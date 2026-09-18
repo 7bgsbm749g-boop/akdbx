@@ -11,8 +11,8 @@ from agentic_kdbx.web_unlock import start_unlock_server
 from test_broker import Entry, RecordingTyper, Vault, SECRET
 
 
-def call(port, method, path, body=None, identity=True):
-    connection = HTTPConnection("127.0.0.1", port, timeout=2)
+def call(port, method, path, body=None, identity=True, timeout=2):
+    connection = HTTPConnection("127.0.0.1", port, timeout=timeout)
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     if identity:
         headers["Tailscale-User-Login"] = "owner@example.test"

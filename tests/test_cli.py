@@ -76,7 +76,8 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
             parts = urlsplit(status["unlock_url"])
             path = parts.path + "?" + parts.query
             port = servers[0].server_address[1]
-            code, _, page = call(port, "POST", path, urlencode({"password": MASTER}))
+            # Real KDBX key derivation can exceed two seconds on a busy host.
+            code, _, page = call(port, "POST", path, urlencode({"password": MASTER}), timeout=30)
             assert code == 200
             assert MASTER.encode() not in page and SECRET.encode() not in page
             assert command("status") == {"ok": True, "locked": False}
