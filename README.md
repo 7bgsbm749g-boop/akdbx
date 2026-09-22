@@ -8,7 +8,9 @@
 - The API has no reveal, clipboard, export, or arbitrary-field operation.
 - Search returns only title, username, URL, group, and a random authenticated handle.
 - Handles expire after five minutes and are consumed on the first fill attempt.
-- The Unix socket and its directory are mode `0600` and `0700`.
+- The Unix socket and its directory are mode `0600` and `0700`. The CLI rejects
+  symlinked or incorrectly owned runtime paths and verifies the server's Unix
+  peer UID before sending a request.
 - The broker starts locked. The user enters the master password only on the private Tailscale HTTPS unlock page, never in chat, terminal input, arguments, or environment variables.
 - After unlock, an explicit `fill` invokes keyboard delivery immediately, without terminal approval. The caller must verify the destination and focus the intended field first.
 - Errors are deliberately generic after the typing boundary.
@@ -32,7 +34,7 @@ Keep the broker process running. Open its private unlock page from your Tailscal
 .venv/bin/akdbx fill HANDLE_FROM_SEARCH --mode login
 ```
 
-Focus the username field before invoking `fill`. `login` types the username, presses Tab, then types the password. `--mode username` and `--mode password` fill one field. The broker never submits the form, reads the destination back, or uses the clipboard.
+Focus the username field before invoking `fill`. `login` types the username, presses Tab, then types the password. `--mode username` and `--mode password` fill one field. Before sending any keys, the broker rejects a requested fill if any field it needs contains a control character, including Tab, carriage return, or newline. The broker sends no submit key of its own, reads nothing back from the destination, and does not use the clipboard.
 
 There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; existing commands still work and emit a deprecation warning. Remove it from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
 
@@ -44,7 +46,14 @@ On the configured VPS, start the broker without entering the master password loc
 .venv/bin/akdbx serve /absolute/path/to/passwords.kdbx --web-unlock
 ```
 
-The broker starts locked. `status` and `search` responses provide a one-time `https://vps-3857965a.tailb80cc4.ts.net:9443` unlock link. Open it from a device signed into the tailnet, enter the KDBX master password, and then use the broker normally. The backend listens only on `127.0.0.1`; Tailscale Serve supplies HTTPS, tailnet access control, and the authenticated identity header. The page and URL are non-cacheable, attempts are rate-limited, request logging is disabled, and the URL token is replaced after a successful unlock.
+The broker starts locked. `status` and `search` responses provide a one-time `https://vps-3857965a.tailb80cc4.ts.net:9443` unlock link. Open it from a device signed into the tailnet, enter the KDBX master password, and then use the broker normally. The backend listens only on a Unix-domain socket in the broker's private runtime directory; it does not open a TCP port. Tailscale Serve supplies HTTPS, tailnet access control, and the authenticated identity header. The filesystem boundary prevents another local UID from replacing a stopped backend behind the trusted HTTPS origin. The page and URL are non-cacheable, attempts are rate-limited, request logging is disabled, and the URL token is replaced after a successful unlock.
+
+The CLI independently trusts that HTTPS origin; it rejects broker responses
+containing an HTTP, malformed, credential-bearing, or different-origin unlock
+link. Custom deployments must configure the client with the intended origin
+using global `--unlock-origin HTTPS_ORIGIN` (or `AKDBX_UNLOCK_ORIGIN`) before the
+subcommand. A broker running under a separately configured account likewise
+requires global `--broker-uid UID` (or `AKDBX_BROKER_UID`).
 
 The master password travels inside the tailnet HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Unlock remains valid for the lifetime of the broker process.
 
@@ -61,9 +70,11 @@ An agent should:
 1. Run `akdbx search <site-or-app>` and show the user the non-secret choices.
 2. Verify the destination and focus the intended field, then use exactly one returned handle with `akdbx fill`. No further user approval is required for the authorized login task.
 3. Never ask for the master password or attempt to read, log, copy, or inspect a filled password field.
-4. Search again if a handle expires. After an error or timeout, check non-secret target state before retrying; typing may have partially completed.
+4. Search again if a handle expires. An `autofill not started` response guarantees that request sent no keys. A timeout or lost connection can still mean typing had already started, so check non-secret target state and never retry automatically.
 
 Existing broker processes retain their loaded code until restarted. The originating login workflow should stop its old broker before starting the command above with the same database, key file, socket, and desktop environment, then request a fresh private web unlock. Old handles cannot be reused after restart. See the [VPS setup reference](skills/agentic-kdbx/references/vps-setup.md) for the deployment command.
+
+Remote unlock requires Tailscale Serve to proxy HTTPS to the broker's Unix socket, not to a persistent loopback TCP port. This mapping must be installed by root with Tailscale 1.98.9 or newer; older versions had a Unix-socket Serve authorization flaw. Merely starting the updated broker does not migrate an existing Serve mapping. Follow the setup reference when deployment changes are authorized.
 
 ## Development
 

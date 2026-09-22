@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import html
+import os
 import secrets
+import socket
+import socketserver
 import threading
 import time
 from http import HTTPStatus
@@ -11,8 +14,165 @@ from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
 from .broker import Broker, open_vault_with_password
+from .runtime import (
+    acquire_lifecycle_lock,
+    prepare_private_runtime_directory,
+    remove_stale_socket,
+    unlink_socket_if_same,
+)
 
 MAX_BODY = 16 * 1024
+MAX_UNLOCK_ATTEMPTS = 5
+ATTEMPT_WINDOW = 60
+MAX_HTTP_CONNECTIONS = 8
+REQUEST_IO_TIMEOUT = 5.0
+CONNECTION_TIMEOUT = 15.0
+
+
+class ConnectionDeadline:
+    """Absolute lifetime shared by a connection watchdog and its handler."""
+
+    def __init__(self) -> None:
+        self.expires_at = time.monotonic() + CONNECTION_TIMEOUT
+        self.expired_event = threading.Event()
+
+    def expire(self) -> None:
+        self.expired_event.set()
+
+    def expired(self) -> bool:
+        return self.expired_event.is_set() or time.monotonic() >= self.expires_at
+
+
+class ThreadingUnixHTTPServer(ThreadingHTTPServer):
+    """HTTP over a filesystem-protected Unix socket for Tailscale Serve."""
+
+    address_family = socket.AF_UNIX
+    daemon_threads = True
+    request_queue_size = MAX_HTTP_CONNECTIONS
+
+    def __init__(
+        self, server_address, *args, **kwargs,
+    ) -> None:
+        self._connection_slots = threading.BoundedSemaphore(MAX_HTTP_CONNECTIONS)
+        self._deadline_lock = threading.Lock()
+        self._deadlines: dict[socket.socket, ConnectionDeadline] = {}
+        self._runtime_fd: int | None = None
+        self._lifecycle_lock: int | None = None
+        socket_path = Path(os.path.abspath(os.fspath(server_address)))
+        runtime_path, self._runtime_fd = prepare_private_runtime_directory(
+            socket_path.parent,
+        )
+        socket_path = runtime_path / socket_path.name
+        self._socket_name = socket_path.name
+        try:
+            self._lifecycle_lock = acquire_lifecycle_lock(
+                self._runtime_fd, self._socket_name,
+            )
+            remove_stale_socket(socket_path, self._runtime_fd, self._socket_name)
+        except Exception:
+            if self._lifecycle_lock is not None:
+                os.close(self._lifecycle_lock)
+                self._lifecycle_lock = None
+            os.close(self._runtime_fd)
+            self._runtime_fd = None
+            raise
+        super().__init__(str(socket_path), *args, **kwargs)
+
+    def get_request(self):
+        # Reserve capacity before accept(), so no more than the bounded worker
+        # count can become application-owned connections at once. Connections
+        # beyond the cap remain in the kernel's bounded listen queue.
+        self._connection_slots.acquire()
+        try:
+            request, client_address = super().get_request()
+            request.settimeout(REQUEST_IO_TIMEOUT)
+            return request, client_address
+        except BaseException:
+            self._connection_slots.release()
+            raise
+
+    @staticmethod
+    def _expire_request(
+        request: socket.socket, deadline: ConnectionDeadline,
+    ) -> None:
+        # The socket timeout above limits inactivity. This watchdog additionally
+        # prevents a peer from extending a connection forever by slowly sending
+        # bytes just before each inactivity deadline.
+        deadline.expire()
+        try:
+            request.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def request_expired(self, request: socket.socket) -> bool:
+        with self._deadline_lock:
+            deadline = self._deadlines.get(request)
+        return deadline is None or deadline.expired()
+
+    def process_request(self, request, client_address) -> None:
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            # Thread creation can fail after get_request() reserved a slot.
+            # Recover both the socket and capacity before propagating it.
+            self.shutdown_request(request)
+            self._connection_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address) -> None:
+        connection_deadline = ConnectionDeadline()
+        with self._deadline_lock:
+            self._deadlines[request] = connection_deadline
+        deadline = threading.Timer(
+            CONNECTION_TIMEOUT, self._expire_request,
+            args=(request, connection_deadline),
+        )
+        deadline.daemon = True
+        deadline_started = False
+        try:
+            deadline.start()
+            deadline_started = True
+            try:
+                self.finish_request(request, client_address)
+            except (TimeoutError, ConnectionError, OSError):
+                # Expected for expired or client-abandoned requests. Do not log
+                # request data or a traceback for an untrusted connection.
+                pass
+            except Exception:
+                self.handle_error(request, client_address)
+        finally:
+            if deadline_started:
+                deadline.cancel()
+            with self._deadline_lock:
+                self._deadlines.pop(request, None)
+            self.shutdown_request(request)
+            self._connection_slots.release()
+
+    def server_bind(self) -> None:
+        # HTTPServer.server_bind assumes an INET (host, port) address.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = "localhost"
+        self.server_port = None
+        assert self._runtime_fd is not None
+        os.chmod(self._socket_name, 0o600, dir_fd=self._runtime_fd)
+        info = os.stat(
+            self._socket_name, dir_fd=self._runtime_fd, follow_symlinks=False,
+        )
+        self._socket_identity = (info.st_dev, info.st_ino)
+
+    def server_close(self) -> None:
+        super().server_close()
+        if self._runtime_fd is not None:
+            unlink_socket_if_same(
+                self._runtime_fd, self._socket_name,
+                getattr(self, "_socket_identity", None),
+            )
+        if self._lifecycle_lock is not None:
+            os.close(self._lifecycle_lock)
+            self._lifecycle_lock = None
+        if self._runtime_fd is not None:
+            os.close(self._runtime_fd)
+            self._runtime_fd = None
 
 
 class UnlockState:
@@ -29,17 +189,67 @@ class UnlockState:
         self.opener = opener
         self.token = secrets.token_urlsafe(32)
         self.failures: list[float] = []
+        self.identity_failures: dict[str, list[float]] = {}
+        self.pending: dict[int, str] = {}
+        self.next_attempt = 0
         self.lock = threading.Lock()
+        self.unlock_lock = threading.Lock()
 
-    def allowed_attempt(self) -> bool:
+    def token_matches(self, token: str) -> bool:
+        with self.lock:
+            return secrets.compare_digest(token, self.token)
+
+    def reserve_attempt(self, identity: str) -> int | None:
+        """Atomically account for an attempt before expensive key derivation."""
         now = time.monotonic()
         with self.lock:
-            self.failures = [stamp for stamp in self.failures if now - stamp < 60]
-            return len(self.failures) < 5
+            self.failures = [stamp for stamp in self.failures if now - stamp < ATTEMPT_WINDOW]
+            for key, stamps in list(self.identity_failures.items()):
+                current = [stamp for stamp in stamps if now - stamp < ATTEMPT_WINDOW]
+                if current:
+                    self.identity_failures[key] = current
+                else:
+                    del self.identity_failures[key]
 
-    def record_failure(self) -> None:
+            pending_for_identity = sum(owner == identity for owner in self.pending.values())
+            if len(self.failures) + len(self.pending) >= MAX_UNLOCK_ATTEMPTS:
+                return None
+            if len(self.identity_failures.get(identity, ())) + pending_for_identity >= MAX_UNLOCK_ATTEMPTS:
+                return None
+
+            self.next_attempt += 1
+            self.pending[self.next_attempt] = identity
+            return self.next_attempt
+
+    def attempt_status(self, attempt: int, token: str) -> str:
+        """Recheck mutable authorization state once this attempt reaches the opener."""
         with self.lock:
-            self.failures.append(time.monotonic())
+            if not self.broker.locked:
+                self.pending.pop(attempt, None)
+                return "unlocked"
+            if not secrets.compare_digest(token, self.token):
+                self.pending.pop(attempt, None)
+                return "invalid"
+            return "ready"
+
+    def record_failure(self, attempt: int) -> None:
+        with self.lock:
+            identity = self.pending.pop(attempt, None)
+            if identity is None:
+                return
+            now = time.monotonic()
+            self.failures.append(now)
+            self.identity_failures.setdefault(identity, []).append(now)
+
+    def record_success(self, attempt: int) -> None:
+        with self.lock:
+            self.pending.pop(attempt, None)
+            self.token = secrets.token_urlsafe(32)
+
+    def cancel_attempt(self, attempt: int) -> None:
+        """Release a reservation that did not reach an opener result."""
+        with self.lock:
+            self.pending.pop(attempt, None)
 
 
 def _page(title: str, body: str) -> bytes:
@@ -65,6 +275,9 @@ def handler_for(state: UnlockState):
         def _token(self) -> str:
             return parse_qs(urlsplit(self.path).query).get("token", [""])[0]
 
+        def _expired(self) -> bool:
+            return self.server.request_expired(self.request)
+
         def _send(self, status: HTTPStatus, body: bytes) -> None:
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -77,7 +290,7 @@ def handler_for(state: UnlockState):
             self.wfile.write(body)
 
         def do_GET(self) -> None:
-            if not self._identity_ok() or not secrets.compare_digest(self._token(), state.token):
+            if not self._identity_ok() or not state.token_matches(self._token()):
                 self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
                 return
             if not state.broker.locked:
@@ -89,14 +302,13 @@ def handler_for(state: UnlockState):
             self._send(HTTPStatus.OK, _page("Unlock KeePass", body))
 
         def do_POST(self) -> None:
-            if not self._identity_ok() or not secrets.compare_digest(self._token(), state.token):
+            identity = self.headers.get("Tailscale-User-Login", "")
+            submitted_token = self._token()
+            if not identity or not state.token_matches(submitted_token):
                 self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
                 return
             if not state.broker.locked:
                 self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The KeePass broker is ready. You may close this page.</p>"))
-                return
-            if not state.allowed_attempt():
-                self._send(HTTPStatus.TOO_MANY_REQUESTS, _page("Try later", "<p>Too many failed attempts. Wait one minute.</p>"))
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -106,20 +318,53 @@ def handler_for(state: UnlockState):
                 self._send(HTTPStatus.BAD_REQUEST, _page("Invalid request", "<p>The request was rejected.</p>"))
                 return
             raw = self.rfile.read(length)
+            if len(raw) != length:
+                if not self._expired():
+                    self._send(HTTPStatus.BAD_REQUEST, _page("Invalid request", "<p>The request was rejected.</p>"))
+                return
+            if self._expired():
+                return
+            attempt = state.reserve_attempt(identity)
+            if attempt is None:
+                self._send(HTTPStatus.TOO_MANY_REQUESTS, _page("Try later", "<p>Too many failed attempts. Wait one minute.</p>"))
+                return
+
             try:
-                values = parse_qs(raw.decode("utf-8"), strict_parsing=True)
-                password = values.get("password", [""])[0]
-                if not password:
-                    raise ValueError
-                vault = state.opener(state.database, password, state.keyfile)
-                password = ""
-                state.broker.unlock(vault)
-                state.token = secrets.token_urlsafe(32)  # invalidate the submitted URL
-                self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The KeePass broker is ready. You may close this page.</p>"))
-            except Exception:
-                password = ""
-                state.record_failure()
-                self._send(HTTPStatus.UNAUTHORIZED, _page("Unlock failed", '<p class="error">The database could not be unlocked.</p><p>Return to the agent-provided link and try again.</p>'))
+                if self._expired():
+                    return
+                with state.unlock_lock:
+                    # Waiting behind another KDF may consume this request's
+                    # entire network lifetime. Never begin new expensive work
+                    # for a client whose absolute deadline has passed.
+                    if self._expired():
+                        return
+                    status = state.attempt_status(attempt, submitted_token)
+                    if status == "unlocked":
+                        self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The KeePass broker is ready. You may close this page.</p>"))
+                        return
+                    if status == "invalid":
+                        self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
+                        return
+                    try:
+                        values = parse_qs(raw.decode("utf-8"), strict_parsing=True)
+                        password = values.get("password", [""])[0]
+                        if not password:
+                            raise ValueError
+                        if self._expired():
+                            return
+                        vault = state.opener(state.database, password, state.keyfile)
+                    except Exception:
+                        password = ""
+                        state.record_failure(attempt)
+                        self._send(HTTPStatus.UNAUTHORIZED, _page("Unlock failed", '<p class="error">The database could not be unlocked.</p><p>Return to the agent-provided link and try again.</p>'))
+                        return
+
+                    password = ""
+                    state.broker.unlock(vault)
+                    state.record_success(attempt)  # invalidate the submitted URL
+                    self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The KeePass broker is ready. You may close this page.</p>"))
+            finally:
+                state.cancel_attempt(attempt)
 
     return Handler
 
@@ -128,15 +373,15 @@ def start_unlock_server(
     broker: Broker,
     database: Path,
     keyfile: Path | None,
-    host: str,
-    port: int,
+    socket_path: Path,
     public_base_url: str,
     opener: Callable = open_vault_with_password,
-) -> tuple[ThreadingHTTPServer, str]:
-    if host not in {"127.0.0.1", "::1", "localhost"}:
-        raise ValueError("web unlock must listen on localhost")
+) -> tuple[ThreadingUnixHTTPServer, str]:
+    socket_path = Path(socket_path).expanduser()
+    if not socket_path.is_absolute():
+        raise ValueError("unlock socket path must be absolute")
     state = UnlockState(broker, database, keyfile, opener)
-    server = ThreadingHTTPServer((host, port), handler_for(state))
+    server = ThreadingUnixHTTPServer(str(socket_path), handler_for(state))
     url = public_base_url.rstrip("/") + "/?token=" + state.token
     broker.unlock_url = url
     thread = threading.Thread(target=server.serve_forever, name="akdbx-web-unlock", daemon=True)

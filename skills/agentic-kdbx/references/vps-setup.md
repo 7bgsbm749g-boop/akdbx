@@ -9,13 +9,17 @@ Read this when ordinary status/search/fill calls cannot proceed or when the user
 /home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx status
 ```
 
-The CLI chooses `${XDG_RUNTIME_DIR}/agentic-kdbx.sock` when `XDG_RUNTIME_DIR` is set, otherwise `/tmp/akdbx-UID/agentic-kdbx.sock`. On this VPS, the usual runtime location is `/run/user/1000/agentic-kdbx.sock`. If the caller and broker have different environments, pass the broker's known socket explicitly. `--socket` is a global option and must precede the subcommand:
+The CLI chooses `${XDG_RUNTIME_DIR}/agentic-kdbx/agentic-kdbx.sock` when `XDG_RUNTIME_DIR` is set, otherwise `/tmp/akdbx-UID/agentic-kdbx.sock`. On this VPS, the usual runtime location is `/run/user/1000/agentic-kdbx/agentic-kdbx.sock`. If the caller and broker have different environments, pass the broker's known socket explicitly. `--socket` is a global option and must precede the subcommand:
 
 ```bash
-/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx --socket /run/user/1000/agentic-kdbx.sock status
+/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx --socket /run/user/1000/agentic-kdbx/agentic-kdbx.sock status
 ```
 
-Use the same socket on subsequent search/fill commands. Do not unlink a socket or launch a duplicate broker to work around a connection failure: `serve` currently replaces an existing socket pathname. Also, `serve` changes its socket's parent-directory mode to `0700`, so custom sockets should live in a dedicated private directory, not a shared project directory.
+Use the same socket on subsequent search/fill commands. Do not unlink a socket or launch a duplicate broker to work around a connection failure. `serve` refuses a live endpoint, recovers only an unchanged owned stale socket, and holds a persistent per-socket lifecycle lock across startup and shutdown. It validates the runtime directory without changing its permissions, and anchors socket lifecycle operations to the verified directory. Custom sockets must already live in (or name a new) dedicated private directory below trusted, non-symlinked ancestry, not a shared project directory. Root-owned sticky ancestors such as `/tmp` are allowed for the per-UID fallback; other group- or world-writable ancestors are rejected.
+
+Before connecting, the CLI requires that dedicated directory to be owned by the configured broker UID with mode `0700`, requires the socket to be owned by that UID with mode `0600`, rejects symlinked path components, and verifies the connected process using Unix peer credentials. The expected UID defaults to the caller's UID. If a deployment intentionally runs the broker as another account, configure its numeric identity independently with global `--broker-uid UID` or `AKDBX_BROKER_UID`; do not derive it from a server response.
+
+Broker-provided unlock links are shown only when they use HTTPS and match the independently configured expected origin. The managed default is `https://vps-3857965a.tailb80cc4.ts.net:9443`. For an intentional custom deployment, put global `--unlock-origin https://host[:port]` before the subcommand, or set `AKDBX_UNLOCK_ORIGIN`. The configured value must be an origin only, without credentials, path, query, or fragment.
 
 This client is a CLI; no MCP server or automatic broker service is supplied. The repository's `.buildtmp` KDBX files were synthetic test fixtures. Do not treat them as the user's database. If the real database path is unknown, ask for its location, never its master password or key-file contents.
 
@@ -50,7 +54,7 @@ Reuse an existing broker whenever possible. To start a new one, use the real dat
 
 ```bash
 /home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx \
-  --socket /run/user/1000/agentic-kdbx.sock \
+  --socket /run/user/1000/agentic-kdbx/agentic-kdbx.sock \
   serve /absolute/path/to/the-users-vault.kdbx --web-unlock
 ```
 
@@ -58,7 +62,7 @@ For a database requiring a key file, append `--keyfile /absolute/path/to/keyfile
 
 Private web unlock is always enabled. `--web-unlock` remains accepted for command compatibility and clarity; omitting it has the same behavior. The former hidden terminal master-password prompt has been removed.
 
-After web unlock, an explicit `fill` with a fresh handle types immediately into the focused target. The user has authorized removal of all per-fill terminal approval. Do not ask for another fill approval. `--yes-on-fill` is a deprecated compatibility no-op that emits a warning; omit it from new commands. Focus and verify the target before invoking `fill`, and keep focus stable through completion. Unlock and search never type on their own. The client still waits five seconds for an RPC response, so treat a timeout as potentially partial input.
+After web unlock, an explicit `fill` with a fresh handle types immediately into the focused target. The user has authorized removal of all per-fill terminal approval. Do not ask for another fill approval. `--yes-on-fill` is a deprecated compatibility no-op that emits a warning; omit it from new commands. Focus and verify the target before invoking `fill`, and keep focus stable through completion. Unlock and search never type on their own. Each fill has a short start deadline: `autofill not started` guarantees no key was sent, while a timeout or lost connection remains potentially partial and must not be retried automatically.
 
 For a broker started before this change, the originating login workflow must stop the old process before running the startup command above, preserving its database/key-file paths, socket, and desktop environment. Do not approve an old pending terminal prompt: stopping that broker discards the pending request. Then request a fresh private web unlock and search for a new handle. Updating source or invoking a new CLI does not replace code already loaded by the running broker. A repair thread scoped to source changes must leave the live broker, socket, vault, and desktop alone.
 
@@ -69,33 +73,36 @@ The database is held in memory for that broker process's lifetime. Changes made 
 Configured deployment:
 
 - Public-to-the-tailnet HTTPS base: `https://vps-3857965a.tailb80cc4.ts.net:9443`
-- Local backend: `http://127.0.0.1:43128`
+- Local backend: HTTP over `unix:/run/user/1000/agentic-kdbx/agentic-kdbx-unlock.sock`
 - Live URL: the base plus `/?token=...`, returned by the running broker.
 
-The backend only runs while a `serve --web-unlock` process is alive. An installed Tailscale proxy alone does not mean a vault is connected or the page is available.
+The backend only runs while a `serve --web-unlock` process is alive. Both sockets live in the dedicated `/run/user/1000/agentic-kdbx` directory, which is owned by `ubuntu` and mode `0700`; the broker also validates its non-symlinked ancestry and rejects replaceable ancestors instead of weakening permissions. This prevents a different local UID from creating a replacement backend while the broker is stopped. An installed Tailscale proxy alone does not mean a vault is connected or the page is available.
 
 Read-only checks:
 
 ```bash
 tailscale serve status
-ss -ltn 'sport = :43128'
+sudo test -S /run/user/1000/agentic-kdbx/agentic-kdbx-unlock.sock
 /home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx status
 ```
 
-Only if the mapping is missing and setting up remote access is authorized, inspect current mappings first, then configure this port without replacing other services:
+Only if migration or setup is authorized, first verify `tailscale version` is **1.98.9 or newer** and inspect the existing mappings. Tailscale requires root to configure filesystem/Unix-socket targets. Then replace only the 9443 mapping with the protected socket backend; do not reset or disturb other services:
 
 ```bash
-tailscale serve --bg --https=9443 http://127.0.0.1:43128
+sudo tailscale serve --bg --https=9443 unix:/run/user/1000/agentic-kdbx/agentic-kdbx-unlock.sock
+tailscale serve status
 ```
 
-Use Serve, keep the backend on loopback, and do not enable Funnel/public exposure for the unlock page. Ports 443 and 8443 already serve other applications. Do not reset the entire Serve configuration.
+Use Serve and do not enable Funnel/public exposure for the unlock page. Ports 443 and 8443 already serve other applications. Do not reset the entire Serve configuration. Do not retain or restore the former `http://127.0.0.1:43128` mapping: a persistent mapping to a reclaimable high TCP port does not authenticate the backend while the broker is stopped. Starting new application code cannot change an existing Tailscale configuration, so remote unlock must remain unavailable until this migration is completed.
+
+Tailscale versions before 1.98.9 must not be used for this socket mapping because TS-2026-005 allowed a non-root Tailscale operator to configure privileged Unix-socket proxy targets. Upgrade Tailscale through the host's managed package process before configuring the mapping. The broker's socket mode is `0600`; `tailscaled` normally runs as root and can reach it without making the socket accessible to other users.
 
 The handler requires both the token and a nonempty Tailscale identity header supplied by Serve. It does not contain a per-owner allowlist: reachability is governed by the tailnet's access rules. Do not spoof identity headers or use a direct backend POST to bypass the intended user unlock workflow. Tagged devices may lack the required identity header.
 
 If the page fails:
 
 - `404`: check broker status and the exact current tokenized URL. Successful unlock invalidates the old URL. Missing identity also causes `404`.
-- Proxy/backend unavailable: check that the broker and loopback listener are still running and inspect the existing Serve mapping.
+- Proxy/backend unavailable: check that the broker and Unix socket are present and inspect the existing Serve mapping.
 - `Unlock failed`: let the user retry on the page. If needed, check only the configured database/key-file paths and file accessibility; do not solicit or test passwords yourself.
 - `429`: the current server limits failed attempts to five per minute. Wait before another user attempt.
 

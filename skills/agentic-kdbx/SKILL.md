@@ -90,7 +90,7 @@ Choose the mode based on the observed form:
 | `username` | Username field | Username only |
 | `password` | Password field | Password only |
 
-For multi-step sign-in or uncertain Tab order, use separate username and password fills, with a new search/handle for the second step. The broker never submits the login form. Do not navigate or move focus while a fill is pending.
+For multi-step sign-in or uncertain Tab order, use separate username and password fills, with a new search/handle for the second step. The broker sends no submit key of its own. It rejects a fill before sending any keys if a required credential field contains a control character (including Tab, carriage return, or newline). Do not navigate or move focus while a fill is pending.
 
 ### 4. Fill once and verify the outcome
 
@@ -110,7 +110,7 @@ The user has authorized fills without per-fill approval. Once the user privately
 
 `--yes-on-fill` is a deprecated no-op, accepted only for command compatibility. New commands should omit it. Every new broker uses private web unlock, including when `--web-unlock` is omitted; terminal master-password entry is no longer supported.
 
-The current CLI has a five-second socket timeout. On a timeout or lost connection, the broker may still be typing or may already have typed. Do not immediately search and retry: inspect non-secret UI state and recheck broker health first. See recovery below.
+Each fill carries a short start deadline. An `autofill not started` response means the broker rejected it before sending any key. On a timeout or lost connection, typing may already be in progress or complete; do not immediately search and retry. Inspect non-secret UI state and recheck broker health first. See recovery below.
 
 ## Recovery and reporting
 
@@ -121,9 +121,10 @@ The current CLI has a five-second socket timeout. On a timeout or lost connectio
 | `entries: []` | Refine the site/account query or report no match. |
 | `unknown or expired handle; search again` | Search again; never fabricate or reuse a handle. |
 | `fill denied` or a terminal approval prompt | The running broker predates this policy change. Stop that old process before restarting the patched version with private web unlock; see the setup reference. Do not approve the old prompt or leave a pending fill behind. |
+| `autofill not started: ...` | No key was sent for that request. Recheck focus and search for a fresh handle before any deliberate retry. |
 | `autofill failed`, timeout, or disconnect | Treat the fill as potentially partial. Check destination and broker; do not blindly duplicate input. |
 
-There is no retry, cancel-fill, lock, reload, or credential-edit command. A process started before this patch must be stopped and restarted to load the new policy; the originating login workflow owns that restart. The current server may exit after a disconnected client's response cannot be delivered; confirm status instead of assuming it stayed unlocked.
+There is no retry, cancel-fill, lock, reload, or credential-edit command. A process started before this patch must be stopped and restarted to load the new policy; the originating login workflow owns that restart. A patched broker contains client disconnects and framing timeouts to their individual connections, but confirm status after an uncertain fill because keyboard delivery may already have started.
 
 ## Repair client failures and resume the original task
 
