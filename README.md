@@ -57,7 +57,45 @@ requires global `--broker-uid UID` (or `AKDBX_BROKER_UID`).
 
 The master password travels inside the tailnet HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Unlock remains valid for the lifetime of the broker process.
 
-Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. The broker never modifies the database.
+Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Only explicit, confirmed password-write workflows modify the database; ordinary unlock, search and fill remain read-only.
+
+## Password writes (0.2.0)
+
+`akdbx --version` reports the CLI version. Broker `status` reports its own
+`version`, `writes_available` and `recovery_required`; require an unlocked,
+write-capable 0.2.0 broker before changing a website password.
+
+- `create-entry --title TITLE --username ACCOUNT --url SITE --group GROUP`
+- `update-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP`
+- `generate-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP [--length 24] [--symbols '!@#$%*-_+=?']`
+- `fill-generated SINGLE_USE_FILL_HANDLE --target-url VERIFIED_RESET_URL`
+- `commit-password WRITE_HANDLE --site-accepted`
+- `write-status WRITE_HANDLE`
+- `cancel-write WRITE_HANDLE`
+
+Update/generation requires all exact search metadata and consumes the fresh
+search handle. Creation checks the destination group and rejects duplicate
+site/accounts. Create/update returns a private confirmation page where the user
+reviews metadata and enters/repeats a chosen password; secrets never pass
+through the CLI. Generated reset passwords remain in broker memory: two
+single-use references fill password and confirmation fields on the verified
+broker desktop, then explicit site acceptance permits saving the same secret.
+No operation exports, shows, logs or copies passwords.
+
+Writes expire after five minutes and vanish on restart. Site rejection requires
+cancellation, not a vault overwrite. Saves serialize against fills/searches,
+check on-disk conflicts, preserve history and unrelated vault data, verify the
+encrypted candidate, retain mode-0600 encrypted backups and replace atomically.
+Failed or uncertain saves never return success. Successful writes become
+immediately searchable/fillable and invalidate previous selection handles.
+The advisory disk lock does not constrain uncooperative external editors;
+arrange exclusive vault editing during saves.
+
+See [password workflows and recovery](skills/agentic-kdbx/references/password-writes.md)
+for reset coordination, policy constraints, focus/origin checks, cancellation,
+conflicts, backup recovery and activation. Installing new code does not replace
+a running broker: coordinate restart and private re-unlock with its owner after
+any live interaction ends.
 
 ## Agent contract
 

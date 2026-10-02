@@ -17,6 +17,8 @@ from pathlib import Path
 from threading import Event
 from typing import Callable, Protocol
 
+from .writes import WriteManager, WriteError
+from . import __version__
 from .protocol import ProtocolError, receive_message, send_message
 from .runtime import (
     acquire_lifecycle_lock,
@@ -98,6 +100,8 @@ class Broker:
         self._handles: dict[str, Handle] = {}
         self._state_lock = threading.Lock()
         self._keyboard_lock = threading.Lock()
+        self._vault_lock = threading.RLock()
+        self.writes = WriteManager(self)
         self.unlock_url: str | None = None
 
     @property
@@ -160,7 +164,17 @@ class Broker:
             if any(unicodedata.category(character) == "Cc" for character in value):
                 raise ValueError("unsafe credential text")
 
-    def dispatch(
+    def dispatch(self, request: dict, *, delivery_ready=None) -> dict:
+        action = request.get("action")
+        if action in {'fill', 'fill-generated'} and delivery_ready is None and 'start_deadline' not in request:
+            request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
+        # Search and write operations observe a consistent vault/revision.
+        if action in {"fill", "search", "create-entry", "update-password", "generate-password", "write-status", "cancel-write", "commit-password", "fill-generated"}:
+            with self._vault_lock:
+                return self._dispatch(request, delivery_ready=delivery_ready)
+        return self._dispatch(request, delivery_ready=delivery_ready)
+
+    def _dispatch(
         self,
         request: dict,
         *,
@@ -171,9 +185,24 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if self.locked:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
+        if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
+            return {"ok": False, "error": "save outcome uncertain; restart and unlock"}
+        if action in {"create-entry", "update-password", "generate-password", "write-status", "cancel-write", "commit-password", "fill-generated"}:
+            try:
+                if action in {"create-entry", "update-password", "generate-password"}:
+                    return self.writes.begin(request)
+                if action in {"write-status", "cancel-write"}:
+                    return self.writes.status(request.get("write_handle"), cancel=action == "cancel-write")
+                if action == "fill-generated":
+                    return self.writes.fill(request, delivery_ready)
+                return self.writes.commit_generated(request)
+            except WriteError as exc:
+                return {"ok": False, "error": str(exc)}
+            except Exception:
+                return {"ok": False, "error": "password operation failed"}
         if action == "search":
             query = request.get("query", "")
             if not isinstance(query, str) or len(query) > 500:
@@ -299,8 +328,8 @@ class Broker:
 
 
 def open_vault_with_password(database: Path, password: str, keyfile: Path | None = None):
-    from pykeepass import PyKeePass
-    return PyKeePass(str(database), password=password, keyfile=str(keyfile) if keyfile else None)
+    from .persistence import VaultStore
+    return VaultStore(database).open(password, keyfile)
 
 
 def _serve_connection(connection: socket.socket, broker: Broker) -> None:
@@ -357,10 +386,10 @@ def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         remove_stale_socket(socket_path, runtime_fd, socket_path.name)
         server.bind(anchored_socket_path(runtime_fd, socket_path.name))
+        server.listen(8)
         os.chmod(socket_path.name, 0o600, dir_fd=runtime_fd)
         socket_info = os.stat(socket_path.name, dir_fd=runtime_fd, follow_symlinks=False)
         socket_identity = (socket_info.st_dev, socket_info.st_ino)
-        server.listen(8)
         server.settimeout(0.2 if stop else None)
         admission = threading.BoundedSemaphore(MAX_RPC_WORKERS)
 

@@ -74,7 +74,7 @@ def test_search_response_never_contains_password_or_internal_uuid():
 
 def test_status_is_secret_free():
     broker, _ = make_broker()
-    assert broker.dispatch({"action": "ping"}) == {"ok": True, "locked": False}
+    assert broker.dispatch({"action": "ping"}) == {"ok": True, "locked": False, "version": "0.2.0", "writes_available": False, "recovery_required": False}
 
 
 @pytest.mark.parametrize("mode, expected", [
@@ -302,7 +302,7 @@ def test_second_broker_refuses_live_socket_without_disrupting_first(tmp_path):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.2.0", "writes_available": False, "recovery_required": False}
 
 
 def test_serve_rejects_unsafe_custom_runtime_directory_without_chmod(tmp_path):
@@ -376,7 +376,7 @@ def test_idle_unix_client_does_not_block_other_requests(tmp_path):
                 client.settimeout(0.5)
                 client.connect(str(socket_path))
                 send_message(client, {"action": "ping"})
-                assert receive_message(client) == {"ok": True, "locked": False}
+                assert receive_message(client) == {"ok": True, "locked": False, "version": "0.2.0", "writes_available": False, "recovery_required": False}
 
 
 def test_rpc_worker_admission_is_bounded_and_recovers(tmp_path, monkeypatch):
@@ -435,7 +435,7 @@ def test_rpc_worker_admission_is_bounded_and_recovers(tmp_path, monkeypatch):
                         client.settimeout(0.5)
                         client.connect(str(socket_path))
                         send_message(client, {"action": "ping"})
-                        assert receive_message(client) == {"ok": True, "locked": True}
+                        assert receive_message(client) == {"ok": True, "locked": True, "version": "0.2.0", "writes_available": False, "recovery_required": False}
                     break
                 except (ConnectionError, TimeoutError):
                     assert time.monotonic() < deadline
@@ -477,7 +477,7 @@ def test_rpc_absolute_frame_deadline_stops_header_drip_and_recovers(
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": True}
+            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.2.0", "writes_available": False, "recovery_required": False}
 
 
 def test_rpc_worker_start_failure_is_local_and_cleanup_still_completes(
@@ -506,7 +506,7 @@ def test_rpc_worker_start_failure_is_local_and_cleanup_still_completes(
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": True}
+            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.2.0", "writes_available": False, "recovery_required": False}
 
     assert not socket_path.exists()
     with running_broker(socket_path, Broker(None, RecordingTyper())):
@@ -524,7 +524,7 @@ def test_disconnected_unix_client_does_not_stop_broker(tmp_path):
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.2.0", "writes_available": False, "recovery_required": False}
 
 
 def test_oversized_metadata_returns_generic_error_and_broker_stays_up(tmp_path):
@@ -539,7 +539,7 @@ def test_oversized_metadata_returns_generic_error_and_broker_stays_up(tmp_path):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.2.0", "writes_available": False, "recovery_required": False}
 
 
 def test_unrelated_oversized_metadata_does_not_block_matching_entry():

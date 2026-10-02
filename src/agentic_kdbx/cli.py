@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from . import __version__
 from .broker import Broker, FILL_START_TIMEOUT, PynputTyper, serve
 from .protocol import ProtocolError, receive_message, send_message
 from .runtime import anchored_socket_path, open_private_runtime_directory
@@ -120,10 +121,15 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         raise ValueError("configured unlock origin must be an HTTPS origin without path, query, or credentials")
     if type(response.get("ok")) is not bool:
         raise ProtocolError("invalid broker response")
-    if "locked" in response and type(response["locked"]) is not bool:
+    for capability in ('locked', 'writes_available', 'recovery_required'):
+        if capability in response and type(response[capability]) is not bool:
+            raise ProtocolError("invalid broker response")
+    if 'version' in response and not isinstance(response['version'], str):
         raise ProtocolError("invalid broker response")
     if "error" in response and not isinstance(response["error"], str):
         raise ProtocolError("invalid broker response")
+    if "private_url" in response:
+        _validate_unlock_url(response["private_url"], expected_unlock_origin)
     if "unlock_url" in response:
         _validate_unlock_url(response["unlock_url"], expected_unlock_origin)
     return response
@@ -154,6 +160,7 @@ def request(
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="akdbx", description="Secret-withholding KeePass autofill broker")
+    result.add_argument("--version", action="version", version=__version__)
     result.add_argument("--socket", type=Path, default=default_socket())
     result.add_argument(
         "--broker-uid", type=int, default=int(os.environ.get("AKDBX_BROKER_UID", os.getuid())),
@@ -176,6 +183,23 @@ def parser() -> argparse.ArgumentParser:
     fill = commands.add_parser("fill", help="autofill using a handle returned by search")
     fill.add_argument("handle")
     fill.add_argument("--mode", choices=("login", "username", "password"), default="login")
+    for name in ('create-entry', 'update-password', 'generate-password'):
+        command = commands.add_parser(name, help='prepare a private password save' if name != 'generate-password' else 'stage a broker-generated password for an existing entry')
+        if name != 'create-entry':
+            command.add_argument('handle')
+        for field in ('title', 'username', 'url', 'group'):
+            command.add_argument('--' + field, required=True, help='exact selected/destination metadata')
+        if name == 'generate-password':
+            command.add_argument('--length', type=int, default=24)
+            command.add_argument('--symbols', default='!@#$%*-_+=?', help='allowed ASCII punctuation; empty for letters and digits')
+    for name in ('write-status', 'cancel-write', 'commit-password'):
+        command = commands.add_parser(name, help='check/cancel a staged write' if name != 'commit-password' else 'save staged password after verified website acceptance')
+        command.add_argument('write_handle')
+        if name == 'commit-password':
+            command.add_argument('--site-accepted', action='store_true', required=True)
+    generated = commands.add_parser('fill-generated', help='fill a single-use generated password reference into a verified focused field')
+    generated.add_argument('handle')
+    generated.add_argument('--target-url', required=True, help='independently verified reset site URL')
     commands.add_parser("status", help="check broker status")
     return result
 
@@ -203,6 +227,18 @@ def main(argv: list[str] | None = None) -> int:
     payload = {"action": "ping" if args.command == "status" else args.command}
     if args.command == "search":
         payload["query"] = args.query
+    elif args.command in {'create-entry', 'update-password', 'generate-password'}:
+        payload['metadata'] = {field: getattr(args, field) for field in ('title', 'username', 'url', 'group')}
+        if args.command != 'create-entry':
+            payload['handle'] = args.handle
+        if args.command == 'generate-password':
+            payload.update(length=args.length, symbols=args.symbols)
+    elif args.command in {'write-status', 'cancel-write', 'commit-password'}:
+        payload['write_handle'] = args.write_handle
+        if args.command == 'commit-password':
+            payload['site_accepted'] = args.site_accepted
+    elif args.command == 'fill-generated':
+        payload.update(handle=args.handle, target_url=args.target_url, start_deadline=time.monotonic() + FILL_START_TIMEOUT)
     elif args.command == "fill":
         payload.update(
             handle=args.handle,
@@ -221,11 +257,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refusing untrusted broker response: {exc}", file=sys.stderr)
         return 2
     except (TimeoutError, OSError):
-        if args.command == "fill":
+        if args.command in {"fill", "fill-generated"}:
             print(
                 "autofill outcome uncertain: connection lost after request; do not retry automatically",
                 file=sys.stderr,
             )
+        elif args.command == 'commit-password':
+            print('save outcome uncertain: check write-status before any retry; do not reset the site again', file=sys.stderr)
         else:
             print("broker request failed", file=sys.stderr)
         return 2

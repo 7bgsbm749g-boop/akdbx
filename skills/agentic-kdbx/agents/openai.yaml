@@ -1,6 +1,6 @@
 interface:
-  display_name: "KeePass Autofill"
-  short_description: "Find logins and autofill without exposing passwords"
-  default_prompt: "Use $agentic-kdbx to find my saved login and autofill it, requesting a Tailscale unlock if needed."
+  display_name: "KeePass Credentials"
+  short_description: "Autofill and save logins without exposing passwords"
+  default_prompt: "Use $agentic-kdbx to find, autofill or securely update my saved login through private unlock, broker-generated passwords and opaque references."
 policy:
   allow_implicit_invocation: true

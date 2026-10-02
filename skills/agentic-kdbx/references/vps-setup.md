@@ -1,6 +1,6 @@
 # VPS setup and recovery
 
-Read this when ordinary status/search/fill calls cannot proceed or when the user asks to connect a database. These are local deployment details, not a reason to reconfigure a working broker.
+Read this when ordinary broker calls cannot proceed or when the user asks to connect a database. These are local deployment details, not a reason to reconfigure a working broker.
 
 ## CLI and socket discovery
 
@@ -66,7 +66,7 @@ After web unlock, an explicit `fill` with a fresh handle types immediately into 
 
 For a broker started before this change, the originating login workflow must stop the old process before running the startup command above, preserving its database/key-file paths, socket, and desktop environment. Do not approve an old pending terminal prompt: stopping that broker discards the pending request. Then request a fresh private web unlock and search for a new handle. Updating source or invoking a new CLI does not replace code already loaded by the running broker. A repair thread scoped to source changes must leave the live broker, socket, vault, and desktop alone.
 
-The database is held in memory for that broker process's lifetime. Changes made to the KDBX file after opening are not automatically reloaded. Stopping the broker (Ctrl-C in its own terminal) requires a fresh unlock next time. There is no stored master password or automatic unlock after reboot.
+The database is held in memory for that broker process's lifetime. Successful broker writes replace it with the verified saved vault. External file changes are not automatically reloaded and cause write conflicts. Version 0.2.0 write workflows are documented in [password writes](password-writes.md). After coordinated activation, require broker status `version: 0.2.0`, `writes_available: true`, `locked: false` and `recovery_required: false`; CLI help alone does not prove activation. Stopping the broker (Ctrl-C in its own terminal) requires a fresh unlock next time. There is no stored master password or automatic unlock after reboot.
 
 ## Tailscale web page
 
