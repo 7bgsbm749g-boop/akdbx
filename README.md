@@ -59,16 +59,17 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
-## Encrypted vault merge (0.3.0)
+## Encrypted vault merge (0.4.0)
 
 ```bash
 akdbx status
 akdbx merge /absolute/path/to/other.kdbx --check
 akdbx merge /absolute/path/to/other.kdbx
+akdbx merge /absolute/path/to/other.kdbx --refresh-target
 akdbx merge-status OPERATION_ID
 ```
 
-Require broker 0.3.0, `merge_protocol: 1`, `merge_available: true` and no recovery
+Require broker 0.4.0, `merge_protocol: 1`, `merge_available: true` and no recovery
 block. The broker privately reuses its held password and key file. Locked
 operation returns the existing private HTTPS unlock link and a clear command
 continuation. Different source credentials are not supported in this release.
@@ -80,6 +81,21 @@ survive. Equal-second conflicting records and any loss of surviving entry
 history/fields are refused. Destination database settings remain authoritative;
 source custom icons/CustomData follow native engine rules. See the workflow for
 metadata conflict details and unsupported credential types.
+
+The default still refuses externally changed targets. Explicit
+`--refresh-target` requires `merge_refresh_target_supported: true` and combines
+the last verified encrypted broker image, the current disk target and the
+incoming source. It privately reuses held credentials, retains all three inputs,
+checks both native merge stages, then applies all deletion records. Broker-only,
+external-only and incoming-only entries survive according to the conflict and
+deletion rules. `--check` also works with this option and adopts no state.
+Successful reconciliation refreshes the broker and invalidates handles even if
+the disk file already held the full result. Bad current keys, incomplete receipts
+and races remain failures. This is not a plain reload or a security override.
+The basic command remains compatible with 0.3.0; the new CLI rejects unsupported
+brokers before sending the opt-in. Activating 0.4.0 in place of a running 0.3.0
+process still requires a coordinated restart/private unlock with its latest
+encrypted state retained; future external saves need no additional unlock.
 
 Both encrypted originals and a reopened encrypted candidate are retained in a
 private recovery directory beside the target. The source stays unchanged.

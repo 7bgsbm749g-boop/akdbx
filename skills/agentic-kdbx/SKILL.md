@@ -139,6 +139,13 @@ a fill receipt confirms keyboard dispatch only.
 
 For an authorized encrypted-vault merge, use [the merge workflow](references/merge.md).
 Version 0.3.0 adds `merge SOURCE [--check]` and durable `merge-status ID`.
+Version 0.4.0 adds explicit `merge SOURCE --refresh-target [--check]`, requiring
+`merge_refresh_target_supported: true`. It combines the broker's last verified
+encrypted state, the current external target and the source with held
+credentials. The default still refuses stale targets. Never use a plain reload
+to discard broker-only entries. Preserve the old broker's latest encrypted
+state before a coordinated version upgrade; an existing 0.3.0 process cannot
+gain the new operation without restart/private unlock.
 An unlocked compatible broker reuses its held credentials privately. A locked
 broker returns its existing HTTPS unlock link and a repeat-command continuation.
 The source must use the same password/key file. Do not start an independent

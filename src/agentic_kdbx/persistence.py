@@ -23,6 +23,7 @@ class VaultStore:
         self.path = (Path(os.path.abspath(Path(database).expanduser())) if strict_path
                      else Path(database).expanduser().resolve(strict=True))
         self.expected = None
+        self.verified_encrypted = None
         self.recovery_required = False
         self.writable_path = False
         self.keyfile_path = None
@@ -81,6 +82,7 @@ class VaultStore:
             if self._read(directory, writing=False)[1] != snapshot:
                 raise SaveError("vault changed on disk; restart and unlock")
             self.expected = snapshot
+            self.verified_encrypted = encrypted
             try:
                 write_directory = self._directory()
                 try:
@@ -202,6 +204,7 @@ class VaultStore:
             persisted, self.expected = self._read(directory)
             if persisted != encrypted:
                 raise SaveError("save outcome uncertain; restart and unlock")
+            self.verified_encrypted = encrypted
             return verified
         except Exception:
             if replaced:

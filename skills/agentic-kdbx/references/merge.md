@@ -1,4 +1,4 @@
-# Merge encrypted KeePass databases (0.3.0)
+# Merge encrypted KeePass databases (0.4.0)
 
 Use the broker that owns the destination vault. The command is authorization
 for this scoped merge. No GUI, second unlock service, key export, or per-step
@@ -16,11 +16,16 @@ akdbx status
 akdbx merge /absolute/path/to/other.kdbx
 ```
 
-Require CLI and broker version `0.3.0`, `merge_protocol: 1`,
+Require CLI and broker version `0.4.0`, `merge_protocol: 1`,
 `merge_available: true`, `locked: false`, and `recovery_required: false`.
 `merge_engine` reports the detected engine. An older broker's missing capability
 is not permission to extract its held key or patch its memory. Coordinate
 activation with its owner after any pending login/reset has ended.
+
+The basic merge remains compatible with 0.3.0. External-change reconciliation
+requires 0.4.0 and `merge_refresh_target_supported: true`; the new CLI checks
+that capability before sending an opt-in request to a broker. The protocol
+version stays 1 because the new option is additive.
 
 The already-unlocked broker reuses its password and key-file bytes privately.
 The agent receives status, counts, encrypted-file SHA-256 hashes, an operation ID,
@@ -60,8 +65,11 @@ akdbx merge-status OPERATION_ID
 it does not replace the destination or refresh/invalidate broker state. It
 retains encrypted evidence and a `checked` receipt. A later real merge performs
 fresh checks and needs a new ID. A check is not a reservation against external
-changes. An identical/repeated merge returns `unchanged` without replacing the
-target. Reuse of an existing ID retrieves the prior receipt; never reuse an ID
+changes. A merge with no native/deletion changes returns `unchanged` without
+replacing the target. A source that still contains tombstoned entries can cause
+native add/delete work again; the logical records/history remain unchanged but
+the encrypted candidate can be saved again. Reuse of an existing ID retrieves
+the prior receipt; never reuse an ID
 for a different source, mode, or intended operation.
 
 Each accepted operation creates a mode-0700 directory beside the target:
@@ -77,6 +85,67 @@ replacement, target-directory fsync, encrypted readback, in-memory refresh, and
 receipt fsync completed. Previous selection handles are cleared; pending
 password writes fail as stale and generated secrets/references are discarded.
 Get fresh search handles after a saved merge.
+
+## Reconcile an externally replaced target
+
+An external editor or sync writer can replace the target with an older branch
+that lacks entries previously saved by this broker. The default command still
+refuses a stale target. Do not restart/reload simply to discard that broker
+state. Explicitly authorize reconciliation with:
+
+```bash
+akdbx status
+akdbx merge /absolute/path/to/other.kdbx --refresh-target --check
+akdbx merge /absolute/path/to/other.kdbx --refresh-target
+```
+
+Require `merge_refresh_target_supported: true`, `merge_available: true`,
+`locked: false` and no recovery block. A compatible unlocked broker needs no
+additional private unlock for this operation. The option is authorization to
+reconcile these inputs; it does not weaken the path, key-file, race or recovery
+checks. An older broker cannot provide this behavior merely because a new CLI
+is installed. Raw RPC callers must also check the capability before sending
+boolean `refresh_target: true`; an older broker may ignore unknown fields.
+
+The broker retains its last verified encrypted image on unlock and after every
+durable password save or merge. Under the target lock, reconciliation snapshots
+all three encrypted inputs: `broker.kdbx` is that verified broker image,
+`target.kdbx` is the current disk file, and `source.kdbx` is the requested input.
+It privately opens the current target with held credentials, merges the broker
+image into the current target with the native engine, reopens/checks that stage,
+then merges the requested source and reopens/checks again. `reconciled.kdbx`
+retains the first native stage when distinct. Destination settings come from the
+current disk target. No stage is a plain reload that discards broker-only data.
+
+Deletion records from all three inputs are applied only after both native
+merges. Newer surviving edits can therefore keep history from the earlier
+stages. Equal-second conflicts and history/field/entry loss fail closed. All
+three snapshots are retained before private target/source open or native merge.
+The existing deletion and metadata policies below still apply.
+
+The receipt adds `refresh_target`, `target_refreshed`, `broker_sha256` and
+`disk_before` counts. `target_refreshed` means the target identity differed from
+the broker's last verified revision. `--check` leaves the broker vault, verified
+image, expected file identity, pending writes and handles unchanged. A real
+successful reconciliation updates them and invalidates old handles/pending
+writes. If the current target already contains all inputs, `unchanged` can still
+mean the broker adopted a new external revision after file/directory fsync and
+race checks. Get new handles after this result too. A final receipt failure
+after adoption is uncertain and blocks further vault use.
+
+Wrong current-file credentials, missing/inconsistent verified broker images,
+changed key files, concurrent file changes, or incomplete prior receipts never
+cause an automatic reset. The held broker state stays available after an
+ordinary pre-save failure; an uncertain/interrupted operation remains blocked.
+Use `merge-status` and the retained encrypted files for recovery. There is no
+security override flag.
+
+For a private WebDAV merge-on-write integration, explicitly opt in for the
+authorized incoming upload, require the capability at activation, and wait for
+the truthful durable result before returning success. Do not replace merge with
+an unconditional file PUT or a plain reload. The integration must keep its
+existing transport, concurrency and upload checks; this option does not supply
+WebDAV or synchronization control itself.
 
 ## Semantics and dependencies
 
@@ -133,8 +202,11 @@ Engine references: [CLI merge](https://github.com/keepassxreboot/keepassxc/blob/
 - Source cannot open: retain both inputs, confirm which encrypted source was
   selected and whether its credential/key-file requirements match. This is not
   proof of an incorrect password. Different-source-key merges are unsupported.
-- Stale target/key file: do not overwrite it. Reconcile the external change,
-  coordinate a broker restart and privately unlock the intended target again.
+- Stale target: the default refuses it. Use the explicit `--refresh-target`
+  path above to combine the verified broker image, current target and incoming
+  file without another unlock on 0.4.0. Do not discard broker-only data by reload.
+- Changed key file or wrong current-file key: retain all inputs and reconcile
+  the cause privately. The option does not reset the broker or bypass key checks.
 - Stale source: preserve its latest bytes. Review the retained input snapshot,
   select a stable source, and start a new operation.
 - Busy: the operation did not start. Check the known ID first. Let the active
@@ -169,18 +241,26 @@ Do this only after the source repair thread has finished and its exact tested
 commit/report has been reviewed. The development thread does not activate code
 or merge real vaults.
 
-1. Install the tested 0.3.0 package/commit into the broker's environment. For a
+1. Install the tested 0.4.0 package/commit into the broker's environment. For a
    source checkout, select the tested commit and run `.venv/bin/pip install -e .`.
    Keep the native dependency above available. Preserve existing uncommitted
    work; do not reset a checkout or force-push.
-2. End pending fills/resets with the broker's owner. Stop that specific old
-   broker normally. Do not extract its master key or modify its memory.
+2. End pending fills/resets with the broker's owner. Before stopping a 0.3.0
+   broker, preserve its latest durable encrypted state and receipt. If external
+   replacement has removed it from disk, identify its retained encrypted saved
+   candidate before proceeding. Do not stop a broker whose latest state exists
+   only in memory. This option preserves state within a compatible running
+   broker; it does not transfer a running 0.3.0 process's memory to 0.4.0.
+   Coordinate a normal restart and private re-unlock for version activation.
+   Never extract a key, hot-patch memory, or start a second unlock service.
 3. Start the installed CLI with the intended target, original socket, key-file
    option (if any), desktop environment and existing private HTTPS mapping:
    `akdbx --socket /KNOWN/PRIVATE/broker.sock serve /INTENDED/base.kdbx`.
    No additional unlock service is required.
-4. Give the returned private unlock link to the user. Check CLI/broker 0.3.0
-   and merge capabilities. Run the merge command above; keep its receipt.
+4. Give the returned private unlock link to the user. Check CLI/broker 0.4.0
+   and merge capabilities, including `merge_refresh_target_supported: true`.
+   Run the authorized merge command above; keep its receipt. Later compatible
+   external replacements can be reconciled without a new unlock or restart.
 5. Verify `saved`/`unchanged`, checksums and expected nonsecret results before
    resuming the separate synchronization workflow. Synthetic tests do not
    establish real-vault behavior or iPhone/Android editor adoption.
