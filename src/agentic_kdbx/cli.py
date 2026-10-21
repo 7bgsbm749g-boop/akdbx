@@ -8,6 +8,7 @@ import stat
 import struct
 import sys
 import time
+import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -15,6 +16,7 @@ from . import __version__
 from .broker import Broker, FILL_START_TIMEOUT, PynputTyper, serve
 from .protocol import ProtocolError, receive_message, send_message
 from .runtime import anchored_socket_path, open_private_runtime_directory
+from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
 
 
@@ -121,7 +123,7 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         raise ValueError("configured unlock origin must be an HTTPS origin without path, query, or credentials")
     if type(response.get("ok")) is not bool:
         raise ProtocolError("invalid broker response")
-    for capability in ('locked', 'writes_available', 'recovery_required'):
+    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only'):
         if capability in response and type(response[capability]) is not bool:
             raise ProtocolError("invalid broker response")
     if 'version' in response and not isinstance(response['version'], str):
@@ -145,7 +147,7 @@ def request(
     broker_uid = os.getuid() if broker_uid is None else broker_uid
     socket_path, runtime_fd = _validate_socket_path(socket_path, broker_uid)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(5)
+    client.settimeout(240 if payload.get('action') == 'merge' else 5)
     try:
         client.connect(anchored_socket_path(runtime_fd, socket_path.name))
         _, peer_uid, _ = _peer_credentials(client)
@@ -201,6 +203,12 @@ def parser() -> argparse.ArgumentParser:
     generated.add_argument('handle')
     generated.add_argument('--target-url', required=True, help='independently verified reset site URL')
     commands.add_parser("status", help="check broker status")
+    merge = commands.add_parser('merge', help='merge another encrypted KDBX into the broker vault using held credentials')
+    merge.add_argument('source', type=Path, help='source KDBX (unchanged); same password and key file as target')
+    merge.add_argument('--check', action='store_true', help='verify a staged encrypted merge without replacing the target')
+    merge.add_argument('--operation-id', help='32 lowercase hex characters; reuse only to retrieve the same durable receipt')
+    merge_status = commands.add_parser('merge-status', help='read a durable merge receipt, including after restart')
+    merge_status.add_argument('operation_id')
     return result
 
 
@@ -227,6 +235,16 @@ def main(argv: list[str] | None = None) -> int:
     payload = {"action": "ping" if args.command == "status" else args.command}
     if args.command == "search":
         payload["query"] = args.query
+    elif args.command == 'merge':
+        payload.update(source=os.path.abspath(args.source.expanduser()), check=args.check,
+                       operation_id=args.operation_id or uuid.uuid4().hex)
+        if not ID_PATTERN.fullmatch(payload['operation_id']):
+            print('operation ID must be 32 lowercase hexadecimal characters', file=sys.stderr)
+            return 2
+        # Known before send: recover after a lost response without a new merge.
+        print('Merge operation: ' + payload['operation_id'], file=sys.stderr)
+    elif args.command == 'merge-status':
+        payload['operation_id'] = args.operation_id
     elif args.command in {'create-entry', 'update-password', 'generate-password'}:
         payload['metadata'] = {field: getattr(args, field) for field in ('title', 'username', 'url', 'group')}
         if args.command != 'create-entry':
@@ -254,7 +272,10 @@ def main(argv: list[str] | None = None) -> int:
         print("broker is not running", file=sys.stderr)
         return 2
     except (PermissionError, ProtocolError, RuntimeError, ValueError) as exc:
-        print(f"refusing untrusted broker response: {exc}", file=sys.stderr)
+        if args.command == 'merge':
+            print('merge outcome unconfirmed: broker response rejected; use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
+        else:
+            print(f"refusing untrusted broker response: {exc}", file=sys.stderr)
         return 2
     except (TimeoutError, OSError):
         if args.command in {"fill", "fill-generated"}:
@@ -264,9 +285,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == 'commit-password':
             print('save outcome uncertain: check write-status before any retry; do not reset the site again', file=sys.stderr)
+        elif args.command == 'merge':
+            print('merge outcome uncertain: use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
         else:
             print("broker request failed", file=sys.stderr)
         return 2
+    if args.command == 'merge' and response.get('error') == 'vault locked':
+        response['continuation'] = 'Open unlock_url privately, then repeat the same merge command and operation ID.'
+        response['operation_id'] = payload['operation_id']
     print(json.dumps(response, indent=2))
     return 0 if response.get("ok") else 1
 

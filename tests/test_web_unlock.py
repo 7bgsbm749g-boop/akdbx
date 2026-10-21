@@ -13,7 +13,7 @@ import pytest
 import agentic_kdbx.web_unlock as web_unlock
 from agentic_kdbx.broker import Broker
 from agentic_kdbx.web_unlock import start_unlock_server
-from test_broker import Entry, RecordingTyper, Vault, SECRET
+from test_broker import Entry, RecordingTyper, Vault, SECRET, expected_merge_capabilities
 
 
 class UnixHTTPConnection(HTTPConnection):
@@ -63,7 +63,7 @@ def test_locked_broker_returns_only_unlock_url_and_types_nothing(action):
     assert SECRET not in json.dumps(response)
     assert broker.dispatch({"action": "ping"}) == {
         "ok": True, "locked": True, "unlock_url": broker.unlock_url,
-        "version": "0.2.0", "writes_available": False, "recovery_required": False,
+        "version": "0.3.0", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(),
     }
     assert typer.events == []
 

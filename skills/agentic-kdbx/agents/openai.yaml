@@ -1,6 +1,6 @@
 interface:
   display_name: "KeePass Credentials"
-  short_description: "Autofill and save logins without exposing passwords"
-  default_prompt: "Use $agentic-kdbx to find, autofill or securely update my saved login through private unlock, broker-generated passwords and opaque references."
+  short_description: "Autofill, save logins and merge encrypted vaults"
+  default_prompt: "Use $agentic-kdbx for authorized logins, password updates or encrypted vault merges through private unlock and secret-withholding broker commands."
 policy:
   allow_implicit_invocation: true

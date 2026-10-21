@@ -93,6 +93,17 @@ class WriteManager:
         store = getattr(self.broker.vault, '_akdbx_store', None)
         return bool(self.public_base and store and store.writable_path and not store.recovery_required)
 
+    def invalidate_revision(self, current=None, *, all_pending=False):
+        self.revision += 1
+        for other in self.operations.values():
+            if other is not current and other.state == 'pending' and (all_pending or other.password is not None):
+                other.state = 'failed'
+                other.error = 'stale write; search and start again'
+                other.password = None
+                other.fill_refs.clear()
+        with self.broker._state_lock:
+            self.broker._handles.clear()
+
     def _prune(self):
         now = self.broker.clock()
         for handle, op in list(self.operations.items()):
@@ -192,15 +203,7 @@ class WriteManager:
                         raise WriteError('duplicate site/account; select an existing entry')
                     candidate.add_entry(group_for(candidate, op.values['group']), op.values['title'], op.values['username'], password, url=op.values['url'])
             self.broker.vault = vault._akdbx_store.commit(vault, mutate)
-            self.revision += 1
-            for other in self.operations.values():
-                if other is not op and other.state == 'pending' and other.password is not None:
-                    other.state = 'failed'
-                    other.error = 'stale write; search and start again'
-                    other.password = None
-                    other.fill_refs.clear()
-            with self.broker._state_lock:
-                self.broker._handles.clear()
+            self.invalidate_revision(op)
             op.state = 'saved'
             op.password = None
             op.fill_refs.clear()

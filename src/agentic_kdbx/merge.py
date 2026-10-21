@@ -1,0 +1,392 @@
+"""UUID-aware KeePassXC merges. Only encrypted files and fixed status leave here."""
+from __future__ import annotations
+
+import copy
+import hashlib
+import io
+import json
+import os
+import re
+import resource
+import stat
+import subprocess
+from pathlib import Path
+
+from .persistence import SaveError, VaultStore
+
+ENGINE = Path('/usr/bin/keepassxc-cli')
+ENGINE_TIMEOUT = 180
+ID_PATTERN = re.compile(r'[a-f0-9]{32}\Z')
+
+
+class MergeError(Exception):
+    """Fixed, nonsecret messages only."""
+
+
+def engine_version():
+    """Fail closed outside the tested engine release series; never use PATH."""
+    try:
+        info = ENGINE.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            return None
+        result = subprocess.run([str(ENGINE), '--version'], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                timeout=5, check=True, env={'LANG': 'C.UTF-8'})
+        version = result.stdout.decode('ascii').strip()
+        if re.fullmatch(r'2\.7\.\d+', version) and int(version.split('.')[2]) >= 10:
+            return version
+    except Exception:
+        pass
+    return None
+
+
+def _digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _open(encrypted, vault):
+    from pykeepass import PyKeePass
+    keyfile = io.BytesIO(vault.keyfile.getvalue()) if vault.keyfile is not None else None
+    return PyKeePass(io.BytesIO(encrypted), password=vault.password, keyfile=keyfile)
+
+
+def _entry_signature(entry):
+    # A check, never a merge. Ignore access times/history/location; inspect only
+    # privately decrypted records to reject ambiguous same-second edits.
+    element = copy.deepcopy(entry._element)
+    strings = []
+    for item in element.findall('String'):
+        key, value = item.findtext('Key'), item.findtext('Value') or ''
+        # KeePassXC writes absent standard fields as explicit empty fields.
+        if key in {'Title', 'UserName', 'Password', 'URL', 'Notes'} and not value:
+            continue
+        strings.append((key, value))
+    for child in list(element):
+        if child.tag in {'Times', 'History', 'String', 'Binary', 'UUID'} or (
+            child.tag in {'ForegroundColor', 'BackgroundColor', 'OverrideURL', 'Tags'} and not child.text
+        ) or (child.tag == 'IconID' and child.text == '0'):
+            element.remove(child)
+    def normalized(node):
+        return (node.tag, node.text or '', tuple(sorted(node.attrib.items())),
+                tuple(sorted(normalized(child) for child in node)))
+    attachments = tuple(sorted((a.filename, a.data) for a in entry.attachments))
+    return tuple(sorted(strings)), attachments, normalized(element)
+
+
+def _check_ambiguity(target, source):
+    for vault in (target, source):
+        ids = [item.uuid for item in [*vault.entries, *vault.groups]]
+        if len(ids) != len(set(ids)):
+            raise MergeError('duplicate UUIDs; merge refused')
+    records = {}
+    for vault in (target, source):
+        for entry in vault.entries:
+            for item in [entry, *entry.history]:
+                key = (item.uuid, item.mtime.replace(microsecond=0))
+                signature = _entry_signature(item)
+                if key in records and records[key] != signature:
+                    raise MergeError('conflicting same-second records; merge refused; originals retained')
+                records[key] = signature
+
+
+def _counts(vault):
+    return {'entries': len(vault.entries), 'groups': len(vault.groups),
+            'history': sum(len(e.history) for e in vault.entries),
+            'attachments': sum(len(e.attachments) for e in vault.entries),
+            'deletions': len(vault.tree.findall('./Root/DeletedObjects/DeletedObject'))}
+
+
+def synchronize_deletions(candidate, target, source):
+    """CLI KeepNewer omits deletion sync. Apply KeePass UUID/time semantics.
+
+    This operates on database objects, never title matches or entry XML joins.
+    Keep even obsolete tombstones; an edit newer than a deletion survives.
+    Use the earliest deletion for a UUID, as KeePassXC Synchronize does.
+    """
+    from lxml import etree
+    deleted = {}
+    for vault in (target, source):
+        for record in vault.tree.findall('./Root/DeletedObjects/DeletedObject'):
+            identity = record.findtext('UUID')
+            stamp = vault._decode_time(record.findtext('DeletionTime'))
+            if identity not in deleted or stamp < deleted[identity][0]:
+                deleted[identity] = (stamp, copy.deepcopy(record))
+    changed = False
+    for entry in list(candidate.entries):
+        record = deleted.get(entry._element.findtext('UUID'))
+        if record is not None and entry.mtime <= record[0]:
+            candidate.delete_entry(entry)
+            changed = True
+    for group in sorted(candidate.groups, key=lambda g: len(g.path), reverse=True):
+        record = deleted.get(group._element.findtext('UUID'))
+        if (group != candidate.root_group and record is not None and group.mtime <= record[0]
+                and not group.entries and not group.subgroups):
+            candidate.delete_group(group)
+            changed = True
+    container = candidate.tree.find('./Root/DeletedObjects')
+    if container is None:
+        container = etree.SubElement(candidate.tree.find('./Root'), 'DeletedObjects')
+    current = {r.findtext('UUID'): candidate._decode_time(r.findtext('DeletionTime')) for r in container}
+    expected = {key: value[0] for key, value in deleted.items()}
+    if current != expected:
+        for record in list(container):
+            container.remove(record)
+        for key in sorted(deleted):
+            container.append(deleted[key][1])
+        changed = True
+    return changed
+
+
+def verify_history(candidate, *originals):
+    """Refuse engine history pruning instead of silently losing old values."""
+    retained = {e.uuid: {(h.mtime, _entry_signature(h)) for h in [e, *e.history]} for e in candidate.entries}
+    for vault in originals:
+        for entry in vault.entries:
+            if entry.uuid not in retained:  # Deliberate deletion, with originals retained.
+                continue
+            if any((h.mtime, _entry_signature(h)) not in retained[entry.uuid] for h in [entry, *entry.history]):
+                raise MergeError('merge would discard entry history or fields; target not replaced')
+
+
+def run_engine(bundle, vault):
+    """No secret argv/env/files. Raw engine output is discarded, even on error."""
+    password = vault.password
+    if not isinstance(password, str) or any(c in password for c in '\r\n\x00'):
+        raise MergeError('merge requires a line-compatible master password')
+    args = [str(ENGINE), 'merge', '--quiet', '--same-credentials']
+    key_fd = None
+    try:
+        # Prevent a crashing native child from writing secrets in a core file.
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        if vault.keyfile is not None:
+            import fcntl
+            key_fd = os.memfd_create('akdbx-key', os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+            os.write(key_fd, vault.keyfile.getvalue())
+            os.lseek(key_fd, 0, os.SEEK_SET)
+            fcntl.fcntl(key_fd, fcntl.F_ADD_SEALS, fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+            args += ['--key-file', f'/proc/self/fd/{key_fd}']
+        args += [str(bundle / 'candidate.kdbx'), str(bundle / 'source.kdbx')]
+        subprocess.run(args, input=(password + '\n').encode('utf-8'),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       pass_fds=(() if key_fd is None else (key_fd,)),
+                       env={'LANG': 'C.UTF-8', 'QT_LOGGING_RULES': '*.debug=false'},
+                       cwd=bundle, timeout=ENGINE_TIMEOUT, check=True)
+    except MergeError:
+        raise
+    except Exception:
+        raise MergeError('merge engine failed; target not replaced') from None
+    finally:
+        if key_fd is not None:
+            os.close(key_fd)
+
+
+class MergeManager:
+    def __init__(self, broker):
+        self.broker = broker
+        self.database = None
+        # Probe lazily once per process; status must not repeatedly spawn tools.
+        self._engine_checked = False
+        self._version = None
+
+    def capabilities(self):
+        if not self._engine_checked:
+            self._version = engine_version()
+            self._engine_checked = True
+        store = getattr(self.broker.vault, '_akdbx_store', None)
+        return {'merge_available': bool(self._version and store and store.writable_path and not store.recovery_required),
+                'merge_engine': ('keepassxc-cli ' + self._version) if self._version else None,
+                'merge_same_credentials_only': True, 'merge_protocol': 1}
+
+    def _store(self):
+        store = getattr(self.broker.vault, '_akdbx_store', None)
+        if store is None and self.database is not None:
+            store = VaultStore(self.database, strict_path=True)
+        if store is None:
+            raise MergeError('merge database unavailable')
+        return store
+
+    @staticmethod
+    def _id(value):
+        if not isinstance(value, str) or not ID_PATTERN.fullmatch(value):
+            raise MergeError('operation ID must be 32 lowercase hexadecimal characters')
+        return value
+
+    @staticmethod
+    def _bundle_name(store, operation_id):
+        return '.' + store.path.name + '.akdbx-merge-' + operation_id
+
+    @staticmethod
+    def _receipt(directory, value):
+        data = json.dumps(value, sort_keys=True).encode('utf-8') + b'\n'
+        name = 'receipt-next.json'
+        # An interrupted previous receipt update is never silently overwritten.
+        VaultStore._write_file(directory, name, data)
+        os.replace(name, 'receipt.json', src_dir_fd=directory, dst_dir_fd=directory)
+        os.fsync(directory)
+
+    def status(self, operation_id):
+        operation_id = self._id(operation_id)
+        store = self._store()
+        directory = store._directory()
+        bundle_fd = None
+        try:
+            name = self._bundle_name(store, operation_id)
+            bundle_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            info = os.fstat(bundle_fd)
+            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                raise MergeError('unsafe merge receipt directory')
+            fd = os.open('receipt.json', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=bundle_fd)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
+                    raise MergeError('unsafe merge receipt')
+                value = json.loads(stream.read(16384))
+            if value['operation_id'] != operation_id:
+                raise MergeError('invalid merge receipt')
+            if value['state'] in {'preparing', 'prepared'}:
+                value.update(ok=False, state='uncertain', error='merge interrupted or active; do not retry; inspect retained encrypted files')
+            return {**value, 'receipt_path': str(store.path.parent / name / 'receipt.json')}
+        except FileNotFoundError:
+            raise MergeError('merge receipt not found; do not infer success') from None
+        finally:
+            if bundle_fd is not None:
+                os.close(bundle_fd)
+            os.close(directory)
+
+    def begin(self, request):
+        operation_id = self._id(request.get('operation_id'))
+        if not self.capabilities()['merge_available']:
+            raise MergeError('merge unavailable; require safe writable vault and KeePassXC CLI >=2.7.10,<2.8')
+        if type(request.get('check', False)) is not bool:
+            raise MergeError('invalid merge check option')
+        source_path = request.get('source')
+        if not isinstance(source_path, str) or not Path(source_path).is_absolute() or '\x00' in source_path:
+            raise MergeError('merge source must be an absolute file path')
+        store = self._store()
+        source = VaultStore(Path(source_path), strict_path=True)
+        directory = source_directory = bundle_fd = None
+        receipt = {'ok': False, 'operation_id': operation_id, 'state': 'preparing',
+                   'check': request.get('check', False), 'engine': self._version}
+        replaced = False
+        replacement_attempted = False
+        candidate_ready = False
+        try:
+            directory = store._directory()
+            with store.advisory_lock(directory):
+                name = self._bundle_name(store, operation_id)
+                try:
+                    os.mkdir(name, 0o700, dir_fd=directory)
+                except FileExistsError:
+                    return self.status(operation_id)
+                bundle_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                bundle = store.path.parent / name
+                self._receipt(bundle_fd, receipt)
+                os.fsync(directory)
+                store._check_keyfile()
+                previous, target_snapshot = store._read(directory)
+                if target_snapshot != store.expected:
+                    raise MergeError('target changed on disk; restart and privately unlock before merging')
+                source_directory = source._directory()
+                incoming, source_snapshot = source._read(source_directory)
+                if target_snapshot[:2] == source_snapshot[:2]:
+                    raise MergeError('source and target must be different files')
+                for filename, data in [('target.kdbx', previous), ('source.kdbx', incoming), ('candidate.kdbx', previous)]:
+                    VaultStore._write_file(bundle_fd, filename, data)
+                os.fsync(bundle_fd)
+                receipt.update(target_sha256=_digest(previous), source_sha256=_digest(incoming))
+                try:
+                    other = _open(incoming, self.broker.vault)
+                except Exception:
+                    raise MergeError('source cannot be opened with broker credentials; different source credentials are unsupported') from None
+                _check_ambiguity(self.broker.vault, other)
+                run_engine(bundle, self.broker.vault)
+                candidate_store = VaultStore(bundle / 'candidate.kdbx', strict_path=True)
+                encrypted, _ = candidate_store._read(bundle_fd)
+                try:
+                    verified = _open(encrypted, self.broker.vault)
+                except Exception:
+                    raise MergeError('encrypted merge candidate could not be reopened') from None
+                if synchronize_deletions(verified, self.broker.vault, other):
+                    buffer = io.BytesIO()
+                    verified.save(buffer)
+                    encrypted = buffer.getvalue()
+                    VaultStore._write_file(bundle_fd, 'candidate-final.kdbx', encrypted)
+                    os.replace('candidate-final.kdbx', 'candidate.kdbx', src_dir_fd=bundle_fd, dst_dir_fd=bundle_fd)
+                    verified = _open(encrypted, self.broker.vault)
+                verify_history(verified, self.broker.vault, other)
+                fd = os.open('candidate.kdbx', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=bundle_fd)
+                try:
+                    os.fchmod(fd, 0o600)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                os.fsync(bundle_fd)
+                candidate_ready = True
+                store.check_current(directory, target_snapshot)
+                source.check_current(source_directory, source_snapshot)
+                store._check_keyfile()
+                receipt.update(state='prepared', candidate_sha256=_digest(encrypted),
+                               before=_counts(self.broker.vault), after=_counts(verified),
+                               changed=encrypted != previous)
+                self._receipt(bundle_fd, receipt)
+                if request.get('check') or encrypted == previous:
+                    receipt.update(ok=True, state='checked' if request.get('check') else 'unchanged')
+                else:
+                    # Retain the candidate too. Rename a separate encrypted file
+                    # from the target directory, with the existing lock held.
+                    staging = name + '.replace'
+                    VaultStore._write_file(directory, staging, encrypted)
+                    try:
+                        store.check_current(directory, target_snapshot)
+                        source.check_current(source_directory, source_snapshot)
+                        store._check_keyfile()
+                        replacement_attempted = True
+                        os.replace(staging, store.path.name, src_dir_fd=directory, dst_dir_fd=directory)
+                        replaced = True
+                        os.fsync(directory)
+                        persisted, snapshot = store._read(directory)
+                        if persisted != encrypted:
+                            raise MergeError('save outcome uncertain; restart and unlock')
+                        store.expected = snapshot
+                        verified._akdbx_store = store
+                        self.broker.vault = verified
+                        self.broker.writes.invalidate_revision(all_pending=True)
+                        receipt.update(ok=True, state='saved')
+                    finally:
+                        try:
+                            os.unlink(staging, dir_fd=directory)
+                        except FileNotFoundError:
+                            pass
+                self._receipt(bundle_fd, receipt)
+                return {**receipt, 'receipt_path': str(bundle / 'receipt.json')}
+        except Exception as exc:
+            if replacement_attempted and not replaced:
+                # A failing rename wrapper/filesystem can report an error after
+                # the name changed. Only a proven unchanged target is a failure
+                # before replacement; every other result requires recovery.
+                try:
+                    store.check_current(directory, target_snapshot)
+                except Exception:
+                    replaced = True
+            if replaced:
+                store.recovery_required = True
+            error = (str(exc) if isinstance(exc, (MergeError, SaveError)) else 'merge failed; save not confirmed')
+            receipt.update(ok=False, state='uncertain' if replaced else 'failed', error=error)
+            if bundle_fd is not None:
+                # Best effort only; a previously fsynced preparing/prepared
+                # receipt stays truthful when the filesystem stops accepting I/O.
+                try:
+                    self._receipt(bundle_fd, receipt)
+                except Exception:
+                    pass
+                if not candidate_ready:
+                    try:
+                        os.unlink('candidate.kdbx', dir_fd=bundle_fd)
+                    except OSError:
+                        pass
+                receipt['receipt_path'] = str(bundle / 'receipt.json')
+            return receipt
+        finally:
+            for fd in (bundle_fd, source_directory, directory):
+                if fd is not None:
+                    os.close(fd)

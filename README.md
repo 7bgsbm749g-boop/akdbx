@@ -57,13 +57,51 @@ requires global `--broker-uid UID` (or `AKDBX_BROKER_UID`).
 
 The master password travels inside the tailnet HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Unlock remains valid for the lifetime of the broker process.
 
-Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Only explicit, confirmed password-write workflows modify the database; ordinary unlock, search and fill remain read-only.
+Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
+
+## Encrypted vault merge (0.3.0)
+
+```bash
+akdbx status
+akdbx merge /absolute/path/to/other.kdbx --check
+akdbx merge /absolute/path/to/other.kdbx
+akdbx merge-status OPERATION_ID
+```
+
+Require broker 0.3.0, `merge_protocol: 1`, `merge_available: true` and no recovery
+block. The broker privately reuses its held password and key file. Locked
+operation returns the existing private HTTPS unlock link and a clear command
+continuation. Different source credentials are not supported in this release.
+
+The native dependency is root-owned `/usr/bin/keepassxc-cli` >=2.7.10,<2.8
+(tested: 2.7.10). Its UUID-aware merge keeps newer entry versions and combines
+history. A broker deletion pass applies timestamped UUID tombstones; newer edits
+survive. Equal-second conflicting records and any loss of surviving entry
+history/fields are refused. Destination database settings remain authoritative;
+source custom icons/CustomData follow native engine rules. See the workflow for
+metadata conflict details and unsupported credential types.
+
+Both encrypted originals and a reopened encrypted candidate are retained in a
+private recovery directory beside the target. The source stays unchanged.
+Replacement uses the existing advisory lock, change checks, restrictive
+permissions, fsync and atomic rename. Success refreshes the active broker and
+invalidates old selection/write handles. Responses contain only status, counts,
+encrypted checksums and durable receipt paths. No password or raw engine output
+is returned or written to disk. A lost response must be resolved with
+`merge-status`, not an automatic retry. Incomplete receipts block use after
+restart until authorized recovery. Keep competing editors/sync writers away
+from the inputs during merge; filesystem advisory locks cannot constrain them.
+
+Read [the supported merge workflow](skills/agentic-kdbx/references/merge.md)
+for the normal command path, exact semantics, recovery and activation. A source
+update does not replace a running broker. Development uses synthetic vaults and
+isolated sockets only; it does not access or restart the production broker.
 
 ## Password writes (0.2.0)
 
 `akdbx --version` reports the CLI version. Broker `status` reports its own
 `version`, `writes_available` and `recovery_required`; require an unlocked,
-write-capable 0.2.0 broker before changing a website password.
+write-capable broker version 0.2.0 or newer before changing a website password.
 
 - `create-entry --title TITLE --username ACCOUNT --url SITE --group GROUP`
 - `update-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP`
@@ -120,3 +158,14 @@ Remote unlock requires Tailscale Serve to proxy HTTPS to the broker's Unix socke
 .venv/bin/pip install -e '.[test]'
 .venv/bin/pytest -q
 ```
+
+Merge integration tests require the native KeePassXC CLI dependency above.
+Tests generate synthetic KDBXs under pytest's temporary directory, with isolated
+RPC and HTTP Unix sockets. Keep temporary fixtures outside every synced vault;
+store retained evidence under `/home/ubuntu/backups/send-to-t3-code`, never QLO2.
+Most fixtures use a reduced KDF cost. `test_full_argon2d_41_profile` separately
+uses KDBX 4.1/AES-256/Argon2d with I=119, M=67108864, P=2, V=19. The suite
+includes the installed CLI, broker, native engine, encrypted replacement, reopen,
+private HTTP form handling, restart receipts and regression boundaries. Its
+test-only identity headers do not test the deployed Tailscale HTTPS proxy,
+native browser input, real vaults, synchronization services, or mobile editors.

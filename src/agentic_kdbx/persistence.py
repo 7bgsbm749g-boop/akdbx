@@ -5,10 +5,12 @@ import copy
 import fcntl
 import hashlib
 import io
+import json
 import os
 import secrets
 import stat
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -17,8 +19,9 @@ class SaveError(Exception):
 
 
 class VaultStore:
-    def __init__(self, database: Path):
-        self.path = Path(database).expanduser().resolve(strict=True)
+    def __init__(self, database: Path, *, strict_path=False):
+        self.path = (Path(os.path.abspath(Path(database).expanduser())) if strict_path
+                     else Path(database).expanduser().resolve(strict=True))
         self.expected = None
         self.recovery_required = False
         self.writable_path = False
@@ -47,7 +50,7 @@ class VaultStore:
                 os.close(current)
 
     def _read(self, directory, *, writing=True):
-        fd = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+        fd = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
         try:
             before = os.fstat(fd)
             if not stat.S_ISREG(before.st_mode) or (writing and (before.st_uid != os.getuid() or before.st_nlink != 1)):
@@ -88,6 +91,7 @@ class VaultStore:
             except (OSError, SaveError):
                 pass
             vault._akdbx_store = self
+            self._check_merge_recovery(directory)
             return vault
         finally:
             os.close(directory)
@@ -95,6 +99,53 @@ class VaultStore:
     def _check_keyfile(self):
         if self.keyfile_path is not None and hashlib.sha256(self.keyfile_path.read_bytes()).digest() != self.keyfile_digest:
             raise SaveError("key file changed on disk; restart and unlock")
+
+    def _check_merge_recovery(self, directory):
+        """An interrupted native merge must stay blocked across broker restarts."""
+        prefix = '.' + self.path.name + '.akdbx-merge-'
+        for name in os.listdir(directory):
+            if not name.startswith(prefix) or name.endswith('.replace'):
+                continue
+            bundle = None
+            try:
+                bundle = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                fd = os.open('receipt.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=bundle)
+                with os.fdopen(fd, 'rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_size > 16384:
+                        raise ValueError
+                    receipt = json.loads(stream.read(16384))
+                if receipt.get('state') not in {'saved', 'unchanged', 'checked', 'failed'}:
+                    self.recovery_required = True
+            except Exception:
+                self.recovery_required = True
+            finally:
+                if bundle is not None:
+                    os.close(bundle)
+
+    @contextmanager
+    def advisory_lock(self, directory):
+        """The same nonblocking disk lock for password writes and merges."""
+        fd = os.open('.' + self.path.name + '.akdbx.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+                raise SaveError('unsafe vault write lock')
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise SaveError('vault write busy; merge not started') from None
+            yield
+        finally:
+            os.close(fd)
+
+    def check_current(self, directory, snapshot):
+        if self._read(directory)[1] != snapshot:
+            raise SaveError('vault changed on disk; restart and unlock')
+        parent = os.stat(self.path.parent, follow_symlinks=False)
+        opened = os.fstat(directory)
+        if (parent.st_dev, parent.st_ino) != (opened.st_dev, opened.st_ino):
+            raise SaveError('vault directory changed; restart and unlock')
 
     def commit(self, vault, mutate):
         """Return a reopened, verified candidate only after durable replacement."""

@@ -18,6 +18,8 @@ from threading import Event
 from typing import Callable, Protocol
 
 from .writes import WriteManager, WriteError
+from .merge import MergeManager, MergeError
+from .persistence import SaveError
 from . import __version__
 from .protocol import ProtocolError, receive_message, send_message
 from .runtime import (
@@ -102,6 +104,7 @@ class Broker:
         self._keyboard_lock = threading.Lock()
         self._vault_lock = threading.RLock()
         self.writes = WriteManager(self)
+        self.merges = MergeManager(self)
         self.unlock_url: str | None = None
 
     @property
@@ -166,6 +169,19 @@ class Broker:
 
     def dispatch(self, request: dict, *, delivery_ready=None) -> dict:
         action = request.get("action")
+        if action in {'merge', 'merge-status'}:
+            if not self._vault_lock.acquire(blocking=False):
+                return {'ok': False, 'error': 'vault busy; merge not started; check merge-status before retry'}
+            try:
+                if action == 'merge-status':
+                    return self.merges.status(request.get('operation_id'))
+                return self._dispatch(request, delivery_ready=delivery_ready)
+            except (MergeError, SaveError) as exc:
+                return {'ok': False, 'error': str(exc)}
+            except Exception:
+                return {'ok': False, 'error': 'merge operation failed'}
+            finally:
+                self._vault_lock.release()
         if action in {'fill', 'fill-generated'} and delivery_ready is None and 'start_deadline' not in request:
             request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
         # Search and write operations observe a consistent vault/revision.
@@ -185,11 +201,13 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.merges.capabilities(), "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if self.locked:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
             return {"ok": False, "error": "save outcome uncertain; restart and unlock"}
+        if action == 'merge':
+            return self.merges.begin(request)
         if action in {"create-entry", "update-password", "generate-password", "write-status", "cancel-write", "commit-password", "fill-generated"}:
             try:
                 if action in {"create-entry", "update-password", "generate-password"}:

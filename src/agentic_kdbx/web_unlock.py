@@ -455,6 +455,7 @@ def start_unlock_server(
     url = public_base_url.rstrip("/") + "/?token=" + state.token
     broker.unlock_url = url
     broker.writes.public_base = public_base_url
+    broker.merges.database = database
     server.write_manager = broker.writes
     thread = threading.Thread(target=server.serve_forever, name="akdbx-web-unlock", daemon=True)
     thread.start()
