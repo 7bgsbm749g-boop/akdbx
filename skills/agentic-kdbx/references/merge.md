@@ -1,4 +1,4 @@
-# Merge encrypted KeePass databases (0.5.0)
+# Merge encrypted KeePass databases (0.6.0)
 
 Use the broker that owns the destination vault. The command is authorization
 for this scoped merge. No GUI, second unlock service, key export, or per-step
@@ -17,7 +17,7 @@ akdbx merge /absolute/path/to/other.kdbx
 akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts
 ```
 
-Require CLI and broker version `0.5.0`, `merge_protocol: 1`,
+Require CLI and broker version `0.6.0`, `merge_protocol: 1`,
 `merge_available: true`, `locked: false`, and `recovery_required: false`.
 `merge_engine` reports the detected engine. An older broker's missing capability
 is not permission to extract its held key or patch its memory. Coordinate
@@ -31,6 +31,14 @@ version stays 1 because the options are additive. Version 0.5.0 adds
 exact `merge_preservation_policy: "capsule-v1"`. The CLI checks both before
 sending the request. A raw RPC integration must perform the same check before
 using boolean `preserve_conflicts: true`; an old broker can ignore unknown fields.
+Version 0.6.0 additionally requires `merge_active_verification: "semantic-v1"`
+and advertises `merge_diagnostics: "categories-v1"`. The new CLI rejects 0.5.0
+before sending a preservation merge. It sends `active_verification: "semantic-v1"`;
+the broker refuses unsupported requested verifiers. Existing raw preservation
+requests without that field remain supported by 0.6.0, with semantic verification
+always enabled. Integrations must check the capability and the exact
+`active_verification` in the durable result. Capsule-v1 identity, payload bytes
+and preservation semantics have not changed; this is a separate active verifier.
 
 The already-unlocked broker reuses its password and key-file bytes privately.
 The agent receives status, counts, encrypted-file SHA-256 hashes, an operation ID,
@@ -204,6 +212,12 @@ unreadable protected fields or an unverified active selection fail closed. This
 policy preserves original entry records; it does not independently reconcile
 all competing database/group settings, which still follow native semantics.
 
+Read [active verification and safe diagnostics](selection-verification.md) for
+the exact semantic-v1 rules and fixed refusal categories. Active standard/custom
+values and attachment bytes remain exact; native serialization and independent
+location changes are checked separately. Do not accept a wrong active result
+merely because its capsule ledger retained originals.
+
 ## Semantics and dependencies
 
 Linux with `/proc/self/fd`, sealed `memfd`, Unix sockets, fsync and atomic rename
@@ -269,7 +283,7 @@ Engine references: [CLI merge](https://github.com/keepassxreboot/keepassxc/blob/
   path above to combine the verified broker image, current target and incoming
   file without another unlock on 0.4.0. Do not discard broker-only data by reload.
 - Conflicting same-second records or native history pruning: retain inputs and
-  use a new operation ID with `--preserve-conflicts` on verified 0.5.0/capsule-v1.
+  use a new operation ID with `--preserve-conflicts` on verified 0.6.0/capsule-v1.
   Include `--refresh-target` when reconciling external changes. This authorizes
   encrypted capsule preservation and the documented active tie preference.
 - Changed key file or wrong current-file key: retain all inputs and reconcile
@@ -280,6 +294,11 @@ Engine references: [CLI merge](https://github.com/keepassxreboot/keepassxc/blob/
   save finish before a deliberate new request.
 - Failure before replacement: the receipt says `failed`; the original target
   remains. Fix the reported cause and use a new ID.
+- Active verification refusal: use only the fixed `verification_diagnostics`
+  categories documented in the reference above. Retain encrypted inputs and
+  the receipt. Confirm semantic-v1 capabilities and requested/result verifier.
+  Do not restart/re-unlock merely to repeat unchanged code, inspect decrypted
+  records, or infer an incorrect master password from a metadata refusal.
 - Timeout/disconnect: do not repeat blindly. Use `merge-status ID`. `checked`,
   `unchanged`, or `saved` describe that operation only. A missing receipt is not
   proof that the request never ran; wait for broker health and inspect again.
@@ -308,7 +327,7 @@ Do this only after the source repair thread has finished and its exact tested
 commit/report has been reviewed. The development thread does not activate code
 or merge real vaults.
 
-1. Install the tested 0.5.0 package/commit into the broker's environment. For a
+1. Install the tested 0.6.0 package/commit into the broker's environment. For a
    source checkout, select the tested commit and run `.venv/bin/pip install -e .`.
    Keep the native dependency above available. Preserve existing uncommitted
    work; do not reset a checkout or force-push.
@@ -317,16 +336,21 @@ or merge real vaults.
    replacement has removed it from disk, identify its retained encrypted saved
    candidate before proceeding. Do not stop a broker whose latest state exists
    only in memory. This option preserves state within a compatible running
-   broker; it does not transfer an older process's memory to 0.5.0.
+   broker; it does not transfer an older process's memory to 0.6.0.
    Coordinate a normal restart and private re-unlock for version activation.
    Never extract a key, hot-patch memory, or start a second unlock service.
 3. Start the installed CLI with the intended target, original socket, key-file
    option (if any), desktop environment and existing private HTTPS mapping:
    `akdbx --socket /KNOWN/PRIVATE/broker.sock serve /INTENDED/base.kdbx`.
    No additional unlock service is required.
-4. Give the returned private unlock link to the user. Check CLI/broker 0.5.0
+4. Give the returned private unlock link to the user. Check CLI/broker 0.6.0
    and merge capabilities, including `merge_refresh_target_supported: true`,
    `merge_preserve_conflicts_supported: true` and exact policy `capsule-v1`.
+   Also require `merge_active_verification: "semantic-v1"`, and verify
+   `active_verification: "semantic-v1"` in the durable result. Install the final
+   tested version before one coordinated restart/private unlock. A currently
+   unlocked 0.5.0 process cannot acquire semantic-v1 without restart; later
+   compatible merges reuse held credentials. Do not extract keys or hot patch.
    Run the authorized merge command above; keep its receipt. Later compatible
    external replacements can be reconciled without a new unlock or restart.
 5. Verify `saved`/`unchanged`, checksums and expected nonsecret results before

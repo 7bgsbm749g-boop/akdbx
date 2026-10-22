@@ -244,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
             payload['refresh_target'] = True
         if args.preserve_conflicts:
             payload['preserve_conflicts'] = True
+            payload['active_verification'] = 'semantic-v1'
         if not ID_PATTERN.fullmatch(payload['operation_id']):
             print('operation ID must be 32 lowercase hexadecimal characters', file=sys.stderr)
             return 2
@@ -276,8 +277,8 @@ def main(argv: list[str] | None = None) -> int:
             if not capabilities.get('ok') or args.refresh_target and capabilities.get('merge_refresh_target_supported') is not True:
                 print(json.dumps({'ok': False, 'error': 'broker does not support --refresh-target; require broker 0.4.0 or newer; merge not sent'}))
                 return 1
-            if args.preserve_conflicts and (capabilities.get('merge_preserve_conflicts_supported') is not True or capabilities.get('merge_preservation_policy') != 'capsule-v1'):
-                print(json.dumps({'ok': False, 'error': 'broker does not support --preserve-conflicts capsule-v1; require broker 0.5.0 or newer; merge not sent'}))
+            if args.preserve_conflicts and (capabilities.get('merge_preserve_conflicts_supported') is not True or capabilities.get('merge_preservation_policy') != 'capsule-v1' or capabilities.get('merge_active_verification') != 'semantic-v1'):
+                print(json.dumps({'ok': False, 'error': 'broker does not support --preserve-conflicts capsule-v1/semantic-v1; require broker 0.6.0 or newer; merge not sent'}))
                 return 1
         response = request(
             args.socket, payload, broker_uid=args.broker_uid,

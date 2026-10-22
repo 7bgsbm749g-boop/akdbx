@@ -336,22 +336,6 @@ def verify(vault, ledger):
 
 
 def verify_selection(vault, originals):
-    """Native newest active value wins; ties prefer the first/current target."""
-    expected = {}
-    for original in originals:
-        for entry in active_entries(original):
-            current = expected.get(entry.uuid)
-            if current is None or entry.mtime > current.mtime:
-                expected[entry.uuid] = entry
-    actual = {entry.uuid: entry for entry in active_entries(vault)}
-    deleted = {r.findtext('UUID'): vault._decode_time(r.findtext('DeletionTime'))
-               for r in vault.tree.findall('./Root/DeletedObjects/DeletedObject')}
-    for identity, entry in expected.items():
-        stamp = deleted.get(entry._element.findtext('UUID'))
-        if stamp is not None and entry.mtime <= stamp:
-            if identity in actual:
-                raise PreservationError('deletion verification failed; target not replaced')
-            continue
-        chosen = actual.get(identity)
-        if chosen is None or chosen.mtime != entry.mtime or entry_signature(chosen) != entry_signature(entry):
-            raise PreservationError('active version selection verification failed; target not replaced')
+    """Verify native active semantics without changing capsule-v1 identity."""
+    from .selection import verify
+    verify(vault, originals)

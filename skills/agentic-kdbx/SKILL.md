@@ -152,12 +152,23 @@ attachments inside the encrypted KDBX; current disk target wins active time ties
 Native History alone may not contain every version. The managed preservation
 records have no restore/view/export command in this release; do not extract
 their contents through an ad hoc script. The default still refuses genuine
-same-second conflicts. A new CLI checks both opt-in capabilities before sending
+same-second conflicts. Version 0.6.0 adds semantic active verification; require
+`merge_active_verification: "semantic-v1"` and verify `active_verification:
+"semantic-v1"` on the durable result. Protocol 1 and capsule-v1 payloads remain
+compatible. Known native metadata normalization is checked separately from
+exact active standard/custom values and attachment bytes. Fixed aggregate
+`verification_diagnostics` explain refusals without exposing record identities
+or field names/values; use [the merge workflow](references/merge.md) to interpret
+them. Do not diagnose with decrypted contents or scripts. A new CLI checks all
+required opt-in capabilities before sending
 the merge; an older running broker can otherwise ignore unknown RPC fields.
 Preserve the old broker's latest encrypted
 state before a coordinated version upgrade; an existing 0.3.0 process cannot
 gain reconciliation, and a 0.4.0 process cannot gain preservation, without
-restart/private unlock.
+restart/private unlock. A running 0.5.0 process also needs one coordinated
+restart/private unlock for semantic-v1. Retain its latest durable encrypted state
+first; install the final tested version before that restart. Compatible later
+merges need no extra unlock.
 An unlocked compatible broker reuses its held credentials privately. A locked
 broker returns its existing HTTPS unlock link and a repeat-command continuation.
 The source must use the same password/key file. Do not start an independent

@@ -59,7 +59,7 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
-## Encrypted vault merge (0.5.0)
+## Encrypted vault merge (0.6.0)
 
 ```bash
 akdbx status
@@ -71,7 +71,7 @@ akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts
 akdbx merge-status OPERATION_ID
 ```
 
-Require broker 0.5.0, `merge_protocol: 1`, `merge_available: true` and no recovery
+Require broker 0.6.0, `merge_protocol: 1`, `merge_available: true` and no recovery
 block. The broker privately reuses its held password and key file. Locked
 operation returns the existing private HTTPS unlock link and a clear command
 continuation. Different source credentials are not supported in this release.
@@ -106,10 +106,21 @@ and races remain failures. This is not a plain reload or a security override.
 For the preservation option require `merge_preserve_conflicts_supported: true`
 and `merge_preservation_policy: "capsule-v1"`. Use both options for authorized
 private WebDAV merge-on-write. The CLI checks the exact policy before sending
-the request; raw RPC integrations must do the same. PyKeePass is pinned to the
+the request; raw RPC integrations must do the same. Version 0.6.0 also requires
+`merge_active_verification: "semantic-v1"`. It verifies active values separately
+from native serialization and independent entry location changes, while keeping
+the capsule-v1 format and exact original payloads unchanged. Standard/custom
+values, protection against downgrade, attachments, active times/expiry and
+native location selection remain checked. Known tag/default/protection/settings
+and CustomData clock transformations are documented in the workflow. Refusals
+add only fixed aggregate `verification_diagnostics` categories; they expose no
+record identities, field names/values or secret digests. Status advertises
+`merge_diagnostics: "categories-v1"`. Raw callers must require these capabilities
+and verify `active_verification: "semantic-v1"` in saved/check receipts.
+PyKeePass is pinned to the
 tested 4.2.0; another version disables this policy. `--check` supports both options.
 The basic command remains compatible with 0.3.0; the new CLI rejects unsupported
-brokers before sending an opt-in. Activating 0.5.0 in place of an older running
+brokers before sending an opt-in. Activating 0.6.0 in place of an older running
 process still requires a coordinated restart/private unlock with its latest
 encrypted state retained; future external saves need no additional unlock.
 

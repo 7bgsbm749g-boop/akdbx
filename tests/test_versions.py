@@ -477,13 +477,15 @@ def test_cli_rejects_old_or_wrong_policy_before_merge(monkeypatch, capsys, capab
     assert 'merge not sent' in json.loads(capsys.readouterr().out)['error']
 
 
-def test_actual_040_broker_rejects_policy_through_new_cli(pair, tmp_path):
+@pytest.mark.parametrize('commit,legacy_version', [('4ee31cb9e2b6bb7682427b03ce18722c463080a3', '0.4.0'), ('c50afe49efef6f4f37143b989048d4b73ff1c361', '0.5.0')])
+def test_actual_old_broker_rejects_policy_through_new_cli(pair, tmp_path, commit, legacy_version):
     _, target, source = pair
     legacy = tmp_path / 'legacy'
     package = legacy / 'agentic_kdbx'
     package.mkdir(parents=True)
-    for name in ('__init__', 'broker', 'cli', 'merge', 'persistence', 'protocol', 'runtime', 'web_unlock', 'writes'):
-        contents = subprocess.run(['git', 'show', '4ee31cb9e2b6bb7682427b03ce18722c463080a3:src/agentic_kdbx/' + name + '.py'], capture_output=True, check=True).stdout
+    modules = ('__init__', 'broker', 'cli', 'merge', 'persistence', 'protocol', 'runtime', 'web_unlock', 'writes')
+    for name in (*modules, *(('versions',) if legacy_version == '0.5.0' else ())):
+        contents = subprocess.run(['git', 'show', commit + ':src/agentic_kdbx/' + name + '.py'], capture_output=True, check=True).stdout
         (package / (name + '.py')).write_bytes(contents)
     socket = tmp_path / 'private' / 'old.sock'
     script = """import signal,sys,threading
@@ -505,7 +507,7 @@ serve(Path(sys.argv[2]),Broker(open_vault_with_password(Path(sys.argv[1]),MASTER
         wait_for(socket.exists, timeout=10)
         prefix = [str(Path(sys.executable).parent / 'akdbx'), '--socket', str(socket)]
         status = subprocess.run([*prefix, 'status'], capture_output=True, text=True, check=True)
-        assert json.loads(status.stdout)['version'] == '0.4.0'
+        assert json.loads(status.stdout)['version'] == legacy_version
         result = subprocess.run([*prefix, 'merge', str(source), '--refresh-target', '--preserve-conflicts'], capture_output=True, text=True)
         assert result.returncode == 1 and 'merge not sent' in json.loads(result.stdout)['error']
         assert target.read_bytes() == before and source.read_bytes() == incoming
@@ -632,7 +634,7 @@ def test_real_cli_preservation_preview_save_and_refresh(pair, tmp_path):
         return json.loads(completed.stdout)
     with running_broker(socket, broker):
         caps = command('status')
-        assert caps['version'] == '0.5.0' and caps['merge_preservation_policy'] == 'capsule-v1'
+        assert caps['version'] == '0.6.0' and caps['merge_preservation_policy'] == 'capsule-v1'
         assert not command('merge', str(source), '--refresh-target', status=1)['ok']
         checked = command('merge', str(source), '--refresh-target', '--preserve-conflicts', '--check')
         assert checked['state'] == 'checked'
@@ -685,6 +687,12 @@ def test_full_cost_41_argon2d_preservation(pair):
     broker, target, source = pair
     left, right = disk(target), disk(source)
     record(left, 'synthetic full-cost target'); record(right, 'synthetic full-cost source')
+    # Force legitimate native protection and CustomData normalization at full
+    # Argon2d cost; keep the exact original representation in capsule-v1.
+    left.find_entries(title='Shared', first=True)._element.find('./String[Key="Password"]/Value').set('Protected', 'False')
+    left.tree.find('./Meta/MemoryProtection/ProtectNotes').text = 'True'
+    from test_selection import custom_data
+    custom_data(left.find_entries(title='Shared', first=True), timed=True)
     for vault, path in ((left, target), (right, source)):
         vault.kdbx.header.value.minor_version = 1
         params = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict

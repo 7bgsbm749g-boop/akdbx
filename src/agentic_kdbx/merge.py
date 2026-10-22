@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 from .persistence import SaveError, VaultStore, open_encrypted
-from . import versions
+from . import selection, versions
 
 ENGINE = Path('/usr/bin/keepassxc-cli')
 ENGINE_TIMEOUT = 180
@@ -64,7 +64,7 @@ def _check_ambiguity(*vaults, preserve=False):
         versions.archives(vault)
         for entry in versions.active_entries(vault):
             for item in [entry, *entry.history]:
-                key = (item.uuid, item.mtime.replace(microsecond=0))
+                key = (item.uuid, selection.modification_time(item))
                 signature = _entry_signature(item)
                 if not preserve and key in records and records[key] != signature:
                     raise MergeError('conflicting same-second records; merge refused; originals retained')
@@ -93,25 +93,25 @@ def synchronize_deletions(candidate, *originals):
     for vault in originals:
         for record in vault.tree.findall('./Root/DeletedObjects/DeletedObject'):
             identity = record.findtext('UUID')
-            stamp = vault._decode_time(record.findtext('DeletionTime'))
+            stamp = selection.decode_time(record.findtext('DeletionTime'), vault.version)
             if identity not in deleted or stamp < deleted[identity][0]:
                 deleted[identity] = (stamp, copy.deepcopy(record))
     changed = False
     for entry in list(versions.active_entries(candidate)):
         record = deleted.get(entry._element.findtext('UUID'))
-        if record is not None and entry.mtime <= record[0]:
+        if record is not None and selection.modification_time(entry) <= record[0]:
             candidate.delete_entry(entry)
             changed = True
     for group in sorted(candidate.groups, key=lambda g: len(g.path), reverse=True):
         record = deleted.get(group._element.findtext('UUID'))
-        if (group != candidate.root_group and not versions.is_archive_group(group) and record is not None and group.mtime <= record[0]
+        if (group != candidate.root_group and not versions.is_archive_group(group) and record is not None and selection.modification_time(group) <= record[0]
                 and not group.entries and not group.subgroups):
             candidate.delete_group(group)
             changed = True
     container = candidate.tree.find('./Root/DeletedObjects')
     if container is None:
         container = etree.SubElement(candidate.tree.find('./Root'), 'DeletedObjects')
-    current = {r.findtext('UUID'): candidate._decode_time(r.findtext('DeletionTime')) for r in container}
+    current = {r.findtext('UUID'): selection.decode_time(r.findtext('DeletionTime'), candidate.version) for r in container}
     expected = {key: value[0] for key, value in deleted.items()}
     if current != expected:
         for record in list(container):
@@ -124,17 +124,17 @@ def synchronize_deletions(candidate, *originals):
 
 def verify_history(candidate, *originals, allow_deletions=True):
     """Refuse engine history pruning instead of silently losing old values."""
-    retained = {e.uuid: {(h.mtime, _entry_signature(h)) for h in [e, *e.history]} for e in candidate.entries}
-    deletions = {r.findtext('UUID'): candidate._decode_time(r.findtext('DeletionTime'))
+    retained = {e.uuid: {(selection.modification_time(h), _entry_signature(h)) for h in [e, *e.history]} for e in candidate.entries}
+    deletions = {r.findtext('UUID'): selection.decode_time(r.findtext('DeletionTime'), candidate.version)
                  for r in candidate.tree.findall('./Root/DeletedObjects/DeletedObject')}
     for vault in originals:
         for entry in vault.entries:
             if entry.uuid not in retained:
                 deleted = deletions.get(entry._element.findtext('UUID'))
-                if allow_deletions and deleted is not None and entry.mtime <= deleted:
+                if allow_deletions and deleted is not None and selection.modification_time(entry) <= deleted:
                     continue
                 raise MergeError('merge would discard an entry without a valid deletion; target not replaced')
-            if any((h.mtime, _entry_signature(h)) not in retained[entry.uuid] for h in [entry, *entry.history]):
+            if any((selection.modification_time(h), _entry_signature(h)) not in retained[entry.uuid] for h in [entry, *entry.history]):
                 raise MergeError('merge would discard entry history or fields; target not replaced')
 
 
@@ -188,7 +188,9 @@ class MergeManager:
                 'merge_same_credentials_only': True, 'merge_protocol': 1,
                 'merge_refresh_target_supported': True,
                 'merge_preserve_conflicts_supported': versions.supported(),
-                'merge_preservation_policy': versions.POLICY if versions.supported() else None}
+                'merge_preservation_policy': versions.POLICY if versions.supported() else None,
+                'merge_active_verification': selection.VERIFICATION if versions.supported() else None,
+                'merge_diagnostics': selection.DIAGNOSTICS}
 
     def _store(self):
         store = getattr(self.broker.vault, '_akdbx_store', None)
@@ -254,6 +256,8 @@ class MergeManager:
             raise MergeError('invalid merge check option')
         refresh_target = request.get('refresh_target', False)
         preserve = request.get('preserve_conflicts', False)
+        if 'active_verification' in request and (not preserve or request['active_verification'] != selection.VERIFICATION):
+            raise MergeError('unsupported active verification request; merge not started')
         if preserve and not versions.supported():
             raise MergeError('preservation requires tested PyKeePass 4.2.0; merge refused')
         source_path = request.get('source')
@@ -265,6 +269,7 @@ class MergeManager:
         receipt = {'ok': False, 'operation_id': operation_id, 'state': 'preparing',
                    'check': request.get('check', False), 'refresh_target': refresh_target,
                    'preserve_conflicts': preserve, 'preservation_policy': versions.POLICY if preserve else None,
+                   'active_verification': selection.VERIFICATION if preserve else None,
                    'engine': self._version}
         replaced = False
         adopted = False
@@ -443,6 +448,8 @@ class MergeManager:
                 store.recovery_required = True
             error = (str(exc) if isinstance(exc, (MergeError, SaveError, versions.PreservationError)) else 'merge failed; save not confirmed')
             receipt.update(ok=False, state='uncertain' if replaced or adopted else 'failed', error=error)
+            if isinstance(exc, selection.SelectionError):
+                receipt['verification_diagnostics'] = exc.diagnostics
             if bundle_fd is not None:
                 # Best effort only; a previously fsynced preparing/prepared
                 # receipt stays truthful when the filesystem stops accepting I/O.

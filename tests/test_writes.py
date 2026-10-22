@@ -299,7 +299,7 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
         return json.loads(captured.out)
     with running_broker(socket.with_name('cli.sock'), broker):
         status = command('status')
-        assert status['version'] == '0.5.0' and status['writes_available']
+        assert status['version'] == '0.6.0' and status['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]
         args = [arg for field in ('title', 'username', 'url', 'group') for arg in ('--' + field, selected[field])]
         generated = command('generate-password', selected['handle'], *args, '--length', '28', '--symbols', '')
@@ -332,7 +332,7 @@ def test_actual_installed_executable_against_running_synthetic_broker(deployed, 
         assert all(secret not in result.stdout for secret in (MASTER, OLD, CHOSEN))
         return json.loads(result.stdout)
     version = subprocess.run([str(executable), '--version'], text=True, capture_output=True, check=True)
-    assert version.stdout.strip() == '0.5.0'
+    assert version.stdout.strip() == '0.6.0'
     with running_broker(socket.with_name('installed-cli.sock'), broker):
         assert command('status')['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]
