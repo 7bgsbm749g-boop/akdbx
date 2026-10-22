@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 from .persistence import SaveError
+from .versions import active_entries, is_archive_group
 
 MAX_WRITES = 64
 
@@ -45,7 +46,7 @@ def validate_metadata(values):
 
 
 def group_for(vault, path):
-    groups = [g for g in vault.groups if '/'.join(g.path) == path]
+    groups = [g for g in vault.groups if not is_archive_group(g) and '/'.join(g.path) == path]
     if len(groups) != 1:
         raise WriteError('destination group is missing or ambiguous')
     return groups[0]
@@ -54,7 +55,7 @@ def group_for(vault, path):
 def duplicate(vault, values):
     # Conservative: same account on an origin anywhere in the vault is a
     # duplicate even if title, URL path or group differs.
-    for entry in vault.entries:
+    for entry in active_entries(vault):
         if (entry.username or '').casefold() != values['username'].casefold():
             continue
         try:
@@ -133,7 +134,7 @@ class WriteManager:
             raise WriteError('invalid destination metadata')
         validate_metadata(values)
         if entry is not None:
-            if metadata(entry) != values or sum(metadata(e) == values for e in self.broker.vault.entries) != 1 or not any(e.uuid == entry.uuid for e in self.broker.vault.entries):
+            if metadata(entry) != values or sum(metadata(e) == values for e in active_entries(self.broker.vault)) != 1 or not any(e.uuid == entry.uuid for e in active_entries(self.broker.vault)):
                 raise WriteError('entry metadata mismatch; search again')
         else:
             group_for(self.broker.vault, values['group'])
@@ -193,7 +194,7 @@ class WriteManager:
             vault = self.broker.vault
             def mutate(candidate):
                 if op.uuid is not None:
-                    entries = [e for e in candidate.entries if e.uuid == op.uuid]
+                    entries = [e for e in active_entries(candidate) if e.uuid == op.uuid]
                     if len(entries) != 1 or metadata(entries[0]) != op.values:
                         raise WriteError('entry changed; search again')
                     entries[0].save_history()

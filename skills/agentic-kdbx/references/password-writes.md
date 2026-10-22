@@ -1,14 +1,14 @@
 # Create, update, and generate passwords
 
 Password writes require CLI and broker version **0.2.0 or newer**. The current
-release is **0.4.0**. The absolute CLI is
+release is **0.5.0**. The absolute CLI is
 `/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx`. Examples below abbreviate it
 as `akdbx`; use the absolute path in agent commands. All uppercase references
 are placeholders, never actual handles or links for a note.
 
 ## Check activation and select an existing entry
 
-Run `akdbx --version` and `akdbx status`. For the current release require `version: "0.4.0"`,
+Run `akdbx --version` and `akdbx status`. For the current release require `version: "0.5.0"`,
 `locked: false`, `writes_available: true`, and `recovery_required: false`.
 An old running broker may omit these fields even though the fresh CLI has new
 commands. Never try a real reset with an incompatible broker. Updating the

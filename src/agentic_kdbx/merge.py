@@ -12,7 +12,8 @@ import stat
 import subprocess
 from pathlib import Path
 
-from .persistence import SaveError, VaultStore
+from .persistence import SaveError, VaultStore, open_encrypted
+from . import versions
 
 ENGINE = Path('/usr/bin/keepassxc-cli')
 ENGINE_TIMEOUT = 180
@@ -45,54 +46,38 @@ def _digest(data):
 
 
 def _open(encrypted, vault):
-    from pykeepass import PyKeePass
     keyfile = io.BytesIO(vault.keyfile.getvalue()) if vault.keyfile is not None else None
-    return PyKeePass(io.BytesIO(encrypted), password=vault.password, keyfile=keyfile)
+    return open_encrypted(encrypted, vault.password, keyfile)
 
 
 def _entry_signature(entry):
-    # A check, never a merge. Ignore access times/history/location; inspect only
-    # privately decrypted records to reject ambiguous same-second edits.
-    element = copy.deepcopy(entry._element)
-    strings = []
-    for item in element.findall('String'):
-        key, value = item.findtext('Key'), item.findtext('Value') or ''
-        # KeePassXC writes absent standard fields as explicit empty fields.
-        if key in {'Title', 'UserName', 'Password', 'URL', 'Notes'} and not value:
-            continue
-        strings.append((key, value))
-    for child in list(element):
-        if child.tag in {'Times', 'History', 'String', 'Binary', 'UUID'} or (
-            child.tag in {'ForegroundColor', 'BackgroundColor', 'OverrideURL', 'Tags'} and not child.text
-        ) or (child.tag == 'IconID' and child.text == '0'):
-            element.remove(child)
-    def normalized(node):
-        return (node.tag, node.text or '', tuple(sorted(node.attrib.items())),
-                tuple(sorted(normalized(child) for child in node)))
-    attachments = tuple(sorted((a.filename, a.data) for a in entry.attachments))
-    return tuple(sorted(strings)), attachments, normalized(element)
+    return versions.entry_signature(entry)
 
 
-def _check_ambiguity(*vaults):
+def _check_ambiguity(*vaults, preserve=False):
     for vault in vaults:
         ids = [item.uuid for item in [*vault.entries, *vault.groups]]
         if len(ids) != len(set(ids)):
             raise MergeError('duplicate UUIDs; merge refused')
     records = {}
     for vault in vaults:
-        for entry in vault.entries:
+        versions.archives(vault)
+        for entry in versions.active_entries(vault):
             for item in [entry, *entry.history]:
                 key = (item.uuid, item.mtime.replace(microsecond=0))
                 signature = _entry_signature(item)
-                if key in records and records[key] != signature:
+                if not preserve and key in records and records[key] != signature:
                     raise MergeError('conflicting same-second records; merge refused; originals retained')
                 records[key] = signature
 
 
 def _counts(vault):
-    return {'entries': len(vault.entries), 'groups': len(vault.groups),
-            'history': sum(len(e.history) for e in vault.entries),
-            'attachments': sum(len(e.attachments) for e in vault.entries),
+    entries = list(versions.active_entries(vault))
+    archive_groups = [group for group in vault.groups if versions.is_archive_group(group)]
+    return {'entries': len(entries), 'groups': len(vault.groups) - len(archive_groups),
+            'history': sum(len(e.history) for e in entries),
+            'attachments': sum(len(e.attachments) for e in entries),
+            'archived_versions': sum(len(group.entries) for group in archive_groups),
             'deletions': len(vault.tree.findall('./Root/DeletedObjects/DeletedObject'))}
 
 
@@ -112,14 +97,14 @@ def synchronize_deletions(candidate, *originals):
             if identity not in deleted or stamp < deleted[identity][0]:
                 deleted[identity] = (stamp, copy.deepcopy(record))
     changed = False
-    for entry in list(candidate.entries):
+    for entry in list(versions.active_entries(candidate)):
         record = deleted.get(entry._element.findtext('UUID'))
         if record is not None and entry.mtime <= record[0]:
             candidate.delete_entry(entry)
             changed = True
     for group in sorted(candidate.groups, key=lambda g: len(g.path), reverse=True):
         record = deleted.get(group._element.findtext('UUID'))
-        if (group != candidate.root_group and record is not None and group.mtime <= record[0]
+        if (group != candidate.root_group and not versions.is_archive_group(group) and record is not None and group.mtime <= record[0]
                 and not group.entries and not group.subgroups):
             candidate.delete_group(group)
             changed = True
@@ -201,7 +186,9 @@ class MergeManager:
         return {'merge_available': bool(self._version and store and store.writable_path and not store.recovery_required),
                 'merge_engine': ('keepassxc-cli ' + self._version) if self._version else None,
                 'merge_same_credentials_only': True, 'merge_protocol': 1,
-                'merge_refresh_target_supported': True}
+                'merge_refresh_target_supported': True,
+                'merge_preserve_conflicts_supported': versions.supported(),
+                'merge_preservation_policy': versions.POLICY if versions.supported() else None}
 
     def _store(self):
         store = getattr(self.broker.vault, '_akdbx_store', None)
@@ -263,9 +250,12 @@ class MergeManager:
         operation_id = self._id(request.get('operation_id'))
         if not self.capabilities()['merge_available']:
             raise MergeError('merge unavailable; require safe writable vault and KeePassXC CLI >=2.7.10,<2.8')
-        if type(request.get('check', False)) is not bool or type(request.get('refresh_target', False)) is not bool:
+        if any(type(request.get(field, False)) is not bool for field in ('check', 'refresh_target', 'preserve_conflicts')):
             raise MergeError('invalid merge check option')
         refresh_target = request.get('refresh_target', False)
+        preserve = request.get('preserve_conflicts', False)
+        if preserve and not versions.supported():
+            raise MergeError('preservation requires tested PyKeePass 4.2.0; merge refused')
         source_path = request.get('source')
         if not isinstance(source_path, str) or not Path(source_path).is_absolute() or '\x00' in source_path:
             raise MergeError('merge source must be an absolute file path')
@@ -274,6 +264,7 @@ class MergeManager:
         directory = source_directory = bundle_fd = None
         receipt = {'ok': False, 'operation_id': operation_id, 'state': 'preparing',
                    'check': request.get('check', False), 'refresh_target': refresh_target,
+                   'preserve_conflicts': preserve, 'preservation_policy': versions.POLICY if preserve else None,
                    'engine': self._version}
         replaced = False
         adopted = False
@@ -320,7 +311,7 @@ class MergeManager:
                     receipt.update(broker_sha256=_digest(broker_image), target_refreshed=stale)
                     try:
                         disk_vault = _open(previous, self.broker.vault)
-                        broker_vault = _open(broker_image, self.broker.vault)
+                        broker_vault = disk_vault if broker_image == previous else _open(broker_image, self.broker.vault)
                     except Exception:
                         raise MergeError('current target or broker image cannot be opened with held credentials; refresh refused') from None
                     originals = (disk_vault, broker_vault)
@@ -331,29 +322,41 @@ class MergeManager:
                 except Exception:
                     raise MergeError('source cannot be opened with broker credentials; different source credentials are unsupported') from None
                 originals = (*originals, other)
-                _check_ambiguity(*originals)
+                _check_ambiguity(*originals, preserve=preserve)
+                ledger = versions.collect(originals, capture=preserve)
+                def complete_stage(data, stage_originals, *, final=False):
+                    try:
+                        stage = _open(data, self.broker.vault)
+                    except Exception:
+                        raise MergeError('encrypted merge candidate could not be reopened') from None
+                    changed = False
+                    if final:
+                        changed = synchronize_deletions(stage, *originals)
+                    changed = versions.ensure(stage, ledger) or changed
+                    if changed:
+                        buffer = io.BytesIO()
+                        stage.save(buffer)
+                        data = buffer.getvalue()
+                        VaultStore._write_file(bundle_fd, 'candidate-final.kdbx', data)
+                        os.replace('candidate-final.kdbx', 'candidate.kdbx', src_dir_fd=bundle_fd, dst_dir_fd=bundle_fd)
+                        stage = _open(data, self.broker.vault)
+                    versions.verify(stage, ledger)
+                    if preserve:
+                        if final:
+                            versions.verify_selection(stage, originals)
+                    else:
+                        verify_history(stage, *stage_originals, allow_deletions=final)
+                    return data, stage
                 if refresh_target and broker_image != previous:
                     run_engine(bundle, self.broker.vault, source_name='broker.kdbx')
                     intermediate_bytes, _ = VaultStore(bundle / 'candidate.kdbx', strict_path=True)._read(bundle_fd)
-                    intermediate = _open(intermediate_bytes, self.broker.vault)
-                    verify_history(intermediate, disk_vault, broker_vault, allow_deletions=False)
+                    intermediate_bytes, intermediate = complete_stage(intermediate_bytes, (disk_vault, broker_vault))
                     VaultStore._write_file(bundle_fd, 'reconciled.kdbx', intermediate_bytes)
                     os.fsync(bundle_fd)
                 run_engine(bundle, self.broker.vault)
                 candidate_store = VaultStore(bundle / 'candidate.kdbx', strict_path=True)
                 encrypted, _ = candidate_store._read(bundle_fd)
-                try:
-                    verified = _open(encrypted, self.broker.vault)
-                except Exception:
-                    raise MergeError('encrypted merge candidate could not be reopened') from None
-                if synchronize_deletions(verified, *originals):
-                    buffer = io.BytesIO()
-                    verified.save(buffer)
-                    encrypted = buffer.getvalue()
-                    VaultStore._write_file(bundle_fd, 'candidate-final.kdbx', encrypted)
-                    os.replace('candidate-final.kdbx', 'candidate.kdbx', src_dir_fd=bundle_fd, dst_dir_fd=bundle_fd)
-                    verified = _open(encrypted, self.broker.vault)
-                verify_history(verified, *originals)
+                encrypted, verified = complete_stage(encrypted, originals, final=True)
                 fd = os.open('candidate.kdbx', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=bundle_fd)
                 try:
                     os.fchmod(fd, 0o600)
@@ -370,6 +373,8 @@ class MergeManager:
                                changed=encrypted != previous)
                 if refresh_target:
                     receipt['disk_before'] = _counts(disk_vault)
+                if preserve:
+                    receipt['preserved_versions'] = len(ledger)
                 self._receipt(bundle_fd, receipt)
                 if request.get('check') or encrypted == previous:
                     receipt.update(ok=True, state='checked' if request.get('check') else 'unchanged')
@@ -436,7 +441,7 @@ class MergeManager:
                     replaced = True
             if replaced or adopted:
                 store.recovery_required = True
-            error = (str(exc) if isinstance(exc, (MergeError, SaveError)) else 'merge failed; save not confirmed')
+            error = (str(exc) if isinstance(exc, (MergeError, SaveError, versions.PreservationError)) else 'merge failed; save not confirmed')
             receipt.update(ok=False, state='uncertain' if replaced or adopted else 'failed', error=error)
             if bundle_fd is not None:
                 # Best effort only; a previously fsynced preparing/prepared

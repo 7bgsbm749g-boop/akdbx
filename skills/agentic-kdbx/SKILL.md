@@ -143,9 +143,21 @@ Version 0.4.0 adds explicit `merge SOURCE --refresh-target [--check]`, requiring
 `merge_refresh_target_supported: true`. It combines the broker's last verified
 encrypted state, the current external target and the source with held
 credentials. The default still refuses stale targets. Never use a plain reload
-to discard broker-only entries. Preserve the old broker's latest encrypted
+to discard broker-only entries. Version 0.5.0 adds `--preserve-conflicts` with
+`merge_preserve_conflicts_supported: true` and exact
+`merge_preservation_policy: "capsule-v1"`. For authorized phone/WebDAV uploads,
+use `merge SOURCE --refresh-target --preserve-conflicts` (add `--check` for
+preview). It retains complete original active/history versions in opaque
+attachments inside the encrypted KDBX; current disk target wins active time ties.
+Native History alone may not contain every version. The managed preservation
+records have no restore/view/export command in this release; do not extract
+their contents through an ad hoc script. The default still refuses genuine
+same-second conflicts. A new CLI checks both opt-in capabilities before sending
+the merge; an older running broker can otherwise ignore unknown RPC fields.
+Preserve the old broker's latest encrypted
 state before a coordinated version upgrade; an existing 0.3.0 process cannot
-gain the new operation without restart/private unlock.
+gain reconciliation, and a 0.4.0 process cannot gain preservation, without
+restart/private unlock.
 An unlocked compatible broker reuses its held credentials privately. A locked
 broker returns its existing HTTPS unlock link and a repeat-command continuation.
 The source must use the same password/key file. Do not start an independent

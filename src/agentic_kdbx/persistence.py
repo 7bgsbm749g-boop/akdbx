@@ -6,16 +6,51 @@ import fcntl
 import hashlib
 import io
 import json
+import logging
 import os
 import secrets
 import stat
 import time
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
 
 class SaveError(Exception):
     pass
+
+
+_OPEN_LOCK = threading.RLock()
+
+
+def open_encrypted(encrypted, password, keyfile=None):
+    """Contain dependency diagnostics and reject silently unreadable fields."""
+    from pykeepass import PyKeePass
+    class Diagnostic(logging.Handler):
+        failed = False
+
+        def emit(self, record):
+            if record.levelno >= logging.ERROR:
+                self.failed = True
+    # PyKeePass reports an inner protected-stream decode failure through this
+    # logger and otherwise returns a partly decoded vault. Never archive that
+    # as a verified logical version, and never forward dependency diagnostics.
+    with _OPEN_LOCK:
+        logger = logging.getLogger('pykeepass.kdbx_parsing.common')
+        previous = logger.handlers, logger.propagate, logger.disabled, logger.level
+        diagnostic = Diagnostic()
+        logger.handlers, logger.propagate, logger.disabled = [diagnostic], False, False
+        logger.setLevel(logging.ERROR)
+        try:
+            vault = PyKeePass(io.BytesIO(encrypted), password=password, keyfile=keyfile)
+            if diagnostic.failed or any(node.get('Protected') not in {'True', 'False'}
+                                        for node in vault.tree.xpath('//Value[@Protected]')):
+                raise SaveError('protected record fields could not be verified; merge refused')
+            return vault
+        finally:
+            logger.handlers, logger.propagate, logger.disabled, level = previous
+            logger.setLevel(level)
+            diagnostic.close()
 
 
 class VaultStore:
@@ -67,7 +102,6 @@ class VaultStore:
             os.close(fd)
 
     def open(self, password, keyfile=None):
-        from pykeepass import PyKeePass
         directory = self._directory(writing=False)
         try:
             encrypted, snapshot = self._read(directory, writing=False)
@@ -77,7 +111,9 @@ class VaultStore:
                 key_bytes = self.keyfile_path.read_bytes()
                 self.keyfile_digest = hashlib.sha256(key_bytes).digest()
                 key_material = io.BytesIO(key_bytes)
-            vault = PyKeePass(io.BytesIO(encrypted), password=password, keyfile=key_material)
+            vault = open_encrypted(encrypted, password, key_material)
+            from .versions import archives
+            archives(vault)
             self._check_keyfile()
             if self._read(directory, writing=False)[1] != snapshot:
                 raise SaveError("vault changed on disk; restart and unlock")
@@ -153,6 +189,8 @@ class VaultStore:
         """Return a reopened, verified candidate only after durable replacement."""
         if self.recovery_required:
             raise SaveError("save outcome uncertain; restart and unlock")
+        from .versions import archives, verify
+        retained_versions = archives(vault)
         directory = self._directory()
         lock = None
         staging = None
@@ -181,8 +219,8 @@ class VaultStore:
             buffer = io.BytesIO()
             candidate.save(buffer)
             encrypted = buffer.getvalue()
-            from pykeepass import PyKeePass
-            verified = PyKeePass(io.BytesIO(encrypted), password=candidate.password, keyfile=candidate.keyfile)
+            verified = open_encrypted(encrypted, candidate.password, candidate.keyfile)
+            verify(verified, retained_versions)
             verified._akdbx_store = self
             # Every file below contains only an encrypted KDBX, never a password.
             backup = '.' + self.path.name + '.akdbx-backup-' + secrets.token_hex(12)

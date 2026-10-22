@@ -123,7 +123,7 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         raise ValueError("configured unlock origin must be an HTTPS origin without path, query, or credentials")
     if type(response.get("ok")) is not bool:
         raise ProtocolError("invalid broker response")
-    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported'):
+    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported'):
         if capability in response and type(response[capability]) is not bool:
             raise ProtocolError("invalid broker response")
     if 'version' in response and not isinstance(response['version'], str):
@@ -147,7 +147,7 @@ def request(
     broker_uid = os.getuid() if broker_uid is None else broker_uid
     socket_path, runtime_fd = _validate_socket_path(socket_path, broker_uid)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout((480 if payload.get('refresh_target') else 240) if payload.get('action') == 'merge' else 5)
+    client.settimeout((480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240) if payload.get('action') == 'merge' else 5)
     try:
         client.connect(anchored_socket_path(runtime_fd, socket_path.name))
         _, peer_uid, _ = _peer_credentials(client)
@@ -207,6 +207,7 @@ def parser() -> argparse.ArgumentParser:
     merge.add_argument('source', type=Path, help='source KDBX (unchanged); same password and key file as target')
     merge.add_argument('--check', action='store_true', help='verify a staged encrypted merge without replacing the target')
     merge.add_argument('--refresh-target', action='store_true', help='reconcile the verified broker state, current disk target and source using held credentials')
+    merge.add_argument('--preserve-conflicts', action='store_true', help='keep every logical version in encrypted in-vault capsules; current target wins active timestamp ties')
     merge.add_argument('--operation-id', help='32 lowercase hex characters; reuse only to retrieve the same durable receipt')
     merge_status = commands.add_parser('merge-status', help='read a durable merge receipt, including after restart')
     merge_status.add_argument('operation_id')
@@ -241,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
                        operation_id=args.operation_id or uuid.uuid4().hex)
         if args.refresh_target:
             payload['refresh_target'] = True
+        if args.preserve_conflicts:
+            payload['preserve_conflicts'] = True
         if not ID_PATTERN.fullmatch(payload['operation_id']):
             print('operation ID must be 32 lowercase hexadecimal characters', file=sys.stderr)
             return 2
@@ -267,11 +270,14 @@ def main(argv: list[str] | None = None) -> int:
             start_deadline=time.monotonic() + FILL_START_TIMEOUT,
         )
     try:
-        if args.command == 'merge' and args.refresh_target:
+        if args.command == 'merge' and (args.refresh_target or args.preserve_conflicts):
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
-            if not capabilities.get('ok') or capabilities.get('merge_refresh_target_supported') is not True:
+            if not capabilities.get('ok') or args.refresh_target and capabilities.get('merge_refresh_target_supported') is not True:
                 print(json.dumps({'ok': False, 'error': 'broker does not support --refresh-target; require broker 0.4.0 or newer; merge not sent'}))
+                return 1
+            if args.preserve_conflicts and (capabilities.get('merge_preserve_conflicts_supported') is not True or capabilities.get('merge_preservation_policy') != 'capsule-v1'):
+                print(json.dumps({'ok': False, 'error': 'broker does not support --preserve-conflicts capsule-v1; require broker 0.5.0 or newer; merge not sent'}))
                 return 1
         response = request(
             args.socket, payload, broker_uid=args.broker_uid,

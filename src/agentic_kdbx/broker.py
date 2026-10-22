@@ -20,6 +20,7 @@ from typing import Callable, Protocol
 from .writes import WriteManager, WriteError
 from .merge import MergeManager, MergeError
 from .persistence import SaveError
+from .versions import active_entries
 from . import __version__
 from .protocol import ProtocolError, receive_message, send_message
 from .runtime import (
@@ -231,7 +232,7 @@ class Broker:
                 with self._state_lock:
                     vault = self.vault
                 assert vault is not None
-                for entry in vault.entries:
+                for entry in active_entries(vault):
                     try:
                         title = entry.title or ""
                         username = entry.username or ""

@@ -1,4 +1,4 @@
-# Merge encrypted KeePass databases (0.4.0)
+# Merge encrypted KeePass databases (0.5.0)
 
 Use the broker that owns the destination vault. The command is authorization
 for this scoped merge. No GUI, second unlock service, key export, or per-step
@@ -14,9 +14,10 @@ unlock-origin options go before the subcommand.
 akdbx --version
 akdbx status
 akdbx merge /absolute/path/to/other.kdbx
+akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts
 ```
 
-Require CLI and broker version `0.4.0`, `merge_protocol: 1`,
+Require CLI and broker version `0.5.0`, `merge_protocol: 1`,
 `merge_available: true`, `locked: false`, and `recovery_required: false`.
 `merge_engine` reports the detected engine. An older broker's missing capability
 is not permission to extract its held key or patch its memory. Coordinate
@@ -25,7 +26,11 @@ activation with its owner after any pending login/reset has ended.
 The basic merge remains compatible with 0.3.0. External-change reconciliation
 requires 0.4.0 and `merge_refresh_target_supported: true`; the new CLI checks
 that capability before sending an opt-in request to a broker. The protocol
-version stays 1 because the new option is additive.
+version stays 1 because the options are additive. Version 0.5.0 adds
+`--preserve-conflicts`; require `merge_preserve_conflicts_supported: true` and
+exact `merge_preservation_policy: "capsule-v1"`. The CLI checks both before
+sending the request. A raw RPC integration must perform the same check before
+using boolean `preserve_conflicts: true`; an old broker can ignore unknown fields.
 
 The already-unlocked broker reuses its password and key-file bytes privately.
 The agent receives status, counts, encrypted-file SHA-256 hashes, an operation ID,
@@ -38,10 +43,11 @@ continuation. Give that exact link to the user. After private unlock, repeat the
 same command with the reported ID:
 
 ```bash
-akdbx merge /absolute/path/to/other.kdbx --operation-id OPERATION_ID
+akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts --operation-id OPERATION_ID
 ```
 
-The ID is 32 lowercase hexadecimal characters. The CLI prints it to stderr
+Keep the original command's options when continuing. The ID is 32 lowercase
+hexadecimal characters. The CLI prints it to stderr
 before sending the request. Keep it to recover from a lost connection. No work
 is queued behind a locked response. Unlock alone does not authorize a later
 automatic merge without the repeated explicit command.
@@ -57,7 +63,7 @@ variables. This release does not add a separate source-password form.
 ## Preview and receipts
 
 ```bash
-akdbx merge /absolute/path/to/other.kdbx --check
+akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts --check
 akdbx merge-status OPERATION_ID
 ```
 
@@ -67,7 +73,7 @@ retains encrypted evidence and a `checked` receipt. A later real merge performs
 fresh checks and needs a new ID. A check is not a reservation against external
 changes. A merge with no native/deletion changes returns `unchanged` without
 replacing the target. A source that still contains tombstoned entries can cause
-native add/delete work again; the logical records/history remain unchanged but
+native add/delete work again; the logical records remain unchanged but
 the encrypted candidate can be saved again. Reuse of an existing ID retrieves
 the prior receipt; never reuse an ID
 for a different source, mode, or intended operation.
@@ -95,8 +101,8 @@ state. Explicitly authorize reconciliation with:
 
 ```bash
 akdbx status
-akdbx merge /absolute/path/to/other.kdbx --refresh-target --check
-akdbx merge /absolute/path/to/other.kdbx --refresh-target
+akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts --check
+akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts
 ```
 
 Require `merge_refresh_target_supported: true`, `merge_available: true`,
@@ -119,7 +125,9 @@ current disk target. No stage is a plain reload that discards broker-only data.
 
 Deletion records from all three inputs are applied only after both native
 merges. Newer surviving edits can therefore keep history from the earlier
-stages. Equal-second conflicts and history/field/entry loss fail closed. All
+stages. Without preservation, equal-second conflicts and history/field/entry
+loss fail closed. With preservation, all original entry versions are verified
+in encrypted capsules, including records removed by valid live deletions. All
 three snapshots are retained before private target/source open or native merge.
 The existing deletion and metadata policies below still apply.
 
@@ -140,31 +148,86 @@ ordinary pre-save failure; an uncertain/interrupted operation remains blocked.
 Use `merge-status` and the retained encrypted files for recovery. There is no
 security override flag.
 
-For a private WebDAV merge-on-write integration, explicitly opt in for the
+For a private WebDAV merge-on-write integration, explicitly use both
+`--refresh-target --preserve-conflicts` for the
 authorized incoming upload, require the capability at activation, and wait for
 the truthful durable result before returning success. Do not replace merge with
 an unconditional file PUT or a plain reload. The integration must keep its
 existing transport, concurrency and upload checks; this option does not supply
 WebDAV or synchronization control itself.
 
+## Preserve equal-second versions
+
+Same-second differences can occur in active entries, histories, or both. They
+do not prove separate live edits. The default now normalizes benign indentation,
+known field order, empty defaults and equivalent boolean representations, while
+keeping password whitespace, custom fields, unknown ordered metadata and
+attachment bytes distinct. It still refuses genuine collisions.
+
+`--preserve-conflicts` authorizes a different, explicit preservation policy:
+
+- Keep the native UUID-based merge and its newest-active-value rule. Active
+  ties prefer the current disk target, then the verified broker image, then the
+  incoming source. A two-input merge prefers the target. Verify this selection
+  after reopening. No original record timestamp is changed to invent an order.
+- Before native merging, collect every distinct original active/history entry
+  version from all inputs and all existing preservation records. Retain original
+  UUIDs, all original times, fields/flags, custom metadata, original grouping
+  context, attachment bytes and referenced custom icon data in structured
+  capsules. These are opaque binary attachments **inside the encrypted KDBX**,
+  with deterministic container UUIDs in a reserved managed group. They do not
+  require another password or unlock service. No plaintext file is exported.
+- Restore and verify every capsule byte after each encrypted native stage and
+  after final encrypted save/reopen. Timestamp-keyed native History and history
+  limits may collapse/prune versions; complete originals remain in capsules.
+  The generic container records have fixed bookkeeping times; embedded original
+  times remain exact. Native active records are never replaced by title matches.
+- Live deletions still apply. Capsules deliberately retain original versions of
+  deleted entries, without reviving them as active logins. They are excluded from
+  broker search/fill, duplicate checks and password-write destinations, and marked
+  nonsearchable/non-autotypable for native clients. Subsequent supported writes,
+  repeated merges and reconciliation validate and retain them. Identical logical
+  versions deduplicate; new versions consume additional encrypted space/memory.
+
+Receipts identify `preserve_conflicts`, `preservation_policy: "capsule-v1"` and
+`preserved_versions`. Counts separate active `entries` from `archived_versions`.
+The full policy composes with `--check` and `--refresh-target`; previews retain
+their staged capsules but adopt no broker state. Reuse an operation ID only for
+that same request. Uncertain/incomplete receipt rules remain unchanged.
+
+There is no capsule restore/view/export or purge command in this release. Native
+History alone must not be treated as the complete preservation ledger. Do not
+edit the managed group or extract capsule contents with an ad hoc agent script.
+The [capsule format](preservation-format.md) documents the internal recovery
+representation and checks. Capsule corruption, reserved UUID collisions,
+unreadable protected fields or an unverified active selection fail closed. This
+policy preserves original entry records; it does not independently reconcile
+all competing database/group settings, which still follow native semantics.
+
 ## Semantics and dependencies
 
 Linux with `/proc/self/fd`, sealed `memfd`, Unix sockets, fsync and atomic rename
 is required. Install root-owned `/usr/bin/keepassxc-cli` from KeePassXC
 `>=2.7.10,<2.8`. Version 2.7.10 is the tested native engine. The Python package
-dependencies are installed by `pip install .`. An unavailable, unsafe or
+dependencies are installed by `pip install .`. PyKeePass is pinned to **4.2.0**:
+the capsule reader/writer and protected-field checks are verified for that
+version. A different installed version disables the preservation capability.
+An unavailable, unsafe or
 unsupported native executable makes merge unavailable; ordinary login behavior
 continues. No engine path or password override is accepted through RPC.
 
 KeePassXC's database-aware `KeepNewer` merge matches entry/group UUIDs. It
 preserves the newer entry's value, fields and modification time, and merges
 older values into history. Group moves use `LocationChanged`; newer group
-properties follow the native engine's rules. Equal-second conflicting entry or
-history values are refused before the engine can discard one. A post-merge
+properties follow the native engine's rules. Without `--preserve-conflicts`,
+equal-second conflicting entry or history values are refused before the engine
+can discard one. A post-merge
 check refuses loss of any surviving entry version, history, field or attachment
 content, including native history-limit pruning. Such a failure leaves the
-target unchanged. It requires review of the vault's history policy or records
-in a trusted KeePass application, then a fresh private unlock/operation.
+target unchanged. Use the explicit preservation policy when complete original
+versions must survive native history limits or timestamp collisions. Its
+capsule verification replaces the default history-membership check; active
+selection and deletion checks still apply.
 
 The CLI's native mode omits deletion synchronization. The broker therefore
 applies a separate database-object deletion pass to the encrypted candidate:
@@ -205,6 +268,10 @@ Engine references: [CLI merge](https://github.com/keepassxreboot/keepassxc/blob/
 - Stale target: the default refuses it. Use the explicit `--refresh-target`
   path above to combine the verified broker image, current target and incoming
   file without another unlock on 0.4.0. Do not discard broker-only data by reload.
+- Conflicting same-second records or native history pruning: retain inputs and
+  use a new operation ID with `--preserve-conflicts` on verified 0.5.0/capsule-v1.
+  Include `--refresh-target` when reconciling external changes. This authorizes
+  encrypted capsule preservation and the documented active tie preference.
 - Changed key file or wrong current-file key: retain all inputs and reconcile
   the cause privately. The option does not reset the broker or bypass key checks.
 - Stale source: preserve its latest bytes. Review the retained input snapshot,
@@ -241,24 +308,25 @@ Do this only after the source repair thread has finished and its exact tested
 commit/report has been reviewed. The development thread does not activate code
 or merge real vaults.
 
-1. Install the tested 0.4.0 package/commit into the broker's environment. For a
+1. Install the tested 0.5.0 package/commit into the broker's environment. For a
    source checkout, select the tested commit and run `.venv/bin/pip install -e .`.
    Keep the native dependency above available. Preserve existing uncommitted
    work; do not reset a checkout or force-push.
-2. End pending fills/resets with the broker's owner. Before stopping a 0.3.0
+2. End pending fills/resets with the broker's owner. Before stopping an older
    broker, preserve its latest durable encrypted state and receipt. If external
    replacement has removed it from disk, identify its retained encrypted saved
    candidate before proceeding. Do not stop a broker whose latest state exists
    only in memory. This option preserves state within a compatible running
-   broker; it does not transfer a running 0.3.0 process's memory to 0.4.0.
+   broker; it does not transfer an older process's memory to 0.5.0.
    Coordinate a normal restart and private re-unlock for version activation.
    Never extract a key, hot-patch memory, or start a second unlock service.
 3. Start the installed CLI with the intended target, original socket, key-file
    option (if any), desktop environment and existing private HTTPS mapping:
    `akdbx --socket /KNOWN/PRIVATE/broker.sock serve /INTENDED/base.kdbx`.
    No additional unlock service is required.
-4. Give the returned private unlock link to the user. Check CLI/broker 0.4.0
-   and merge capabilities, including `merge_refresh_target_supported: true`.
+4. Give the returned private unlock link to the user. Check CLI/broker 0.5.0
+   and merge capabilities, including `merge_refresh_target_supported: true`,
+   `merge_preserve_conflicts_supported: true` and exact policy `capsule-v1`.
    Run the authorized merge command above; keep its receipt. Later compatible
    external replacements can be reconciled without a new unlock or restart.
 5. Verify `saved`/`unchanged`, checksums and expected nonsecret results before
