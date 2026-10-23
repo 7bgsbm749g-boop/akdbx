@@ -7,12 +7,16 @@ from ordinary history. Existing capsule payloads must remain byte-for-byte.
 from __future__ import annotations
 
 import copy
+import re
 from collections import Counter
+from datetime import datetime, timezone
+from lxml import etree
 
 from . import selection, versions
 
 POLICY = 'snapshot-admission-v1'
 VERIFICATION = 'native-containment-v1'
+GROUP_VERIFICATION = 'group-semantic-v1'
 CATEGORIES = frozenset({'encryption_policy', 'database_settings', 'group_metadata',
                         'managed_capsules', 'deletion', 'field_protection', 'unsupported_structure'})
 META_FIELDS = frozenset({'Generator', 'DatabaseName', 'DatabaseNameChanged', 'DatabaseDescription',
@@ -23,7 +27,7 @@ META_FIELDS = frozenset({'Generator', 'DatabaseName', 'DatabaseNameChanged', 'Da
     'HistoryMaxItems', 'HistoryMaxSize', 'SettingsChanged', 'CustomData'})
 GROUP_FIELDS = frozenset({'UUID', 'Name', 'Notes', 'IconID', 'CustomIconUUID', 'Times', 'IsExpanded',
     'DefaultAutoTypeSequence', 'EnableAutoType', 'EnableSearching', 'LastTopVisibleEntry',
-    'CustomData', 'PreviousParentGroup'})
+    'CustomData', 'PreviousParentGroup', 'Tags'})
 
 
 class AdmissionError(versions.PreservationError):
@@ -47,6 +51,85 @@ def _crypto(vault):
                 'cipher_id', 'compression_flags', 'master_seed', 'encryption_iv', 'kdf_parameters', 'end'}})
 
 
+def _group_time(text, vault):
+    # Group clocks are not entry-version timestamp buckets. Normalize timezone
+    # representation while retaining supplied fractional precision. Ordinary
+    # KDBX4 binary times are whole seconds; different ISO instants must refuse.
+    try:
+        if re.search(r'[.,]\d{7}', text or ''):
+            raise ValueError
+        value = datetime.fromisoformat(versions._time(text, vault.version))
+        return value.replace(tzinfo=value.tzinfo or timezone.utc).astimezone(timezone.utc).isoformat()
+    except Exception:
+        raise AdmissionError(['unsupported_structure']) from None
+
+
+def _group_defaults(node, vault):
+    """Private representation equivalence, never group conflict selection.
+
+    KeePassXC 2.7.10 Group/parseGroup and KeePassium Group2.load/toXml
+    agree on these defaults. Their writers differ in tristate spelling,
+    Tags position, and omission of optional zero UUIDs/empty CustomData.
+    Keep inheritance distinct from explicit true/false. Essential Times,
+    even disabled expiry, and every CustomData value/clock stay significant.
+    This projection never changes the incoming file or capsule identities.
+    """
+    for tag, default in {'Name': '', 'Notes': '', 'IconID': '48',
+                         'DefaultAutoTypeSequence': '', 'EnableAutoType': 'null',
+                         'EnableSearching': 'null'}.items():
+        child = node.find(tag)
+        if child is None:
+            child = etree.SubElement(node, tag)
+            child.text = default
+        selection._leaf(child)
+    for tag in ('EnableAutoType', 'EnableSearching'):
+        child = node.find(tag)
+        value = selection._leaf(child).lower()
+        if value not in {'null', 'true', 'false'}:
+            raise AdmissionError(['unsupported_structure'])
+        child.text = value
+    for tag in ('CustomIconUUID', 'PreviousParentGroup'):
+        child = node.find(tag)
+        if child is not None and selection._uuid(selection._leaf(child)) is None:
+            node.remove(child)
+    times = node.find('Times')
+    if times is None or times.attrib:
+        raise AdmissionError(['unsupported_structure'])
+    seen = set()
+    for child in times:
+        if child.tag not in selection.TIME_FIELDS or child.tag in seen:
+            raise AdmissionError(['unsupported_structure'])
+        seen.add(child.tag)
+        value = selection._leaf(child)
+        if child.tag == 'Expires':
+            child.text = str(selection._boolean(value))
+        elif child.tag not in {'UsageCount', 'LastAccessTime'}:
+            child.text = _group_time(value, vault)
+    if not {'CreationTime', 'LastModificationTime', 'ExpiryTime', 'Expires', 'LocationChanged'} <= seen:
+        raise AdmissionError(['unsupported_structure'])
+    custom = node.find('CustomData')
+    if custom is not None:
+        if custom.attrib or (custom.text or '').strip():
+            raise AdmissionError(['unsupported_structure'])
+        keys = set()
+        for item in custom:
+            tags = [child.tag for child in item]
+            if (item.tag != 'Item' or item.attrib or tags.count('Key') != 1 or tags.count('Value') != 1
+                    or tags.count('LastModificationTime') > 1
+                    or set(tags) - {'Key', 'Value', 'LastModificationTime'}):
+                raise AdmissionError(['unsupported_structure'])
+            key = selection._leaf(item.find('Key'))
+            selection._leaf(item.find('Value'))
+            if key in keys:
+                raise AdmissionError(['unsupported_structure'])
+            keys.add(key)
+            clock = item.find('LastModificationTime')
+            if clock is not None:
+                clock.text = _group_time(selection._leaf(clock), vault)
+        if not len(custom):
+            node.remove(custom)
+
+
 def _shape(node, vault, *, group=False):
     if node is None:
         return None
@@ -58,6 +141,8 @@ def _shape(node, vault, *, group=False):
             if child.tag in seen:
                 raise AdmissionError(['unsupported_structure'])
             seen.add(child.tag)
+    if group:
+        _group_defaults(node, vault)
     ignored = ({'Entry', 'Group', 'IsExpanded', 'LastTopVisibleEntry'} if group else
                {'Generator', 'LastSelectedGroup', 'LastTopVisibleGroup', 'CustomIcons', 'CustomData'})
     for child in list(node):
@@ -67,7 +152,8 @@ def _shape(node, vault, *, group=False):
         if child.tag in {'LastAccessTime', 'UsageCount'} and child.getparent().tag == 'Times':
             child.getparent().remove(child)
         elif child.tag.endswith('Changed') or child.tag in {'MasterKeyChanged'}:
-            child.text = selection.decode_time(child.text, vault.version).isoformat()
+            child.text = (_group_time(child.text, vault) if group else
+                          selection.decode_time(child.text, vault.version).isoformat())
         elif child.tag.startswith('Protect') or child.tag == 'RecycleBinEnabled':
             child.text = str(selection._boolean(child.text))
     projected = versions._canonical(node, {}, vault.version, times=True)

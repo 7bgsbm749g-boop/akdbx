@@ -1,4 +1,4 @@
-# Exact-byte snapshot admission (0.7.0 prototype)
+# Exact-byte snapshot admission (0.7.1 prototype)
 
 **NEEDS PARENT POLICY REVIEW before activation.** This is a separately named
 opt-in policy, not a native merge or capsule-v1 capture. Existing merge defaults
@@ -41,17 +41,22 @@ fails closed. No snapshot pruning, rebind, reset or downgrade command is added.
 but does not replace the vault, refresh the broker or invalidate handles. It is
 not a reservation against later races.
 
-Require CLI/broker 0.7.0, unlocked, no recovery block, `merge_available:true`, and
+Require CLI/broker 0.7.1, unlocked, no recovery block, `merge_available:true`, and
 all exact capabilities before dispatch:
 
 ```json
 {"admission_supported":true,"admission_protocol":1,
  "admission_policy":"snapshot-admission-v1",
- "admission_verification":"native-containment-v1"}
+ "admission_verification":"native-containment-v1",
+ "admission_group_verification":"group-semantic-v1"}
 ```
 
 RPC action `admit` requires `source`, `snapshot_directory`, `operation_id`,
-`policy`, `verification`, and optional boolean `check`. Merge options are refused.
+`policy`, `verification`, `group_verification:"group-semantic-v1"`, and optional boolean `check`.
+Older raw callers may omit the additive group-verifier request; the new broker
+still applies it. Unsupported explicit group verifiers are refused before intent.
+The 0.7.1 CLI requires the capability, sends the request and checks the result.
+Merge options are refused.
 Optional CLI `--if-match SHA256` / RPC `if_match` is an unquoted lowercase SHA256
 of the current **encrypted** target. Adapters must map an HTTP ETag explicitly;
 stale supplied preconditions must never be ignored. No wildcard is supported.
@@ -59,8 +64,9 @@ Without If-Match, the active-state containment checks still prevent branch loss.
 
 A synchronous adapter may acknowledge only a durable result with `ok:true`,
 `state:saved|unchanged`, `check:false`, `mode:admission`, requested operation ID,
-`policy:snapshot-admission-v1`, `verification:native-containment-v1`, and
-`exact_bytes:true`. The CLI checks these result fields as well as capabilities.
+`policy:snapshot-admission-v1`, `verification:native-containment-v1`,
+`group_verification:group-semantic-v1` and `exact_bytes:true`. The CLI checks
+these result fields as well as capabilities.
 Raw callers must do the same. `source_sha256` and `candidate_sha256` identify the
 same encrypted bytes. GET/HEAD must serve those exact canonical bytes, with
 correct ETag and length. No transform-and-ack, asynchronous success, automatic
@@ -92,8 +98,55 @@ across inputs, including group rename/move combinations, rather than guess a
 partial native result. Expansion, last-visible-entry, display order and access/usage statistics
 may differ. Database settings must agree, including name/description/default
 user, history limits, recycle bin/templates, key settings and memory protection.
-Known singleton database/group field order and memory-protection flag order
-are normalized; duplicate settings are refused. Generator and selected/top-visible
+Known singleton database/group field order (including nonempty Tags) and
+memory-protection flag order are normalized; duplicate settings are refused.
+
+### Group representation equivalence in 0.7.1
+
+`group-semantic-v1` corrects demonstrable serialization refusals without changing
+`snapshot-admission-v1`, `native-containment-v1`, capsule identities or retention.
+The public [KeePassium 2.5.171 Group2 reader/writer](https://github.com/keepassium/KeePassium/blob/2.5.171/KeePassiumLib/KeePassiumLib/db/kp2/Group2.swift)
+reorders group Tags and writes tristates as `True`/`False`/`null`.
+[KeePassXC 2.7.10 writer](https://github.com/keepassxreboot/keepassxc/blob/2.7.10/src/format/KdbxXmlWriter.cpp)
+writes Tags earlier and tristates lowercase; its
+[reader](https://github.com/keepassxreboot/keepassxc/blob/2.7.10/src/format/KdbxXmlReader.cpp)
+reads those tristates case-insensitively. These are equal representations.
+The former raw check falsely refused them, including disabled searching/AutoType
+in the managed archive group. Synthetic reproduction does not identify any
+particular real client's trigger.
+
+Only documented defaults are supplied for absent fields: empty Name/Notes/
+DefaultAutoTypeSequence, built-in IconID 48 and inherited searching/AutoType.
+Absent/zero optional CustomIconUUID and PreviousParentGroup are equal. Empty
+CustomData is equal to absent; CustomData item order is insignificant, but every
+key, value and optional modification clock remains significant. Valid group
+timestamps use UTC instants independent of binary/ISO representation.
+Fractional group instants remain significant; timezone equivalence does not
+bucket them into entry-version seconds. Unsupported precision beyond six
+fractional digits refuses rather than silently rounding metadata.
+
+Inheritance remains distinct from explicit enabled/disabled. Nonempty Tags,
+name/notes, icon/custom icon, AutoType sequence, previous parent, actual parent,
+creation/modification/location times, Expires and ExpiryTime (even while disabled)
+remain checked. No group edit or competing metadata is automatically selected.
+Unknown metadata stays conservative. Duplicate fields, invalid tristates and
+malformed Times/CustomData fail closed. Exact original metadata remains in the
+complete encrypted snapshots; no input/capsule bytes are normalized on disk.
+
+Group Tags *text* is still checked exactly. Public KeePassium
+[TagHelper](https://github.com/keepassium/KeePassium/blob/2.5.171/KeePassiumLib/KeePassiumLib/db/kp2/Taggable.swift)
+can change semicolon separators/whitespace to comma syntax without an explicit
+tag edit; native Group stores and compares the original string directly. This
+patch does not extend policy to accept those value changes. They still return
+a retained-upload conflict. A future group tag equivalence policy would need
+separate native reference proof and review. Group2 projection tests model this
+rewrite and verify both the accepted canonical syntax and this remaining limit.
+The native reference retains the target's original Tags string on an existing
+group. A new client read can therefore repeat the rewrite/refusal; explicit
+merge is not a lasting cure for that particular structural shape. Do not
+repeat private unlocks or claim universal compatibility to work around it.
+
+Generator and selected/top-visible
 UI state may differ. Database CustomData may
 change only its dictionary clock; existing icons must remain intact. Current
 protected fields cannot be downgraded to unprotected. Ordinary client edits can
@@ -178,11 +231,42 @@ Windows/iPhone UI and native KeePassium remain outside this verification.
 
 After parent policy review, retain the current broker's latest durable encrypted
 state and resolve pending receipts. Install the final tested wheel/commit, then
-perform one coordinated normal restart/private HTTPS unlock. An unlocked 0.6
-process cannot acquire new code. No hotpatch, key extraction or second unlock
+perform one coordinated normal restart/private HTTPS unlock. An unlocked older process, including 0.7.0,
+cannot acquire new code. No hotpatch, key extraction or second unlock
 service is supported. No new serve argument is required: the first explicit
 admission binds external recovery. Require exact capabilities/results before
 adapter integration. Do not downgrade a bound vault to 0.6 or older: old brokers
 do not scan external admission receipts. Preserve the locator and snapshots;
 there is no downgrade/reset/prune command. Parent owns activation and native
 client acceptance; this prototype is **not native iPhone verified**.
+
+The runtime wheel does not install these skill documents. When using a wheel,
+advance the maintained source/skill checkout to the same tested commit through
+the existing checkout workflow, preserving unrelated local work.
+
+0.7.1 keeps the 0.7.0 external locator, snapshot directory, operation IDs and
+receipt recovery format. Preserve them in place; no rebind or migration is
+required. Historical 0.7.0 receipts remain queryable with `merge-status` and
+do not retroactively prove `group-semantic-v1`. New admissions report the group
+verifier. New CLI refuses an old running 0.7.0 broker before dispatch. Do not
+repeat a historical operation ID to obtain a new verifier: inspect its original
+receipt and retain uncertainty rules. A downgrade loses the group fix; never
+downgrade below 0.7.0 on a bound vault because external recovery is unsupported.
+
+The reported installed client is KeePassium 2.5.171. Public tag `2.5.171` maps
+to commit `4dc000da761217d1f8fab7ac40c4195d7b2ff37b`; its Xcode project sets
+`MARKETING_VERSION=2.5` and `CURRENT_PROJECT_VERSION=171`. The test projection
+is pinned to this source, not an assumption about current master. This source
+mapping does not verify a device binary or identify the real refusal.
+
+In that release, [Group.touch](https://github.com/keepassium/KeePassium/blob/2.5.171/KeePassiumLib/KeePassiumLib/db/Group.swift)
+updates access time for `.accessed`, modification time for `.modified`, and
+propagates the mode to parents; Group2 also increments usage. Access/usage-only
+touches are admitted. Real group modification clocks remain significant.
+The [AutoFill remembered-URL operation](https://github.com/keepassium/KeePassium/blob/2.5.171/KeePassiumLib/KeePassiumLib/db/transactions/AddEntryURLOperation.swift)
+backs up the entry, sets its modification clock and changes its URL/extra field;
+it does not directly touch parent clocks. Do not infer which operation or
+metadata occurred on a user's device from these possible paths.
+The AutoFill [background saver](https://github.com/keepassium/KeePassium/blob/2.5.171/KeePassium%20AutoFill/AutoFillCoordinator%2BdbSaving.swift)
+has a fixed 10-second timeout in this public release. That is a separate path
+from main-app save settings, not a diagnosis of a particular failed request.

@@ -94,7 +94,7 @@ class Lab:
                     lab.results[op]=result
                     okay=result.get('ok') and result.get('state') in {'saved','unchanged'} and result.get('check') is False
                     if lab.mode=='admit':
-                        okay=okay and result.get('policy')==admission.POLICY and result.get('verification')==admission.VERIFICATION and result.get('exact_bytes') is True
+                        okay=okay and result.get('policy')==admission.POLICY and result.get('verification')==admission.VERIFICATION and result.get('group_verification')==admission.GROUP_VERIFICATION and result.get('exact_bytes') is True
                         okay=okay and self.headers.get('X-Test-Operation',op)==result.get('operation_id')
                         okay=okay and lab.target.read_bytes()==data
                     self.reply(204 if okay else 409)

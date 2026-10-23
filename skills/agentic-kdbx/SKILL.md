@@ -212,7 +212,7 @@ Report the site/account used and whether sign-in was verified, or the exact non-
 
 ## Exact-byte snapshot admission review prototype
 
-Version 0.7.0 adds `admit SOURCE --policy snapshot-admission-v1 --snapshot-dir DIR`
+Version 0.7.1 supports `admit SOURCE --policy snapshot-admission-v1 --snapshot-dir DIR`
 (add `--check` for preview). **NEEDS PARENT POLICY REVIEW before activation.**
 Read [the admission contract](references/snapshot-admission.md) before use.
 It retains full encrypted input snapshots outside canonical, preserves existing
@@ -221,7 +221,12 @@ active state. It does not create per-upload capsules. Ordinary-history versions
 may remain only in retained encrypted databases. Refuse conflicts, explicitly
 merge outside PUT, then require a fresh client read. A transformed native merge
 is not seamless KeePassium PUT because the client caches uploaded bytes. Require
-exact admission capability/result checks. One coordinated normal restart/private
+exact admission capability/result checks, including
+`admission_group_verification:"group-semantic-v1"` and result
+`group_verification:"group-semantic-v1"`. The new CLI rejects an old running
+0.7.0 broker. This patch normalizes proven group serialization differences;
+actual group edits still refuse. It preserves the 0.7.0 recovery locator and
+receipts without migration. One coordinated normal restart/private
 unlock is required after policy review; do not hotpatch an unlocked broker,
 remove the recovery locator, or downgrade around external receipts. No native
 mobile or production adapter verification is implied.

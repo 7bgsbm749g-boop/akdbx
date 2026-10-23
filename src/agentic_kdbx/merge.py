@@ -193,7 +193,8 @@ class MergeManager:
                 'merge_active_verification': selection.VERIFICATION if versions.supported() else None,
                 'merge_diagnostics': selection.DIAGNOSTICS,
                 'admission_supported': versions.supported(), 'admission_protocol': 1,
-                'admission_policy': admission.POLICY, 'admission_verification': admission.VERIFICATION}
+                'admission_policy': admission.POLICY, 'admission_verification': admission.VERIFICATION,
+                'admission_group_verification': admission.GROUP_VERIFICATION}
 
     def _store(self):
         store = getattr(self.broker.vault, '_akdbx_store', None)
@@ -267,6 +268,8 @@ class MergeManager:
         admitting = request.get('action') == 'admit'
         if admitting and (request.get('policy') != admission.POLICY or request.get('verification') != admission.VERIFICATION):
             raise MergeError('unsupported admission policy or verifier; operation not started')
+        if admitting and 'group_verification' in request and request['group_verification'] != admission.GROUP_VERIFICATION:
+            raise MergeError('unsupported admission group verifier; operation not started')
         if admitting and any(k in request for k in ('refresh_target', 'preserve_conflicts', 'active_verification')):
             raise MergeError('admission is a separate policy; merge options refused')
         if admitting and not isinstance(request.get('snapshot_directory'), str):
@@ -297,6 +300,7 @@ class MergeManager:
                    'engine': self._version}
         if admitting:
             receipt.update(mode='admission', policy=admission.POLICY, verification=admission.VERIFICATION,
+                           group_verification=admission.GROUP_VERIFICATION,
                            exact_bytes=True, engine=None, refresh_target=True)
         replaced = False
         adopted = False

@@ -209,7 +209,8 @@ def parser() -> argparse.ArgumentParser:
     merge.add_argument('--refresh-target', action='store_true', help='reconcile the verified broker state, current disk target and source using held credentials')
     merge.add_argument('--preserve-conflicts', action='store_true', help='keep every logical version in encrypted in-vault capsules; current target wins active timestamp ties')
     merge.add_argument('--operation-id', help='32 lowercase hex characters; reuse only to retrieve the same durable receipt')
-    admit = commands.add_parser('admit', help='opt-in exact-byte conditional admission with external encrypted snapshots; policy review required')
+    admit = commands.add_parser('admit', help='opt-in exact-byte conditional admission with external encrypted snapshots; policy review required',
+                                description='Exact-byte snapshot-admission-v1 with group-semantic-v1 checks; requires CLI and broker 0.7.1 or newer.')
     admit.add_argument('source', type=Path)
     admit.add_argument('--policy', required=True, choices=('snapshot-admission-v1',))
     admit.add_argument('--snapshot-dir', required=True, type=Path, help='existing mode-0700 directory outside the synced vault; permanently bound for recovery')
@@ -249,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
                        operation_id=args.operation_id or uuid.uuid4().hex)
         if args.command == 'admit':
             payload.update(policy=args.policy, verification='native-containment-v1',
+                           group_verification='group-semantic-v1',
                            snapshot_directory=os.path.abspath(args.snapshot_dir.expanduser()))
             if args.if_match is not None:
                 payload['if_match'] = args.if_match
@@ -290,8 +292,9 @@ def main(argv: list[str] | None = None) -> int:
                     or type(capabilities.get('admission_protocol')) is not int
                     or capabilities.get('admission_protocol') != 1
                     or capabilities.get('admission_policy') != 'snapshot-admission-v1'
-                    or capabilities.get('admission_verification') != 'native-containment-v1'):
-                print(json.dumps({'ok': False, 'error': 'broker lacks exact snapshot-admission-v1/native-containment-v1 capabilities; admission not sent'}))
+                    or capabilities.get('admission_verification') != 'native-containment-v1'
+                    or capabilities.get('admission_group_verification') != 'group-semantic-v1'):
+                print(json.dumps({'ok': False, 'error': 'broker lacks exact snapshot-admission-v1/native-containment-v1/group-semantic-v1 capabilities; require broker 0.7.1 or newer; admission not sent'}))
                 return 1
         if args.command == 'merge' and (args.refresh_target or args.preserve_conflicts):
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
@@ -334,6 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'admit' and response.get('ok') and (
             response.get('mode') != 'admission' or response.get('policy') != 'snapshot-admission-v1'
             or response.get('verification') != 'native-containment-v1' or response.get('exact_bytes') is not True
+            or response.get('group_verification') != 'group-semantic-v1'
             or response.get('operation_id') != payload['operation_id']
             or response.get('check') is not args.check
             or response.get('state') not in ({'checked'} if args.check else {'saved', 'unchanged'})):

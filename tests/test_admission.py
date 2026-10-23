@@ -292,7 +292,7 @@ def test_genuine_old_cli_rejection_and_result_downgrade(case,monkeypatch,capsys)
     args=['admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots)]
     assert cli.main(args)==1 and [p['action'] for p in calls]==['ping']
     def downgraded(sock,payload,**kw):
-        if payload['action']=='ping':return {'ok':True,'admission_supported':True,'admission_protocol':1,'admission_policy':admission.POLICY,'admission_verification':admission.VERIFICATION}
+        if payload['action']=='ping':return {'ok':True,'admission_supported':True,'admission_protocol':1,'admission_policy':admission.POLICY,'admission_verification':admission.VERIFICATION,'admission_group_verification':admission.GROUP_VERIFICATION}
         return {'ok':True,'state':'saved','policy':'capsule-v1'}
     monkeypatch.setattr(cli,'request',downgraded)
     assert cli.main(args)==2
@@ -342,12 +342,13 @@ def test_unlocked_state_contains_all_three_active_branches_before_admission(case
     assert {e.title for e in versions.active_entries(broker.vault)}>={'Held only','External only','Incoming only'}
 
 
-def test_actual_frozen_060_broker_rejected_before_admission(case,tmp_path):
+@pytest.mark.parametrize('commit,version', [('42cdedee4b75d151def765543419536f3fe4d348','0.6.0'), ('d3657b7f9337895ce65068a4b9a57341fe90e783','0.7.0')])
+def test_actual_old_broker_rejected_and_070_receipts_recover(case,tmp_path,commit,version):
     """Run the real previous committed broker, not a mocked capability dict."""
     broker,target,source,snapshots=case
     frozen=tmp_path/'frozen';frozen.mkdir(mode=0o700)
     # Git object source only; never read the separate production checkout.
-    archive=subprocess.run(['git','archive','42cdedee4b75d151def765543419536f3fe4d348','src'],capture_output=True,check=True)
+    archive=subprocess.run(['git','archive',commit,'src'],capture_output=True,check=True)
     import tarfile
     with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:tar.extractall(frozen,filter='data')
     socket=tmp_path/'old-runtime'/'broker.sock';socket.parent.mkdir(mode=0o700)
@@ -355,14 +356,32 @@ def test_actual_frozen_060_broker_rejected_before_admission(case,tmp_path):
     script.write_text("from pathlib import Path\nimport sys\nfrom test_merge import MASTER\nfrom agentic_kdbx.broker import Broker,open_vault_with_password,serve\nfrom test_broker import RecordingTyper\nserve(Path(sys.argv[2]),Broker(open_vault_with_password(Path(sys.argv[1]),MASTER),RecordingTyper()))\n")
     env={**os.environ,'PYTHONPATH':str(frozen/'src')+os.pathsep+str(Path(__file__).parent)}
     process=subprocess.Popen([sys.executable,str(script),str(target),str(socket)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    historical=None
     try:
         end=time.monotonic()+8
         while not socket.exists() and time.monotonic()<end:time.sleep(0.02)
-        assert cli.request(socket,{'action':'ping'})['version']=='0.6.0'
+        assert cli.request(socket,{'action':'ping'})['version']==version
         result=subprocess.run([sys.executable,'-m','agentic_kdbx.cli','--socket',str(socket),'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots)],capture_output=True,text=True)
         assert result.returncode==1 and 'admission not sent' in result.stdout
         assert not list(snapshots.iterdir())
+        if version=='0.7.0':
+            # The actual prior CLI/server writes its original external locator
+            # and receipt. The new broker must recover it without migration.
+            old=subprocess.run([sys.executable,'-m','agentic_kdbx.cli','--socket',str(socket),'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots)],env=env,capture_output=True,text=True)
+            assert old.returncode==0,old.stdout+old.stderr
+            historical=json.loads(old.stdout)
+            assert historical['state']=='unchanged' and 'group_verification' not in historical
     finally:process.terminate();process.wait(5)
+    if historical:
+        reopened=Broker(open_vault_with_password(target,MASTER),RecordingTyper())
+        assert reopened.merges.status(historical['operation_id'])==historical
+        assert not reopened.vault._akdbx_store.recovery_required
+        with running_broker(tmp_path/'new-runtime'/'broker.sock',reopened):
+            command=[sys.executable,'-m','agentic_kdbx.cli','--socket',str(tmp_path/'new-runtime'/'broker.sock')]
+            status=subprocess.run([*command,'merge-status',historical['operation_id']],capture_output=True,text=True)
+            assert status.returncode==0 and json.loads(status.stdout)==historical
+            reused=subprocess.run([*command,'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots),'--operation-id',historical['operation_id']],capture_output=True,text=True)
+            assert reused.returncode==2 and 'outcome unconfirmed' in reused.stderr
 
 
 def test_capsule_optimization_matches_frozen_original_and_revalidates_changed_bytes(case):

@@ -87,7 +87,7 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
             code, _, page = call(servers[0].server_address, "POST", path, urlencode({"password": MASTER}), timeout=30)
             assert code == 200
             assert MASTER.encode() not in page and SECRET.encode() not in page
-            assert command("status") == {"ok": True, "locked": False, "version": "0.7.0", "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True)}
+            assert command("status") == {"ok": True, "locked": False, "version": "0.7.1", "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True)}
             search = command("search", "example")
             assert typer.events == []  # Unlock/search must not trigger a fill.
             handle = search["entries"][0]["handle"]
