@@ -32,7 +32,10 @@ akdbx merge-status OPERATION_ID
 Use a dedicated existing mode-0700 directory outside the canonical file's parent
 and **all synced vaults**. It is permanently bound by a small nonsecret mode-0600
 `.TARGET.akdbx-admission.json` locator beside the target. Preserve this locator
-and external storage through restarts/migrations. Missing or unsafe storage
+and external storage through restarts/migrations. Keep the locator local to this
+broker host; exclude it from cross-device file sync with the owning workflow.
+It contains a host-specific absolute recovery path. Do not delete it to bypass
+recovery or copy it to another host as a portable configuration. Missing or unsafe storage
 fails closed. No snapshot pruning, rebind, reset or downgrade command is added.
 `--check` retains encrypted snapshots/receipt and binds the recovery directory,
 but does not replace the vault, refresh the broker or invalidate handles. It is
@@ -86,7 +89,7 @@ are permitted; removal of an existing empty group needs a valid tombstone.
 
 The prototype refuses existing group property/parent/essential-time differences
 across inputs, including group rename/move combinations, rather than guess a
-partial native result. Expansion, last-visible-entry and access/usage statistics
+partial native result. Expansion, last-visible-entry, display order and access/usage statistics
 may differ. Database settings must agree, including name/description/default
 user, history limits, recycle bin/templates, key settings and memory protection.
 Known singleton database/group field order and memory-protection flag order
