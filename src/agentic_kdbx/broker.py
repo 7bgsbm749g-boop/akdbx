@@ -170,7 +170,7 @@ class Broker:
 
     def dispatch(self, request: dict, *, delivery_ready=None) -> dict:
         action = request.get("action")
-        if action in {'merge', 'merge-status'}:
+        if action in {'merge', 'admit', 'merge-status'}:
             if not self._vault_lock.acquire(blocking=False):
                 return {'ok': False, 'error': 'vault busy; merge not started; check merge-status before retry'}
             try:
@@ -207,7 +207,7 @@ class Broker:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
             return {"ok": False, "error": "save outcome uncertain; restart and unlock"}
-        if action == 'merge':
+        if action in {'merge', 'admit'}:
             return self.merges.begin(request)
         if action in {"create-entry", "update-password", "generate-password", "write-status", "cancel-write", "commit-password", "fill-generated"}:
             try:

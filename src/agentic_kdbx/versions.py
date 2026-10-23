@@ -156,7 +156,13 @@ def _canonical(node, binaries, version, *, times):
         if not parent or not inherited_space and not tail.strip():
             tail = ''
         return [element.tag, sorted(attributes.items()), text, children, tail]
-    return visit(node)
+    try:
+        return visit(node)
+    finally:
+        # Recursive local functions form a reference cycle. Break it promptly:
+        # otherwise every signature can retain its copied full binary pool
+        # until cyclic GC, reaching gigabytes on a capsule-rich database.
+        visit = None
 
 
 def entry_signature(entry):
@@ -186,7 +192,7 @@ def active_entries(vault):
             yield entry
 
 
-def _capsule(entry, group):
+def _capsule(entry, group, binaries=None):
     element = copy.deepcopy(entry._element)
     history = element.find('History')
     if history is not None:
@@ -196,17 +202,19 @@ def _capsule(entry, group):
     # element argument is a HistoryEntry. Resolve each original Binary directly.
     for attachment in element.findall('Binary'):
         reference = int(attachment.find('Value').get('Ref'))
-        data = entry._kp.binaries[reference]
+        data = (entry._kp.binaries if binaries is None else binaries)[reference]
         attachments.append({'ref': reference, 'data': base64.b64encode(data).decode('ascii')})
     icon_uuid = element.findtext('CustomIconUUID')
     icons = [_packed(icon) for icon in entry._kp.tree.findall('./Meta/CustomIcons/Icon')
              if icon.findtext('UUID') == icon_uuid] if icon_uuid else []
-    group_record = copy.deepcopy(group._element)
-    for child in list(group_record):
-        if child.tag in {'Entry', 'Group'}:
-            group_record.remove(child)
+    # Pack only group metadata. Deep-copying the entire parent subtree for
+    # each version needlessly copies all sibling entries/history/capsules.
+    # This is byte-equivalent to _packed(deepcopy(group) minus Entry/Group).
+    node = group._element
+    group_record = [node.tag, dict(node.attrib), node.text,
+                    [_packed(child) for child in node if child.tag not in {'Entry', 'Group'}], node.tail]
     return {'schema': POLICY, 'uuid': str(entry.uuid), 'group_uuid': str(group.uuid),
-            'group_path': group.path, 'group_record': _packed(group_record),
+            'group_path': group.path, 'group_record': group_record,
             'format': list(entry._kp.version), 'custom_icons': icons,
             'record': _packed(element), 'attachments': attachments}
 
@@ -233,7 +241,7 @@ def _alias(identity):
     return uuid.uuid5(NAMESPACE, identity)
 
 
-def archives(vault):
+def archives(vault, *, trusted=None):
     """Validate the reserved group and every capsule before using an input."""
     result = {}
     groups = [g for g in vault.groups if is_archive_group(g)]
@@ -242,15 +250,25 @@ def archives(vault):
     if len(groups) != 1 or groups[0] == vault.root_group or _marker(groups[0]) != POLICY or groups[0].subgroups:
         raise PreservationError('invalid preservation archive; merge refused')
     aliases = set()
+    validated = {_alias(key): (key, data) for key, data in (trusted or {}).items()}
+    # PyKeePass.binaries copies the entire binary pool. Resolve it once, not
+    # once per capsule (quadratic work for ordinary phone uploads).
+    binaries = vault.binaries
     for entry in groups[0].entries:
         try:
             if entry.history or len(entry.attachments) != 1 or entry.attachments[0].filename != FILENAME:
                 raise ValueError
-            data = entry.attachments[0].data
+            data = binaries[entry.attachments[0].id]
             if entry.get_custom_property(CHECKSUM) != hashlib.sha256(data).hexdigest():
                 raise ValueError
-            payload = json.loads(data)
-            identity = capsule_identity(payload)
+            known = validated.get(entry.uuid)
+            if known is not None and known[1] == data:
+                # Exact opaque payload equality to a previously fully verified
+                # capsule proves the same identity. Wrapper checks still run.
+                identity = known[0]
+            else:
+                payload = json.loads(data)
+                identity = capsule_identity(payload)
             if entry.uuid != _alias(identity) or identity in result or entry.uuid in aliases:
                 raise ValueError
             aliases.add(entry.uuid)
@@ -266,9 +284,10 @@ def collect(vaults, *, capture):
         for identity, data in archives(vault).items():
             ledger.setdefault(identity, data)
         if capture:
+            binaries = vault.binaries
             for entry in active_entries(vault):
                 for version in [entry, *entry.history]:
-                    payload = _capsule(version, entry.group)
+                    payload = _capsule(version, entry.group, binaries)
                     ledger.setdefault(capsule_identity(payload), _json(payload))
     return ledger
 
@@ -305,6 +324,7 @@ def ensure(vault, ledger):
     existing = {entry.uuid: entry for entry in vault.entries}
     group_ids = {group.uuid for group in vault.groups}
     aliases = {}
+    binaries = vault.binaries
     for identity, data in ledger.items():
         alias = _alias(identity)
         if alias in group_ids or alias in aliases and aliases[alias] != identity:
@@ -314,7 +334,7 @@ def ensure(vault, ledger):
         if entry is not None:
             if entry.group.uuid != ARCHIVE_UUID:
                 raise PreservationError('preserved version UUID collision; merge refused')
-            if (not entry.history and len(entry.attachments) == 1 and entry.attachments[0].data == data
+            if (not entry.history and len(entry.attachments) == 1 and binaries[entry.attachments[0].id] == data
                     and entry.get_custom_property(CHECKSUM) == hashlib.sha256(data).hexdigest()):
                 continue
             vault.delete_entry(entry)

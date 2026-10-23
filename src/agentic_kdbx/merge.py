@@ -9,11 +9,12 @@ import os
 import re
 import resource
 import stat
+import time
 import subprocess
 from pathlib import Path
 
 from .persistence import SaveError, VaultStore, open_encrypted
-from . import selection, versions
+from . import admission, selection, versions
 
 ENGINE = Path('/usr/bin/keepassxc-cli')
 ENGINE_TIMEOUT = 180
@@ -190,7 +191,9 @@ class MergeManager:
                 'merge_preserve_conflicts_supported': versions.supported(),
                 'merge_preservation_policy': versions.POLICY if versions.supported() else None,
                 'merge_active_verification': selection.VERIFICATION if versions.supported() else None,
-                'merge_diagnostics': selection.DIAGNOSTICS}
+                'merge_diagnostics': selection.DIAGNOSTICS,
+                'admission_supported': versions.supported(), 'admission_protocol': 1,
+                'admission_policy': admission.POLICY, 'admission_verification': admission.VERIFICATION}
 
     def _store(self):
         store = getattr(self.broker.vault, '_akdbx_store', None)
@@ -226,7 +229,18 @@ class MergeManager:
         bundle_fd = None
         try:
             name = self._bundle_name(store, operation_id)
-            bundle_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            try:
+                bundle_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                root = store.path.parent
+            except FileNotFoundError:
+                external = store.snapshot_directory(directory)
+                if external is None:
+                    raise
+                try:
+                    bundle_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=external)
+                    root = Path(os.readlink('/proc/self/fd/' + str(external)))
+                finally:
+                    os.close(external)
             info = os.fstat(bundle_fd)
             if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
                 raise MergeError('unsafe merge receipt directory')
@@ -240,7 +254,7 @@ class MergeManager:
                 raise MergeError('invalid merge receipt')
             if value['state'] in {'preparing', 'prepared'}:
                 value.update(ok=False, state='uncertain', error='merge interrupted or active; do not retry; inspect retained encrypted files')
-            return {**value, 'receipt_path': str(store.path.parent / name / 'receipt.json')}
+            return {**value, 'receipt_path': str(root / name / 'receipt.json')}
         except FileNotFoundError:
             raise MergeError('merge receipt not found; do not infer success') from None
         finally:
@@ -249,28 +263,41 @@ class MergeManager:
             os.close(directory)
 
     def begin(self, request):
+        started = time.monotonic()
+        admitting = request.get('action') == 'admit'
+        if admitting and (request.get('policy') != admission.POLICY or request.get('verification') != admission.VERIFICATION):
+            raise MergeError('unsupported admission policy or verifier; operation not started')
+        if admitting and any(k in request for k in ('refresh_target', 'preserve_conflicts', 'active_verification')):
+            raise MergeError('admission is a separate policy; merge options refused')
+        if admitting and not isinstance(request.get('snapshot_directory'), str):
+            raise MergeError('admission requires an external snapshot directory')
+        if admitting and 'if_match' in request and (not isinstance(request['if_match'], str) or not re.fullmatch(r'[a-f0-9]{64}', request['if_match'])):
+            raise MergeError('invalid encrypted target SHA256 precondition')
         operation_id = self._id(request.get('operation_id'))
         if not self.capabilities()['merge_available']:
             raise MergeError('merge unavailable; require safe writable vault and KeePassXC CLI >=2.7.10,<2.8')
         if any(type(request.get(field, False)) is not bool for field in ('check', 'refresh_target', 'preserve_conflicts')):
             raise MergeError('invalid merge check option')
-        refresh_target = request.get('refresh_target', False)
+        refresh_target = admitting or request.get('refresh_target', False)
         preserve = request.get('preserve_conflicts', False)
         if 'active_verification' in request and (not preserve or request['active_verification'] != selection.VERIFICATION):
             raise MergeError('unsupported active verification request; merge not started')
-        if preserve and not versions.supported():
+        if (preserve or admitting) and not versions.supported():
             raise MergeError('preservation requires tested PyKeePass 4.2.0; merge refused')
         source_path = request.get('source')
         if not isinstance(source_path, str) or not Path(source_path).is_absolute() or '\x00' in source_path:
             raise MergeError('merge source must be an absolute file path')
         store = self._store()
         source = VaultStore(Path(source_path), strict_path=True)
-        directory = source_directory = bundle_fd = None
+        directory = source_directory = bundle_fd = snapshot_directory = None
         receipt = {'ok': False, 'operation_id': operation_id, 'state': 'preparing',
                    'check': request.get('check', False), 'refresh_target': refresh_target,
                    'preserve_conflicts': preserve, 'preservation_policy': versions.POLICY if preserve else None,
                    'active_verification': selection.VERIFICATION if preserve else None,
                    'engine': self._version}
+        if admitting:
+            receipt.update(mode='admission', policy=admission.POLICY, verification=admission.VERIFICATION,
+                           exact_bytes=True, engine=None, refresh_target=True)
         replaced = False
         adopted = False
         replacement_attempted = False
@@ -284,24 +311,31 @@ class MergeManager:
                 store._check_merge_recovery(directory)
                 if store.recovery_required:
                     raise MergeError('incomplete merge receipt; recovery required; refresh refused')
+                snapshot_directory = store.snapshot_directory(directory, request['snapshot_directory']) if admitting else os.dup(directory)
+                # The bound external root participates in recovery before any intent.
+                store._check_merge_recovery(directory)
+                if store.recovery_required:
+                    raise MergeError('incomplete receipt; recovery required; operation refused')
                 try:
-                    os.mkdir(name, 0o700, dir_fd=directory)
+                    os.mkdir(name, 0o700, dir_fd=snapshot_directory)
                 except FileExistsError:
                     return self.status(operation_id)
-                bundle_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
-                bundle = store.path.parent / name
+                bundle_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=snapshot_directory)
+                bundle = Path(os.readlink('/proc/self/fd/' + str(snapshot_directory))) / name
                 self._receipt(bundle_fd, receipt)
-                os.fsync(directory)
+                os.fsync(snapshot_directory)
                 store._check_keyfile()
                 previous, target_snapshot = store._read(directory)
                 stale = target_snapshot != store.expected
+                if admitting and 'if_match' in request and request['if_match'] != _digest(previous):
+                    raise MergeError('encrypted target precondition failed; admission refused')
                 if stale and not refresh_target:
                     raise MergeError('target changed on disk; use explicit --refresh-target reconciliation')
                 source_directory = source._directory()
                 incoming, source_snapshot = source._read(source_directory)
                 if target_snapshot[:2] == source_snapshot[:2]:
                     raise MergeError('source and target must be different files')
-                snapshots = [('target.kdbx', previous), ('source.kdbx', incoming), ('candidate.kdbx', previous)]
+                snapshots = [('target.kdbx', previous), ('source.kdbx', incoming), ('candidate.kdbx', incoming if admitting else previous)]
                 if refresh_target:
                     broker_image = store.verified_encrypted
                     if (broker_image is None or store.expected is None
@@ -311,57 +345,76 @@ class MergeManager:
                 for filename, data in snapshots:
                     VaultStore._write_file(bundle_fd, filename, data)
                 os.fsync(bundle_fd)
+                if admitting:
+                    for filename, data in snapshots:
+                        retained, _ = VaultStore(bundle / filename, strict_path=True)._read(bundle_fd)
+                        if retained != data:
+                            raise MergeError('encrypted input snapshot verification failed; admission refused')
                 receipt.update(target_sha256=_digest(previous), source_sha256=_digest(incoming))
+                current_open_started = time.monotonic()
                 if refresh_target:
                     receipt.update(broker_sha256=_digest(broker_image), target_refreshed=stale)
                     try:
-                        disk_vault = _open(previous, self.broker.vault)
-                        broker_vault = disk_vault if broker_image == previous else _open(broker_image, self.broker.vault)
+                        disk_vault = (self.broker.vault if admitting and broker_image == previous else _open(previous, self.broker.vault))
+                        broker_vault = (self.broker.vault if admitting else disk_vault if broker_image == previous else _open(broker_image, self.broker.vault))
                     except Exception:
                         raise MergeError('current target or broker image cannot be opened with held credentials; refresh refused') from None
                     originals = (disk_vault, broker_vault)
                 else:
                     originals = (self.broker.vault,)
+                decrypted = time.monotonic()
                 try:
                     other = _open(incoming, self.broker.vault)
                 except Exception:
                     raise MergeError('source cannot be opened with broker credentials; different source credentials are unsupported') from None
                 originals = (*originals, other)
-                _check_ambiguity(*originals, preserve=preserve)
-                ledger = versions.collect(originals, capture=preserve)
-                def complete_stage(data, stage_originals, *, final=False):
-                    try:
-                        stage = _open(data, self.broker.vault)
-                    except Exception:
-                        raise MergeError('encrypted merge candidate could not be reopened') from None
-                    changed = False
-                    if final:
-                        changed = synchronize_deletions(stage, *originals)
-                    changed = versions.ensure(stage, ledger) or changed
-                    if changed:
-                        buffer = io.BytesIO()
-                        stage.save(buffer)
-                        data = buffer.getvalue()
-                        VaultStore._write_file(bundle_fd, 'candidate-final.kdbx', data)
-                        os.replace('candidate-final.kdbx', 'candidate.kdbx', src_dir_fd=bundle_fd, dst_dir_fd=bundle_fd)
-                        stage = _open(data, self.broker.vault)
-                    versions.verify(stage, ledger)
-                    if preserve:
+                if admitting:
+                    opened = time.monotonic()
+                    # Avoid repeat validation of the identical current/held image.
+                    states = (disk_vault,) if broker_image == previous else (disk_vault, broker_vault)
+                    cached = {id(self.broker.vault): store.verified_capsules} if store.verified_capsules is not None else {}
+                    details, admitted_capsules = admission.verify(other, states, trusted_archives=cached)
+                    encrypted, verified = incoming, other
+                    receipt.update(details, timings={'current_decrypt_s': round(decrypted - current_open_started, 6),
+                                                     'source_decrypt_s': round(opened - decrypted, 6),
+                                                     'validation_s': round(time.monotonic() - opened, 6)})
+                    validation_finished = time.monotonic()
+                else:
+                    _check_ambiguity(*originals, preserve=preserve)
+                    ledger = versions.collect(originals, capture=preserve)
+                    def complete_stage(data, stage_originals, *, final=False):
+                        try:
+                            stage = _open(data, self.broker.vault)
+                        except Exception:
+                            raise MergeError('encrypted merge candidate could not be reopened') from None
+                        changed = False
                         if final:
-                            versions.verify_selection(stage, originals)
-                    else:
-                        verify_history(stage, *stage_originals, allow_deletions=final)
-                    return data, stage
-                if refresh_target and broker_image != previous:
-                    run_engine(bundle, self.broker.vault, source_name='broker.kdbx')
-                    intermediate_bytes, _ = VaultStore(bundle / 'candidate.kdbx', strict_path=True)._read(bundle_fd)
-                    intermediate_bytes, intermediate = complete_stage(intermediate_bytes, (disk_vault, broker_vault))
-                    VaultStore._write_file(bundle_fd, 'reconciled.kdbx', intermediate_bytes)
-                    os.fsync(bundle_fd)
-                run_engine(bundle, self.broker.vault)
-                candidate_store = VaultStore(bundle / 'candidate.kdbx', strict_path=True)
-                encrypted, _ = candidate_store._read(bundle_fd)
-                encrypted, verified = complete_stage(encrypted, originals, final=True)
+                            changed = synchronize_deletions(stage, *originals)
+                        changed = versions.ensure(stage, ledger) or changed
+                        if changed:
+                            buffer = io.BytesIO()
+                            stage.save(buffer)
+                            data = buffer.getvalue()
+                            VaultStore._write_file(bundle_fd, 'candidate-final.kdbx', data)
+                            os.replace('candidate-final.kdbx', 'candidate.kdbx', src_dir_fd=bundle_fd, dst_dir_fd=bundle_fd)
+                            stage = _open(data, self.broker.vault)
+                        versions.verify(stage, ledger)
+                        if preserve:
+                            if final:
+                                versions.verify_selection(stage, originals)
+                        else:
+                            verify_history(stage, *stage_originals, allow_deletions=final)
+                        return data, stage
+                    if refresh_target and broker_image != previous:
+                        run_engine(bundle, self.broker.vault, source_name='broker.kdbx')
+                        intermediate_bytes, _ = VaultStore(bundle / 'candidate.kdbx', strict_path=True)._read(bundle_fd)
+                        intermediate_bytes, intermediate = complete_stage(intermediate_bytes, (disk_vault, broker_vault))
+                        VaultStore._write_file(bundle_fd, 'reconciled.kdbx', intermediate_bytes)
+                        os.fsync(bundle_fd)
+                    run_engine(bundle, self.broker.vault)
+                    candidate_store = VaultStore(bundle / 'candidate.kdbx', strict_path=True)
+                    encrypted, _ = candidate_store._read(bundle_fd)
+                    encrypted, verified = complete_stage(encrypted, originals, final=True)
                 fd = os.open('candidate.kdbx', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=bundle_fd)
                 try:
                     os.fchmod(fd, 0o600)
@@ -369,6 +422,18 @@ class MergeManager:
                 finally:
                     os.close(fd)
                 os.fsync(bundle_fd)
+                if admitting:
+                    staged, _ = VaultStore(bundle / 'candidate.kdbx', strict_path=True)._read(bundle_fd)
+                    if staged != encrypted:
+                        raise MergeError('encrypted admission stage differs from verified source; refused')
+                    # Ensure the external root still has the identity we fsynced.
+                    check_fd = store.snapshot_directory(directory, request['snapshot_directory'])
+                    try:
+                        left, right = os.fstat(check_fd), os.fstat(snapshot_directory)
+                        if (left.st_dev, left.st_ino) != (right.st_dev, right.st_ino):
+                            raise MergeError('snapshot directory changed; admission refused')
+                    finally:
+                        os.close(check_fd)
                 candidate_ready = True
                 store.check_current(directory, target_snapshot)
                 source.check_current(source_directory, source_snapshot)
@@ -382,6 +447,16 @@ class MergeManager:
                     receipt['preserved_versions'] = len(ledger)
                 self._receipt(bundle_fd, receipt)
                 if request.get('check') or encrypted == previous:
+                    if admitting and not request.get('check'):
+                        fd = os.open(store.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+                        try:
+                            os.fsync(fd)
+                        finally:
+                            os.close(fd)
+                        os.fsync(directory)
+                        store.check_current(directory, target_snapshot)
+                        source.check_current(source_directory, source_snapshot)
+                        store._check_keyfile()
                     receipt.update(ok=True, state='checked' if request.get('check') else 'unchanged')
                 else:
                     # Retain the candidate too. Rename a separate encrypted file
@@ -392,6 +467,14 @@ class MergeManager:
                         store.check_current(directory, target_snapshot)
                         source.check_current(source_directory, source_snapshot)
                         store._check_keyfile()
+                        if admitting:
+                            root_fd = store.snapshot_directory(directory, request['snapshot_directory'])
+                            try:
+                                left, right = os.fstat(root_fd), os.fstat(snapshot_directory)
+                                if (left.st_dev, left.st_ino) != (right.st_dev, right.st_ino):
+                                    raise MergeError('snapshot directory changed; admission refused')
+                            finally:
+                                os.close(root_fd)
                         replacement_attempted = True
                         os.replace(staging, store.path.name, src_dir_fd=directory, dst_dir_fd=directory)
                         replaced = True
@@ -402,6 +485,7 @@ class MergeManager:
                         adopted = True
                         store.expected = snapshot
                         store.verified_encrypted = encrypted
+                        store.verified_capsules = admitted_capsules if admitting else versions.archives(verified)
                         verified._akdbx_store = store
                         self.broker.vault = verified
                         self.broker.writes.invalidate_revision(all_pending=True)
@@ -426,9 +510,13 @@ class MergeManager:
                     adopted = True
                     store.expected = target_snapshot
                     store.verified_encrypted = encrypted
+                    store.verified_capsules = admitted_capsules if admitting else versions.archives(verified)
                     verified._akdbx_store = store
                     self.broker.vault = verified
                     self.broker.writes.invalidate_revision(all_pending=True)
+                if admitting:
+                    receipt['timings']['total_s'] = round(time.monotonic() - started, 6)
+                    receipt['timings']['durability_s'] = round(time.monotonic() - validation_finished, 6)
                 self._receipt(bundle_fd, receipt)
                 return {**receipt, 'receipt_path': str(bundle / 'receipt.json')}
         except (KeyboardInterrupt, SystemExit):
@@ -448,7 +536,7 @@ class MergeManager:
                 store.recovery_required = True
             error = (str(exc) if isinstance(exc, (MergeError, SaveError, versions.PreservationError)) else 'merge failed; save not confirmed')
             receipt.update(ok=False, state='uncertain' if replaced or adopted else 'failed', error=error)
-            if isinstance(exc, selection.SelectionError):
+            if isinstance(exc, (selection.SelectionError, admission.AdmissionError)):
                 receipt['verification_diagnostics'] = exc.diagnostics
             if bundle_fd is not None:
                 # Best effort only; a previously fsynced preparing/prepared
@@ -465,6 +553,6 @@ class MergeManager:
                 receipt['receipt_path'] = str(bundle / 'receipt.json')
             return receipt
         finally:
-            for fd in (bundle_fd, source_directory, directory):
+            for fd in (bundle_fd, snapshot_directory, source_directory, directory):
                 if fd is not None:
                     os.close(fd)

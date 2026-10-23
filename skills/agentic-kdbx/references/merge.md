@@ -1,8 +1,13 @@
-# Merge encrypted KeePass databases (0.6.0)
+# Merge encrypted KeePass databases (0.7.0)
 
 Use the broker that owns the destination vault. The command is authorization
 for this scoped merge. No GUI, second unlock service, key export, or per-step
 approval is needed. Never use a real vault for development tests.
+
+For native KeePassium consecutive saves, read the separate
+[exact-byte admission prototype](snapshot-admission.md). A transformed merge
+does not satisfy that byte contract. Admission requires retention-policy review;
+capsule-v1 remains unchanged.
 
 ## Normal path
 
@@ -17,7 +22,7 @@ akdbx merge /absolute/path/to/other.kdbx
 akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts
 ```
 
-Require CLI and broker version `0.6.0`, `merge_protocol: 1`,
+Require CLI and broker version `0.7.0`, `merge_protocol: 1`,
 `merge_available: true`, `locked: false`, and `recovery_required: false`.
 `merge_engine` reports the detected engine. An older broker's missing capability
 is not permission to extract its held key or patch its memory. Coordinate
@@ -156,13 +161,14 @@ ordinary pre-save failure; an uncertain/interrupted operation remains blocked.
 Use `merge-status` and the retained encrypted files for recovery. There is no
 security override flag.
 
-For a private WebDAV merge-on-write integration, explicitly use both
-`--refresh-target --preserve-conflicts` for the
-authorized incoming upload, require the capability at activation, and wait for
-the truthful durable result before returning success. Do not replace merge with
-an unconditional file PUT or a plain reload. The integration must keep its
-existing transport, concurrency and upload checks; this option does not supply
-WebDAV or synchronization control itself.
+For explicit reconciliation of a retained upload, use both
+`--refresh-target --preserve-conflicts` and require the exact durable policy and
+verifier before reporting merge success. A transformed merge cannot be
+acknowledged as seamless native KeePassium PUT: it changes the client's cached
+encrypted-byte representation. Read [snapshot admission](snapshot-admission.md)
+for the separately reviewed conditional byte-preserving policy. Never use
+unconditional PUT, plain reload, pending-work acknowledgement or an automatic
+slow-merge fallback. These commands do not provide WebDAV transport themselves.
 
 ## Preserve equal-second versions
 
@@ -327,7 +333,7 @@ Do this only after the source repair thread has finished and its exact tested
 commit/report has been reviewed. The development thread does not activate code
 or merge real vaults.
 
-1. Install the tested 0.6.0 package/commit into the broker's environment. For a
+1. Install the tested 0.7.0 package/commit into the broker's environment. For a
    source checkout, select the tested commit and run `.venv/bin/pip install -e .`.
    Keep the native dependency above available. Preserve existing uncommitted
    work; do not reset a checkout or force-push.
@@ -336,20 +342,20 @@ or merge real vaults.
    replacement has removed it from disk, identify its retained encrypted saved
    candidate before proceeding. Do not stop a broker whose latest state exists
    only in memory. This option preserves state within a compatible running
-   broker; it does not transfer an older process's memory to 0.6.0.
+   broker; it does not transfer an older process's memory to 0.7.0.
    Coordinate a normal restart and private re-unlock for version activation.
    Never extract a key, hot-patch memory, or start a second unlock service.
 3. Start the installed CLI with the intended target, original socket, key-file
    option (if any), desktop environment and existing private HTTPS mapping:
    `akdbx --socket /KNOWN/PRIVATE/broker.sock serve /INTENDED/base.kdbx`.
    No additional unlock service is required.
-4. Give the returned private unlock link to the user. Check CLI/broker 0.6.0
+4. Give the returned private unlock link to the user. Check CLI/broker 0.7.0
    and merge capabilities, including `merge_refresh_target_supported: true`,
    `merge_preserve_conflicts_supported: true` and exact policy `capsule-v1`.
    Also require `merge_active_verification: "semantic-v1"`, and verify
    `active_verification: "semantic-v1"` in the durable result. Install the final
    tested version before one coordinated restart/private unlock. A currently
-   unlocked 0.5.0 process cannot acquire semantic-v1 without restart; later
+   unlocked older process cannot acquire new code without restart; later
    compatible merges reuse held credentials. Do not extract keys or hot patch.
    Run the authorized merge command above; keep its receipt. Later compatible
    external replacements can be reconciled without a new unlock or restart.

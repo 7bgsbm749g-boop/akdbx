@@ -59,6 +59,7 @@ class VaultStore:
                      else Path(database).expanduser().resolve(strict=True))
         self.expected = None
         self.verified_encrypted = None
+        self.verified_capsules = None
         self.recovery_required = False
         self.writable_path = False
         self.keyfile_path = None
@@ -113,7 +114,7 @@ class VaultStore:
                 key_material = io.BytesIO(key_bytes)
             vault = open_encrypted(encrypted, password, key_material)
             from .versions import archives
-            archives(vault)
+            self.verified_capsules = archives(vault)
             self._check_keyfile()
             if self._read(directory, writing=False)[1] != snapshot:
                 raise SaveError("vault changed on disk; restart and unlock")
@@ -140,6 +141,66 @@ class VaultStore:
 
     def _check_merge_recovery(self, directory):
         """An interrupted native merge must stay blocked across broker restarts."""
+        self._scan_merge_recovery(directory)
+        external = self.snapshot_directory(directory)
+        if external is not None:
+            try:
+                self._scan_merge_recovery(external)
+            finally:
+                os.close(external)
+
+    def snapshot_directory(self, directory, requested=None):
+        """Persistently bind admission recovery to one private external directory.
+
+        The small nonsecret locator stays beside the target, so omitting a CLI
+        option after restart cannot hide an interrupted external transaction.
+        No encrypted originals are placed beside the canonical vault.
+        """
+        marker = '.' + self.path.name + '.akdbx-admission.json'
+        try:
+            fd = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except FileNotFoundError:
+            fd = None
+        bound = None
+        if fd is not None:
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size > 4096):
+                    raise SaveError('unsafe admission snapshot locator; recovery required')
+                try:
+                    value = json.loads(stream.read(4096))
+                    bound = value['snapshot_directory']
+                    if value['policy'] != 'snapshot-admission-v1' or not isinstance(bound, str):
+                        raise ValueError
+                except Exception:
+                    raise SaveError('invalid admission snapshot locator; recovery required') from None
+        if requested is None and bound is None:
+            return None
+        if requested is not None and (not isinstance(requested, str) or bound is not None and requested != bound):
+            raise SaveError('admission snapshot directory differs from durable binding; refused')
+        path = Path(bound if bound is not None else requested)
+        if (not path.is_absolute() or str(path) != str(bound if bound is not None else requested)
+                or '..' in path.parts or path.is_relative_to(self.path.parent)):
+            raise SaveError('admission snapshots require an absolute external directory')
+        # Use the same anchored ancestry checks as vault writes. The sentinel is
+        # never opened and the final directory itself must be private.
+        external = VaultStore(path / 'sentinel', strict_path=True)._directory()
+        try:
+            info = os.fstat(external)
+            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                raise SaveError('admission snapshot directory must be owned and mode 0700')
+            if bound is None:
+                self._write_file(directory, marker, json.dumps({'snapshot_directory': str(path),
+                                                               'policy': 'snapshot-admission-v1'}).encode())
+                os.fsync(directory)
+            result, external = external, None
+            return result
+        finally:
+            if external is not None:
+                os.close(external)
+
+    def _scan_merge_recovery(self, directory):
         prefix = '.' + self.path.name + '.akdbx-merge-'
         for name in os.listdir(directory):
             if not name.startswith(prefix) or name.endswith('.replace'):
@@ -243,6 +304,7 @@ class VaultStore:
             if persisted != encrypted:
                 raise SaveError("save outcome uncertain; restart and unlock")
             self.verified_encrypted = encrypted
+            self.verified_capsules = retained_versions
             return verified
         except Exception:
             if replaced:

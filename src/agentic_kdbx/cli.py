@@ -123,7 +123,7 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         raise ValueError("configured unlock origin must be an HTTPS origin without path, query, or credentials")
     if type(response.get("ok")) is not bool:
         raise ProtocolError("invalid broker response")
-    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported'):
+    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported'):
         if capability in response and type(response[capability]) is not bool:
             raise ProtocolError("invalid broker response")
     if 'version' in response and not isinstance(response['version'], str):
@@ -147,7 +147,7 @@ def request(
     broker_uid = os.getuid() if broker_uid is None else broker_uid
     socket_path, runtime_fd = _validate_socket_path(socket_path, broker_uid)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout((480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240) if payload.get('action') == 'merge' else 5)
+    client.settimeout((480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240) if payload.get('action') in {'merge', 'admit'} else 5)
     try:
         client.connect(anchored_socket_path(runtime_fd, socket_path.name))
         _, peer_uid, _ = _peer_credentials(client)
@@ -209,6 +209,13 @@ def parser() -> argparse.ArgumentParser:
     merge.add_argument('--refresh-target', action='store_true', help='reconcile the verified broker state, current disk target and source using held credentials')
     merge.add_argument('--preserve-conflicts', action='store_true', help='keep every logical version in encrypted in-vault capsules; current target wins active timestamp ties')
     merge.add_argument('--operation-id', help='32 lowercase hex characters; reuse only to retrieve the same durable receipt')
+    admit = commands.add_parser('admit', help='opt-in exact-byte conditional admission with external encrypted snapshots; policy review required')
+    admit.add_argument('source', type=Path)
+    admit.add_argument('--policy', required=True, choices=('snapshot-admission-v1',))
+    admit.add_argument('--snapshot-dir', required=True, type=Path, help='existing mode-0700 directory outside the synced vault; permanently bound for recovery')
+    admit.add_argument('--if-match', help='optional current encrypted target SHA256; no quotes or wildcard')
+    admit.add_argument('--check', action='store_true', help='read-only admission check; retain snapshots and receipt')
+    admit.add_argument('--operation-id', help='32 lowercase hex; use merge-status to recover this same operation')
     merge_status = commands.add_parser('merge-status', help='read a durable merge receipt, including after restart')
     merge_status.add_argument('operation_id')
     return result
@@ -237,12 +244,17 @@ def main(argv: list[str] | None = None) -> int:
     payload = {"action": "ping" if args.command == "status" else args.command}
     if args.command == "search":
         payload["query"] = args.query
-    elif args.command == 'merge':
+    elif args.command in {'merge', 'admit'}:
         payload.update(source=os.path.abspath(args.source.expanduser()), check=args.check,
                        operation_id=args.operation_id or uuid.uuid4().hex)
-        if args.refresh_target:
+        if args.command == 'admit':
+            payload.update(policy=args.policy, verification='native-containment-v1',
+                           snapshot_directory=os.path.abspath(args.snapshot_dir.expanduser()))
+            if args.if_match is not None:
+                payload['if_match'] = args.if_match
+        if args.command == 'merge' and args.refresh_target:
             payload['refresh_target'] = True
-        if args.preserve_conflicts:
+        if args.command == 'merge' and args.preserve_conflicts:
             payload['preserve_conflicts'] = True
             payload['active_verification'] = 'semantic-v1'
         if not ID_PATTERN.fullmatch(payload['operation_id']):
@@ -271,6 +283,16 @@ def main(argv: list[str] | None = None) -> int:
             start_deadline=time.monotonic() + FILL_START_TIMEOUT,
         )
     try:
+        if args.command == 'admit':
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('admission_supported') is not True
+                    or type(capabilities.get('admission_protocol')) is not int
+                    or capabilities.get('admission_protocol') != 1
+                    or capabilities.get('admission_policy') != 'snapshot-admission-v1'
+                    or capabilities.get('admission_verification') != 'native-containment-v1'):
+                print(json.dumps({'ok': False, 'error': 'broker lacks exact snapshot-admission-v1/native-containment-v1 capabilities; admission not sent'}))
+                return 1
         if args.command == 'merge' and (args.refresh_target or args.preserve_conflicts):
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -288,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         print("broker is not running", file=sys.stderr)
         return 2
     except (PermissionError, ProtocolError, RuntimeError, ValueError) as exc:
-        if args.command == 'merge':
+        if args.command in {'merge', 'admit'}:
             print('merge outcome unconfirmed: broker response rejected; use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
         else:
             print(f"refusing untrusted broker response: {exc}", file=sys.stderr)
@@ -301,14 +323,22 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == 'commit-password':
             print('save outcome uncertain: check write-status before any retry; do not reset the site again', file=sys.stderr)
-        elif args.command == 'merge':
+        elif args.command in {'merge', 'admit'}:
             print('merge outcome uncertain: use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
         else:
             print("broker request failed", file=sys.stderr)
         return 2
-    if args.command == 'merge' and response.get('error') == 'vault locked':
-        response['continuation'] = 'Open unlock_url privately, then repeat the same merge command and operation ID.'
+    if args.command in {'merge', 'admit'} and response.get('error') == 'vault locked':
+        response['continuation'] = 'Open unlock_url privately, then repeat the same command, policy and operation ID.'
         response['operation_id'] = payload['operation_id']
+    if args.command == 'admit' and response.get('ok') and (
+            response.get('mode') != 'admission' or response.get('policy') != 'snapshot-admission-v1'
+            or response.get('verification') != 'native-containment-v1' or response.get('exact_bytes') is not True
+            or response.get('operation_id') != payload['operation_id']
+            or response.get('check') is not args.check
+            or response.get('state') not in ({'checked'} if args.check else {'saved', 'unchanged'})):
+        print('admission outcome unconfirmed: result policy rejected; use merge-status ' + payload['operation_id'], file=sys.stderr)
+        return 2
     print(json.dumps(response, indent=2))
     return 0 if response.get("ok") else 1
 
