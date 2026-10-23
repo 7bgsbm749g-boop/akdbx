@@ -406,7 +406,7 @@ def test_real_cli_locked_private_unlock_merge_and_restart_status(pair, tmp_path)
             code, headers, body = call(web_socket, 'POST', path, urlencode({'password': MASTER}), timeout=10)
             assert code == 200 and headers['Cache-Control'] == 'no-store'
             ready = command('status')
-            assert ready['version'] == '0.7.1' and ready['merge_available']
+            assert ready['version'] == '0.8.0' and ready['merge_available']
             result = command('merge', str(source), '--operation-id', operation_id)
             assert result['state'] == 'saved'
             assert command('merge-status', operation_id)['state'] == 'saved'

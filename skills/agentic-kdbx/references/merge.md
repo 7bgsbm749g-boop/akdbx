@@ -1,4 +1,4 @@
-# Merge encrypted KeePass databases (0.7.1)
+# Merge encrypted KeePass databases (0.8.0)
 
 Use the broker that owns the destination vault. The command is authorization
 for this scoped merge. No GUI, second unlock service, key export, or per-step
@@ -22,7 +22,7 @@ akdbx merge /absolute/path/to/other.kdbx
 akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts
 ```
 
-Require CLI and broker version `0.7.1`, `merge_protocol: 1`,
+Require CLI and broker version `0.8.0`, `merge_protocol: 1`,
 `merge_available: true`, `locked: false`, and `recovery_required: false`.
 `merge_engine` reports the detected engine. An older broker's missing capability
 is not permission to extract its held key or patch its memory. Coordinate
@@ -333,7 +333,7 @@ Do this only after the source repair thread has finished and its exact tested
 commit/report has been reviewed. The development thread does not activate code
 or merge real vaults.
 
-1. Install the tested 0.7.1 package/commit into the broker's environment. For a
+1. Install the tested 0.8.0 package/commit into the broker's environment. For a
    source checkout, select the tested commit and run `.venv/bin/pip install -e .`.
    Keep the native dependency above available. Preserve existing uncommitted
    work; do not reset a checkout or force-push.
@@ -342,14 +342,14 @@ or merge real vaults.
    replacement has removed it from disk, identify its retained encrypted saved
    candidate before proceeding. Do not stop a broker whose latest state exists
    only in memory. This option preserves state within a compatible running
-   broker; it does not transfer an older process's memory to 0.7.1.
+   broker; it does not transfer an older process's memory to 0.8.0.
    Coordinate a normal restart and private re-unlock for version activation.
    Never extract a key, hot-patch memory, or start a second unlock service.
 3. Start the installed CLI with the intended target, original socket, key-file
    option (if any), desktop environment and existing private HTTPS mapping:
    `akdbx --socket /KNOWN/PRIVATE/broker.sock serve /INTENDED/base.kdbx`.
    No additional unlock service is required.
-4. Give the returned private unlock link to the user. Check CLI/broker 0.7.1
+4. Give the returned private unlock link to the user. Check CLI/broker 0.8.0
    and merge capabilities, including `merge_refresh_target_supported: true`,
    `merge_preserve_conflicts_supported: true` and exact policy `capsule-v1`.
    Also require `merge_active_verification: "semantic-v1"`, and verify

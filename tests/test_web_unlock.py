@@ -63,7 +63,7 @@ def test_locked_broker_returns_only_unlock_url_and_types_nothing(action):
     assert SECRET not in json.dumps(response)
     assert broker.dispatch({"action": "ping"}) == {
         "ok": True, "locked": True, "unlock_url": broker.unlock_url,
-        "version": "0.7.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(),
+        "version": "0.8.0", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(),
     }
     assert typer.events == []
 

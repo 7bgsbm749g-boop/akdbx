@@ -59,7 +59,7 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
-## Encrypted vault merge (0.7.1)
+## Encrypted vault merge (0.8.0)
 
 ```bash
 akdbx status
@@ -71,7 +71,7 @@ akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts
 akdbx merge-status OPERATION_ID
 ```
 
-Require broker 0.7.1, `merge_protocol: 1`, `merge_available: true` and no recovery
+Require broker 0.8.0, `merge_protocol: 1`, `merge_available: true` and no recovery
 block. The broker privately reuses its held password and key file. Locked
 operation returns the existing private HTTPS unlock link and a clear command
 continuation. Different source credentials are not supported in this release.
@@ -121,7 +121,7 @@ and verify `active_verification: "semantic-v1"` in saved/check receipts.
 PyKeePass is pinned to the
 tested 4.2.0; another version disables this policy. `--check` supports both options.
 The basic command remains compatible with 0.3.0; the new CLI rejects unsupported
-brokers before sending an opt-in. Activating 0.7.1 in place of an older running
+brokers before sending an opt-in. Activating 0.8.0 in place of an older running
 process still requires a coordinated restart/private unlock with its latest
 encrypted state retained; future external saves need no additional unlock.
 
@@ -214,7 +214,7 @@ private HTTP form handling, restart receipts and regression boundaries. Its
 test-only identity headers do not test the deployed Tailscale HTTPS proxy,
 native browser input, real vaults, synchronization services, or mobile editors.
 
-## Exact-byte snapshot admission (0.7.1 review prototype)
+## Exact-byte snapshot admission (0.8.0 review prototype)
 
 **NEEDS PARENT POLICY REVIEW before activation.** Existing capsule-v1 merge
 defaults remain unchanged. The separate `admit` operation saves exact incoming
@@ -232,7 +232,16 @@ Read the [full admission contract](skills/agentic-kdbx/references/snapshot-admis
 before use, including capability/result checks, retention differences, real
 conflict recovery, deadline limits, and coordinated restart/private unlock.
 Synthetic transport evidence does not establish native iPhone compatibility.
-Version 0.7.1 adds exact `admission_group_verification:"group-semantic-v1"`
-capability/request/result detection for proven group serialization equivalence
-(Tags order, tristate spelling and documented defaults). Actual group property
-changes still refuse; the snapshot policy and 0.7.0 recovery layout stay intact.
+Version 0.8.0 adds explicit `--group-verification group-tag-sequence-v1` and
+`--group-verification native-group-selection-v1` profiles. Read the
+[group contract and remaining limits](skills/agentic-kdbx/references/group-selection.md)
+before selecting either. The old default `group-semantic-v1` remains narrower.
+New CLI requires group protocol 2 and checks the exact requested profile in
+capabilities and durable results; old 0.7.0/0.7.1 processes are rejected before
+dispatch. Recovery locators/old receipts need no migration and gain no new
+certification. Noncanonical tag separators can be admitted when the ordered
+case-sensitive sequence, including duplicates, is unchanged. Native group
+selection admits only already-complete selected properties/locations. Pure
+entry moves/recycle deletes and root modification propagation remain conflicts;
+this patch does not prove unrestricted native phone sync. No production or
+native iPhone test is claimed.

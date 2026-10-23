@@ -28,7 +28,7 @@ class Lab:
             self.intents[op]=hashlib.sha256((staging/(op+'.kdbx')).read_bytes()).hexdigest()
         self.active=threading.Event();self.finished=threading.Event()
         self.mutation=threading.Lock();self.delay=0;self.metadata_delay=0
-        self.queue_metadata=False;self.mode='admit'
+        self.queue_metadata=False;self.mode='admit';self.group_verification=admission.GROUP_VERIFICATION
 
     def command(self,*args):
         done=subprocess.run([*self.prefix,*args],capture_output=True,text=True,timeout=480)
@@ -86,6 +86,7 @@ class Lab:
                         finally:os.close(directory)
                         time.sleep(lab.delay)
                         args=['admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(lab.snapshots),'--operation-id',op]
+                        args+=['--group-verification',lab.group_verification]
                         if lab.mode=='merge':args=['merge',str(source),'--refresh-target','--preserve-conflicts','--operation-id',op]
                         if self.headers.get('If-Match'):
                             args+=['--if-match',self.headers['If-Match'].strip('"')]
@@ -94,7 +95,7 @@ class Lab:
                     lab.results[op]=result
                     okay=result.get('ok') and result.get('state') in {'saved','unchanged'} and result.get('check') is False
                     if lab.mode=='admit':
-                        okay=okay and result.get('policy')==admission.POLICY and result.get('verification')==admission.VERIFICATION and result.get('group_verification')==admission.GROUP_VERIFICATION and result.get('exact_bytes') is True
+                        okay=okay and result.get('policy')==admission.POLICY and result.get('verification')==admission.VERIFICATION and result.get('group_protocol')==2 and result.get('group_verification')==lab.group_verification and result.get('group_tag_verification')==('raw-v1' if lab.group_verification==admission.GROUP_VERIFICATION else 'keepassium-2.5.171-sequence-v1') and result.get('group_selection')==('keepassxc-2.7.10-selection-v1' if lab.group_verification==admission.NATIVE_GROUP_VERIFICATION else 'strict-v1') and result.get('exact_bytes') is True
                         okay=okay and self.headers.get('X-Test-Operation',op)==result.get('operation_id')
                         okay=okay and lab.target.read_bytes()==data
                     self.reply(204 if okay else 409)

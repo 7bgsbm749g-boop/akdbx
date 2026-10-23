@@ -352,7 +352,7 @@ def test_cli_http_consecutive_group_projection_and_restart_recovery(native_case,
     socket = tmp_path / 'runtime' / 'broker.sock'; lab = Lab(target, snapshots, staging, socket)
     with running_broker(socket, broker), servers(lab) as address:
         caps = lab.command('status')
-        assert caps['version'] == '0.7.1' and caps['admission_group_verification'] == 'group-semantic-v1'
+        assert caps['version'] == '0.8.0' and caps['admission_group_verification'] == 'group-semantic-v1'
         client = KeePassiumSequence(address); client.read()
         for day in (2, 3):
             v = edit(source, day=day)

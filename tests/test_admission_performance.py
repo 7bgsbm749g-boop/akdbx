@@ -17,7 +17,9 @@ from pathlib import Path
 from pykeepass import PyKeePass,create_database
 from pykeepass.kdbx_parsing.kdbx4 import kdf_uuids
 
-from agentic_kdbx import merge as merging, versions
+from agentic_kdbx import admission, merge as merging, versions
+from test_group_admission import project
+from test_selection import put
 from agentic_kdbx.broker import Broker,open_vault_with_password
 from test_broker import running_broker,RecordingTyper
 from test_merge import MASTER,BASE_TIME
@@ -48,6 +50,7 @@ def full_fixture(path):
             e.password='synthetic historical value '+str(day);e.mtime=BASE_TIME+timedelta(days=day);e.save_history()
         e.password='synthetic active value';e.mtime=BASE_TIME+timedelta(days=4)
     versions.ensure(v,versions.collect([v],capture=True))
+    for group in v.groups:put(group._element,'Tags',' Synthetic ; group,Synthetic ')
     params['$UUID'].value=kdf_uuids['argon2'];params['I'].value=119;params['M'].value=67108864
     params['P'].value=2;params['V'].value=19;v.kdbx.header.value.minor_version=1
     v.save(path)
@@ -61,6 +64,7 @@ def next_save(path,day):
     e.mtime=BASE_TIME+timedelta(days=day)
     # Keep realistic ordinary history size constant without modifying capsules.
     e.delete_history(history_entry=e.history[0])
+    project(v)
     v.save(path)
     return time.monotonic()-began
 
@@ -76,7 +80,9 @@ def test_full_cost_deadlines_consecutive_sha512_and_native_baseline(tmp_path,mon
     shutil.copyfile(target,source);initial=target.read_bytes()
     broker=Broker(open_vault_with_password(target,MASTER),RecordingTyper())
     socket=tmp_path/'runtime'/'broker.sock';lab=Lab(target,snapshots,staging,socket)
+    lab.group_verification=admission.NATIVE_GROUP_VERIFICATION
     metrics={'fixture_s':fixture_s,'encrypted_bytes':len(initial),'entries':300,'history':900,'capsules':1200,
+             'group_verification':lab.group_verification,'group_tags':'noncanonical exact-release projection',
              'kdbx':'4.1','cipher':'AES256','kdf':'Argon2d','I':119,'M':67108864,'P':2,'V':19,'uploads':[]}
     report=Path(os.environ.get('AKDBX_SYNTHETIC_BENCHMARK_REPORT',str(tmp_path/'benchmark.json')))
     save_metrics(report,metrics)

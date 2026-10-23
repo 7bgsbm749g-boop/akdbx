@@ -10,7 +10,7 @@ import uuid
 
 import pytest
 from pykeepass import PyKeePass
-from agentic_kdbx import versions
+from agentic_kdbx import admission, versions
 from agentic_kdbx.broker import Broker,open_vault_with_password
 from test_broker import running_broker,RecordingTyper
 from test_merge import MASTER,BASE_TIME,base
@@ -53,10 +53,11 @@ def test_transformed_merge_positive_ack_reproduces_false_self_conflict(case,tmp_
         assert client.save(source.read_bytes())=='conflict'
 
 
-def test_client_timeout_same_id_recovery_no_early_ack_and_metadata_queue(case,tmp_path):
+@pytest.mark.parametrize("profile",admission.GROUP_VERIFIERS)
+def test_client_timeout_same_id_recovery_no_early_ack_and_metadata_queue(case,tmp_path,profile):
     broker,target,source,snapshots=case;edit(source);before=target.read_bytes()
     staging=tmp_path/'uploads';staging.mkdir(mode=0o700)
-    socket=tmp_path/'runtime'/'broker.sock';lab=Lab(target,snapshots,staging,socket);lab.delay=0.6
+    socket=tmp_path/'runtime'/'broker.sock';lab=Lab(target,snapshots,staging,socket);lab.group_verification=profile;lab.delay=0.6
     op=uuid.uuid4().hex
     with running_broker(socket,broker),servers(lab) as address:
         with pytest.raises(TimeoutError):http(address,'PUT',source.read_bytes(),timeout=0.15,headers={'X-Test-Operation':op})
@@ -82,10 +83,11 @@ def test_client_timeout_same_id_recovery_no_early_ack_and_metadata_queue(case,tm
         with pytest.raises(TimeoutError):http(address,'HEAD',timeout=0.1)
 
 
-def test_transport_if_match_false_no_if_match_held_branch_and_no_false_ack(case,tmp_path):
+@pytest.mark.parametrize("profile",admission.GROUP_VERIFIERS)
+def test_transport_if_match_false_no_if_match_held_branch_and_no_false_ack(case,tmp_path,profile):
     broker,target,source,snapshots=case;edit(source)
     staging=tmp_path/'uploads';staging.mkdir(mode=0o700)
-    socket=tmp_path/'runtime'/'broker.sock';lab=Lab(target,snapshots,staging,socket)
+    socket=tmp_path/'runtime'/'broker.sock';lab=Lab(target,snapshots,staging,socket);lab.group_verification=profile
     with running_broker(socket,broker),servers(lab) as address:
         before=target.read_bytes()
         assert http(address,'PUT',source.read_bytes(),headers={'If-Match':'"'+'f'*64+'"'})[0]==409
@@ -102,14 +104,15 @@ def test_transport_if_match_false_no_if_match_held_branch_and_no_false_ack(case,
         assert (bundle(result)/'broker.kdbx').read_bytes()==held
 
 
-def test_transport_and_locked_broker_restart_recover_same_durable_id(case,tmp_path):
+@pytest.mark.parametrize("profile",admission.GROUP_VERIFIERS)
+def test_transport_and_locked_broker_restart_recover_same_durable_id(case,tmp_path,profile):
     broker,target,source,snapshots=case;edit(source)
     staging=tmp_path/'uploads';staging.mkdir(mode=0o700)
-    socket=tmp_path/'runtime'/'broker.sock';lab=Lab(target,snapshots,staging,socket);op=uuid.uuid4().hex
+    socket=tmp_path/'runtime'/'broker.sock';lab=Lab(target,snapshots,staging,socket);lab.group_verification=profile;op=uuid.uuid4().hex
     with running_broker(socket,broker),servers(lab) as address:
         assert http(address,'PUT',source.read_bytes(),headers={'X-Test-Operation':op})[0]==204
     restarted=Broker(None,RecordingTyper());restarted.merges.database=target
-    lab2=Lab(target,snapshots,staging,socket)
+    lab2=Lab(target,snapshots,staging,socket);lab2.group_verification=profile
     with running_broker(socket,restarted),servers(lab2) as address:
         assert http(address,'PUT',source.read_bytes(),headers={'X-Test-Operation':op})[0]==204
         assert lab2.command('merge-status',op)['state']=='saved'

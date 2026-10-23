@@ -1,8 +1,14 @@
-# Exact-byte snapshot admission (0.7.1 prototype)
+# Exact-byte snapshot admission (0.8.0 review prototype)
 
 **NEEDS PARENT POLICY REVIEW before activation.** This is a separately named
 opt-in policy, not a native merge or capsule-v1 capture. Existing merge defaults
 and capsule-v1 identities, payloads and retention semantics remain unchanged.
+
+0.8.0 adds separately requested [group profiles](group-selection.md). The
+original `group-semantic-v1` contract below remains unchanged. New CLI requires
+protocol 2 and the exact profile/result certification, including for its old
+strict default. Require 0.8.0 for this CLI; old receipt recovery is unchanged.
+Read the new profile document before changing an adapter's request.
 
 ## Contract and commands
 
@@ -41,7 +47,8 @@ fails closed. No snapshot pruning, rebind, reset or downgrade command is added.
 but does not replace the vault, refresh the broker or invalidate handles. It is
 not a reservation against later races.
 
-Require CLI/broker 0.7.1, unlocked, no recovery block, `merge_available:true`, and
+For current CLI require CLI/broker 0.8.0 and the protocol-2 detection in
+[group profiles](group-selection.md), unlocked, no recovery block, `merge_available:true`, and
 all exact capabilities before dispatch:
 
 ```json
@@ -133,13 +140,14 @@ Unknown metadata stays conservative. Duplicate fields, invalid tristates and
 malformed Times/CustomData fail closed. Exact original metadata remains in the
 complete encrypted snapshots; no input/capsule bytes are normalized on disk.
 
-Group Tags *text* is still checked exactly. Public KeePassium
+Under the unchanged `group-semantic-v1` profile, Group Tags *text* is still checked exactly. Public KeePassium
 [TagHelper](https://github.com/keepassium/KeePassium/blob/2.5.171/KeePassiumLib/KeePassiumLib/db/kp2/Taggable.swift)
 can change semicolon separators/whitespace to comma syntax without an explicit
 tag edit; native Group stores and compares the original string directly. This
 patch does not extend policy to accept those value changes. They still return
-a retained-upload conflict. A future group tag equivalence policy would need
-separate native reference proof and review. Group2 projection tests model this
+a retained-upload conflict. The separately named 0.8.0 [group profiles](group-selection.md) provide a
+narrow ordered-sequence equivalence with separate native reference proof and
+required policy review; this old profile does not acquire that behavior. Group2 projection tests model this
 rewrite and verify both the accepted canonical syntax and this remaining limit.
 The native reference retains the target's original Tags string on an existing
 group. A new client read can therefore repeat the rewrite/refusal; explicit

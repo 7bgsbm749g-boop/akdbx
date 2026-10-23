@@ -210,9 +210,10 @@ def parser() -> argparse.ArgumentParser:
     merge.add_argument('--preserve-conflicts', action='store_true', help='keep every logical version in encrypted in-vault capsules; current target wins active timestamp ties')
     merge.add_argument('--operation-id', help='32 lowercase hex characters; reuse only to retrieve the same durable receipt')
     admit = commands.add_parser('admit', help='opt-in exact-byte conditional admission with external encrypted snapshots; policy review required',
-                                description='Exact-byte snapshot-admission-v1 with group-semantic-v1 checks; requires CLI and broker 0.7.1 or newer.')
+                                description='Exact-byte snapshot-admission-v1; explicit group verification profiles require CLI and broker 0.8.0 or newer. Policy review required.')
     admit.add_argument('source', type=Path)
     admit.add_argument('--policy', required=True, choices=('snapshot-admission-v1',))
+    admit.add_argument('--group-verification', default='group-semantic-v1', choices=('group-semantic-v1', 'group-tag-sequence-v1', 'native-group-selection-v1'), help='explicit group contract; extended profiles require exact KeePassXC 2.7.10')
     admit.add_argument('--snapshot-dir', required=True, type=Path, help='existing mode-0700 directory outside the synced vault; permanently bound for recovery')
     admit.add_argument('--if-match', help='optional current encrypted target SHA256; no quotes or wildcard')
     admit.add_argument('--check', action='store_true', help='read-only admission check; retain snapshots and receipt')
@@ -250,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
                        operation_id=args.operation_id or uuid.uuid4().hex)
         if args.command == 'admit':
             payload.update(policy=args.policy, verification='native-containment-v1',
-                           group_verification='group-semantic-v1',
+                           group_protocol=2, group_verification=args.group_verification,
                            snapshot_directory=os.path.abspath(args.snapshot_dir.expanduser()))
             if args.if_match is not None:
                 payload['if_match'] = args.if_match
@@ -288,13 +289,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == 'admit':
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
-            if (capabilities.get('admission_supported') is not True
+            if (capabilities.get('ok') is not True or capabilities.get('admission_supported') is not True
                     or type(capabilities.get('admission_protocol')) is not int
                     or capabilities.get('admission_protocol') != 1
                     or capabilities.get('admission_policy') != 'snapshot-admission-v1'
                     or capabilities.get('admission_verification') != 'native-containment-v1'
-                    or capabilities.get('admission_group_verification') != 'group-semantic-v1'):
-                print(json.dumps({'ok': False, 'error': 'broker lacks exact snapshot-admission-v1/native-containment-v1/group-semantic-v1 capabilities; require broker 0.7.1 or newer; admission not sent'}))
+                    or capabilities.get('admission_group_verification') != 'group-semantic-v1'
+                    or type(capabilities.get('admission_group_protocol')) is not int
+                    or capabilities.get('admission_group_protocol') != 2
+                    or not isinstance(capabilities.get('admission_group_verifiers'), list)
+                    or args.group_verification not in capabilities['admission_group_verifiers']
+                    or capabilities.get('admission_group_tags') != 'keepassium-2.5.171-sequence-v1'
+                    or capabilities.get('admission_group_selection') != 'keepassxc-2.7.10-selection-v1'
+                    or capabilities.get('admission_group_diagnostics') != 'group-categories-v1'):
+                print(json.dumps({'ok': False, 'error': 'broker lacks exact requested group verification protocol 2; require broker 0.8.0 with the selected profile; admission not sent'}))
                 return 1
         if args.command == 'merge' and (args.refresh_target or args.preserve_conflicts):
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
@@ -337,7 +345,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'admit' and response.get('ok') and (
             response.get('mode') != 'admission' or response.get('policy') != 'snapshot-admission-v1'
             or response.get('verification') != 'native-containment-v1' or response.get('exact_bytes') is not True
-            or response.get('group_verification') != 'group-semantic-v1'
+            or response.get('group_verification') != args.group_verification
+            or type(response.get('group_protocol')) is not int or response.get('group_protocol') != 2
+            or response.get('group_tag_verification') != ('raw-v1' if args.group_verification == 'group-semantic-v1' else 'keepassium-2.5.171-sequence-v1')
+            or response.get('group_selection') != ('keepassxc-2.7.10-selection-v1' if args.group_verification == 'native-group-selection-v1' else 'strict-v1')
             or response.get('operation_id') != payload['operation_id']
             or response.get('check') is not args.check
             or response.get('state') not in ({'checked'} if args.check else {'saved', 'unchanged'})):

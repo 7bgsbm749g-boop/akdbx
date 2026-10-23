@@ -12,11 +12,14 @@ from collections import Counter
 from datetime import datetime, timezone
 from lxml import etree
 
-from . import selection, versions
+from . import group_tags, selection, versions
 
 POLICY = 'snapshot-admission-v1'
 VERIFICATION = 'native-containment-v1'
 GROUP_VERIFICATION = 'group-semantic-v1'
+TAG_GROUP_VERIFICATION = 'group-tag-sequence-v1'
+NATIVE_GROUP_VERIFICATION = 'native-group-selection-v1'
+GROUP_VERIFIERS = (GROUP_VERIFICATION, TAG_GROUP_VERIFICATION, NATIVE_GROUP_VERIFICATION)
 CATEGORIES = frozenset({'encryption_policy', 'database_settings', 'group_metadata',
                         'managed_capsules', 'deletion', 'field_protection', 'unsupported_structure'})
 META_FIELDS = frozenset({'Generator', 'DatabaseName', 'DatabaseNameChanged', 'DatabaseDescription',
@@ -130,7 +133,7 @@ def _group_defaults(node, vault):
             node.remove(custom)
 
 
-def _shape(node, vault, *, group=False):
+def _shape(node, vault, *, group=False, tag_equivalence=False):
     if node is None:
         return None
     node = copy.deepcopy(node)
@@ -143,6 +146,14 @@ def _shape(node, vault, *, group=False):
             seen.add(child.tag)
     if group:
         _group_defaults(node, vault)
+        if tag_equivalence:
+            tags = node.find('Tags')
+            if tags is not None:
+                values = group_tags.sequence(selection._leaf(tags))
+                if values:
+                    tags.text = versions._json(values).decode('utf-8')
+                else:
+                    node.remove(tags)
     ignored = ({'Entry', 'Group', 'IsExpanded', 'LastTopVisibleEntry'} if group else
                {'Generator', 'LastSelectedGroup', 'LastTopVisibleGroup', 'CustomIcons', 'CustomData'})
     for child in list(node):
@@ -196,13 +207,15 @@ def _deleted(vault):
     return result
 
 
-def verify(incoming, originals, *, trusted_archives=None):
+def verify(incoming, originals, *, trusted_archives=None, group_verification=GROUP_VERIFICATION):
     """No mutations, digests of secrets, native output or identities in errors.
 
     Existing group properties/database settings must agree. Deliberately refuse
     concurrent group/settings edits rather than guess their partial native
     combination. Entry locations and active data use semantic-v1 selection.
     """
+    if group_verification not in GROUP_VERIFIERS:
+        raise AdmissionError(['unsupported_structure'])
     errors = Counter()
     all_inputs = (*originals, incoming)
     for vault in all_inputs:
@@ -283,11 +296,19 @@ def verify(incoming, originals, *, trusted_archives=None):
                 if any(protected and key in after and not after[key][1]
                        for key, (_, protected) in before.items()):
                     errors['field_protection'] += 1
+    if group_verification == NATIVE_GROUP_VERIFICATION:
+        from . import group_selection
+        group_selection.verify(incoming, originals)
+        if errors:
+            raise AdmissionError(errors)
+        selection.verify(incoming, all_inputs)
+        return {'retained_capsules': len(ledger)}, admitted
     groups = {}
+    tag_equivalence = group_verification == TAG_GROUP_VERIFICATION
     for vault in originals:
         for group in vault.groups:
             parent = group.parentgroup.uuid if group.parentgroup else None
-            value = (_shape(group._element, vault, group=True), parent)
+            value = (_shape(group._element, vault, group=True, tag_equivalence=tag_equivalence), parent)
             if group.uuid in groups and groups[group.uuid][0] != value:
                 errors['group_metadata'] += 1
             groups[group.uuid] = (value, group)
@@ -298,7 +319,7 @@ def verify(incoming, originals, *, trusted_archives=None):
             stamp = deletions.get(group._element.findtext('UUID'))
             if stamp is None or selection.modification_time(group) > stamp or group == base.root_group:
                 errors['group_metadata'] += 1
-        elif (_shape(chosen._element, incoming, group=True), chosen.parentgroup.uuid if chosen.parentgroup else None) != value:
+        elif (_shape(chosen._element, incoming, group=True, tag_equivalence=tag_equivalence), chosen.parentgroup.uuid if chosen.parentgroup else None) != value:
             errors['group_metadata'] += 1
     if errors:
         raise AdmissionError(errors)

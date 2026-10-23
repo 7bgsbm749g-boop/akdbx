@@ -194,7 +194,12 @@ class MergeManager:
                 'merge_diagnostics': selection.DIAGNOSTICS,
                 'admission_supported': versions.supported(), 'admission_protocol': 1,
                 'admission_policy': admission.POLICY, 'admission_verification': admission.VERIFICATION,
-                'admission_group_verification': admission.GROUP_VERIFICATION}
+                'admission_group_verification': admission.GROUP_VERIFICATION,
+                'admission_group_protocol': 2,
+                'admission_group_verifiers': list(admission.GROUP_VERIFIERS if self._version == '2.7.10' else (admission.GROUP_VERIFICATION,)),
+                'admission_group_tags': 'keepassium-2.5.171-sequence-v1',
+                'admission_group_selection': 'keepassxc-2.7.10-selection-v1',
+                'admission_group_diagnostics': 'group-categories-v1'}
 
     def _store(self):
         store = getattr(self.broker.vault, '_akdbx_store', None)
@@ -268,8 +273,11 @@ class MergeManager:
         admitting = request.get('action') == 'admit'
         if admitting and (request.get('policy') != admission.POLICY or request.get('verification') != admission.VERIFICATION):
             raise MergeError('unsupported admission policy or verifier; operation not started')
-        if admitting and 'group_verification' in request and request['group_verification'] != admission.GROUP_VERIFICATION:
+        group_verifier = request.get('group_verification', admission.GROUP_VERIFICATION)
+        if admitting and group_verifier not in admission.GROUP_VERIFIERS:
             raise MergeError('unsupported admission group verifier; operation not started')
+        if admitting and ('group_protocol' in request or group_verifier != admission.GROUP_VERIFICATION) and (type(request.get('group_protocol')) is not int or request['group_protocol'] != 2):
+            raise MergeError('extended group verification requires protocol 2; operation not started')
         if admitting and any(k in request for k in ('refresh_target', 'preserve_conflicts', 'active_verification')):
             raise MergeError('admission is a separate policy; merge options refused')
         if admitting and not isinstance(request.get('snapshot_directory'), str):
@@ -279,6 +287,8 @@ class MergeManager:
         operation_id = self._id(request.get('operation_id'))
         if not self.capabilities()['merge_available']:
             raise MergeError('merge unavailable; require safe writable vault and KeePassXC CLI >=2.7.10,<2.8')
+        if admitting and group_verifier != admission.GROUP_VERIFICATION and self._version != '2.7.10':
+            raise MergeError('extended group verification requires exact KeePassXC CLI 2.7.10; operation not started')
         if any(type(request.get(field, False)) is not bool for field in ('check', 'refresh_target', 'preserve_conflicts')):
             raise MergeError('invalid merge check option')
         refresh_target = admitting or request.get('refresh_target', False)
@@ -300,7 +310,9 @@ class MergeManager:
                    'engine': self._version}
         if admitting:
             receipt.update(mode='admission', policy=admission.POLICY, verification=admission.VERIFICATION,
-                           group_verification=admission.GROUP_VERIFICATION,
+                           group_protocol=2, group_verification=group_verifier,
+                           group_tag_verification=('raw-v1' if group_verifier == admission.GROUP_VERIFICATION else 'keepassium-2.5.171-sequence-v1'),
+                           group_selection=('keepassxc-2.7.10-selection-v1' if group_verifier == admission.NATIVE_GROUP_VERIFICATION else 'strict-v1'),
                            exact_bytes=True, engine=None, refresh_target=True)
         replaced = False
         adopted = False
@@ -377,7 +389,7 @@ class MergeManager:
                     # Avoid repeat validation of the identical current/held image.
                     states = (disk_vault,) if broker_image == previous else (disk_vault, broker_vault)
                     cached = {id(self.broker.vault): store.verified_capsules} if store.verified_capsules is not None else {}
-                    details, admitted_capsules = admission.verify(other, states, trusted_archives=cached)
+                    details, admitted_capsules = admission.verify(other, states, trusted_archives=cached, group_verification=group_verifier)
                     encrypted, verified = incoming, other
                     receipt.update(details, timings={'current_decrypt_s': round(decrypted - current_open_started, 6),
                                                      'source_decrypt_s': round(opened - decrypted, 6),
@@ -540,7 +552,8 @@ class MergeManager:
                 store.recovery_required = True
             error = (str(exc) if isinstance(exc, (MergeError, SaveError, versions.PreservationError)) else 'merge failed; save not confirmed')
             receipt.update(ok=False, state='uncertain' if replaced or adopted else 'failed', error=error)
-            if isinstance(exc, (selection.SelectionError, admission.AdmissionError)):
+            from .group_selection import GroupSelectionError
+            if isinstance(exc, (selection.SelectionError, admission.AdmissionError, GroupSelectionError)):
                 receipt['verification_diagnostics'] = exc.diagnostics
             if bundle_fd is not None:
                 # Best effort only; a previously fsynced preparing/prepared

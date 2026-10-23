@@ -212,21 +212,28 @@ Report the site/account used and whether sign-in was verified, or the exact non-
 
 ## Exact-byte snapshot admission review prototype
 
-Version 0.7.1 supports `admit SOURCE --policy snapshot-admission-v1 --snapshot-dir DIR`
+Version 0.8.0 supports `admit SOURCE --policy snapshot-admission-v1 --snapshot-dir DIR`
 (add `--check` for preview). **NEEDS PARENT POLICY REVIEW before activation.**
-Read [the admission contract](references/snapshot-admission.md) before use.
-It retains full encrypted input snapshots outside canonical, preserves existing
-capsules intact, and accepts only incoming bytes proven to contain required
-active state. It does not create per-upload capsules. Ordinary-history versions
-may remain only in retained encrypted databases. Refuse conflicts, explicitly
-merge outside PUT, then require a fresh client read. A transformed native merge
-is not seamless KeePassium PUT because the client caches uploaded bytes. Require
-exact admission capability/result checks, including
-`admission_group_verification:"group-semantic-v1"` and result
-`group_verification:"group-semantic-v1"`. The new CLI rejects an old running
-0.7.0 broker. This patch normalizes proven group serialization differences;
-actual group edits still refuse. It preserves the 0.7.0 recovery locator and
-receipts without migration. One coordinated normal restart/private
-unlock is required after policy review; do not hotpatch an unlocked broker,
-remove the recovery locator, or downgrade around external receipts. No native
-mobile or production adapter verification is implied.
+Read [the admission contract](references/snapshot-admission.md) and the
+[explicit group profiles and limits](references/group-selection.md) before use.
+Full encrypted snapshots outside canonical retain ordinary-history versions;
+existing canonical capsule payloads stay intact. No per-upload capsules are
+created. Successful PUT requires exact uploaded bytes durably canonical.
+Refuse conflicts, merge explicitly outside PUT, then require a fresh read.
+Never transform an upload and acknowledge it as an exact-byte save.
+
+Default `group-semantic-v1` remains the old narrow contract. Select
+`--group-verification group-tag-sequence-v1` for the proved ordered tag sequence
+equivalence, or `--group-verification native-group-selection-v1` for additional
+native group property/location selection. Both require exact KeePassXC 2.7.10.
+Require group protocol 2, the selected verifier in `admission_group_verifiers`,
+and the exact requested profile/tag/selection fields in durable results. New CLI
+rejects old running 0.7.0/0.7.1 brokers before dispatch. Never fall back silently.
+Old receipts remain readable without migration and gain no new certification.
+Pure entry moves/recycle deletes and propagated root modification clocks can
+still refuse; do not promise unrestricted native sync or repeated unlock cures.
+
+Preserve the recovery locator/external snapshots. Parent owns policy review and
+any one coordinated normal restart/private unlock. No key export, hotpatch,
+second unlock service, reset/rebind, downgrade bypass or automatic activation.
+No native mobile or production adapter verification is implied.

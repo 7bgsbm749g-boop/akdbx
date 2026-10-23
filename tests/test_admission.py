@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from pykeepass import PyKeePass
 
-from agentic_kdbx import admission, cli, merge as merging, selection, versions
+from agentic_kdbx import admission, cli, group_selection, merge as merging, selection, versions
 from agentic_kdbx.broker import Broker, open_vault_with_password
 from agentic_kdbx.persistence import VaultStore
 from test_broker import RecordingTyper, running_broker
@@ -97,7 +97,8 @@ def test_exact_bytes_preview_reopen_refresh_history_trim_reencrypted_retry(case,
 
 
 @pytest.mark.parametrize('change', ['missing','older','tie','capsule-drop','capsule-corrupt','kdf','cipher','settings','group','protected','tombstone'])
-def test_refusal_preserves_originals_and_fixed_diagnostics(case, change):
+@pytest.mark.parametrize('profile', admission.GROUP_VERIFIERS)
+def test_refusal_preserves_originals_and_fixed_diagnostics(case, change, profile):
     broker,target,source,_ = case
     v = PyKeePass(source,password=MASTER); e=v.find_entries(title='Shared',first=True)
     if change == 'missing': v.delete_entry(e)
@@ -120,14 +121,14 @@ def test_refusal_preserves_originals_and_fixed_diagnostics(case, change):
         # Establish a verified current state through an ordinary encrypted save.
         broker.vault.save(target); broker.vault=open_vault_with_password(target,MASTER)
     v.save(); before=target.read_bytes(); incoming=source.read_bytes()
-    result=admit(case)
+    result=admit(case, group_protocol=2, group_verification=profile)
     assert not result['ok'] and result['state']=='failed',result
     assert target.read_bytes()==before and source.read_bytes()==incoming
     assert (bundle(result)/'source.kdbx').read_bytes()==incoming
     text=json.dumps(result)
     assert 'Shared' not in text and 'synthetic refused' not in text and MASTER not in text
     if 'verification_diagnostics' in result:
-        assert set(result['verification_diagnostics']) <= admission.CATEGORIES | selection.CATEGORIES
+        assert set(result['verification_diagnostics']) <= admission.CATEGORIES | selection.CATEGORIES | group_selection.CATEGORIES
 
 
 def test_deletion_addition_custom_attachment_and_native_reference(case, tmp_path):
@@ -292,7 +293,7 @@ def test_genuine_old_cli_rejection_and_result_downgrade(case,monkeypatch,capsys)
     args=['admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots)]
     assert cli.main(args)==1 and [p['action'] for p in calls]==['ping']
     def downgraded(sock,payload,**kw):
-        if payload['action']=='ping':return {'ok':True,'admission_supported':True,'admission_protocol':1,'admission_policy':admission.POLICY,'admission_verification':admission.VERIFICATION,'admission_group_verification':admission.GROUP_VERIFICATION}
+        if payload['action']=='ping':return case[0].dispatch({'action':'ping'})
         return {'ok':True,'state':'saved','policy':'capsule-v1'}
     monkeypatch.setattr(cli,'request',downgraded)
     assert cli.main(args)==2
@@ -342,7 +343,7 @@ def test_unlocked_state_contains_all_three_active_branches_before_admission(case
     assert {e.title for e in versions.active_entries(broker.vault)}>={'Held only','External only','Incoming only'}
 
 
-@pytest.mark.parametrize('commit,version', [('42cdedee4b75d151def765543419536f3fe4d348','0.6.0'), ('d3657b7f9337895ce65068a4b9a57341fe90e783','0.7.0')])
+@pytest.mark.parametrize('commit,version', [('42cdedee4b75d151def765543419536f3fe4d348','0.6.0'), ('d3657b7f9337895ce65068a4b9a57341fe90e783','0.7.0'), ('642c5c194cbdad4754a8c8a0dc24a437f0ace5c2','0.7.1')])
 def test_actual_old_broker_rejected_and_070_receipts_recover(case,tmp_path,commit,version):
     """Run the real previous committed broker, not a mocked capability dict."""
     broker,target,source,snapshots=case
@@ -361,16 +362,18 @@ def test_actual_old_broker_rejected_and_070_receipts_recover(case,tmp_path,commi
         end=time.monotonic()+8
         while not socket.exists() and time.monotonic()<end:time.sleep(0.02)
         assert cli.request(socket,{'action':'ping'})['version']==version
-        result=subprocess.run([sys.executable,'-m','agentic_kdbx.cli','--socket',str(socket),'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots)],capture_output=True,text=True)
-        assert result.returncode==1 and 'admission not sent' in result.stdout
+        for profile in admission.GROUP_VERIFIERS:
+            result=subprocess.run([sys.executable,'-m','agentic_kdbx.cli','--socket',str(socket),'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots),'--group-verification',profile],capture_output=True,text=True)
+            assert result.returncode==1 and 'admission not sent' in result.stdout
         assert not list(snapshots.iterdir())
-        if version=='0.7.0':
+        if version in {'0.7.0','0.7.1'}:
             # The actual prior CLI/server writes its original external locator
             # and receipt. The new broker must recover it without migration.
             old=subprocess.run([sys.executable,'-m','agentic_kdbx.cli','--socket',str(socket),'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots)],env=env,capture_output=True,text=True)
             assert old.returncode==0,old.stdout+old.stderr
             historical=json.loads(old.stdout)
-            assert historical['state']=='unchanged' and 'group_verification' not in historical
+            assert historical['state']=='unchanged' and 'group_protocol' not in historical
+            assert historical.get('group_verification') == ('group-semantic-v1' if version=='0.7.1' else None)
     finally:process.terminate();process.wait(5)
     if historical:
         reopened=Broker(open_vault_with_password(target,MASTER),RecordingTyper())
