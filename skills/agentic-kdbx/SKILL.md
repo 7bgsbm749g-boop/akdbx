@@ -5,7 +5,7 @@ description: Use the local KeePass broker to find, autofill, create and update s
 
 # KeePass login and autofill
 
-Use this skill for the user's authorized login task. The broker exposes login metadata and types credentials into the focused application. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
+Use this skill for the user's authorized login task. The broker exposes login metadata and sends credentials to a verified, pinned X11 application window. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
 
 ## Where the tool lives
 
@@ -86,7 +86,34 @@ A handle expires five minutes after search and is consumed on its first fill att
 
 Use the available GUI/browser tools to confirm the app/site and focus the intended field on the broker's desktop. Follow those tools' interaction instructions. For this VPS, the broker types into the managed X11 desktop at `:99`; see the setup reference if necessary.
 
-The broker uses global keyboard input. It does not accept a window, browser tab, selector, or origin argument, and it cannot check that the focus is correct. A browser preview or remote browser controlled by the agent is not automatically the desktop into which the broker types. Verify that the target belongs to the same desktop before filling.
+Version 0.9.0 requires target fill protocol 1 for every saved/generated fill.
+Read [target-pinned delivery](references/target-fill.md) before the first use.
+Check CLI `--version` and broker `status`: require `target_fill_required: true`,
+integer `target_fill_protocol: 1`, and `target_fill_delivery: "x11-send-event-v1"`.
+The CLI refuses older or incompatible brokers before sending any target request.
+Never remove `--target` or use an older CLI to work around a refusal.
+
+Verify the exact application process and X11 client window independently with
+the supported desktop tool, including the canonical Chrome profile when relevant.
+Bring that window to the foreground, confirm the site URL and account, then focus
+the intended field. A background click alone does not establish foreground focus.
+Use that verified PID and window ID; do not copy the current foreground identity
+blindly. Search first, prepare focus, then pin immediately before filling:
+
+```bash
+/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx pin-target --pid VERIFIED_PID --window VERIFIED_X11_CLIENT_WINDOW
+```
+
+The result includes a private `target` token, valid for 30 seconds and one fill.
+Each separate username/password/generated-confirmation fill needs a new pin.
+The pin records process start/executable identity, window class and host, and
+exact X input-focus window. A changed or unknown destination is refused.
+The broker checks identity and focus events before and after each key pair and
+sends directly to the pinned X window owner without propagation. It uses no
+global keyboard fallback, keymap changes, clipboard, or X server/keyboard grabs.
+This protects against an ordinary foreground switch redirecting keys into
+another application. It cannot verify a DOM field, browser tab, or page origin;
+those remain the caller's responsibility. Keep focus stable through completion.
 
 Choose the mode based on the observed form:
 
@@ -101,18 +128,18 @@ For multi-step sign-in or uncertain Tab order, use separate username and passwor
 ### 4. Fill once and verify the outcome
 
 ```bash
-/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx fill 'HANDLE_FROM_SEARCH' --mode password
+/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx fill 'HANDLE_FROM_SEARCH' --mode password --target 'TARGET_FROM_PIN'
 ```
 
 On success the response is only a receipt, such as:
 
 ```json
-{"ok": true, "filled": "password"}
+{"ok": true, "filled": "password", "target_delivery": "x11-send-event-v1"}
 ```
 
-This receipt means keyboard dispatch completed; it does not prove the intended field received the text or that sign-in succeeded. Submit the form through the authorized app workflow and verify a non-secret result such as the expected account page or authenticated navigation.
+This receipt means guarded dispatch completed; it does not prove the intended field received the text or that sign-in succeeded. Submit the form through the authorized app workflow and verify a non-secret result such as the expected account page or authenticated navigation.
 
-The user has authorized fills without per-fill approval. Once the user privately unlocks the vault, an explicit `fill` immediately types into the focused destination. Do not ask for another approval or require access to the broker's terminal. Unlock and search alone never type anything. The unlocked broker, fresh single-use handle, explicit fill invocation, and verified target focus remain required.
+The user has authorized fills without per-fill approval. Once the user privately unlocks the vault, an explicit `fill` immediately types into the focused destination. Do not ask for another approval or require access to the broker's terminal. Unlock and search alone never type anything. The unlocked broker, fresh single-use handle, explicit fill invocation, and verified target focus and fresh target pin remain required.
 
 `--yes-on-fill` is a deprecated no-op, accepted only for command compatibility. New commands should omit it. Every new broker uses private web unlock, including when `--web-unlock` is omitted; terminal master-password entry is no longer supported.
 
@@ -143,7 +170,7 @@ metadata fields. Password-based new entries and chosen-password updates require 
 confirmation and repeated password entry on the private broker page. For an
 agent-driven reset, generate inside the broker, fill password and confirmation
 through their separate single-use references into independently verified focused
-fields, verify site acceptance, and only then `commit-password WRITE_HANDLE
+fields with a fresh target pin for each, verify site acceptance, and only then `commit-password WRITE_HANDLE
 --site-accepted`. Passwords never enter tool responses. Keep pending handles and
 private URLs inside the private task workflow and out of notes/reports.
 
@@ -201,7 +228,7 @@ per-step confirmation is required. Keep receipts and encrypted originals.
 | `unknown or expired handle; search again` | Search again; never fabricate or reuse a handle. |
 | `fill denied` or a terminal approval prompt | The running broker predates this policy change. Stop that old process before restarting the patched version with private web unlock; see the setup reference. Do not approve the old prompt or leave a pending fill behind. |
 | `autofill not started: ...` | No key was sent for that request. Recheck focus and search for a fresh handle before any deliberate retry. |
-| `autofill failed`, timeout, or disconnect | Treat the fill as potentially partial. Check destination and broker; do not blindly duplicate input. |
+| `autofill outcome uncertain: ...`, `autofill failed`, timeout, or disconnect | Treat the fill as potentially partial. Check destination and broker; do not blindly duplicate input. |
 
 There is no cancel-fill, lock or standalone reload command. A successful merge
 refreshes its saved contents and has durable status through `merge-status`.

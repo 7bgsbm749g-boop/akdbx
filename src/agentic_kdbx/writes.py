@@ -342,6 +342,8 @@ class WriteManager:
         op, mode = found
         if op.state != 'pending' or op.password is None or op.revision != self.revision:
             raise WriteError('stale generated password; start again')
+        if set(request) - {'action', 'handle', 'target_url', 'start_deadline', 'target', 'target_protocol'}:
+            raise WriteError('autofill not started: unsupported target request')
         target = request.get('target_url')
         if not isinstance(target, str):
             raise WriteError('verified target URL required')
@@ -350,7 +352,7 @@ class WriteManager:
         # Reuse the existing keyboard preflight/deadline/dispatch boundary.
         proxy = SimpleNamespace(uuid=secrets.token_hex(16), password=op.password, username='')
         handle = self.broker._new_handle(proxy)
-        response = self.broker._dispatch({'action': 'fill', 'handle': handle, 'mode': 'password', 'start_deadline': request.get('start_deadline')}, delivery_ready=delivery_ready)
+        response = self.broker._dispatch({'action': 'fill', 'handle': handle, 'mode': 'password', 'start_deadline': request.get('start_deadline'), 'target': request.get('target'), 'target_protocol': request.get('target_protocol')}, delivery_ready=delivery_ready)
         if response.get('ok'):
             op.filled.add(mode)
         return response

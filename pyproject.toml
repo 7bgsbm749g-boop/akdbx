@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentic-kdbx"
-version = "0.8.1"
+version = "0.9.0"
 description = "A secret-withholding KeePass autofill broker for local agents"
 requires-python = ">=3.11"
 dependencies = [
   "pykeepass==4.2.0",
-  "pynput>=1.7,<2",
+  "python-xlib>=0.33,<1",
 ]
 
 [project.scripts]

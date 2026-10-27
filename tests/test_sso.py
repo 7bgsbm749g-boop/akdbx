@@ -15,7 +15,7 @@ from agentic_kdbx import cli
 from agentic_kdbx.broker import Broker, open_vault_with_password
 from agentic_kdbx.persistence import VaultStore
 from agentic_kdbx.versions import ARCHIVE_UUID
-from test_broker import RecordingTyper, running_broker
+from test_broker import target_request, RecordingTyper, running_broker
 from test_writes import MASTER, OLD, CHOSEN, deployed, template, begin, private_post, reopened
 
 
@@ -80,14 +80,14 @@ def test_sso_fill_guards_and_single_use_handles(deployed, mode):
     broker, typer, _, _ = deployed
     assert create(broker)['ok']
     selected = broker.dispatch(dict(action='search', query=VALUES['title']))['entries'][0]
-    result = broker.dispatch(dict(action='fill', handle=selected['handle'], mode=mode))
+    result = broker.dispatch(dict(**target_request(broker), action='fill', handle=selected['handle'], mode=mode))
     if mode == 'username':
-        assert result == dict(ok=True, filled='username')
+        assert result == dict(ok=True, filled='username', target_delivery='x11-send-event-v1')
         assert typer.events == [('type', VALUES['username'])]
     else:
         assert not result['ok'] and 'no keys sent' in result['error']
         assert typer.events == []
-    assert not broker.dispatch(dict(action='fill', handle=selected['handle'], mode='username'))['ok']
+    assert not broker.dispatch(dict(**target_request(broker), action='fill', handle=selected['handle'], mode='username'))['ok']
 
 
 @pytest.mark.parametrize('action', ['update-password', 'generate-password'])
@@ -98,7 +98,7 @@ def test_sso_rejects_password_writes_and_consumes_handles(deployed, action):
     selected = broker.dispatch(dict(action='search', query=VALUES['title']))['entries'][0]
     result = broker.dispatch(dict(action=action, handle=selected['handle'], metadata=VALUES))
     assert not result['ok'] and 'SSO-only' in result['error']
-    assert not broker.dispatch(dict(action='fill', handle=selected['handle'], mode='username'))['ok']
+    assert not broker.dispatch(dict(**target_request(broker), action='fill', handle=selected['handle'], mode='username'))['ok']
     assert path.read_bytes() == before and typer.events == []
 
 
@@ -112,7 +112,7 @@ def test_incomplete_markers_fail_closed_even_if_password_present(deployed, marke
         entry.set_custom_property('akdbx.auth-method', method)
     selected = broker.dispatch(dict(action='search', query='Synthetic site'))['entries'][0]
     assert selected['passwordless'] is True
-    result = broker.dispatch(dict(action='fill', handle=selected['handle'], mode='password'))
+    result = broker.dispatch(dict(**target_request(broker), action='fill', handle=selected['handle'], mode='password'))
     assert not result['ok'] and typer.events == []
 
 
@@ -192,7 +192,7 @@ def test_concurrent_creates_make_one_record_and_invalidate_stale_work(deployed):
         outcomes = list(pool.map(lambda _: create(broker), range(2)))
     assert sum(result['ok'] for result in outcomes) == 1
     assert len(reopened(path).find_entries(username=VALUES['username'])) == 1
-    assert not broker.dispatch(dict(action='fill', handle=handle, mode='password'))['ok']
+    assert not broker.dispatch(dict(**target_request(broker), action='fill', handle=handle, mode='password'))['ok']
     assert private_post(socket, private)[0] == 409
     assert broker.writes.get(generated['write_handle']).password is None
     assert typer.events == []

@@ -19,7 +19,7 @@ from agentic_kdbx.broker import Broker, open_vault_with_password
 from agentic_kdbx.persistence import VaultStore
 from agentic_kdbx.web_unlock import start_unlock_server
 from agentic_kdbx.writes import metadata
-from test_broker import RecordingTyper, running_broker
+from test_broker import target_request, RecordingTyper, running_broker
 from test_web_unlock import call
 
 MASTER = 'synthetic-write-master-only'
@@ -76,7 +76,7 @@ def private_post(socket, result, password=CHOSEN, confirmation=CHOSEN, confirmed
 
 
 def fills(broker, result, target='https://example.test/reset'):
-    return [broker.dispatch({'action': 'fill-generated', 'handle': ref, 'target_url': target}) for ref in result['fill_handles'].values()]
+    return [broker.dispatch({'action': 'fill-generated', **target_request(broker), 'handle': ref, 'target_url': target}) for ref in result['fill_handles'].values()]
 
 
 def commit(broker, result, accepted=True):
@@ -104,7 +104,7 @@ def test_private_update_preserves_vault_and_is_immediately_fillable(deployed, ca
     assert code == 200 and CHOSEN.encode() not in page and MASTER.encode() not in page
     assert private_post(socket, prepared)[0] == 404
     assert broker.dispatch({'action': 'write-status', 'write_handle': prepared['write_handle']}) == {'ok': True, 'state': 'saved'}
-    assert not broker.dispatch({'action': 'fill', 'handle': stale})['ok']
+    assert not broker.dispatch({'action': 'fill', **target_request(broker), 'handle': stale})['ok']
     vault = reopened(path)
     entry = vault.find_entries(title='Synthetic site', first=True)
     assert entry.password == CHOSEN and entry.notes == 'preserve notes'
@@ -112,7 +112,7 @@ def test_private_update_preserves_vault_and_is_immediately_fillable(deployed, ca
     assert entry.history[-1].password == OLD
     assert vault.find_entries(title='Unrelated', first=True).password == 'synthetic-unrelated-secret'
     fresh = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]['handle']
-    assert broker.dispatch({'action': 'fill', 'handle': fresh, 'mode': 'password'})['ok']
+    assert broker.dispatch({'action': 'fill', **target_request(broker), 'handle': fresh, 'mode': 'password'})['ok']
     assert typer.events == [('type', CHOSEN)]
     backups = list(path.parent.glob('.*.akdbx-backup-*'))
     assert len(backups) == 1
@@ -144,7 +144,7 @@ def test_wrong_entry_metadata_rejected_and_handle_consumed(deployed, field, valu
     values = {key: selected[key] for key in ('title', 'username', 'url', 'group')}
     result = broker.dispatch({'action': 'update-password', 'handle': selected['handle'], 'metadata': {**values, field: value}})
     assert not result['ok'] and 'mismatch' in result['error']
-    assert not broker.dispatch({'action': 'fill', 'handle': selected['handle']})['ok']
+    assert not broker.dispatch({'action': 'fill', **target_request(broker), 'handle': selected['handle']})['ok']
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == OLD
 
 
@@ -292,6 +292,8 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
     broker, typer, path, socket = deployed
     prefix = ['--socket', str(socket.with_name('cli.sock')), '--unlock-origin', 'https://node.example:9443']
     def command(*args, expected=0):
+        if args[0] == "fill-generated":
+            args = (*args, "--target", target_request(broker)["target"])
         assert cli.main([*prefix, *args]) == expected
         captured = capsys.readouterr()
         assert not captured.err
@@ -299,7 +301,7 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
         return json.loads(captured.out)
     with running_broker(socket.with_name('cli.sock'), broker):
         status = command('status')
-        assert status['version'] == '0.8.1' and status['writes_available']
+        assert status['version'] == '0.9.0' and status['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]
         args = [arg for field in ('title', 'username', 'url', 'group') for arg in ('--' + field, selected[field])]
         generated = command('generate-password', selected['handle'], *args, '--length', '28', '--symbols', '')
@@ -327,12 +329,14 @@ def test_actual_installed_executable_against_running_synthetic_broker(deployed, 
     executable = Path(sys.executable).parent / 'akdbx'
     prefix = [str(executable), '--socket', str(socket.with_name('installed-cli.sock')), '--unlock-origin', 'https://node.example:9443']
     def command(*args):
+        if args[0] == "fill-generated":
+            args = (*args, "--target", target_request(broker)["target"])
         result = subprocess.run([*prefix, *args], text=True, capture_output=True, timeout=30)
         assert result.returncode == 0 and not result.stderr
         assert all(secret not in result.stdout for secret in (MASTER, OLD, CHOSEN))
         return json.loads(result.stdout)
     version = subprocess.run([str(executable), '--version'], text=True, capture_output=True, check=True)
-    assert version.stdout.strip() == '0.8.1'
+    assert version.stdout.strip() == '0.9.0'
     with running_broker(socket.with_name('installed-cli.sock'), broker):
         assert command('status')['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]
@@ -362,7 +366,7 @@ def test_unsafe_write_ancestry_preserves_read_only_unlock(tmp_path, template):
     broker.writes.public_base = 'https://node.example:9443'
     assert not broker.dispatch({'action': 'ping'})['writes_available']
     selected = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]
-    assert broker.dispatch({'action': 'fill', 'handle': selected['handle'], 'mode': 'password'})['ok']
+    assert broker.dispatch({'action': 'fill', **target_request(broker), 'handle': selected['handle'], 'mode': 'password'})['ok']
     assert not begin(broker)['ok']
 
 
@@ -370,11 +374,11 @@ def test_generated_deadline_disconnect_and_typing_failure_prevent_commit(deploye
     broker, typer, path, _ = deployed
     prepared = begin(broker, 'generate-password')
     password_ref = prepared['fill_handles']['password']
-    assert not broker.dispatch({'action': 'fill-generated', 'handle': password_ref, 'target_url': 'https://example.test/reset', 'start_deadline': time.monotonic() - 1})['ok']
+    assert not broker.dispatch({'action': 'fill-generated', **target_request(broker), 'handle': password_ref, 'target_url': 'https://example.test/reset', 'start_deadline': time.monotonic() - 1})['ok']
     assert typer.events == []
     assert not commit(broker, prepared)['ok']
     prepared = begin(broker, 'generate-password')
-    assert not broker.dispatch({'action': 'fill-generated', 'handle': prepared['fill_handles']['password'], 'target_url': 'https://example.test/reset', 'start_deadline': time.monotonic() + 1}, delivery_ready=lambda: False)['ok']
+    assert not broker.dispatch({'action': 'fill-generated', **target_request(broker), 'handle': prepared['fill_handles']['password'], 'target_url': 'https://example.test/reset', 'start_deadline': time.monotonic() + 1}, delivery_ready=lambda: False)['ok']
     assert typer.events == []
     prepared = begin(broker, 'generate-password')
     def failure(text):
@@ -472,7 +476,7 @@ def test_legacy_broker_capability_and_secret_free_timeout_reports(monkeypatch, c
     assert cli.main(['commit-password', 'synthetic-opaque-reference', '--site-accepted']) == 2
     output = capsys.readouterr()
     assert output.out == '' and 'uncertain' in output.err and 'write-status' in output.err
-    assert cli.main(['fill-generated', 'synthetic-opaque-reference', '--target-url', 'https://example.test']) == 2
+    assert cli.main(['fill-generated', 'synthetic-opaque-reference', '--target-url', 'https://example.test', '--target', 'synthetic-pin']) == 2
     output = capsys.readouterr()
     assert output.out == '' and 'do not retry automatically' in output.err
 

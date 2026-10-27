@@ -1,7 +1,7 @@
 # Create passwords and passwordless SSO records
 
 Password writes require CLI and broker version **0.2.0 or newer**. The current
-release is **0.8.1**. Passwordless SSO creation requires CLI and broker **0.8.1
+release is **0.9.0**. All fills require [target protocol 1](target-fill.md). Passwordless SSO creation requires CLI and broker **0.8.1
 or newer** plus the exact capabilities below. The absolute CLI is
 `/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx`. Examples below abbreviate it
 as `akdbx`; use the absolute path in agent commands. All uppercase references
@@ -9,7 +9,7 @@ are placeholders, never actual handles or links for a note.
 
 ## Check activation and select an existing entry
 
-Run `akdbx --version` and `akdbx status`. For this release require `version: "0.8.1"`,
+Run `akdbx --version` and `akdbx status`. For this release require `version: "0.9.0"`,
 `locked: false`, `writes_available: true`, and `recovery_required: false`.
 An old running broker may omit these fields even though the fresh CLI has new
 commands. Never try a real reset with an incompatible broker. Updating the
@@ -55,19 +55,21 @@ metadata. Omit reset tokens, verification codes and other private query values
 from command arguments:
 
 ```bash
-akdbx fill-generated PASSWORD_FILL_HANDLE --target-url 'https://example.test/reset'
+# Focus and verify the password field, then obtain a fresh pin-target token.
+akdbx fill-generated PASSWORD_FILL_HANDLE --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN
 ```
 
 Then focus the confirmation field, verify again, and run:
 
 ```bash
-akdbx fill-generated CONFIRMATION_FILL_HANDLE --target-url 'https://example.test/reset'
+# Focus and verify the confirmation field, then obtain another fresh pin.
+akdbx fill-generated CONFIRMATION_FILL_HANDLE --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN
 ```
 
 Each reference permits only one attempt and types only the staged password,
 without Tab or submit. Both fills use the same secret. Generated resets require HTTPS. The broker checks that
 the supplied target origin (scheme, host, effective port) matches the selected
-entry. This is an additional guard: global keyboard input cannot independently
+entry. This is an additional guard: target-pinned X11 delivery cannot independently
 inspect the browser or guarantee focus. The originating agent must verify the
 real form through its GUI workflow. Cross-origin reset sites are refused; do
 not falsify the URL to bypass this check. Never inspect password field values,

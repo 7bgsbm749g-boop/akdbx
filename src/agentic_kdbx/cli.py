@@ -13,8 +13,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
-from .broker import Broker, FILL_START_TIMEOUT, PynputTyper, serve
+from .broker import Broker, FILL_START_TIMEOUT, serve
 from .protocol import ProtocolError, receive_message, send_message
+from .target import X11Typer, DELIVERY
 from .runtime import anchored_socket_path, open_private_runtime_directory
 from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
@@ -123,7 +124,7 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         raise ValueError("configured unlock origin must be an HTTPS origin without path, query, or credentials")
     if type(response.get("ok")) is not bool:
         raise ProtocolError("invalid broker response")
-    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported'):
+    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'target_fill_required'):
         if capability in response and type(response[capability]) is not bool:
             raise ProtocolError("invalid broker response")
     if 'version' in response and not isinstance(response['version'], str):
@@ -189,6 +190,9 @@ def parser() -> argparse.ArgumentParser:
     fill = commands.add_parser("fill", help="autofill using a handle returned by search")
     fill.add_argument("handle")
     fill.add_argument("--mode", choices=("login", "username", "password"), default="login")
+    pin = commands.add_parser('pin-target', help='pin an independently verified local foreground PID/window and current input-focus window for 30 seconds')
+    pin.add_argument('--pid', type=int, required=True)
+    pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID, decimal or 0x hex')
     for name in ('create-entry', 'create-sso-entry', 'update-password', 'generate-password'):
         command = commands.add_parser(name, help='save a passwordless SSO identity (no password form)' if name == 'create-sso-entry' else 'prepare a private password save' if name != 'generate-password' else 'stage a broker-generated password for an existing entry')
         if name not in {'create-entry', 'create-sso-entry'}:
@@ -208,6 +212,8 @@ def parser() -> argparse.ArgumentParser:
     generated = commands.add_parser('fill-generated', help='fill a single-use generated password reference into a verified focused field')
     generated.add_argument('handle')
     generated.add_argument('--target-url', required=True, help='independently verified reset site URL')
+    for command in (fill, generated):
+        command.add_argument('--target', required=True, help='fresh single-use pin-target token; no global fallback')
     commands.add_parser("status", help="check broker status")
     merge = commands.add_parser('merge', help='merge another encrypted KDBX into the broker vault using held credentials')
     merge.add_argument('source', type=Path, help='source KDBX (unchanged); same password and key file as target')
@@ -236,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         keyfile = args.keyfile.expanduser() if args.keyfile else None
         if args.yes_on_fill:
             print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
-        broker = Broker(None, PynputTyper())
+        broker = Broker(None, X11Typer())
         unlock_socket = args.unlock_socket or args.socket.with_name("agentic-kdbx-unlock.sock")
         unlock_server, unlock_url = start_unlock_server(broker, database, keyfile, unlock_socket, args.unlock_url)
         print(f"Vault locked. Open over Tailscale: {unlock_url}", file=sys.stderr)
@@ -250,7 +256,9 @@ def main(argv: list[str] | None = None) -> int:
             unlock_server.server_close()
         return 0
     payload = {"action": "ping" if args.command == "status" else args.command}
-    if args.command == "search":
+    if args.command == 'pin-target':
+        payload.update(pid=args.pid, window=args.window, target_protocol=1)
+    elif args.command == "search":
         payload["query"] = args.query
     elif args.command in {'merge', 'admit'}:
         payload.update(source=os.path.abspath(args.source.expanduser()), check=args.check,
@@ -293,7 +301,21 @@ def main(argv: list[str] | None = None) -> int:
             mode=args.mode,
             start_deadline=time.monotonic() + FILL_START_TIMEOUT,
         )
+    if args.command in {'fill', 'fill-generated'}:
+        payload.update(target=args.target, target_protocol=1)
     try:
+        if args.command in {'pin-target', 'fill', 'fill-generated'}:
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True or capabilities.get('target_fill_required') is not True
+                    or type(capabilities.get('target_fill_protocol')) is not int
+                    or capabilities.get('target_fill_protocol') != 1
+                    or capabilities.get('target_fill_delivery') != DELIVERY):
+                print(json.dumps({'ok': False, 'error': 'broker lacks target fill protocol 1; require broker 0.9.0 or newer; target request not sent'}))
+                return 1
+            if args.command in {'fill', 'fill-generated'}:
+                # Capability preflight does not use up the short start deadline.
+                payload['start_deadline'] = time.monotonic() + FILL_START_TIMEOUT
         if args.command == 'create-sso-entry':
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -361,6 +383,18 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("broker request failed", file=sys.stderr)
         return 2
+    if args.command in {'pin-target', 'fill', 'fill-generated'} and response.get('ok'):
+        invalid_pin = args.command == 'pin-target' and (
+            not isinstance(response.get('target'), str) or len(response['target']) != 64
+            or any(c not in '0123456789abcdef' for c in response['target'])
+            or type(response.get('pid')) is not int or response['pid'] != args.pid
+            or type(response.get('window')) is not int or response['window'] != args.window
+            or type(response.get('expires_in')) is not int or response['expires_in'] != 30)
+        invalid_fill = args.command in {'fill', 'fill-generated'} and (
+            response.get('filled') != (args.mode if args.command == 'fill' else 'password'))
+        if response.get('target_delivery') != DELIVERY or invalid_pin or invalid_fill:
+            print('target operation outcome unconfirmed: receipt rejected; do not retry automatically', file=sys.stderr)
+            return 2
     if args.command in {'merge', 'admit'} and response.get('error') == 'vault locked':
         response['continuation'] = 'Open unlock_url privately, then repeat the same command, policy and operation ID.'
         response['operation_id'] = payload['operation_id']

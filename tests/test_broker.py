@@ -5,12 +5,10 @@ import os
 import socket
 import stat
 import struct
-import sys
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -21,7 +19,6 @@ from agentic_kdbx.broker import (
     MAX_CREDENTIAL_CHARACTERS,
     MAX_METADATA_BYTES,
     MAX_OUTSTANDING_HANDLES,
-    PynputTyper,
     _serve_connection,
     serve,
 )
@@ -50,11 +47,35 @@ class RecordingTyper:
     def __init__(self):
         self.events = []
 
+    def capture(self, pid, window):
+        return (pid, window)
+
+    def deliver(self, identity, steps, ready):
+        assert ready()
+        for text in steps:
+            if text is None:
+                self.press_tab()
+            else:
+                self.type_text(text)
+
     def type_text(self, text):
         self.events.append(("type", text))
 
     def press_tab(self):
         self.events.append(("key", "tab"))
+
+
+def target_capabilities():
+    # An independent protocol expectation; this fixture also imports under
+    # frozen pre-target broker versions in compatibility regressions.
+    return dict(target_fill_required=True, target_fill_protocol=1,
+                target_fill_delivery='x11-send-event-v1')
+
+
+def target_request(broker):
+    result = broker.dispatch({'action': 'pin-target', 'pid': 123, 'window': 456, 'target_protocol': 1})
+    assert result['ok']
+    return dict(target=result['target'], target_protocol=1)
 
 
 def make_broker(clock=lambda: 10):
@@ -74,7 +95,7 @@ def test_search_response_never_contains_password_or_internal_uuid():
 
 def test_status_is_secret_free():
     broker, _ = make_broker()
-    assert broker.dispatch({"action": "ping"}) == {"ok": True, "locked": False, "version": "0.8.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities()}
+    assert broker.dispatch({"action": "ping"}) == {"ok": True, "locked": False, "version": "0.9.0", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **target_capabilities()}
 
 
 @pytest.mark.parametrize("mode, expected", [
@@ -86,11 +107,11 @@ def test_fill_without_terminal_returns_only_receipt_and_consumes_handle(mode, ex
     broker, typer = make_broker()
     handle = broker.dispatch({"action": "search", "query": "Example"})["entries"][0]["handle"]
     assert typer.events == []
-    response = broker.dispatch({"action": "fill", "handle": handle, "mode": mode})
-    assert response == {"ok": True, "filled": mode}
+    response = broker.dispatch({"action": "fill", **target_request(broker), "handle": handle, "mode": mode})
+    assert response == {"ok": True, "filled": mode, "target_delivery": "x11-send-event-v1"}
     assert SECRET not in json.dumps(response)
     assert typer.events == expected
-    assert broker.dispatch({"action": "fill", "handle": handle})["ok"] is False
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle})["ok"] is False
     assert typer.events == expected
     assert capsys.readouterr() == ("", "")
     assert not caplog.records
@@ -100,11 +121,11 @@ def test_fill_without_terminal_returns_only_receipt_and_consumes_handle(mode, ex
 def test_invalid_mode_types_nothing_and_consumes_handle(mode):
     broker, typer = make_broker()
     handle = broker.dispatch({"action": "search"})["entries"][0]["handle"]
-    assert broker.dispatch({"action": "fill", "handle": handle, "mode": mode}) == {
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle, "mode": mode}) == {
         "ok": False, "error": "mode must be login, username, or password",
     }
     assert typer.events == []
-    assert broker.dispatch({"action": "fill", "handle": handle})["ok"] is False
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle})["ok"] is False
 
 
 @pytest.mark.parametrize("elapsed", [300, 301])
@@ -113,9 +134,9 @@ def test_expired_handle_is_rejected_and_consumed(elapsed):
     broker, typer = make_broker(clock=lambda: now[0])
     handle = broker.dispatch({"action": "search"})["entries"][0]["handle"]
     now[0] += elapsed
-    assert broker.dispatch({"action": "fill", "handle": handle})["ok"] is False
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle})["ok"] is False
     now[0] = 10
-    assert broker.dispatch({"action": "fill", "handle": handle})["ok"] is False
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle})["ok"] is False
     assert typer.events == []
 
 
@@ -128,7 +149,7 @@ def test_handle_issuance_prunes_all_expired_handles():
     current = broker.dispatch({"action": "search"})["entries"][0]["handle"]
 
     assert list(broker._handles) == [current]
-    assert broker.dispatch({"action": "fill", "handle": expired})["ok"] is False
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": expired})["ok"] is False
     assert typer.events == []
 
 
@@ -140,8 +161,8 @@ def test_handle_resolution_prunes_other_expired_handles():
     current = broker.dispatch({"action": "search"})["entries"][0]["handle"]
 
     now[0] += 200
-    assert broker.dispatch({"action": "fill", "handle": current}) == {
-        "ok": True, "filled": "login",
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": current}) == {
+        "ok": True, "filled": "login", "target_delivery": "x11-send-event-v1",
     }
     assert expired not in broker._handles
 
@@ -154,17 +175,17 @@ def test_outstanding_handles_are_bounded_by_evicting_oldest():
     ]
 
     assert len(broker._handles) == MAX_OUTSTANDING_HANDLES
-    assert broker.dispatch({"action": "fill", "handle": issued[0]})["ok"] is False
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": issued[0]})["ok"] is False
     assert typer.events == []
-    assert broker.dispatch({"action": "fill", "handle": issued[-1]}) == {
-        "ok": True, "filled": "login",
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": issued[-1]}) == {
+        "ok": True, "filled": "login", "target_delivery": "x11-send-event-v1",
     }
 
 
 @pytest.mark.parametrize("handle", [None, 123, {}, [], "fabricated"])
 def test_invalid_or_unknown_handle_types_nothing(handle):
     broker, typer = make_broker()
-    assert broker.dispatch({"action": "fill", "handle": handle})["ok"] is False
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle})["ok"] is False
     assert typer.events == []
 
 
@@ -172,7 +193,7 @@ def test_handles_cannot_be_used_by_another_broker():
     first, _ = make_broker()
     second, typer = make_broker()
     handle = first.dispatch({"action": "search"})["entries"][0]["handle"]
-    assert second.dispatch({"action": "fill", "handle": handle})["ok"] is False
+    assert second.dispatch({"action": "fill", **target_request(second), "handle": handle})["ok"] is False
     assert typer.events == []
 
 
@@ -185,10 +206,10 @@ def test_keyboard_failure_withholds_error_text_and_consumes_handle(error, capsys
     typer = FailingTyper()
     broker = Broker(Vault([Entry()]), typer)
     handle = broker.dispatch({"action": "search"})["entries"][0]["handle"]
-    assert broker.dispatch({"action": "fill", "handle": handle, "mode": "password"}) == {
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle, "mode": "password"}) == {
         "ok": False, "error": "autofill failed",
     }
-    assert broker.dispatch({"action": "fill", "handle": handle})["ok"] is False
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle})["ok"] is False
     assert capsys.readouterr() == ("", "")
     assert not caplog.records
 
@@ -202,34 +223,6 @@ def test_metadata_operations_and_unsupported_actions_do_not_type():
     assert typer.events == []
 
 
-def test_pynput_delivers_safe_literal_text_and_tab_only_through_keyboard(monkeypatch):
-    events = []
-
-    class Keyboard:
-        def type(self, text):
-            events.append(("type", text))
-
-        def press(self, key):
-            events.append(("press", key))
-
-        def release(self, key):
-            events.append(("release", key))
-
-    # Replace the native module before import: never connect to a desktop.
-    keyboard = ModuleType("pynput.keyboard")
-    keyboard.Controller = Keyboard
-    keyboard.Key = SimpleNamespace(tab=object())
-    monkeypatch.setitem(sys.modules, "pynput.keyboard", keyboard)
-    literal = "synthetic ' $() ` ; \\ unicode: é"
-    broker = Broker(Vault([Entry(password=literal)]), PynputTyper())
-    handle = broker.dispatch({"action": "search"})["entries"][0]["handle"]
-    assert broker.dispatch({"action": "fill", "handle": handle}) == {"ok": True, "filled": "login"}
-    assert events == [
-        ("type", Entry.username), ("press", keyboard.Key.tab),
-        ("release", keyboard.Key.tab), ("type", literal),
-    ]
-
-
 @pytest.mark.parametrize(("mode", "username", "password"), [
     ("login", "unsafe\nusername", SECRET),
     ("login", Entry.username, "unsafe\tpassword"),
@@ -239,27 +232,15 @@ def test_pynput_delivers_safe_literal_text_and_tab_only_through_keyboard(monkeyp
     ("password", Entry.username, "unsafe\x7fpassword"),
     ("password", Entry.username, "unsafe\x85password"),
 ])
-def test_pynput_rejects_credential_controls_before_any_key_event(
-    monkeypatch, mode, username, password,
-):
-    # Exercise the installed Controller.type conversion layer with its non-GUI
-    # backend. In particular, a bad password in login mode must be found before
-    # the safe username or the broker's intentional Tab is delivered.
-    monkeypatch.setenv("PYNPUT_BACKEND", "dummy")
-    from pynput import keyboard
-
-    typer = PynputTyper()
-    events = []
-    monkeypatch.setattr(typer._keyboard, "press", lambda key: events.append(("press", key)))
-    monkeypatch.setattr(typer._keyboard, "release", lambda key: events.append(("release", key)))
+def test_controls_rejected_before_guarded_delivery(mode, username, password):
+    typer = RecordingTyper()
     broker = Broker(Vault([Entry(username=username, password=password)]), typer)
     handle = broker.dispatch({"action": "search"})["entries"][0]["handle"]
-
-    assert broker.dispatch({"action": "fill", "handle": handle, "mode": mode}) == {
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle, "mode": mode}) == {
         "ok": False, "error": "autofill failed",
     }
-    assert events == []
-    assert broker.dispatch({"action": "fill", "handle": handle})["ok"] is False
+    assert typer.events == []
+    assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle})["ok"] is False
 
 
 @contextmanager
@@ -302,7 +283,7 @@ def test_second_broker_refuses_live_socket_without_disrupting_first(tmp_path):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.8.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.0", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **target_capabilities()}
 
 
 def test_serve_rejects_unsafe_custom_runtime_directory_without_chmod(tmp_path):
@@ -376,7 +357,7 @@ def test_idle_unix_client_does_not_block_other_requests(tmp_path):
                 client.settimeout(0.5)
                 client.connect(str(socket_path))
                 send_message(client, {"action": "ping"})
-                assert receive_message(client) == {"ok": True, "locked": False, "version": "0.8.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities()}
+                assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.0", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **target_capabilities()}
 
 
 def test_rpc_worker_admission_is_bounded_and_recovers(tmp_path, monkeypatch):
@@ -435,7 +416,7 @@ def test_rpc_worker_admission_is_bounded_and_recovers(tmp_path, monkeypatch):
                         client.settimeout(0.5)
                         client.connect(str(socket_path))
                         send_message(client, {"action": "ping"})
-                        assert receive_message(client) == {"ok": True, "locked": True, "version": "0.8.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities()}
+                        assert receive_message(client) == {"ok": True, "locked": True, "version": "0.9.0", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **target_capabilities()}
                     break
                 except (ConnectionError, TimeoutError):
                     assert time.monotonic() < deadline
@@ -477,7 +458,7 @@ def test_rpc_absolute_frame_deadline_stops_header_drip_and_recovers(
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.8.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.9.0", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **target_capabilities()}
 
 
 def test_rpc_worker_start_failure_is_local_and_cleanup_still_completes(
@@ -506,7 +487,7 @@ def test_rpc_worker_start_failure_is_local_and_cleanup_still_completes(
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.8.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.9.0", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **target_capabilities()}
 
     assert not socket_path.exists()
     with running_broker(socket_path, Broker(None, RecordingTyper())):
@@ -524,7 +505,7 @@ def test_disconnected_unix_client_does_not_stop_broker(tmp_path):
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.8.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.0", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **target_capabilities()}
 
 
 def test_oversized_metadata_returns_generic_error_and_broker_stays_up(tmp_path):
@@ -539,7 +520,7 @@ def test_oversized_metadata_returns_generic_error_and_broker_stays_up(tmp_path):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.8.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.0", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **target_capabilities()}
 
 
 def test_unrelated_oversized_metadata_does_not_block_matching_entry():
@@ -584,8 +565,8 @@ def test_concurrent_fills_do_not_interleave_keyboard_operations():
     broker = Broker(vault, typer)
     first = broker.dispatch({"action": "search", "query": "First"})["entries"][0]["handle"]
     second = broker.dispatch({"action": "search", "query": "Second"})["entries"][0]["handle"]
-    one = threading.Thread(target=broker.dispatch, args=({"action": "fill", "handle": first},))
-    two = threading.Thread(target=broker.dispatch, args=({"action": "fill", "handle": second},))
+    one = threading.Thread(target=broker.dispatch, args=({"action": "fill", **target_request(broker), "handle": first},))
+    two = threading.Thread(target=broker.dispatch, args=({"action": "fill", **target_request(broker), "handle": second},))
     one.start()
     assert first_started.wait(1)
     two.start()
@@ -618,9 +599,10 @@ def test_timed_out_queued_fill_never_starts_after_caller_disconnects(tmp_path):
     ]), typer)
     first = broker.dispatch({"action": "search", "query": "First"})["entries"][0]["handle"]
     abandoned = broker.dispatch({"action": "search", "query": "Abandoned"})["entries"][0]["handle"]
+    abandoned_target = target_request(broker)
     active = threading.Thread(
         target=broker.dispatch,
-        args=({"action": "fill", "handle": first},),
+        args=({"action": "fill", **target_request(broker), "handle": first},),
     )
     active.start()
     assert first_started.wait(1)
@@ -631,7 +613,7 @@ def test_timed_out_queued_fill_never_starts_after_caller_disconnects(tmp_path):
             client.settimeout(0.05)
             client.connect(str(socket_path))
             send_message(client, {
-                "action": "fill",
+                "action": "fill", **abandoned_target,
                 "handle": abandoned,
                 "mode": "login",
                 "start_deadline": time.monotonic() + 0.15,
@@ -666,7 +648,7 @@ def test_deadline_expiring_during_credential_preflight_types_nothing():
     handle = broker._new_handle(ExpiringEntry())
 
     assert broker.dispatch({
-        "action": "fill", "handle": handle, "mode": "password",
+        "action": "fill", **target_request(broker), "handle": handle, "mode": "password",
         "start_deadline": 10.05,
     }) == {"ok": False, "error": "autofill not started: request expired"}
     assert typer.events == []
@@ -689,7 +671,7 @@ def test_disconnect_during_credential_preflight_types_nothing():
 
     assert broker.dispatch(
         {
-            "action": "fill", "handle": handle, "mode": "password",
+            "action": "fill", **target_request(broker), "handle": handle, "mode": "password",
             "start_deadline": 11.0,
         },
         delivery_ready=lambda: connected[0],
@@ -707,7 +689,7 @@ def test_oversized_credential_preflight_types_nothing(value):
     handle = broker.dispatch({"action": "search"})["entries"][0]["handle"]
 
     assert broker.dispatch({
-        "action": "fill", "handle": handle, "mode": "password",
+        "action": "fill", **target_request(broker), "handle": handle, "mode": "password",
     }) == {"ok": False, "error": "autofill failed"}
     assert typer.events == []
 
@@ -719,7 +701,7 @@ def test_unexpired_fill_from_closed_caller_types_nothing(trailing):
     server_side, client_side = socket.socketpair()
     try:
         send_message(client_side, {
-            "action": "fill", "handle": handle, "mode": "password",
+            "action": "fill", **target_request(broker), "handle": handle, "mode": "password",
             "start_deadline": time.monotonic() + 1,
         })
         client_side.sendall(trailing)
@@ -739,7 +721,7 @@ def test_open_caller_with_trailing_protocol_data_is_rejected_before_typing():
     worker = threading.Thread(target=_serve_connection, args=(server_side, broker))
     try:
         send_message(client_side, {
-            "action": "fill", "handle": handle, "mode": "password",
+            "action": "fill", **target_request(broker), "handle": handle, "mode": "password",
             "start_deadline": time.monotonic() + 1,
         })
         client_side.sendall(b"unexpected trailing data")
@@ -764,7 +746,7 @@ def test_wire_fill_without_start_deadline_is_not_started(tmp_path):
     with running_broker(socket_path, broker):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.connect(str(socket_path))
-            send_message(client, {"action": "fill", "handle": handle})
+            send_message(client, {"action": "fill", **target_request(broker), "handle": handle})
             assert receive_message(client) == {
                 "ok": False,
                 "error": "autofill not started: invalid deadline",
@@ -786,8 +768,8 @@ def test_real_encrypted_kdbx_round_trip_never_returns_secret(tmp_path):
     broker = Broker(reopened, typer)
     search = broker.dispatch({"action": "search", "query": "real.example"})
     assert SECRET not in json.dumps(search)
-    fill = broker.dispatch({"action": "fill", "handle": search["entries"][0]["handle"], "mode": "password"})
-    assert fill == {"ok": True, "filled": "password"}
+    fill = broker.dispatch({"action": "fill", **target_request(broker), "handle": search["entries"][0]["handle"], "mode": "password"})
+    assert fill == {"ok": True, "filled": "password", "target_delivery": "x11-send-event-v1"}
     assert typer.events == [("type", SECRET)]
 
 

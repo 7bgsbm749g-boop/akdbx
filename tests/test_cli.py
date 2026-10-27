@@ -13,7 +13,7 @@ from pykeepass import PyKeePass, create_database
 
 from agentic_kdbx import cli
 from agentic_kdbx.protocol import ProtocolError, send_message
-from test_broker import Entry, RecordingTyper, SECRET, running_broker, expected_merge_capabilities, expected_sso_capabilities
+from test_broker import target_capabilities, Entry, RecordingTyper, target_request, SECRET, running_broker, expected_merge_capabilities, expected_sso_capabilities
 from test_web_unlock import call
 
 
@@ -41,7 +41,7 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
     options, is_tty, synthetic_database, tmp_path, monkeypatch, capsys, caplog,
 ):
     typer = RecordingTyper()
-    monkeypatch.setattr(cli, "PynputTyper", lambda: typer)
+    monkeypatch.setattr(cli, "X11Typer", lambda: typer)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: is_tty)
     start_unlock_server = cli.start_unlock_server
     servers = []
@@ -61,6 +61,8 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
         ]
 
         def command(*args, expected_exit=0):
+            if args[0] == 'fill':
+                args = (*args, '--target', ('synthetic-locked-pin' if broker.locked else target_request(broker)['target']))
             assert cli.main([*prefix, *args]) == expected_exit
             captured = capsys.readouterr()
             assert not captured.err
@@ -87,11 +89,11 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
             code, _, page = call(servers[0].server_address, "POST", path, urlencode({"password": MASTER}), timeout=30)
             assert code == 200
             assert MASTER.encode() not in page and SECRET.encode() not in page
-            assert command("status") == {"ok": True, "locked": False, "version": "0.8.1", "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities()}
+            assert command("status") == {"ok": True, "locked": False, "version": "0.9.0", "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **target_capabilities()}
             search = command("search", "example")
             assert typer.events == []  # Unlock/search must not trigger a fill.
             handle = search["entries"][0]["handle"]
-            assert command("fill", handle, "--mode", "login") == {"ok": True, "filled": "login"}
+            assert command("fill", handle, "--mode", "login") == {"ok": True, "filled": "login", "target_delivery": "x11-send-event-v1"}
             expected = [("type", Entry.username), ("key", "tab"), ("type", SECRET)]
             assert typer.events == expected
             assert command("fill", handle, expected_exit=1)["error"] == "unknown or expired handle; search again"
@@ -265,18 +267,21 @@ def test_fill_connection_timeout_is_reported_as_uncertain_without_retry(monkeypa
 
     def timed_out(_socket_path, payload, **_kwargs):
         calls.append(payload)
+        if payload["action"] == "ping":
+            return {"ok": True, **target_capabilities()}
         raise TimeoutError
 
     monkeypatch.setattr(cli, "request", timed_out)
     monkeypatch.setattr(cli.time, "monotonic", lambda: 100.0)
 
-    assert cli.main(["fill", "opaque-handle", "--mode", "password"]) == 2
+    assert cli.main(["fill", "opaque-handle", "--mode", "password", "--target", "synthetic-pin"]) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "outcome uncertain" in captured.err
     assert "do not retry automatically" in captured.err
-    assert calls == [{
-        "action": "fill",
+    assert calls[0] == {"action": "ping"}
+    assert calls[1:] == [{
+        "action": "fill", "target": "synthetic-pin", "target_protocol": 1,
         "handle": "opaque-handle",
         "mode": "password",
         "start_deadline": 100.0 + cli.FILL_START_TIMEOUT,

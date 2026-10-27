@@ -17,6 +17,7 @@ from pathlib import Path
 from threading import Event
 from typing import Callable, Protocol
 
+from .target import TargetPins, TargetError, DeliveryError, DELIVERY, capabilities as target_capabilities, failure as target_failure
 from .writes import WriteManager, WriteError, sso_capabilities, sso_identity
 from .merge import MergeManager, MergeError
 from .persistence import SaveError
@@ -57,25 +58,8 @@ class VaultLike(Protocol):
 
 
 class Typer(Protocol):
-    def type_text(self, text: str) -> None: ...
-    def press_tab(self) -> None: ...
-
-
-class PynputTyper:
-    def __init__(self) -> None:
-        try:
-            from pynput.keyboard import Controller, Key
-        except Exception as exc:  # display backends may fail during import
-            raise RuntimeError("keyboard backend unavailable; run inside a desktop session") from exc
-        self._keyboard = Controller()
-        self._tab = Key.tab
-
-    def type_text(self, text: str) -> None:
-        self._keyboard.type(text)
-
-    def press_tab(self) -> None:
-        self._keyboard.press(self._tab)
-        self._keyboard.release(self._tab)
+    def capture(self, pid: int, window: int) -> object: ...
+    def deliver(self, identity: object, steps: list[str | None], ready: Callable[[], bool]) -> None: ...
 
 
 @dataclass
@@ -97,6 +81,7 @@ class Broker:
     ) -> None:
         self.vault = vault
         self.typer = typer
+        self.targets = TargetPins(typer, clock)
         self.handle_ttl = handle_ttl
         self.clock = clock
         self._key = secrets.token_bytes(32)
@@ -186,7 +171,7 @@ class Broker:
         if action in {'fill', 'fill-generated'} and delivery_ready is None and 'start_deadline' not in request:
             request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
         # Search and write operations observe a consistent vault/revision.
-        if action in {"fill", "search", "create-sso-entry", "create-entry", "update-password", "generate-password", "write-status", "cancel-write", "commit-password", "fill-generated"}:
+        if action in {"pin-target", "fill", "search", "create-sso-entry", "create-entry", "update-password", "generate-password", "write-status", "cancel-write", "commit-password", "fill-generated"}:
             with self._vault_lock:
                 return self._dispatch(request, delivery_ready=delivery_ready)
         return self._dispatch(request, delivery_ready=delivery_ready)
@@ -202,11 +187,16 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.merges.capabilities(), **sso_capabilities(), "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.merges.capabilities(), **sso_capabilities(), **target_capabilities(), "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if self.locked:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
             return {"ok": False, "error": "save outcome uncertain; restart and unlock"}
+        if action == 'pin-target':
+            try:
+                return self.targets.pin(request)
+            except Exception:
+                return target_failure()
         if action in {'merge', 'admit'}:
             return self.merges.begin(request)
         if action == 'create-sso-entry':
@@ -292,6 +282,9 @@ class Broker:
         if action == "fill":
             try:
                 entry = self._resolve(request.get("handle"))
+                target = self.targets.consume(request)
+                if set(request) - {'action', 'handle', 'mode', 'start_deadline', 'target', 'target_protocol'}:
+                    raise TargetError()
                 mode = request.get("mode", "login")
                 if mode not in ("login", "username", "password"):
                     raise ValueError("mode must be login, username, or password")
@@ -304,6 +297,8 @@ class Broker:
                     or not math.isfinite(start_deadline)
                 ):
                     raise ValueError("autofill not started: invalid deadline")
+            except TargetError:
+                return target_failure()
             except ValueError as exc:
                 return {"ok": False, "error": str(exc)}
             # Once credentials are accessed, backend errors must never reach RPC
@@ -343,17 +338,13 @@ class Broker:
                     if not delivery_ready():
                         return {"ok": False, "error": "autofill not started: caller disconnected"}
 
-                    if mode == "login":
-                        self.typer.type_text(username)
-                        self.typer.press_tab()
-                        self.typer.type_text(password)
-                    elif mode == "username":
-                        self.typer.type_text(username)
-                    else:
-                        self.typer.type_text(password)
-                    return {"ok": True, "filled": mode}
+                    steps = [username, None, password] if mode == 'login' else [username if mode == 'username' else password]
+                    self.typer.deliver(target, steps, lambda: self.clock() < start_deadline and delivery_ready())
+                    return {"ok": True, "filled": mode, "target_delivery": DELIVERY}
                 finally:
                     self._keyboard_lock.release()
+            except DeliveryError as exc:
+                return target_failure(exc.started)
             except Exception:
                 return {"ok": False, "error": "autofill failed"}
         return {"ok": False, "error": "unknown action"}

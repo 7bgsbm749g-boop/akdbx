@@ -1,6 +1,6 @@
 # agentic-kdbx
 
-`agentic-kdbx` is a local KeePass (`.kdbx`) autofill broker designed for AI agents. Agents may search login metadata and choose an opaque, short-lived handle. They never receive the password: the broker types it into the focused application and returns only a success receipt.
+`agentic-kdbx` is a local KeePass (`.kdbx`) autofill broker designed for AI agents. Agents may search login metadata and choose an opaque, short-lived handle. They never receive the password: the broker sends it to a verified, pinned X11 application window and returns only a success receipt.
 
 ## Security model
 
@@ -16,11 +16,11 @@
 - After unlock, an explicit `fill` invokes keyboard delivery immediately, without terminal approval. The caller must verify the destination and focus the intended field first.
 - Errors are deliberately generic after the typing boundary.
 
-This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. The broker uses global keyboard input and cannot verify the destination: check focus before every explicit fill and keep it stable until the response arrives. Python cannot guarantee memory zeroization.
+This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Version 0.9.0 requires a short-lived target pin and directed X11 delivery; see [the target contract](skills/agentic-kdbx/references/target-fill.md). It verifies the local process, foreground window and X input focus through dispatch. Browser field/tab/origin and application acceptance remain caller checks; X11 metadata is not a hostile-process security boundary. Python cannot guarantee memory zeroization.
 
 ## Install and run
 
-Linux desktop (X11 is the most reliable backend):
+Linux desktop with X11, X-Resource 1.2 local PID support and EWMH window-manager metadata:
 
 ```bash
 python3 -m venv .venv
@@ -32,12 +32,13 @@ Keep the broker process running. Open its private unlock page from your Tailscal
 
 ```bash
 .venv/bin/akdbx search github.com
-.venv/bin/akdbx fill HANDLE_FROM_SEARCH --mode login
+.venv/bin/akdbx pin-target --pid VERIFIED_PID --window VERIFIED_X11_CLIENT_WINDOW
+.venv/bin/akdbx fill HANDLE_FROM_SEARCH --mode login --target TARGET_FROM_PIN
 ```
 
 Focus the username field before invoking `fill`. `login` types the username, presses Tab, then types the password. `--mode username` and `--mode password` fill one field. Before sending any keys, the broker rejects a requested fill if any field it needs contains a control character, including Tab, carriage return, or newline. The broker sends no submit key of its own, reads nothing back from the destination, and does not use the clipboard.
 
-There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; existing commands still work and emit a deprecation warning. Remove it from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
+There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; it emits a deprecation warning. All fill commands now require `--target`. Remove it from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
 
 ### Unlock remotely over Tailscale
 
@@ -168,7 +169,7 @@ write-capable broker version 0.2.0 or newer before changing a website password.
 - `create-entry --title TITLE --username ACCOUNT --url SITE --group GROUP`
 - `update-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP`
 - `generate-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP [--length 24] [--symbols '!@#$%*-_+=?']`
-- `fill-generated SINGLE_USE_FILL_HANDLE --target-url VERIFIED_RESET_URL`
+- `fill-generated SINGLE_USE_FILL_HANDLE --target-url VERIFIED_RESET_URL --target TARGET_FROM_FRESH_PIN`
 - `commit-password WRITE_HANDLE --site-accepted`
 - `write-status WRITE_HANDLE`
 - `cancel-write WRITE_HANDLE`
@@ -263,3 +264,16 @@ selection admits only already-complete selected properties/locations. Pure
 entry moves/recycle deletes and root modification propagation remain conflicts;
 this patch does not prove unrestricted native phone sync. No production or
 native iPhone test is claimed.
+
+
+## Target-window regression checks (0.9.0)
+
+`tests/test_target*.py` covers required pins, legacy broker downgrade refusal,
+PID/window/focus switches, partial delivery and generated-password commit
+refusal. Native widget/browser checks launch a fresh Xvfb display (never :99).
+The Chromium test uses a new temporary profile and synthetic HTML fields; CDP
+only prepares/observes them, while production X11Typer sends all nonempty input.
+It passed six separate username/password fills and a username–Tab–password fill
+on Chrome 153.0.8010.47. Optional native checks skip when Xvfb/Chromium is absent;
+record those skips explicitly. No real vault, canonical browser/profile or live
+broker is used. Run heavy batches through the configured resource-manager queue.
