@@ -1,14 +1,15 @@
-# Create, update, and generate passwords
+# Create passwords and passwordless SSO records
 
 Password writes require CLI and broker version **0.2.0 or newer**. The current
-release is **0.6.0**. The absolute CLI is
+release is **0.8.1**. Passwordless SSO creation requires CLI and broker **0.8.1
+or newer** plus the exact capabilities below. The absolute CLI is
 `/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx`. Examples below abbreviate it
 as `akdbx`; use the absolute path in agent commands. All uppercase references
 are placeholders, never actual handles or links for a note.
 
 ## Check activation and select an existing entry
 
-Run `akdbx --version` and `akdbx status`. For the current release require `version: "0.6.0"`,
+Run `akdbx --version` and `akdbx status`. For this release require `version: "0.8.1"`,
 `locked: false`, `writes_available: true`, and `recovery_required: false`.
 An old running broker may omit these fields even though the fresh CLI has new
 commands. Never try a real reset with an incompatible broker. Updating the
@@ -116,6 +117,81 @@ The user confirms the proposed destination on the private page. A matching
 account (case-insensitive username) on the same site origin anywhere in the
 vault is conservatively rejected as a duplicate, even if title/group/path
 change. Use a selected existing entry rather than silently creating another.
+
+## Passwordless SSO identity records (0.8.1)
+
+Use this only for an authorized save after the site/account and actual sign-in
+method are verified. Google or GitHub SSO does not supply a separate site
+password. Never invent one, generate one, or copy the provider's password.
+`create-entry` is still the private nonempty-password workflow; it cannot save
+a passwordless identity. No existing metadata-only command in 0.8.0 does so.
+
+Check `akdbx --version` and `akdbx status`. Require CLI/broker 0.8.1 or newer,
+`sso_identity_supported: true`, integer `sso_identity_protocol: 1`, and the chosen
+provider in `sso_auth_methods` (currently `google` and `github`). Also require
+`locked: false`, `writes_available: true`, `recovery_required: false`.
+The CLI checks the running broker's SSO capability before sending creation;
+CLI help or an editable install alone does not establish broker activation.
+
+```bash
+akdbx create-sso-entry \
+  --title 'VERIFIED_SITE_TITLE' --username 'VERIFIED_ACCOUNT' \
+  --url 'https://verified.example.test/login' --group 'EXACT_EXISTING_GROUP' \
+  --auth-method google
+```
+
+Use the absolute CLI path given above. These are placeholders: the originating
+workflow must supply its privately held account/site/group metadata, never
+commit it to a note or report. `--group ''` explicitly selects root; nested
+paths must match an existing group exactly. The command does not create groups.
+Only ASCII HTTPS URLs with a valid host and optional valid port/path are
+supported. Omit query, fragment, userinfo, reset tokens, whitespace and malformed
+escapes. Accounts must be nonempty and have no whitespace/control characters.
+Unsupported/missing providers and extra fields (including password fields) are
+refused. Same origin plus case-insensitive account anywhere active is a
+duplicate, including existing password logins and SSO through another provider.
+Title/group/path changes cannot bypass that check. Inspect the existing record;
+there is no implicit overwrite or conversion command.
+
+This explicit command saves immediately using the held broker credentials and
+the same verified atomic encrypted persistence, backup and conflict checks as
+password saves. There is no password form, secret argument, generated secret,
+pending write handle, or keyboard action. A successful response is only
+`ok: true`, `state: "saved"`, the supplied `metadata`, `auth_method`, and
+`passwordless: true`. The encrypted entry has an empty Password field,
+`akdbx.passwordless-sso: "v1"`, `akdbx.auth-method: "google"` (or `"github"`), and
+notes such as `Sign-in method: Google SSO. No separate site password.`
+Search also exposes only the provider/passwordless flags, not custom properties
+in general. Login/password fills and update/generation refuse an SSO record
+before typing; username-only fills still consume a fresh single-use handle.
+Incomplete SSO markers also block password use. A successful save invalidates
+old search handles and pending write revisions. Check a fresh site/account
+search; a durable save receipt confirms the vault write, not website sign-in.
+
+Locked-vault errors return the existing private unlock URL. Share it privately
+and resume the same authorized work after unlock. Missing/ambiguous groups,
+duplicates, unsafe write paths, disk/key-file conflicts and recovery blocks
+return failure without a new record or a success receipt. Do not change vault
+paths, permissions, snapshot admission policy or recovery state to bypass them.
+A failure after replacement sets `recovery_required`; use the encrypted
+file/backup recovery procedure with the originating workflow. For timeout,
+disconnect or rejected receipt, do not automatically create another record.
+Check broker status and perform a fresh narrow metadata search to reconcile
+the account first. This immediate save has no `write-status` handle. A lost
+response is not proof of failure or success.
+
+Activation belongs to the originating workflow. Keep its current broker and
+latest encrypted state until its live work is clear; install the complete
+tested patch into the checkout used by the real CLI (do not overwrite unrelated
+edits). Refresh the editable package metadata with that checkout's
+`.venv/bin/pip install --no-deps -e .`. Then perform one coordinated normal
+stop/start of that broker with its existing database/key-file paths, socket,
+unlock configuration and desktop environment, and ask the user to unlock on
+the fresh private web page. No hotpatch, key export, second service or separate
+unlock service is needed. Recheck CLI version, broker version and all SSO/write
+capabilities before saving. This patch preserves the 0.8.0 snapshot admission
+and recovery contract; it does not activate or approve the admission prototype.
+The isolated repair thread must not perform live activation or real vault work.
 
 ## Cancellation and recovery
 

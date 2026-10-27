@@ -634,7 +634,7 @@ def test_real_cli_preservation_preview_save_and_refresh(pair, tmp_path):
         return json.loads(completed.stdout)
     with running_broker(socket, broker):
         caps = command('status')
-        assert caps['version'] == '0.8.0' and caps['merge_preservation_policy'] == 'capsule-v1'
+        assert caps['version'] == '0.8.1' and caps['merge_preservation_policy'] == 'capsule-v1'
         assert not command('merge', str(source), '--refresh-target', status=1)['ok']
         checked = command('merge', str(source), '--refresh-target', '--preserve-conflicts', '--check')
         assert checked['state'] == 'checked'

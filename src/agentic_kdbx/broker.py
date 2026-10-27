@@ -17,7 +17,7 @@ from pathlib import Path
 from threading import Event
 from typing import Callable, Protocol
 
-from .writes import WriteManager, WriteError
+from .writes import WriteManager, WriteError, sso_capabilities, sso_identity
 from .merge import MergeManager, MergeError
 from .persistence import SaveError
 from .versions import active_entries
@@ -186,7 +186,7 @@ class Broker:
         if action in {'fill', 'fill-generated'} and delivery_ready is None and 'start_deadline' not in request:
             request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
         # Search and write operations observe a consistent vault/revision.
-        if action in {"fill", "search", "create-entry", "update-password", "generate-password", "write-status", "cancel-write", "commit-password", "fill-generated"}:
+        if action in {"fill", "search", "create-sso-entry", "create-entry", "update-password", "generate-password", "write-status", "cancel-write", "commit-password", "fill-generated"}:
             with self._vault_lock:
                 return self._dispatch(request, delivery_ready=delivery_ready)
         return self._dispatch(request, delivery_ready=delivery_ready)
@@ -202,13 +202,20 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.merges.capabilities(), "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.merges.capabilities(), **sso_capabilities(), "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if self.locked:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
             return {"ok": False, "error": "save outcome uncertain; restart and unlock"}
         if action in {'merge', 'admit'}:
             return self.merges.begin(request)
+        if action == 'create-sso-entry':
+            try:
+                return self.writes.create_sso(request)
+            except (WriteError, SaveError) as exc:
+                return {'ok': False, 'error': str(exc)}
+            except Exception:
+                return {'ok': False, 'error': 'SSO save failed; vault update not confirmed'}
         if action in {"create-entry", "update-password", "generate-password", "write-status", "cancel-write", "commit-password", "fill-generated"}:
             try:
                 if action in {"create-entry", "update-password", "generate-password"}:
@@ -262,6 +269,9 @@ class Broker:
                         "url": url,
                         "group": group,
                     }
+                    identity = sso_identity(entry)
+                    if identity:
+                        candidate.update(identity)
                     projected = {
                         "ok": True,
                         "entries": [*(item for item, _entry in matches), candidate],
@@ -309,6 +319,9 @@ class Broker:
                         return {"ok": False, "error": "autofill not started: request expired"}
                     if not delivery_ready():
                         return {"ok": False, "error": "autofill not started: caller disconnected"}
+
+                    if mode != 'username' and sso_identity(entry):
+                        return {'ok': False, 'error': 'SSO-only record has no separate password; no keys sent'}
 
                     # Materialize and validate every value needed by this mode
                     # before emitting any event. Entry access and validation

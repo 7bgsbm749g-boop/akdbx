@@ -1,6 +1,6 @@
 ---
 name: agentic-kdbx
-description: Use the local KeePass broker to find, autofill, create and update saved logins or merge and conditionally admit encrypted KDBX databases without returning passwords to the agent. Use for authorized login, password save/reset, vault merge, or private Tailscale unlock.
+description: Use the local KeePass broker to find, autofill, create and update saved logins, save passwordless SSO identities, or merge and conditionally admit encrypted KDBX databases without returning passwords to the agent. Use for authorized login, password or SSO record save, vault merge, or private Tailscale unlock.
 ---
 
 # KeePass login and autofill
@@ -74,6 +74,12 @@ Example response (all values are illustrative):
 
 Compare the current destination with the entry's site and the user's requested account. Select the unambiguous match from context. If multiple accounts remain plausible, ask which username/account to use. Do not guess or probe accounts by filling each one. No matches means report that no suitable saved login was found; do not fall back to extracting the vault.
 
+SSO-only entries add `passwordless: true` and `auth_method: "google"` or
+`"github"` to search metadata. Use that site's provider sign-in button and the
+authorized provider session/account. They contain no separate site password;
+`fill --mode login` and `password`, password updates and generation are refused.
+`fill --mode username` remains available with a fresh handle if needed.
+
 A handle expires five minutes after search and is consumed on its first fill attempt, including invalid mode or typing failure. Obtain a fresh handle for every separate fill, and obtain it near the time of use.
 
 ### 3. Prepare the actual destination
@@ -112,7 +118,7 @@ The user has authorized fills without per-fill approval. Once the user privately
 
 Each fill carries a short start deadline. An `autofill not started` response means the broker rejected it before sending any key. On a timeout or lost connection, typing may already be in progress or complete; do not immediately search and retry. Inspect non-secret UI state and recheck broker health first. See recovery below.
 
-## Save, update, and generate passwords
+## Save passwords or passwordless SSO identities
 
 Use [the password-write workflow](references/password-writes.md) for exact
 commands and recovery. Version 0.2.0 adds `create-entry`, `update-password`,
@@ -121,8 +127,19 @@ commands and recovery. Version 0.2.0 adds `create-entry`, `update-password`,
 starting a website reset; an editable source update does not activate the
 running broker. Never restart a broker owned by another live workflow.
 
+For an authorized account created through Google/GitHub SSO with no separate
+site password, use `create-sso-entry` as described in
+[passwordless SSO records](references/password-writes.md#passwordless-sso-identity-records-081).
+It requires CLI/broker 0.8.1 or newer and the advertised SSO protocol. Supply
+explicit verified title, account, site URL, existing group and auth method.
+This command directly saves metadata and an empty password through verified
+encrypted persistence, using the unlocked broker's held credentials. It needs
+no password page or additional user confirmation for an already authorized save.
+Never invent a password or copy a provider password into the site record.
+Ordinary `create-entry` continues to require a privately chosen nonempty password.
+
 Select an existing entry using a fresh search handle and all four exact returned
-metadata fields. Privately chosen passwords/new entries require destination
+metadata fields. Password-based new entries and chosen-password updates require destination
 confirmation and repeated password entry on the private broker page. For an
 agent-driven reset, generate inside the broker, fill password and confirmation
 through their separate single-use references into independently verified focused

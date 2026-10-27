@@ -1,8 +1,11 @@
-"""Private, user-confirmed writes; RPC deals only in metadata and references."""
+"""Private password writes and explicit metadata-only SSO identity creation."""
 from __future__ import annotations
 
+import ipaddress
+import re
 import secrets
 import string
+import unicodedata
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -11,10 +14,68 @@ from .persistence import SaveError
 from .versions import active_entries, is_archive_group
 
 MAX_WRITES = 64
+SSO_AUTH_METHODS = ('google', 'github')
+SSO_MARKER = 'akdbx.passwordless-sso'
+AUTH_METHOD = 'akdbx.auth-method'
 
 
 class WriteError(ValueError):
     """Only fixed, non-secret messages may cross RPC."""
+
+
+def sso_capabilities():
+    return dict(sso_identity_supported=True, sso_identity_protocol=1,
+                sso_auth_methods=list(SSO_AUTH_METHODS))
+
+
+def sso_identity(entry):
+    """Read only our non-secret markers; fail closed on incomplete markers."""
+    getter = getattr(entry, 'get_custom_property', None)
+    if getter is None:
+        return None
+    marker, method = getter(SSO_MARKER), getter(AUTH_METHOD)
+    if marker is None and method is None:
+        # PyKeePass returns None for both absent and empty Value elements.
+        # An empty/corrupt marker must not re-enable password delivery.
+        element = getattr(entry, '_element', None)
+        if element is None or all(element.find('./String[Key="' + key + '"]') is None
+                                  for key in (SSO_MARKER, AUTH_METHOD)):
+            return None
+    return dict(passwordless=True, auth_method=method if method in SSO_AUTH_METHODS else 'unknown')
+
+
+def validate_sso_metadata(values):
+    try:
+        if not isinstance(values, dict) or any(
+            not isinstance(value, str) or any(unicodedata.category(c).startswith('C') for c in value)
+            for value in values.values()
+        ):
+            raise ValueError
+        validate_metadata(values)
+        if values['username'] != values['username'].strip() or any(c.isspace() for c in values['username']):
+            raise ValueError
+        url = values['url']
+        if not url.isascii() or any(c.isspace() for c in url) or '\\' in url:
+            raise ValueError
+        parsed = urlsplit(url)
+        if parsed.scheme != 'https' or '?' in url or '#' in url or re.search(r'%(?![0-9a-fA-F]{2})', url):
+            raise ValueError
+        host = parsed.hostname
+        authority = '[' + host + ']' if ':' in host else host
+        if not re.fullmatch(re.escape(authority) + r'(?::[0-9]+)?', parsed.netloc.lower()):
+            raise ValueError
+        if ':' in host:
+            ipaddress.IPv6Address(host)
+            if '%' in host:
+                raise ValueError
+        elif host.rsplit('.', 1)[-1].isdigit() or re.fullmatch(r'0x[0-9a-f]+', host.rsplit('.', 1)[-1]):
+            # URL parsers disagree on abbreviated/hex/octal IPv4 spellings.
+            # Accept only the unambiguous dotted decimal form for new records.
+            ipaddress.IPv4Address(host)
+        elif len(host) > 253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in host.split('.')):
+            raise ValueError
+    except (ValueError, TypeError, UnicodeError):
+        raise WriteError('invalid SSO metadata; require title, account, existing group and an ASCII HTTPS site URL without query or fragment') from None
 
 
 def metadata(entry):
@@ -30,7 +91,12 @@ def site_origin(url):
     ):
         raise WriteError('invalid site URL')
     port = parsed.port if parsed.port is not None else (443 if parsed.scheme == 'https' else 80)
-    return parsed.scheme, parsed.hostname, port
+    host = parsed.hostname
+    try:
+        host = ipaddress.ip_address(host).compressed
+    except ValueError:
+        host = host.encode('idna').decode('ascii').lower()
+    return parsed.scheme, host, port
 
 
 def validate_metadata(values):
@@ -46,7 +112,15 @@ def validate_metadata(values):
 
 
 def group_for(vault, path):
-    groups = [g for g in vault.groups if not is_archive_group(g) and '/'.join(g.path) == path]
+    groups = []
+    for group in vault.groups:
+        if '/'.join(group.path) != path:
+            continue
+        ancestor = group
+        while ancestor is not None and not is_archive_group(ancestor):
+            ancestor = getattr(ancestor, 'parentgroup', None)
+        if ancestor is None:
+            groups.append(group)
     if len(groups) != 1:
         raise WriteError('destination group is missing or ambiguous')
     return groups[0]
@@ -120,6 +194,42 @@ class WriteManager:
         self._prune()
         return next((op for op in self.operations.values() if secrets.compare_digest(op.token, token) and op.state == 'pending'), None)
 
+    def create_sso(self, request):
+        # This explicit action accepts metadata only. It cannot accept a secret
+        # or silently reinterpret an ordinary create-entry/password request.
+        if set(request) != {'action', 'metadata', 'auth_method'}:
+            raise WriteError('SSO creation accepts only destination metadata and auth_method')
+        method = request.get('auth_method')
+        if not isinstance(method, str) or method not in SSO_AUTH_METHODS:
+            raise WriteError('SSO auth_method must be google or github')
+        values = request.get('metadata')
+        validate_sso_metadata(values)
+        if not self.available():
+            raise WriteError('private writes unavailable; check activation and vault path safety')
+        vault = self.broker.vault
+        group_for(vault, values['group'])
+        if duplicate(vault, values):
+            raise WriteError('duplicate site/account; select an existing entry')
+
+        def mutate(candidate):
+            group = group_for(candidate, values['group'])
+            if duplicate(candidate, values):
+                raise WriteError('duplicate site/account; select an existing entry')
+            label = {'google': 'Google', 'github': 'GitHub'}[method]
+            entry = candidate.add_entry(group, values['title'], values['username'], '', url=values['url'],
+                                        notes=f'Sign-in method: {label} SSO. No separate site password.')
+            entry.set_custom_property(SSO_MARKER, 'v1')
+            entry.set_custom_property(AUTH_METHOD, method)
+
+        try:
+            self.broker.vault = vault._akdbx_store.commit(vault, mutate)
+        except (SaveError, WriteError):
+            raise
+        except Exception:
+            raise WriteError('save failed; vault update not confirmed') from None
+        self.invalidate_revision()
+        return dict(ok=True, state='saved', metadata=dict(values), auth_method=method, passwordless=True)
+
     def begin(self, request):
         entry = None
         if request['action'] in {'update-password', 'generate-password'}:
@@ -127,6 +237,8 @@ class WriteManager:
                 entry = self.broker._resolve(request.get('handle'))
             except ValueError:
                 raise WriteError('unknown or expired handle; search again') from None
+            if sso_identity(entry):
+                raise WriteError('SSO-only record has no separate password; use its sign-in method')
         if not self.available():
             raise WriteError('private writes unavailable; check activation and vault path safety')
         values = request.get('metadata')
@@ -197,6 +309,8 @@ class WriteManager:
                     entries = [e for e in active_entries(candidate) if e.uuid == op.uuid]
                     if len(entries) != 1 or metadata(entries[0]) != op.values:
                         raise WriteError('entry changed; search again')
+                    if sso_identity(entries[0]):
+                        raise WriteError('SSO-only record has no separate password; use its sign-in method')
                     entries[0].save_history()
                     entries[0].password = password
                 else:

@@ -335,7 +335,7 @@ def test_real_cli_reconciles_without_another_unlock(refresh_case, tmp_path):
         return json.loads(completed.stdout)
     with running_broker(socket, case.broker):
         status = command('status')
-        assert status['version'] == '0.8.0' and status['merge_refresh_target_supported']
+        assert status['version'] == '0.8.1' and status['merge_refresh_target_supported']
         assert not command('merge', str(case.source), expected=1)['ok']
         checked = command('merge', str(case.source), '--refresh-target', '--check')
         assert checked['state'] == 'checked'

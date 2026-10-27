@@ -6,7 +6,8 @@
 
 - The unlocked database and plaintext secrets stay in the foreground broker process.
 - The API has no reveal, clipboard, export, or arbitrary-field operation.
-- Search returns only title, username, URL, group, and a random authenticated handle.
+- Search returns only title, username, URL, group, a random authenticated handle,
+  and provider/passwordless flags for managed SSO identities.
 - Handles expire after five minutes and are consumed on the first fill attempt.
 - The Unix socket and its directory are mode `0600` and `0700`. The CLI rejects
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
@@ -140,6 +141,23 @@ Read [the supported merge workflow](skills/agentic-kdbx/references/merge.md)
 for the normal command path, exact semantics, recovery and activation. A source
 update does not replace a running broker. Development uses synthetic vaults and
 isolated sockets only; it does not access or restart the production broker.
+
+## Passwordless SSO identity records (0.8.1)
+
+`create-sso-entry --title TITLE --username ACCOUNT --url SITE --group GROUP
+--auth-method google` saves an explicitly authorized Google SSO account with
+an empty Password field and clear provider/no-separate-password markers.
+`--auth-method github` is also supported. It never generates, copies, accepts
+or exports a password, opens a password form, or types credentials. Require
+CLI/broker 0.8.1 or newer, `sso_identity_supported: true`, integer
+`sso_identity_protocol: 1` and the selected provider in `sso_auth_methods`.
+The CLI checks the running broker before dispatch. Existing group selection,
+same-origin/account duplicate checks, write safety, conflicts, recovery refusal,
+verified encrypted persistence and backups are reused. Search reports provider
+and passwordless flags; login/password fills and password writes refuse these
+records, while username-only fill remains available. The ordinary chosen-
+password workflow below still requires private confirmation and a nonempty
+password. Read [the exact SSO workflow and activation requirements](skills/agentic-kdbx/references/password-writes.md#passwordless-sso-identity-records-081).
 
 ## Password writes (0.2.0)
 
