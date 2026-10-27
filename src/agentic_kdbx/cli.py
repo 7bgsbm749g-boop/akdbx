@@ -22,6 +22,7 @@ from .web_unlock import start_unlock_server
 
 
 DEFAULT_UNLOCK_ORIGIN = "https://vps-3857965a.tailb80cc4.ts.net:9443"
+IDENTITY_CREATES = ('create-sso-entry', 'create-passwordless-entry')
 
 
 def default_socket() -> Path:
@@ -124,7 +125,7 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         raise ValueError("configured unlock origin must be an HTTPS origin without path, query, or credentials")
     if type(response.get("ok")) is not bool:
         raise ProtocolError("invalid broker response")
-    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'target_fill_required'):
+    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'passwordless_identity_supported', 'target_fill_required'):
         if capability in response and type(response[capability]) is not bool:
             raise ProtocolError("invalid broker response")
     if 'version' in response and not isinstance(response['version'], str):
@@ -151,7 +152,7 @@ def request(
     if payload.get('action') in {'merge', 'admit'}:
         timeout = 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
     else:
-        timeout = 240 if payload.get('action') == 'create-sso-entry' else 5
+        timeout = 240 if payload.get('action') in IDENTITY_CREATES else 5
     client.settimeout(timeout)
     try:
         client.connect(anchored_socket_path(runtime_fd, socket_path.name))
@@ -193,14 +194,21 @@ def parser() -> argparse.ArgumentParser:
     pin = commands.add_parser('pin-target', help='pin an independently verified local foreground PID/window and current input-focus window for 30 seconds')
     pin.add_argument('--pid', type=int, required=True)
     pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID, decimal or 0x hex')
-    for name in ('create-entry', 'create-sso-entry', 'update-password', 'generate-password'):
-        command = commands.add_parser(name, help='save a passwordless SSO identity (no password form)' if name == 'create-sso-entry' else 'prepare a private password save' if name != 'generate-password' else 'stage a broker-generated password for an existing entry')
-        if name not in {'create-entry', 'create-sso-entry'}:
+    for name in ('create-entry', *IDENTITY_CREATES, 'update-password', 'generate-password'):
+        help_text = {
+            'create-sso-entry': 'save a Google/GitHub SSO identity (no password form)',
+            'create-passwordless-entry': 'save an email-code identity (no password or saved code)',
+            'generate-password': 'stage a broker-generated password for an existing entry',
+        }.get(name, 'prepare a private password save')
+        command = commands.add_parser(name, help=help_text, description=help_text)
+        if name not in ('create-entry', *IDENTITY_CREATES):
             command.add_argument('handle')
         for field in ('title', 'username', 'url', 'group'):
             command.add_argument('--' + field, required=True, help='exact selected/destination metadata')
         if name == 'create-sso-entry':
             command.add_argument('--auth-method', required=True, choices=('google', 'github'), help='verified SSO provider; no separate site password')
+        if name == 'create-passwordless-entry':
+            command.add_argument('--auth-method', required=True, choices=('email_code',), help='verified native email-code sign-in; no separate site password; never save the code')
         if name == 'generate-password':
             command.add_argument('--length', type=int, default=24)
             command.add_argument('--symbols', default='!@#$%*-_+=?', help='allowed ASCII punctuation; empty for letters and digits')
@@ -281,13 +289,13 @@ def main(argv: list[str] | None = None) -> int:
         print('Merge operation: ' + payload['operation_id'], file=sys.stderr)
     elif args.command == 'merge-status':
         payload['operation_id'] = args.operation_id
-    elif args.command in {'create-entry', 'create-sso-entry', 'update-password', 'generate-password'}:
+    elif args.command in ('create-entry', *IDENTITY_CREATES, 'update-password', 'generate-password'):
         payload['metadata'] = {field: getattr(args, field) for field in ('title', 'username', 'url', 'group')}
-        if args.command not in {'create-entry', 'create-sso-entry'}:
+        if args.command not in ('create-entry', *IDENTITY_CREATES):
             payload['handle'] = args.handle
         if args.command == 'generate-password':
             payload.update(length=args.length, symbols=args.symbols)
-        if args.command == 'create-sso-entry':
+        if args.command in IDENTITY_CREATES:
             payload['auth_method'] = args.auth_method
     elif args.command in {'write-status', 'cancel-write', 'commit-password'}:
         payload['write_handle'] = args.write_handle
@@ -303,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.command in {'fill', 'fill-generated'}:
         payload.update(target=args.target, target_protocol=1)
+    identity_kind = 'SSO' if args.command == 'create-sso-entry' else 'passwordless'
     try:
         if args.command in {'pin-target', 'fill', 'fill-generated'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
@@ -316,15 +325,18 @@ def main(argv: list[str] | None = None) -> int:
             if args.command in {'fill', 'fill-generated'}:
                 # Capability preflight does not use up the short start deadline.
                 payload['start_deadline'] = time.monotonic() + FILL_START_TIMEOUT
-        if args.command == 'create-sso-entry':
+        if args.command in IDENTITY_CREATES:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
-            if (capabilities.get('ok') is not True or capabilities.get('sso_identity_supported') is not True
-                    or type(capabilities.get('sso_identity_protocol')) is not int
-                    or capabilities.get('sso_identity_protocol') != 1
-                    or not isinstance(capabilities.get('sso_auth_methods'), list)
-                    or args.auth_method not in capabilities['sso_auth_methods']):
-                print(json.dumps({'ok': False, 'error': 'broker lacks passwordless SSO identity protocol 1; require broker 0.8.1 or newer; SSO creation not sent'}))
+            prefix = 'sso' if args.command == 'create-sso-entry' else 'passwordless'
+            methods = capabilities.get(prefix + '_auth_methods')
+            if (capabilities.get('ok') is not True or capabilities.get(prefix + '_identity_supported') is not True
+                    or type(capabilities.get(prefix + '_identity_protocol')) is not int
+                    or capabilities.get(prefix + '_identity_protocol') != 1
+                    or not isinstance(methods, list) or not all(isinstance(method, str) for method in methods)
+                    or args.auth_method not in methods):
+                minimum = '0.8.1' if args.command == 'create-sso-entry' else '0.9.1'
+                print(json.dumps({'ok': False, 'error': f'broker lacks {identity_kind} identity protocol 1 for the requested method; require broker {minimum} or newer; {identity_kind} creation not sent'}))
                 return 1
         if args.command == 'admit':
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
@@ -363,8 +375,8 @@ def main(argv: list[str] | None = None) -> int:
     except (PermissionError, ProtocolError, RuntimeError, ValueError) as exc:
         if args.command in {'merge', 'admit'}:
             print('merge outcome unconfirmed: broker response rejected; use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
-        elif args.command == 'create-sso-entry':
-            print('SSO save outcome unconfirmed: broker response rejected; check status and search before any retry', file=sys.stderr)
+        elif args.command in IDENTITY_CREATES:
+            print(f'{identity_kind} save outcome unconfirmed: broker response rejected; check status and search before any retry', file=sys.stderr)
         else:
             print(f"refusing untrusted broker response: {exc}", file=sys.stderr)
         return 2
@@ -376,8 +388,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == 'commit-password':
             print('save outcome uncertain: check write-status before any retry; do not reset the site again', file=sys.stderr)
-        elif args.command == 'create-sso-entry':
-            print('SSO save outcome uncertain: check status and search before any retry; do not create another record automatically', file=sys.stderr)
+        elif args.command in IDENTITY_CREATES:
+            print(f'{identity_kind} save outcome uncertain: check status and search before any retry; do not create another record automatically', file=sys.stderr)
         elif args.command in {'merge', 'admit'}:
             print('merge outcome uncertain: use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
         else:
@@ -398,10 +410,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {'merge', 'admit'} and response.get('error') == 'vault locked':
         response['continuation'] = 'Open unlock_url privately, then repeat the same command, policy and operation ID.'
         response['operation_id'] = payload['operation_id']
-    if args.command == 'create-sso-entry' and response.get('ok') and (
+    if args.command in IDENTITY_CREATES and response.get('ok') and (
             response.get('state') != 'saved' or response.get('passwordless') is not True
             or response.get('auth_method') != args.auth_method or response.get('metadata') != payload['metadata']):
-        print('SSO save outcome unconfirmed: receipt rejected; check status and search before any retry', file=sys.stderr)
+        print(f'{identity_kind} save outcome unconfirmed: receipt rejected; check status and search before any retry', file=sys.stderr)
         return 2
     if args.command == 'admit' and response.get('ok') and (
             response.get('mode') != 'admission' or response.get('policy') != 'snapshot-admission-v1'

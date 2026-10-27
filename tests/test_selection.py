@@ -371,7 +371,7 @@ def test_real_cli_semantics_three_inputs_metadata_location_and_refresh(pair, tmp
         return json.loads(done.stdout)
     with running_broker(socket, broker):
         capabilities = command('status')
-        assert capabilities['version'] == '0.9.0' and capabilities['merge_active_verification'] == 'semantic-v1'
+        assert capabilities['version'] == '0.9.1' and capabilities['merge_active_verification'] == 'semantic-v1'
         assert capabilities['merge_diagnostics'] == 'categories-v1'
         selected = command('search', 'Shared')['entries'][0]['handle']
         checked = command('merge', str(source), '--refresh-target', '--preserve-conflicts', '--check')

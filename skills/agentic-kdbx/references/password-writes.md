@@ -1,15 +1,17 @@
-# Create passwords and passwordless SSO records
+# Create passwords and passwordless identity records
 
 Password writes require CLI and broker version **0.2.0 or newer**. The current
-release is **0.9.0**. All fills require [target protocol 1](target-fill.md). Passwordless SSO creation requires CLI and broker **0.8.1
-or newer** plus the exact capabilities below. The absolute CLI is
+release is **0.9.1**. All fills require [target protocol 1](target-fill.md).
+Native email-code creation requires **0.9.1** and its separate passwordless
+protocol below. Passwordless SSO creation requires CLI and broker **0.8.1 or
+newer** plus the exact capabilities below. The absolute CLI is
 `/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx`. Examples below abbreviate it
 as `akdbx`; use the absolute path in agent commands. All uppercase references
 are placeholders, never actual handles or links for a note.
 
 ## Check activation and select an existing entry
 
-Run `akdbx --version` and `akdbx status`. For this release require `version: "0.9.0"`,
+Run `akdbx --version` and `akdbx status`. For this release require `version: "0.9.1"`,
 `locked: false`, `writes_available: true`, and `recovery_required: false`.
 An old running broker may omit these fields even though the fresh CLI has new
 commands. Never try a real reset with an incompatible broker. Updating the
@@ -119,6 +121,71 @@ The user confirms the proposed destination on the private page. A matching
 account (case-insensitive username) on the same site origin anywhere in the
 vault is conservatively rejected as a duplicate, even if title/group/path
 change. Use a selected existing entry rather than silently creating another.
+
+## Passwordless email-code identity records (0.9.1)
+
+Use this after an authorized native email-code sign-in establishes the site and
+account, with no separate site password. An email address is not evidence of
+Google SSO. The one-time email code is never a vault password or saved metadata.
+Do not invent/copy/generate a password to make `create-entry` accept the account.
+
+Check `akdbx --version` and `akdbx status`. Require CLI/broker **0.9.1 or newer**,
+`passwordless_identity_supported: true`, integer
+`passwordless_identity_protocol: 1`, and `email_code` in
+`passwordless_auth_methods` (currently only `email_code`). Also require
+`locked: false`, `writes_available: true`, `recovery_required: false`.
+The CLI checks this separate capability before sending creation. An existing
+0.9.0 broker advertises only Google/GitHub SSO protocol 1 and is refused;
+updating CLI source/help does not activate it. Raw RPC callers must check the
+same exact capability types and selected method before dispatch.
+
+```bash
+akdbx create-passwordless-entry \
+  --title 'VERIFIED_SITE_TITLE' --username 'VERIFIED_ACCOUNT' \
+  --url 'https://verified.example.test/login' --group 'EXACT_EXISTING_GROUP' \
+  --auth-method email_code
+```
+
+Use the absolute CLI path given above. Supply privately held verified metadata,
+never a challenge code, token or password. The destination is the verified
+application site, not a code sender or shared identity host merely because it
+issued the challenge. The same strict ASCII HTTPS URL, existing unambiguous
+group, account, extra-field, origin/account duplicate, write safety, conflict,
+backup and recovery checks described for SSO below apply. The broker saves
+immediately through supported verified atomic encrypted persistence using its
+held credentials. There is no secret input page, generated secret, pending
+write handle or typing action.
+
+Success returns only `ok: true`, `state: "saved"`, supplied `metadata`,
+`auth_method: "email_code"`, and `passwordless: true`. The encrypted record has
+an empty Password field, `akdbx.passwordless: "v1"`,
+`akdbx.auth-method: "email_code"`, and notes
+`Sign-in method: Email code. No separate site password.` It has no SSO marker.
+Search adds `passwordless: true` and `auth_method: "email_code"`; login/password
+fills and password updates/generation refuse it, including incomplete markers.
+Username-only fill remains available with fresh selection and target handles.
+Google/GitHub SSO protocol 1 and its markers remain unchanged. Brokers 0.8.1
+and 0.9.0 recognize the auth-method marker as passwordless but report an unknown
+method; do not use that as support for creation or bypass the CLI refusal.
+
+On a locked response, use the existing private unlock link. On timeout,
+disconnect or rejected receipt, check status and a fresh narrow search before
+any deliberate retry; a lost response does not prove failure. Successful saves
+invalidate old search handles and pending write revisions. Recovery blocks
+must be resolved by the originating workflow as described below.
+
+The source-only repair thread must leave the live broker, vault, services,
+unlock state and desktop untouched. The originating parent reviews the pushed
+commit, integrates it into the real CLI checkout without overwriting dirty work,
+and refreshes that checkout's editable package metadata with
+`.venv/bin/pip install --no-deps -e .`. After preserving the latest verified
+encrypted state and coordinating its live work, the parent performs one normal
+broker stop/start with unchanged deployment configuration and requests private
+unlock. No hotpatch or second service is part of this workflow. Recheck CLI
+version, running broker version and all passwordless/write capabilities; reread
+this skill/reference, search for duplicates, then save the already authorized
+identity once. Verify fresh search metadata. Website sign-in remains a separate
+non-secret check owned by the parent; a vault receipt does not prove sign-in.
 
 ## Passwordless SSO identity records (0.8.1)
 

@@ -1,6 +1,6 @@
 ---
 name: agentic-kdbx
-description: Use the local KeePass broker to find, autofill, create and update saved logins, save passwordless SSO identities, or merge and conditionally admit encrypted KDBX databases without returning passwords to the agent. Use for authorized login and related emailed verification, password or SSO record save, vault merge, or private Tailscale unlock.
+description: Use the local KeePass broker to find, autofill, create and update saved logins, save passwordless SSO or email-code identities, or merge and conditionally admit encrypted KDBX databases without returning passwords to the agent. Use for authorized login and related emailed verification, password or passwordless account save, vault merge, or private Tailscale unlock.
 ---
 
 # KeePass login and autofill
@@ -79,6 +79,14 @@ SSO-only entries add `passwordless: true` and `auth_method: "google"` or
 authorized provider session/account. They contain no separate site password;
 `fill --mode login` and `password`, password updates and generation are refused.
 `fill --mode username` remains available with a fresh handle if needed.
+
+Native email-code accounts instead report `passwordless: true` and
+`auth_method: "email_code"` (0.9.1). Use the site's email sign-in and complete
+its current challenge through the emailed-verification workflow below.
+These are not Google/GitHub SSO accounts. Do not save the one-time code or
+invent a site password. The same password/login fill and password-write refusals
+apply; username-only fill still requires a fresh target pin. Incomplete managed
+passwordless markers also refuse password use.
 
 A handle expires five minutes after search and is consumed on its first fill attempt, including invalid mode or typing failure. Obtain a fresh handle for every separate fill, and obtain it near the time of use.
 
@@ -177,7 +185,7 @@ codes rather than guessing or repeatedly resending. Ask the user only when the
 correct mailbox cannot be identified or accessed, a physical passkey/device is
 required, or this direct workflow cannot complete the challenge.
 
-## Save passwords or passwordless SSO identities
+## Save passwords or passwordless identities
 
 Use [the password-write workflow](references/password-writes.md) for exact
 commands and recovery. Version 0.2.0 adds `create-entry`, `update-password`,
@@ -196,6 +204,18 @@ encrypted persistence, using the unlocked broker's held credentials. It needs
 no password page or additional user confirmation for an already authorized save.
 Never invent a password or copy a provider password into the site record.
 Ordinary `create-entry` continues to require a privately chosen nonempty password.
+
+For a verified native email-code account with no separate site password, use
+`create-passwordless-entry --auth-method email_code` with explicit verified
+title, account, HTTPS site URL and existing group. Read
+[passwordless email-code records](references/password-writes.md#passwordless-email-code-identity-records-091).
+Require CLI/broker 0.9.1 or newer, `passwordless_identity_supported: true`, integer
+`passwordless_identity_protocol: 1`, and `email_code` in
+`passwordless_auth_methods`. The CLI refuses older brokers before dispatch;
+SSO protocol 1 alone does not authorize this save. This immediate metadata-only
+save uses the same verified encrypted persistence, with no password form or
+additional confirmation for an already authorized save. Never relabel it Google
+SSO, use `create-entry` with a dummy password, or store the one-time code.
 
 Select an existing entry using a fresh search handle and all four exact returned
 metadata fields. Password-based new entries and chosen-password updates require destination

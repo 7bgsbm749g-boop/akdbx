@@ -43,7 +43,8 @@ limits instead of using retired local fleet/database paths.
   permissions/policy or other worktrees. Never claim isolated tests prove a real
   login. Optional native X11 checks need a new isolated test server, never :99.
 - Fix source and broken skill/references. Test locked-vault behavior, consumed
-  handles, deadlines, controls, modes, generated writes, SSO protocol 1, target
+  handles, deadlines, controls, modes, generated writes, SSO protocol 1,
+  passwordless email-code protocol 1 and its old-broker refusal, target
   switches, partial failures and secret-free responses/logs. Run the relevant
   existing regressions. Use the resource-manager queue and bounded batches for
   heavy jobs; do not change resource settings.

@@ -1,4 +1,4 @@
-"""Private password writes and explicit metadata-only SSO identity creation."""
+"""Private password writes and explicit metadata-only passwordless identities."""
 from __future__ import annotations
 
 import ipaddress
@@ -16,6 +16,8 @@ from .versions import active_entries, is_archive_group
 MAX_WRITES = 64
 SSO_AUTH_METHODS = ('google', 'github')
 SSO_MARKER = 'akdbx.passwordless-sso'
+PASSWORDLESS_AUTH_METHODS = ('email_code',)
+PASSWORDLESS_MARKER = 'akdbx.passwordless'
 AUTH_METHOD = 'akdbx.auth-method'
 
 
@@ -28,23 +30,29 @@ def sso_capabilities():
                 sso_auth_methods=list(SSO_AUTH_METHODS))
 
 
-def sso_identity(entry):
+def passwordless_capabilities():
+    return dict(passwordless_identity_supported=True, passwordless_identity_protocol=1,
+                passwordless_auth_methods=list(PASSWORDLESS_AUTH_METHODS))
+
+
+def passwordless_identity(entry):
     """Read only our non-secret markers; fail closed on incomplete markers."""
     getter = getattr(entry, 'get_custom_property', None)
     if getter is None:
         return None
-    marker, method = getter(SSO_MARKER), getter(AUTH_METHOD)
-    if marker is None and method is None:
+    markers = (SSO_MARKER, PASSWORDLESS_MARKER, AUTH_METHOD)
+    method = getter(AUTH_METHOD)
+    if all(getter(key) is None for key in markers):
         # PyKeePass returns None for both absent and empty Value elements.
         # An empty/corrupt marker must not re-enable password delivery.
         element = getattr(entry, '_element', None)
         if element is None or all(element.find('./String[Key="' + key + '"]') is None
-                                  for key in (SSO_MARKER, AUTH_METHOD)):
+                                  for key in markers):
             return None
-    return dict(passwordless=True, auth_method=method if method in SSO_AUTH_METHODS else 'unknown')
+    return dict(passwordless=True, auth_method=method if method in SSO_AUTH_METHODS + PASSWORDLESS_AUTH_METHODS else 'unknown')
 
 
-def validate_sso_metadata(values):
+def validate_identity_metadata(values, kind):
     try:
         if not isinstance(values, dict) or any(
             not isinstance(value, str) or any(unicodedata.category(c).startswith('C') for c in value)
@@ -75,7 +83,7 @@ def validate_sso_metadata(values):
         elif len(host) > 253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in host.split('.')):
             raise ValueError
     except (ValueError, TypeError, UnicodeError):
-        raise WriteError('invalid SSO metadata; require title, account, existing group and an ASCII HTTPS site URL without query or fragment') from None
+        raise WriteError(f'invalid {kind} metadata; require title, account, existing group and an ASCII HTTPS site URL without query or fragment') from None
 
 
 def metadata(entry):
@@ -195,15 +203,21 @@ class WriteManager:
         return next((op for op in self.operations.values() if secrets.compare_digest(op.token, token) and op.state == 'pending'), None)
 
     def create_sso(self, request):
+        return self._create_identity(request, SSO_AUTH_METHODS, SSO_MARKER, 'SSO')
+
+    def create_passwordless(self, request):
+        return self._create_identity(request, PASSWORDLESS_AUTH_METHODS, PASSWORDLESS_MARKER, 'passwordless')
+
+    def _create_identity(self, request, methods, marker, kind):
         # This explicit action accepts metadata only. It cannot accept a secret
         # or silently reinterpret an ordinary create-entry/password request.
         if set(request) != {'action', 'metadata', 'auth_method'}:
-            raise WriteError('SSO creation accepts only destination metadata and auth_method')
+            raise WriteError(f'{kind} creation accepts only destination metadata and auth_method')
         method = request.get('auth_method')
-        if not isinstance(method, str) or method not in SSO_AUTH_METHODS:
-            raise WriteError('SSO auth_method must be google or github')
+        if not isinstance(method, str) or method not in methods:
+            raise WriteError(f'{kind} auth_method must be ' + ' or '.join(methods))
         values = request.get('metadata')
-        validate_sso_metadata(values)
+        validate_identity_metadata(values, kind)
         if not self.available():
             raise WriteError('private writes unavailable; check activation and vault path safety')
         vault = self.broker.vault
@@ -215,10 +229,10 @@ class WriteManager:
             group = group_for(candidate, values['group'])
             if duplicate(candidate, values):
                 raise WriteError('duplicate site/account; select an existing entry')
-            label = {'google': 'Google', 'github': 'GitHub'}[method]
+            label = {'google': 'Google SSO', 'github': 'GitHub SSO', 'email_code': 'Email code'}[method]
             entry = candidate.add_entry(group, values['title'], values['username'], '', url=values['url'],
-                                        notes=f'Sign-in method: {label} SSO. No separate site password.')
-            entry.set_custom_property(SSO_MARKER, 'v1')
+                                        notes=f'Sign-in method: {label}. No separate site password.')
+            entry.set_custom_property(marker, 'v1')
             entry.set_custom_property(AUTH_METHOD, method)
 
         try:
@@ -237,8 +251,8 @@ class WriteManager:
                 entry = self.broker._resolve(request.get('handle'))
             except ValueError:
                 raise WriteError('unknown or expired handle; search again') from None
-            if sso_identity(entry):
-                raise WriteError('SSO-only record has no separate password; use its sign-in method')
+            if passwordless_identity(entry):
+                raise WriteError('passwordless record has no separate password; use its sign-in method')
         if not self.available():
             raise WriteError('private writes unavailable; check activation and vault path safety')
         values = request.get('metadata')
@@ -309,8 +323,8 @@ class WriteManager:
                     entries = [e for e in active_entries(candidate) if e.uuid == op.uuid]
                     if len(entries) != 1 or metadata(entries[0]) != op.values:
                         raise WriteError('entry changed; search again')
-                    if sso_identity(entries[0]):
-                        raise WriteError('SSO-only record has no separate password; use its sign-in method')
+                    if passwordless_identity(entries[0]):
+                        raise WriteError('passwordless record has no separate password; use its sign-in method')
                     entries[0].save_history()
                     entries[0].password = password
                 else:

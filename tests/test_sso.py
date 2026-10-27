@@ -97,7 +97,7 @@ def test_sso_rejects_password_writes_and_consumes_handles(deployed, action):
     before = path.read_bytes()
     selected = broker.dispatch(dict(action='search', query=VALUES['title']))['entries'][0]
     result = broker.dispatch(dict(action=action, handle=selected['handle'], metadata=VALUES))
-    assert not result['ok'] and 'SSO-only' in result['error']
+    assert not result['ok'] and 'no separate password' in result['error']
     assert not broker.dispatch(dict(**target_request(broker), action='fill', handle=selected['handle'], mode='username'))['ok']
     assert path.read_bytes() == before and typer.events == []
 

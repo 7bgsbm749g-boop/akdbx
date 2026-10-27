@@ -7,7 +7,7 @@
 - The unlocked database and plaintext secrets stay in the foreground broker process.
 - The API has no reveal, clipboard, export, or arbitrary-field operation.
 - Search returns only title, username, URL, group, a random authenticated handle,
-  and provider/passwordless flags for managed SSO identities.
+  and auth-method/passwordless flags for managed SSO and email-code identities.
 - Handles expire after five minutes and are consumed on the first fill attempt.
 - The Unix socket and its directory are mode `0600` and `0700`. The CLI rejects
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
@@ -142,6 +142,26 @@ Read [the supported merge workflow](skills/agentic-kdbx/references/merge.md)
 for the normal command path, exact semantics, recovery and activation. A source
 update does not replace a running broker. Development uses synthetic vaults and
 isolated sockets only; it does not access or restart the production broker.
+
+## Passwordless email-code identity records (0.9.1)
+
+`create-passwordless-entry --title TITLE --username ACCOUNT --url SITE --group GROUP
+--auth-method email_code` saves an authorized account verified through the site's
+native emailed-code sign-in. It saves an empty Password field, not the one-time
+code. It neither labels the account as SSO nor creates/copies a password.
+Require CLI/broker 0.9.1 or newer, `passwordless_identity_supported: true`, integer
+`passwordless_identity_protocol: 1`, and `email_code` in
+`passwordless_auth_methods`. The CLI checks these capabilities before dispatch;
+an older running broker is refused even if new CLI help is present.
+
+This separate action reuses SSO's metadata validation, duplicate checks,
+verified encrypted persistence, backups and recovery rules. The entry has
+`akdbx.passwordless: "v1"` and `akdbx.auth-method: "email_code"`; search returns
+`passwordless: true` and `auth_method: "email_code"`. Password/login fills and
+password updates/generation refuse it. Username-only fill still requires the
+existing fresh target pin. Empty or incomplete managed markers fail closed.
+Google/GitHub remain on the unchanged SSO protocol 1 and `create-sso-entry`.
+See [email-code save and parent activation](skills/agentic-kdbx/references/password-writes.md#passwordless-email-code-identity-records-091).
 
 ## Passwordless SSO identity records (0.8.1)
 
