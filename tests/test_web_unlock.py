@@ -10,9 +10,9 @@ from urllib.parse import urlencode, urlsplit
 
 import pytest
 
-import agentic_kdbx.web_unlock as web_unlock
-from agentic_kdbx.broker import Broker
-from agentic_kdbx.web_unlock import start_unlock_server
+import akdbx.web_unlock as web_unlock
+from akdbx.broker import Broker
+from akdbx.web_unlock import start_unlock_server
 from test_broker import target_capabilities, Entry, RecordingTyper, Vault, SECRET, expected_merge_capabilities, expected_sso_capabilities, expected_passwordless_capabilities
 
 
@@ -63,7 +63,7 @@ def test_locked_broker_returns_only_unlock_url_and_types_nothing(action):
     assert SECRET not in json.dumps(response)
     assert broker.dispatch({"action": "ping"}) == {
         "ok": True, "locked": True, "unlock_url": broker.unlock_url,
-        "version": "0.9.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities(),
+        "version": "0.9.2", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities(),
     }
     assert typer.events == []
 

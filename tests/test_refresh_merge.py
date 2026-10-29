@@ -16,9 +16,9 @@ from types import SimpleNamespace
 import pytest
 from pykeepass import PyKeePass
 
-from agentic_kdbx import cli, merge as merging
-from agentic_kdbx.broker import Broker, open_vault_with_password
-from agentic_kdbx.persistence import VaultStore
+from akdbx import cli, merge as merging
+from akdbx.broker import Broker, open_vault_with_password
+from akdbx.persistence import VaultStore
 from test_broker import RecordingTyper, running_broker
 from test_merge import MASTER, SECRET, BASE_TIME, base, tombstone
 
@@ -335,7 +335,7 @@ def test_real_cli_reconciles_without_another_unlock(refresh_case, tmp_path):
         return json.loads(completed.stdout)
     with running_broker(socket, case.broker):
         status = command('status')
-        assert status['version'] == '0.9.1' and status['merge_refresh_target_supported']
+        assert status['version'] == '0.9.2' and status['merge_refresh_target_supported']
         assert not command('merge', str(case.source), expected=1)['ok']
         checked = command('merge', str(case.source), '--refresh-target', '--check')
         assert checked['state'] == 'checked'

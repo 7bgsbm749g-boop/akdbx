@@ -18,10 +18,10 @@ from urllib.parse import urlencode, urlsplit
 
 import pytest
 
-from agentic_kdbx.broker import Broker, PynputTyper, serve
-from agentic_kdbx.cli import request
-from agentic_kdbx.protocol import receive_message, send_message
-from agentic_kdbx.web_unlock import start_unlock_server
+from akdbx.broker import Broker, PynputTyper, serve
+from akdbx.cli import request
+from akdbx.protocol import receive_message, send_message
+from akdbx.web_unlock import start_unlock_server
 
 
 @dataclass
@@ -277,7 +277,7 @@ def test_arbitrary_direct_identity_header_is_accepted(tmp_path):
 
 def test_pykeepass_retains_master_password_after_broker_unlock(tmp_path):
     from pykeepass import create_database
-    from agentic_kdbx.broker import open_vault_with_password
+    from akdbx.broker import open_vault_with_password
 
     path = tmp_path / "synthetic.kdbx"
     create_database(str(path), password="synthetic-master")

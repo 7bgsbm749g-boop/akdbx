@@ -12,7 +12,7 @@ capsule-v1 remains unchanged.
 ## Normal path
 
 Use the installed CLI's absolute path (on this VPS,
-`/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx`). Global socket and trusted
+`/home/ubuntu/projects/akdbx/.venv/bin/akdbx`). Global socket and trusted
 unlock-origin options go before the subcommand.
 
 ```bash

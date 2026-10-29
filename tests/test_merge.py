@@ -20,11 +20,11 @@ import pytest
 from lxml import etree
 from pykeepass import PyKeePass, create_database
 
-from agentic_kdbx import cli
-from agentic_kdbx import merge as merging
-from agentic_kdbx.broker import Broker, open_vault_with_password
-from agentic_kdbx.persistence import VaultStore
-from agentic_kdbx.web_unlock import start_unlock_server
+from akdbx import cli
+from akdbx import merge as merging
+from akdbx.broker import Broker, open_vault_with_password
+from akdbx.persistence import VaultStore
+from akdbx.web_unlock import start_unlock_server
 from test_broker import RecordingTyper, running_broker
 from test_web_unlock import call
 
@@ -406,7 +406,7 @@ def test_real_cli_locked_private_unlock_merge_and_restart_status(pair, tmp_path)
             code, headers, body = call(web_socket, 'POST', path, urlencode({'password': MASTER}), timeout=10)
             assert code == 200 and headers['Cache-Control'] == 'no-store'
             ready = command('status')
-            assert ready['version'] == '0.9.1' and ready['merge_available']
+            assert ready['version'] == '0.9.2' and ready['merge_available']
             result = command('merge', str(source), '--operation-id', operation_id)
             assert result['state'] == 'saved'
             assert command('merge-status', operation_id)['state'] == 'saved'

@@ -17,10 +17,10 @@ from pathlib import Path
 from pykeepass import PyKeePass,create_database
 from pykeepass.kdbx_parsing.kdbx4 import kdf_uuids
 
-from agentic_kdbx import admission, merge as merging, versions
+from akdbx import admission, merge as merging, versions
 from test_group_admission import project
 from test_selection import put
-from agentic_kdbx.broker import Broker,open_vault_with_password
+from akdbx.broker import Broker,open_vault_with_password
 from test_broker import running_broker,RecordingTyper
 from test_merge import MASTER,BASE_TIME
 from upload_lab import Lab,servers,http,KeePassiumSequence

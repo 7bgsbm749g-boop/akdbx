@@ -20,8 +20,8 @@ import pytest
 from lxml import etree
 from pykeepass import PyKeePass
 
-from agentic_kdbx import admission, cli, merge as merging, selection, versions
-from agentic_kdbx.broker import open_vault_with_password
+from akdbx import admission, cli, merge as merging, selection, versions
+from akdbx.broker import open_vault_with_password
 from test_admission import case, admit, bundle, edit
 from test_broker import running_broker
 from test_merge import MASTER, SECRET, BASE_TIME, base
@@ -116,7 +116,7 @@ def test_native_groups_untouched_keepassium_projection(native_case):
     # Reproduce the old check on the final faithful public writer projection,
     # not only a hand-edited string or a mock capability response.
     frozen = subprocess.run(['git', 'show', 'd3657b7f9337895ce65068a4b9a57341fe90e783:src/agentic_kdbx/admission.py'], capture_output=True, check=True)
-    legacy = types.ModuleType('agentic_kdbx._legacy_group_admission')
+    legacy = types.ModuleType('akdbx._legacy_group_admission')
     exec(compile(frozen.stdout, 'legacy_group_admission.py', 'exec'), legacy.__dict__)
     with pytest.raises(legacy.AdmissionError) as refused:
         legacy.verify(incoming, (broker.vault, broker.vault))
@@ -352,7 +352,7 @@ def test_cli_http_consecutive_group_projection_and_restart_recovery(native_case,
     socket = tmp_path / 'runtime' / 'broker.sock'; lab = Lab(target, snapshots, staging, socket)
     with running_broker(socket, broker), servers(lab) as address:
         caps = lab.command('status')
-        assert caps['version'] == '0.9.1' and caps['admission_group_verification'] == 'group-semantic-v1'
+        assert caps['version'] == '0.9.2' and caps['admission_group_verification'] == 'group-semantic-v1'
         client = KeePassiumSequence(address); client.read()
         for day in (2, 3):
             v = edit(source, day=day)
@@ -382,7 +382,7 @@ def test_cli_http_consecutive_group_projection_and_restart_recovery(native_case,
         failed = next(reversed(lab.results.values()))
         assert failed['verification_diagnostics'] == {'group_metadata': 1}
     restarted = open_vault_with_password(target, MASTER)
-    from agentic_kdbx.broker import Broker
+    from akdbx.broker import Broker
     from test_broker import RecordingTyper
     restored = Broker(restarted, RecordingTyper())
     assert restored.merges.status(result['operation_id']) == result

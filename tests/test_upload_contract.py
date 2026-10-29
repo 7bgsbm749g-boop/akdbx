@@ -10,8 +10,8 @@ import uuid
 
 import pytest
 from pykeepass import PyKeePass
-from agentic_kdbx import admission, versions
-from agentic_kdbx.broker import Broker,open_vault_with_password
+from akdbx import admission, versions
+from akdbx.broker import Broker,open_vault_with_password
 from test_broker import running_broker,RecordingTyper
 from test_merge import MASTER,BASE_TIME,base
 from test_admission import case,edit,admit,bundle

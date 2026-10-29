@@ -6,13 +6,13 @@ import subprocess
 import sys
 import time
 
-from agentic_kdbx import cli
+from akdbx import cli
 
 BASELINE = '1e6fc5167c156e59857e055b1cfd57a70110f20e'
 
 
 def test_actual_081_global_input_reproduction_and_new_cli_preflight(tmp_path):
-    package = tmp_path / 'legacy' / 'agentic_kdbx'
+    package = tmp_path / 'legacy' / 'akdbx'
     package.mkdir(parents=True)
     names = subprocess.run(['git', 'ls-tree', '--name-only', BASELINE + ':src/agentic_kdbx'],
                            capture_output=True, text=True, check=True, timeout=10).stdout.splitlines()
@@ -24,7 +24,7 @@ def test_actual_081_global_input_reproduction_and_new_cli_preflight(tmp_path):
     script = '''import signal,sys,threading
 from pathlib import Path
 from types import SimpleNamespace
-from agentic_kdbx.broker import Broker,serve
+from akdbx.broker import Broker,serve
 class RecordingGlobalInput:
     count=0
     foreground='unrelated-synthetic-app'

@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from agentic_kdbx.broker import Broker
-from agentic_kdbx.target import DeliveryError, failure
+from akdbx.broker import Broker
+from akdbx.target import DeliveryError, failure
 from test_broker import Entry, RecordingTyper, Vault, target_request
 from test_writes import deployed, template, begin, commit, reopened, OLD
 

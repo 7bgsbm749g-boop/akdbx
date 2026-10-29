@@ -10,10 +10,10 @@ from pathlib import Path
 import pytest
 from pykeepass import PyKeePass
 
-from agentic_kdbx import cli
-from agentic_kdbx.broker import Broker, open_vault_with_password
-from agentic_kdbx.persistence import VaultStore
-from agentic_kdbx.target import DeliveryError, failure
+from akdbx import cli
+from akdbx.broker import Broker, open_vault_with_password
+from akdbx.persistence import VaultStore
+from akdbx.target import DeliveryError, failure
 from test_broker import RecordingTyper, running_broker, target_request
 from test_writes import MASTER, OLD, CHOSEN, begin, commit, deployed, fills, private_post, reopened, template
 
@@ -313,7 +313,7 @@ def test_persistence_failures_never_claim_saved_or_leak(deployed, monkeypatch, c
 def test_frozen_090_broker_refuses_new_creation_and_keeps_fill_guards(deployed, tmp_path):
     broker, _, path, _ = deployed
     assert create(broker)['ok']
-    package = tmp_path / 'legacy' / 'agentic_kdbx'
+    package = tmp_path / 'legacy' / 'akdbx'
     package.mkdir(parents=True)
     baseline = '0846ca4'
     names = subprocess.run(['git', 'ls-tree', '--name-only', baseline + ':src/agentic_kdbx'],
@@ -325,7 +325,7 @@ def test_frozen_090_broker_refuses_new_creation_and_keeps_fill_guards(deployed, 
     socket = tmp_path / 'legacy-runtime' / 'broker.sock'
     script = '''import signal,sys,threading
 from pathlib import Path
-from agentic_kdbx.broker import Broker,open_vault_with_password,serve
+from akdbx.broker import Broker,open_vault_with_password,serve
 from test_writes import MASTER
 from test_broker import RecordingTyper
 class Audited(Broker):

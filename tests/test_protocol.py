@@ -2,7 +2,7 @@ import socket
 import struct
 import unittest
 
-from agentic_kdbx.protocol import MAX_MESSAGE, ProtocolError, receive_message
+from akdbx.protocol import MAX_MESSAGE, ProtocolError, receive_message
 
 
 def test_rejects_oversized_message_before_reading_body():

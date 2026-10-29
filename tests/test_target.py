@@ -10,9 +10,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentic_kdbx import cli
-from agentic_kdbx.broker import Broker
-from agentic_kdbx.target import (DELIVERY, DeliveryError, Identity, TargetError,
+from akdbx import cli
+from akdbx.broker import Broker
+from akdbx.target import (DELIVERY, DeliveryError, Identity, TargetError,
                                  X11Session, X11Typer, capabilities, failure)
 from test_broker import Entry, RecordingTyper, Vault, target_request
 
@@ -139,7 +139,7 @@ def test_mapping_failure_happens_before_first_key():
 def test_budget_stops_long_fills(monkeypatch):
     session = Session(123, 456)
     now = [0]
-    monkeypatch.setattr('agentic_kdbx.target.time.monotonic', lambda: now[0])
+    monkeypatch.setattr('akdbx.target.time.monotonic', lambda: now[0])
     session.after_send = lambda s: now.__setitem__(0, 4)
     with pytest.raises(DeliveryError) as error:
         session_typer(session).deliver(session.identity, ['abc'], lambda: True)

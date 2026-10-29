@@ -1,6 +1,22 @@
-# agentic-kdbx
+# akdbx
 
-`agentic-kdbx` is a local KeePass (`.kdbx`) autofill broker designed for AI agents. Agents may search login metadata and choose an opaque, short-lived handle. They never receive the password: the broker sends it to a verified, pinned X11 application window and returns only a success receipt.
+`akdbx` is a local KeePass (`.kdbx`) autofill broker designed for AI agents. Agents may search login metadata and choose an opaque, short-lived handle. They never receive the password: the broker sends it to a verified, pinned X11 application window and returns only a success receipt.
+
+Source and issue tracker: [7bgsbm749g-boop/akdbx](https://github.com/7bgsbm749g-boop/akdbx).
+
+## akdbx rebrand (0.9.2)
+
+The project, Python distribution, Python package and agent skill are named
+`akdbx`. The command remains `akdbx`; new integrations import `akdbx` and invoke
+`$akdbx`. The old `agentic_kdbx` import remains a compatibility alias.
+
+New brokers use `akdbx/akdbx.sock` under `XDG_RUNTIME_DIR`, or
+`/tmp/akdbx-UID/akdbx.sock` without it. When the new socket is absent, the CLI
+can connect to an existing `agentic-kdbx.sock` using the same path, ownership
+and peer checks. This lets an unlocked broker finish its session without a
+restart. Explicit `--socket` remains supported. Existing encrypted vaults,
+recovery directories, admission locators and receipts must retain their paths;
+the rebrand does not migrate or rewrite private vault data.
 
 ## Security model
 
@@ -16,7 +32,7 @@
 - After unlock, an explicit `fill` invokes keyboard delivery immediately, without terminal approval. The caller must verify the destination and focus the intended field first.
 - Errors are deliberately generic after the typing boundary.
 
-This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Version 0.9.0 requires a short-lived target pin and directed X11 delivery; see [the target contract](skills/agentic-kdbx/references/target-fill.md). It verifies the local process, foreground window and X input focus through dispatch. Browser field/tab/origin and application acceptance remain caller checks; X11 metadata is not a hostile-process security boundary. Python cannot guarantee memory zeroization.
+This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Version 0.9.0 requires a short-lived target pin and directed X11 delivery; see [the target contract](skills/akdbx/references/target-fill.md). It verifies the local process, foreground window and X input focus through dispatch. Browser field/tab/origin and application acceptance remain caller checks; X11 metadata is not a hostile-process security boundary. Python cannot guarantee memory zeroization.
 
 ## Install and run
 
@@ -138,7 +154,7 @@ is returned or written to disk. A lost response must be resolved with
 restart until authorized recovery. Keep competing editors/sync writers away
 from the inputs during merge; filesystem advisory locks cannot constrain them.
 
-Read [the supported merge workflow](skills/agentic-kdbx/references/merge.md)
+Read [the supported merge workflow](skills/akdbx/references/merge.md)
 for the normal command path, exact semantics, recovery and activation. A source
 update does not replace a running broker. Development uses synthetic vaults and
 isolated sockets only; it does not access or restart the production broker.
@@ -161,7 +177,7 @@ verified encrypted persistence, backups and recovery rules. The entry has
 password updates/generation refuse it. Username-only fill still requires the
 existing fresh target pin. Empty or incomplete managed markers fail closed.
 Google/GitHub remain on the unchanged SSO protocol 1 and `create-sso-entry`.
-See [email-code save and parent activation](skills/agentic-kdbx/references/password-writes.md#passwordless-email-code-identity-records-091).
+See [email-code save and parent activation](skills/akdbx/references/password-writes.md#passwordless-email-code-identity-records-091).
 
 ## Passwordless SSO identity records (0.8.1)
 
@@ -178,7 +194,7 @@ verified encrypted persistence and backups are reused. Search reports provider
 and passwordless flags; login/password fills and password writes refuse these
 records, while username-only fill remains available. The ordinary chosen-
 password workflow below still requires private confirmation and a nonempty
-password. Read [the exact SSO workflow and activation requirements](skills/agentic-kdbx/references/password-writes.md#passwordless-sso-identity-records-081).
+password. Read [the exact SSO workflow and activation requirements](skills/akdbx/references/password-writes.md#passwordless-sso-identity-records-081).
 
 ## Password writes (0.2.0)
 
@@ -212,7 +228,7 @@ immediately searchable/fillable and invalidate previous selection handles.
 The advisory disk lock does not constrain uncooperative external editors;
 arrange exclusive vault editing during saves.
 
-See [password workflows and recovery](skills/agentic-kdbx/references/password-writes.md)
+See [password workflows and recovery](skills/akdbx/references/password-writes.md)
 for reset coordination, policy constraints, focus/origin checks, cancellation,
 conflicts, backup recovery and activation. Installing new code does not replace
 a running broker: coordinate restart and private re-unlock with its owner after
@@ -220,9 +236,9 @@ any live interaction ends.
 
 ## Agent contract
 
-The installed agent skill is [skills/agentic-kdbx/SKILL.md](skills/agentic-kdbx/SKILL.md), available on this VPS at `/home/ubuntu/.codex/skills/agentic-kdbx`. Agents can invoke it as `$agentic-kdbx`; automatic selection is enabled for saved-login, KeePass, and autofill tasks. New sessions can discover the installed skill. An existing session whose skill catalog has not refreshed can read the file directly.
+The installed agent skill is [skills/akdbx/SKILL.md](skills/akdbx/SKILL.md), available on this VPS at `/home/ubuntu/.codex/skills/akdbx`. Agents can invoke it as `$akdbx`; automatic selection is enabled for saved-login, KeePass, and autofill tasks. New sessions can discover the installed skill. An existing session whose skill catalog has not refreshed can read the file directly.
 
-The skill covers exact CLI commands, remote unlock, account selection, desktop targeting, explicit fills, and recovery from uncertain fills. Its [setup reference](skills/agentic-kdbx/references/vps-setup.md) documents the managed VPS desktop, socket discovery, startup, and Tailscale configuration. The skill directory in the repository is the maintained source; the installed path links to it so updates stay in sync.
+The skill covers exact CLI commands, remote unlock, account selection, desktop targeting, explicit fills, and recovery from uncertain fills. Its [setup reference](skills/akdbx/references/vps-setup.md) documents the managed VPS desktop, socket discovery, startup, and Tailscale configuration. The skill directory in the repository is the maintained source; the installed path links to it so updates stay in sync.
 
 An agent should:
 
@@ -231,7 +247,7 @@ An agent should:
 3. Never ask for the master password or attempt to read, log, copy, or inspect a filled password field.
 4. Search again if a handle expires. An `autofill not started` response guarantees that request sent no keys. A timeout or lost connection can still mean typing had already started, so check non-secret target state and never retry automatically.
 
-Existing broker processes retain their loaded code until restarted. The originating login workflow should stop its old broker before starting the command above with the same database, key file, socket, and desktop environment, then request a fresh private web unlock. Old handles cannot be reused after restart. See the [VPS setup reference](skills/agentic-kdbx/references/vps-setup.md) for the deployment command.
+Existing broker processes retain their loaded code until restarted. The originating login workflow should stop its old broker before starting the command above with the same database, key file, socket, and desktop environment, then request a fresh private web unlock. Old handles cannot be reused after restart. See the [VPS setup reference](skills/akdbx/references/vps-setup.md) for the deployment command.
 
 Remote unlock requires Tailscale Serve to proxy HTTPS to the broker's Unix socket, not to a persistent loopback TCP port. This mapping must be installed by root with Tailscale 1.98.9 or newer; older versions had a Unix-socket Serve authorization flaw. Merely starting the updated broker does not migrate an existing Serve mapping. Follow the setup reference when deployment changes are authorized.
 
@@ -267,13 +283,13 @@ akdbx admit /absolute/private-staging/upload.kdbx --policy snapshot-admission-v1
   --snapshot-dir /absolute/private-backups/one-vault-admission --check
 ```
 
-Read the [full admission contract](skills/agentic-kdbx/references/snapshot-admission.md)
+Read the [full admission contract](skills/akdbx/references/snapshot-admission.md)
 before use, including capability/result checks, retention differences, real
 conflict recovery, deadline limits, and coordinated restart/private unlock.
 Synthetic transport evidence does not establish native iPhone compatibility.
 Version 0.8.0 adds explicit `--group-verification group-tag-sequence-v1` and
 `--group-verification native-group-selection-v1` profiles. Read the
-[group contract and remaining limits](skills/agentic-kdbx/references/group-selection.md)
+[group contract and remaining limits](skills/akdbx/references/group-selection.md)
 before selecting either. The old default `group-semantic-v1` remains narrower.
 New CLI requires group protocol 2 and checks the exact requested profile in
 capabilities and durable results; old 0.7.0/0.7.1 processes are rejected before

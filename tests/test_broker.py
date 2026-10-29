@@ -12,8 +12,8 @@ from dataclasses import dataclass
 
 import pytest
 
-import agentic_kdbx.broker as broker_module
-from agentic_kdbx.broker import (
+import akdbx.broker as broker_module
+from akdbx.broker import (
     Broker,
     MAX_CREDENTIAL_BYTES,
     MAX_CREDENTIAL_CHARACTERS,
@@ -22,7 +22,7 @@ from agentic_kdbx.broker import (
     _serve_connection,
     serve,
 )
-from agentic_kdbx.protocol import receive_message, send_message
+from akdbx.protocol import receive_message, send_message
 
 
 SECRET = "correct horse battery staple"
@@ -95,7 +95,7 @@ def test_search_response_never_contains_password_or_internal_uuid():
 
 def test_status_is_secret_free():
     broker, _ = make_broker()
-    assert broker.dispatch({"action": "ping"}) == {"ok": True, "locked": False, "version": "0.9.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
+    assert broker.dispatch({"action": "ping"}) == {"ok": True, "locked": False, "version": "0.9.2", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
 
 
 @pytest.mark.parametrize("mode, expected", [
@@ -283,7 +283,7 @@ def test_second_broker_refuses_live_socket_without_disrupting_first(tmp_path):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.2", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
 
 
 def test_serve_rejects_unsafe_custom_runtime_directory_without_chmod(tmp_path):
@@ -357,7 +357,7 @@ def test_idle_unix_client_does_not_block_other_requests(tmp_path):
                 client.settimeout(0.5)
                 client.connect(str(socket_path))
                 send_message(client, {"action": "ping"})
-                assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
+                assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.2", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
 
 
 def test_rpc_worker_admission_is_bounded_and_recovers(tmp_path, monkeypatch):
@@ -416,7 +416,7 @@ def test_rpc_worker_admission_is_bounded_and_recovers(tmp_path, monkeypatch):
                         client.settimeout(0.5)
                         client.connect(str(socket_path))
                         send_message(client, {"action": "ping"})
-                        assert receive_message(client) == {"ok": True, "locked": True, "version": "0.9.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
+                        assert receive_message(client) == {"ok": True, "locked": True, "version": "0.9.2", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
                     break
                 except (ConnectionError, TimeoutError):
                     assert time.monotonic() < deadline
@@ -458,7 +458,7 @@ def test_rpc_absolute_frame_deadline_stops_header_drip_and_recovers(
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.9.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.9.2", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
 
 
 def test_rpc_worker_start_failure_is_local_and_cleanup_still_completes(
@@ -487,7 +487,7 @@ def test_rpc_worker_start_failure_is_local_and_cleanup_still_completes(
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.9.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.9.2", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
 
     assert not socket_path.exists()
     with running_broker(socket_path, Broker(None, RecordingTyper())):
@@ -505,7 +505,7 @@ def test_disconnected_unix_client_does_not_stop_broker(tmp_path):
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.2", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
 
 
 def test_oversized_metadata_returns_generic_error_and_broker_stays_up(tmp_path):
@@ -520,7 +520,7 @@ def test_oversized_metadata_returns_generic_error_and_broker_stays_up(tmp_path):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.1", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.9.2", "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
 
 
 def test_unrelated_oversized_metadata_does_not_block_matching_entry():
@@ -784,6 +784,6 @@ def expected_sso_capabilities():
 
 
 def expected_merge_capabilities(available=False):
-    from agentic_kdbx.merge import engine_version
+    from akdbx.merge import engine_version
     version = engine_version()
     return {"merge_available": bool(available and version), "merge_engine": "keepassxc-cli " + version if version else None, "merge_same_credentials_only": True, "merge_protocol": 1, "merge_refresh_target_supported": True, "merge_preserve_conflicts_supported": True, "merge_preservation_policy": "capsule-v1", "merge_active_verification": "semantic-v1", "merge_diagnostics": "categories-v1", "admission_supported": True, "admission_protocol": 1, "admission_policy": "snapshot-admission-v1", "admission_verification": "native-containment-v1", "admission_group_verification": "group-semantic-v1", "admission_group_protocol": 2, "admission_group_verifiers": ["group-semantic-v1", "group-tag-sequence-v1", "native-group-selection-v1"] if version == "2.7.10" else ["group-semantic-v1"], "admission_group_tags": "keepassium-2.5.171-sequence-v1", "admission_group_selection": "keepassxc-2.7.10-selection-v1", "admission_group_diagnostics": "group-categories-v1"}

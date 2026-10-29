@@ -6,13 +6,15 @@ import socket
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
 
 import pytest
 from pykeepass import PyKeePass, create_database
 
-from agentic_kdbx import cli
-from agentic_kdbx.protocol import ProtocolError, send_message
+from akdbx import cli
+from akdbx.broker import Broker
+from akdbx.protocol import ProtocolError, send_message
 from test_broker import target_capabilities, Entry, RecordingTyper, target_request, SECRET, running_broker, expected_merge_capabilities, expected_sso_capabilities, expected_passwordless_capabilities
 from test_web_unlock import call
 
@@ -89,7 +91,7 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
             code, _, page = call(servers[0].server_address, "POST", path, urlencode({"password": MASTER}), timeout=30)
             assert code == 200
             assert MASTER.encode() not in page and SECRET.encode() not in page
-            assert command("status") == {"ok": True, "locked": False, "version": "0.9.1", "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
+            assert command("status") == {"ok": True, "locked": False, "version": "0.9.2", "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
             search = command("search", "example")
             assert typer.events == []  # Unlock/search must not trigger a fill.
             handle = search["entries"][0]["handle"]
@@ -110,15 +112,15 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
     assert not caplog.records
 
 
-def test_managed_default_unlock_socket_matches_documented_serve_target(monkeypatch):
-    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
-    expected = Path("/run/user/1000/agentic-kdbx/agentic-kdbx-unlock.sock")
-    assert cli.default_socket().with_name("agentic-kdbx-unlock.sock") == expected
+def test_managed_default_unlock_socket_matches_documented_serve_target(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    expected = Path("/run/user/1000/akdbx/akdbx-unlock.sock")
+    assert cli.default_socket().with_name("akdbx-unlock.sock").relative_to(tmp_path) == Path("akdbx/akdbx-unlock.sock")
     setup = (
-        Path(__file__).parents[1] / "skills/agentic-kdbx/references/vps-setup.md"
+        Path(__file__).parents[1] / "skills/akdbx/references/vps-setup.md"
     ).read_text()
     assert f"unix:{expected}" in setup
-    assert "/run/user/1000/agentic-kdbx-unlock.sock" not in setup
+    assert "/run/user/1000/akdbx-unlock.sock" not in setup
 
 
 def _fake_server(socket_path, response):
@@ -290,4 +292,36 @@ def test_fill_connection_timeout_is_reported_as_uncertain_without_retry(monkeypa
 
 def test_default_socket_uses_dedicated_xdg_runtime_subdirectory(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    assert cli.default_socket() == tmp_path / "agentic-kdbx" / "agentic-kdbx.sock"
+    assert cli.default_socket() == tmp_path / "akdbx" / "akdbx.sock"
+
+
+def test_rebrand_client_uses_existing_broker_without_restart(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    legacy = tmp_path / "agentic-kdbx" / "agentic-kdbx.sock"
+    broker = Broker(SimpleNamespace(entries=[]), RecordingTyper())
+    with running_broker(legacy, broker):
+        assert cli.default_socket() == legacy
+        assert cli.main(["status"]) == 0
+        assert json.loads(capsys.readouterr().out)["locked"] is False
+
+
+def test_rebrand_prefers_canonical_broker_when_both_exist(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    canonical = tmp_path / "akdbx" / "akdbx.sock"
+    legacy = tmp_path / "agentic-kdbx" / "agentic-kdbx.sock"
+    with running_broker(legacy, Broker(SimpleNamespace(entries=[]), RecordingTyper())):
+        with running_broker(canonical, Broker(SimpleNamespace(entries=[]), RecordingTyper())):
+            assert cli.default_socket() == canonical
+
+
+def test_rebrand_fallback_does_not_bypass_symlink_checks(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    real_socket = tmp_path / "real" / "broker.sock"
+    legacy = tmp_path / "agentic-kdbx"
+    legacy.symlink_to(real_socket.parent, target_is_directory=True)
+    with running_broker(real_socket, Broker(SimpleNamespace(entries=[]), RecordingTyper())):
+        (real_socket.parent / "agentic-kdbx.sock").symlink_to(real_socket)
+        assert cli.main(["status"]) == 2
+        captured = capsys.readouterr()
+        assert not captured.out
+        assert "symlink" in captured.err.lower()

@@ -16,8 +16,8 @@ from urllib.parse import quote
 
 import pytest
 
-from agentic_kdbx.broker import Broker
-from agentic_kdbx.target import DELIVERY, X11Typer
+from akdbx.broker import Broker
+from akdbx.target import DELIVERY, X11Typer
 from test_broker import Entry, Vault
 from test_target import isolated_x11
 

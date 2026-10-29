@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agentic_kdbx import admission
+from akdbx import admission
 
 
 class Lab:

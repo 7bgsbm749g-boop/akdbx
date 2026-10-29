@@ -18,9 +18,9 @@ from pathlib import Path
 import pytest
 from pykeepass import PyKeePass
 
-from agentic_kdbx import admission, cli, group_selection, merge as merging, selection, versions
-from agentic_kdbx.broker import Broker, open_vault_with_password
-from agentic_kdbx.persistence import VaultStore
+from akdbx import admission, cli, group_selection, merge as merging, selection, versions
+from akdbx.broker import Broker, open_vault_with_password
+from akdbx.persistence import VaultStore
 from test_broker import RecordingTyper, running_broker
 from test_merge import MASTER, SECRET, BASE_TIME, base, tombstone
 from test_selection import put, style, CASES
@@ -274,7 +274,7 @@ def test_real_cli_policy_capabilities_and_restart_status(case,tmp_path):
     broker,target,source,snapshots=case;edit(source)
     socket=tmp_path/'runtime'/'broker.sock'
     with running_broker(socket,broker):
-        cmd=[sys.executable,'-m','agentic_kdbx.cli','--socket',str(socket)]
+        cmd=[sys.executable,'-m','akdbx.cli','--socket',str(socket)]
         result=subprocess.run([*cmd,'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots)],capture_output=True,text=True)
         assert result.returncode==0,result.stderr+result.stdout
         value=json.loads(result.stdout);assert value['state']=='saved'
@@ -352,9 +352,11 @@ def test_actual_old_broker_rejected_and_070_receipts_recover(case,tmp_path,commi
     archive=subprocess.run(['git','archive',commit,'src'],capture_output=True,check=True)
     import tarfile
     with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:tar.extractall(frozen,filter='data')
+    # Preserve the frozen code while loading it under the current import name.
+    (frozen/'src'/'agentic_kdbx').rename(frozen/'src'/'akdbx')
     socket=tmp_path/'old-runtime'/'broker.sock';socket.parent.mkdir(mode=0o700)
     script=tmp_path/'old-broker.py'
-    script.write_text("from pathlib import Path\nimport sys\nfrom test_merge import MASTER\nfrom agentic_kdbx.broker import Broker,open_vault_with_password,serve\nfrom test_broker import RecordingTyper\nserve(Path(sys.argv[2]),Broker(open_vault_with_password(Path(sys.argv[1]),MASTER),RecordingTyper()))\n")
+    script.write_text("from pathlib import Path\nimport sys\nfrom test_merge import MASTER\nfrom akdbx.broker import Broker,open_vault_with_password,serve\nfrom test_broker import RecordingTyper\nserve(Path(sys.argv[2]),Broker(open_vault_with_password(Path(sys.argv[1]),MASTER),RecordingTyper()))\n")
     env={**os.environ,'PYTHONPATH':str(frozen/'src')+os.pathsep+str(Path(__file__).parent)}
     process=subprocess.Popen([sys.executable,str(script),str(target),str(socket)],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     historical=None
@@ -363,13 +365,13 @@ def test_actual_old_broker_rejected_and_070_receipts_recover(case,tmp_path,commi
         while not socket.exists() and time.monotonic()<end:time.sleep(0.02)
         assert cli.request(socket,{'action':'ping'})['version']==version
         for profile in admission.GROUP_VERIFIERS:
-            result=subprocess.run([sys.executable,'-m','agentic_kdbx.cli','--socket',str(socket),'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots),'--group-verification',profile],capture_output=True,text=True)
+            result=subprocess.run([sys.executable,'-m','akdbx.cli','--socket',str(socket),'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots),'--group-verification',profile],capture_output=True,text=True)
             assert result.returncode==1 and 'admission not sent' in result.stdout
         assert not list(snapshots.iterdir())
         if version in {'0.7.0','0.7.1'}:
             # The actual prior CLI/server writes its original external locator
             # and receipt. The new broker must recover it without migration.
-            old=subprocess.run([sys.executable,'-m','agentic_kdbx.cli','--socket',str(socket),'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots)],env=env,capture_output=True,text=True)
+            old=subprocess.run([sys.executable,'-m','akdbx.cli','--socket',str(socket),'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots)],env=env,capture_output=True,text=True)
             assert old.returncode==0,old.stdout+old.stderr
             historical=json.loads(old.stdout)
             assert historical['state']=='unchanged' and 'group_protocol' not in historical
@@ -380,7 +382,7 @@ def test_actual_old_broker_rejected_and_070_receipts_recover(case,tmp_path,commi
         assert reopened.merges.status(historical['operation_id'])==historical
         assert not reopened.vault._akdbx_store.recovery_required
         with running_broker(tmp_path/'new-runtime'/'broker.sock',reopened):
-            command=[sys.executable,'-m','agentic_kdbx.cli','--socket',str(tmp_path/'new-runtime'/'broker.sock')]
+            command=[sys.executable,'-m','akdbx.cli','--socket',str(tmp_path/'new-runtime'/'broker.sock')]
             status=subprocess.run([*command,'merge-status',historical['operation_id']],capture_output=True,text=True)
             assert status.returncode==0 and json.loads(status.stdout)==historical
             reused=subprocess.run([*command,'admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots),'--operation-id',historical['operation_id']],capture_output=True,text=True)
@@ -434,7 +436,7 @@ def test_structural_metadata_and_snapshot_readback_fail_closed(case,kind,monkeyp
 
 
 def test_real_cli_locked_existing_private_unlock_continuation(case,tmp_path):
-    from agentic_kdbx.web_unlock import start_unlock_server
+    from akdbx.web_unlock import start_unlock_server
     from test_web_unlock import call
     from urllib.parse import urlencode,urlsplit
     _,target,source,snapshots=case;edit(source)
@@ -442,7 +444,7 @@ def test_real_cli_locked_existing_private_unlock_continuation(case,tmp_path):
     web=tmp_path/'web'/'unlock.sock'
     server,url=start_unlock_server(broker,target,None,web,'https://unlock.synthetic.example:9443')
     sock=tmp_path/'runtime'/'broker.sock';op=uuid.uuid4().hex
-    args=[sys.executable,'-m','agentic_kdbx.cli','--socket',str(sock),'--unlock-origin','https://unlock.synthetic.example:9443','admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots),'--operation-id',op]
+    args=[sys.executable,'-m','akdbx.cli','--socket',str(sock),'--unlock-origin','https://unlock.synthetic.example:9443','admit',str(source),'--policy',admission.POLICY,'--snapshot-dir',str(snapshots),'--operation-id',op]
     try:
         with running_broker(sock,broker):
             locked=subprocess.run(args,capture_output=True,text=True,timeout=20)

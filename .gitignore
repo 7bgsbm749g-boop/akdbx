@@ -1,6 +1,8 @@
 .venv/
 .testdeps/
 .buildtmp/
+/build/
+/dist/
 __pycache__/
 .pytest_cache/
 *.egg-info/

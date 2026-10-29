@@ -27,8 +27,19 @@ IDENTITY_CREATES = ('create-sso-entry', 'create-passwordless-entry')
 
 def default_socket() -> Path:
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    base = Path(runtime) / "agentic-kdbx" if runtime else Path(f"/tmp/akdbx-{os.getuid()}")
-    return base / "agentic-kdbx.sock"
+    base = Path(runtime) / "akdbx" if runtime else Path(f"/tmp/akdbx-{os.getuid()}")
+    canonical = base / "akdbx.sock"
+    legacy_base = Path(runtime) / "agentic-kdbx" if runtime else base
+    legacy = legacy_base / "agentic-kdbx.sock"
+    # Keep existing unlocked brokers usable during an upgrade. All normal
+    # ownership, symlink and peer checks still apply when connecting.
+    for candidate in (canonical, legacy):
+        try:
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        return candidate
+    return canonical
 
 
 def _validate_socket_path(socket_path: Path, broker_uid: int) -> tuple[Path, int]:
@@ -251,7 +262,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.yes_on_fill:
             print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
         broker = Broker(None, X11Typer())
-        unlock_socket = args.unlock_socket or args.socket.with_name("agentic-kdbx-unlock.sock")
+        unlock_name = ("agentic-kdbx-unlock.sock"
+                       if args.socket.name == "agentic-kdbx.sock"
+                       else "akdbx-unlock.sock")
+        unlock_socket = args.unlock_socket or args.socket.with_name(unlock_name)
         unlock_server, unlock_url = start_unlock_server(broker, database, keyfile, unlock_socket, args.unlock_url)
         print(f"Vault locked. Open over Tailscale: {unlock_url}", file=sys.stderr)
         print(f"Broker ready at {args.socket}; Ctrl-C locks it.", file=sys.stderr)

@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from agentic_kdbx.target import DeliveryError, TargetError, X11Session, X11Typer
+from akdbx.target import DeliveryError, TargetError, X11Session, X11Typer
 from test_target import isolated_x11
 
 

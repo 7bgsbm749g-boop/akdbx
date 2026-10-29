@@ -276,6 +276,7 @@ class UnlockState:
 
 
 def _page(title: str, body: str) -> bytes:
+    title = f"akdbx: {title}"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <meta name="referrer" content="no-referrer"><title>{html.escape(title)}</title>
@@ -286,7 +287,7 @@ input,button{{box-sizing:border-box;width:100%;padding:.8rem;margin:.5rem 0;font
 
 def handler_for(state: UnlockState):
     class Handler(BaseHTTPRequestHandler):
-        server_version = "agentic-kdbx"
+        server_version = "akdbx"
         sys_version = ""
 
         def log_message(self, format, *args):

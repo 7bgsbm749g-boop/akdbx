@@ -15,8 +15,8 @@ import pytest
 from lxml import etree
 from pykeepass import PyKeePass
 
-from agentic_kdbx import cli, merge as merging, selection, versions
-from agentic_kdbx.broker import open_vault_with_password
+from akdbx import cli, merge as merging, selection, versions
+from akdbx.broker import open_vault_with_password
 from test_broker import running_broker
 from test_merge import MASTER, SECRET, BASE_TIME, base, pair, disk, merge, receipt_files
 from test_versions import assert_retained, ledger, save_pair, record
@@ -371,7 +371,7 @@ def test_real_cli_semantics_three_inputs_metadata_location_and_refresh(pair, tmp
         return json.loads(done.stdout)
     with running_broker(socket, broker):
         capabilities = command('status')
-        assert capabilities['version'] == '0.9.1' and capabilities['merge_active_verification'] == 'semantic-v1'
+        assert capabilities['version'] == '0.9.2' and capabilities['merge_active_verification'] == 'semantic-v1'
         assert capabilities['merge_diagnostics'] == 'categories-v1'
         selected = command('search', 'Shared')['entries'][0]['handle']
         checked = command('merge', str(source), '--refresh-target', '--preserve-conflicts', '--check')

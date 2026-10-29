@@ -5,7 +5,7 @@ from datetime import timedelta
 import pytest
 from pykeepass import PyKeePass
 
-from agentic_kdbx.broker import open_vault_with_password
+from akdbx.broker import open_vault_with_password
 from test_admission import case, admit, bundle
 from test_group_admission import native_case, project
 from test_merge import MASTER, BASE_TIME, base
@@ -41,7 +41,7 @@ import os
 import subprocess
 import uuid
 from lxml import etree
-from agentic_kdbx import admission, cli, group_selection, group_tags, merge as merging, versions
+from akdbx import admission, cli, group_selection, group_tags, merge as merging, versions
 from test_broker import running_broker
 from test_merge import SECRET, tombstone
 from upload_lab import Lab, servers, http, KeePassiumSequence
@@ -360,7 +360,7 @@ def test_group_membership_deletions_and_unsupported_topology(native_case,tmp_pat
 @pytest.mark.parametrize('profile',[TAG,NATIVE])
 @pytest.mark.parametrize('phase',['source-race','target-race','after-replace','receipt-failure','interrupt'])
 def test_extended_uncertainty_same_id_and_restart(native_case,monkeypatch,profile,phase):
-    from agentic_kdbx.broker import Broker
+    from akdbx.broker import Broker
     from test_broker import RecordingTyper
     broker,target,source,_=native_case
     v=PyKeePass(source,password=MASTER);phone_action(v,'edit',4);v.save()

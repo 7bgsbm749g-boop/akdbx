@@ -8,7 +8,7 @@ repair thread owns the isolated source fix, synthetic tests and Git push.
 
 Use current `t3-code` tools for local ordinary threads, including another project
 on the same server. Do not use fleet scripts for local T3 work. Discover the
-registered agentic-kdbx project with `t3_project_list`/`t3_project_read`, then use
+registered akdbx project with `t3_project_list`/`t3_project_read`, then use
 `t3_thread_launch` with explicit `projectId`, `workspaceStrategy` and `message`.
 For source repair use an isolated worktree based on the intended local commit;
 uncommitted parent changes are not copied. The originating repair workflow
@@ -49,7 +49,7 @@ limits instead of using retired local fleet/database paths.
   existing regressions. Use the resource-manager queue and bounded batches for
   heavy jobs; do not change resource settings.
 - Store evidence in the project's ignored `evidence/` directory. Validate with
-  `python3 /home/ubuntu/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/agentic-kdbx`.
+  `python3 /home/ubuntu/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/akdbx`.
 - Review Git status/remote, commit only the patch and push the configured repair
   branch. Never include vaults, tokens, secret-bearing artifacts or unrelated
   work. Return cause/design/limits, changed files, test/evidence results, full

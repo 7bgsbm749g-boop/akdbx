@@ -14,11 +14,11 @@ from urllib.parse import urlencode, urlsplit
 import pytest
 from pykeepass import PyKeePass, create_database
 
-from agentic_kdbx import cli
-from agentic_kdbx.broker import Broker, open_vault_with_password
-from agentic_kdbx.persistence import VaultStore
-from agentic_kdbx.web_unlock import start_unlock_server
-from agentic_kdbx.writes import metadata
+from akdbx import cli
+from akdbx.broker import Broker, open_vault_with_password
+from akdbx.persistence import VaultStore
+from akdbx.web_unlock import start_unlock_server
+from akdbx.writes import metadata
 from test_broker import target_request, RecordingTyper, running_broker
 from test_web_unlock import call
 
@@ -301,7 +301,7 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
         return json.loads(captured.out)
     with running_broker(socket.with_name('cli.sock'), broker):
         status = command('status')
-        assert status['version'] == '0.9.1' and status['writes_available']
+        assert status['version'] == '0.9.2' and status['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]
         args = [arg for field in ('title', 'username', 'url', 'group') for arg in ('--' + field, selected[field])]
         generated = command('generate-password', selected['handle'], *args, '--length', '28', '--symbols', '')
@@ -336,7 +336,7 @@ def test_actual_installed_executable_against_running_synthetic_broker(deployed, 
         assert all(secret not in result.stdout for secret in (MASTER, OLD, CHOSEN))
         return json.loads(result.stdout)
     version = subprocess.run([str(executable), '--version'], text=True, capture_output=True, check=True)
-    assert version.stdout.strip() == '0.9.1'
+    assert version.stdout.strip() == '0.9.2'
     with running_broker(socket.with_name('installed-cli.sock'), broker):
         assert command('status')['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]

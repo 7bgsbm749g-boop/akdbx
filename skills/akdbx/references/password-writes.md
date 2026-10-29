@@ -5,7 +5,7 @@ release is **0.9.1**. All fills require [target protocol 1](target-fill.md).
 Native email-code creation requires **0.9.1** and its separate passwordless
 protocol below. Passwordless SSO creation requires CLI and broker **0.8.1 or
 newer** plus the exact capabilities below. The absolute CLI is
-`/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx`. Examples below abbreviate it
+`/home/ubuntu/projects/akdbx/.venv/bin/akdbx`. Examples below abbreviate it
 as `akdbx`; use the absolute path in agent commands. All uppercase references
 are placeholders, never actual handles or links for a note.
 

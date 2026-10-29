@@ -22,10 +22,10 @@ import pytest
 from lxml import etree
 from pykeepass import PyKeePass
 
-from agentic_kdbx import cli, merge as merging, versions
-from agentic_kdbx.broker import Broker, open_vault_with_password
-from agentic_kdbx.persistence import VaultStore
-from agentic_kdbx.web_unlock import start_unlock_server
+from akdbx import cli, merge as merging, versions
+from akdbx.broker import Broker, open_vault_with_password
+from akdbx.persistence import VaultStore
+from akdbx.web_unlock import start_unlock_server
 from test_broker import RecordingTyper, running_broker
 from test_merge import MASTER, SECRET, BASE_TIME, base, pair, merge, disk, receipt_files, tombstone
 from test_refresh_merge import refresh_case, refresh, opened
@@ -481,7 +481,7 @@ def test_cli_rejects_old_or_wrong_policy_before_merge(monkeypatch, capsys, capab
 def test_actual_old_broker_rejects_policy_through_new_cli(pair, tmp_path, commit, legacy_version):
     _, target, source = pair
     legacy = tmp_path / 'legacy'
-    package = legacy / 'agentic_kdbx'
+    package = legacy / 'akdbx'
     package.mkdir(parents=True)
     modules = ('__init__', 'broker', 'cli', 'merge', 'persistence', 'protocol', 'runtime', 'web_unlock', 'writes')
     for name in (*modules, *(('versions',) if legacy_version == '0.5.0' else ())):
@@ -490,7 +490,7 @@ def test_actual_old_broker_rejects_policy_through_new_cli(pair, tmp_path, commit
     socket = tmp_path / 'private' / 'old.sock'
     script = """import signal,sys,threading
 from pathlib import Path
-from agentic_kdbx.broker import Broker,open_vault_with_password,serve
+from akdbx.broker import Broker,open_vault_with_password,serve
 from test_merge import MASTER
 class Typer:
  def type_text(self,value): raise RuntimeError('typing forbidden in synthetic legacy test')
@@ -634,7 +634,7 @@ def test_real_cli_preservation_preview_save_and_refresh(pair, tmp_path):
         return json.loads(completed.stdout)
     with running_broker(socket, broker):
         caps = command('status')
-        assert caps['version'] == '0.9.1' and caps['merge_preservation_policy'] == 'capsule-v1'
+        assert caps['version'] == '0.9.2' and caps['merge_preservation_policy'] == 'capsule-v1'
         assert not command('merge', str(source), '--refresh-target', status=1)['ok']
         checked = command('merge', str(source), '--refresh-target', '--preserve-conflicts', '--check')
         assert checked['state'] == 'checked'

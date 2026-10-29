@@ -1,4 +1,4 @@
-**Security audit — agentic-kdbx — 18 September 2026**
+**Security audit — akdbx — 18 September 2026**
 
 Audited revision: `d77df04825622df1e7992a3d3b0140ef552ce72f` (`0.1.0`). The working tree was clean at the start. This audit adds this report and a synthetic reproduction suite; it does not change production behavior.
 
@@ -45,7 +45,7 @@ Consequently, the trusted computing base includes the OS account, Python environ
 
 - [ ] **F1 — High: saved credential control characters can redirect input or submit a form**
 
-Code: [broker.py:46](../../src/agentic_kdbx/broker.py#L46), [broker.py:146](../../src/agentic_kdbx/broker.py#L146).
+Code: [broker.py:46](../../src/akdbx/broker.py#L46), [broker.py:146](../../src/akdbx/broker.py#L146).
 
 `PynputTyper.type_text()` delegates directly to `Controller.type()`. The installed pynput 1.8.2 maps newline and carriage return to `Key.enter` and tab to `Key.tab` before pressing/releasing each key. The broker does not validate either credential before delivery. The existing mock-based “literal text” test replaces `Controller.type()` itself, so it cannot detect this behavior. The real implementation is also visible in [pynput's controller source](https://github.com/moses-palmer/pynput/blob/master/lib/pynput/keyboard/_base.py).
 
@@ -57,7 +57,7 @@ An imported or edited username/password containing these characters can alter fo
 
 - [ ] **F2 — High, conditional: persistent Serve mapping does not authenticate the unlock backend**
 
-Code/configuration: [cli.py:60](../../src/agentic_kdbx/cli.py#L60), [web_unlock.py:139](../../src/agentic_kdbx/web_unlock.py#L139), [VPS setup](../../skills/agentic-kdbx/references/vps-setup.md).
+Code/configuration: [cli.py:60](../../src/akdbx/cli.py#L60), [web_unlock.py:139](../../src/akdbx/web_unlock.py#L139), [VPS setup](../../skills/akdbx/references/vps-setup.md).
 
 The documented persistent Serve mapping and the observed live configuration point to a fixed, unprivileged loopback TCP port. The Python listener exists only for the broker's lifetime. No upstream TLS identity, protected socket ownership, or persistent supervisor-held listener ties the HTTPS origin to this particular broker.
 
@@ -71,9 +71,9 @@ Tailscale's documentation describes Serve as a proxy to a local service and expl
 
 - [ ] **F3 — Medium: client does not authenticate its socket or constrain the unlock URL**
 
-Code: [cli.py:15](../../src/agentic_kdbx/cli.py#L15), [cli.py:21](../../src/agentic_kdbx/cli.py#L21), [cli.py:81](../../src/agentic_kdbx/cli.py#L81).
+Code: [cli.py:15](../../src/akdbx/cli.py#L15), [cli.py:21](../../src/akdbx/cli.py#L21), [cli.py:81](../../src/akdbx/cli.py#L81).
 
-The CLI connects to a pathname and prints the returned dictionary without checking directory ownership/mode, symlinks, server peer credentials, or the scheme/origin of `unlock_url`. With `XDG_RUNTIME_DIR` absent, the predictable fallback is `/tmp/akdbx-UID/agentic-kdbx.sock`.
+The CLI connects to a pathname and prints the returned dictionary without checking directory ownership/mode, symlinks, server peer credentials, or the scheme/origin of `unlock_url`. With `XDG_RUNTIME_DIR` absent, the predictable fallback is `/tmp/akdbx-UID/akdbx.sock`.
 
 The test creates an intentionally world-writable test directory/socket and a fake server returning an arbitrary `https://phishing.example.invalid/` link. `request()` accepts it. The cross-user variant is inferred: another user could pre-create the predictable fallback before the victim's private directory exists. The real broker would fail its `chmod` on an attacker-owned directory, but that does not protect a CLI `status` request made before startup. The normal existing `/run/user/UID` boundary substantially reduces this exposure.
 
@@ -81,7 +81,7 @@ The test creates an intentionally world-writable test directory/socket and a fak
 
 - [ ] **F4 — Medium: concurrent requests bypass unlock throttling**
 
-Code: [web_unlock.py:34](../../src/agentic_kdbx/web_unlock.py#L34), [web_unlock.py:98](../../src/agentic_kdbx/web_unlock.py#L98), [web_unlock.py:114](../../src/agentic_kdbx/web_unlock.py#L114).
+Code: [web_unlock.py:34](../../src/akdbx/web_unlock.py#L34), [web_unlock.py:98](../../src/akdbx/web_unlock.py#L98), [web_unlock.py:114](../../src/akdbx/web_unlock.py#L114).
 
 `allowed_attempt()` checks a failure list under a lock, then releases it before expensive key derivation. A failure is recorded only when the opener returns an error. ThreadingHTTPServer can admit many requests before any has completed, so each sees fewer than five failures.
 
@@ -93,7 +93,7 @@ Prerequisites are a valid unlock token and ability to reach the endpoint with an
 
 - [ ] **F5 — Medium: HTTP worker/socket lifetime is unbounded**
 
-Code: [web_unlock.py:108](../../src/agentic_kdbx/web_unlock.py#L108), [web_unlock.py:139](../../src/agentic_kdbx/web_unlock.py#L139).
+Code: [web_unlock.py:108](../../src/akdbx/web_unlock.py#L108), [web_unlock.py:139](../../src/akdbx/web_unlock.py#L139).
 
 The server creates a thread per connection and sets no accepted-socket timeout or worker limit. A client can leave headers incomplete before identity/token validation, or supply a valid token and a declared body length while withholding the body. `MAX_BODY` limits bytes, not waiting time or thread count. Invalid tokens do not prevent the pre-handler header-read case.
 
@@ -105,7 +105,7 @@ This is directly reachable by local processes sharing the network namespace, reg
 
 - [ ] **F6 — Medium: ordinary socket failures can hang or kill the broker**
 
-Code: [broker.py:179](../../src/agentic_kdbx/broker.py#L179), [broker.py:187](../../src/agentic_kdbx/broker.py#L187), [broker.py:191](../../src/agentic_kdbx/broker.py#L191), [protocol.py:15](../../src/agentic_kdbx/protocol.py#L15).
+Code: [broker.py:179](../../src/akdbx/broker.py#L179), [broker.py:187](../../src/akdbx/broker.py#L187), [broker.py:191](../../src/akdbx/broker.py#L191), [protocol.py:15](../../src/akdbx/protocol.py#L15).
 
 The Unix server processes one connection at a time. Its listener timeout does not set a timeout on accepted sockets. An idle client blocks all subsequent requests. Only `ProtocolError` around receive/dispatch is handled; sending the response is outside that handler. A closed client causes `BrokenPipeError` and unwinds the entire server, removing its socket. The CLI then shuts down the unlock server as well.
 
@@ -117,7 +117,7 @@ A malicious same-UID process is outside the stated security model, so these are 
 
 - [ ] **F7 — Medium: abandoned queued requests can still type secrets**
 
-Code: [cli.py:23](../../src/agentic_kdbx/cli.py#L23), [broker.py:185](../../src/agentic_kdbx/broker.py#L185), [broker.py:135](../../src/agentic_kdbx/broker.py#L135).
+Code: [cli.py:23](../../src/akdbx/cli.py#L23), [broker.py:185](../../src/akdbx/broker.py#L185), [broker.py:135](../../src/akdbx/broker.py#L135).
 
 The client waits five seconds, but a fill request contains no delivery deadline or cancellation state. An earlier client can block the single server while a complete fill waits in the queue. When the first client releases it, the server reads the buffered request and types even if the fill caller has timed out and closed its connection. Only sending the receipt reveals the disconnect, after secret delivery.
 
@@ -129,7 +129,7 @@ This is more specific than the acknowledged possibility that typing is already i
 
 - [ ] **F8 — Low: socket lifecycle can disrupt another live broker**
 
-Code: [broker.py:167](../../src/agentic_kdbx/broker.py#L167), [broker.py:169](../../src/agentic_kdbx/broker.py#L169), [broker.py:195](../../src/agentic_kdbx/broker.py#L195).
+Code: [broker.py:167](../../src/akdbx/broker.py#L167), [broker.py:169](../../src/akdbx/broker.py#L169), [broker.py:195](../../src/akdbx/broker.py#L195).
 
 Startup unlinks any existing socket without proving it stale. Shutdown unlinks the pathname without confirming that it still refers to this server's inode. In the test, a second broker replaced a live first broker's pathname; stopping the first then removed the second's socket while the second server remained alive. The default HTTP-port collision often prevents this through the normal CLI, but it remains possible with separate unlock ports or direct library use.
 
@@ -139,7 +139,7 @@ The same setup unconditionally chmods the socket's existing parent to 0700. A cu
 
 - [ ] **F9 — Low: handle expiration does not release stored handles**
 
-Code: [broker.py:92](../../src/agentic_kdbx/broker.py#L92), [broker.py:99](../../src/agentic_kdbx/broker.py#L99), [broker.py:125](../../src/agentic_kdbx/broker.py#L125).
+Code: [broker.py:92](../../src/akdbx/broker.py#L92), [broker.py:99](../../src/akdbx/broker.py#L99), [broker.py:125](../../src/akdbx/broker.py#L125).
 
 Every match stores a new handle. Expiration is checked only when that exact handle is consumed. No search-time cleanup, timer, or size cap removes unused expired handles. The reproduction advances a fake clock beyond every expiry while searching 1,000 times; all 1,000 expired handles remain.
 

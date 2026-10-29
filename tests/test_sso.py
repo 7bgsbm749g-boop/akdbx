@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 from pykeepass import PyKeePass, create_database
 
-from agentic_kdbx import cli
-from agentic_kdbx.broker import Broker, open_vault_with_password
-from agentic_kdbx.persistence import VaultStore
-from agentic_kdbx.versions import ARCHIVE_UUID
+from akdbx import cli
+from akdbx.broker import Broker, open_vault_with_password
+from akdbx.persistence import VaultStore
+from akdbx.versions import ARCHIVE_UUID
 from test_broker import target_request, RecordingTyper, running_broker
 from test_writes import MASTER, OLD, CHOSEN, deployed, template, begin, private_post, reopened
 
@@ -412,7 +412,7 @@ def test_lost_success_response_can_be_reconciled_by_search(deployed, monkeypatch
 def test_actual_080_broker_is_not_dispatched_to(deployed, tmp_path):
     _, _, path, _ = deployed
     legacy = tmp_path / 'legacy'
-    package = legacy / 'agentic_kdbx'
+    package = legacy / 'akdbx'
     package.mkdir(parents=True)
     baseline = '8e46770'
     names = subprocess.run(['git', 'ls-tree', '--name-only', baseline + ':src/agentic_kdbx'],
@@ -424,7 +424,7 @@ def test_actual_080_broker_is_not_dispatched_to(deployed, tmp_path):
     socket = tmp_path / 'legacy-runtime' / 'broker.sock'
     script = '''import signal,sys,threading
 from pathlib import Path
-from agentic_kdbx.broker import Broker,open_vault_with_password,serve
+from akdbx.broker import Broker,open_vault_with_password,serve
 from test_writes import MASTER
 from test_broker import RecordingTyper
 stop=threading.Event()
