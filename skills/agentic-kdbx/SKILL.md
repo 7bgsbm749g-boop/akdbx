@@ -9,7 +9,7 @@ Use this skill for the user's authorized login task. The broker exposes login me
 
 ## Session delegation
 
-Delegate sign-in tasks that use this skill to a subagent running GPT-6.1 Terra (`gpt-6.1-terra`). Discover the available provider and model through the current orchestration tools, and pass this skill and the authorized task to the subagent. The delegated subagent performs the sign-in directly; it must not delegate the same sign-in again. If the requested model or delegation is unavailable, report the limitation instead of running the sign-in with another model or in the parent agent. This delegation requirement does not apply to other tasks that use this skill.
+For sign-in tasks that use this skill, check the current model through the current orchestration tools. If it is GPT-6.1 Terra (`gpt-6.1-terra`), perform the sign-in directly. Otherwise, delegate the sign-in to a GPT-6.1 Terra subagent, passing it this skill and the authorized task. If the requested model or delegation is unavailable, report the limitation instead of performing the sign-in with another model. This delegation requirement does not apply to other tasks that use this skill.
 
 ## Where the tool lives
 
