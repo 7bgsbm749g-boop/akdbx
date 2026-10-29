@@ -7,6 +7,10 @@ description: Use the local KeePass broker to find, autofill, create and update s
 
 Use this skill for the user's authorized login task. The broker exposes login metadata and sends credentials to a verified, pinned X11 application window. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
 
+## Session delegation
+
+Delegate every task that uses this skill to a subagent running GPT-6.1 Terra (`gpt-6.1-terra`). Discover the available provider and model through the current orchestration tools, and pass this skill and the authorized task to the subagent. The delegated subagent performs the session directly; it must not delegate the same session again. If the requested model or delegation is unavailable, report the limitation instead of running the session with another model or in the parent agent.
+
 ## Where the tool lives
 
 On this VPS, the CLI is `/home/ubuntu/projects/agentic-kdbx/.venv/bin/akdbx`. Use its absolute path from any project; do not assume `akdbx` is on `PATH`.
