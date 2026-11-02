@@ -9,7 +9,7 @@ Use this skill for the user's authorized login task. The broker exposes login me
 
 ## Session delegation
 
-When sign-in is needed, check the current model and available delegation through the current orchestration tools. If the current model is GPT-6.1 Terra (`gpt-6.1-terra`), perform the sign-in directly. Otherwise, if GPT-6.1 Terra and delegation are available, delegate only the sign-in to a GPT-6.1 Terra subagent. Give it this skill, the destination and account context needed to sign in, and instructions to verify the authenticated state and report the result or blocker. Do not delegate the user's wider task or ask the subagent to continue it after sign-in. The parent agent retains the wider task and resumes it after the sign-in result. If GPT-6.1 Terra or delegation is unavailable, perform the sign-in directly using the current model. This delegation requirement does not apply to other tasks that use this skill.
+When sign-in is needed, check the current model and available delegation through the current orchestration tools. If the current model is GPT-6.1 Terra (`gpt-6.1-terra`), perform the sign-in directly. Otherwise, if GPT-6.1 Terra and delegation are available, delegate only the sign-in to a GPT-6.1 Terra subagent. Give it this skill, the destination and account context needed to sign in, including known account emails, possible sign-in providers and prior attempts, and instructions to verify the authenticated state and report the result or blocker. Do not delegate the user's wider task or ask the subagent to continue it after sign-in. The parent agent retains the wider task and resumes it after the sign-in result. If GPT-6.1 Terra or delegation is unavailable, perform the sign-in directly using the current model. This delegation requirement does not apply to other tasks that use this skill.
 
 ## Where the tool lives
 
@@ -76,7 +76,28 @@ Example response (all values are illustrative):
 }
 ```
 
-Compare the current destination with the entry's site and the user's requested account. Select the unambiguous match from context. If multiple accounts remain plausible, ask which username/account to use. Do not guess or probe accounts by filling each one. No matches means report that no suitable saved login was found; do not fall back to extracting the vault.
+Resolve the sign-in method as well as the saved entry. Search relevant metadata
+by service hostname, requested username and known account email; a renamed
+account or provider login may be saved under a different title. Use the user's
+context or authorized connected-account metadata to resolve these identifiers.
+Do not guess between accounts or probe them by filling each one.
+
+A missing service password is a discovery step, not a sign-in blocker. Inspect
+the service's actual sign-in choices and check the corresponding saved Google,
+Apple, GitHub, organization SSO or email-code identity and existing sessions.
+Do this before asking the user how to sign in. An offered provider route and an
+unambiguous matching identity for the known account email are enough to try
+that sign-in route; a service-specific passwordless marker is not required.
+An email domain alone does not establish the account or authorize signup or
+changes to account links. Stop before those changes unless separately authorized.
+
+For example, if GitHub has no matching password entry but offers **Continue
+with Google**, and the known GitHub account email matches a saved Google
+identity, use that route and verify the expected GitHub username after return.
+Use a provider's credentials only on its independently verified sign-in page,
+never in the destination service's password field. If account ambiguity or a
+missing identity remains after this discovery, ask for the specific missing
+provider, account or saved-entry name. Do not extract the vault to find secrets.
 
 SSO-only entries add `passwordless: true` and `auth_method: "google"` or
 `"github"` to search metadata. Use that site's provider sign-in button and the
@@ -280,7 +301,7 @@ per-step confirmation is required. Keep receipts and encrypted originals.
 | --- | --- |
 | `broker is not running` (exit 2) | Check socket/environment and startup instructions in the setup reference. |
 | `vault locked` (exit 1 from search/fill) | Share its unlock URL, then recheck status. |
-| `entries: []` | Refine the site/account query or report no match. |
+| `entries: []` | Search the known account identifiers and inspect the service's supported provider or email-code routes before reporting a missing-login blocker. |
 | `unknown or expired handle; search again` | Search again; never fabricate or reuse a handle. |
 | `fill denied` or a terminal approval prompt | The running broker predates this policy change. Stop that old process before restarting the patched version with private web unlock; see the setup reference. Do not approve the old prompt or leave a pending fill behind. |
 | `autofill not started: ...` | No key was sent for that request. Recheck focus and search for a fresh handle before any deliberate retry. |
