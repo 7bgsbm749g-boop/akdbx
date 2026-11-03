@@ -141,14 +141,16 @@ def test_setup_and_password_tokens_cannot_cross_routes(deployed):
 
 
 @pytest.mark.parametrize('action', ['setup-totp', 'update-password'])
-def test_stale_private_links_refuse_forms_and_submissions(deployed, action):
+@pytest.mark.parametrize('status_action', ['write-status', 'cancel-write'])
+def test_stale_private_links_refuse_forms_and_submissions(deployed, action, status_action):
     """A real competing save must retire both kinds of private input forms."""
     broker, _, path, socket = deployed
     prepared = begin(broker, action)
     parsed = urlsplit(prepared['private_url'])
     route = parsed.path + '?' + parsed.query
     assert call(socket, 'GET', route)[0] == 200
-    assert private_post(socket, begin(broker))[0] == 200
+    winner = begin(broker)
+    assert private_post(socket, winner)[0] == 200
     before = path.read_bytes()
     op = broker.writes.get(prepared['write_handle'])
     assert op.state == 'pending' and op.revision != broker.writes.revision
@@ -159,7 +161,13 @@ def test_stale_private_links_refuse_forms_and_submissions(deployed, action):
         assert code == 404 and b'<form' not in page
         assert KEY.encode() not in page and b'synthetic-rejected-password' not in page
     assert path.read_bytes() == before
+    failed = dict(ok=True, state='failed', error='stale write; search and start again')
+    for _ in range(2):
+        assert broker.dispatch(dict(action=status_action, write_handle=prepared['write_handle'])) == failed
+    assert broker.dispatch(dict(action='write-status', write_handle=winner['write_handle'])) == dict(ok=True, state='saved')
+    assert path.read_bytes() == before
     fresh = begin(broker, action)
+    assert broker.dispatch(dict(action='write-status', write_handle=fresh['write_handle'])) == dict(ok=True, state='pending')
     parsed = urlsplit(fresh['private_url'])
     code, _, page = call(socket, 'GET', parsed.path + '?' + parsed.query)
     assert code == 200 and b'<form' in page

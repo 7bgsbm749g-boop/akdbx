@@ -339,9 +339,15 @@ class WriteManager:
         return {'ok': True, 'write_handle': handle, 'private_url': self.public_base.rstrip('/') + route + '?token=' + op.token, 'state': op.state}
 
     def status(self, handle, cancel=False):
+        """Report stale pending writes as failed before applying cancellation."""
         op = self.get(handle)
         if op is None:
             return {'ok': False, 'error': 'unknown or expired write; start again'}
+        if op.state == 'pending' and op.revision != self.revision:
+            op.state = 'failed'
+            op.error = 'stale write; search and start again'
+            op.password = None
+            op.fill_refs.clear()
         if cancel and op.state == 'pending':
             op.state = 'cancelled'
             op.password = None
