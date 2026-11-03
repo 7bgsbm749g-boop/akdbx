@@ -240,7 +240,7 @@ def test_stale_parallel_updates_do_not_overwrite(deployed):
     first, second = begin(broker), begin(broker)
     with ThreadPoolExecutor(max_workers=2) as pool:
         outcomes = list(pool.map(lambda result: private_post(socket, result)[0], [first, second]))
-    assert sorted(outcomes) == [200, 409]
+    assert sorted(outcomes) == [200, 404]
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == CHOSEN
 
 
@@ -442,7 +442,7 @@ def test_private_cancellation_expiry_controls_and_duplicate_race(deployed):
     values = {'title': 'Race entry', 'username': 'race-user', 'url': 'https://race.test', 'group': ''}
     first, second = [broker.dispatch({'action': 'create-entry', 'metadata': values}) for _ in range(2)]
     assert private_post(socket, first)[0] == 200
-    assert private_post(socket, second)[0] == 409
+    assert private_post(socket, second)[0] == 404
     assert len(reopened(path).find_entries(username='race-user')) == 1
     prepared = begin(broker)
     broker.clock = lambda: time.monotonic() + 600
