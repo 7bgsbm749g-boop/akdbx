@@ -61,7 +61,7 @@ class VaultLike(Protocol):
 
 class Typer(Protocol):
     def capture(self, pid: int, window: int) -> object: ...
-    def deliver(self, identity: object, steps: list[str | None], ready: Callable[[], bool]) -> None: ...
+    def deliver(self, identity: object, steps: list[str | None], ready: Callable[[], bool], *, guard: Callable[[], bool] | None = None) -> None: ...
 
 
 @dataclass
@@ -363,7 +363,13 @@ class Broker:
                         return {'ok': False, 'error': 'autofill not started: authenticator clock changed or code expired'}
 
                     steps = [username, None, password] if mode == 'login' else [username if mode == 'username' else password]
-                    self.typer.deliver(target, steps, lambda: self.clock() < start_deadline and delivery_ready() and code_valid())
+                    ready = lambda: self.clock() < start_deadline and delivery_ready() and code_valid()
+                    if mode == 'totp':
+                        self.typer.deliver(target, steps, ready, guard=code_valid)
+                        if not code_valid():
+                            return target_failure(True)
+                    else:
+                        self.typer.deliver(target, steps, ready)
                     return {"ok": True, "filled": mode, "target_delivery": DELIVERY}
                 finally:
                     self._keyboard_lock.release()

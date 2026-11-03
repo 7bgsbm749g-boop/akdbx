@@ -23,7 +23,7 @@ the rebrand does not migrate or rewrite private vault data.
 - The unlocked database and plaintext secrets stay in the foreground broker process.
 - The API has no reveal, clipboard, export, or arbitrary-field operation.
 - Search returns only title, username, URL, group, a random authenticated handle,
-  and auth-method/passwordless flags for managed SSO and email-code identities.
+  auth-method/passwordless flags, and TOTP-presence flags.
 - Handles expire after five minutes and are consumed on the first fill attempt.
 - The Unix socket and its directory are mode `0600` and `0700`. The CLI rejects
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
@@ -103,8 +103,8 @@ This returns a private `/totp?token=...` page. The user enters the site's setup
 key or otpauth URI there and confirms the displayed account. Never put keys,
 URIs or generated codes in CLI arguments, environment variables, chat, logs,
 screenshots or notes. The page uses the existing Tailscale private-write
-transport; it accepts no secrets through agent RPC. Check `write-status
-WRITE_HANDLE` for `state: saved`. A cancelled, expired or stale request cannot
+transport; it accepts no secrets through agent RPC. Check
+`write-status WRITE_HANDLE` for `state: saved`. A cancelled, expired or stale request cannot
 save; an existing OTP field requires explicit `setup-totp ... --replace`.
 Private imports save to KeePass only: they do not enable or change site 2FA.
 This version attaches authenticators to existing entries, including managed
@@ -129,7 +129,8 @@ akdbx fill-totp FRESH_SEARCH_HANDLE --target-url 'https://example.com/challenge'
   --target FRESH_TARGET_PIN
 ```
 
-The asserted target URL must be HTTPS and match the entry's origin; X11 does
+The asserted target URL and the entry URL must use ASCII HTTPS spelling
+(punycode for internationalized hosts) and match in origin; X11 does
 not attest the DOM field, browser tab or origin. The caller must verify them.
 The receipt contains only `ok`, `filled: totp` and `target_delivery`.
 The broker refuses a code with less than eight seconds remaining, returning

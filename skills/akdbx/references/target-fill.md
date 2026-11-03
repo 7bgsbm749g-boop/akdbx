@@ -112,7 +112,8 @@ edits. Install there with
 `.venv/bin/pip install -e .` (the direct dependency is now python-xlib >=0.33,<1).
 Do not change permissions, service policy, desktop/profile or vault configuration.
 
-Check `.venv/bin/akdbx --version` reports 0.9.0. Perform one coordinated normal
+Check `.venv/bin/akdbx --version` reports the reviewed release (0.10.0 or newer
+for TOTP) and the required capabilities are present. Perform one coordinated normal
 restart of the existing owned broker using its unchanged DB/key/socket/unlock
 and desktop environment. Share its new private unlock link; let the user unlock.
 Require the running broker's version/capabilities above, `locked: false`, and

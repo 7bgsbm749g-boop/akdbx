@@ -7,6 +7,7 @@ import secrets
 import string
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
@@ -391,8 +392,16 @@ class WriteManager:
                 entry = selected(candidate)
                 if totp_configured(entry) and not op.replace:
                     raise WriteError('TOTP already configured; explicit --replace is required')
+                # KDBX/native merge selects versions at second precision.
+                # A field assignment and save_history() do not advance mtime.
+                # Avoid a same-second active/history conflict even for repeated
+                # imports or an existing future-dated historical version.
+                latest = max([entry.mtime, *(version.mtime for version in entry.history)])
+                now = datetime.fromtimestamp(self.broker.wall_clock(), timezone.utc).replace(microsecond=0)
+                changed_at = max(now, latest.replace(microsecond=0) + timedelta(seconds=1))
                 entry.save_history()
                 entry.otp = uri
+                entry.mtime = changed_at
                 # PyKeePass reserves otp as a standard field. Its setter keeps
                 # an existing field's protection flag, so force protection for
                 # imported/replaced keys, including formerly unprotected OTPs.

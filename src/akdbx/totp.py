@@ -129,11 +129,14 @@ def https_origin(url):
     # not a DOM/origin attestation by the X11 transport.
     from .writes import site_origin
     try:
-        if not isinstance(url, str) or len(url) > 4096 or '\\' in url or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url):
+        # Python's IDNA 2003 codec can collapse distinct browser hostnames
+        # (for example faß.test and fass.test). Require the browser's ASCII
+        # URL spelling, including punycode for internationalized hostnames.
+        if not isinstance(url, str) or not url.isascii() or len(url) > 4096 or '\\' in url or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url):
             raise ValueError
         result = site_origin(url)
         if result[0] != 'https':
             raise ValueError
         return result
     except Exception:
-        raise TotpError('TOTP requires a verified HTTPS site URL without credentials') from None
+        raise TotpError('TOTP requires a verified ASCII HTTPS site URL without credentials') from None

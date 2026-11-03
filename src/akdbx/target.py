@@ -239,7 +239,7 @@ class X11Typer:
         finally:
             session.close()
 
-    def deliver(self, identity, steps, ready):
+    def deliver(self, identity, steps, ready, *, guard=None):
         started = False
         session = None
         try:
@@ -248,7 +248,7 @@ class X11Typer:
                 raise TargetError()
             codes = session.prepare(steps)
             session.check()
-            if not ready():
+            if not ready() or guard is not None and not guard():
                 raise TargetError()
             deadline = time.monotonic() + DELIVERY_TIMEOUT
             for code in codes:
@@ -259,12 +259,20 @@ class X11Typer:
                 # deadline/caller after the final preflight, before any key.
                 if time.monotonic() >= deadline or not started and not ready():
                     raise TargetError()
+                # Unlike the start deadline, an authenticator's validity must
+                # hold throughout dispatch, including after the final pair.
+                if guard is not None and not guard():
+                    raise TargetError()
                 # Conservatively uncertain even if native send raises before
                 # it can confirm whether the first pair reached the server.
                 started = True
                 session.send_pair(code)
                 session.check()
+                if guard is not None and not guard():
+                    raise TargetError()
             session.check()
+            if guard is not None and not guard():
+                raise TargetError()
         except Exception:
             raise DeliveryError(started) from None
         finally:

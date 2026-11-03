@@ -434,8 +434,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.command in {'setup-totp', 'fill-totp'}:
         allowed = ({'ok', 'write_handle', 'private_url', 'state'} if args.command == 'setup-totp'
-                   else {'ok', 'filled', 'target_delivery'}) if response.get('ok') else {'ok', 'error', 'retry_after', 'unlock_url'}
-        if set(response) - allowed:
+                   else {'ok', 'filled', 'target_delivery'}) if response.get('ok') else {'ok', 'error', 'retry_after', 'unlock_url', 'delivery'}
+        invalid_delivery = 'delivery' in response and (
+            args.command != 'fill-totp' or response['delivery'] not in ('not-started', 'uncertain'))
+        invalid_retry = 'retry_after' in response and (
+            type(response['retry_after']) is not int or not 1 <= response['retry_after'] <= 120)
+        if set(response) - allowed or invalid_delivery or invalid_retry:
             print('TOTP operation outcome unconfirmed: receipt rejected; inspect status before any retry', file=sys.stderr)
             return 2
         if args.command == 'setup-totp' and response.get('ok') and (

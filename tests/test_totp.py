@@ -273,7 +273,7 @@ def test_near_expiry_returns_only_retry_time_and_does_not_sleep():
 @pytest.mark.parametrize('started', [False, True])
 def test_delivery_failures_do_not_leak_code_or_setup(started, capsys, caplog):
     broker, typer = make_totp_broker()
-    def fail(*args):
+    def fail(*args, **kwargs):
         exception = DeliveryError(started)
         exception.args = (KEY + '050471',)
         raise exception
@@ -286,7 +286,7 @@ def test_delivery_failures_do_not_leak_code_or_setup(started, capsys, caplog):
 
 def test_delivery_ready_rechecks_wall_clock_before_start():
     broker, typer = make_totp_broker()
-    def delayed(identity, steps, ready):
+    def delayed(identity, steps, ready, *, guard=None):
         broker.wall_clock = lambda: 1111111140
         if not ready():
             raise DeliveryError(False)
@@ -365,3 +365,86 @@ def test_locked_totp_commands_do_not_touch_credentials():
     broker = Broker(None, object())
     for action in ('fill-totp', 'setup-totp'):
         assert broker.dispatch(dict(action=action)) == dict(ok=False, error='vault locked')
+
+
+@pytest.mark.parametrize('saved,target', [('https://fass.test/login', 'https://faß.test/challenge'),
+                                         ('https://faß.test/login', 'https://fass.test/challenge')])
+def test_unicode_origin_collision_refused_before_reading_key(saved, target):
+    class UnreadableOtp(Entry):
+        @property
+        def otp(self):
+            raise AssertionError('key must not be read for an ambiguous origin')
+    entry = UnreadableOtp(url=saved)
+    typer = RecordingTyper()
+    broker = Broker(Vault([entry]), typer)
+    handle = broker._new_handle(entry)
+    response = broker.dispatch(dict(action='fill-totp', handle=handle, target_url=target, **target_request(broker)))
+    assert not response['ok'] and 'ASCII HTTPS' in response['error'] and not typer.events
+
+
+def test_ascii_punycode_origin_is_supported_without_collapsing_other_sites():
+    from akdbx.totp import https_origin
+    assert https_origin('https://xn--fa-hia.test/challenge') != https_origin('https://fass.test/challenge')
+
+
+def test_import_and_same_second_replacement_advance_merge_timestamps(deployed):
+    from akdbx.merge import _check_ambiguity
+    broker, _, path, socket = deployed
+    original = reopened(path).find_entries(title='Synthetic site', first=True).mtime
+    broker.wall_clock = lambda: original.timestamp()
+    assert post_setup(socket, prepare(broker))[0] == 200
+    first = reopened(path).find_entries(title='Synthetic site', first=True)
+    assert first.mtime > original and first.history[-1].mtime == original
+    _check_ambiguity(broker.vault)
+    assert post_setup(socket, prepare(broker, replace=True), URI + '&digits=8')[0] == 200
+    second = reopened(path).find_entries(title='Synthetic site', first=True)
+    assert second.mtime > first.mtime and second.history[-1].mtime == first.mtime
+    _check_ambiguity(broker.vault)
+
+
+@pytest.mark.parametrize('switch_after', [1, 6, 'close'])
+def test_production_transport_refuses_expiry_during_and_after_dispatch(switch_after):
+    from test_target import Session, session_typer
+    from akdbx.target import TargetPins
+    broker, _ = make_totp_broker()
+    session = Session(123, 456)
+    production = session_typer(session)
+    broker.typer = production
+    broker.targets = TargetPins(production, broker.clock)
+    def change_clock(current):
+        if len(current.sent) == switch_after:
+            broker.wall_clock = lambda: 1111111140
+    session.after_send = change_clock
+    original_close = session.close
+    def close():
+        if switch_after == 'close' and session.sent:
+            broker.wall_clock = lambda: 1111111140
+        original_close()
+    session.close = close
+    response, _ = totp_fill(broker)
+    assert response == failure(True)
+    assert len(session.sent) == (switch_after if isinstance(switch_after, int) else 6)
+    assert session.closed
+
+
+@pytest.mark.parametrize('started', [False, True])
+def test_cli_preserves_valid_totp_delivery_failure_state(monkeypatch, capsys, started):
+    responses = iter([dict(ok=True, totp_supported=True, totp_protocol=1),
+                      dict(ok=True, target_fill_required=True, target_fill_protocol=1, target_fill_delivery='x11-send-event-v1'),
+                      failure(started)])
+    monkeypatch.setattr(cli, 'request', lambda *a, **kw: next(responses))
+    assert cli.main(['fill-totp', 'synthetic-handle', '--target-url', 'https://example.test', '--target', 'synthetic-pin']) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == failure(started) and not captured.err
+
+
+@pytest.mark.parametrize('extra', [dict(delivery='unexpected-private-value'), dict(delivery={}),
+                                 dict(retry_after=True), dict(retry_after=0), dict(retry_after=121)])
+def test_cli_rejects_invalid_totp_error_values(monkeypatch, capsys, extra):
+    responses = iter([dict(ok=True, totp_supported=True, totp_protocol=1),
+                      dict(ok=True, target_fill_required=True, target_fill_protocol=1, target_fill_delivery='x11-send-event-v1'),
+                      dict(ok=False, error='synthetic failure', **extra)])
+    monkeypatch.setattr(cli, 'request', lambda *a, **kw: next(responses))
+    assert cli.main(['fill-totp', 'synthetic-handle', '--target-url', 'https://example.test', '--target', 'synthetic-pin']) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and 'unexpected-private-value' not in captured.err

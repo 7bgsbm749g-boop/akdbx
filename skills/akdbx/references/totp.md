@@ -37,6 +37,8 @@ without gaining password fill or password generation privileges.
    typing or put the code into chat, logs, screenshots or notes.
 
 The target URL is required, must be HTTPS, and must match the entry's origin.
+Both URLs must use ASCII spelling, including punycode for internationalized
+hostnames; Unicode URLs are refused to avoid ambiguous IDNA normalization.
 This is a caller assertion: pinned X11 delivery does not verify a DOM field,
 tab, origin or site acceptance. All search handles and target pins are
 single-use, including on failure. Success returns only a dispatch receipt:

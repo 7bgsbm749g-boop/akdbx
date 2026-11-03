@@ -50,8 +50,9 @@ class RecordingTyper:
     def capture(self, pid, window):
         return (pid, window)
 
-    def deliver(self, identity, steps, ready):
+    def deliver(self, identity, steps, ready, *, guard=None):
         assert ready()
+        assert guard is None or guard()
         for text in steps:
             if text is None:
                 self.press_tab()

@@ -96,6 +96,13 @@ def session_typer(session):
     return X11Typer(lambda pid, window: session)
 
 
+def test_start_deadline_remains_distinct_from_ongoing_guard():
+    session = Session(123, 456)
+    # An ordinary fill's start authorization may end after its first pair.
+    session_typer(session).deliver(session.identity, ['synthetic'], lambda: not session.sent)
+    assert len(session.sent) == len('synthetic') and session.closed
+
+
 @pytest.mark.parametrize('change', ['pid', 'window', 'focus', 'root', 'process', 'wm_class', 'machine'])
 def test_changed_pinned_identity_refused_before_keys(change):
     session = Session(123, 456)
