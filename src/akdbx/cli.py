@@ -136,7 +136,7 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         raise ValueError("configured unlock origin must be an HTTPS origin without path, query, or credentials")
     if type(response.get("ok")) is not bool:
         raise ProtocolError("invalid broker response")
-    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'passwordless_identity_supported', 'target_fill_required'):
+    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'passwordless_identity_supported', 'target_fill_required', 'totp_supported'):
         if capability in response and type(response[capability]) is not bool:
             raise ProtocolError("invalid broker response")
     if 'version' in response and not isinstance(response['version'], str):
@@ -205,12 +205,13 @@ def parser() -> argparse.ArgumentParser:
     pin = commands.add_parser('pin-target', help='pin an independently verified local foreground PID/window and current input-focus window for 30 seconds')
     pin.add_argument('--pid', type=int, required=True)
     pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID, decimal or 0x hex')
-    for name in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password'):
+    for name in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password', 'setup-totp'):
         help_text = {
             'create-sso-entry': 'save a Google/GitHub SSO identity (no password form)',
             'create-passwordless-entry': 'save an email-code identity (no password or saved code)',
             'generate-password': 'stage a broker-generated password for an existing entry',
             'generate-entry': 'stage a broker-generated password for a new entry',
+            'setup-totp': 'import an authenticator key through a private page for an existing entry; never pass keys on the command line',
         }.get(name, 'prepare a private password save')
         command = commands.add_parser(name, help=help_text, description=help_text)
         if name not in ('create-entry', 'generate-entry', *IDENTITY_CREATES):
@@ -224,6 +225,8 @@ def parser() -> argparse.ArgumentParser:
         if name in ('generate-password', 'generate-entry'):
             command.add_argument('--length', type=int, default=24)
             command.add_argument('--symbols', default='!@#$%*-_+=?', help='allowed ASCII punctuation; empty for letters and digits')
+        if name == 'setup-totp':
+            command.add_argument('--replace', action='store_true', help='explicitly permit replacing this entry\'s existing authenticator')
     for name in ('write-status', 'cancel-write', 'commit-password'):
         command = commands.add_parser(name, help='check/cancel a staged write' if name != 'commit-password' else 'save staged password after verified website acceptance')
         command.add_argument('write_handle')
@@ -232,7 +235,10 @@ def parser() -> argparse.ArgumentParser:
     generated = commands.add_parser('fill-generated', help='fill a single-use generated password reference into a verified focused field')
     generated.add_argument('handle')
     generated.add_argument('--target-url', required=True, help='independently verified reset site URL')
-    for command in (fill, generated):
+    totp = commands.add_parser('fill-totp', help='generate and directly fill a saved TOTP code; returns no key or code')
+    totp.add_argument('handle', help='fresh selected-entry handle from search')
+    totp.add_argument('--target-url', required=True, help='independently verified HTTPS challenge URL; must match the entry origin')
+    for command in (fill, generated, totp):
         command.add_argument('--target', required=True, help='fresh single-use pin-target token; no global fallback')
     commands.add_parser("status", help="check broker status")
     merge = commands.add_parser('merge', help='merge another encrypted KDBX into the broker vault using held credentials')
@@ -304,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         print('Merge operation: ' + payload['operation_id'], file=sys.stderr)
     elif args.command == 'merge-status':
         payload['operation_id'] = args.operation_id
-    elif args.command in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password'):
+    elif args.command in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password', 'setup-totp'):
         payload['metadata'] = {field: getattr(args, field) for field in ('title', 'username', 'url', 'group')}
         if args.command not in ('create-entry', 'generate-entry', *IDENTITY_CREATES):
             payload['handle'] = args.handle
@@ -312,11 +318,13 @@ def main(argv: list[str] | None = None) -> int:
             payload.update(length=args.length, symbols=args.symbols)
         if args.command in IDENTITY_CREATES:
             payload['auth_method'] = args.auth_method
+        if args.command == 'setup-totp':
+            payload['replace'] = args.replace
     elif args.command in {'write-status', 'cancel-write', 'commit-password'}:
         payload['write_handle'] = args.write_handle
         if args.command == 'commit-password':
             payload['site_accepted'] = args.site_accepted
-    elif args.command == 'fill-generated':
+    elif args.command in {'fill-generated', 'fill-totp'}:
         payload.update(handle=args.handle, target_url=args.target_url, start_deadline=time.monotonic() + FILL_START_TIMEOUT)
     elif args.command == "fill":
         payload.update(
@@ -324,10 +332,17 @@ def main(argv: list[str] | None = None) -> int:
             mode=args.mode,
             start_deadline=time.monotonic() + FILL_START_TIMEOUT,
         )
-    if args.command in {'fill', 'fill-generated'}:
+    if args.command in {'fill', 'fill-generated', 'fill-totp'}:
         payload.update(target=args.target, target_protocol=1)
     identity_kind = 'SSO' if args.command == 'create-sso-entry' else 'passwordless'
     try:
+        if args.command in {'setup-totp', 'fill-totp'}:
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True or capabilities.get('totp_supported') is not True
+                    or type(capabilities.get('totp_protocol')) is not int or capabilities.get('totp_protocol') != 1):
+                print(json.dumps({'ok': False, 'error': 'broker lacks TOTP protocol 1; require broker 0.10.0 or newer; TOTP request not sent'}))
+                return 1
         if args.command == 'generate-entry':
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -335,7 +350,7 @@ def main(argv: list[str] | None = None) -> int:
                     or capabilities.get('generated_entry_protocol') != 1):
                 print(json.dumps({'ok': False, 'error': 'broker lacks generated entry protocol 1; generation not sent'}))
                 return 1
-        if args.command in {'pin-target', 'fill', 'fill-generated'}:
+        if args.command in {'pin-target', 'fill', 'fill-generated', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
             if (capabilities.get('ok') is not True or capabilities.get('target_fill_required') is not True
@@ -344,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
                     or capabilities.get('target_fill_delivery') != DELIVERY):
                 print(json.dumps({'ok': False, 'error': 'broker lacks target fill protocol 1; require broker 0.9.0 or newer; target request not sent'}))
                 return 1
-            if args.command in {'fill', 'fill-generated'}:
+            if args.command in {'fill', 'fill-generated', 'fill-totp'}:
                 # Capability preflight does not use up the short start deadline.
                 payload['start_deadline'] = time.monotonic() + FILL_START_TIMEOUT
         if args.command in IDENTITY_CREATES:
@@ -403,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"refusing untrusted broker response: {exc}", file=sys.stderr)
         return 2
     except (TimeoutError, OSError):
-        if args.command in {"fill", "fill-generated"}:
+        if args.command in {"fill", "fill-generated", "fill-totp"}:
             print(
                 "autofill outcome uncertain: connection lost after request; do not retry automatically",
                 file=sys.stderr,
@@ -417,15 +432,30 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("broker request failed", file=sys.stderr)
         return 2
-    if args.command in {'pin-target', 'fill', 'fill-generated'} and response.get('ok'):
+    if args.command in {'setup-totp', 'fill-totp'}:
+        allowed = ({'ok', 'write_handle', 'private_url', 'state'} if args.command == 'setup-totp'
+                   else {'ok', 'filled', 'target_delivery'}) if response.get('ok') else {'ok', 'error', 'retry_after', 'unlock_url', 'delivery'}
+        invalid_delivery = 'delivery' in response and (
+            args.command != 'fill-totp' or response['delivery'] not in ('not-started', 'uncertain'))
+        invalid_retry = 'retry_after' in response and (
+            type(response['retry_after']) is not int or not 1 <= response['retry_after'] <= 120)
+        if set(response) - allowed or invalid_delivery or invalid_retry:
+            print('TOTP operation outcome unconfirmed: receipt rejected; inspect status before any retry', file=sys.stderr)
+            return 2
+        if args.command == 'setup-totp' and response.get('ok') and (
+                response.get('state') != 'pending' or not isinstance(response.get('write_handle'), str)
+                or not response['write_handle'] or urlsplit(response.get('private_url', '')).path != '/totp'):
+            print('TOTP setup outcome unconfirmed: receipt rejected; inspect status before any retry', file=sys.stderr)
+            return 2
+    if args.command in {'pin-target', 'fill', 'fill-generated', 'fill-totp'} and response.get('ok'):
         invalid_pin = args.command == 'pin-target' and (
             not isinstance(response.get('target'), str) or len(response['target']) != 64
             or any(c not in '0123456789abcdef' for c in response['target'])
             or type(response.get('pid')) is not int or response['pid'] != args.pid
             or type(response.get('window')) is not int or response['window'] != args.window
             or type(response.get('expires_in')) is not int or response['expires_in'] != 30)
-        invalid_fill = args.command in {'fill', 'fill-generated'} and (
-            response.get('filled') != (args.mode if args.command == 'fill' else 'password'))
+        invalid_fill = args.command in {'fill', 'fill-generated', 'fill-totp'} and (
+            response.get('filled') != (args.mode if args.command == 'fill' else 'totp' if args.command == 'fill-totp' else 'password'))
         if response.get('target_delivery') != DELIVERY or invalid_pin or invalid_fill:
             print('target operation outcome unconfirmed: receipt rejected; do not retry automatically', file=sys.stderr)
             return 2

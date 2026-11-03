@@ -1,6 +1,6 @@
 # Target-pinned X11 fill (0.9.0)
 
-All saved and generated fills require a fresh target token. There is no legacy
+All saved, generated and TOTP fills require a fresh target token. There is no legacy
 or global-input option. This is a breaking fill-API change; passwordless SSO
 protocol 1, writes, merges and unlock behavior are unchanged.
 
@@ -31,6 +31,11 @@ For a reset, each `fill-generated REF --target-url VERIFIED_URL --target TOKEN`
 needs its own fresh pin after independently focusing that field. A failed or
 partial generated fill does not count toward the two successful fills needed
 for `commit-password --site-accepted`. Do not commit until the site accepts it.
+
+TOTP additionally requires protocol 1 from broker 0.10.0 or newer. Use
+`fill-totp HANDLE --target-url VERIFIED_HTTPS_URL --target TOKEN` for the
+selected account's authenticator challenge. Its origin must match the entry.
+See [the TOTP workflow](totp.md) for private setup, expiry handling and limits.
 
 The broker consumes the credential handle on the first fill attempt. A resolved
 target pin is consumed even if later mode, deadline, text or delivery checks
@@ -107,7 +112,8 @@ edits. Install there with
 `.venv/bin/pip install -e .` (the direct dependency is now python-xlib >=0.33,<1).
 Do not change permissions, service policy, desktop/profile or vault configuration.
 
-Check `.venv/bin/akdbx --version` reports 0.9.0. Perform one coordinated normal
+Check `.venv/bin/akdbx --version` reports the reviewed release (0.10.0 or newer
+for TOTP) and the required capabilities are present. Perform one coordinated normal
 restart of the existing owned broker using its unchanged DB/key/socket/unlock
 and desktop environment. Share its new private unlock link; let the user unlock.
 Require the running broker's version/capabilities above, `locked: false`, and

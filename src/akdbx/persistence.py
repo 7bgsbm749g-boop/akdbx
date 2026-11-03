@@ -246,7 +246,7 @@ class VaultStore:
         if (parent.st_dev, parent.st_ino) != (opened.st_dev, opened.st_ino):
             raise SaveError('vault directory changed; restart and unlock')
 
-    def commit(self, vault, mutate):
+    def commit(self, vault, mutate, *, verify_candidate=None):
         """Return a reopened, verified candidate only after durable replacement."""
         if self.recovery_required:
             raise SaveError("save outcome uncertain; restart and unlock")
@@ -282,6 +282,8 @@ class VaultStore:
             encrypted = buffer.getvalue()
             verified = open_encrypted(encrypted, candidate.password, candidate.keyfile)
             verify(verified, retained_versions)
+            if verify_candidate is not None:
+                verify_candidate(verified)
             verified._akdbx_store = self
             # Every file below contains only an encrypted KDBX, never a password.
             backup = '.' + self.path.name + '.akdbx-backup-' + secrets.token_hex(12)
