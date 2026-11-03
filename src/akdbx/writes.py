@@ -7,7 +7,8 @@ import secrets
 import string
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from time import monotonic, sleep
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
@@ -25,6 +26,30 @@ AUTH_METHOD = 'akdbx.auth-method'
 
 class WriteError(ValueError):
     """Only fixed, non-secret messages may cross RPC."""
+
+
+def _totp_changed_at(entry, wall_clock):
+    """Use a real, strictly newer KDBX second without inventing future dates."""
+    latest = max([entry.mtime, *(version.mtime for version in entry.history)]).replace(microsecond=0)
+    deadline = monotonic() + 1.25
+    while True:
+        timestamp = wall_clock()
+        try:
+            if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                raise ValueError
+            now = datetime.fromtimestamp(timestamp, timezone.utc).replace(microsecond=0)
+        except (ValueError, TypeError, OverflowError):
+            raise WriteError('invalid authenticator clock; TOTP not saved') from None
+        if latest > now:
+            raise WriteError('entry or history is future-dated; synchronize the clock before importing TOTP')
+        if latest < now:
+            return now
+        # Ordinary same-second saves can wait for a real clock boundary. A
+        # frozen/backward clock must refuse instead of creating a merge tie or
+        # letting remote edits lose to an artificially future-dated version.
+        if monotonic() >= deadline:
+            raise WriteError('clock did not advance beyond the entry timestamp; retry TOTP import later')
+        sleep(0.05)
 
 
 def sso_capabilities():
@@ -394,11 +419,9 @@ class WriteManager:
                     raise WriteError('TOTP already configured; explicit --replace is required')
                 # KDBX/native merge selects versions at second precision.
                 # A field assignment and save_history() do not advance mtime.
-                # Avoid a same-second active/history conflict even for repeated
-                # imports or an existing future-dated historical version.
-                latest = max([entry.mtime, *(version.mtime for version in entry.history)])
-                now = datetime.fromtimestamp(self.broker.wall_clock(), timezone.utc).replace(microsecond=0)
-                changed_at = max(now, latest.replace(microsecond=0) + timedelta(seconds=1))
+                # Wait only for ordinary same-second collisions; a future
+                # current/history version must not advance the active clock.
+                changed_at = _totp_changed_at(entry, self.broker.wall_clock)
                 entry.save_history()
                 entry.otp = uri
                 entry.mtime = changed_at
@@ -418,6 +441,8 @@ class WriteManager:
             op.state = 'saved'
             return {'ok': True, 'state': 'saved'}
         except SaveError as exc:
+            op.error = str(exc)
+        except WriteError as exc:
             op.error = str(exc)
         except ValueError:
             op.error = 'stale or conflicting TOTP destination; search and start again'

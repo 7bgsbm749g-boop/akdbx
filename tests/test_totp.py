@@ -306,7 +306,6 @@ def test_totp_on_provider_identity_does_not_enable_password_fill():
 
 def test_cli_private_setup_and_fill_over_real_rpc(deployed, tmp_path, capsys):
     broker, typer, path, web_socket = deployed
-    broker.wall_clock = lambda: 1111111111
     rpc_socket = tmp_path / 'rpc-private' / 'rpc.sock'
     prefix = ['--socket', str(rpc_socket), '--unlock-origin', 'https://node.example:9443']
     with running_broker(rpc_socket, broker):
@@ -315,6 +314,7 @@ def test_cli_private_setup_and_fill_over_real_rpc(deployed, tmp_path, capsys):
         assert cli.main([*prefix, 'setup-totp', selected['handle'], *metadata_args]) == 0
         prepared = json.loads(capsys.readouterr().out)
         assert post_setup(web_socket, prepared)[0] == 200
+        broker.wall_clock = lambda: 1111111111
         assert cli.main([*prefix, 'write-status', prepared['write_handle']]) == 0
         assert json.loads(capsys.readouterr().out) == dict(ok=True, state='saved')
         selected = broker.dispatch(dict(action='search', query='Synthetic site'))['entries'][0]
@@ -387,19 +387,74 @@ def test_ascii_punycode_origin_is_supported_without_collapsing_other_sites():
     assert https_origin('https://xn--fa-hia.test/challenge') != https_origin('https://fass.test/challenge')
 
 
-def test_import_and_same_second_replacement_advance_merge_timestamps(deployed):
+def test_import_and_same_second_replacement_advance_merge_timestamps(deployed, monkeypatch):
+    import akdbx.writes as writes
     from akdbx.merge import _check_ambiguity
     broker, _, path, socket = deployed
     original = reopened(path).find_entries(title='Synthetic site', first=True).mtime
-    broker.wall_clock = lambda: original.timestamp()
+    now = [original.timestamp() + 1]
+    broker.wall_clock = lambda: now[0]
+    waited = []
+    def advance_clock(delay):
+        waited.append(delay)
+        now[0] += 1
+    monkeypatch.setattr(writes, 'sleep', advance_clock)
     assert post_setup(socket, prepare(broker))[0] == 200
     first = reopened(path).find_entries(title='Synthetic site', first=True)
     assert first.mtime > original and first.history[-1].mtime == original
+    assert first.mtime.timestamp() <= now[0] and not waited
     _check_ambiguity(broker.vault)
     assert post_setup(socket, prepare(broker, replace=True), URI + '&digits=8')[0] == 200
     second = reopened(path).find_entries(title='Synthetic site', first=True)
     assert second.mtime > first.mtime and second.history[-1].mtime == first.mtime
+    assert second.mtime.timestamp() <= now[0] and waited == [0.05]
     _check_ambiguity(broker.vault)
+
+
+@pytest.mark.parametrize('future_in', ['active', 'history'])
+def test_future_timestamp_refuses_import_and_preserves_encrypted_vault(deployed, future_in):
+    from datetime import timedelta
+    from lxml.etree import tostring
+    from akdbx.broker import open_vault_with_password
+    broker, typer, path, socket = deployed
+    vault = reopened(path)
+    entry = vault.find_entries(title='Synthetic site', first=True)
+    now = entry.mtime
+    entry.mtime = now + timedelta(days=365)
+    if future_in == 'history':
+        entry.save_history()
+        entry.mtime = now - timedelta(days=1)
+    vault.save()
+    broker.vault = open_vault_with_password(path, MASTER)
+    broker.wall_clock = lambda: now.timestamp()
+    before = path.read_bytes()
+    history = [tostring(version._element)
+               for version in broker.vault.find_entries(title='Synthetic site', first=True).history]
+    prepared = prepare(broker)
+    code, _, page = post_setup(socket, prepared)
+    assert code == 409 and b'future-dated' in page and KEY.encode() not in page
+    assert path.read_bytes() == before and not typer.events
+    current = reopened(path).find_entries(title='Synthetic site', first=True)
+    assert current.otp is None and current.password == OLD
+    assert [tostring(version._element) for version in current.history] == history
+    assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle']))['state'] == 'failed'
+
+
+@pytest.mark.parametrize('clock_behavior', ['frozen', 'backward'])
+def test_nonadvancing_clock_refuses_import_without_timestamp_changes(deployed, monkeypatch, clock_behavior):
+    import akdbx.writes as writes
+    broker, typer, path, socket = deployed
+    timestamp = broker.vault.find_entries(title='Synthetic site', first=True).mtime.timestamp()
+    current = [timestamp]
+    broker.wall_clock = lambda: current[0]
+    ticks = iter([0, 0, 2])
+    monkeypatch.setattr(writes, 'monotonic', lambda: next(ticks))
+    monkeypatch.setattr(writes, 'sleep', lambda delay: current.__setitem__(0, timestamp - (1 if clock_behavior == 'backward' else 0)))
+    before = path.read_bytes()
+    code, _, page = post_setup(socket, prepare(broker))
+    assert code == 409 and KEY.encode() not in page
+    assert (b'future-dated' if clock_behavior == 'backward' else b'clock did not advance') in page
+    assert path.read_bytes() == before and not typer.events
 
 
 @pytest.mark.parametrize('switch_after', [1, 6, 'close'])

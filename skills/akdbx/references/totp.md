@@ -96,6 +96,11 @@ The standard protected KDBX `otp` field stores a normalized otpauth URI.
 The broker verifies the exact protected field by reopening the encrypted
 candidate before vault replacement; passwords and unrelated entry data are
 preserved. Stale/external edits and recovery-required state refuse writes.
+Imports also refuse a current entry or history version dated after the host's
+clock. Ordinary same-second saves wait up to 1.25 seconds for a newer real
+second; a frozen or backward clock refuses the save. Synchronize the clock
+before a new private import. Do not rewrite history or backdate records to
+force a save. The broker never invents a future modification time.
 
 Supported: RFC 6238 SHA1/SHA256/SHA512, six/eight digits, 15..120-second periods.
 A bare Base32 key defaults to SHA1, six digits, 30 seconds. A URI carries other
