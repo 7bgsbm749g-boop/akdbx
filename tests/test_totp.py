@@ -14,7 +14,7 @@ from akdbx.totp import (Configuration, TotpError, code_at, configured,
                         parse_setup, read_configuration)
 from test_broker import Entry, RecordingTyper, Vault, running_broker, target_request
 from test_web_unlock import call
-from test_writes import MASTER, OLD, begin, deployed, reopened, template
+from test_writes import MASTER, OLD, begin, deployed, private_post, reopened, template
 
 
 KEY = base64.b32encode(b'12345678901234567890').decode('ascii')
@@ -138,6 +138,61 @@ def test_setup_and_password_tokens_cannot_cross_routes(deployed):
     assert call(socket, 'POST', parsed.path + '?' + parsed.query,
                 urlencode(dict(setup=URI, confirmed='yes', password='synthetic')))[0] == 400
     assert reopened(path).find_entries(title='Synthetic site', first=True).otp is None
+
+
+@pytest.mark.parametrize('action', ['setup-totp', 'update-password'])
+@pytest.mark.parametrize('status_action', ['write-status', 'cancel-write'])
+def test_stale_private_links_refuse_forms_and_submissions(deployed, action, status_action):
+    """A real competing save must retire both kinds of private input forms."""
+    broker, _, path, socket = deployed
+    prepared = begin(broker, action)
+    parsed = urlsplit(prepared['private_url'])
+    route = parsed.path + '?' + parsed.query
+    assert call(socket, 'GET', route)[0] == 200
+    winner = begin(broker)
+    assert private_post(socket, winner)[0] == 200
+    before = path.read_bytes()
+    op = broker.writes.get(prepared['write_handle'])
+    assert op.state == 'pending' and op.revision != broker.writes.revision
+    body = urlencode(dict(setup=URI, confirmed='yes')) if action == 'setup-totp' else urlencode(
+        dict(password='synthetic-rejected-password', confirmation='synthetic-rejected-password', confirmed='yes'))
+    for method in ('GET', 'POST'):
+        code, _, page = call(socket, method, route, body)
+        assert code == 404 and b'<form' not in page
+        assert KEY.encode() not in page and b'synthetic-rejected-password' not in page
+    assert path.read_bytes() == before
+    failed = dict(ok=True, state='failed', error='stale write; search and start again')
+    for _ in range(2):
+        assert broker.dispatch(dict(action=status_action, write_handle=prepared['write_handle'])) == failed
+    assert broker.dispatch(dict(action='write-status', write_handle=winner['write_handle'])) == dict(ok=True, state='saved')
+    assert path.read_bytes() == before
+    fresh = begin(broker, action)
+    assert broker.dispatch(dict(action='write-status', write_handle=fresh['write_handle'])) == dict(ok=True, state='pending')
+    parsed = urlsplit(fresh['private_url'])
+    code, _, page = call(socket, 'GET', parsed.path + '?' + parsed.query)
+    assert code == 200 and b'<form' in page
+
+
+@pytest.mark.parametrize('action', ['setup-totp', 'update-password'])
+def test_private_post_rechecks_revision_after_reading_body(deployed, monkeypatch, action):
+    """A revision change while reading a private POST must retire the link."""
+    import akdbx.web_unlock as web_unlock
+    broker, _, path, socket = deployed
+    prepared = begin(broker, action)
+    before = path.read_bytes()
+    original = web_unlock.parse_qs
+
+    def invalidate_during_body_parse(value, *args, **kwargs):
+        values = original(value, *args, **kwargs)
+        if 'confirmed' in values:
+            with broker._vault_lock:
+                broker.writes.invalidate_revision()
+        return values
+
+    monkeypatch.setattr(web_unlock, 'parse_qs', invalidate_during_body_parse)
+    response = post_setup(socket, prepared) if action == 'setup-totp' else private_post(socket, prepared)
+    assert response[0] == 404 and b'<form' not in response[2]
+    assert path.read_bytes() == before
 
 
 def test_replace_requires_explicit_intent_preserves_old_key_in_history(deployed):
