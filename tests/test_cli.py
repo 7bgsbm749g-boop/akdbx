@@ -91,7 +91,7 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
             code, _, page = call(servers[0].server_address, "POST", path, urlencode({"password": MASTER}), timeout=30)
             assert code == 200
             assert MASTER.encode() not in page and SECRET.encode() not in page
-            assert command("status") == {"ok": True, "locked": False, "version": "0.9.2", "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), **target_capabilities()}
+            assert command("status") == {"ok": True, "locked": False, "version": "0.9.2", "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "generated_entry_protocol": 1, **target_capabilities()}
             search = command("search", "example")
             assert typer.events == []  # Unlock/search must not trigger a fill.
             handle = search["entries"][0]["handle"]
@@ -262,6 +262,18 @@ def test_request_accepts_authenticated_peer_and_configured_unlock_origin(tmp_pat
     ) == response
 
     thread.join(timeout=1)
+
+
+def test_generate_entry_refuses_old_broker_without_sending_write(monkeypatch, capsys):
+    calls = []
+    def request(socket, payload, **kwargs):
+        calls.append(payload)
+        return {'ok': True}
+    monkeypatch.setattr(cli, 'request', request)
+    assert cli.main(['generate-entry', '--title', 'Example', '--username', 'user',
+                     '--url', 'https://example.test', '--group', 'Web']) == 1
+    assert [p['action'] for p in calls] == ['ping']
+    assert 'lacks generated entry protocol' in capsys.readouterr().out
 
 
 def test_fill_connection_timeout_is_reported_as_uncertain_without_retry(monkeypatch, capsys):

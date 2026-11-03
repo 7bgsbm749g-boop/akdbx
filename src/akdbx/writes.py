@@ -200,7 +200,7 @@ class WriteManager:
 
     def by_token(self, token):
         self._prune()
-        return next((op for op in self.operations.values() if secrets.compare_digest(op.token, token) and op.state == 'pending'), None)
+        return next((op for op in self.operations.values() if secrets.compare_digest(op.token, token) and op.state == 'pending' and op.password is None), None)
 
     def create_sso(self, request):
         return self._create_identity(request, SSO_AUTH_METHODS, SSO_MARKER, 'SSO')
@@ -246,6 +246,8 @@ class WriteManager:
 
     def begin(self, request):
         entry = None
+        if request['action'] == 'generate-entry' and set(request) - {'action', 'metadata', 'length', 'symbols'}:
+            raise WriteError('generated entry accepts only destination metadata and generation policy')
         if request['action'] in {'update-password', 'generate-password'}:
             try:
                 entry = self.broker._resolve(request.get('handle'))
@@ -271,7 +273,7 @@ class WriteManager:
             raise WriteError('too many pending writes; cancel or wait')
         handle = secrets.token_urlsafe(32)
         op = Write(secrets.token_urlsafe(32), self.broker.clock() + self.broker.handle_ttl, self.revision, dict(values), entry.uuid if entry else None)
-        if request['action'] == 'generate-password':
+        if request['action'] in {'generate-password', 'generate-entry'}:
             if urlsplit(values['url']).scheme != 'https':
                 raise WriteError('generated resets require an HTTPS site')
             length = request.get('length', 24)

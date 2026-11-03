@@ -171,7 +171,7 @@ class Broker:
         if action in {'fill', 'fill-generated'} and delivery_ready is None and 'start_deadline' not in request:
             request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
         # Search and write operations observe a consistent vault/revision.
-        if action in {"pin-target", "fill", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "write-status", "cancel-write", "commit-password", "fill-generated"}:
+        if action in {"pin-target", "fill", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated"}:
             with self._vault_lock:
                 return self._dispatch(request, delivery_ready=delivery_ready)
         return self._dispatch(request, delivery_ready=delivery_ready)
@@ -187,7 +187,7 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), "generated_entry_protocol": 1, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if self.locked:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
@@ -207,9 +207,9 @@ class Broker:
                 return {'ok': False, 'error': str(exc)}
             except Exception:
                 return {'ok': False, 'error': 'passwordless save failed; vault update not confirmed'}
-        if action in {"create-entry", "update-password", "generate-password", "write-status", "cancel-write", "commit-password", "fill-generated"}:
+        if action in {"create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated"}:
             try:
-                if action in {"create-entry", "update-password", "generate-password"}:
+                if action in {"create-entry", "update-password", "generate-password", "generate-entry"}:
                     return self.writes.begin(request)
                 if action in {"write-status", "cancel-write"}:
                     return self.writes.status(request.get("write_handle"), cancel=action == "cancel-write")

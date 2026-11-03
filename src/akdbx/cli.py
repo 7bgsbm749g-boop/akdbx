@@ -205,14 +205,15 @@ def parser() -> argparse.ArgumentParser:
     pin = commands.add_parser('pin-target', help='pin an independently verified local foreground PID/window and current input-focus window for 30 seconds')
     pin.add_argument('--pid', type=int, required=True)
     pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID, decimal or 0x hex')
-    for name in ('create-entry', *IDENTITY_CREATES, 'update-password', 'generate-password'):
+    for name in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password'):
         help_text = {
             'create-sso-entry': 'save a Google/GitHub SSO identity (no password form)',
             'create-passwordless-entry': 'save an email-code identity (no password or saved code)',
             'generate-password': 'stage a broker-generated password for an existing entry',
+            'generate-entry': 'stage a broker-generated password for a new entry',
         }.get(name, 'prepare a private password save')
         command = commands.add_parser(name, help=help_text, description=help_text)
-        if name not in ('create-entry', *IDENTITY_CREATES):
+        if name not in ('create-entry', 'generate-entry', *IDENTITY_CREATES):
             command.add_argument('handle')
         for field in ('title', 'username', 'url', 'group'):
             command.add_argument('--' + field, required=True, help='exact selected/destination metadata')
@@ -220,7 +221,7 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument('--auth-method', required=True, choices=('google', 'github'), help='verified SSO provider; no separate site password')
         if name == 'create-passwordless-entry':
             command.add_argument('--auth-method', required=True, choices=('email_code',), help='verified native email-code sign-in; no separate site password; never save the code')
-        if name == 'generate-password':
+        if name in ('generate-password', 'generate-entry'):
             command.add_argument('--length', type=int, default=24)
             command.add_argument('--symbols', default='!@#$%*-_+=?', help='allowed ASCII punctuation; empty for letters and digits')
     for name in ('write-status', 'cancel-write', 'commit-password'):
@@ -303,11 +304,11 @@ def main(argv: list[str] | None = None) -> int:
         print('Merge operation: ' + payload['operation_id'], file=sys.stderr)
     elif args.command == 'merge-status':
         payload['operation_id'] = args.operation_id
-    elif args.command in ('create-entry', *IDENTITY_CREATES, 'update-password', 'generate-password'):
+    elif args.command in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password'):
         payload['metadata'] = {field: getattr(args, field) for field in ('title', 'username', 'url', 'group')}
-        if args.command not in ('create-entry', *IDENTITY_CREATES):
+        if args.command not in ('create-entry', 'generate-entry', *IDENTITY_CREATES):
             payload['handle'] = args.handle
-        if args.command == 'generate-password':
+        if args.command in ('generate-password', 'generate-entry'):
             payload.update(length=args.length, symbols=args.symbols)
         if args.command in IDENTITY_CREATES:
             payload['auth_method'] = args.auth_method
@@ -327,6 +328,13 @@ def main(argv: list[str] | None = None) -> int:
         payload.update(target=args.target, target_protocol=1)
     identity_kind = 'SSO' if args.command == 'create-sso-entry' else 'passwordless'
     try:
+        if args.command == 'generate-entry':
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True or type(capabilities.get('generated_entry_protocol')) is not int
+                    or capabilities.get('generated_entry_protocol') != 1):
+                print(json.dumps({'ok': False, 'error': 'broker lacks generated entry protocol 1; generation not sent'}))
+                return 1
         if args.command in {'pin-target', 'fill', 'fill-generated'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)

@@ -169,6 +169,38 @@ def test_generation_two_fills_site_acceptance_and_same_persisted_secret(deployed
     assert generated not in captured.out + captured.err + caplog.text + json.dumps(result)
 
 
+def test_generated_new_entry_requires_both_fills_and_acceptance(deployed, capsys, caplog):
+    broker, typer, path, _ = deployed
+    values = {'title': 'New generated', 'username': 'new-account', 'url': 'https://new.test/login', 'group': 'Web'}
+    result = broker.dispatch({'action': 'generate-entry', 'metadata': values})
+    assert result['ok'] and 'private_url' not in result
+    assert broker.writes.by_token(broker.writes.get(result['write_handle']).token) is None
+    assert not commit(broker, result)['ok']
+    assert reopened(path).find_entries(title=values['title'], first=True) is None
+    assert all(r['ok'] for r in fills(broker, result, target='https://new.test/reset'))
+    secret = typer.events[0][1]
+    assert typer.events == [('type', secret)] * 2
+    assert not commit(broker, result, accepted=False)['ok']
+    assert commit(broker, result) == {'ok': True, 'state': 'saved'}
+    assert reopened(path).find_entries(title=values['title'], first=True).password == secret
+    assert not broker.dispatch({'action': 'generate-entry', 'metadata': values})['ok']
+    assert secret not in json.dumps(result) + capsys.readouterr().out + caplog.text
+
+
+def test_generated_new_entry_rechecks_duplicate_and_rejects_wrong_target(deployed):
+    broker, typer, path, socket = deployed
+    values = {'title': 'New generated', 'username': 'new-account', 'url': 'https://new.test/login', 'group': 'Web'}
+    wrong = broker.dispatch({'action': 'generate-entry', 'metadata': values})
+    assert not any(r['ok'] for r in fills(broker, wrong, target='https://other.test/reset'))
+    assert not commit(broker, wrong)['ok'] and typer.events == []
+    generated = broker.dispatch({'action': 'generate-entry', 'metadata': values})
+    assert all(r['ok'] for r in fills(broker, generated, target='https://new.test/reset'))
+    other = broker.dispatch({'action': 'create-entry', 'metadata': values})
+    assert private_post(socket, other)[0] == 200
+    assert not commit(broker, generated)['ok']
+    assert reopened(path).find_entries(title=values['title'], first=True).password == CHOSEN
+
+
 @pytest.mark.parametrize('policy', [{'length': 8}, {'length': True}, {'length': 129}, {'symbols': '\n'}, {'symbols': 'abc'}])
 def test_unsafe_generation_policy_rejected(deployed, policy):
     broker, typer, _, _ = deployed

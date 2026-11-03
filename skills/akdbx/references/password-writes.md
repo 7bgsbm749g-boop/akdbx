@@ -30,6 +30,25 @@ and is consumed on the first fill/update/generation attempt, including failure.
 
 ## Required agent-driven reset: generate, fill twice, accept, commit
 
+For a new password entry, first search for the site and account and confirm no
+matching entry exists. When the running broker status advertises integer
+`generated_entry_protocol: 1`, use `generate-entry` with independently
+verified metadata and an existing unambiguous group. It stages the password
+without creating a vault entry. The CLI refuses an older running broker.
+
+```bash
+akdbx generate-entry --title 'VERIFIED_TITLE' --username 'VERIFIED_ACCOUNT' \
+  --url 'https://example.test/login' --group 'EXISTING_GROUP' \
+  --length 24 --symbols '!@#$%*-_+=?'
+```
+
+Use the same two pinned fills, site acceptance and `commit-password` workflow
+below. The broker rechecks duplicates on commit. Never create a dummy or
+passwordless entry as a workaround. If this capability is absent, do not claim
+it is active merely because source was updated; the running broker needs a
+coordinated restart and private unlock. Use another authorized private password
+manager when it can generate, fill and retain the secret without exposing it.
+
 ```bash
 akdbx generate-password SEARCH_HANDLE \
   --title 'SELECTED_TITLE' --username 'SELECTED_ACCOUNT' \

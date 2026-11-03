@@ -215,7 +215,8 @@ required, or this direct workflow cannot complete the challenge.
 Use [the password-write workflow](references/password-writes.md) for exact
 commands and recovery. Version 0.2.0 adds `create-entry`, `update-password`,
 `generate-password`, `fill-generated`, `commit-password`, `write-status`, and
-`cancel-write`. Check both CLI version and broker `status` capabilities before
+`cancel-write`. New-entry generation additionally requires `generate-entry`
+and `generated_entry_protocol: 1`. Check CLI and broker `status` capabilities before
 starting a website reset; an editable source update does not activate the
 running broker. Never restart a broker owned by another live workflow.
 
@@ -243,9 +244,11 @@ additional confirmation for an already authorized save. Never relabel it Google
 SSO, use `create-entry` with a dummy password, or store the one-time code.
 
 Select an existing entry using a fresh search handle and all four exact returned
-metadata fields. Password-based new entries and chosen-password updates require destination
-confirmation and repeated password entry on the private broker page. For an
-agent-driven reset, generate inside the broker, fill password and confirmation
+metadata fields. For an authorized agent-driven password setup with no saved
+entry, use `generate-entry` when the running broker advertises generated entry
+protocol 1; do not ask the user to choose a password merely because the entry
+is new. For a chosen-password save, use the private broker page. For an
+agent-driven reset or setup, generate inside the broker, fill password and confirmation
 through their separate single-use references into independently verified focused
 fields with a fresh target pin for each, verify site acceptance, and only then `commit-password WRITE_HANDLE
 --site-accepted`. Passwords never enter tool responses. Keep pending handles and
