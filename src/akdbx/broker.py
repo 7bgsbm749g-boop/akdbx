@@ -22,6 +22,8 @@ from .writes import WriteManager, WriteError, sso_capabilities, passwordless_cap
 from .merge import MergeManager, MergeError
 from .persistence import SaveError
 from .versions import active_entries
+from .totp import (MIN_VALIDITY, TotpError, capabilities as totp_capabilities,
+                   configured as totp_configured, read_configuration, code_at, https_origin)
 from . import __version__
 from .protocol import ProtocolError, receive_message, send_message
 from .runtime import (
@@ -78,12 +80,14 @@ class Broker:
         *,
         handle_ttl: float = 300,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
     ) -> None:
         self.vault = vault
         self.typer = typer
         self.targets = TargetPins(typer, clock)
         self.handle_ttl = handle_ttl
         self.clock = clock
+        self.wall_clock = wall_clock
         self._key = secrets.token_bytes(32)
         self._handles: dict[str, Handle] = {}
         self._state_lock = threading.Lock()
@@ -168,10 +172,10 @@ class Broker:
                 return {'ok': False, 'error': 'merge operation failed'}
             finally:
                 self._vault_lock.release()
-        if action in {'fill', 'fill-generated'} and delivery_ready is None and 'start_deadline' not in request:
+        if action in {'fill', 'fill-generated', 'fill-totp'} and delivery_ready is None and 'start_deadline' not in request:
             request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
         # Search and write operations observe a consistent vault/revision.
-        if action in {"pin-target", "fill", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated"}:
+        if action in {"pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated"}:
             with self._vault_lock:
                 return self._dispatch(request, delivery_ready=delivery_ready)
         return self._dispatch(request, delivery_ready=delivery_ready)
@@ -187,7 +191,7 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), "generated_entry_protocol": 1, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), "generated_entry_protocol": 1, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if self.locked:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
@@ -207,16 +211,16 @@ class Broker:
                 return {'ok': False, 'error': str(exc)}
             except Exception:
                 return {'ok': False, 'error': 'passwordless save failed; vault update not confirmed'}
-        if action in {"create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated"}:
+        if action in {"create-entry", "update-password", "generate-password", "generate-entry", "setup-totp", "write-status", "cancel-write", "commit-password", "fill-generated"}:
             try:
-                if action in {"create-entry", "update-password", "generate-password", "generate-entry"}:
+                if action in {"create-entry", "update-password", "generate-password", "generate-entry", "setup-totp"}:
                     return self.writes.begin(request)
                 if action in {"write-status", "cancel-write"}:
                     return self.writes.status(request.get("write_handle"), cancel=action == "cancel-write")
                 if action == "fill-generated":
                     return self.writes.fill(request, delivery_ready)
                 return self.writes.commit_generated(request)
-            except WriteError as exc:
+            except (WriteError, TotpError) as exc:
                 return {"ok": False, "error": str(exc)}
             except Exception:
                 return {"ok": False, "error": "password operation failed"}
@@ -263,6 +267,8 @@ class Broker:
                     identity = passwordless_identity(entry)
                     if identity:
                         candidate.update(identity)
+                    if totp_configured(entry):
+                        candidate['totp_configured'] = True
                     projected = {
                         "ok": True,
                         "entries": [*(item for item, _entry in matches), candidate],
@@ -280,14 +286,16 @@ class Broker:
                 candidate["handle"] = self._new_handle(entry)
                 entries.append(candidate)
             return {"ok": True, "entries": entries}
-        if action == "fill":
+        if action in {'fill', 'fill-totp'}:
             try:
                 entry = self._resolve(request.get("handle"))
                 target = self.targets.consume(request)
-                if set(request) - {'action', 'handle', 'mode', 'start_deadline', 'target', 'target_protocol'}:
+                allowed = {'action', 'handle', 'start_deadline', 'target', 'target_protocol'}
+                allowed.add('target_url' if action == 'fill-totp' else 'mode')
+                if set(request) - allowed:
                     raise TargetError()
-                mode = request.get("mode", "login")
-                if mode not in ("login", "username", "password"):
+                mode = 'totp' if action == 'fill-totp' else request.get("mode", "login")
+                if action != 'fill-totp' and mode not in ("login", "username", "password"):
                     raise ValueError("mode must be login, username, or password")
                 start_deadline = request.get("start_deadline")
                 if start_deadline is None and internal_dispatch:
@@ -316,13 +324,26 @@ class Broker:
                     if not delivery_ready():
                         return {"ok": False, "error": "autofill not started: caller disconnected"}
 
-                    if mode != 'username' and passwordless_identity(entry):
+                    if mode not in {'username', 'totp'} and passwordless_identity(entry):
                         return {'ok': False, 'error': 'passwordless record has no separate password; no keys sent'}
 
                     # Materialize and validate every value needed by this mode
                     # before emitting any event. Entry access and validation
                     # may take time, so neither is itself the delivery boundary.
-                    if mode == "login":
+                    code_valid = lambda: True
+                    if mode == 'totp':
+                        if https_origin(request.get('target_url')) != https_origin(entry.url):
+                            return {'ok': False, 'error': 'autofill not started: TOTP target site mismatch'}
+                        configuration = read_configuration(entry)
+                        now = self.wall_clock()
+                        password = code_at(configuration, now)
+                        valid_from = int(now // configuration.period) * configuration.period
+                        valid_until = valid_from + configuration.period
+                        if valid_until - now < MIN_VALIDITY:
+                            return {'ok': False, 'error': 'autofill not started: TOTP code near expiry; wait and use fresh handles',
+                                    'retry_after': math.ceil(valid_until - now)}
+                        code_valid = lambda: valid_from <= self.wall_clock() < valid_until - 2
+                    elif mode == "login":
                         username, password = entry.username or "", entry.password or ""
                         self._validate_credential_text(username, password)
                     elif mode == "username":
@@ -338,14 +359,18 @@ class Broker:
                         return {"ok": False, "error": "autofill not started: request expired"}
                     if not delivery_ready():
                         return {"ok": False, "error": "autofill not started: caller disconnected"}
+                    if not code_valid():
+                        return {'ok': False, 'error': 'autofill not started: authenticator clock changed or code expired'}
 
                     steps = [username, None, password] if mode == 'login' else [username if mode == 'username' else password]
-                    self.typer.deliver(target, steps, lambda: self.clock() < start_deadline and delivery_ready())
+                    self.typer.deliver(target, steps, lambda: self.clock() < start_deadline and delivery_ready() and code_valid())
                     return {"ok": True, "filled": mode, "target_delivery": DELIVERY}
                 finally:
                     self._keyboard_lock.release()
             except DeliveryError as exc:
                 return target_failure(exc.started)
+            except TotpError as exc:
+                return {'ok': False, 'error': 'autofill not started: ' + str(exc)}
             except Exception:
                 return {"ok": False, "error": "autofill failed"}
         return {"ok": False, "error": "unknown action"}

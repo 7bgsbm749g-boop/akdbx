@@ -77,6 +77,71 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
+## Authenticator codes (0.10.0)
+
+`akdbx` can import TOTP authenticator keys and directly fill the current code
+without returning the key or code to the agent. It supports RFC 6238 SHA-1,
+SHA-256 and SHA-512, six or eight digits, and periods from 15 to 120 seconds.
+The default for a manual Base32 key is SHA-1, six digits and 30 seconds.
+Other settings require an `otpauth://totp/` URI. HOTP, Steam codes and migration
+QR payloads are not supported. There is no code-reveal or key-export command.
+
+Check that `status` advertises `totp_supported: true`, integer `totp_protocol: 1`,
+and the existing target-fill protocol. New CLI commands refuse old brokers.
+Updating source or pushing a commit does not update a running broker: install
+the tested version and coordinate its normal restart/private unlock first.
+
+For one-time import, select an existing account entry with `search`, then pass
+its fresh handle and all four exact metadata fields:
+
+```bash
+akdbx setup-totp HANDLE --title 'Example' --username 'alice@example.com' \
+  --url 'https://example.com/login' --group 'Web'
+```
+
+This returns a private `/totp?token=...` page. The user enters the site's setup
+key or otpauth URI there and confirms the displayed account. Never put keys,
+URIs or generated codes in CLI arguments, environment variables, chat, logs,
+screenshots or notes. The page uses the existing Tailscale private-write
+transport; it accepts no secrets through agent RPC. Check `write-status
+WRITE_HANDLE` for `state: saved`. A cancelled, expired or stale request cannot
+save; an existing OTP field requires explicit `setup-totp ... --replace`.
+Private imports save to KeePass only: they do not enable or change site 2FA.
+This version attaches authenticators to existing entries, including managed
+passwordless identities; it does not create standalone TOTP-only records.
+
+The key is stored in the standard protected KDBX `otp` field. The broker
+reopens the encrypted candidate and verifies the exact protected field before
+replacing the vault. Existing passwords, notes and other fields are preserved;
+replacing a key keeps the previous entry in encrypted history. No existing key
+is exposed on the import page. Keep recovery methods under your own control.
+Storing passwords and TOTP keys on the same host reduces their independence;
+the broker does not protect against a malicious process sharing its OS account.
+
+After import, search returns `totp_configured: true` for that entry. Confirm the
+site and account, focus the code field in the verified foreground window, then
+pin and fill using fresh single-use references:
+
+```bash
+akdbx search example.com
+akdbx pin-target --pid VERIFIED_PID --window VERIFIED_X11_CLIENT_WINDOW
+akdbx fill-totp FRESH_SEARCH_HANDLE --target-url 'https://example.com/challenge' \
+  --target FRESH_TARGET_PIN
+```
+
+The asserted target URL must be HTTPS and match the entry's origin; X11 does
+not attest the DOM field, browser tab or origin. The caller must verify them.
+The receipt contains only `ok`, `filled: totp` and `target_delivery`.
+The broker refuses a code with less than eight seconds remaining, returning
+a non-secret `retry_after` delay. Wait for the next period, then search and pin
+again. Keep the host clock synchronized. Never retry an uncertain/partial
+dispatch automatically or read back a filled code; verify the site's outcome.
+This handles standard authenticator challenges, not push approvals, SMS,
+passkeys, recovery checks or organization-specific device requirements.
+
+Algorithm references: [RFC 6238](https://www.rfc-editor.org/rfc/rfc6238) and
+[Google's Key URI format](https://github.com/google/google-authenticator/wiki/Key-Uri-Format).
+
 ## Encrypted vault merge (0.8.0)
 
 ```bash

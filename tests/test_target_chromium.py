@@ -172,3 +172,22 @@ def test_production_transport_reaches_real_chromium_username_password_and_tab(sy
     print(json.dumps(dict(browser=version, separate_field_fills=count, combined_login_fills=1,
                           username_matches=True, password_matches=True, tab_matches=True,
                           isolated_desktop=True, temporary_profile=True)))
+
+
+def test_totp_reaches_only_focused_synthetic_chromium_field(synthetic_chromium):
+    lab, process, cdp, session, window, _ = synthetic_chromium
+    class TotpEntry(Entry):
+        # Public RFC test vector, never an enrolled account or real key.
+        otp = 'otpauth://totp/synthetic?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
+    broker = Broker(Vault([TotpEntry()]), X11Typer(), wall_clock=lambda: 1111111111)
+    cdp.evaluate("username.value='';password.value='';password.focus()", session)
+    lab.activate(window)
+    handle = broker.dispatch(dict(action='search'))['entries'][0]['handle']
+    pin = broker.dispatch(dict(action='pin-target', pid=process.pid, window=window.id, target_protocol=1))
+    assert pin['ok']
+    response = broker.dispatch(dict(action='fill-totp', handle=handle, target=pin['target'],
+                                    target_protocol=1, target_url='https://example.com/challenge'))
+    assert response == dict(ok=True, filled='totp', target_delivery=DELIVERY)
+    wait_for(cdp, session, "password.value === '050471'")
+    assert cdp.evaluate('username.value.length', session) == 0
+    assert cdp.evaluate('document.activeElement.id', session) == 'password'

@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 
 from .persistence import SaveError
 from .versions import active_entries, is_archive_group
+from .totp import configured as totp_configured, https_origin, parse_setup
 
 MAX_WRITES = 64
 SSO_AUTH_METHODS = ('google', 'github')
@@ -162,6 +163,8 @@ class Write:
     password: str | None = field(default=None, repr=False)
     filled: set = field(default_factory=set)
     fill_refs: dict = field(default_factory=dict, repr=False)
+    kind: str = 'password'
+    replace: bool = False
 
 
 class WriteManager:
@@ -198,9 +201,9 @@ class WriteManager:
         self._prune()
         return self.operations.get(handle) if isinstance(handle, str) else None
 
-    def by_token(self, token):
+    def by_token(self, token, kind='password'):
         self._prune()
-        return next((op for op in self.operations.values() if secrets.compare_digest(op.token, token) and op.state == 'pending' and op.password is None), None)
+        return next((op for op in self.operations.values() if secrets.compare_digest(op.token, token) and op.state == 'pending' and op.password is None and op.kind == kind), None)
 
     def create_sso(self, request):
         return self._create_identity(request, SSO_AUTH_METHODS, SSO_MARKER, 'SSO')
@@ -246,14 +249,17 @@ class WriteManager:
 
     def begin(self, request):
         entry = None
+        is_totp = request['action'] == 'setup-totp'
+        if is_totp and (set(request) - {'action', 'handle', 'metadata', 'replace'} or type(request.get('replace', False)) is not bool):
+            raise WriteError('TOTP setup accepts only selected entry metadata and an explicit replace flag')
         if request['action'] == 'generate-entry' and set(request) - {'action', 'metadata', 'length', 'symbols'}:
             raise WriteError('generated entry accepts only destination metadata and generation policy')
-        if request['action'] in {'update-password', 'generate-password'}:
+        if request['action'] in {'update-password', 'generate-password', 'setup-totp'}:
             try:
                 entry = self.broker._resolve(request.get('handle'))
             except ValueError:
                 raise WriteError('unknown or expired handle; search again') from None
-            if passwordless_identity(entry):
+            if not is_totp and passwordless_identity(entry):
                 raise WriteError('passwordless record has no separate password; use its sign-in method')
         if not self.available():
             raise WriteError('private writes unavailable; check activation and vault path safety')
@@ -264,6 +270,10 @@ class WriteManager:
         if entry is not None:
             if metadata(entry) != values or sum(metadata(e) == values for e in active_entries(self.broker.vault)) != 1 or not any(e.uuid == entry.uuid for e in active_entries(self.broker.vault)):
                 raise WriteError('entry metadata mismatch; search again')
+            if is_totp:
+                https_origin(values['url'])
+                if totp_configured(entry) and not request.get('replace', False):
+                    raise WriteError('TOTP already configured; explicit --replace is required')
         else:
             group_for(self.broker.vault, values['group'])
             if duplicate(self.broker.vault, values):
@@ -273,6 +283,9 @@ class WriteManager:
             raise WriteError('too many pending writes; cancel or wait')
         handle = secrets.token_urlsafe(32)
         op = Write(secrets.token_urlsafe(32), self.broker.clock() + self.broker.handle_ttl, self.revision, dict(values), entry.uuid if entry else None)
+        if is_totp:
+            op.kind = 'totp'
+            op.replace = request.get('replace', False)
         if request['action'] in {'generate-password', 'generate-entry'}:
             if urlsplit(values['url']).scheme != 'https':
                 raise WriteError('generated resets require an HTTPS site')
@@ -293,7 +306,8 @@ class WriteManager:
         self.operations[handle] = op
         if op.password is not None:
             return {'ok': True, 'write_handle': handle, 'state': op.state, 'fill_handles': {mode: ref for ref, mode in op.fill_refs.items()}}
-        return {'ok': True, 'write_handle': handle, 'private_url': self.public_base.rstrip('/') + '/write?token=' + op.token, 'state': op.state}
+        route = '/totp' if is_totp else '/write'
+        return {'ok': True, 'write_handle': handle, 'private_url': self.public_base.rstrip('/') + route + '?token=' + op.token, 'state': op.state}
 
     def status(self, handle, cancel=False):
         op = self.get(handle)
@@ -306,7 +320,7 @@ class WriteManager:
         return {'ok': True, 'state': op.state, **({'error': op.error} if op.error else {})}
 
     def submit(self, op, password, confirmation, confirmed):
-        if op.state != 'pending' or op.expires <= self.broker.clock():
+        if op.kind != 'password' or op.state != 'pending' or op.expires <= self.broker.clock():
             return {'ok': False, 'error': 'unknown or expired write; start again'}
         try:
             self.broker._validate_credential_text(password)
@@ -347,6 +361,59 @@ class WriteManager:
             op.error = 'save failed; vault update not confirmed'
         op.password = None
         op.fill_refs.clear()
+        return {'ok': False, 'error': op.error}
+
+    def submit_totp(self, op, setup, confirmed):
+        if op.kind != 'totp' or op.state != 'pending' or op.expires <= self.broker.clock():
+            return {'ok': False, 'error': 'unknown or expired TOTP setup; start again'}
+        # Validation errors allow correction on the same private page, but no
+        # submitted value or parser diagnostic is ever reflected to the client.
+        try:
+            if confirmed is not True:
+                raise ValueError
+            configuration = parse_setup(setup, label=op.values['username'])
+            uri = configuration.uri()
+        except Exception:
+            return {'ok': False, 'error': 'confirm the account and enter a supported TOTP setup key or URI'}
+        op.state = 'failed'
+        try:
+            if op.revision != self.revision or not self.available():
+                raise WriteError('stale TOTP setup; search and start again')
+            vault = self.broker.vault
+
+            def selected(candidate):
+                entries = [e for e in active_entries(candidate) if e.uuid == op.uuid]
+                if len(entries) != 1 or metadata(entries[0]) != op.values:
+                    raise WriteError('entry changed; search again')
+                return entries[0]
+
+            def mutate(candidate):
+                entry = selected(candidate)
+                if totp_configured(entry) and not op.replace:
+                    raise WriteError('TOTP already configured; explicit --replace is required')
+                entry.save_history()
+                entry.otp = uri
+                # PyKeePass reserves otp as a standard field. Its setter keeps
+                # an existing field's protection flag, so force protection for
+                # imported/replaced keys, including formerly unprotected OTPs.
+                entry._element.find('./String[Key="otp"]/Value').set('Protected', 'True')
+
+            def verify_saved(candidate):
+                entry = selected(candidate)
+                if (entry.otp != uri
+                        or entry._element.find('./String[Key="otp"]/Value').get('Protected') != 'True'):
+                    raise WriteError('TOTP encrypted save verification failed; target not replaced')
+
+            self.broker.vault = vault._akdbx_store.commit(vault, mutate, verify_candidate=verify_saved)
+            self.invalidate_revision(op)
+            op.state = 'saved'
+            return {'ok': True, 'state': 'saved'}
+        except SaveError as exc:
+            op.error = str(exc)
+        except ValueError:
+            op.error = 'stale or conflicting TOTP destination; search and start again'
+        except Exception:
+            op.error = 'TOTP save failed; vault update not confirmed'
         return {'ok': False, 'error': op.error}
 
     def fill(self, request, delivery_ready):

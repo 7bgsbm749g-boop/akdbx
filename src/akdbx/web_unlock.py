@@ -314,21 +314,27 @@ def handler_for(state: UnlockState):
             self.wfile.write(body)
 
         def _write_request(self) -> bool:
-            if urlsplit(self.path).path != '/write':
+            route = urlsplit(self.path).path
+            if route not in {'/write', '/totp'}:
                 return False
+            kind = 'totp' if route == '/totp' else 'password'
             if not self._identity_ok():
                 self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Invalid password request.</p>'))
                 return True
             with state.broker._vault_lock:
-                op = state.broker.writes.by_token(self._token())
+                op = state.broker.writes.by_token(self._token(), kind)
                 if op is None or op.password is not None:
                     self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Invalid or expired password request.</p>'))
                     return True
                 if self.command == 'GET':
                     destination = ''.join(f'<dt>{html.escape(key)}</dt><dd>{html.escape(value)}</dd>' for key, value in op.values.items())
-                    action = '/write?token=' + html.escape(op.token, quote=True)
-                    body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes KeePass only.</p><form method="post" action="{action}" autocomplete="off"><label>Chosen password</label><input name="password" type="password" required autocomplete="new-password"><label>Repeat password</label><input name="confirmation" type="password" required autocomplete="new-password"><label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label><button>Save to KeePass</button></form>'
-                    self._send(HTTPStatus.OK, _page('Confirm KeePass password', body))
+                    action = route + '?token=' + html.escape(op.token, quote=True)
+                    if kind == 'totp':
+                        replacement = '<p>This replaces the saved authenticator key.</p>' if op.replace else ''
+                        body = f'<dl>{destination}</dl><p>Import the setup key or otpauth URI for this account. This saves an authenticator in KeePass; it does not change the website. Keep a separate recovery method.</p>{replacement}<form method="post" action="{action}" autocomplete="off"><label>Setup key or otpauth TOTP URI</label><input name="setup" type="password" required maxlength="4096" autocomplete="off"><label><input type="checkbox" name="confirmed" value="yes" required>I confirm this account and authenticator key</label><button>Save authenticator</button></form>'
+                    else:
+                        body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes KeePass only.</p><form method="post" action="{action}" autocomplete="off"><label>Chosen password</label><input name="password" type="password" required autocomplete="new-password"><label>Repeat password</label><input name="confirmation" type="password" required autocomplete="new-password"><label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label><button>Save to KeePass</button></form>'
+                    self._send(HTTPStatus.OK, _page('Confirm KeePass authenticator' if kind == 'totp' else 'Confirm KeePass password', body))
                     return True
             # Read outside the vault lock so a stalled user cannot block fills.
             try:
@@ -341,18 +347,23 @@ def handler_for(state: UnlockState):
                 values = parse_qs(raw.decode('utf-8'), strict_parsing=True)
                 if any(len(v) != 1 for v in values.values()):
                     raise ValueError
+                if kind == 'totp' and set(values) - {'setup', 'confirmed'}:
+                    raise ValueError
             except Exception:
                 self._send(HTTPStatus.BAD_REQUEST, _page('Invalid request', '<p>Request rejected.</p>'))
                 return True
             with state.broker._vault_lock:
                 # Cancellation/expiry may have happened during the private POST.
-                op = state.broker.writes.by_token(self._token())
+                op = state.broker.writes.by_token(self._token(), kind)
                 if op is None or self._expired():
                     self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Invalid or expired password request.</p>'))
                     return True
-                result = state.broker.writes.submit(op, values.get('password', [''])[0], values.get('confirmation', [''])[0], values.get('confirmed') == ['yes'])
+                if kind == 'totp':
+                    result = state.broker.writes.submit_totp(op, values.get('setup', [''])[0], values.get('confirmed') == ['yes'])
+                else:
+                    result = state.broker.writes.submit(op, values.get('password', [''])[0], values.get('confirmation', [''])[0], values.get('confirmed') == ['yes'])
             # No submitted fields, parser exceptions or secrets enter the page.
-            body = '<p>Password saved to KeePass. You may close this page.</p>' if result['ok'] else '<p>' + html.escape(result['error']) + '</p>'
+            body = ('<p>Authenticator saved to KeePass. You may close this page.</p>' if kind == 'totp' else '<p>Password saved to KeePass. You may close this page.</p>') if result['ok'] else '<p>' + html.escape(result['error']) + '</p>'
             self._send(HTTPStatus.OK if result['ok'] else HTTPStatus.CONFLICT, _page('KeePass save result', body))
             return True
 

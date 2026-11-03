@@ -1,6 +1,6 @@
 ---
 name: akdbx
-description: Use the local KeePass broker to find, autofill, create and update saved logins, save passwordless SSO or email-code identities, or merge and conditionally admit encrypted KDBX databases without returning passwords to the agent. Use for authorized login and related emailed verification, password or passwordless account save, vault merge, or private Tailscale unlock.
+description: Use the local KeePass broker to find and fill saved logins and TOTP authenticator codes, save passwords or passwordless identities, or merge and conditionally admit encrypted KDBX databases without returning secrets to the agent. Use for authorized login and related verification, account save, vault merge, or private Tailscale unlock.
 ---
 
 # KeePass login and autofill
@@ -177,6 +177,25 @@ The user has authorized fills without per-fill approval. Once the user privately
 `--yes-on-fill` is a deprecated no-op, accepted only for command compatibility. New commands should omit it. Every new broker uses private web unlock, including when `--web-unlock` is omitted; terminal master-password entry is no longer supported.
 
 Each fill carries a short start deadline. An `autofill not started` response means the broker rejected it before sending any key. On a timeout or lost connection, typing may already be in progress or complete; do not immediately search and retry. Inspect non-secret UI state and recheck broker health first. See recovery below.
+
+## Complete authenticator-code verification directly
+
+When the site offers an authenticator code, use the selected account's saved
+TOTP through `fill-totp` instead of requesting a phone approval. Read
+[the authenticator workflow](references/totp.md) before the first use. Require
+broker 0.10.0 or newer, `totp_supported: true`, integer `totp_protocol: 1`, and
+the target-fill protocol. Search metadata reports `totp_configured: true` when
+an OTP field is present; this does not certify that its format or key is valid.
+Use a fresh search handle, independently verified HTTPS challenge URL and
+fresh target pin. Keys and generated codes never belong in tool responses,
+chat, screenshots or evidence. Verify the site's accepted state, not the code.
+
+Authorized fills need no extra per-code approval. A missing key requires one
+private import via `setup-totp`; its page changes KeePass only. Do not read or
+capture a live setup key/QR code through GUI, browser, clipboard or vault
+extraction. Do not reset a site's 2FA or replace a saved key merely to complete
+a login. Site enrollment or a key replacement needs authorization for that
+account change. Push-only or device-required checks can still need the user.
 
 ## Complete emailed verification directly
 
