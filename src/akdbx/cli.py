@@ -21,7 +21,8 @@ from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
 
 
-DEFAULT_UNLOCK_ORIGIN = "https://vps-3857965a.tailb80cc4.ts.net:9443"
+# Reserved example domain: deployment addresses belong in local configuration.
+DEFAULT_UNLOCK_ORIGIN = "https://unlock.example.invalid:9443"
 IDENTITY_CREATES = ('create-sso-entry', 'create-passwordless-entry')
 
 
@@ -187,7 +188,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument(
         "--unlock-origin", default=os.environ.get("AKDBX_UNLOCK_ORIGIN", DEFAULT_UNLOCK_ORIGIN),
-        help="trusted HTTPS origin for broker-provided unlock links",
+        help="deployment HTTPS origin for private pages (or AKDBX_UNLOCK_ORIGIN); default is a non-routable example",
     )
     commands = result.add_subparsers(dest="command", required=True)
     start = commands.add_parser("serve", help="unlock a KDBX and run the local broker")
@@ -196,7 +197,7 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--yes-on-fill", action="store_true", help="deprecated no-op: fills no longer require terminal approval")
     start.add_argument("--web-unlock", action="store_true", help="compatibility flag: private web unlock is always enabled")
     start.add_argument("--unlock-socket", type=Path, help=argparse.SUPPRESS)
-    start.add_argument("--unlock-url", default="https://vps-3857965a.tailb80cc4.ts.net:9443", help=argparse.SUPPRESS)
+    start.add_argument("--unlock-url", help=argparse.SUPPRESS)
     search = commands.add_parser("search", help="return matching non-secret login metadata")
     search.add_argument("query", nargs="?", default="")
     fill = commands.add_parser("fill", help="autofill using a handle returned by search")
@@ -273,7 +274,9 @@ def main(argv: list[str] | None = None) -> int:
                        if args.socket.name == "agentic-kdbx.sock"
                        else "akdbx-unlock.sock")
         unlock_socket = args.unlock_socket or args.socket.with_name(unlock_name)
-        unlock_server, unlock_url = start_unlock_server(broker, database, keyfile, unlock_socket, args.unlock_url)
+        unlock_server, unlock_url = start_unlock_server(
+            broker, database, keyfile, unlock_socket, args.unlock_url or args.unlock_origin,
+        )
         print(f"Vault locked. Open over Tailscale: {unlock_url}", file=sys.stderr)
         print(f"Broker ready at {args.socket}; Ctrl-C locks it.", file=sys.stderr)
         try:

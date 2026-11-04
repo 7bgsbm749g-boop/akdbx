@@ -4,9 +4,10 @@ Password writes require CLI and broker version **0.2.0 or newer**. The current
 release is **0.9.1**. All fills require [target protocol 1](target-fill.md).
 Native email-code creation requires **0.9.1** and its separate passwordless
 protocol below. Passwordless SSO creation requires CLI and broker **0.8.1 or
-newer** plus the exact capabilities below. The absolute CLI is
-`/home/ubuntu/projects/akdbx/.venv/bin/akdbx`. Examples below abbreviate it
-as `akdbx`; use the absolute path in agent commands. All uppercase references
+newer** plus the exact capabilities below. Locate the absolute CLI path in
+private deployment configuration and set `AKDBX_UNLOCK_ORIGIN` to the trusted
+deployment origin. Examples below abbreviate the CLI as `akdbx`; use its
+verified absolute path in agent commands. All uppercase references
 are placeholders, never actual handles or links for a note.
 
 ## Check activation and select an existing entry

@@ -41,7 +41,7 @@ limits instead of using retired local fleet/database paths.
 - Work only in the bound worktree when source-only scope is set. Do not touch
   the live broker, real vault, desktop/browser, services, unlock state,
   permissions/policy or other worktrees. Never claim isolated tests prove a real
-  login. Optional native X11 checks need a new isolated test server, never :99.
+  login. Optional native X11 checks need a new isolated test server, never the shared desktop display.
 - Fix source and broken skill/references. Test locked-vault behavior, consumed
   handles, deadlines, controls, modes, generated writes, SSO protocol 1,
   passwordless email-code protocol 1 and its old-broker refusal, target
@@ -49,7 +49,8 @@ limits instead of using retired local fleet/database paths.
   existing regressions. Use the resource-manager queue and bounded batches for
   heavy jobs; do not change resource settings.
 - Store evidence in the project's ignored `evidence/` directory. Validate with
-  `python3 /home/ubuntu/.codex/skills/.system/skill-creator/scripts/quick_validate.py skills/akdbx`.
+  the installed skill-creator's `scripts/quick_validate.py skills/akdbx`;
+  resolve its location from the current skill catalog.
 - Review Git status/remote, commit only the patch and push the configured repair
   branch. Never include vaults, tokens, secret-bearing artifacts or unrelated
   work. Return cause/design/limits, changed files, test/evidence results, full

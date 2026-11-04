@@ -112,15 +112,50 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
     assert not caplog.records
 
 
-def test_managed_default_unlock_socket_matches_documented_serve_target(monkeypatch, tmp_path):
+@pytest.mark.parametrize(("environment", "global_options", "serve_options", "expected"), [
+    (None, [], [], "https://unlock.example.invalid:9443"),
+    ("https://configured.example:9443", [], [], "https://configured.example:9443"),
+    ("https://configured.example:9443", ["--unlock-origin", "https://override.example:8443"], [], "https://override.example:8443"),
+    ("https://configured.example:9443", [], ["--unlock-url", "https://legacy.example:9443"], "https://legacy.example:9443"),
+])
+def test_serve_uses_private_configuration_for_origin_and_runtime(
+    environment, global_options, serve_options, expected, monkeypatch, tmp_path,
+):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    expected = Path("/run/user/1000/akdbx/akdbx-unlock.sock")
-    assert cli.default_socket().with_name("akdbx-unlock.sock").relative_to(tmp_path) == Path("akdbx/akdbx-unlock.sock")
-    setup = (
-        Path(__file__).parents[1] / "skills/akdbx/references/vps-setup.md"
-    ).read_text()
-    assert f"unix:{expected}" in setup
-    assert "/run/user/1000/akdbx-unlock.sock" not in setup
+    if environment is None:
+        monkeypatch.delenv("AKDBX_UNLOCK_ORIGIN", raising=False)
+    else:
+        monkeypatch.setenv("AKDBX_UNLOCK_ORIGIN", environment)
+    calls = []
+    lifecycle = []
+    listener = SimpleNamespace(
+        shutdown=lambda: lifecycle.append("shutdown"),
+        server_close=lambda: lifecycle.append("close"),
+    )
+
+    def start_unlock(_broker, _database, _keyfile, socket_path, origin):
+        calls.append((socket_path, origin))
+        return listener, origin + "/?token=synthetic"
+
+    monkeypatch.setattr(cli, "X11Typer", RecordingTyper)
+    monkeypatch.setattr(cli, "start_unlock_server", start_unlock)
+    monkeypatch.setattr(cli, "serve", lambda *_: None)
+    assert cli.main([*global_options, "serve", "synthetic.kdbx", *serve_options]) == 0
+    assert calls == [(tmp_path / "akdbx" / "akdbx-unlock.sock", expected)]
+    assert lifecycle == ["shutdown", "close"]
+
+
+def test_request_default_refuses_unconfigured_deployment_link(tmp_path):
+    socket_path = tmp_path / "private" / "broker.sock"
+    thread = _fake_server(socket_path, {
+        "ok": True, "locked": True,
+        "unlock_url": "https://configured.example:9443/?token=synthetic",
+    })
+    try:
+        with pytest.raises(ProtocolError, match="untrusted unlock URL"):
+            cli.request(socket_path, {"action": "ping"})
+    finally:
+        thread.join(timeout=1)
 
 
 def _fake_server(socket_path, response):

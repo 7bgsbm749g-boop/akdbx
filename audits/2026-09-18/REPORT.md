@@ -2,6 +2,9 @@
 
 Audited revision: `d77df04825622df1e7992a3d3b0140ef552ce72f` (`0.1.0`). The working tree was clean at the start. This audit adds this report and a synthetic reproduction suite; it does not change production behavior.
 
+Deployment-specific port numbers are omitted from this public report; the
+findings and audit results below are unchanged.
+
 **Assessment**
 
 The narrow RPC interface successfully withholds the password field from normal responses, and several useful safeguards are implemented correctly. However, I would address the keyboard-delivery defects and unlock-backend trust before relying on this for an unattended, high-value vault. The implementation is a convenience broker for a trusted agent on a trusted desktop, not an isolation boundary that prevents an agent from obtaining secrets.
@@ -32,7 +35,7 @@ Results:
 - Audit suite: `.venv/bin/pytest -q audits/2026-09-18/reproduce.py` → **13 passed in 12.19 seconds**.
 - The audit assertions confirm vulnerable behavior and documented limitations. They are not regression tests demonstrating a fix, and they are outside the normal `testpaths = ["tests"]` collection.
 - Python was 3.14.4; the main installed dependencies were PyKeePass 4.2.0 and pynput 1.8.2.
-- The deployed unlock mapping forwards HTTPS port 9443 to `http://127.0.0.1:43128`. Its own `AllowFunnel` flag was false. Other services' Funnel settings do not establish exposure of this port.
+- The deployed unlock mapping forwards its configured HTTPS port to a fixed, unprivileged loopback TCP port. Its own `AllowFunnel` flag was false. Other services' Funnel settings do not establish exposure of this port.
 - A bounded scan of the 18 tracked files found no KDBX/key containers, private-key blocks, matching GitHub/AWS token patterns, or literal live-length unlock tokens. This is not an exhaustive secret scan of history or ignored files.
 
 The tailnet ACL/grants policy, other users' access, OS hardening, browser security, host compromise, package provenance, and the cryptographic implementations themselves were not independently audited. No claim of public internet exploitability or existing compromise is made.
@@ -63,7 +66,7 @@ The documented persistent Serve mapping and the observed live configuration poin
 
 If an untrusted local process can bind that port while the broker is stopped, it can supply a lookalike unlock page through the existing trusted Tailscale HTTPS origin. The user might revisit a previously issued link and enter the master password. A replacement page can accept any token: the real token check is inside the replaced application. The attacker does not need to compromise Tailscale TLS or know the original token beforehand. An ordinary different OS user can bind an available high TCP port in a shared network namespace unless additional host policy prevents it.
 
-This is a **deployment attack inference**, not a performed exploit. The relevant mapping was confirmed read-only; no attempt was made to bind port 43128, replace the live backend, or capture a submission. It requires a local attacker, an available port, and a subsequent user submission. It does not let an attacker seize an already bound listener. Unlike the documented malicious-same-user exclusion, this can matter for a different local UID.
+This is a **deployment attack inference**, not a performed exploit. The relevant mapping was confirmed read-only; no attempt was made to bind that backend port, replace the live backend, or capture a submission. It requires a local attacker, an available port, and a subsequent user submission. It does not let an attacker seize an already bound listener. Unlike the documented malicious-same-user exclusion, this can matter for a different local UID.
 
 **Fix:** give the upstream a verifiable identity or protected, persistent endpoint. Options include an authenticated HTTPS upstream with proper certificate verification, or a supervised proxy/Unix-socket arrangement whose sensitive endpoint cannot be replaced by other users. Socket activation must reserve the listener across broker restarts, and needs implementation support. Coordinate proxy lifecycle with broker lifecycle and keep the host free of untrusted workloads meanwhile. Merely trusting the displayed Tailscale hostname, adding a form token, or checking the request's identity header does not authenticate a replacement backend.
 

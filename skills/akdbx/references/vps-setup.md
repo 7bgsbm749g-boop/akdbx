@@ -1,75 +1,66 @@
 # VPS setup and recovery
 
-Read this when ordinary broker calls cannot proceed or when the user asks to connect a database. These are local deployment details, not a reason to reconfigure a working broker.
+Read this when ordinary broker calls cannot proceed or when the user asks to connect a database. This is a portable setup guide, not a record of a particular server. Obtain real CLI paths, HTTPS origins, service names and desktop settings from private local configuration. Do not reconfigure a working broker to match an example.
 
 ## CLI and socket discovery
 
 ```bash
-/home/ubuntu/projects/akdbx/.venv/bin/akdbx --help
-/home/ubuntu/projects/akdbx/.venv/bin/akdbx status
+/absolute/path/to/akdbx/.venv/bin/akdbx --help
+/absolute/path/to/akdbx/.venv/bin/akdbx status
 ```
 
-The CLI chooses `${XDG_RUNTIME_DIR}/akdbx/akdbx.sock` when `XDG_RUNTIME_DIR` is set, otherwise `/tmp/akdbx-UID/akdbx.sock`. On this VPS, the usual runtime location is `/run/user/1000/akdbx/akdbx.sock`. If the caller and broker have different environments, pass the broker's known socket explicitly. `--socket` is a global option and must precede the subcommand:
+The CLI chooses `${XDG_RUNTIME_DIR}/akdbx/akdbx.sock` when `XDG_RUNTIME_DIR` is set, otherwise `/tmp/akdbx-UID/akdbx.sock`. For a runtime-based deployment, the unlock backend is `${XDG_RUNTIME_DIR}/akdbx/akdbx-unlock.sock`. If the caller and broker have different environments, pass the broker's known socket explicitly. `--socket` is a global option and must precede the subcommand:
 
 ```bash
-/home/ubuntu/projects/akdbx/.venv/bin/akdbx --socket /run/user/1000/akdbx/akdbx.sock status
+/absolute/path/to/akdbx/.venv/bin/akdbx --socket ${XDG_RUNTIME_DIR}/akdbx/akdbx.sock status
 ```
 
 Use the same socket on subsequent search/fill commands. Do not unlink a socket or launch a duplicate broker to work around a connection failure. `serve` refuses a live endpoint, recovers only an unchanged owned stale socket, and holds a persistent per-socket lifecycle lock across startup and shutdown. It validates the runtime directory without changing its permissions, and anchors socket lifecycle operations to the verified directory. Custom sockets must already live in (or name a new) dedicated private directory below trusted, non-symlinked ancestry, not a shared project directory. Root-owned sticky ancestors such as `/tmp` are allowed for the per-UID fallback; other group- or world-writable ancestors are rejected.
 
-During the rebrand, the managed service keeps its existing
-`/run/user/1000/agentic-kdbx/agentic-kdbx.sock` endpoint and private vault path.
-The CLI automatically uses that legacy endpoint only when the canonical socket
-is absent, then applies the same security checks. Use `akdbx status` or the
-explicit existing socket; do not restart an unlocked broker just to rename
-storage. The managed unit is available as `akdbx.service`. Existing vault,
-admission and recovery paths stay unchanged so saved receipts remain valid.
-The current 9443 Serve mapping also retains the existing protected backend
-until an authorized broker migration; new deployments use the canonical paths
-below.
+During the rebrand, an existing deployment may keep its legacy
+`${XDG_RUNTIME_DIR}/agentic-kdbx/agentic-kdbx.sock` endpoint and private vault
+path. The CLI automatically uses that legacy endpoint only when the canonical
+socket is absent, then applies the same security checks. Use the existing
+socket; do not restart an unlocked broker just to rename storage. Existing
+vault, admission and recovery paths must stay unchanged so saved receipts
+remain valid. Preserve an existing protected Serve backend until a coordinated
+migration is authorized.
 
 Before connecting, the CLI requires that dedicated directory to be owned by the configured broker UID with mode `0700`, requires the socket to be owned by that UID with mode `0600`, rejects symlinked path components, and verifies the connected process using Unix peer credentials. The expected UID defaults to the caller's UID. If a deployment intentionally runs the broker as another account, configure its numeric identity independently with global `--broker-uid UID` or `AKDBX_BROKER_UID`; do not derive it from a server response.
 
-Broker-provided unlock links are shown only when they use HTTPS and match the independently configured expected origin. The managed default is `https://vps-3857965a.tailb80cc4.ts.net:9443`. For an intentional custom deployment, put global `--unlock-origin https://host[:port]` before the subcommand, or set `AKDBX_UNLOCK_ORIGIN`. The configured value must be an origin only, without credentials, path, query, or fragment.
+Broker-provided unlock links are shown only when they use HTTPS and match the independently configured expected origin. The built-in default, `https://unlock.example.invalid:9443`, is deliberately non-routable. Set `AKDBX_UNLOCK_ORIGIN` in the private environment to the real deployment origin, or put global `--unlock-origin https://host[:port]` before the subcommand. This setting also configures the broker's private-page origin at startup. The legacy `serve --unlock-url` override remains supported; clients must still independently configure the same trusted origin. Existing deployments must configure their current origin before updating the CLI or restarting the broker. The configured value must be an origin only, without credentials, path, query, or fragment.
 
 This client is a CLI; no MCP server or automatic broker service is supplied. The repository's `.buildtmp` KDBX files were synthetic test fixtures. Do not treat them as the user's database. If the real database path is unknown, ask for its location, never its master password or key-file contents.
 
 If the existing virtual environment is missing and installation is part of the task, the repository's `README.md` describes installation. Avoid dependency reinstalls for an ordinary login.
 
-## Existing managed desktop
+## Existing X11 desktop
 
-The VPS already runs Xvfb `:99` with Openbox. Check it before trying to launch any desktop components:
+Reuse the host's existing X11 desktop and window manager. Read `DISPLAY`,
+`XAUTHORITY`, `DBUS_SESSION_BUS_ADDRESS` and other desktop environment settings
+from the owning account's private configuration or managed service. Do not
+assume a display number, account name, authorization-file path or service name.
+Keep the Xauthority contents private. Verify the configured display with
+`xdpyinfo` in that environment before starting desktop components; an unset
+`DISPLAY` is not evidence that a second Xvfb is needed.
 
-```bash
-systemctl --user is-active vps-desktop.service vps-cua.service
-DISPLAY=:99 XAUTHORITY=/home/ubuntu/.local/share/vps-computer/Xauthority xdpyinfo
-```
-
-The broker startup environment is:
-
-```bash
-export DISPLAY=:99
-export XAUTHORITY=/home/ubuntu/.local/share/vps-computer/Xauthority
-export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
-export XDG_SESSION_TYPE=x11
-export XDG_CURRENT_DESKTOP=OPENBOX
-```
-
-Login shells receive these values from `/etc/profile.d/vps-managed-desktop.sh`. A tool may sanitize its environment; use the explicit values above if needed. Run as `ubuntu`. Keep the Xauthority contents private. Do not start a second Xvfb just because `DISPLAY` is unset.
-
-For actual GUI interaction, use the available GUI skill/tools and verify the exact target. A browser running on another device, another display, or in a separate preview is not a destination the local broker can automatically fill. Remote unlock on a phone only unlocks the VPS broker; it does not type on that phone.
+For actual GUI interaction, use the available GUI skill/tools and verify the
+exact target. A browser running on another device, another display, or in a
+separate preview is not a destination the local broker can automatically fill.
+Remote unlock on a phone only unlocks the host's broker; it does not type on
+that phone.
 
 ## Start with remote unlock
 
-Reuse an existing broker whenever possible. To start a new one, use the real database path supplied by the user and a persistent process/PTY with the desktop environment above. Keep that session alive after the agent turn; terminating it locks the database. The user does not need access to its terminal: master-password entry is private web-only and fills require no terminal input.
+Reuse an existing broker whenever possible. To start a new one, use the real database path supplied by the user and a persistent process/PTY with the configured desktop environment and `AKDBX_UNLOCK_ORIGIN` set. Keep that session alive after the agent turn; terminating it locks the database. The user does not need access to its terminal: master-password entry is private web-only and fills require no terminal input.
 
 ```bash
-/home/ubuntu/projects/akdbx/.venv/bin/akdbx \
-  --socket /run/user/1000/akdbx/akdbx.sock \
+/absolute/path/to/akdbx/.venv/bin/akdbx \
+  --socket ${XDG_RUNTIME_DIR}/akdbx/akdbx.sock \
   serve /absolute/path/to/the-users-vault.kdbx --web-unlock
 ```
 
-For a database requiring a key file, append `--keyfile /absolute/path/to/keyfile`. The key file must already be available on this VPS. Never print its contents. The browser accepts a master password; it does not upload the KDBX or key file, and its current form requires a nonempty password.
+For a database requiring a key file, append `--keyfile /absolute/path/to/keyfile`. The key file must already be available on the broker host. Never print its contents. The browser accepts a master password; it does not upload the KDBX or key file, and its current form requires a nonempty password.
 
 Private web unlock is always enabled. `--web-unlock` remains accepted for command compatibility and clarity; omitting it has the same behavior. The former hidden terminal master-password prompt has been removed.
 
@@ -81,30 +72,30 @@ The database is held in memory for that broker process's lifetime. Successful br
 
 ## Tailscale web page
 
-Configured deployment:
+Example runtime-based deployment (substitute your private configuration):
 
-- Public-to-the-tailnet HTTPS base: `https://vps-3857965a.tailb80cc4.ts.net:9443`
-- Local backend: HTTP over `unix:/run/user/1000/akdbx/akdbx-unlock.sock`
+- Public-to-the-tailnet HTTPS base: the HTTPS origin in `AKDBX_UNLOCK_ORIGIN`
+- Local backend: HTTP over `unix:${XDG_RUNTIME_DIR}/akdbx/akdbx-unlock.sock`
 - Live URL: the base plus `/?token=...`, returned by the running broker.
 
-The backend only runs while a `serve --web-unlock` process is alive. Both sockets live in the dedicated `/run/user/1000/akdbx` directory, which is owned by `ubuntu` and mode `0700`; the broker also validates its non-symlinked ancestry and rejects replaceable ancestors instead of weakening permissions. This prevents a different local UID from creating a replacement backend while the broker is stopped. An installed Tailscale proxy alone does not mean a vault is connected or the page is available.
+The backend only runs while a `serve --web-unlock` process is alive. Both sockets live in the dedicated `${XDG_RUNTIME_DIR}/akdbx` directory, which is owned by the configured broker UID and mode `0700`; the broker also validates its non-symlinked ancestry and rejects replaceable ancestors instead of weakening permissions. This prevents a different local UID from creating a replacement backend while the broker is stopped. An installed Tailscale proxy alone does not mean a vault is connected or the page is available.
 
 Read-only checks:
 
 ```bash
 tailscale serve status
-sudo test -S /run/user/1000/akdbx/akdbx-unlock.sock
-/home/ubuntu/projects/akdbx/.venv/bin/akdbx status
+test -S "${XDG_RUNTIME_DIR}/akdbx/akdbx-unlock.sock"
+/absolute/path/to/akdbx/.venv/bin/akdbx status
 ```
 
-Only if migration or setup is authorized, first verify `tailscale version` is **1.98.9 or newer** and inspect the existing mappings. Tailscale requires root to configure filesystem/Unix-socket targets. Then replace only the 9443 mapping with the protected socket backend; do not reset or disturb other services:
+Only if migration or setup is authorized, first verify `tailscale version` is **1.98.9 or newer** and inspect the existing mappings. Tailscale requires root to configure filesystem/Unix-socket targets. Then replace only the mapping for the configured unlock port with the protected socket backend (9443 is an example); do not reset or disturb other services:
 
 ```bash
-sudo tailscale serve --bg --https=9443 unix:/run/user/1000/akdbx/akdbx-unlock.sock
+sudo tailscale serve --bg --https=9443 "unix:${XDG_RUNTIME_DIR}/akdbx/akdbx-unlock.sock"
 tailscale serve status
 ```
 
-Use Serve and do not enable Funnel/public exposure for the unlock page. Ports 443 and 8443 already serve other applications. Do not reset the entire Serve configuration. Do not retain or restore the former `http://127.0.0.1:43128` mapping: a persistent mapping to a reclaimable high TCP port does not authenticate the backend while the broker is stopped. Starting new application code cannot change an existing Tailscale configuration, so remote unlock must remain unavailable until this migration is completed.
+Use Serve and do not enable Funnel/public exposure for the unlock page. Preserve mappings for other applications; do not reset the entire Serve configuration. Do not retain or restore a loopback TCP mapping: a persistent mapping to a reclaimable high TCP port does not authenticate the backend while the broker is stopped. Starting new application code cannot change an existing Tailscale configuration, so remote unlock must remain unavailable until this migration is completed.
 
 Tailscale versions before 1.98.9 must not be used for this socket mapping because TS-2026-005 allowed a non-root Tailscale operator to configure privileged Unix-socket proxy targets. Upgrade Tailscale through the host's managed package process before configuring the mapping. The broker's socket mode is `0600`; `tailscaled` normally runs as root and can reach it without making the socket accessible to other users.
 
@@ -119,10 +110,10 @@ If the page fails:
 
 ## Sources for implementation-specific questions
 
-- Usage: `/home/ubuntu/projects/akdbx/README.md`
-- CLI defaults and arguments: `/home/ubuntu/projects/akdbx/src/akdbx/cli.py`
-- Broker and keyboard delivery: `/home/ubuntu/projects/akdbx/src/akdbx/broker.py`
-- Unlock page: `/home/ubuntu/projects/akdbx/src/akdbx/web_unlock.py`
+- Usage: [`README.md`](../../../README.md)
+- CLI defaults and arguments: [`src/akdbx/cli.py`](../../../src/akdbx/cli.py)
+- Broker and keyboard delivery: [`src/akdbx/broker.py`](../../../src/akdbx/broker.py)
+- Unlock page: [`src/akdbx/web_unlock.py`](../../../src/akdbx/web_unlock.py)
 
 Consult source when observed behavior differs from this skill. Reading implementation is fine; using it to extract the user's vault secrets is not part of the login workflow.
 

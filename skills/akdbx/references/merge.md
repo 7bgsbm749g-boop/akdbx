@@ -11,9 +11,9 @@ capsule-v1 remains unchanged.
 
 ## Normal path
 
-Use the installed CLI's absolute path (on this VPS,
-`/home/ubuntu/projects/akdbx/.venv/bin/akdbx`). Global socket and trusted
-unlock-origin options go before the subcommand.
+Use the installed CLI's absolute path from private deployment configuration.
+Global socket and trusted unlock-origin options go before the subcommand;
+`AKDBX_UNLOCK_ORIGIN` can supply the origin for all calls.
 
 ```bash
 akdbx --version

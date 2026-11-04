@@ -36,12 +36,13 @@ This prevents accidental disclosure into chat, command output, logs, process arg
 
 ## Install and run
 
-Linux desktop with X11, X-Resource 1.2 local PID support and EWMH window-manager metadata:
+Linux desktop with X11, X-Resource 1.2 local PID support and EWMH window-manager metadata. Set `AKDBX_UNLOCK_ORIGIN` in your private local environment to the HTTPS origin configured in Tailscale Serve before starting the broker or using the CLI. For example, `https://node.example:9443` is an illustrative origin, not a deployment address:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e .
-.venv/bin/akdbx serve /absolute/path/to/passwords.kdbx --web-unlock
+.venv/bin/akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" \
+  serve /absolute/path/to/passwords.kdbx --web-unlock
 ```
 
 Keep the broker process running. Open its private unlock page from your Tailscale-connected device and enter the master password there. The broker needs no terminal input and can run in a persistent agent PTY that the user cannot access. After unlocking, use another shell—or an agent—to search, focus the destination, and explicitly fill:
@@ -58,19 +59,20 @@ There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatib
 
 ### Unlock remotely over Tailscale
 
-On the configured VPS, start the broker without entering the master password locally:
+On your host, set the private deployment origin as described above, then start the broker without entering the master password locally:
 
 ```bash
-.venv/bin/akdbx serve /absolute/path/to/passwords.kdbx --web-unlock
+.venv/bin/akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" \
+  serve /absolute/path/to/passwords.kdbx --web-unlock
 ```
 
-The broker starts locked. `status` and `search` responses provide a one-time `https://vps-3857965a.tailb80cc4.ts.net:9443` unlock link. Open it from a device signed into the tailnet, enter the KDBX master password, and then use the broker normally. The backend listens only on a Unix-domain socket in the broker's private runtime directory; it does not open a TCP port. Tailscale Serve supplies HTTPS, tailnet access control, and the authenticated identity header. The filesystem boundary prevents another local UID from replacing a stopped backend behind the trusted HTTPS origin. The page and URL are non-cacheable, attempts are rate-limited, request logging is disabled, and the URL token is replaced after a successful unlock.
+The broker starts locked. `status` and `search` responses provide a one-time unlock link under your configured HTTPS origin. Open it from a device signed into the tailnet, enter the KDBX master password, and then use the broker normally. The backend listens only on a Unix-domain socket in the broker's private runtime directory; it does not open a TCP port. Tailscale Serve supplies HTTPS, tailnet access control, and the authenticated identity header. The filesystem boundary prevents another local UID from replacing a stopped backend behind the trusted HTTPS origin. The page and URL are non-cacheable, attempts are rate-limited, request logging is disabled, and the URL token is replaced after a successful unlock.
 
 The CLI independently trusts that HTTPS origin; it rejects broker responses
 containing an HTTP, malformed, credential-bearing, or different-origin unlock
-link. Custom deployments must configure the client with the intended origin
+link. Every deployment must configure the client with the intended origin
 using global `--unlock-origin HTTPS_ORIGIN` (or `AKDBX_UNLOCK_ORIGIN`) before the
-subcommand. A broker running under a separately configured account likewise
+subcommand. The same setting configures the broker's private-page origin at startup; the built-in default is a non-routable example. Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
 requires global `--broker-uid UID` (or `AKDBX_BROKER_UID`).
 
 The master password travels inside the tailnet HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Unlock remains valid for the lifetime of the broker process.
@@ -302,9 +304,9 @@ any live interaction ends.
 
 ## Agent contract
 
-The installed agent skill is [skills/akdbx/SKILL.md](skills/akdbx/SKILL.md), available on this VPS at `/home/ubuntu/.codex/skills/akdbx`. Agents can invoke it as `$akdbx`; automatic selection is enabled for saved-login, KeePass, and autofill tasks. New sessions can discover the installed skill. An existing session whose skill catalog has not refreshed can read the file directly.
+The installed agent skill is [skills/akdbx/SKILL.md](skills/akdbx/SKILL.md), which can be installed under your agent's local skills directory. Agents can invoke it as `$akdbx`; automatic selection is enabled for saved-login, KeePass, and autofill tasks. New sessions can discover the installed skill. An existing session whose skill catalog has not refreshed can read the file directly.
 
-The skill covers exact CLI commands, remote unlock, account selection, desktop targeting, explicit fills, and recovery from uncertain fills. Its [setup reference](skills/akdbx/references/vps-setup.md) documents the managed VPS desktop, socket discovery, startup, and Tailscale configuration. The skill directory in the repository is the maintained source; the installed path links to it so updates stay in sync.
+The skill covers exact CLI commands, remote unlock, account selection, desktop targeting, explicit fills, and recovery from uncertain fills. Its [setup reference](skills/akdbx/references/vps-setup.md) documents X11 desktop requirements, socket discovery, startup, and Tailscale configuration using portable examples. The skill directory in the repository is the maintained source; a local installation can link to it so updates stay in sync.
 
 An agent should:
 
@@ -327,7 +329,8 @@ Remote unlock requires Tailscale Serve to proxy HTTPS to the broker's Unix socke
 Merge integration tests require the native KeePassXC CLI dependency above.
 Tests generate synthetic KDBXs under pytest's temporary directory, with isolated
 RPC and HTTP Unix sockets. Keep temporary fixtures outside every synced vault;
-store retained evidence under `/home/ubuntu/backups/send-to-t3-code`, never QLO2.
+store retained evidence in the project's gitignored `evidence/` directory, outside
+synced vaults.
 Most fixtures use a reduced KDF cost. `test_full_argon2d_41_profile` separately
 uses KDBX 4.1/AES-256/Argon2d with I=119, M=67108864, P=2, V=19. The suite
 includes the installed CLI, broker, native engine, encrypted replacement, reopen,
@@ -372,7 +375,7 @@ native iPhone test is claimed.
 
 `tests/test_target*.py` covers required pins, legacy broker downgrade refusal,
 PID/window/focus switches, partial delivery and generated-password commit
-refusal. Native widget/browser checks launch a fresh Xvfb display (never :99).
+refusal. Native widget/browser checks launch a fresh Xvfb display (never the shared desktop display).
 The Chromium test uses a new temporary profile and synthetic HTML fields; CDP
 only prepares/observes them, while production X11Typer sends all nonempty input.
 It passed six separate username/password fills and a username–Tab–password fill

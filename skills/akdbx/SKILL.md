@@ -13,13 +13,13 @@ When sign-in is needed, check the current model and available delegation through
 
 ## Where the tool lives
 
-On this VPS, the CLI is `/home/ubuntu/projects/akdbx/.venv/bin/akdbx`. Use its absolute path from any project; do not assume `akdbx` is on `PATH`.
+Locate the installed CLI in private deployment configuration. Use its absolute path from any project; do not assume `akdbx` is on `PATH`. Examples use `/absolute/path/to/akdbx/.venv/bin/akdbx`; replace it with the verified local path. Set `AKDBX_UNLOCK_ORIGIN` to the independently configured deployment HTTPS origin before broker calls; the built-in default is a non-routable example.
 
 ```bash
-/home/ubuntu/projects/akdbx/.venv/bin/akdbx status
+/absolute/path/to/akdbx/.venv/bin/akdbx status
 ```
 
-The repository is `/home/ubuntu/projects/akdbx`. This skill is installed as `/home/ubuntu/.codex/skills/akdbx`, linked to the repository's `skills/akdbx` directory. It can be explicitly invoked as `$akdbx`.
+The maintained skill source is the repository's `skills/akdbx` directory. A local installation can link to that directory from the agent's skills directory. It can be explicitly invoked as `$akdbx`. Keep real hostnames, account paths and desktop settings in private deployment configuration, not in tracked skill files.
 
 If the broker is absent, the CLI is missing, the socket differs, or desktop/Tailscale setup needs attention, read [VPS setup and recovery](references/vps-setup.md). Do not start another broker merely because one query failed. The real database path must come from the user's configuration or request; the repository's test KDBX files are not the user's vault.
 
@@ -49,14 +49,14 @@ A locked web-unlock broker returns this shape:
 
 `status` exits successfully even when locked, so inspect `locked`. A `search` against a locked vault returns `ok: false`, `error: "vault locked"`, and the unlock URL when configured.
 
-When locked, give the user the exact returned link. On this VPS the expected base is `https://vps-3857965a.tailb80cc4.ts.net:9443`. The user opens it on their Tailscale-connected device and submits the master password there. Do not substitute the bare base URL: the token is required. Keep the token in a private interaction with the user.
+When locked, give the user the exact returned link. The expected base must match the independently configured deployment origin; never infer trust from a broker response. The user opens it on their Tailscale-connected device and submits the master password there. Do not substitute the bare base URL: the token is required. Keep the token in a private interaction with the user.
 
 After the user unlocks, run `status` again and continue when `locked` is false. If actively waiting, use a bounded wait or periodic status check, not a tight polling loop. A successful unlock lasts until that broker process stops or the host reboots; there is no idle lock. Do not restart it to perform another login. The unlock link is invalidated after success.
 
 ### 2. Find and select the appropriate login
 
 ```bash
-/home/ubuntu/projects/akdbx/.venv/bin/akdbx search 'example.com'
+/absolute/path/to/akdbx/.venv/bin/akdbx search 'example.com'
 ```
 
 Search is case-insensitive substring matching across title, username, URL, and group. It returns up to 20 entries, with no pagination or exact-domain enforcement. Narrow a broad query; an empty query lists up to 20 entries and should not be the default.
@@ -117,7 +117,7 @@ A handle expires five minutes after search and is consumed on its first fill att
 
 ### 3. Prepare the actual destination
 
-Use the available GUI/browser tools to confirm the app/site and focus the intended field on the broker's desktop. Follow those tools' interaction instructions. For this VPS, the broker types into the managed X11 desktop at `:99`; see the setup reference if necessary.
+Use the available GUI/browser tools to confirm the app/site and focus the intended field on the broker's desktop. Follow those tools' interaction instructions. The broker types into its configured X11 desktop; obtain the display and authorization settings from private local configuration. See the setup reference if necessary.
 
 Version 0.9.0 requires target fill protocol 1 for every saved/generated fill.
 Read [target-pinned delivery](references/target-fill.md) before the first use.
@@ -134,7 +134,7 @@ Use that verified PID and window ID; do not copy the current foreground identity
 blindly. Search first, prepare focus, then pin immediately before filling:
 
 ```bash
-/home/ubuntu/projects/akdbx/.venv/bin/akdbx pin-target --pid VERIFIED_PID --window VERIFIED_X11_CLIENT_WINDOW
+/absolute/path/to/akdbx/.venv/bin/akdbx pin-target --pid VERIFIED_PID --window VERIFIED_X11_CLIENT_WINDOW
 ```
 
 The result includes a private `target` token, valid for 30 seconds and one fill.
@@ -161,7 +161,7 @@ For multi-step sign-in or uncertain Tab order, use separate username and passwor
 ### 4. Fill once and verify the outcome
 
 ```bash
-/home/ubuntu/projects/akdbx/.venv/bin/akdbx fill 'HANDLE_FROM_SEARCH' --mode password --target 'TARGET_FROM_PIN'
+/absolute/path/to/akdbx/.venv/bin/akdbx fill 'HANDLE_FROM_SEARCH' --mode password --target 'TARGET_FROM_PIN'
 ```
 
 On success the response is only a receipt, such as:
@@ -341,7 +341,7 @@ already have started.
 The user has authorized this ongoing repair workflow, including fixing broken skill instructions and pushing the tested patch. When a sign-in flow fails because of the agentic KeePass client or its instructions, carry out the following loop without asking for permission again for each scoped repair:
 
 1. Establish the client/instruction failure from non-secret evidence. Capture the failing command, error, relevant version, desktop context, and expected behavior. Resolve any pending or partial fill before retrying. An incorrect saved password, missing MFA, account lockout, site outage, or explicit user denial is not itself evidence of a client defect.
-2. Start a real T3 Code repair thread in the `akdbx` project at `/home/ubuntu/projects/akdbx`. Use [the repair-thread handoff](references/repair-thread.md) for dispatch and observation. Send a sanitized reproduction and the original sign-in step to unblock; never send passwords, vault contents, key-file contents, handles, or live unlock tokens.
+2. Start a real T3 Code repair thread in the registered `akdbx` project. Use [the repair-thread handoff](references/repair-thread.md) for dispatch and observation. Send a sanitized reproduction and the original sign-in step to unblock; never send passwords, vault contents, key-file contents, handles, or live unlock tokens.
 3. Instruct that thread to reproduce the issue, fix the client and/or broken instructions, test the failed behavior with synthetic credentials, run relevant regression checks, and commit and push the patch to the project's configured Git remote. Require the commit, push destination/result, test evidence, and instructions for using the updated version. Preserve the password-withholding behavior and existing user work.
 4. Wait for the T3 thread to finish. Read its final result and turn state; thread creation or an idle/error state is not proof of a completed repair. If the repair is incomplete, continue the repair work with the collected evidence before resuming the affected login step. Keep only one active repair thread for this failure, and do not recursively delegate the same repair from inside that thread.
 5. Use the tested new version in the original workflow. Verify that the local CLI and running broker actually use the patch; a pushed commit alone does not update a running Python process. Coordinate any necessary broker restart, ask the user to unlock again through the web page if needed, and reread this skill if it changed.
