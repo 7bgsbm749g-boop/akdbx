@@ -19,6 +19,7 @@ from .target import X11Typer, DELIVERY
 from .runtime import anchored_socket_path, open_private_runtime_directory
 from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
+from .notifications import validate_webhook_url
 
 
 # Reserved example domain: deployment addresses belong in local configuration.
@@ -178,6 +179,17 @@ def request(
         os.close(runtime_fd)
 
 
+def _read_webhook_url(path: Path) -> str:
+    """Read a private callback without placing its bearer token in argv/output."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "r", encoding="utf-8") as source:
+        info = os.fstat(source.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 4096):
+            raise ValueError("webhook URL file must be an owned mode-0600 regular file of at most 4096 bytes")
+        return validate_webhook_url(source.read(4097).strip())
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="akdbx", description="Secret-withholding KeePass autofill broker")
     result.add_argument("--version", action="version", version=__version__)
@@ -242,6 +254,13 @@ def parser() -> argparse.ArgumentParser:
     for command in (fill, generated, totp):
         command.add_argument('--target', required=True, help='fresh single-use pin-target token; no global fallback')
     commands.add_parser("status", help="check broker status")
+    subscribe = commands.add_parser("subscribe-unlock", help="register a one-shot HTTPS unlock webhook; no active agent wait")
+    subscribe.add_argument("--webhook-url-file", required=True, type=Path,
+                           help="owned mode-0600 file containing the private callback URL")
+    subscribe.add_argument("--ttl", type=int, default=1800, help="subscription lifetime, 60–3600 seconds (default: 1800)")
+    for name in ("unlock-subscription-status", "unsubscribe-unlock"):
+        command = commands.add_parser(name, help="inspect/cancel a one-shot unlock subscription")
+        command.add_argument("subscription_id")
     merge = commands.add_parser('merge', help='merge another encrypted KDBX into the broker vault using held credentials')
     merge.add_argument('source', type=Path, help='source KDBX (unchanged); same password and key file as target')
     merge.add_argument('--check', action='store_true', help='verify a staged encrypted merge without replacing the target')
@@ -288,7 +307,9 @@ def main(argv: list[str] | None = None) -> int:
             unlock_server.server_close()
         return 0
     payload = {"action": "ping" if args.command == "status" else args.command}
-    if args.command == 'pin-target':
+    if args.command in {'unlock-subscription-status', 'unsubscribe-unlock'}:
+        payload['subscription_id'] = args.subscription_id
+    elif args.command == 'pin-target':
         payload.update(pid=args.pid, window=args.window, target_protocol=1)
     elif args.command == "search":
         payload["query"] = args.query
@@ -339,6 +360,17 @@ def main(argv: list[str] | None = None) -> int:
         payload.update(target=args.target, target_protocol=1)
     identity_kind = 'SSO' if args.command == 'create-sso-entry' else 'passwordless'
     try:
+        if args.command == 'subscribe-unlock':
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True
+                    or capabilities.get('unlock_notifications_supported') is not True
+                    or type(capabilities.get('unlock_notifications_protocol')) is not int
+                    or capabilities['unlock_notifications_protocol'] != 1):
+                print(json.dumps({'ok': False, 'error': 'broker lacks unlock notification protocol 1; require broker 0.11.0 or newer; subscription not sent'}))
+                return 1
+            payload.update(webhook_url=_read_webhook_url(args.webhook_url_file),
+                           ttl=args.ttl, notification_protocol=1)
         if args.command in {'setup-totp', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)

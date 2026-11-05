@@ -51,7 +51,25 @@ A locked web-unlock broker returns this shape:
 
 When locked, give the user the exact returned link. The expected base must match the independently configured deployment origin; never infer trust from a broker response. The user opens it on their Tailscale-connected device and submits the master password there. Do not substitute the bare base URL: the token is required. Keep the token in a private interaction with the user.
 
-After the user unlocks, run `status` again and continue when `locked` is false. If actively waiting, use a bounded wait or periodic status check, not a tight polling loop. A successful unlock lasts until that broker process stops or the host reboots; there is no idle lock. Do not restart it to perform another login. The unlock link is invalidated after success.
+When locked, subscribe to an unlock notification and let the event resume the
+original task. Do not ask the user to say “unlocked,” keep an agent turn waiting,
+or create a polling schedule. Read [unlock notifications](references/unlock-notifications.md)
+for registration, race handling and cleanup. In T3, create a webhook trigger bound
+to the current thread, register its private URL with `subscribe-unlock`, verify
+the subscription receipt, then end the turn. Outside T3, use the agent host's
+incoming webhook or event adapter. A webhook must actually start a new agent
+turn; a shell listener alone does not do this. Report a missing host callback
+capability rather than claiming that automatic continuation is configured.
+
+On notification, remove the one-shot host trigger, run `status`, and continue
+the original task when `locked` is false, with fresh handles and target pins.
+No further approval or user reply is required. Require broker 0.11.0 or newer
+and unlock notification protocol 1 before promising notification; an older
+running broker needs a coordinated upgrade, restart and private unlock.
+
+A successful unlock lasts until that broker process stops or the host reboots;
+there is no idle lock. Do not restart it to perform another login. The unlock
+link is invalidated after success.
 
 ### 2. Find and select the appropriate login
 
@@ -322,7 +340,7 @@ per-step confirmation is required. Keep receipts and encrypted originals.
 | Observed result | Next step |
 | --- | --- |
 | `broker is not running` (exit 2) | Check socket/environment and startup instructions in the setup reference. |
-| `vault locked` (exit 1 from search/fill) | Share its unlock URL, then recheck status. |
+| `vault locked` (exit 1 from search/fill) | Share its unlock URL, register a one-shot unlock notification, and resume on that event. |
 | `entries: []` | Search the known account identifiers and inspect the service's supported provider or email-code routes before reporting a missing-login blocker. |
 | `unknown or expired handle; search again` | Search again; never fabricate or reuse a handle. |
 | `fill denied` or a terminal approval prompt | The running broker predates this policy change. Stop that old process before restarting the patched version with private web unlock; see the setup reference. Do not approve the old prompt or leave a pending fill behind. |

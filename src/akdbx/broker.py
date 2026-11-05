@@ -25,6 +25,7 @@ from .versions import active_entries
 from .totp import (MIN_VALIDITY, TotpError, capabilities as totp_capabilities,
                    configured as totp_configured, read_configuration, code_at, https_origin)
 from . import __version__
+from .notifications import UnlockNotifications, capabilities as notification_capabilities
 from .protocol import ProtocolError, receive_message, send_message
 from .runtime import (
     acquire_lifecycle_lock,
@@ -96,6 +97,7 @@ class Broker:
         self.writes = WriteManager(self)
         self.merges = MergeManager(self)
         self.unlock_url: str | None = None
+        self.unlock_notifications = UnlockNotifications()
 
     @property
     def locked(self) -> bool:
@@ -107,6 +109,7 @@ class Broker:
             if self.vault is not None:
                 return False
             self.vault = vault
+            self.unlock_notifications.publish()
             return True
 
     def _new_handle(self, entry: EntryLike) -> str:
@@ -159,6 +162,14 @@ class Broker:
 
     def dispatch(self, request: dict, *, delivery_ready=None) -> dict:
         action = request.get("action")
+        if action == "subscribe-unlock":
+            # Share unlock's lock so registration cannot miss a racing unlock.
+            with self._state_lock:
+                return self.unlock_notifications.subscribe(request, unlocked=self.vault is not None)
+        if action in {"unlock-subscription-status", "unsubscribe-unlock"}:
+            return self.unlock_notifications.status(
+                request.get("subscription_id"), cancel=action == "unsubscribe-unlock",
+            )
         if action in {'merge', 'admit', 'merge-status'}:
             if not self._vault_lock.acquire(blocking=False):
                 return {'ok': False, 'error': 'vault busy; merge not started; check merge-status before retry'}
@@ -191,7 +202,7 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), "generated_entry_protocol": 1, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), "generated_entry_protocol": 1, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if self.locked:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
@@ -485,6 +496,7 @@ def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
         try:
             if server is not None:
                 server.close()
+            broker.unlock_notifications.close()
             with workers_lock:
                 pending = list(workers)
             join_deadline = time.monotonic() + CONNECTION_TIMEOUT + 0.2

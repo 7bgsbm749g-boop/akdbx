@@ -79,6 +79,35 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
+### Unlock notifications (0.11.0)
+
+Agents can subscribe to a one-shot unlock webhook and end their turn. In T3,
+create a webhook task bound to the current thread, register its returned URL,
+and let T3 resume the thread when the broker posts the unlock event. No “unlocked”
+chat reply, active agent wait or polling schedule is needed. Other agent hosts
+can use their own incoming webhook/event adapters.
+
+```bash
+.venv/bin/akdbx subscribe-unlock --webhook-url-file /private/url-file --ttl 1800
+.venv/bin/akdbx unlock-subscription-status SUBSCRIPTION_ID
+.venv/bin/akdbx unsubscribe-unlock SUBSCRIPTION_ID
+```
+
+The URL file must be an owned mode-0600 regular file. The URL is private and is
+never echoed in receipts. Events contain only `event: "akdbx.unlocked"`,
+`locked: false` and opaque subscription/event IDs. Registration cannot miss a
+racing unlock; an already-unlocked broker queues the event immediately. Delivery
+runs outside the unlock request, uses verified HTTPS without redirects, and
+retries at most three times with the same event ID. Subscriptions expire after
+30 minutes by default, have a maximum one-hour lifetime, and do not survive a
+broker restart. The sender and receipt store are bounded. The agent must remove
+the host trigger and recheck broker readiness before continuing.
+
+Require the running broker's `unlock_notifications_supported: true` and integer
+`unlock_notifications_protocol: 1`; source/CLI updates alone do not activate a
+running broker. See [the notification workflow](skills/akdbx/references/unlock-notifications.md)
+for exact T3 registration, cleanup and recovery.
+
 ## Authenticator codes (0.10.0)
 
 `akdbx` can import TOTP authenticator keys and directly fill the current code
