@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import json
+import errno
 import shutil
 import threading
 import uuid
@@ -14,6 +15,7 @@ from pykeepass import PyKeePass
 from akdbx import admission, cli
 from akdbx.broker import Broker, open_vault_with_password
 from akdbx.web_unlock import start_unlock_server
+from akdbx.persistence import VaultStore
 from test_broker import RecordingTyper, running_broker
 from test_merge import MASTER, base
 
@@ -81,6 +83,98 @@ def recovery_case(tmp_path, base):
     incoming.add_entry(incoming.root_group, 'Synthetic addition', 'synthetic', 'synthetic value')
     incoming.save(source)
     return target, source, snapshots
+
+
+def recovery_request(source, snapshots, action, operation_id):
+    request = dict(action=action, source=str(source), operation_id=operation_id)
+    if action == 'admit':
+        request.update(snapshot_directory=str(snapshots), policy=admission.POLICY,
+                       verification=admission.VERIFICATION)
+    return request
+
+
+def save_recovery_identity(broker):
+    return broker.dispatch(dict(action='create-passwordless-entry', auth_method='email_code',
+                                metadata=dict(title='Synthetic later identity', username='synthetic',
+                                              url='https://identity.example.test', group='')))
+
+
+@pytest.mark.parametrize('action', ['merge', 'admit'])
+@pytest.mark.parametrize('partial', [False, True])
+def test_receipt_finalization_failure_blocks_live_saves(recovery_case, monkeypatch, action, partial):
+    """A partial next receipt keeps live recovery blocked; a durable failed receipt does not."""
+    target, source, snapshots = recovery_case
+    broker = Broker(open_vault_with_password(target, MASTER), RecordingTyper())
+    broker.writes.public_base = 'https://unlock.example.test:9443'
+    active = broker.vault
+    before = target.read_bytes(), source.read_bytes()
+    original = VaultStore._write_file
+
+    def fail_receipt(directory, name, data):
+        if partial and name == 'receipt-next.json' and json.loads(data)['state'] == 'prepared':
+            original(directory, name, b'{')
+            raise OSError(errno.ENOSPC, 'synthetic short receipt write')
+        if not partial and name == 'source.kdbx':
+            raise OSError(errno.ENOSPC, 'synthetic pre-replacement failure')
+        return original(directory, name, data)
+
+    operation_id = uuid.uuid4().hex
+    with monkeypatch.context() as patch:
+        patch.setattr(VaultStore, '_write_file', staticmethod(fail_receipt))
+        result = broker.dispatch(recovery_request(source, snapshots, action, operation_id))
+    assert not result['ok'] and (target.read_bytes(), source.read_bytes()) == before
+    receipt = Path(result['receipt_path'])
+    assert json.loads(receipt.read_bytes())['state'] == ('preparing' if partial else 'failed')
+    assert broker.vault is active and not broker.typer.events
+    assert broker.vault._akdbx_store.recovery_required is partial
+    assert result['state'] == ('uncertain' if partial else 'failed')
+    assert open_vault_with_password(target, MASTER)._akdbx_store.recovery_required is partial
+    written = save_recovery_identity(broker)
+    assert written['ok'] is (not partial)
+    if partial:
+        assert (target.read_bytes(), source.read_bytes()) == before and broker.vault is active
+        assert receipt.with_name('receipt-next.json').read_bytes() == b'{'
+
+
+@pytest.mark.parametrize('action', ['merge', 'admit'])
+@pytest.mark.parametrize('write_kind', ['identity', 'password'])
+def test_existing_store_rescans_peer_recovery_before_save(recovery_case, monkeypatch, action, write_kind):
+    """The shared flock serializes saves, and its owner must also check prior durable intents."""
+    target, source, snapshots = recovery_case
+    first = Broker(open_vault_with_password(target, MASTER), RecordingTyper())
+    first.writes.public_base = 'https://unlock.example.test:9443'
+    active = first.vault
+    if write_kind == 'password':
+        pending = first.dispatch(dict(action='create-entry', metadata=dict(
+            title='Synthetic later password', username='synthetic', url='https://password.example.test', group='')))
+        assert pending['ok'], pending
+        operation = first.writes.get(pending['write_handle'])
+    peer = Broker(open_vault_with_password(target, MASTER), RecordingTyper())
+    original = peer.merges._receipt
+
+    def interrupt(directory, receipt):
+        original(directory, receipt)
+        if receipt['state'] == 'prepared':
+            raise KeyboardInterrupt('synthetic peer interruption')
+
+    operation_id = uuid.uuid4().hex
+    monkeypatch.setattr(peer.merges, '_receipt', interrupt)
+    before = target.read_bytes(), source.read_bytes()
+    with pytest.raises(KeyboardInterrupt):
+        peer.dispatch(recovery_request(source, snapshots, action, operation_id))
+    assert peer.vault._akdbx_store.recovery_required
+    assert not first.vault._akdbx_store.recovery_required
+    revision = first.writes.revision
+    if write_kind == 'password':
+        result = first.writes.submit(operation, 'synthetic new password', 'synthetic new password', True)
+    else:
+        result = save_recovery_identity(first)
+    assert not result['ok'], result
+    assert first.vault._akdbx_store.recovery_required
+    assert first.vault is active and first.writes.revision == revision
+    assert (target.read_bytes(), source.read_bytes()) == before and not first.typer.events
+    assert not list(target.parent.glob('.*.akdbx-backup-*'))
+    assert first.dispatch(dict(action='merge-status', operation_id=operation_id))['state'] == 'uncertain'
 
 
 @pytest.mark.parametrize('external', [False, True])

@@ -14,7 +14,7 @@ from pykeepass import PyKeePass, create_database
 
 from akdbx import cli
 from akdbx.broker import Broker
-from akdbx.protocol import ProtocolError, send_message
+from akdbx.protocol import ProtocolError, receive_message, send_message
 from test_broker import target_capabilities, Entry, RecordingTyper, target_request, SECRET, running_broker, expected_merge_capabilities, expected_sso_capabilities, expected_passwordless_capabilities
 from test_web_unlock import call
 
@@ -32,6 +32,115 @@ MASTER = "synthetic-web-unlock-master"
 def test_documented_end_of_options_accepts_legacy_handles(arguments, field):
     """A new CLI must still accept opaque handles from a running old broker."""
     assert getattr(cli.parser().parse_args(arguments), field) == '-legacy-handle'
+
+
+@pytest.mark.parametrize('raw_uid', ['', 'not-a-uid'])
+@pytest.mark.parametrize('command', ['override', 'default', 'help', 'version', 'subcommand-help'])
+def test_unused_invalid_uid_environment_does_not_block_cli(monkeypatch, tmp_path, capsys, raw_uid, command):
+    """Only the effective UID needs conversion; local help needs no broker configuration."""
+    monkeypatch.setenv('AKDBX_BROKER_UID', raw_uid)
+    if command == 'override':
+        endpoint = tmp_path / 'private' / 'broker.sock'
+        broker = Broker(SimpleNamespace(entries=[]), RecordingTyper())
+        with running_broker(endpoint, broker):
+            assert cli.main(['--socket', str(endpoint), '--broker-uid', str(os.getuid()), 'status']) == 0
+        assert json.loads(capsys.readouterr().out)['ok'] is True
+    else:
+        arguments = {'default': ['status'], 'help': ['--help'], 'version': ['--version'],
+                     'subcommand-help': ['status', '--help']}[command]
+        with pytest.raises(SystemExit) as exc:
+            cli.main(arguments)
+        assert exc.value.code == (2 if command == 'default' else 0)
+        captured = capsys.readouterr()
+        if command == 'default':
+            assert not captured.out and '--broker-uid' in captured.err
+        else:
+            assert captured.out and not captured.err
+        assert 'Traceback' not in captured.err
+
+
+def test_valid_uid_environment_selects_authenticated_broker(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv('AKDBX_BROKER_UID', str(os.getuid()))
+    endpoint = tmp_path / 'private' / 'broker.sock'
+    with running_broker(endpoint, Broker(SimpleNamespace(entries=[]), RecordingTyper())):
+        assert cli.main(['--socket', str(endpoint), 'status']) == 0
+    assert json.loads(capsys.readouterr().out)['ok'] is True
+
+
+def test_eof_after_completed_fill_requires_uncertainty_without_retry(tmp_path, capsys):
+    """A completed delivery with a lost receipt cannot be classified as safe to repeat."""
+    typer = RecordingTyper()
+    broker = Broker(SimpleNamespace(entries=[Entry()]), typer)
+    handle = broker.dispatch({'action': 'search'})['entries'][0]['handle']
+    pin = target_request(broker)['target']
+    endpoint = tmp_path / 'private' / 'broker.sock'
+    endpoint.parent.mkdir(mode=0o700)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(endpoint))
+    endpoint.chmod(0o600)
+    listener.listen(2)
+    listener.settimeout(2)
+    actions, errors = [], []
+
+    def lose_reply():
+        try:
+            for _ in range(2):
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(2)
+                    payload = receive_message(connection)
+                    actions.append(payload['action'])
+                    response = broker.dispatch(payload)
+                    if payload['action'] == 'ping':
+                        send_message(connection, response)
+                    else:
+                        assert response['ok'] is True
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=lose_reply)
+    worker.start()
+    try:
+        assert cli.main(['--socket', str(endpoint), '--broker-uid', str(os.getuid()),
+                         'fill', handle, '--mode', 'password', '--target', pin]) == 2
+        worker.join(3)
+        assert not worker.is_alive() and not errors
+        assert actions == ['ping', 'fill']
+        assert typer.events == [('type', SECRET)] and handle not in broker._handles
+        captured = capsys.readouterr()
+        assert not captured.out and SECRET not in captured.err
+        assert 'outcome unconfirmed' in captured.err and 'do not retry automatically' in captured.err
+    finally:
+        listener.close()
+        worker.join(3)
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('action, preflight', [
+    ('fill-generated', False), ('fill-totp', False), ('commit-password', False),
+    ('fill-generated', True), ('fill-totp', True),
+])
+def test_lost_mutation_reply_has_safe_recovery_guidance(monkeypatch, capsys, action, preflight):
+    calls = []
+
+    def lost_reply(endpoint, payload, **kwargs):
+        calls.append(payload['action'])
+        if payload['action'] == 'ping' and not preflight:
+            return {'ok': True, **target_capabilities(), 'totp_supported': True, 'totp_protocol': 1}
+        raise ProtocolError('connection closed')
+
+    monkeypatch.setattr(cli, 'request', lost_reply)
+    arguments = [action, 'synthetic-reference']
+    arguments += (['--site-accepted'] if action == 'commit-password' else
+                  ['--target-url', 'https://example.test', '--target', 'synthetic-pin'])
+    assert cli.main(arguments) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and 'outcome unconfirmed' in captured.err
+    assert ('write-status' if action == 'commit-password' else 'do not retry automatically') in captured.err
+    assert 'after request' not in captured.err
+    assert calls == (['ping'] if preflight else
+                     ['ping', 'ping', action] if action == 'fill-totp' else
+                     ['ping', action] if action == 'fill-generated' else [action])
 
 
 @pytest.fixture(scope="module")

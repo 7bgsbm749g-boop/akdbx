@@ -8,7 +8,61 @@ import pytest
 from pykeepass import PyKeePass
 
 from akdbx import merge, versions
-from test_merge import BASE_TIME, MASTER, base
+from test_merge import BASE_TIME, MASTER, base, pair
+
+
+def test_preservation_preflight_does_not_build_unused_signatures(base, monkeypatch):
+    """Preservation still checks UUIDs/archives without constructing conflict signatures."""
+    getter, signature = PyKeePass.binaries.fget, merge._entry_signature
+    calls = Counter()
+
+    def pool(vault):
+        calls['pool'] += 1
+        return getter(vault)
+
+    def record(*args, **kwargs):
+        calls['signature'] += 1
+        return signature(*args, **kwargs)
+
+    for size in (2, 24):
+        source = PyKeePass(io.BytesIO(base.read_bytes()), password=MASTER)
+        source.add_binary(b'synthetic unreferenced pool' * 2048)
+        for index in range(size):
+            entry = source.add_entry(source.root_group, f'Synthetic {index}', 'synthetic', 'synthetic')
+            entry.mtime = BASE_TIME
+            entry.save_history()
+        calls.clear()
+        with monkeypatch.context() as patch:
+            patch.setattr(PyKeePass, 'binaries', property(pool))
+            patch.setattr(merge, '_entry_signature', record)
+            merge._check_ambiguity(source, preserve=True)
+        assert not calls, (size, calls)
+
+
+@pytest.mark.parametrize('damage', ['timestamp', 'attachment'])
+def test_preservation_capture_refuses_malformed_records_before_native_engine(pair, monkeypatch, damage):
+    """Skipping unused signatures must retain capture's validation before native code."""
+    broker, target, source = pair
+    incoming = PyKeePass(source, password=MASTER)
+    entry = incoming.find_entries(title='Shared', first=True)
+    if damage == 'timestamp':
+        entry._element.find('Times/LastModificationTime').text = 'synthetic invalid timestamp'
+    else:
+        entry.add_attachment(999, 'synthetic missing binary')
+    incoming.save(source)
+    before = target.read_bytes(), source.read_bytes()
+    calls = []
+
+    def forbidden_engine(*args, **kwargs):
+        calls.append(True)
+        raise AssertionError('malformed input reached the native engine')
+
+    monkeypatch.setattr(merge, 'run_engine', forbidden_engine)
+    import uuid
+    result = broker.dispatch(dict(action='merge', source=str(source), check=True,
+                                  preserve_conflicts=True, operation_id=uuid.uuid4().hex))
+    assert not result['ok'] and result['state'] == 'failed', result
+    assert not calls and (target.read_bytes(), source.read_bytes()) == before
 
 
 def test_signature_pool_copies_do_not_grow_with_record_count(base, monkeypatch):

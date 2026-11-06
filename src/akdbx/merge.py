@@ -63,12 +63,14 @@ def _check_ambiguity(*vaults, preserve=False):
     records = {}
     for vault in vaults:
         versions.archives(vault)
+        if preserve:
+            continue
         binaries = vault.binaries
         for entry in versions.active_entries(vault):
             for item in [entry, *entry.history]:
                 key = (item.uuid, selection.modification_time(item))
                 signature = _entry_signature(item, binaries)
-                if not preserve and key in records and records[key] != signature:
+                if key in records and records[key] != signature:
                     raise MergeError('conflicting same-second records; merge refused; originals retained')
                 records[key] = signature
 
@@ -558,7 +560,8 @@ class MergeManager:
                 try:
                     self._receipt(bundle_fd, receipt)
                 except Exception:
-                    pass
+                    store.recovery_required = True
+                    receipt.update(state='uncertain', error='merge receipt could not be finalized; recovery required')
                 if not candidate_ready:
                     try:
                         os.unlink('candidate.kdbx', dir_fd=bundle_fd)

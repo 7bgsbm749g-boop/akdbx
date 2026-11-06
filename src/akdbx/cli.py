@@ -195,7 +195,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--version", action="version", version=__version__)
     result.add_argument("--socket", type=Path)
     result.add_argument(
-        "--broker-uid", type=int, default=int(os.environ.get("AKDBX_BROKER_UID", os.getuid())),
+        "--broker-uid", type=int, default=os.environ.get("AKDBX_BROKER_UID", os.getuid()),
         help="expected operating-system UID of the broker",
     )
     result.add_argument(
@@ -459,6 +459,10 @@ def main(argv: list[str] | None = None) -> int:
             print('merge outcome unconfirmed: broker response rejected; use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
         elif args.command in IDENTITY_CREATES:
             print(f'{identity_kind} save outcome unconfirmed: broker response rejected; check status and search before any retry', file=sys.stderr)
+        elif args.command in {'fill', 'fill-generated', 'fill-totp'}:
+            print('autofill outcome unconfirmed: broker response rejected; do not retry automatically', file=sys.stderr)
+        elif args.command == 'commit-password':
+            print('save outcome unconfirmed: broker response rejected; check write-status before any retry; do not reset the site again', file=sys.stderr)
         else:
             print(f"refusing untrusted broker response: {exc}", file=sys.stderr)
         return 2

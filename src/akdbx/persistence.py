@@ -92,7 +92,7 @@ class VaultStore:
         """Check current metadata and lock access without reading bytes or taking a lock."""
         if self.expected is None:
             return False
-        directory = target = lock = None
+        directory = target = lock = keyfile = None
         try:
             directory = self._directory()
             target = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
@@ -100,12 +100,14 @@ class VaultStore:
             self._file_info(target)
             if not os.access('.', os.W_OK | os.X_OK, dir_fd=directory, effective_ids=True):
                 return False
+            if self.keyfile_path is not None:
+                keyfile = self._open_keyfile()
             lock = self._open_write_lock(directory, create=False)
             return True
         except (OSError, SaveError):
             return False
         finally:
-            for fd in (lock, target, directory):
+            for fd in (lock, keyfile, target, directory):
                 if fd is not None:
                     os.close(fd)
 
@@ -157,7 +159,7 @@ class VaultStore:
             key_material = None
             if keyfile is not None:
                 self.keyfile_path = Path(keyfile).expanduser().resolve(strict=True)
-                key_bytes = self.keyfile_path.read_bytes()
+                key_bytes = self._read_keyfile()
                 self.keyfile_digest = hashlib.sha256(key_bytes).digest()
                 key_material = io.BytesIO(key_bytes)
             vault = open_encrypted(encrypted, password, key_material)
@@ -174,8 +176,24 @@ class VaultStore:
         finally:
             os.close(directory)
 
+    def _open_keyfile(self):
+        """Refuse nonregular key artifacts without waiting for a FIFO or following a replaced leaf."""
+        fd = os.open(self.keyfile_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise SaveError('key file must be a regular file')
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def _read_keyfile(self):
+        """Use the same checked reader for initial key material and digest revalidation."""
+        with os.fdopen(self._open_keyfile(), 'rb') as stream:
+            return stream.read()
+
     def _check_keyfile(self):
-        if self.keyfile_path is not None and hashlib.sha256(self.keyfile_path.read_bytes()).digest() != self.keyfile_digest:
+        if self.keyfile_path is not None and hashlib.sha256(self._read_keyfile()).digest() != self.keyfile_digest:
             raise SaveError("key file changed on disk; restart and unlock")
 
     def _check_merge_recovery(self, directory):
@@ -343,6 +361,13 @@ class VaultStore:
                     if time.monotonic() >= deadline:
                         raise SaveError("vault write busy; update not saved") from None
                     time.sleep(0.02)
+            try:
+                self._check_merge_recovery(directory)
+            except Exception:
+                self.recovery_required = True
+                raise SaveError('merge recovery state could not be verified; recovery required') from None
+            if self.recovery_required:
+                raise SaveError('incomplete merge receipt; recovery required; update not saved')
             self._check_keyfile()
             previous, snapshot = self._read(directory)
             if snapshot != self.expected:
