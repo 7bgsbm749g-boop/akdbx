@@ -337,6 +337,12 @@ or merge real vaults.
    source checkout, select the tested commit and run `.venv/bin/pip install -e .`.
    Keep the native dependency above available. Preserve existing uncommitted
    work; do not reset a checkout or force-push.
+   Resolve the absolute CLI path from private deployment configuration. Verify
+   that its interpreter imports `akdbx` from the reviewed installation. For an
+   editable installation, verify the reviewed checkout commit and confirm that
+   the loaded source has no unreviewed changes;
+   for a packaged installation, verify the reviewed artifact. A matching version
+   and capability set alone do not establish code identity.
 2. End pending fills/resets with the broker's owner. Before stopping an older
    broker, preserve its latest durable encrypted state and receipt. If external
    replacement has removed it from disk, identify its retained encrypted saved
@@ -347,10 +353,17 @@ or merge real vaults.
    Never extract a key, hot-patch memory, or start a second unlock service.
 3. Start the installed CLI with the intended target, original socket, key-file
    option (if any), desktop environment and existing private HTTPS mapping:
-   `akdbx --socket /KNOWN/PRIVATE/broker.sock serve /INTENDED/base.kdbx`.
+   `/VERIFIED/DEPLOYMENT/.venv/bin/akdbx --socket /KNOWN/PRIVATE/broker.sock serve /INTENDED/base.kdbx`.
+   Replace the CLI placeholder with the verified absolute path; do not resolve
+   this startup command through PATH. Retain the private owner launch receipt
+   that ties the new process to that installation and reviewed commit/artifact.
+   Checking source files after an older process started does not prove which
+   code that process loaded. Keep the verified installation stable while it runs.
    No additional unlock service is required.
 4. Give the returned private unlock link to the user. Check that CLI and broker
-   versions match the tested deployment and are 0.8.0 or newer. Check merge
+   versions match the tested deployment and are 0.8.0 or newer. Confirm the broker's code
+   identity against the launch receipt from step 3. Use the same absolute CLI
+   for `--version` and `status`, rather than another installation on PATH. Check merge
    capabilities, including `merge_refresh_target_supported: true`,
    `merge_preserve_conflicts_supported: true` and exact policy `capsule-v1`.
    Also require `merge_active_verification: "semantic-v1"`, and verify
