@@ -164,11 +164,12 @@ def _tags(text):
     def space(character):
         return character in '\t\n\v\f\r' or unicodedata.category(character) in {'Zs', 'Zl', 'Zp'}
     def trim(value):
-        while value and space(value[0]):
-            value = value[1:]
-        while value and space(value[-1]):
-            value = value[:-1]
-        return value
+        start, stop = 0, len(value)
+        while start < stop and space(value[start]):
+            start += 1
+        while stop > start and space(value[stop - 1]):
+            stop -= 1
+        return value[start:stop]
     return ';'.join(sorted({trim(part) for part in re.split('[,;\t]', text) if part},
                            key=lambda item: item.encode('utf-16be')))
 

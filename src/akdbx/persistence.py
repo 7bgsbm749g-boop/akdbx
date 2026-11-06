@@ -21,6 +21,9 @@ class SaveError(Exception):
     pass
 
 
+WRITE_TOKEN_BYTES = 12
+
+
 # Both shipped import names swap handlers on the same dependency logger.
 if __name__ == 'akdbx.persistence':
     _OPEN_LOCK = threading.RLock()
@@ -95,6 +98,7 @@ class VaultStore:
         directory = target = lock = keyfile = external = None
         try:
             directory = self._directory()
+            self._check_write_names(directory)
             target = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                              dir_fd=directory)
             self._file_info(target)
@@ -111,6 +115,16 @@ class VaultStore:
             for fd in (external, lock, keyfile, target, directory):
                 if fd is not None:
                     os.close(fd)
+
+    def _write_name(self, kind, token):
+        return '.' + self.path.name + '.akdbx-' + kind + '-' + token
+
+    def _check_write_names(self, directory):
+        """Check required ordinary-save components against the anchored directory limit."""
+        maximum = os.fpathconf(directory, 'PC_NAME_MAX')
+        if maximum >= 0 and any(len(os.fsencode(self._write_name(kind, '0' * (2 * WRITE_TOKEN_BYTES)))) > maximum
+                                for kind in ('backup', 'write')):
+            raise SaveError('vault filename is too long for required write artifacts')
 
     def _directory(self, *, writing=True):
         # Anchor each component rather than racing lstat against a full-path open.
@@ -352,6 +366,7 @@ class VaultStore:
         replaced = False
         replacement_attempted = False
         try:
+            self._check_write_names(directory)
             lock = self._open_write_lock(directory, create=True)
             deadline = time.monotonic() + 4.0
             while True:
@@ -385,10 +400,10 @@ class VaultStore:
                 verify_candidate(verified)
             verified._akdbx_store = self
             # Every file below contains only an encrypted KDBX, never a password.
-            backup = '.' + self.path.name + '.akdbx-backup-' + secrets.token_hex(12)
+            backup = self._write_name('backup', secrets.token_hex(WRITE_TOKEN_BYTES))
             self._write_file(directory, backup, previous)
             os.fsync(directory)
-            staging = '.' + self.path.name + '.akdbx-write-' + secrets.token_hex(12)
+            staging = self._write_name('write', secrets.token_hex(WRITE_TOKEN_BYTES))
             self._write_file(directory, staging, encrypted)
             if self._read(directory)[1] != snapshot:
                 raise SaveError("vault changed on disk; restart and unlock")

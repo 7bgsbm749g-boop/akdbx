@@ -113,6 +113,33 @@ def test_tailscale_identity_and_one_time_web_unlock(tmp_path):
         server.server_close()
 
 
+@pytest.mark.parametrize('encoding', ['%FF', '%C3'])
+def test_unlock_rejects_lossy_percent_utf8_before_opening(tmp_path, encoding):
+    attempts = []
+    valid = 'synthetic-\ufffd-tail'
+
+    def opener(database, password, keyfile):
+        attempts.append(password)
+        assert password == valid
+        return Vault([Entry()])
+
+    broker = Broker(None, RecordingTyper())
+    socket_path = tmp_path / 'private' / 'unlock.sock'
+    server, url = start_unlock_server(broker, tmp_path / 'vault.kdbx', None, socket_path,
+                                      'https://node.example:9443', opener=opener)
+    parts = urlsplit(url)
+    route = parts.path + '?' + parts.query
+    try:
+        status, _, page = call(socket_path, 'POST', route, 'password=synthetic-' + encoding + '-tail')
+        assert status == 401 and b'synthetic-' not in page
+        assert broker.locked and not attempts
+        assert call(socket_path, 'POST', route, urlencode(dict(password=valid)))[0] == 200
+        assert attempts == [valid] and not broker.locked
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 @pytest.mark.parametrize("distinct_identities", [False, True])
 def test_parallel_unlock_attempts_are_reserved_and_serialized(tmp_path, distinct_identities):
     entered = 0
