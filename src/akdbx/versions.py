@@ -294,6 +294,17 @@ def collect(vaults, *, capture):
     return ledger
 
 
+def _append_capsule_binary(vault, data):
+    """Append protected KDBX4 bytes without materializing the pool for its index."""
+    if vault.version < (4, 0):
+        return vault.add_binary(data, protected=True)
+    from construct import Container
+    binaries = vault.payload.inner_header.binary
+    reference = len(binaries)
+    binaries.append(Container(type='binary', data=b'\x01' + data))
+    return reference
+
+
 def ensure(vault, ledger):
     """Restore opaque capsules lost/normalized by a native stage from inputs."""
     from lxml import etree
@@ -345,7 +356,7 @@ def ensure(vault, ledger):
         entry.set_custom_property(CHECKSUM, hashlib.sha256(data).hexdigest(), protect=True)
         for field in ('ctime', 'mtime', 'atime'):
             setattr(entry, field, EPOCH)
-        entry.add_attachment(vault.add_binary(data, protected=True), FILENAME)
+        entry.add_attachment(_append_capsule_binary(vault, data), FILENAME)
         changed = True
     verify(vault, ledger)
     return changed
