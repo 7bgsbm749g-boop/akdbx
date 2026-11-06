@@ -89,10 +89,10 @@ class VaultStore:
 
     @property
     def writable_path(self):
-        """Check current metadata and lock access without reading bytes or taking a lock."""
+        """Check metadata and bound storage without vault/key reads, receipt scans or locking."""
         if self.expected is None:
             return False
-        directory = target = lock = keyfile = None
+        directory = target = lock = keyfile = external = None
         try:
             directory = self._directory()
             target = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
@@ -103,11 +103,12 @@ class VaultStore:
             if self.keyfile_path is not None:
                 keyfile = self._open_keyfile()
             lock = self._open_write_lock(directory, create=False)
+            external = self.snapshot_directory(directory)
             return True
         except (OSError, SaveError):
             return False
         finally:
-            for fd in (lock, keyfile, target, directory):
+            for fd in (external, lock, keyfile, target, directory):
                 if fd is not None:
                     os.close(fd)
 

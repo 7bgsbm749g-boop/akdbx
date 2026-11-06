@@ -184,6 +184,15 @@ def duplicate(vault, values):
     return False
 
 
+def _append_entry(vault, group, values, password, *, notes=None):
+    """Append broker-validated metadata without the dependency's label/XPath preflight."""
+    from pykeepass.entry import Entry
+    entry = Entry(title=values['title'], username=values['username'], password=password,
+                  url=values['url'], notes=notes, kp=vault)
+    group.append(entry)
+    return entry
+
+
 @dataclass
 class Write:
     token: str
@@ -269,8 +278,8 @@ class WriteManager:
             if duplicate(candidate, values):
                 raise WriteError('duplicate site/account; select an existing entry')
             label = {'google': 'Google SSO', 'github': 'GitHub SSO', 'email_code': 'Email code'}[method]
-            entry = candidate.add_entry(group, values['title'], values['username'], '', url=values['url'],
-                                        notes=f'Sign-in method: {label}. No separate site password.')
+            entry = _append_entry(candidate, group, values, '',
+                                  notes=f'Sign-in method: {label}. No separate site password.')
             entry.set_custom_property(marker, 'v1')
             entry.set_custom_property(AUTH_METHOD, method)
 
@@ -390,7 +399,7 @@ class WriteManager:
                 else:
                     if duplicate(candidate, op.values):
                         raise WriteError('duplicate site/account; select an existing entry')
-                    candidate.add_entry(group_for(candidate, op.values['group']), op.values['title'], op.values['username'], password, url=op.values['url'])
+                    _append_entry(candidate, group_for(candidate, op.values['group']), op.values, password)
             self.broker.vault = vault._akdbx_store.commit(vault, mutate)
             self.invalidate_revision(op)
             op.state = 'saved'
@@ -477,6 +486,8 @@ class WriteManager:
         op, mode = found
         if op.state != 'pending' or op.password is None or op.revision != self.revision:
             raise WriteError('stale generated password; start again')
+        if not self.available():
+            raise WriteError('private writes unavailable; check activation and vault path safety')
         if set(request) - {'action', 'handle', 'target_url', 'start_deadline', 'target', 'target_protocol'}:
             raise WriteError('autofill not started: unsupported target request')
         target = request.get('target_url')

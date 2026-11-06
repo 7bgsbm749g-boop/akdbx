@@ -5,6 +5,7 @@ import shutil
 
 import pytest
 
+from akdbx import admission
 from akdbx.broker import Broker, open_vault_with_password
 from test_broker import RecordingTyper, target_request
 from test_writes import MASTER, OLD, begin, commit, fills, reopened, template
@@ -28,6 +29,86 @@ def vault_path(tmp_path, template):
 
 def lock_path(path):
     return path.with_name('.' + path.name + '.akdbx.lock')
+
+
+@pytest.mark.parametrize('fault', ['missing-root', 'root-mode', 'locator-unreadable',
+                                   'locator-mode', 'locator-fifo', 'locator-symlink', 'locator-invalid'])
+@pytest.mark.parametrize('staged', [False, True])
+def test_bound_recovery_storage_is_ready_before_generation_and_delivery(
+    vault_path, tmp_path, monkeypatch, fault, staged,
+):
+    """Known recovery-storage faults cannot reach a generated site reset."""
+    if fault == 'locator-unreadable' and os.geteuid() == 0:
+        pytest.skip('root bypasses file read permissions')
+    import uuid
+    snapshots = tmp_path / 'snapshots'
+    snapshots.mkdir(mode=0o700)
+    source = tmp_path / 'incoming.kdbx'
+    shutil.copyfile(vault_path, source)
+    broker = open_broker(vault_path)
+    checked = broker.dispatch(dict(action='admit', source=str(source), check=True,
+        operation_id=uuid.uuid4().hex, policy=admission.POLICY,
+        verification=admission.VERIFICATION, snapshot_directory=str(snapshots)))
+    assert checked['ok'] and checked['state'] == 'checked', checked
+    locator = vault_path.with_name('.' + vault_path.name + '.akdbx-admission.json')
+    original_locator = locator.read_bytes()
+    prepared = begin(broker, 'generate-password') if staged else None
+    if staged:
+        assert prepared['ok'], prepared
+    original = vault_path.read_bytes(), source.read_bytes()
+    moved = tmp_path / 'temporarily-unavailable'
+    saved_locator = locator.with_name('synthetic-saved-locator')
+    if fault == 'missing-root':
+        snapshots.rename(moved)
+    elif fault == 'root-mode':
+        snapshots.chmod(0o755)
+    elif fault.startswith('locator-'):
+        if fault in {'locator-unreadable', 'locator-mode'}:
+            locator.chmod(0 if fault == 'locator-unreadable' else 0o644)
+        elif fault == 'locator-invalid':
+            locator.write_bytes(b'{')
+        else:
+            locator.rename(saved_locator)
+            if fault == 'locator-fifo':
+                os.mkfifo(locator, 0o600)
+            else:
+                locator.symlink_to(saved_locator)
+
+    def no_receipt_scan(*args):
+        raise AssertionError('readiness must not scan receipt directories')
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(broker.vault._akdbx_store, '_scan_merge_recovery', no_receipt_scan)
+            if staged:
+                result = broker.dispatch(dict(action='fill-generated',
+                    handle=prepared['fill_handles']['password'], target_url='https://example.test/reset',
+                    **target_request(broker)))
+                assert not result['ok'], result
+            else:
+                assert broker.dispatch(dict(action='ping'))['writes_available'] is False
+                assert not begin(broker, 'generate-password')['ok']
+                assert not broker.writes.operations
+        assert not broker.typer.events
+        assert (vault_path.read_bytes(), source.read_bytes()) == original
+    finally:
+        if fault == 'missing-root':
+            moved.rename(snapshots)
+        elif fault == 'root-mode':
+            snapshots.chmod(0o700)
+        elif fault in {'locator-fifo', 'locator-symlink'}:
+            locator.unlink()
+            saved_locator.rename(locator)
+        else:
+            locator.chmod(0o600)
+            locator.write_bytes(original_locator)
+    assert broker.dispatch(dict(action='ping'))['writes_available'] is True
+    if staged:
+        broker.dispatch(dict(action='cancel-write', write_handle=prepared['write_handle']))
+    fresh = begin(broker, 'generate-password')
+    assert fresh['ok'] and all(result['ok'] for result in fills(broker, fresh))
+    assert commit(broker, fresh)['state'] == 'saved'
+    assert reopened(vault_path).find_entries(title='Synthetic site', first=True).password == broker.typer.events[0][1]
 
 
 @pytest.mark.parametrize('kind', ['read-only', 'public', 'symlink', 'directory', 'fifo', 'hardlink'])
