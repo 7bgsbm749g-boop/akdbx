@@ -202,9 +202,13 @@ class MergeManager:
                 'admission_group_diagnostics': 'group-categories-v1'}
 
     def _store(self):
+        """Use normal opening's target identity for locked receipt recovery."""
         store = getattr(self.broker.vault, '_akdbx_store', None)
         if store is None and self.database is not None:
-            store = VaultStore(self.database, strict_path=True)
+            # Unlock resolves target aliases, so receipts use the real name.
+            # The KDBX itself can be absent while its recovery bundle survives.
+            target = Path(self.database).expanduser().resolve(strict=False)
+            store = VaultStore(target, strict_path=True)
         if store is None:
             raise MergeError('merge database unavailable')
         return store
