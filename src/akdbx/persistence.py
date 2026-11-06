@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import base64
 import fcntl
 import hashlib
 import io
@@ -30,6 +31,19 @@ else:
 def open_encrypted(encrypted, password, keyfile=None):
     """Contain dependency diagnostics and reject silently unreadable fields."""
     from pykeepass import PyKeePass
+    from pykeepass.kdbx_parsing.common import UnprotectedStream
+
+    def strict_decode(adapter, tree, context, path):
+        """Reject protected text that lxml cannot retain byte-for-byte."""
+        cipher = adapter.get_cipher(adapter.protected_stream_key(context))
+        for node in tree.xpath(adapter.protected_xpath):
+            if node.text is not None:
+                try:
+                    node.text = cipher.decrypt(base64.b64decode(node.text)).decode('utf-8')
+                except ValueError:
+                    raise SaveError('protected record fields could not be verified; merge refused') from None
+        return tree
+
     class Diagnostic(logging.Handler):
         failed = False
 
@@ -42,16 +56,21 @@ def open_encrypted(encrypted, password, keyfile=None):
     with _OPEN_LOCK:
         logger = logging.getLogger('pykeepass.kdbx_parsing.common')
         previous = logger.handlers, logger.propagate, logger.disabled, logger.level
+        previous_decoder = UnprotectedStream._decode
         diagnostic = Diagnostic()
         logger.handlers, logger.propagate, logger.disabled = [diagnostic], False, False
         logger.setLevel(logging.ERROR)
         try:
+            # PyKeePass otherwise strips XML-forbidden protected characters.
+            # The shared import lock also serializes this temporary decoder.
+            UnprotectedStream._decode = strict_decode
             vault = PyKeePass(io.BytesIO(encrypted), password=password, keyfile=keyfile)
             if diagnostic.failed or any(node.get('Protected') not in {'True', 'False'}
                                         for node in vault.tree.xpath('//Value[@Protected]')):
                 raise SaveError('protected record fields could not be verified; merge refused')
             return vault
         finally:
+            UnprotectedStream._decode = previous_decoder
             logger.handlers, logger.propagate, logger.disabled, level = previous
             logger.setLevel(level)
             diagnostic.close()
