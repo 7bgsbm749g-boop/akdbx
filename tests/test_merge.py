@@ -81,6 +81,26 @@ def receipt_files(result):
     return Path(result['receipt_path']).parent
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason='requires real directory permission denial')
+def test_merge_source_directory_can_be_read_only(pair, tmp_path):
+    broker, target, source = pair
+    directory = tmp_path / 'read-only-source'
+    directory.mkdir(mode=0o700)
+    incoming = directory / source.name
+    shutil.copyfile(source, incoming)
+    incoming.chmod(0o400)
+    expected_target, expected_source = target.read_bytes(), incoming.read_bytes()
+    directory.chmod(0o500)
+    try:
+        assert not os.access(directory, os.W_OK)
+        result = merge((broker, target, incoming), check=True)
+        assert result['ok'] and result['state'] == 'checked', result
+        assert target.read_bytes() == expected_target and incoming.read_bytes() == expected_source
+        assert list(directory.iterdir()) == [incoming]
+    finally:
+        directory.chmod(0o700)
+
+
 def test_diverged_round_trip_preview_repeated_refresh_and_receipt(pair, capsys, caplog):
     broker, target, source = pair
     original, incoming = target.read_bytes(), source.read_bytes()

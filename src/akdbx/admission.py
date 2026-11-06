@@ -136,7 +136,15 @@ def _group_defaults(node, vault):
 def _shape(node, vault, *, group=False, tag_equivalence=False):
     if node is None:
         return None
-    node = copy.deepcopy(node)
+    if group:
+        metadata = etree.Element(node.tag, attrib=dict(node.attrib), nsmap=node.nsmap)
+        metadata.text, metadata.tail = node.text, node.tail
+        for child in node:
+            if child.tag not in {'Entry', 'Group'}:
+                metadata.append(copy.deepcopy(child))
+        node = metadata
+    else:
+        node = copy.deepcopy(node)
     fields = GROUP_FIELDS if group else META_FIELDS
     seen = set()
     for child in node:

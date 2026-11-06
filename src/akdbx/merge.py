@@ -51,8 +51,8 @@ def _open(encrypted, vault):
     return open_encrypted(encrypted, vault.password, keyfile)
 
 
-def _entry_signature(entry):
-    return versions.entry_signature(entry)
+def _entry_signature(entry, binaries=None):
+    return versions.entry_signature(entry, binaries)
 
 
 def _check_ambiguity(*vaults, preserve=False):
@@ -63,11 +63,19 @@ def _check_ambiguity(*vaults, preserve=False):
     records = {}
     for vault in vaults:
         versions.archives(vault)
+        if preserve:
+            # Capture reads these clocks before semantic verification. Preserve
+            # the fixed refusal category without building unused signatures.
+            for entry in versions.active_entries(vault):
+                for item in [entry, *entry.history]:
+                    selection.modification_time(item)
+            continue
+        binaries = vault.binaries
         for entry in versions.active_entries(vault):
             for item in [entry, *entry.history]:
                 key = (item.uuid, selection.modification_time(item))
-                signature = _entry_signature(item)
-                if not preserve and key in records and records[key] != signature:
+                signature = _entry_signature(item, binaries)
+                if key in records and records[key] != signature:
                     raise MergeError('conflicting same-second records; merge refused; originals retained')
                 records[key] = signature
 
@@ -125,17 +133,19 @@ def synchronize_deletions(candidate, *originals):
 
 def verify_history(candidate, *originals, allow_deletions=True):
     """Refuse engine history pruning instead of silently losing old values."""
-    retained = {e.uuid: {(selection.modification_time(h), _entry_signature(h)) for h in [e, *e.history]} for e in candidate.entries}
+    binaries = candidate.binaries
+    retained = {e.uuid: {(selection.modification_time(h), _entry_signature(h, binaries)) for h in [e, *e.history]} for e in candidate.entries}
     deletions = {r.findtext('UUID'): selection.decode_time(r.findtext('DeletionTime'), candidate.version)
                  for r in candidate.tree.findall('./Root/DeletedObjects/DeletedObject')}
     for vault in originals:
+        binaries = vault.binaries
         for entry in vault.entries:
             if entry.uuid not in retained:
                 deleted = deletions.get(entry._element.findtext('UUID'))
                 if allow_deletions and deleted is not None and selection.modification_time(entry) <= deleted:
                     continue
                 raise MergeError('merge would discard an entry without a valid deletion; target not replaced')
-            if any((selection.modification_time(h), _entry_signature(h)) not in retained[entry.uuid] for h in [entry, *entry.history]):
+            if any((selection.modification_time(h), _entry_signature(h, binaries)) not in retained[entry.uuid] for h in [entry, *entry.history]):
                 raise MergeError('merge would discard entry history or fields; target not replaced')
 
 
@@ -251,17 +261,7 @@ class MergeManager:
                     root = Path(os.readlink('/proc/self/fd/' + str(external)))
                 finally:
                     os.close(external)
-            info = os.fstat(bundle_fd)
-            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                raise MergeError('unsafe merge receipt directory')
-            fd = os.open('receipt.json', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=bundle_fd)
-            with os.fdopen(fd, 'rb') as stream:
-                info = os.fstat(stream.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
-                    raise MergeError('unsafe merge receipt')
-                value = json.loads(stream.read(16384))
-            if value['operation_id'] != operation_id:
-                raise MergeError('invalid merge receipt')
+            value = store.read_merge_receipt(bundle_fd, operation_id)
             if value['state'] in {'preparing', 'prepared'}:
                 value.update(ok=False, state='uncertain', error='merge interrupted or active; do not retry; inspect retained encrypted files')
             return {**value, 'receipt_path': str(root / name / 'receipt.json')}
@@ -565,7 +565,8 @@ class MergeManager:
                 try:
                     self._receipt(bundle_fd, receipt)
                 except Exception:
-                    pass
+                    store.recovery_required = True
+                    receipt.update(state='uncertain', error='merge receipt could not be finalized; recovery required')
                 if not candidate_ready:
                     try:
                         os.unlink('candidate.kdbx', dir_fd=bundle_fd)

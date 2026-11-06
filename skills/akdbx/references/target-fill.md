@@ -27,7 +27,7 @@ protocol 1, writes, merges and unlock behavior are unchanged.
    `target_delivery: "x11-send-event-v1"`. Then submit and verify authenticated
    application state. The receipt proves dispatch, not field adoption or login.
 
-For a reset, each `fill-generated REF --target-url VERIFIED_URL --target TOKEN`
+For a reset, each `fill-generated --target-url VERIFIED_URL --target TOKEN -- REF`
 needs its own fresh pin after independently focusing that field. A failed or
 partial generated fill does not count toward the two successful fills needed
 for `commit-password --site-accepted`. Do not commit until the site accepts it.

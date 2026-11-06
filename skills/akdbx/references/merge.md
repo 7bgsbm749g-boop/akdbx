@@ -22,7 +22,7 @@ akdbx merge /absolute/path/to/other.kdbx
 akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts
 ```
 
-Require CLI and broker version `0.8.0`, `merge_protocol: 1`,
+Require CLI and broker version `0.8.0` or newer, `merge_protocol: 1`,
 `merge_available: true`, `locked: false`, and `recovery_required: false`.
 `merge_engine` reports the detected engine. An older broker's missing capability
 is not permission to extract its held key or patch its memory. Coordinate
@@ -333,24 +333,64 @@ Do this only after the source repair thread has finished and its exact tested
 commit/report has been reviewed. The development thread does not activate code
 or merge real vaults.
 
-1. Install the tested 0.8.0 package/commit into the broker's environment. For a
+1. Install the reviewed, tested package/commit into the broker's environment. For a
    source checkout, select the tested commit and run `.venv/bin/pip install -e .`.
    Keep the native dependency above available. Preserve existing uncommitted
    work; do not reset a checkout or force-push.
+   Resolve the absolute CLI path from private deployment configuration. Verify
+   that its interpreter imports `akdbx` from the reviewed installation. For an
+   editable installation, verify the reviewed checkout commit and confirm that
+   the loaded source has no unreviewed changes;
+   for a packaged installation, verify the reviewed artifact. A matching version
+   and capability set alone do not establish code identity.
 2. End pending fills/resets with the broker's owner. Before stopping an older
    broker, preserve its latest durable encrypted state and receipt. If external
    replacement has removed it from disk, identify its retained encrypted saved
    candidate before proceeding. Do not stop a broker whose latest state exists
    only in memory. This option preserves state within a compatible running
-   broker; it does not transfer an older process's memory to 0.8.0.
+   broker; it does not transfer an older process's memory to the new process.
    Coordinate a normal restart and private re-unlock for version activation.
    Never extract a key, hot-patch memory, or start a second unlock service.
 3. Start the installed CLI with the intended target, original socket, key-file
    option (if any), desktop environment and existing private HTTPS mapping:
-   `akdbx --socket /KNOWN/PRIVATE/broker.sock serve /INTENDED/base.kdbx`.
+   `/VERIFIED/DEPLOYMENT/.venv/bin/akdbx --socket /KNOWN/PRIVATE/broker.sock serve /INTENDED/base.kdbx`.
+   Replace the CLI placeholder with the verified absolute path; do not resolve
+   this startup command through PATH. The CLI does not create a launch receipt.
+   The owner must create one as part of this launch, before accepting work.
+   In the owner's private deployment state directory (mode `0700`), create a
+   new mode-`0600` JSON file with the following nonsecret fields: absolute CLI
+   path, interpreter path, imported module root, verified commit/artifact digest,
+   intended socket path, broker UID, kernel boot ID, actual broker PID and its
+   kernel start-time ticks. Obtain the PID from the launcher or supervisor for
+   the newly started broker; do not use a shell/wrapper PID or select a process
+   by name. On a VPS, use its supported session/supervisor launch workflow.
+
+   On Linux, read the boot ID from `/proc/sys/kernel/random/boot_id`, interpreter
+   path from `/proc/PID/exe`, and start-time ticks from field 22 of `/proc/PID/stat`.
+   Parse the stat fields after the final `)` of the process name; the start time
+   is index 19 in that remaining whitespace-separated list. Record the code
+   identity verified immediately before this launch, while the installation is
+   held stable. Do not infer it from a version string or record an old process
+   against files changed after it started.
+
+   To check this record, validate the original private socket with the verified
+   CLI's `status`, then connect to that same socket as its owner and read Linux
+   `SO_PEERCRED` using `struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET,
+   socket.SO_PEERCRED, struct.calcsize('3i')))`. The returned PID and UID must
+   match the recorded broker PID and configured UID. Close this diagnostic
+   connection without sending any request. Read the recorded PID's boot ID,
+   start-time ticks and interpreter path again and require exact matches.
+   A mismatch or a missing record requires a new coordinated, verified launch;
+   do not create a retrospective receipt for an unverified running process.
+   Retain the receipt privately for this process's lifetime.
+   Checking source files after an older process started does not prove which
+   code that process loaded. Keep the verified installation stable while it runs.
    No additional unlock service is required.
-4. Give the returned private unlock link to the user. Check CLI/broker 0.8.0
-   and merge capabilities, including `merge_refresh_target_supported: true`,
+4. Give the returned private unlock link to the user. Check that CLI and broker
+   versions match the tested deployment and are 0.8.0 or newer. Confirm the broker's code
+   identity against the launch receipt from step 3. Use the same absolute CLI
+   for `--version` and `status`, rather than another installation on PATH. Check merge
+   capabilities, including `merge_refresh_target_supported: true`,
    `merge_preserve_conflicts_supported: true` and exact policy `capsule-v1`.
    Also require `merge_active_verification: "semantic-v1"`, and verify
    `active_verification: "semantic-v1"` in the durable result. Install the final

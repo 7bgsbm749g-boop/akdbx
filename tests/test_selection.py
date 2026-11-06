@@ -240,7 +240,7 @@ def test_real_native_result_corruption_is_refused_with_private_durable_categorie
         assert private not in serialized
 
 
-@pytest.mark.parametrize('case,category', [('unknown-entry', 'unsupported_metadata'), ('missing-creation', 'unsupported_times'), ('invalid-modification', 'unsupported_times')])
+@pytest.mark.parametrize('case,category', [('unknown-entry', 'unsupported_metadata'), ('missing-creation', 'unsupported_times'), ('invalid-modification', 'unsupported_times'), ('invalid-history-modification', 'unsupported_times')])
 def test_unsupported_selected_structure_has_a_fixed_nonsecret_reason(pair, case, category):
     _, target, source = pair
     left, right = disk(target), disk(source)
@@ -249,12 +249,15 @@ def test_unsupported_selected_structure_has_a_fixed_nonsecret_reason(pair, case,
         etree.SubElement(entry._element, 'SyntheticPrivateExtensionName').text = 'synthetic extension secret'
     elif case == 'missing-creation':
         entry._element.find('Times').remove(entry._element.find('Times/CreationTime'))
+    elif case == 'invalid-history-modification':
+        entry.save_history()
+        entry.history[0]._element.find('Times/LastModificationTime').text = 'synthetic invalid private value'
     else:
         entry._element.find('Times/LastModificationTime').text = 'synthetic invalid private value'
     save_pair(pair, left, right)
     before = target.read_bytes()
     result = merge(pair, preserve_conflicts=True)
-    assert result['verification_diagnostics'] == {category: 1}, result
+    assert result.get('verification_diagnostics') == {category: 1}, result
     assert target.read_bytes() == before
     assert 'SyntheticPrivate' not in json.dumps(result) and 'synthetic extension secret' not in json.dumps(result)
 

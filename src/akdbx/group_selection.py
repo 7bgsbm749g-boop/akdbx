@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import base64
 import copy
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import datetime
 from lxml import etree
@@ -175,19 +175,29 @@ def verify(incoming, originals):
         raise GroupSelectionError(['group_membership'])
     # Conditional admission verifies entry containment independently below. Using
     # actual incoming occupancy here cannot excuse a missing required entry.
-    occupied = {entry.group.uuid for entry in incoming.entries}
-    pending = set(states)
-    while pending:
-        leaves = {identity for identity in pending if not any(
-            child in pending and value.parent == identity for child, value in states.items())}
-        if not leaves:
-            raise GroupSelectionError(['group_location'])
-        for identity in leaves:
+    if deleted:
+        occupied = {entry.group.uuid for entry in incoming.entries}
+        children = Counter(state.parent for state in states.values())
+        pending = children.copy()
+        leaves = deque(identity for identity in states if not pending[identity])
+        remaining = len(states)
+        while leaves:
+            identity = leaves.popleft()
             state = states[identity]
+            parent = state.parent
             if (identity in deleted and _clock(state, 'LastModificationTime') <= deleted[identity]
-                    and identity not in occupied and not any(v.parent == identity for v in states.values())):
+                    and identity not in occupied and not children[identity]):
                 del states[identity]
-        pending -= leaves
+                children[parent] -= 1
+            # Processing a live child permits visiting its parent, but only
+            # deleting that child removes the parent's occupancy constraint.
+            remaining -= 1
+            if parent is not None:
+                pending[parent] -= 1
+                if not pending[parent]:
+                    leaves.append(parent)
+        if remaining:
+            raise GroupSelectionError(['group_location'])
     actual = {g.uuid: _read(g, incoming) for g in incoming.groups}
     errors = Counter()
     errors['group_membership'] += len(states.keys() ^ actual.keys())

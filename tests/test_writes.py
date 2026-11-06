@@ -89,6 +89,19 @@ def reopened(path):
     return PyKeePass(str(path), password=MASTER)
 
 
+@pytest.fixture
+def cli_handle_entropy(monkeypatch):
+    """Exercise bytes whose URL-safe base64 representation begins with '-'."""
+    counter = 0
+
+    def token_bytes(nbytes=32):
+        nonlocal counter
+        counter += 1
+        return b'\xfb' + counter.to_bytes(nbytes - 1, 'big')
+
+    monkeypatch.setattr('akdbx.writes.secrets.token_bytes', token_bytes)
+
+
 def test_private_update_preserves_vault_and_is_immediately_fillable(deployed, capsys, caplog):
     broker, typer, path, socket = deployed
     stale = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]['handle']
@@ -452,7 +465,7 @@ def test_two_independent_brokers_serialized_against_same_file(tmp_path, template
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == CHOSEN
 
 
-def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
+def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog, cli_handle_entropy):
     broker, typer, path, socket = deployed
     prefix = ['--socket', str(socket.with_name('cli.sock')), '--unlock-origin', 'https://node.example:9443']
     def command(*args, expected=0):
@@ -485,7 +498,33 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == generated_secret
 
 
-def test_actual_installed_executable_against_running_synthetic_broker(deployed, capsys):
+def test_commit_returns_saved_receipt_after_a_slow_save(deployed, capsys, monkeypatch):
+    """A durable reset commit can exceed the metadata RPC budget without a retry."""
+    broker, typer, path, web_socket = deployed
+    prepared = begin(broker, 'generate-password')
+    assert prepared['ok'] and all(result['ok'] for result in fills(broker, prepared))
+    store = broker.vault._akdbx_store
+    real_commit = store.commit
+    calls = []
+
+    def delayed_commit(*args, **kwargs):
+        calls.append(True)
+        time.sleep(5.2)
+        return real_commit(*args, **kwargs)
+
+    monkeypatch.setattr(store, 'commit', delayed_commit)
+    rpc_socket = web_socket.with_name('slow-commit.sock')
+    prefix = ['--socket', str(rpc_socket), '--unlock-origin', 'https://node.example:9443']
+    with running_broker(rpc_socket, broker):
+        assert cli.main([*prefix, 'commit-password', '--site-accepted',
+                         '--', prepared['write_handle']]) == 0
+        captured = capsys.readouterr()
+        assert not captured.err and json.loads(captured.out)['state'] == 'saved'
+    assert len(calls) == 1
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == typer.events[0][1]
+
+
+def test_actual_installed_executable_against_running_synthetic_broker(deployed, capsys, cli_handle_entropy):
     import subprocess
     import sys
     from pathlib import Path
@@ -532,6 +571,55 @@ def test_unsafe_write_ancestry_preserves_read_only_unlock(tmp_path, template):
     selected = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]
     assert broker.dispatch({'action': 'fill', **target_request(broker), 'handle': selected['handle'], 'mode': 'password'})['ok']
     assert not begin(broker)['ok']
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason='requires real directory permission denial')
+def test_read_only_target_directory_disables_resets_but_preserves_fill(tmp_path, template):
+    """Readiness must reject a stable denial before exposing a generated reset."""
+    directory = tmp_path / 'read-only'
+    directory.mkdir(mode=0o700)
+    path = directory / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    path.chmod(0o600)
+    before = path.read_bytes()
+    directory.chmod(0o500)
+    try:
+        assert not os.access(directory, os.W_OK)
+        broker = Broker(open_vault_with_password(path, MASTER), RecordingTyper())
+        broker.writes.public_base = 'https://node.example:9443'
+        status = broker.dispatch({'action': 'ping'})
+        assert status['locked'] is False and status['recovery_required'] is False
+        assert status['writes_available'] is False and status['merge_available'] is False
+        generated = begin(broker, 'generate-password')
+        created = broker.dispatch({'action': 'generate-entry', 'metadata': {
+            'title': 'Synthetic new entry', 'username': 'new-user',
+            'url': 'https://example.test/login', 'group': 'Web',
+        }})
+        for result in (generated, created):
+            assert result['ok'] is False and 'fill_handles' not in result
+        assert not broker.writes.operations
+        selected = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]
+        assert broker.dispatch({'action': 'fill', **target_request(broker),
+                                'handle': selected['handle'], 'mode': 'password'})['ok']
+        assert broker.typer.events == [('type', OLD)]
+        assert path.read_bytes() == before and list(directory.iterdir()) == [path]
+    finally:
+        directory.chmod(0o700)
+
+
+def test_read_only_vault_file_can_be_atomically_replaced(tmp_path, template):
+    directory = tmp_path / 'writable'
+    directory.mkdir(mode=0o700)
+    path = directory / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    path.chmod(0o400)
+    broker = Broker(open_vault_with_password(path, MASTER), RecordingTyper())
+    broker.writes.public_base = 'https://node.example:9443'
+    assert broker.dispatch({'action': 'ping'})['writes_available'] is True
+    prepared = begin(broker, 'generate-password')
+    assert prepared['ok'] and all(result['ok'] for result in fills(broker, prepared))
+    assert commit(broker, prepared)['state'] == 'saved'
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == broker.typer.events[0][1]
 
 
 def test_generated_deadline_disconnect_and_typing_failure_prevent_commit(deployed, monkeypatch):
@@ -668,13 +756,18 @@ def test_legacy_broker_capability_and_secret_free_timeout_reports(monkeypatch, c
     for field in ('writes_available', 'recovery_required', 'locked'):
         with pytest.raises(cli.ProtocolError):
             cli._validate_response({'ok': True, field: 'false'}, 'https://node.example:9443')
-    monkeypatch.setattr(cli, 'request', lambda *a, **kw: (_ for _ in ()).throw(TimeoutError()))
+    def timed_out(*args, **kwargs):
+        if kwargs.get('before_send') is not None:
+            kwargs['before_send']()
+        raise TimeoutError
+
+    monkeypatch.setattr(cli, 'request', timed_out)
     assert cli.main(['commit-password', 'synthetic-opaque-reference', '--site-accepted']) == 2
     output = capsys.readouterr()
     assert output.out == '' and 'uncertain' in output.err and 'write-status' in output.err
     assert cli.main(['fill-generated', 'synthetic-opaque-reference', '--target-url', 'https://example.test', '--target', 'synthetic-pin']) == 2
     output = capsys.readouterr()
-    assert output.out == '' and 'do not retry automatically' in output.err
+    assert output.out == '' and 'request not sent' in output.err and 'not started' in output.err
 
 
 def test_changed_keyfile_never_rekeys_vault(tmp_path):

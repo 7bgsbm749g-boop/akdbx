@@ -1,8 +1,8 @@
 # Create passwords and passwordless identity records
 
-Password writes require CLI and broker version **0.2.0 or newer**. The current
-release is **0.9.1**. All fills require [target protocol 1](target-fill.md).
-Native email-code creation requires **0.9.1** and its separate passwordless
+Password writes require CLI and broker version **0.2.0 or newer**.
+All fills require [target protocol 1](target-fill.md).
+Native email-code creation requires **0.9.1 or newer** and its separate passwordless
 protocol below. Passwordless SSO creation requires CLI and broker **0.8.1 or
 newer** plus the exact capabilities below. Locate the absolute CLI path in
 private deployment configuration and set `AKDBX_UNLOCK_ORIGIN` to the trusted
@@ -12,8 +12,11 @@ are placeholders, never actual handles or links for a note.
 
 ## Check activation and select an existing entry
 
-Run `akdbx --version` and `akdbx status`. For this release require `version: "0.9.1"`,
-`locked: false`, `writes_available: true`, and `recovery_required: false`.
+Run `akdbx --version` and `akdbx status`. Require CLI and broker **0.2.0 or newer**
+for basic password writes, plus `locked: false`, `writes_available: true`, and
+`recovery_required: false`. Each workflow below also requires its exact capabilities.
+After coordinated activation, verify that broker `version` matches the verified
+deployed CLI version instead of requiring an older literal version.
 An old running broker may omit these fields even though the fresh CLI has new
 commands. Never try a real reset with an incompatible broker. Updating the
 editable installation or skill does not activate the running Python process.
@@ -67,6 +70,8 @@ require a scoped implementation change or private user entry, never an export.
 
 The response contains `write_handle`, `state: "pending"`, and `fill_handles`
 with separate `password` and `confirmation` references. It contains no secret.
+Put command options before `--` and the returned handle after it, as below.
+This also accepts opaque handles from older running brokers that start with `-`.
 The generated secret has a five-minute authorization; broker expiry cleanup
 discards it even when no further request arrives. Generation does not change KeePass or type anything.
 
@@ -78,14 +83,14 @@ from command arguments:
 
 ```bash
 # Focus and verify the password field, then obtain a fresh pin-target token.
-akdbx fill-generated PASSWORD_FILL_HANDLE --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN
+akdbx fill-generated --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN -- PASSWORD_FILL_HANDLE
 ```
 
 Then focus the confirmation field, verify again, and run:
 
 ```bash
 # Focus and verify the confirmation field, then obtain another fresh pin.
-akdbx fill-generated CONFIRMATION_FILL_HANDLE --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN
+akdbx fill-generated --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN -- CONFIRMATION_FILL_HANDLE
 ```
 
 Each reference permits only one attempt and types only the staged password,
@@ -105,8 +110,8 @@ Submit the reset through the authorized website workflow. Verify non-secret
 A fill receipt alone is insufficient. Only then run:
 
 ```bash
-akdbx commit-password WRITE_HANDLE --site-accepted
-akdbx write-status WRITE_HANDLE
+akdbx commit-password --site-accepted -- WRITE_HANDLE
+akdbx write-status -- WRITE_HANDLE
 ```
 
 Commit requires both successful fill dispatches plus explicit site acceptance.
@@ -288,8 +293,8 @@ The isolated repair thread must not perform live activation or real vault work.
 ## Cancellation and recovery
 
 ```bash
-akdbx cancel-write WRITE_HANDLE
-akdbx write-status WRITE_HANDLE
+akdbx cancel-write -- WRITE_HANDLE
+akdbx write-status -- WRITE_HANDLE
 ```
 
 - **Site rejection or cancellation before acceptance:** cancel the staged write.

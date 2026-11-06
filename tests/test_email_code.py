@@ -122,14 +122,14 @@ def test_incomplete_passwordless_markers_block_existing_password(deployed, marke
 
 
 @pytest.mark.parametrize('state', ['locked', 'unavailable', 'recovery'])
-def test_vault_state_refusals(deployed, state):
+def test_vault_state_refusals(deployed, state, monkeypatch):
     broker, typer, path, _ = deployed
     before = path.read_bytes()
     if state == 'locked':
         broker = Broker(None, typer)
         broker.unlock_url = 'https://node.example:9443/?token=synthetic-token'
     elif state == 'unavailable':
-        broker.vault._akdbx_store.writable_path = False
+        monkeypatch.setattr(broker.writes, 'available', lambda: False)
     else:
         broker.vault._akdbx_store.recovery_required = True
     result = create(broker)

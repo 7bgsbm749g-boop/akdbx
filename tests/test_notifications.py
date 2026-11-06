@@ -246,6 +246,62 @@ def test_cli_registration_status_cancel_and_private_file(tmp_path, notifier, cap
         assert broker.unlock(Vault([])) and not sent
 
 
+@pytest.mark.parametrize('failure', [
+    'missing', 'public', 'symlink', 'invalid', 'non-utf8', 'directory', 'oversized',
+])
+def test_cli_reports_local_callback_file_failure_without_subscribing(
+    tmp_path, notifier, capsys, monkeypatch, failure,
+):
+    manager, sent = notifier
+    broker = Broker(None, RecordingTyper())
+    broker.unlock_notifications = manager
+    url_file = tmp_path / 'url'
+    if failure == 'directory':
+        url_file.mkdir(mode=0o700)
+    elif failure != 'missing':
+        value = CALLBACK.encode()
+        if failure == 'non-utf8':
+            value = b'\xffprivate-bearer-token'
+        elif failure == 'invalid':
+            value = CALLBACK.replace('https:', 'http:').encode()
+        elif failure == 'oversized':
+            value += b'a' * 4097
+        url_file.write_bytes(value)
+        url_file.chmod(0o644 if failure == 'public' else 0o600)
+        if failure == 'symlink':
+            link = tmp_path / 'link'
+            link.symlink_to(url_file)
+            url_file = link
+    calls = []
+    dispatch = broker.dispatch
+
+    def record(payload, **kwargs):
+        calls.append(payload['action'])
+        return dispatch(payload, **kwargs)
+
+    monkeypatch.setattr(broker, 'dispatch', record)
+    socket_path = tmp_path / 'rpc' / 'broker.sock'
+    prefix = ['--socket', str(socket_path), '--unlock-origin', 'https://node.example:9443']
+    with running_broker(socket_path, broker):
+        assert cli.main([*prefix, 'subscribe-unlock', '--webhook-url-file', str(url_file)]) == 2
+        captured = capsys.readouterr()
+        assert captured.out == ''
+        assert captured.err.strip() == 'could not read private webhook URL file; subscription not sent'
+        assert 'private-bearer-token' not in captured.out + captured.err
+        assert calls == ['ping'] and not sent
+        assert cli.main([*prefix, 'status']) == 0
+        assert json.loads(capsys.readouterr().out)['locked'] is True
+
+
+def test_cli_reports_absent_broker_before_callback_file_errors(tmp_path, capsys):
+    runtime = tmp_path / 'rpc'
+    runtime.mkdir(mode=0o700)
+    assert cli.main(['--socket', str(runtime / 'absent.sock'), 'subscribe-unlock',
+                     '--webhook-url-file', str(tmp_path / 'also-absent')]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == '' and captured.err.strip() == 'broker is not running'
+
+
 def test_cli_refuses_old_broker_without_reading_or_registering(monkeypatch, capsys):
     calls = []
 

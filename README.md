@@ -135,7 +135,7 @@ key or otpauth URI there and confirms the displayed account. Never put keys,
 URIs or generated codes in CLI arguments, environment variables, chat, logs,
 screenshots or notes. The page uses the existing Tailscale private-write
 transport; it accepts no secrets through agent RPC. Check
-`write-status WRITE_HANDLE` for `state: saved`. A cancelled, expired or stale request cannot
+`write-status -- WRITE_HANDLE` for `state: saved`. A cancelled, expired or stale request cannot
 save; an existing OTP field requires explicit `setup-totp ... --replace`.
 Private imports save to KeePass only: they do not enable or change site 2FA.
 This version attaches authenticators to existing entries, including managed
@@ -186,7 +186,7 @@ akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts
 akdbx merge-status OPERATION_ID
 ```
 
-Require broker 0.8.0, `merge_protocol: 1`, `merge_available: true` and no recovery
+Require broker 0.8.0 or newer, `merge_protocol: 1`, `merge_available: true` and no recovery
 block. The broker privately reuses its held password and key file. Locked
 operation returns the existing private HTTPS unlock link and a clear command
 continuation. Different source credentials are not supported in this release.
@@ -302,10 +302,13 @@ write-capable broker version 0.2.0 or newer before changing a website password.
 - `create-entry --title TITLE --username ACCOUNT --url SITE --group GROUP`
 - `update-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP`
 - `generate-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP [--length 24] [--symbols '!@#$%*-_+=?']`
-- `fill-generated SINGLE_USE_FILL_HANDLE --target-url VERIFIED_RESET_URL --target TARGET_FROM_FRESH_PIN`
-- `commit-password WRITE_HANDLE --site-accepted`
-- `write-status WRITE_HANDLE`
-- `cancel-write WRITE_HANDLE`
+- `fill-generated --target-url VERIFIED_RESET_URL --target TARGET_FROM_FRESH_PIN -- SINGLE_USE_FILL_HANDLE`
+- `commit-password --site-accepted -- WRITE_HANDLE`
+- `write-status -- WRITE_HANDLE`
+- `cancel-write -- WRITE_HANDLE`
+
+Put options before `--` and the returned handle after it. This also accepts
+opaque handles from older running brokers that start with `-`.
 
 Update/generation requires all exact search metadata and consumes the fresh
 search handle. Creation checks the destination group and rejects duplicate
