@@ -503,6 +503,141 @@ def test_nonadvancing_clock_refuses_password_update(deployed, monkeypatch, clock
     assert path.read_bytes() == before and not typer.events
 
 
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('latest_in', ['active', 'history'])
+@pytest.mark.parametrize('hook', ['caller', 'backend'])
+@pytest.mark.parametrize('change', ['rollback', 'invalid', 'stable'])
+def test_generated_delivery_rechecks_clock_after_preflight(template, tmp_path, namespace, latest_in, hook, change):
+    """A ready callback must refuse a changed clock before the first key is sent."""
+    module = importlib.import_module(namespace + '.broker')
+    path = tmp_path / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    vault = reopened(path)
+    entry = vault.find_entries(title='Synthetic site', first=True)
+    latest = entry.mtime
+    if latest_in == 'history':
+        entry.save_history()
+        entry.mtime = latest - timedelta(days=1)
+        vault.save()
+    wall = [latest.timestamp() + 1]
+
+    def change_clock():
+        if change != 'stable':
+            wall[0] = latest.timestamp() - 1 if change == 'rollback' else float('nan')
+
+    class StepTyper(RecordingTyper):
+        def deliver(self, identity, steps, ready, *, guard=None):
+            if hook == 'backend':
+                change_clock()
+            return super().deliver(identity, steps, ready, guard=guard)
+
+    def caller_ready():
+        if hook == 'caller':
+            change_clock()
+        return True
+
+    broker = module.Broker(module.open_vault_with_password(path, MASTER), StepTyper(), wall_clock=lambda: wall[0])
+    broker.writes.public_base = 'https://node.example:9443'
+    before = path.read_bytes()
+    try:
+        assert broker.dispatch(dict(action='ping'))['writes_available'] is True
+        prepared = begin(broker, 'generate-password')
+        assert prepared['ok'], prepared
+        results = []
+        for reference in prepared['fill_handles'].values():
+            wall[0] = latest.timestamp() + 1
+            results.append(broker.dispatch(dict(action='fill-generated', handle=reference,
+                target_url='https://example.test/reset', start_deadline=broker.clock() + module.FILL_START_TIMEOUT,
+                **target_request(broker)), delivery_ready=caller_ready))
+        if change != 'stable':
+            assert all(not result['ok'] for result in results), results
+            reason = 'future-dated' if change == 'rollback' else 'write clock'
+            assert all(reason in result['error'] for result in results), results
+            assert len(broker.typer.events) == 0
+            assert path.read_bytes() == before
+            assert reopened(path).find_entries(title='Synthetic site', first=True).password == OLD
+            assert not commit(broker, prepared)['ok']
+            assert not list(path.parent.glob('.*.akdbx-backup-*'))
+            assert not list(path.parent.glob('.*.akdbx-write-*'))
+        else:
+            assert all(result['ok'] for result in results), results
+            assert len(broker.typer.events) == 2
+            assert commit(broker, prepared)['ok']
+            current = reopened(path).find_entries(title='Synthetic site', first=True)
+            assert current.password == broker.typer.events[0][1] and current.mtime > latest
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('caller', ['disconnected', 'exception'])
+def test_generated_delivery_keeps_caller_refusal_and_error_privacy(template, tmp_path, namespace, caller):
+    module = importlib.import_module(namespace + '.broker')
+    path = tmp_path / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    broker = module.Broker(module.open_vault_with_password(path, MASTER), RecordingTyper())
+    broker.writes.public_base = 'https://node.example:9443'
+    latest = broker.vault.find_entries(title='Synthetic site', first=True).mtime.timestamp()
+    wall = [latest + 1]
+    broker.wall_clock = lambda: wall[0]
+    before = path.read_bytes()
+
+    def caller_ready():
+        wall[0] = float('nan')
+        if caller == 'exception':
+            raise ValueError('synthetic-private-callback-text')
+        return False
+
+    try:
+        prepared = begin(broker, 'generate-password')
+        assert prepared['ok'], prepared
+        result = broker.dispatch(dict(action='fill-generated', handle=prepared['fill_handles']['password'],
+            target_url='https://example.test/reset', start_deadline=broker.clock() + module.FILL_START_TIMEOUT,
+            **target_request(broker)), delivery_ready=caller_ready)
+        assert not result['ok'] and len(broker.typer.events) == 0
+        assert 'synthetic-private-callback-text' not in json.dumps(result)
+        if caller == 'disconnected':
+            assert 'caller disconnected' in result['error']
+        assert path.read_bytes() == before
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+def test_generated_clock_guard_preserves_backend_uncertainty(template, tmp_path, namespace):
+    module = importlib.import_module(namespace + '.broker')
+    target = importlib.import_module(namespace + '.target')
+    path = tmp_path / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    latest = reopened(path).find_entries(title='Synthetic site', first=True).mtime.timestamp()
+    wall = [latest + 1]
+    refused = []
+
+    class UncertainTyper(RecordingTyper):
+        def deliver(self, identity, steps, ready, *, guard=None):
+            wall[0] = latest - 1
+            try:
+                ready()
+            except Exception:
+                refused.append(True)
+            raise target.DeliveryError(True)
+
+    broker = module.Broker(module.open_vault_with_password(path, MASTER), UncertainTyper(), wall_clock=lambda: wall[0])
+    broker.writes.public_base = 'https://node.example:9443'
+    before = path.read_bytes()
+    try:
+        prepared = begin(broker, 'generate-password')
+        assert prepared['ok'], prepared
+        result = broker.dispatch(dict(action='fill-generated', handle=prepared['fill_handles']['password'],
+            target_url='https://example.test/reset', **target_request(broker)))
+        assert refused == [True]
+        assert not result['ok'] and result['delivery'] == 'uncertain'
+        assert 'do not retry automatically' in result['error']
+        assert path.read_bytes() == before
+    finally:
+        broker.unlock_notifications.close()
+
+
 def test_two_independent_brokers_serialized_against_same_file(tmp_path, template):
     path = tmp_path / 'synthetic.kdbx'
     shutil.copyfile(template, path)
