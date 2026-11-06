@@ -8,6 +8,7 @@ version = "0.11.0"
 description = "A secret-withholding KeePass autofill broker for local agents"
 requires-python = ">=3.11"
 dependencies = [
+  "idna>=3.7,<4",
   "pykeepass==4.2.0",
   "python-xlib>=0.33,<1",
 ]

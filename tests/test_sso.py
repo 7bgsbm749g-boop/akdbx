@@ -124,7 +124,7 @@ def test_vault_state_refusals(deployed, state, monkeypatch):
         broker = Broker(None, typer)
         broker.unlock_url = 'https://node.example:9443/?token=synthetic-token'
     elif state == 'unavailable':
-        monkeypatch.setattr(broker.writes, 'available', lambda: False)
+        monkeypatch.setattr(broker.writes, 'public_base', None)
     else:
         broker.vault._akdbx_store.recovery_required = True
     result = create(broker)
@@ -259,7 +259,7 @@ def test_external_change_preserved(deployed):
     external.save()
     before = path.read_bytes()
     result = create(broker)
-    assert not result['ok'] and 'changed on disk' in result['error']
+    assert not result['ok'] and 'vault/key changes' in result['error']
     assert path.read_bytes() == before and typer.events == []
     assert not broker.vault.find_entries(title=VALUES['title'])
 
@@ -280,7 +280,8 @@ def test_two_independent_brokers_do_not_overwrite_each_other(deployed):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(create, [broker, other]))
     assert sum(result['ok'] for result in results) == 1
-    assert any('changed on disk' in result.get('error', '') for result in results)
+    assert any('changed on disk' in result.get('error', '') or 'vault/key changes' in result.get('error', '')
+               for result in results)
     assert len(reopened(path).find_entries(username=VALUES['username'])) == 1
 
 
@@ -345,7 +346,7 @@ def test_held_keyfile_and_attachments_preserved(tmp_path):
     before = path.read_bytes()
     key.write_bytes(bytes(reversed(range(32))))
     result = create(broker, values={**VALUES, 'group': '', 'username': 'another@example.test'})
-    assert not result['ok'] and 'key file changed' in result['error']
+    assert not result['ok'] and 'vault/key changes' in result['error']
     assert path.read_bytes() == before
 
 

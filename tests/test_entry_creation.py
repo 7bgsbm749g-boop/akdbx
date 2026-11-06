@@ -37,12 +37,13 @@ def create(broker, flow, values):
     return result, password
 
 
-def setup_creation(namespace, template, tmp_path, title, account, unnamed=False):
+def setup_creation(namespace, template, tmp_path, title, account, unnamed=False,
+                   url='https://first.example.test/login'):
     path = tmp_path / 'synthetic.kdbx'
     shutil.copyfile(template, path)
     vault = PyKeePass(path, password=MASTER)
     original = vault.find_entries(title='Synthetic site', first=True)
-    original.title, original.username, original.url = title, account, 'https://first.example.test/login'
+    original.title, original.username, original.url = title, account, url
     identity = original.uuid
     if unnamed:
         empty = vault.add_group(vault.root_group, '')
@@ -52,6 +53,57 @@ def setup_creation(namespace, template, tmp_path, title, account, unnamed=False)
     broker = module.Broker(module.open_vault_with_password(path, MASTER), RecordingTyper())
     broker.writes.public_base = 'https://unlock.example.test:9443'
     return broker, path, identity
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('flow', FLOWS)
+@pytest.mark.parametrize('stored_host,new_host,duplicate', [
+    ('faß.test', 'fass.test', False),
+    ('faß.test', 'xn--fa-hia.test', True),
+    ('FAẞ.test', 'xn--fa-hia.test', True),
+    ('bücher.test', 'xn--bcher-kva.test', True),
+    ('☕.test', 'xn--53h.test', True),
+])
+def test_creation_compares_international_origins_without_deviation_folding(
+    template, tmp_path, namespace, flow, stored_host, new_host, duplicate,
+):
+    broker, path, identity = setup_creation(namespace, template, tmp_path, 'Original',
+        'CaseUser@example.test', url='https://' + stored_host + '/login')
+    before = path.read_bytes()
+    original_count = len(broker.vault.entries)
+    try:
+        values = dict(title='New identity', username='caseuser@EXAMPLE.TEST',
+                      url='https://' + new_host + '/register', group='Web')
+        result, _ = create(broker, flow, values)
+        saved = PyKeePass(path, password=MASTER)
+        assert saved.find_entries(uuid=identity, first=True).password == OLD
+        if duplicate:
+            assert not result['ok'] and 'duplicate site/account' in result['error'], result
+            assert len(saved.entries) == original_count and path.read_bytes() == before
+            assert not broker.typer.events and not broker.writes.operations
+            assert not list(path.parent.glob('.*.akdbx-backup-*'))
+        else:
+            assert result['ok'] and result['state'] == 'saved', result
+            assert len(saved.entries) == original_count + 1 and path.read_bytes() != before
+            assert len(list(path.parent.glob('.*.akdbx-backup-*'))) == 1
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('host', ['faß.test', 'under_score.test'])
+def test_chosen_creation_preserves_supported_host_spellings(template, tmp_path, namespace, host):
+    stored = 'xn--fa-hia.test' if host == 'faß.test' else host
+    broker, path, _ = setup_creation(namespace, template, tmp_path, 'Original',
+        'account', url='https://' + stored + '/login')
+    before = path.read_bytes()
+    try:
+        result, _ = create(broker, 'chosen', dict(title='Other label', username='account',
+            url='https://' + host + '/register', group='Web'))
+        assert not result['ok'] and 'duplicate site/account' in result['error'], result
+        assert path.read_bytes() == before and not broker.writes.operations
+    finally:
+        broker.unlock_notifications.close()
 
 
 @pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
@@ -161,5 +213,39 @@ def test_true_site_account_duplicates_remain_refused(template, tmp_path, namespa
         assert not result['ok'] and 'duplicate site/account' in result['error']
         assert path.read_bytes() == before and not broker.typer.events
         assert not broker.writes.operations and not list(path.parent.glob('.*.akdbx-backup-*'))
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('flow', FLOWS)
+@pytest.mark.parametrize('host', ['a\u200db.test', 'a\u200cb.test',
+                                  'xn--' + 'a\u200db'.encode('punycode').decode('ascii') + '.test',
+                                  'xn--' + 'a\u200cb'.encode('punycode').decode('ascii') + '.test'])
+def test_contextually_invalid_joiners_never_create_or_deliver(template, tmp_path, namespace, flow, host):
+    broker, path, _ = setup_creation(namespace, template, tmp_path, 'Original', 'account')
+    before = path.read_bytes()
+    try:
+        result, _ = create(broker, flow, dict(title='Invalid destination', username='new-account',
+            url='https://' + host + '/register', group='Web'))
+        assert not result['ok']
+        assert path.read_bytes() == before and not broker.typer.events and not broker.writes.operations
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('joiner', ['\u200c', '\u200d'])
+def test_chosen_creation_preserves_valid_joiner_origins(template, tmp_path, namespace, joiner):
+    host = '\u0915\u094d' + joiner + '\u0937'
+    encoded = 'xn--' + host.encode('punycode').decode('ascii')
+    broker, path, _ = setup_creation(namespace, template, tmp_path, 'Original', 'account',
+                                      url='https://' + encoded + '.test/login')
+    before = path.read_bytes()
+    try:
+        result, _ = create(broker, 'chosen', dict(title='Other label', username='account',
+            url='https://' + host + '.test/register', group='Web'))
+        assert not result['ok'] and 'duplicate site/account' in result['error']
+        assert path.read_bytes() == before and not broker.writes.operations
     finally:
         broker.unlock_notifications.close()

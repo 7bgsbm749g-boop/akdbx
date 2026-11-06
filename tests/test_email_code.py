@@ -129,7 +129,7 @@ def test_vault_state_refusals(deployed, state, monkeypatch):
         broker = Broker(None, typer)
         broker.unlock_url = 'https://node.example:9443/?token=synthetic-token'
     elif state == 'unavailable':
-        monkeypatch.setattr(broker.writes, 'available', lambda: False)
+        monkeypatch.setattr(broker.writes, 'public_base', None)
     else:
         broker.vault._akdbx_store.recovery_required = True
     result = create(broker)
