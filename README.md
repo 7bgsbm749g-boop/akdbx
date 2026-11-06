@@ -314,6 +314,8 @@ reviews metadata and enters/repeats a chosen password; secrets never pass
 through the CLI. Generated reset passwords remain in broker memory: two
 single-use references fill password and confirmation fields on the verified
 broker desktop, then explicit site acceptance permits saving the same secret.
+Generated resets require the entry and asserted target URLs to use ASCII HTTPS
+spelling (punycode for internationalized hosts) and to match in origin.
 No operation exports, shows, logs or copies passwords.
 
 Writes expire after five minutes and vanish on restart. Site rejection requires

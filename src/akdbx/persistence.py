@@ -256,6 +256,7 @@ class VaultStore:
         lock = None
         staging = None
         replaced = False
+        replacement_attempted = False
         try:
             lock = os.open('.' + self.path.name + '.akdbx.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory)
             info = os.fstat(lock)
@@ -298,6 +299,7 @@ class VaultStore:
             opened = os.fstat(directory)
             if (parent.st_dev, parent.st_ino) != (opened.st_dev, opened.st_ino):
                 raise SaveError("vault directory changed; restart and unlock")
+            replacement_attempted = True
             os.replace(staging, self.path.name, src_dir_fd=directory, dst_dir_fd=directory)
             replaced = True
             staging = None
@@ -309,6 +311,13 @@ class VaultStore:
             self.verified_capsules = retained_versions
             return verified
         except Exception:
+            if replacement_attempted and not replaced:
+                # A rename can take effect even when its caller gets an error.
+                # Only a proven unchanged original is a clean failed save.
+                try:
+                    self.check_current(directory, snapshot)
+                except Exception:
+                    replaced = True
             if replaced:
                 self.recovery_required = True
                 raise SaveError("save outcome uncertain; restart and unlock") from None

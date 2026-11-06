@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+from pathlib import Path
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -14,6 +17,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 MAX_SUBSCRIPTIONS = 64
 DELIVERY_TIMEOUT = 4
 MAX_ATTEMPTS = 3
+MAX_DELIVERY_INPUT = 16 * 1024
 
 
 def capabilities() -> dict:
@@ -41,6 +45,22 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def post_event(url: str, payload: dict) -> None:
+    # urllib's timeout limits socket inactivity, not DNS or the total time to
+    # receive headers. Isolate one attempt so even those operations can be
+    # killed and reaped at the absolute deadline. No URL/token enters argv,
+    # the environment, an exception receipt, or a child output stream.
+    try:
+        data = json.dumps({'url': url, 'payload': payload}).encode('utf-8')
+        if len(data) > MAX_DELIVERY_INPUT:
+            raise ValueError
+        subprocess.run([sys.executable, '-I', str(Path(__file__).resolve())],
+                       input=data, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=DELIVERY_TIMEOUT, check=True)
+    except Exception:
+        raise OSError('notification delivery failed') from None
+
+
+def _post_event(url: str, payload: dict) -> None:
     # Do not forward a private webhook token through redirects or env proxies.
     opener = build_opener(ProxyHandler({}), _NoRedirect())
     request = Request(url, data=json.dumps(payload).encode("utf-8"), method="POST",
@@ -192,3 +212,16 @@ class UnlockNotifications:
             worker = self._worker
         if worker is not None:
             worker.join(timeout=DELIVERY_TIMEOUT + 0.5)
+
+
+if __name__ == '__main__':
+    # Private one-attempt helper. Standalone execution avoids importing the
+    # broker (or inheriting its decrypted vault via fork-only execution).
+    try:
+        raw = sys.stdin.buffer.read(MAX_DELIVERY_INPUT + 1)
+        if len(raw) > MAX_DELIVERY_INPUT:
+            raise ValueError
+        value = json.loads(raw)
+        _post_event(validate_webhook_url(value['url']), value['payload'])
+    except Exception:
+        sys.exit(1)

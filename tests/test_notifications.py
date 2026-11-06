@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import shutil
+import ssl
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
@@ -276,3 +280,159 @@ def test_notification_shutdown_releases_pending_work(notifier):
     assert manager.status(receipt["subscription_id"])["state"] == "cancelled"
     assert not manager.subscribe(registration(CALLBACK + "-new"), unlocked=True)["ok"]
     assert not sent
+
+
+@pytest.fixture
+def tls_callback(tmp_path, monkeypatch):
+    """A private, verified TLS endpoint; never the shared browser or broker."""
+    openssl = shutil.which('openssl')
+    if openssl is None:
+        pytest.skip('local TLS notification checks require openssl')
+    cert, key = tmp_path / 'cert.pem', tmp_path / 'key.pem'
+    subprocess.run([openssl, 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+                    '-keyout', str(key), '-out', str(cert), '-days', '1',
+                    '-subj', '/CN=localhost', '-addext', 'subjectAltName=DNS:localhost'],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=10)
+    monkeypatch.setenv('SSL_CERT_FILE', str(cert))
+    # Production must ignore environment proxies, even when they are unusable.
+    monkeypatch.setenv('https_proxy', 'http://127.0.0.1:1')
+    received, slow_started, stop = [], threading.Event(), threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            size = int(self.headers['Content-Length'])
+            received.append((self.path, json.loads(self.rfile.read(size))))
+            if self.path.startswith('/slow'):
+                slow_started.set()
+                try:
+                    self.connection.sendall(b'HTTP/1.1 200 OK\r\nX-Delay: ')
+                    # Keep every socket read active; only the total deadline
+                    # can end this response before its header is complete.
+                    for _ in range(200):
+                        if stop.wait(0.03):
+                            return
+                        self.connection.sendall(b'a')
+                    self.connection.sendall(b'\r\nContent-Length: 0\r\n\r\n')
+                except OSError:
+                    pass  # Expected when the owned child is killed at deadline.
+                return
+            self.send_response(302 if self.path == '/redirect' else 200)
+            if self.path == '/redirect':
+                self.send_header('Location', '/redirect-target')
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f'https://localhost:{server.server_port}', received, slow_started
+    finally:
+        stop.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
+        assert not thread.is_alive()
+
+
+@pytest.fixture
+def delivery_children(monkeypatch):
+    """Keep process objects to prove each real transport child was reaped."""
+    processes = []
+    real_popen = subprocess.Popen
+
+    def popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(notifications.subprocess, 'Popen', popen)
+    return processes
+
+
+def test_verified_https_delivery_and_redirect_refusal(tls_callback, delivery_children, capsys, caplog):
+    base, received, _ = tls_callback
+    payload = {'event': 'akdbx.unlocked', 'locked': False, 'subscription_id': 'synthetic-id'}
+    notifications.post_event(base + '/accepted/private-token', payload)
+    assert received == [('/accepted/private-token', payload)]
+    with pytest.raises(OSError, match='^notification delivery failed$'):
+        notifications.post_event(base + '/redirect', payload)
+    assert [path for path, _ in received] == ['/accepted/private-token', '/redirect']
+    assert delivery_children and all(process.poll() is not None for process in delivery_children)
+    assert all('private-token' not in str(process.args) for process in delivery_children)
+    assert capsys.readouterr() == ('', '') and not caplog.records
+
+
+def test_untrusted_tls_certificate_refused(tls_callback, monkeypatch):
+    base, received, _ = tls_callback
+    monkeypatch.delenv('SSL_CERT_FILE')
+    with pytest.raises(OSError, match='^notification delivery failed$'):
+        notifications.post_event(base + '/not-trusted', {'event': 'akdbx.unlocked'})
+    assert not received
+
+
+def test_slow_https_headers_cannot_hold_sender_or_later_events(tls_callback, delivery_children, monkeypatch, capsys, caplog):
+    base, received, _ = tls_callback
+    monkeypatch.setattr(notifications, 'DELIVERY_TIMEOUT', 0.6)
+    manager = notifications.UnlockNotifications()
+    # Avoid retry backoff here; the real transport and all three attempts run.
+    monkeypatch.setattr(manager._stop, 'wait', lambda _: False)
+    started = time.monotonic()
+    try:
+        first = manager.subscribe(registration(base + '/slow/private-token'), unlocked=True)
+        second = manager.subscribe(registration(base + '/accepted'), unlocked=True)
+        wait_for(lambda: manager.status(second['subscription_id']).get('state') == 'delivered', timeout=5)
+        assert time.monotonic() - started < 5
+        assert manager.status(first['subscription_id']) == dict(
+            ok=True, subscription_id=first['subscription_id'], state='failed', attempts=3)
+        assert len(received) == 4 and received[-1][0] == '/accepted'
+        assert received[0][1] == received[1][1] == received[2][1]
+    finally:
+        manager.close()
+    assert manager._worker is None
+    assert len(delivery_children) == 4 and all(process.poll() is not None for process in delivery_children)
+    assert capsys.readouterr() == ('', '') and not caplog.records
+
+
+def test_shutdown_reaps_child_during_slow_https_headers(tls_callback, delivery_children, monkeypatch):
+    base, _, slow_started = tls_callback
+    monkeypatch.setattr(notifications, 'DELIVERY_TIMEOUT', 0.6)
+    manager = notifications.UnlockNotifications()
+    receipt = manager.subscribe(registration(base + '/slow'), unlocked=True)
+    try:
+        assert slow_started.wait(2)
+    finally:
+        manager.close()
+    assert manager.status(receipt['subscription_id'])['state'] == 'cancelled'
+    assert manager._worker is None
+    assert len(delivery_children) == 1 and delivery_children[0].poll() is not None
+
+
+def test_deadline_also_stops_blocked_dns(tmp_path, delivery_children, monkeypatch, capsys, caplog):
+    # Inject a DNS stall inside the real child; leave urllib's DNS/HTTP path
+    # intact so the parent's total deadline, not a fake sender, must stop it.
+    helper = tmp_path / 'blocked-dns.py'
+    marker = tmp_path / 'dns-entered'
+    helper.write_text(
+        'import socket, time, runpy\n'
+        'from pathlib import Path\n'
+        'def blocked(*args, **kwargs):\n'
+        f'    Path({str(marker)!r}).touch()\n'
+        '    time.sleep(30)\n'
+        'socket.getaddrinfo = blocked\n'
+        f'runpy.run_path({notifications.__file__!r}, run_name="__main__")\n')
+    monkeypatch.setattr(notifications, '__file__', str(helper))
+    monkeypatch.setattr(notifications, 'DELIVERY_TIMEOUT', 0.6)
+    started = time.monotonic()
+    with pytest.raises(OSError, match='^notification delivery failed$'):
+        notifications.post_event(CALLBACK, {'event': 'akdbx.unlocked'})
+    assert marker.exists() and time.monotonic() - started < 2
+    assert len(delivery_children) == 1 and delivery_children[0].poll() is not None
+    assert CALLBACK not in str(delivery_children[0].args)
+    assert capsys.readouterr() == ('', '') and not caplog.records

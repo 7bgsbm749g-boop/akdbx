@@ -89,7 +89,10 @@ akdbx fill-generated CONFIRMATION_FILL_HANDLE --target-url 'https://example.test
 ```
 
 Each reference permits only one attempt and types only the staged password,
-without Tab or submit. Both fills use the same secret. Generated resets require HTTPS. The broker checks that
+without Tab or submit. Both fills use the same secret. Generated resets require
+both the entry URL and asserted target URL to use ASCII HTTPS spelling, with
+punycode for internationalized hosts. Unicode URLs, whitespace and backslashes
+are refused. The broker checks that
 the supplied target origin (scheme, host, effective port) matches the selected
 entry. This is an additional guard: target-pinned X11 delivery cannot independently
 inspect the browser or guarantee focus. The originating agent must verify the

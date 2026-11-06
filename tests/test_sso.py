@@ -193,7 +193,7 @@ def test_concurrent_creates_make_one_record_and_invalidate_stale_work(deployed):
     assert sum(result['ok'] for result in outcomes) == 1
     assert len(reopened(path).find_entries(username=VALUES['username'])) == 1
     assert not broker.dispatch(dict(**target_request(broker), action='fill', handle=handle, mode='password'))['ok']
-    assert private_post(socket, private)[0] == 409
+    assert private_post(socket, private)[0] == 404
     assert broker.writes.get(generated['write_handle']).password is None
     assert typer.events == []
 

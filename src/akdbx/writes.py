@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 from .persistence import SaveError
 from .versions import active_entries, is_archive_group
-from .totp import configured as totp_configured, https_origin, parse_setup
+from .totp import TotpError, configured as totp_configured, https_origin, parse_setup
 
 MAX_WRITES = 64
 SSO_AUTH_METHODS = ('google', 'github')
@@ -28,7 +28,7 @@ class WriteError(ValueError):
     """Only fixed, non-secret messages may cross RPC."""
 
 
-def _totp_changed_at(entry, wall_clock):
+def _entry_changed_at(entry, wall_clock):
     """Use a real, strictly newer KDBX second without inventing future dates."""
     latest = max([entry.mtime, *(version.mtime for version in entry.history)]).replace(microsecond=0)
     deadline = monotonic() + 1.25
@@ -39,17 +39,24 @@ def _totp_changed_at(entry, wall_clock):
                 raise ValueError
             now = datetime.fromtimestamp(timestamp, timezone.utc).replace(microsecond=0)
         except (ValueError, TypeError, OverflowError):
-            raise WriteError('invalid authenticator clock; TOTP not saved') from None
+            raise WriteError('invalid write clock; entry not saved') from None
         if latest > now:
-            raise WriteError('entry or history is future-dated; synchronize the clock before importing TOTP')
+            raise WriteError('entry or history is future-dated; synchronize the clock before updating the entry')
         if latest < now:
             return now
         # Ordinary same-second saves can wait for a real clock boundary. A
         # frozen/backward clock must refuse instead of creating a merge tie or
         # letting remote edits lose to an artificially future-dated version.
         if monotonic() >= deadline:
-            raise WriteError('clock did not advance beyond the entry timestamp; retry TOTP import later')
+            raise WriteError('clock did not advance beyond the entry timestamp; retry the update later')
         sleep(0.05)
+
+
+def _generated_origin(url):
+    try:
+        return https_origin(url)
+    except TotpError:
+        raise WriteError('generated resets require a verified ASCII HTTPS site URL without credentials') from None
 
 
 def sso_capabilities():
@@ -316,8 +323,7 @@ class WriteManager:
             op.kind = 'totp'
             op.replace = request.get('replace', False)
         if request['action'] in {'generate-password', 'generate-entry'}:
-            if urlsplit(values['url']).scheme != 'https':
-                raise WriteError('generated resets require an HTTPS site')
+            _generated_origin(values['url'])
             length = request.get('length', 24)
             symbols = request.get('symbols', '!@#$%*-_+=?')
             if type(length) is not int or not 16 <= length <= 128 or not isinstance(symbols, str) or len(symbols) > 32 or any(c not in string.punctuation for c in symbols):
@@ -376,8 +382,11 @@ class WriteManager:
                         raise WriteError('entry changed; search again')
                     if passwordless_identity(entries[0]):
                         raise WriteError('passwordless record has no separate password; use its sign-in method')
-                    entries[0].save_history()
-                    entries[0].password = password
+                    entry = entries[0]
+                    changed_at = _entry_changed_at(entry, self.broker.wall_clock)
+                    entry.save_history()
+                    entry.password = password
+                    entry.mtime = changed_at
                 else:
                     if duplicate(candidate, op.values):
                         raise WriteError('duplicate site/account; select an existing entry')
@@ -388,7 +397,7 @@ class WriteManager:
             op.password = None
             op.fill_refs.clear()
             return {'ok': True, 'state': 'saved'}
-        except SaveError as exc:
+        except (SaveError, WriteError) as exc:
             op.error = str(exc)
         except ValueError:
             op.error = 'stale or conflicting destination; search and start again'
@@ -430,7 +439,7 @@ class WriteManager:
                 # A field assignment and save_history() do not advance mtime.
                 # Wait only for ordinary same-second collisions; a future
                 # current/history version must not advance the active clock.
-                changed_at = _totp_changed_at(entry, self.broker.wall_clock)
+                changed_at = _entry_changed_at(entry, self.broker.wall_clock)
                 entry.save_history()
                 entry.otp = uri
                 entry.mtime = changed_at
@@ -473,7 +482,7 @@ class WriteManager:
         target = request.get('target_url')
         if not isinstance(target, str):
             raise WriteError('verified target URL required')
-        if site_origin(target) != site_origin(op.values['url']):
+        if _generated_origin(target) != _generated_origin(op.values['url']):
             raise WriteError('target site mismatch; no password filled')
         # Reuse the existing keyboard preflight/deadline/dispatch boundary.
         proxy = SimpleNamespace(uuid=secrets.token_hex(16), password=op.password, username='')
