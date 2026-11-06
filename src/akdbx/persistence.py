@@ -20,7 +20,11 @@ class SaveError(Exception):
     pass
 
 
-_OPEN_LOCK = threading.RLock()
+# Both shipped import names swap handlers on the same dependency logger.
+if __name__ == 'akdbx.persistence':
+    _OPEN_LOCK = threading.RLock()
+else:
+    from akdbx.persistence import _OPEN_LOCK
 
 
 def open_encrypted(encrypted, password, keyfile=None):
