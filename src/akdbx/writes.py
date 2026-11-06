@@ -354,7 +354,7 @@ class WriteManager:
                 raise WriteError('duplicate site/account; select an existing entry')
         self._prune()
         if len(self.operations) >= MAX_WRITES:
-            raise WriteError('too many pending writes; cancel or wait')
+            raise WriteError('too many recent write requests; wait for earlier requests to expire, then start again')
         handle = secrets.token_hex(32)
         op = Write(secrets.token_urlsafe(32), self.broker.clock() + self.broker.handle_ttl, self.revision, dict(values), entry.uuid if entry else None)
         if is_totp:
