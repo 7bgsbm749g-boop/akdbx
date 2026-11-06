@@ -165,7 +165,7 @@ def request(
     if payload.get('action') in {'merge', 'admit'}:
         timeout = 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
     else:
-        timeout = 240 if payload.get('action') in IDENTITY_CREATES else 5
+        timeout = 240 if payload.get('action') in (*IDENTITY_CREATES, 'commit-password') else 5
     client.settimeout(timeout)
     try:
         client.connect(anchored_socket_path(runtime_fd, socket_path.name))

@@ -498,6 +498,32 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog, 
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == generated_secret
 
 
+def test_commit_returns_saved_receipt_after_a_slow_save(deployed, capsys, monkeypatch):
+    """A durable reset commit can exceed the metadata RPC budget without a retry."""
+    broker, typer, path, web_socket = deployed
+    prepared = begin(broker, 'generate-password')
+    assert prepared['ok'] and all(result['ok'] for result in fills(broker, prepared))
+    store = broker.vault._akdbx_store
+    real_commit = store.commit
+    calls = []
+
+    def delayed_commit(*args, **kwargs):
+        calls.append(True)
+        time.sleep(5.2)
+        return real_commit(*args, **kwargs)
+
+    monkeypatch.setattr(store, 'commit', delayed_commit)
+    rpc_socket = web_socket.with_name('slow-commit.sock')
+    prefix = ['--socket', str(rpc_socket), '--unlock-origin', 'https://node.example:9443']
+    with running_broker(rpc_socket, broker):
+        assert cli.main([*prefix, 'commit-password', '--site-accepted',
+                         '--', prepared['write_handle']]) == 0
+        captured = capsys.readouterr()
+        assert not captured.err and json.loads(captured.out)['state'] == 'saved'
+    assert len(calls) == 1
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == typer.events[0][1]
+
+
 def test_actual_installed_executable_against_running_synthetic_broker(deployed, capsys, cli_handle_entropy):
     import subprocess
     import sys
