@@ -8,7 +8,9 @@ import shutil
 import stat
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from urllib.parse import urlencode, urlsplit
 
 import pytest
@@ -302,6 +304,136 @@ def test_generated_save_failure_discards_stage_preserves_old_vault(deployed, mon
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == OLD
 
 
+@pytest.mark.parametrize('unreadable', [False, True])
+def test_ambiguous_rename_blocks_old_credentials_and_preserves_backup(deployed, monkeypatch, unreadable):
+    broker, typer, path, socket = deployed
+    prepared = begin(broker)
+    original = path.read_bytes()
+    selected = broker.dispatch(dict(action='search', query='Synthetic site'))['entries'][0]
+    pin = target_request(broker)
+    real_replace = os.replace
+    store = broker.vault._akdbx_store
+
+    def fail(*args, **kwargs):
+        raise OSError(CHOSEN + MASTER)
+
+    def renamed_then_error(*args, **kwargs):
+        real_replace(*args, **kwargs)
+        if unreadable:
+            monkeypatch.setattr(store, '_read', fail)
+        fail()
+
+    monkeypatch.setattr(os, 'replace', renamed_then_error)
+    code, _, page = private_post(socket, prepared)
+    assert code == 409 and b'uncertain' in page
+    assert CHOSEN.encode() not in page and MASTER.encode() not in page
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == CHOSEN
+    assert broker.vault.find_entries(title='Synthetic site', first=True).password == OLD
+    assert broker.dispatch(dict(action='ping'))['recovery_required'] is True
+    assert not broker.dispatch(dict(action='search', query='Synthetic site'))['ok']
+    assert not broker.dispatch(dict(action='fill', handle=selected['handle'], mode='password', **pin))['ok']
+    assert not broker.dispatch(dict(action='update-password', handle=selected['handle'],
+                                    metadata={key: selected[key] for key in ('title', 'username', 'url', 'group')}))['ok']
+    assert not typer.events
+    assert any(backup.read_bytes() == original for backup in path.parent.glob('.*.akdbx-backup-*'))
+    assert not list(path.parent.glob('.*.akdbx-write-*'))
+
+
+@pytest.mark.parametrize('action', ['update-password', 'generate-password'])
+def test_repeated_password_updates_advance_history_clocks(deployed, monkeypatch, action):
+    import akdbx.writes as writes
+    from akdbx.merge import _check_ambiguity
+    broker, _, path, socket = deployed
+    original = reopened(path).find_entries(title='Synthetic site', first=True).mtime
+    now = [original.timestamp() + 1]
+    broker.wall_clock = lambda: now[0]
+    waited = []
+
+    def advance_clock(delay):
+        waited.append(delay)
+        now[0] += 1
+
+    monkeypatch.setattr(writes, 'sleep', advance_clock)
+    previous = original
+    for index in range(2):
+        prepared = begin(broker, action)
+        if action == 'generate-password':
+            assert all(result['ok'] for result in fills(broker, prepared))
+            assert commit(broker, prepared)['ok']
+        else:
+            assert private_post(socket, prepared, password=CHOSEN + str(index), confirmation=CHOSEN + str(index))[0] == 200
+        current = reopened(path).find_entries(title='Synthetic site', first=True)
+        assert current.mtime > previous and current.history[-1].mtime == previous
+        assert current.mtime.timestamp() <= now[0]
+        assert len(current.history) == index + 1
+        _check_ambiguity(broker.vault)
+        previous = current.mtime
+    assert waited == [0.05]
+
+
+@pytest.mark.parametrize('action', ['update-password', 'generate-password'])
+@pytest.mark.parametrize('preserve', [False, True])
+def test_password_update_survives_merge_with_older_branch(deployed, tmp_path, action, preserve):
+    broker, _, path, socket = deployed
+    source_path = tmp_path / 'older-branch.kdbx'
+    source = reopened(path)
+    older = source.find_entries(title='Synthetic site', first=True)
+    original = older.mtime
+    older.mtime = original + timedelta(seconds=1)
+    source.add_entry(source.root_group, 'Source only', 'other', 'synthetic-source-only')
+    source.save(source_path)
+    broker.wall_clock = lambda: original.timestamp() + 10
+    prepared = begin(broker, action)
+    if action == 'generate-password':
+        password = broker.writes.get(prepared['write_handle']).password
+        assert all(result['ok'] for result in fills(broker, prepared))
+        assert commit(broker, prepared)['ok']
+    else:
+        password = CHOSEN
+        assert private_post(socket, prepared)[0] == 200
+    options = dict(preserve_conflicts=True, active_verification='semantic-v1') if preserve else {}
+    result = broker.dispatch(dict(action='merge', source=str(source_path), operation_id=uuid.uuid4().hex, **options))
+    assert result['ok'] and result['state'] == 'saved', result
+    current = reopened(path).find_entries(title='Synthetic site', first=True)
+    assert current.password == password and current.mtime == original + timedelta(seconds=10)
+    assert any(version.password == OLD for version in current.history)
+
+
+@pytest.mark.parametrize('future_in', ['active', 'history'])
+def test_future_entry_clock_refuses_password_update(deployed, future_in):
+    broker, typer, path, socket = deployed
+    vault = reopened(path)
+    entry = vault.find_entries(title='Synthetic site', first=True)
+    now = entry.mtime
+    entry.mtime = now + timedelta(days=365)
+    if future_in == 'history':
+        entry.save_history()
+        entry.mtime = now - timedelta(days=1)
+    vault.save()
+    broker.vault = open_vault_with_password(path, MASTER)
+    broker.wall_clock = lambda: now.timestamp()
+    before = path.read_bytes()
+    code, _, page = private_post(socket, begin(broker))
+    assert code == 409 and b'future-dated' in page and CHOSEN.encode() not in page
+    assert path.read_bytes() == before and not typer.events
+
+
+@pytest.mark.parametrize('clock', ['frozen', 'backward', 'invalid'])
+def test_nonadvancing_clock_refuses_password_update(deployed, monkeypatch, clock):
+    import akdbx.writes as writes
+    broker, typer, path, socket = deployed
+    stamp = broker.vault.find_entries(title='Synthetic site', first=True).mtime.timestamp()
+    now = [float('nan') if clock == 'invalid' else stamp]
+    broker.wall_clock = lambda: now[0]
+    ticks = iter([0, 0, 2])
+    monkeypatch.setattr(writes, 'monotonic', lambda: next(ticks))
+    monkeypatch.setattr(writes, 'sleep', lambda _: now.__setitem__(0, stamp - (clock == 'backward')))
+    before = path.read_bytes()
+    code, _, page = private_post(socket, begin(broker))
+    assert code == 409 and CHOSEN.encode() not in page
+    assert path.read_bytes() == before and not typer.events
+
+
 def test_two_independent_brokers_serialized_against_same_file(tmp_path, template):
     path = tmp_path / 'synthetic.kdbx'
     shutil.copyfile(template, path)
@@ -497,6 +629,38 @@ def test_generated_origin_port_zero_and_insecure_site_rejected(deployed):
     entry.url = 'http://example.test/login'
     assert not begin(broker, 'generate-password')['ok']
     assert typer.events == []
+
+
+@pytest.mark.parametrize('target', ['https://faß.test/reset', 'https://xn--fa-hia.test/reset',
+                                  'https://fass.test/\nreset', 'https://fass.test/with space',
+                                  'https://fass.test/\\reset'])
+def test_generated_fill_refuses_ambiguous_or_distinct_origin(deployed, target):
+    broker, typer, _, _ = deployed
+    broker.vault.find_entries(title='Synthetic site', first=True).url = 'https://fass.test/login'
+    prepared = begin(broker, 'generate-password')
+    results = fills(broker, prepared, target=target)
+    assert all(not result['ok'] for result in results)
+    assert not commit(broker, prepared)['ok'] and not typer.events
+
+
+@pytest.mark.parametrize('action', ['generate-password', 'generate-entry'])
+def test_generated_password_requires_ascii_site_before_staging(deployed, action):
+    broker, typer, _, _ = deployed
+    if action == 'generate-password':
+        broker.vault.find_entries(title='Synthetic site', first=True).url = 'https://faß.test/login'
+        result = begin(broker, action)
+    else:
+        result = broker.dispatch(dict(action=action, metadata=dict(
+            title='New generated', username='new-account', url='https://faß.test/login', group='Web')))
+    assert not result['ok'] and 'ASCII HTTPS' in result['error']
+    assert not broker.writes.operations and not typer.events
+
+
+def test_generated_fill_accepts_verified_punycode_spelling(deployed):
+    broker, _, _, _ = deployed
+    broker.vault.find_entries(title='Synthetic site', first=True).url = 'https://xn--fa-hia.test/login'
+    prepared = begin(broker, 'generate-password')
+    assert all(result['ok'] for result in fills(broker, prepared, target='https://xn--fa-hia.test/reset'))
 
 
 def test_legacy_broker_capability_and_secret_free_timeout_reports(monkeypatch, capsys):

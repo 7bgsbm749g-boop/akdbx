@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import fcntl
 import base64
+import copy
 import io
 import json
 import os
@@ -187,7 +188,22 @@ def test_newest_conflict_history_deletions_groups_attachments_custom_metadata(pa
     assert saved.tree.findtext('./Meta/CustomIcons/Icon[UUID="' + icon_id + '"]/Data') == icon_data
     assert result['after']['attachments'] == 1 and result['after']['deletions'] >= 1
     repeated = merge(pair)
-    assert repeated['ok'] and repeated['state'] == 'unchanged', repeated
+    assert repeated['ok'] and repeated['state'] in {'unchanged', 'saved'}, repeated
+    # Native CustomData readers regenerate their dictionary clock, and a save
+    # regenerates native padding. Loading across a real second can therefore
+    # cause a save with no user-data change. Check every other XML value/byte.
+    def without_native_bookkeeping(vault):
+        root = copy.deepcopy(vault.tree.getroot())
+        custom = root.find('./Meta/CustomData')
+        for item in list(custom):
+            if item.findtext('Key') in {'_LAST_MODIFIED', 'KPXC_RANDOM_SLUG'}:
+                custom.remove(item)
+        custom[:] = sorted(custom, key=lambda item: item.findtext('Key') or '')
+        return etree.tostring(root, method='c14n')
+
+    again = disk(target)
+    assert without_native_bookkeeping(again) == without_native_bookkeeping(saved)
+    assert again.binaries == saved.binaries
 
 
 def test_equal_second_conflict_fails_closed(pair):
