@@ -84,9 +84,30 @@ class VaultStore:
         self.verified_encrypted = None
         self.verified_capsules = None
         self.recovery_required = False
-        self.writable_path = False
         self.keyfile_path = None
         self.keyfile_digest = None
+
+    @property
+    def writable_path(self):
+        """Check current metadata and lock access without reading bytes or taking a lock."""
+        if self.expected is None:
+            return False
+        directory = target = lock = None
+        try:
+            directory = self._directory()
+            target = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=directory)
+            self._file_info(target)
+            if not os.access('.', os.W_OK | os.X_OK, dir_fd=directory, effective_ids=True):
+                return False
+            lock = self._open_write_lock(directory, create=False)
+            return True
+        except (OSError, SaveError):
+            return False
+        finally:
+            for fd in (lock, target, directory):
+                if fd is not None:
+                    os.close(fd)
 
     def _directory(self, *, writing=True):
         # Anchor each component rather than racing lstat against a full-path open.
@@ -109,12 +130,16 @@ class VaultStore:
             if current is not None:
                 os.close(current)
 
+    def _file_info(self, fd, *, writing=True):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or (writing and (info.st_uid != os.getuid() or info.st_nlink != 1)):
+            raise SaveError('unsafe vault file')
+        return info
+
     def _read(self, directory, *, writing=True):
         fd = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
         try:
-            before = os.fstat(fd)
-            if not stat.S_ISREG(before.st_mode) or (writing and (before.st_uid != os.getuid() or before.st_nlink != 1)):
-                raise SaveError("unsafe vault file")
+            before = self._file_info(fd, writing=writing)
             with os.fdopen(os.dup(fd), "rb") as stream:
                 data = stream.read()
             after = os.fstat(fd)
@@ -143,16 +168,6 @@ class VaultStore:
                 raise SaveError("vault changed on disk; restart and unlock")
             self.expected = snapshot
             self.verified_encrypted = encrypted
-            try:
-                write_directory = self._directory()
-                try:
-                    self._read(write_directory)
-                    self.writable_path = os.access('.', os.W_OK | os.X_OK,
-                                                   dir_fd=write_directory, effective_ids=True)
-                finally:
-                    os.close(write_directory)
-            except (OSError, SaveError):
-                pass
             vault._akdbx_store = self
             self._check_merge_recovery(directory)
             return vault
@@ -246,14 +261,30 @@ class VaultStore:
                 if bundle is not None:
                     os.close(bundle)
 
-    @contextmanager
-    def advisory_lock(self, directory):
-        """The same nonblocking disk lock for password writes and merges."""
-        fd = os.open('.' + self.path.name + '.akdbx.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+    def _open_write_lock(self, directory, *, create):
+        """Open the same safe lock inode for readiness, saves and merges."""
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        try:
+            fd = os.open('.' + self.path.name + '.akdbx.lock',
+                         flags | (os.O_CREAT if create else 0), 0o600, dir_fd=directory)
+        except FileNotFoundError:
+            if not create:
+                return None
+            raise
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
                 raise SaveError('unsafe vault write lock')
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    @contextmanager
+    def advisory_lock(self, directory):
+        """The same nonblocking disk lock for password writes and merges."""
+        fd = self._open_write_lock(directory, create=True)
+        try:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -282,10 +313,7 @@ class VaultStore:
         replaced = False
         replacement_attempted = False
         try:
-            lock = os.open('.' + self.path.name + '.akdbx.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-            info = os.fstat(lock)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
-                raise SaveError("unsafe vault write lock")
+            lock = self._open_write_lock(directory, create=True)
             deadline = time.monotonic() + 4.0
             while True:
                 try:
