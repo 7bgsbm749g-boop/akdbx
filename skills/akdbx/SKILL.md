@@ -287,8 +287,8 @@ protocol 1; do not ask the user to choose a password merely because the entry
 is new. For a chosen-password save, use the private broker page. For an
 agent-driven reset or setup, generate inside the broker, fill password and confirmation
 through their separate single-use references into independently verified focused
-fields with a fresh target pin for each, verify site acceptance, and only then `commit-password WRITE_HANDLE
---site-accepted`. Passwords never enter tool responses. Keep pending handles and
+fields with a fresh target pin for each, verify site acceptance, and only then
+`commit-password --site-accepted -- WRITE_HANDLE`. Passwords never enter tool responses. Keep pending handles and
 private URLs inside the private task workflow and out of notes/reports.
 
 A rejected or cancelled site reset must never update KeePass. Cancel the staged
