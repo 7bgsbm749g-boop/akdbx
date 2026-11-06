@@ -158,6 +158,7 @@ def request(
     *,
     broker_uid: int | None = None,
     expected_unlock_origin: str = DEFAULT_UNLOCK_ORIGIN,
+    before_send=None,
 ) -> dict:
     broker_uid = os.getuid() if broker_uid is None else broker_uid
     socket_path, runtime_fd = _validate_socket_path(socket_path, broker_uid)
@@ -172,7 +173,7 @@ def request(
         _, peer_uid, _ = _peer_credentials(client)
         if peer_uid != broker_uid:
             raise PermissionError("broker peer UID does not match the configured broker UID")
-        send_message(client, payload)
+        send_message(client, payload, before_send=before_send)
         return _validate_response(receive_message(client), expected_unlock_origin)
     finally:
         client.close()
@@ -188,6 +189,23 @@ def _read_webhook_url(path: Path) -> str:
                 or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 4096):
             raise ValueError("webhook URL file must be an owned mode-0600 regular file of at most 4096 bytes")
         return validate_webhook_url(source.read(4097).strip())
+
+
+def _mutation_not_sent(command, error):
+    """Describe pre-send failures using only local, fixed text."""
+    if isinstance(error, PermissionError):
+        reason = 'broker socket or peer identity check failed'
+    elif isinstance(error, (ProtocolError, ValueError)):
+        reason = 'broker capability or response validation failed'
+    elif isinstance(error, RuntimeError):
+        reason = 'broker peer verification unavailable'
+    else:
+        reason = 'broker connection or capability check failed'
+    prefix = 'save' if command == 'commit-password' else 'autofill'
+    message = f'{prefix} not started: {reason}; request not sent'
+    if command == 'commit-password':
+        message += '; check write-status before any retry; do not reset the site again'
+    return message
 
 
 def parser() -> argparse.ArgumentParser:
@@ -365,6 +383,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {'fill', 'fill-generated', 'fill-totp'}:
         payload.update(target=args.target, target_protocol=1)
     identity_kind = 'SSO' if args.command == 'create-sso-entry' else 'passwordless'
+    track_send = args.command in {'fill', 'fill-generated', 'fill-totp', 'commit-password'}
+    send_started = False
+
+    def mark_send():
+        nonlocal send_started
+        send_started = True
+
     try:
         if args.command == 'subscribe-unlock':
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
@@ -450,12 +475,15 @@ def main(argv: list[str] | None = None) -> int:
         response = request(
             args.socket, payload, broker_uid=args.broker_uid,
             expected_unlock_origin=args.unlock_origin,
+            **({'before_send': mark_send} if track_send else {}),
         )
     except (FileNotFoundError, ConnectionRefusedError):
         print("broker is not running", file=sys.stderr)
         return 2
     except (PermissionError, ProtocolError, RuntimeError, ValueError) as exc:
-        if args.command in {'merge', 'admit'}:
+        if track_send and not send_started:
+            print(_mutation_not_sent(args.command, exc), file=sys.stderr)
+        elif args.command in {'merge', 'admit'}:
             print('merge outcome unconfirmed: broker response rejected; use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
         elif args.command in IDENTITY_CREATES:
             print(f'{identity_kind} save outcome unconfirmed: broker response rejected; check status and search before any retry', file=sys.stderr)
@@ -466,8 +494,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"refusing untrusted broker response: {exc}", file=sys.stderr)
         return 2
-    except (TimeoutError, OSError):
-        if args.command in {"fill", "fill-generated", "fill-totp"}:
+    except (TimeoutError, OSError) as exc:
+        if track_send and not send_started:
+            print(_mutation_not_sent(args.command, exc), file=sys.stderr)
+        elif args.command in {"fill", "fill-generated", "fill-totp"}:
             print(
                 "autofill outcome uncertain: connection lost after request; do not retry automatically",
                 file=sys.stderr,

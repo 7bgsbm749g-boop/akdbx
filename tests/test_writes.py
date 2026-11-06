@@ -756,13 +756,18 @@ def test_legacy_broker_capability_and_secret_free_timeout_reports(monkeypatch, c
     for field in ('writes_available', 'recovery_required', 'locked'):
         with pytest.raises(cli.ProtocolError):
             cli._validate_response({'ok': True, field: 'false'}, 'https://node.example:9443')
-    monkeypatch.setattr(cli, 'request', lambda *a, **kw: (_ for _ in ()).throw(TimeoutError()))
+    def timed_out(*args, **kwargs):
+        if kwargs.get('before_send') is not None:
+            kwargs['before_send']()
+        raise TimeoutError
+
+    monkeypatch.setattr(cli, 'request', timed_out)
     assert cli.main(['commit-password', 'synthetic-opaque-reference', '--site-accepted']) == 2
     output = capsys.readouterr()
     assert output.out == '' and 'uncertain' in output.err and 'write-status' in output.err
     assert cli.main(['fill-generated', 'synthetic-opaque-reference', '--target-url', 'https://example.test', '--target', 'synthetic-pin']) == 2
     output = capsys.readouterr()
-    assert output.out == '' and 'do not retry automatically' in output.err
+    assert output.out == '' and 'request not sent' in output.err and 'not started' in output.err
 
 
 def test_changed_keyfile_never_rekeys_vault(tmp_path):

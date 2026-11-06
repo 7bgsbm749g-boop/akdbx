@@ -64,6 +64,11 @@ def _check_ambiguity(*vaults, preserve=False):
     for vault in vaults:
         versions.archives(vault)
         if preserve:
+            # Capture reads these clocks before semantic verification. Preserve
+            # the fixed refusal category without building unused signatures.
+            for entry in versions.active_entries(vault):
+                for item in [entry, *entry.history]:
+                    selection.modification_time(item)
             continue
         binaries = vault.binaries
         for entry in versions.active_entries(vault):

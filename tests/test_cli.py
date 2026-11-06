@@ -95,7 +95,7 @@ def test_eof_after_completed_fill_requires_uncertainty_without_retry(tmp_path, c
                         send_message(connection, response)
                     else:
                         assert response['ok'] is True
-        except BaseException as exc:
+        except Exception as exc:
             errors.append(exc)
 
     worker = threading.Thread(target=lose_reply)
@@ -127,6 +127,8 @@ def test_lost_mutation_reply_has_safe_recovery_guidance(monkeypatch, capsys, act
         calls.append(payload['action'])
         if payload['action'] == 'ping' and not preflight:
             return {'ok': True, **target_capabilities(), 'totp_supported': True, 'totp_protocol': 1}
+        if payload['action'] != 'ping' and kwargs.get('before_send') is not None:
+            kwargs['before_send']()
         raise ProtocolError('connection closed')
 
     monkeypatch.setattr(cli, 'request', lost_reply)
@@ -135,12 +137,70 @@ def test_lost_mutation_reply_has_safe_recovery_guidance(monkeypatch, capsys, act
                   ['--target-url', 'https://example.test', '--target', 'synthetic-pin'])
     assert cli.main(arguments) == 2
     captured = capsys.readouterr()
-    assert not captured.out and 'outcome unconfirmed' in captured.err
-    assert ('write-status' if action == 'commit-password' else 'do not retry automatically') in captured.err
+    assert not captured.out
+    if preflight:
+        assert 'request not sent' in captured.err and 'not started' in captured.err
+        assert 'outcome unconfirmed' not in captured.err
+    else:
+        assert 'outcome unconfirmed' in captured.err
+        assert ('write-status' if action == 'commit-password' else 'do not retry automatically') in captured.err
     assert 'after request' not in captured.err
     assert calls == (['ping'] if preflight else
                      ['ping', 'ping', action] if action == 'fill-totp' else
                      ['ping', action] if action == 'fill-generated' else [action])
+
+
+@pytest.mark.parametrize('action', ['fill', 'commit-password'])
+@pytest.mark.parametrize('fault', ['socket-mode', 'peer-uid'])
+def test_mutation_transport_refusal_is_known_not_sent(tmp_path, monkeypatch, capsys, action, fault):
+    endpoint = tmp_path / 'private' / 'broker.sock'
+    endpoint.parent.mkdir(mode=0o700)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(endpoint))
+    listener.listen(1)
+    endpoint.chmod(0o666 if fault == 'socket-mode' else 0o600)
+    if fault == 'peer-uid':
+        monkeypatch.setattr(cli, '_peer_credentials', lambda client: (os.getpid(), os.getuid() + 1, os.getgid()))
+    arguments = ['--socket', str(endpoint), action, 'synthetic-reference']
+    arguments += ['--site-accepted'] if action == 'commit-password' else ['--target', 'synthetic-pin']
+    try:
+        assert cli.main(arguments) == 2
+        captured = capsys.readouterr()
+        assert not captured.out and 'socket or peer identity' in captured.err
+        assert 'request not sent' in captured.err and 'outcome unconfirmed' not in captured.err
+        if action == 'commit-password':
+            assert 'write-status' in captured.err and 'do not reset the site again' in captured.err
+        if fault == 'peer-uid':
+            listener.settimeout(1)
+            connection, _ = listener.accept()
+            with connection:
+                connection.settimeout(1)
+                assert connection.recv(1) == b''
+        else:
+            listener.setblocking(False)
+            with pytest.raises(BlockingIOError):
+                listener.accept()
+    finally:
+        listener.close()
+
+
+def test_rejected_capability_reply_is_not_a_fill_attempt(tmp_path, monkeypatch, capsys):
+    actions = []
+    broker = Broker(SimpleNamespace(entries=[]), RecordingTyper())
+
+    def rejected(payload, **kwargs):
+        actions.append(payload['action'])
+        return {'ok': 'synthetic private diagnostic'}
+
+    monkeypatch.setattr(broker, 'dispatch', rejected)
+    endpoint = tmp_path / 'private' / 'broker.sock'
+    with running_broker(endpoint, broker):
+        assert cli.main(['--socket', str(endpoint), 'fill', 'synthetic-reference',
+                         '--target', 'synthetic-pin']) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and 'request not sent' in captured.err
+    assert 'capability' in captured.err and 'synthetic private diagnostic' not in captured.err
+    assert actions == ['ping'] and not broker.typer.events
 
 
 @pytest.fixture(scope="module")
@@ -439,6 +499,7 @@ def test_fill_connection_timeout_is_reported_as_uncertain_without_retry(monkeypa
         calls.append(payload)
         if payload["action"] == "ping":
             return {"ok": True, **target_capabilities()}
+        _kwargs['before_send']()
         raise TimeoutError
 
     monkeypatch.setattr(cli, "request", timed_out)

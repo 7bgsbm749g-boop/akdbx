@@ -355,8 +355,34 @@ or merge real vaults.
    option (if any), desktop environment and existing private HTTPS mapping:
    `/VERIFIED/DEPLOYMENT/.venv/bin/akdbx --socket /KNOWN/PRIVATE/broker.sock serve /INTENDED/base.kdbx`.
    Replace the CLI placeholder with the verified absolute path; do not resolve
-   this startup command through PATH. Retain the private owner launch receipt
-   that ties the new process to that installation and reviewed commit/artifact.
+   this startup command through PATH. The CLI does not create a launch receipt.
+   The owner must create one as part of this launch, before accepting work.
+   In the owner's private deployment state directory (mode `0700`), create a
+   new mode-`0600` JSON file with the following nonsecret fields: absolute CLI
+   path, interpreter path, imported module root, verified commit/artifact digest,
+   intended socket path, broker UID, kernel boot ID, actual broker PID and its
+   kernel start-time ticks. Obtain the PID from the launcher or supervisor for
+   the newly started broker; do not use a shell/wrapper PID or select a process
+   by name. On a VPS, use its supported session/supervisor launch workflow.
+
+   On Linux, read the boot ID from `/proc/sys/kernel/random/boot_id`, interpreter
+   path from `/proc/PID/exe`, and start-time ticks from field 22 of `/proc/PID/stat`.
+   Parse the stat fields after the final `)` of the process name; the start time
+   is index 19 in that remaining whitespace-separated list. Record the code
+   identity verified immediately before this launch, while the installation is
+   held stable. Do not infer it from a version string or record an old process
+   against files changed after it started.
+
+   To check this record, validate the original private socket with the verified
+   CLI's `status`, then connect to that same socket as its owner and read Linux
+   `SO_PEERCRED` using `struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET,
+   socket.SO_PEERCRED, struct.calcsize('3i')))`. The returned PID and UID must
+   match the recorded broker PID and configured UID. Close this diagnostic
+   connection without sending any request. Read the recorded PID's boot ID,
+   start-time ticks and interpreter path again and require exact matches.
+   A mismatch or a missing record requires a new coordinated, verified launch;
+   do not create a retrospective receipt for an unverified running process.
+   Retain the receipt privately for this process's lifetime.
    Checking source files after an older process started does not prove which
    code that process loaded. Keep the verified installation stable while it runs.
    No additional unlock service is required.
