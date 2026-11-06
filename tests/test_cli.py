@@ -22,6 +22,18 @@ from test_web_unlock import call
 MASTER = "synthetic-web-unlock-master"
 
 
+@pytest.mark.parametrize('arguments, field', [
+    (['write-status', '--', '-legacy-handle'], 'write_handle'),
+    (['cancel-write', '--', '-legacy-handle'], 'write_handle'),
+    (['commit-password', '--site-accepted', '--', '-legacy-handle'], 'write_handle'),
+    (['fill-generated', '--target-url', 'https://example.test/reset',
+      '--target', 'synthetic-pin', '--', '-legacy-handle'], 'handle'),
+])
+def test_documented_end_of_options_accepts_legacy_handles(arguments, field):
+    """A new CLI must still accept opaque handles from a running old broker."""
+    assert getattr(cli.parser().parse_args(arguments), field) == '-legacy-handle'
+
+
 @pytest.fixture(scope="module")
 def synthetic_database(tmp_path_factory):
     database = tmp_path_factory.mktemp("synthetic") / "vault.kdbx"

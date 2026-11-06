@@ -369,8 +369,12 @@ def main(argv: list[str] | None = None) -> int:
                     or capabilities['unlock_notifications_protocol'] != 1):
                 print(json.dumps({'ok': False, 'error': 'broker lacks unlock notification protocol 1; require broker 0.11.0 or newer; subscription not sent'}))
                 return 1
-            payload.update(webhook_url=_read_webhook_url(args.webhook_url_file),
-                           ttl=args.ttl, notification_protocol=1)
+            try:
+                webhook_url = _read_webhook_url(args.webhook_url_file)
+            except (OSError, ValueError):
+                print('could not read private webhook URL file; subscription not sent', file=sys.stderr)
+                return 2
+            payload.update(webhook_url=webhook_url, ttl=args.ttl, notification_protocol=1)
         if args.command in {'setup-totp', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)

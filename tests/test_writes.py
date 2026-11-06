@@ -89,6 +89,19 @@ def reopened(path):
     return PyKeePass(str(path), password=MASTER)
 
 
+@pytest.fixture
+def cli_handle_entropy(monkeypatch):
+    """Exercise bytes whose URL-safe base64 representation begins with '-'."""
+    counter = 0
+
+    def token_bytes(nbytes=32):
+        nonlocal counter
+        counter += 1
+        return b'\xfb' + counter.to_bytes(nbytes - 1, 'big')
+
+    monkeypatch.setattr('akdbx.writes.secrets.token_bytes', token_bytes)
+
+
 def test_private_update_preserves_vault_and_is_immediately_fillable(deployed, capsys, caplog):
     broker, typer, path, socket = deployed
     stale = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]['handle']
@@ -452,7 +465,7 @@ def test_two_independent_brokers_serialized_against_same_file(tmp_path, template
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == CHOSEN
 
 
-def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
+def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog, cli_handle_entropy):
     broker, typer, path, socket = deployed
     prefix = ['--socket', str(socket.with_name('cli.sock')), '--unlock-origin', 'https://node.example:9443']
     def command(*args, expected=0):
@@ -485,7 +498,7 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == generated_secret
 
 
-def test_actual_installed_executable_against_running_synthetic_broker(deployed, capsys):
+def test_actual_installed_executable_against_running_synthetic_broker(deployed, capsys, cli_handle_entropy):
     import subprocess
     import sys
     from pathlib import Path
