@@ -215,3 +215,37 @@ def test_true_site_account_duplicates_remain_refused(template, tmp_path, namespa
         assert not broker.writes.operations and not list(path.parent.glob('.*.akdbx-backup-*'))
     finally:
         broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('flow', FLOWS)
+@pytest.mark.parametrize('host', ['a\u200db.test', 'a\u200cb.test',
+                                  'xn--' + 'a\u200db'.encode('punycode').decode('ascii') + '.test',
+                                  'xn--' + 'a\u200cb'.encode('punycode').decode('ascii') + '.test'])
+def test_contextually_invalid_joiners_never_create_or_deliver(template, tmp_path, namespace, flow, host):
+    broker, path, _ = setup_creation(namespace, template, tmp_path, 'Original', 'account')
+    before = path.read_bytes()
+    try:
+        result, _ = create(broker, flow, dict(title='Invalid destination', username='new-account',
+            url='https://' + host + '/register', group='Web'))
+        assert not result['ok']
+        assert path.read_bytes() == before and not broker.typer.events and not broker.writes.operations
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('joiner', ['\u200c', '\u200d'])
+def test_chosen_creation_preserves_valid_joiner_origins(template, tmp_path, namespace, joiner):
+    host = '\u0915\u094d' + joiner + '\u0937'
+    encoded = 'xn--' + host.encode('punycode').decode('ascii')
+    broker, path, _ = setup_creation(namespace, template, tmp_path, 'Original', 'account',
+                                      url='https://' + encoded + '.test/login')
+    before = path.read_bytes()
+    try:
+        result, _ = create(broker, 'chosen', dict(title='Other label', username='account',
+            url='https://' + host + '.test/register', group='Web'))
+        assert not result['ok'] and 'duplicate site/account' in result['error']
+        assert path.read_bytes() == before and not broker.writes.operations
+    finally:
+        broker.unlock_notifications.close()

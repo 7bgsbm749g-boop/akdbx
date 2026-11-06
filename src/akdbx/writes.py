@@ -137,6 +137,19 @@ def metadata(entry):
     return dict(title=entry.title or '', username=entry.username or '', url=entry.url or '', group='/'.join(entry.path[:-1]))
 
 
+def _site_label(label):
+    """Check joiners in Unicode and A-label forms without excluding emoji or underscores."""
+    try:
+        contextual = label[4:].encode('ascii').decode('punycode') if label.startswith('xn--') else label
+        valid = all(c not in '\u200c\u200d' or idna.valid_contextj(contextual, i)
+                    for i, c in enumerate(contextual))
+    except ValueError:
+        raise WriteError('invalid site URL') from None
+    if not valid:
+        raise WriteError('invalid site URL')
+    return label.encode('ascii') if label.isascii() else b'xn--' + label.encode('punycode')
+
+
 def site_origin(url):
     parsed = urlsplit(url)
     if (
@@ -153,8 +166,7 @@ def site_origin(url):
         # Keep IDNA2008 deviations distinct while preserving accepted ASCII
         # labels (including local underscores) and Unicode compatibility maps.
         mapped = idna.uts46_remap(host, std3_rules=False, transitional=False)
-        labels = [label.encode('ascii') if label.isascii() else b'xn--' + label.encode('punycode')
-                  for label in mapped.split('.')]
+        labels = [_site_label(label) for label in mapped.split('.')]
         checked = labels[:-1] if labels[-1] == b'' else labels
         if not checked or any(not label or len(label) > 63 for label in checked):
             raise WriteError('invalid site URL')
@@ -254,9 +266,15 @@ class WriteManager:
         self.revision = 0
         self.public_base = None
 
-    def available(self):
+    def available(self, *, refresh_inputs=False):
+        """Refresh changed key contents for discovery, keeping delivery checks metadata-only."""
         store = getattr(self.broker.vault, '_akdbx_store', None)
-        return bool(self.public_base and store and store.writable_path and not store.recovery_required)
+        if not (self.public_base and store and not store.recovery_required):
+            return False
+        try:
+            return bool(store.check_write_inputs() if refresh_inputs else store.writable_path)
+        except (OSError, SaveError):
+            return False
 
     def _require_available(self):
         store = getattr(self.broker.vault, '_akdbx_store', None)

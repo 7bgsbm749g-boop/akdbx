@@ -129,6 +129,7 @@ def test_stale_inputs_refuse_generated_resets_before_delivery(
             key.chmod(0o600)
             key.write_bytes(keyed_template[1])
             key.chmod(0o400)
+            assert broker.dispatch(dict(action='ping'))['writes_available'] is True
             recovered = prepare_generated(broker, action)
             assert recovered['ok'] and all(result['ok'] for result in fills(broker, recovered))
             assert commit(broker, recovered)['state'] == 'saved'
