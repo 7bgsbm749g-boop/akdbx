@@ -51,8 +51,8 @@ def _open(encrypted, vault):
     return open_encrypted(encrypted, vault.password, keyfile)
 
 
-def _entry_signature(entry):
-    return versions.entry_signature(entry)
+def _entry_signature(entry, binaries=None):
+    return versions.entry_signature(entry, binaries)
 
 
 def _check_ambiguity(*vaults, preserve=False):
@@ -63,10 +63,11 @@ def _check_ambiguity(*vaults, preserve=False):
     records = {}
     for vault in vaults:
         versions.archives(vault)
+        binaries = vault.binaries
         for entry in versions.active_entries(vault):
             for item in [entry, *entry.history]:
                 key = (item.uuid, selection.modification_time(item))
-                signature = _entry_signature(item)
+                signature = _entry_signature(item, binaries)
                 if not preserve and key in records and records[key] != signature:
                     raise MergeError('conflicting same-second records; merge refused; originals retained')
                 records[key] = signature
@@ -125,17 +126,19 @@ def synchronize_deletions(candidate, *originals):
 
 def verify_history(candidate, *originals, allow_deletions=True):
     """Refuse engine history pruning instead of silently losing old values."""
-    retained = {e.uuid: {(selection.modification_time(h), _entry_signature(h)) for h in [e, *e.history]} for e in candidate.entries}
+    binaries = candidate.binaries
+    retained = {e.uuid: {(selection.modification_time(h), _entry_signature(h, binaries)) for h in [e, *e.history]} for e in candidate.entries}
     deletions = {r.findtext('UUID'): selection.decode_time(r.findtext('DeletionTime'), candidate.version)
                  for r in candidate.tree.findall('./Root/DeletedObjects/DeletedObject')}
     for vault in originals:
+        binaries = vault.binaries
         for entry in vault.entries:
             if entry.uuid not in retained:
                 deleted = deletions.get(entry._element.findtext('UUID'))
                 if allow_deletions and deleted is not None and selection.modification_time(entry) <= deleted:
                     continue
                 raise MergeError('merge would discard an entry without a valid deletion; target not replaced')
-            if any((selection.modification_time(h), _entry_signature(h)) not in retained[entry.uuid] for h in [entry, *entry.history]):
+            if any((selection.modification_time(h), _entry_signature(h, binaries)) not in retained[entry.uuid] for h in [entry, *entry.history]):
                 raise MergeError('merge would discard entry history or fields; target not replaced')
 
 

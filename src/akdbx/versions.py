@@ -165,14 +165,16 @@ def _canonical(node, binaries, version, *, times):
         visit = None
 
 
-def entry_signature(entry):
+def entry_signature(entry, binaries=None):
     node = copy.deepcopy(entry._element)
     timeinfo = node.find('Times')
     if timeinfo is not None:
         for child in list(timeinfo):
             if child.tag in {'LastAccessTime', 'UsageCount'}:
                 timeinfo.remove(child)
-    return _json(_canonical(node, entry._kp.binaries, entry._kp.version, times=True))
+    if binaries is None:
+        binaries = entry._kp.binaries
+    return _json(_canonical(node, binaries, entry._kp.version, times=True))
 
 
 def _marker(group):
