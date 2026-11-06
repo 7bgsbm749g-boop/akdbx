@@ -68,6 +68,63 @@ def test_required_write_artifact_names_fit_directory_limit(template, tmp_path, a
         broker.unlock_notifications.close()
 
 
+@pytest.mark.parametrize('action', ['merge', 'admit'])
+@pytest.mark.parametrize('unicode_name', [False, True])
+@pytest.mark.parametrize('extra_bytes', [0, 1, 8])
+def test_merge_names_have_separate_readiness_from_ordinary_saves(
+    template, tmp_path, action, unicode_name, extra_bytes,
+):
+    """Exercise real replacement names while ordinary encrypted saves still fit."""
+    import uuid
+    directory = tmp_path / 'vault'
+    directory.mkdir(mode=0o700)
+    maximum = os.pathconf(tmp_path, 'PC_NAME_MAX')
+    length = maximum - len(b'..akdbx-merge-') - 32 - len(b'.replace') + extra_bytes
+    basename = ('é' * (length // 2) + 'a' * (length % 2)) if unicode_name else 'a' * length
+    path = directory / basename
+    source = tmp_path / 'incoming.kdbx'
+    shutil.copyfile(template, path)
+    broker = open_broker(path)
+    try:
+        capabilities = broker.dispatch(dict(action='ping'))
+        assert capabilities['writes_available']
+        assert capabilities['merge_available'] is (extra_bytes == 0)
+        prepared = begin(broker, 'generate-password')
+        assert prepared['ok'] and all(result['ok'] for result in fills(broker, prepared))
+        assert commit(broker, prepared)['state'] == 'saved'
+        before = path.read_bytes()
+        shutil.copyfile(path, source)
+        incoming = reopened(source)
+        incoming.add_entry(incoming.root_group, 'Incoming only', 'incoming-user', OLD)
+        incoming.save()
+        source_before = source.read_bytes()
+        existing = set(tmp_path.iterdir())
+        vault_files = set(directory.iterdir())
+        request = dict(action=action, source=str(source), operation_id=uuid.uuid4().hex)
+        if action == 'admit':
+            snapshots = tmp_path / 'snapshots'
+            snapshots.mkdir(mode=0o700)
+            existing.add(snapshots)
+            request.update(policy=admission.POLICY, verification=admission.VERIFICATION,
+                           snapshot_directory=str(snapshots))
+        result = broker.dispatch(request)
+        assert source.read_bytes() == source_before
+        if extra_bytes:
+            assert not result['ok'] and 'unavailable' in result['error']
+            assert path.read_bytes() == before and set(tmp_path.iterdir()) == existing
+            assert set(directory.iterdir()) == vault_files
+            if action == 'admit':
+                assert not list(snapshots.iterdir())
+            return
+        assert result['ok'] and result['state'] == 'saved', result.get('error')
+        saved = reopened(path)
+        assert saved.find_entries(title='Incoming only', first=True).password == OLD
+        assert saved.find_entries(title='Synthetic site', first=True).password == broker.typer.events[0][1]
+        assert not list(directory.glob('*.replace'))
+    finally:
+        broker.unlock_notifications.close()
+
+
 @pytest.mark.parametrize('fault', ['missing-root', 'root-mode', 'locator-unreadable',
                                    'locator-mode', 'locator-fifo', 'locator-symlink', 'locator-invalid'])
 @pytest.mark.parametrize('staged', [False, True])

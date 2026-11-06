@@ -92,6 +92,13 @@ class VaultStore:
 
     @property
     def writable_path(self):
+        return self._writable_path()
+
+    @property
+    def merge_writable_path(self):
+        return self._writable_path(merging=True)
+
+    def _writable_path(self, *, merging=False):
         """Check metadata and bound storage without vault/key reads, receipt scans or locking."""
         if self.expected is None:
             return False
@@ -99,6 +106,8 @@ class VaultStore:
         try:
             directory = self._directory()
             self._check_write_names(directory)
+            if merging:
+                self._check_merge_names(directory)
             target = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                              dir_fd=directory)
             self._file_info(target)
@@ -108,6 +117,8 @@ class VaultStore:
                 keyfile = self._open_keyfile()
             lock = self._open_write_lock(directory, create=False)
             external = self.snapshot_directory(directory)
+            if merging and external is not None:
+                self._check_merge_names(external, replacement=False)
             return True
         except (OSError, SaveError):
             return False
@@ -125,6 +136,13 @@ class VaultStore:
         if maximum >= 0 and any(len(os.fsencode(self._write_name(kind, '0' * (2 * WRITE_TOKEN_BYTES)))) > maximum
                                 for kind in ('backup', 'write')):
             raise SaveError('vault filename is too long for required write artifacts')
+
+    def _check_merge_names(self, directory, *, replacement=True):
+        """Check the longest merge component in its anchored destination."""
+        name = self._write_name('merge', '0' * 32) + ('.replace' if replacement else '')
+        maximum = os.fpathconf(directory, 'PC_NAME_MAX')
+        if maximum >= 0 and len(os.fsencode(name)) > maximum:
+            raise SaveError('vault filename is too long for required merge artifacts')
 
     def _directory(self, *, writing=True):
         # Anchor each component rather than racing lstat against a full-path open.
