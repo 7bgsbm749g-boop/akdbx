@@ -354,6 +354,38 @@ def test_default_socket_uses_dedicated_xdg_runtime_subdirectory(monkeypatch, tmp
     assert cli.default_socket() == tmp_path / "akdbx" / "akdbx.sock"
 
 
+@pytest.mark.parametrize('command', ['explicit', 'default', 'help', 'version', 'subcommand-help'])
+def test_unused_inaccessible_runtime_does_not_block_cli(monkeypatch, tmp_path, capsys, command):
+    """An explicit endpoint and local diagnostics do not need the default runtime."""
+    if os.geteuid() == 0:
+        pytest.skip('root can traverse a mode-000 directory')
+    runtime = tmp_path / 'unavailable'
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv('XDG_RUNTIME_DIR', str(runtime))
+    runtime.chmod(0)
+    try:
+        if command == 'explicit':
+            endpoint = tmp_path / 'private' / 'broker.sock'
+            with running_broker(endpoint, Broker(SimpleNamespace(entries=[]), RecordingTyper())):
+                assert cli.main(['--socket', str(endpoint), 'status']) == 0
+            assert json.loads(capsys.readouterr().out)['ok'] is True
+        elif command == 'default':
+            assert cli.main(['status']) == 2
+            captured = capsys.readouterr()
+            assert not captured.out and 'default broker socket' in captured.err
+            assert 'Traceback' not in captured.err
+        else:
+            arguments = {'help': ['--help'], 'version': ['--version'],
+                         'subcommand-help': ['status', '--help']}[command]
+            with pytest.raises(SystemExit) as exc:
+                cli.main(arguments)
+            assert exc.value.code == 0
+            captured = capsys.readouterr()
+            assert captured.out and not captured.err
+    finally:
+        runtime.chmod(0o700)
+
+
 def test_rebrand_client_uses_existing_broker_without_restart(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     legacy = tmp_path / "agentic-kdbx" / "agentic-kdbx.sock"

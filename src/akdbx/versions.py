@@ -308,6 +308,7 @@ def _append_capsule_binary(vault, data):
 def ensure(vault, ledger):
     """Restore opaque capsules lost/normalized by a native stage from inputs."""
     from lxml import etree
+    from pykeepass.entry import Entry
     groups = [g for g in vault.groups if is_archive_group(g)]
     if not ledger:
         archives(vault)
@@ -351,7 +352,11 @@ def ensure(vault, ledger):
                     and entry.get_custom_property(CHECKSUM) == hashlib.sha256(data).hexdigest()):
                 continue
             vault.delete_entry(entry)
-        entry = vault.add_entry(group, 'Preserved original record', '', '', notes='Managed encrypted recovery record; do not edit.', force_creation=True)
+        # UUID collisions are checked above; managed labels may repeat. The
+        # generic add_entry still searches every duplicate with force_creation.
+        entry = Entry(title='Preserved original record', username='', password='',
+                      notes='Managed encrypted recovery record; do not edit.', kp=vault)
+        group.append(entry)
         entry.uuid = alias
         entry.set_custom_property(CHECKSUM, hashlib.sha256(data).hexdigest(), protect=True)
         for field in ('ctime', 'mtime', 'atime'):

@@ -3,12 +3,14 @@ from collections import Counter
 import copy
 from datetime import timedelta
 import io
+import sys
 
 from lxml import etree
 import pytest
 from pykeepass import PyKeePass
+from pykeepass.entry import Entry
 
-from akdbx import admission, selection, versions
+from akdbx import admission, group_selection, selection, versions
 from test_merge import BASE_TIME, MASTER, base
 
 
@@ -118,6 +120,122 @@ def test_capsule_repair_and_later_mutation_preserve_payloads(base):
     reopened = PyKeePass(io.BytesIO(buffer.getvalue()), password=MASTER)
     assert versions.archives(reopened) == updated
     assert versions.ensure(reopened, updated) is False
+
+
+@pytest.mark.parametrize('repair', [False, True])
+def test_capsule_insertion_duplicate_lookup_work_is_bounded(base, monkeypatch, repair):
+    """Managed UUID-addressed wrappers need no growing duplicate-label search."""
+    constructor, find = Entry.__init__, PyKeePass.find_entries
+    for size in (2, 24):
+        candidate = attached_vault(base, size)
+        ledger = versions.collect([candidate], capture=True)
+        if repair:
+            versions.ensure(candidate, ledger)
+            for entry in candidate.entries:
+                if versions.is_archive_group(entry.group):
+                    entry.set_custom_property(versions.CHECKSUM, 'synthetic invalid checksum', protect=True)
+        matching = False
+        matches = 0
+
+        def counted_constructor(entry, *args, **kwargs):
+            nonlocal matches
+            if matching and kwargs.get('element') is not None:
+                matches += 1
+            constructor(entry, *args, **kwargs)
+
+        def counted_find(vault, *args, **kwargs):
+            nonlocal matching
+            previous = matching
+            matching = kwargs.get('title') == 'Preserved original record' and kwargs.get('first') is True
+            try:
+                return find(vault, *args, **kwargs)
+            finally:
+                matching = previous
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Entry, '__init__', counted_constructor)
+            patch.setattr(PyKeePass, 'find_entries', counted_find)
+            assert versions.ensure(candidate, ledger)
+        assert matches <= len(ledger), (size, matches, len(ledger))
+        buffer = io.BytesIO()
+        candidate.save(buffer)
+        reopened = PyKeePass(io.BytesIO(buffer.getvalue()), password=MASTER)
+        assert versions.archives(reopened) == ledger
+        assert versions.ensure(reopened, ledger) is False
+
+
+@pytest.mark.parametrize('shape', ['flat', 'chain'])
+@pytest.mark.parametrize('deleted', [False, True])
+def test_native_group_deletion_traversal_work_is_bounded(base, monkeypatch, shape, deleted):
+    """Topology validation stays intact while deletion traversal scales linearly."""
+    counts = {}
+    for size in (12, 48):
+        source = PyKeePass(io.BytesIO(base.read_bytes()), password=MASTER)
+        parent = source.root_group
+        branch = []
+        for index in range(size):
+            group = source.add_group(parent, f'Synthetic resource group {index}')
+            group.mtime = BASE_TIME
+            branch.append(group)
+            if shape == 'chain':
+                parent = group
+        candidate = copy.deepcopy(source)
+        if deleted:
+            for group in branch:
+                node = etree.SubElement(candidate.tree.find('./Root/DeletedObjects'), 'DeletedObject')
+                etree.SubElement(node, 'UUID').text = group._element.findtext('UUID')
+                etree.SubElement(node, 'DeletionTime').text = candidate._encode_time(BASE_TIME + timedelta(days=1))
+            for group in list(candidate.root_group.subgroups):
+                if group.uuid in {item.uuid for item in branch}:
+                    candidate.delete_group(group)
+        before = etree.tostring(source.tree), etree.tostring(candidate.tree)
+        reads = 0
+
+        class CountedState:
+            def __init__(self, node, vault, parent):
+                self.node, self.vault, self._parent = node, vault, parent
+
+            @property
+            def parent(self):
+                nonlocal reads
+                # Ancestor/cycle validation is separate from deletion traversal.
+                if sys._getframe(1).f_code.co_name != '_parent':
+                    reads += 1
+                return self._parent
+
+            @parent.setter
+            def parent(self, value):
+                self._parent = value
+
+        with monkeypatch.context() as patch:
+            patch.setattr(group_selection, 'GroupState', CountedState)
+            group_selection.verify(candidate, [source])
+        counts[size] = reads
+        assert (etree.tostring(source.tree), etree.tostring(candidate.tree)) == before
+    assert counts[48] <= 5 * counts[12], counts
+
+
+@pytest.mark.parametrize('retained', ['occupied', 'newer', 'not-deleted'])
+def test_group_deletion_keeps_ancestors_of_retained_children(base, retained):
+    """A processed child still prevents parent deletion until it is actually removed."""
+    source = PyKeePass(io.BytesIO(base.read_bytes()), password=MASTER)
+    parent = source.add_group(source.root_group, 'Synthetic retained ancestor')
+    child = source.add_group(parent, 'Synthetic retained descendant')
+    parent.mtime = child.mtime = BASE_TIME
+    if retained == 'occupied':
+        source.add_entry(child, 'Synthetic retained record', 'synthetic', 'synthetic')
+    elif retained == 'newer':
+        child.mtime = BASE_TIME + timedelta(days=2)
+    candidate = copy.deepcopy(source)
+    for group in (parent, child):
+        if group is child and retained == 'not-deleted':
+            continue
+        node = etree.SubElement(candidate.tree.find('./Root/DeletedObjects'), 'DeletedObject')
+        etree.SubElement(node, 'UUID').text = group._element.findtext('UUID')
+        etree.SubElement(node, 'DeletionTime').text = candidate._encode_time(BASE_TIME + timedelta(days=1))
+    before = etree.tostring(source.tree), etree.tostring(candidate.tree)
+    group_selection.verify(candidate, [source])
+    assert (etree.tostring(source.tree), etree.tostring(candidate.tree)) == before
 
 
 @pytest.mark.parametrize('profile', [admission.GROUP_VERIFICATION, admission.TAG_GROUP_VERIFICATION])

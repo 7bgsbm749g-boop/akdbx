@@ -193,7 +193,7 @@ def _read_webhook_url(path: Path) -> str:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="akdbx", description="Secret-withholding KeePass autofill broker")
     result.add_argument("--version", action="version", version=__version__)
-    result.add_argument("--socket", type=Path, default=default_socket())
+    result.add_argument("--socket", type=Path)
     result.add_argument(
         "--broker-uid", type=int, default=int(os.environ.get("AKDBX_BROKER_UID", os.getuid())),
         help="expected operating-system UID of the broker",
@@ -283,6 +283,12 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if args.socket is None:
+        try:
+            args.socket = default_socket()
+        except OSError:
+            print('could not locate default broker socket; use --socket', file=sys.stderr)
+            return 2
     if args.command == "serve":
         database = args.database.expanduser()
         keyfile = args.keyfile.expanduser() if args.keyfile else None

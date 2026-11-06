@@ -254,17 +254,7 @@ class MergeManager:
                     root = Path(os.readlink('/proc/self/fd/' + str(external)))
                 finally:
                     os.close(external)
-            info = os.fstat(bundle_fd)
-            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                raise MergeError('unsafe merge receipt directory')
-            fd = os.open('receipt.json', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=bundle_fd)
-            with os.fdopen(fd, 'rb') as stream:
-                info = os.fstat(stream.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
-                    raise MergeError('unsafe merge receipt')
-                value = json.loads(stream.read(16384))
-            if value['operation_id'] != operation_id:
-                raise MergeError('invalid merge receipt')
+            value = store.read_merge_receipt(bundle_fd, operation_id)
             if value['state'] in {'preparing', 'prepared'}:
                 value.update(ok=False, state='uncertain', error='merge interrupted or active; do not retry; inspect retained encrypted files')
             return {**value, 'receipt_path': str(root / name / 'receipt.json')}

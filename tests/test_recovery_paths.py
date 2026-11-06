@@ -1,7 +1,10 @@
 """Receipt recovery uses synthetic vaults and isolated sockets, without unlock."""
 from __future__ import annotations
 
+import os
+import json
 import shutil
+import threading
 import uuid
 from pathlib import Path
 
@@ -13,6 +16,55 @@ from akdbx.broker import Broker, open_vault_with_password
 from akdbx.web_unlock import start_unlock_server
 from test_broker import RecordingTyper, running_broker
 from test_merge import MASTER, base
+
+
+@pytest.mark.parametrize('external', [False, True])
+@pytest.mark.parametrize('locked', [False, True])
+def test_fifo_receipt_is_refused_without_retaining_vault_lock(base, tmp_path, external, locked):
+    """Malformed recovery files must not turn a status query into a stuck broker."""
+    directory = tmp_path / 'canonical'
+    directory.mkdir(mode=0o700)
+    target = directory / 'target.kdbx'
+    shutil.copyfile(base, target)
+    before = target.read_bytes()
+    broker = Broker(open_vault_with_password(target, MASTER), RecordingTyper())
+    receipt_root = directory
+    if external:
+        receipt_root = tmp_path / 'snapshots'
+        receipt_root.mkdir(mode=0o700)
+        store = broker.vault._akdbx_store
+        anchor = store._directory()
+        try:
+            os.close(store.snapshot_directory(anchor, str(receipt_root)))
+        finally:
+            os.close(anchor)
+    if locked:
+        broker = Broker(None, RecordingTyper())
+        broker.merges.database = target
+    operation_id = uuid.uuid4().hex
+    bundle = receipt_root / ('.' + target.name + '.akdbx-merge-' + operation_id)
+    bundle.mkdir(mode=0o700)
+    receipt = bundle / 'receipt.json'
+    os.mkfifo(receipt, 0o600)
+    results = []
+    worker = threading.Thread(target=lambda: results.append(broker.dispatch(
+        {'action': 'merge-status', 'operation_id': operation_id})))
+    worker.start()
+    worker.join(1)
+    blocked = worker.is_alive()
+    if blocked:
+        # Keep this owned FIFO connected until the old blocking reader exits.
+        fd = os.open(receipt, os.O_RDWR | os.O_NONBLOCK)
+        try:
+            worker.join(2)
+        finally:
+            os.close(fd)
+    assert not worker.is_alive(), 'owned receipt lookup did not exit'
+    assert not blocked, 'receipt open blocked before regular-file validation'
+    assert results == [{'ok': False, 'error': 'unsafe merge receipt'}]
+    assert broker._vault_lock.acquire(blocking=False)
+    broker._vault_lock.release()
+    assert target.read_bytes() == before and not broker.typer.events
 
 
 @pytest.fixture
@@ -29,6 +81,50 @@ def recovery_case(tmp_path, base):
     incoming.add_entry(incoming.root_group, 'Synthetic addition', 'synthetic', 'synthetic value')
     incoming.save(source)
     return target, source, snapshots
+
+
+@pytest.mark.parametrize('external', [False, True])
+@pytest.mark.parametrize('change', ['checked', 'prepared', 'receipt-mode', 'bundle-0755',
+                                   'bundle-0777', 'hardlink', 'wrong-id', 'missing-id'])
+def test_restart_recovery_requires_trusted_receipt_identity(recovery_case, external, change):
+    """A terminal state cannot clear recovery when its metadata or identity is unsafe."""
+    target, source, snapshots = recovery_case
+    broker = Broker(open_vault_with_password(target, MASTER), RecordingTyper())
+    operation_id = uuid.uuid4().hex
+    request = dict(action='admit' if external else 'merge', source=str(source),
+                   operation_id=operation_id, check=True)
+    if external:
+        request.update(snapshot_directory=str(snapshots), policy=admission.POLICY,
+                       verification=admission.VERIFICATION)
+    checked = broker.dispatch(request)
+    assert checked['ok'] and checked['state'] == 'checked', checked
+    receipt = Path(checked['receipt_path'])
+    if change in {'prepared', 'wrong-id', 'missing-id'}:
+        value = json.loads(receipt.read_bytes())
+        if change == 'prepared':
+            value['state'] = 'prepared'
+        elif change == 'wrong-id':
+            value['operation_id'] = uuid.uuid4().hex
+        else:
+            del value['operation_id']
+        receipt.write_text(json.dumps(value))
+    elif change == 'receipt-mode':
+        receipt.chmod(0o644)
+    elif change.startswith('bundle-'):
+        receipt.parent.chmod(int(change.removeprefix('bundle-'), 8))
+    elif change == 'hardlink':
+        os.link(receipt, receipt.with_name('synthetic-link.json'))
+    before = target.read_bytes(), receipt.read_bytes()
+    restarted = Broker(open_vault_with_password(target, MASTER), RecordingTyper())
+    restarted.writes.public_base = 'https://unlock.example.test:9443'
+    status = restarted.dispatch({'action': 'ping'})
+    blocked = change != 'checked'
+    assert status['recovery_required'] is blocked
+    assert status['writes_available'] is (not blocked)
+    result = restarted.dispatch({'action': 'merge-status', 'operation_id': operation_id})
+    assert result['ok'] is (not blocked), result
+    assert (target.read_bytes(), receipt.read_bytes()) == before
+    assert not restarted.typer.events
 
 
 def configured_path(tmp_path, target, alias_kind):

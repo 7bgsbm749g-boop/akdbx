@@ -239,6 +239,31 @@ class VaultStore:
             if external is not None:
                 os.close(external)
 
+    @staticmethod
+    def read_merge_receipt(bundle, operation_id):
+        """Read a bounded receipt only from its private, correctly identified bundle."""
+        info = os.fstat(bundle)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise SaveError('unsafe merge receipt directory')
+        fd = os.open('receipt.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                     dir_fd=bundle)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 16384):
+                raise SaveError('unsafe merge receipt')
+            try:
+                data = stream.read(16385)
+                if len(data) > 16384:
+                    raise ValueError
+                receipt = json.loads(data)
+                if (len(operation_id) != 32 or any(c not in '0123456789abcdef' for c in operation_id)
+                        or not isinstance(receipt, dict) or receipt.get('operation_id') != operation_id):
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise SaveError('invalid merge receipt') from None
+        return receipt
+
     def _scan_merge_recovery(self, directory):
         prefix = '.' + self.path.name + '.akdbx-merge-'
         for name in os.listdir(directory):
@@ -247,12 +272,7 @@ class VaultStore:
             bundle = None
             try:
                 bundle = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
-                fd = os.open('receipt.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=bundle)
-                with os.fdopen(fd, 'rb') as stream:
-                    info = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(info.st_mode) or info.st_size > 16384:
-                        raise ValueError
-                    receipt = json.loads(stream.read(16384))
+                receipt = self.read_merge_receipt(bundle, name[len(prefix):])
                 if receipt.get('state') not in {'saved', 'unchanged', 'checked', 'failed'}:
                     self.recovery_required = True
             except Exception:
