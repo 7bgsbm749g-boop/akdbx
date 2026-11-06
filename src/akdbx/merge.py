@@ -194,7 +194,7 @@ class MergeManager:
             self._version = engine_version()
             self._engine_checked = True
         store = getattr(self.broker.vault, '_akdbx_store', None)
-        return {'merge_available': bool(self._version and store and store.writable_path and not store.recovery_required),
+        return {'merge_available': bool(self._version and store and store.merge_writable_path and not store.recovery_required),
                 'merge_engine': ('keepassxc-cli ' + self._version) if self._version else None,
                 'merge_same_credentials_only': True, 'merge_protocol': 1,
                 'merge_refresh_target_supported': True,
@@ -231,7 +231,7 @@ class MergeManager:
 
     @staticmethod
     def _bundle_name(store, operation_id):
-        return '.' + store.path.name + '.akdbx-merge-' + operation_id
+        return store._write_name('merge', operation_id)
 
     @staticmethod
     def _receipt(directory, value):
@@ -325,6 +325,7 @@ class MergeManager:
         try:
             directory = store._directory()
             with store.advisory_lock(directory):
+                store._check_merge_names(directory)
                 name = self._bundle_name(store, operation_id)
                 # Refresh is reconciliation, never an override for an unresolved
                 # operation. Check prior intents before creating this intent.
@@ -332,6 +333,7 @@ class MergeManager:
                 if store.recovery_required:
                     raise MergeError('incomplete merge receipt; recovery required; refresh refused')
                 snapshot_directory = store.snapshot_directory(directory, request['snapshot_directory']) if admitting else os.dup(directory)
+                store._check_merge_names(snapshot_directory, replacement=False)
                 # The bound external root participates in recovery before any intent.
                 store._check_merge_recovery(directory)
                 if store.recovery_required:

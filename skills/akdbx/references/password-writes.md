@@ -145,6 +145,12 @@ before expiry. The page changes KeePass only, so coordinate it after the site
 has accepted the user's privately chosen password.
 
 Creation requires an existing unambiguous group; it does not create groups.
+Every non-root ancestor in the destination path must have a nonempty name.
+Search display paths can omit unnamed ancestors. Before using one for creation,
+verify that every actual non-root ancestor has a nonempty name in the vault app.
+A collapsed path such as `Web` can select a different, fully named `Web` group
+when both exist. Select a verified fully named group, or ask the user to name
+the destination's unnamed ancestors in their vault app before retrying.
 The user confirms the proposed destination on the private page. A matching
 account (case-insensitive username) on the same site origin anywhere in the
 vault is conservatively rejected as a duplicate, even if title/group/path

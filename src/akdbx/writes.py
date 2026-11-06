@@ -28,28 +28,39 @@ class WriteError(ValueError):
     """Only fixed, non-secret messages may cross RPC."""
 
 
+def _entry_write_clock(entry, wall_clock, *, latest=None):
+    """Refuse known future versions without waiting; reuse history during a save wait."""
+    try:
+        if latest is None:
+            latest = max([entry.mtime, *(version.mtime for version in entry.history)]).replace(microsecond=0)
+    except (ValueError, TypeError, OverflowError):
+        raise WriteError('entry timestamps could not be verified; entry not saved') from None
+    try:
+        timestamp = wall_clock()
+        if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+            raise ValueError
+        now = datetime.fromtimestamp(timestamp, timezone.utc).replace(microsecond=0)
+        future = latest > now
+    except (ValueError, TypeError, OverflowError):
+        raise WriteError('invalid write clock; entry not saved') from None
+    if future:
+        raise WriteError('entry or history is future-dated; synchronize the clock before updating the entry')
+    return latest, now
+
+
 def _entry_changed_at(entry, wall_clock):
     """Use a real, strictly newer KDBX second without inventing future dates."""
-    latest = max([entry.mtime, *(version.mtime for version in entry.history)]).replace(microsecond=0)
+    latest, now = _entry_write_clock(entry, wall_clock)
     deadline = monotonic() + 1.25
-    while True:
-        timestamp = wall_clock()
-        try:
-            if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
-                raise ValueError
-            now = datetime.fromtimestamp(timestamp, timezone.utc).replace(microsecond=0)
-        except (ValueError, TypeError, OverflowError):
-            raise WriteError('invalid write clock; entry not saved') from None
-        if latest > now:
-            raise WriteError('entry or history is future-dated; synchronize the clock before updating the entry')
-        if latest < now:
-            return now
+    while latest == now:
         # Ordinary same-second saves can wait for a real clock boundary. A
         # frozen/backward clock must refuse instead of creating a merge tie or
         # letting remote edits lose to an artificially future-dated version.
         if monotonic() >= deadline:
             raise WriteError('clock did not advance beyond the entry timestamp; retry the update later')
         sleep(0.05)
+        _, now = _entry_write_clock(entry, wall_clock, latest=latest)
+    return now
 
 
 def _generated_origin(url):
@@ -142,12 +153,20 @@ def site_origin(url):
 
 
 def validate_metadata(values):
-    if set(values) != {'title', 'username', 'url', 'group'} or any(
-        not isinstance(v, str) or len(v.encode('utf-8')) > 4096
-        or any(ord(c) < 32 or ord(c) == 127 for c in v)
-        for v in values.values()
-    ):
-        raise WriteError('invalid destination metadata')
+    from lxml import etree
+    try:
+        if set(values) != {'title', 'username', 'url', 'group'} or any(
+            not isinstance(v, str) or len(v.encode('utf-8')) > 4096
+            or any(ord(c) < 32 or ord(c) == 127 for c in v)
+            for v in values.values()
+        ):
+            raise ValueError
+        if any(unicodedata.category(c) == 'Cc' for c in values['username']):
+            raise ValueError
+        for value in values.values():
+            etree.Element('Value').text = value
+    except (ValueError, TypeError):
+        raise WriteError('invalid destination metadata') from None
     if not values['title'].strip() or not values['username'].strip():
         raise WriteError('title, account and a site URL are required')
     site_origin(values['url'])
@@ -156,12 +175,20 @@ def validate_metadata(values):
 def group_for(vault, path):
     groups = []
     for group in vault.groups:
-        if '/'.join(group.path) != path:
-            continue
+        parts = []
         ancestor = group
-        while ancestor is not None and not is_archive_group(ancestor):
+        while ancestor is not None:
+            if is_archive_group(ancestor):
+                break
+            if not ancestor.is_root_group:
+                name = ancestor.name
+                # The dependency's path drops unnamed ancestors. Do not let a
+                # child of an unnamed group alias a different named path.
+                if not isinstance(name, str) or not name:
+                    break
+                parts.append(name)
             ancestor = getattr(ancestor, 'parentgroup', None)
-        if ancestor is None:
+        if ancestor is None and '/'.join(reversed(parts)) == path:
             groups.append(group)
     if len(groups) != 1:
         raise WriteError('destination group is missing or ambiguous')
@@ -315,6 +342,8 @@ class WriteManager:
         if entry is not None:
             if metadata(entry) != values or sum(metadata(e) == values for e in active_entries(self.broker.vault)) != 1 or not any(e.uuid == entry.uuid for e in active_entries(self.broker.vault)):
                 raise WriteError('entry metadata mismatch; search again')
+            if request['action'] == 'generate-password':
+                _entry_write_clock(entry, self.broker.wall_clock)
             if is_totp:
                 https_origin(values['url'])
                 if totp_configured(entry) and not request.get('replace', False):
@@ -488,6 +517,11 @@ class WriteManager:
             raise WriteError('stale generated password; start again')
         if not self.available():
             raise WriteError('private writes unavailable; check activation and vault path safety')
+        if op.uuid is not None:
+            entries = [entry for entry in active_entries(self.broker.vault) if entry.uuid == op.uuid]
+            if len(entries) != 1 or metadata(entries[0]) != op.values:
+                raise WriteError('entry changed; search again')
+            _entry_write_clock(entries[0], self.broker.wall_clock)
         if set(request) - {'action', 'handle', 'target_url', 'start_deadline', 'target', 'target_protocol'}:
             raise WriteError('autofill not started: unsupported target request')
         target = request.get('target_url')

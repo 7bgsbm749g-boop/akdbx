@@ -344,7 +344,7 @@ def handler_for(state: UnlockState):
                 raw = self.rfile.read(length)
                 if len(raw) != length or self._expired():
                     return True
-                values = parse_qs(raw.decode('utf-8'), strict_parsing=True)
+                values = parse_qs(raw.decode('utf-8'), strict_parsing=True, errors='strict')
                 if any(len(v) != 1 for v in values.values()):
                     raise ValueError
                 if kind == 'totp' and set(values) - {'setup', 'confirmed'}:
@@ -428,7 +428,7 @@ def handler_for(state: UnlockState):
                         self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
                         return
                     try:
-                        values = parse_qs(raw.decode("utf-8"), strict_parsing=True)
+                        values = parse_qs(raw.decode("utf-8"), strict_parsing=True, errors='strict')
                         password = values.get("password", [""])[0]
                         if not password:
                             raise ValueError

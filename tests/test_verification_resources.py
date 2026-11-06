@@ -14,6 +14,57 @@ from akdbx import admission, group_selection, selection, versions
 from test_merge import BASE_TIME, MASTER, base
 
 
+@pytest.mark.parametrize('padding', [128, 16384])
+def test_tag_trimming_copies_only_linear_text(monkeypatch, padding):
+    copied = 0
+
+    class CountedText(str):
+        def __getitem__(self, key):
+            nonlocal copied
+            value = super().__getitem__(key)
+            if isinstance(key, slice):
+                copied += len(value)
+                return CountedText(value)
+            return value
+
+    split = selection.re.split
+
+    def counted_split(pattern, text):
+        return [CountedText(part) for part in split(pattern, text)]
+
+    monkeypatch.setattr(selection.re, 'split', counted_split)
+    text = ' ' * padding + 'tag' + '\u2003' * padding
+    assert selection._tags(text) == 'tag'
+    assert copied <= len(text) * 2, copied
+
+
+@pytest.mark.parametrize('text,expected', [
+    ('\u2003 Beta\u2028;Alpha\r\n;Alpha', 'Alpha;Beta'),
+    (' ;tag;;', ';tag'),
+    ('\u001ctag\u0085;\u200btag\u200b', '\u001ctag\u0085;\u200btag\u200b'),
+    ('\ue000;\U00010000;a;A;a', 'A;a;\U00010000;\ue000'),
+])
+def test_tag_trimming_preserves_native_comparison_semantics(text, expected):
+    assert selection._tags(text) == expected
+
+
+def test_tag_padding_verification_preserves_xml_and_detects_changed_tag(base):
+    source = PyKeePass(io.BytesIO(base.read_bytes()), password=MASTER)
+    entry = source.add_entry(source.root_group, 'Tagged synthetic', 'synthetic-user', 'synthetic')
+    tags = etree.SubElement(entry._element, 'Tags')
+    tags.text = '\u2003 alpha\u2028;beta '
+    candidate = copy.deepcopy(source)
+    changed = candidate.find_entries(uuid=entry.uuid, first=True)._element.find('Tags')
+    changed.text = 'beta;alpha'
+    before = etree.tostring(source.tree), etree.tostring(candidate.tree)
+    selection.verify(candidate, [source])
+    assert (etree.tostring(source.tree), etree.tostring(candidate.tree)) == before
+    changed.text = 'beta;different'
+    with pytest.raises(selection.SelectionError) as exc:
+        selection.verify(candidate, [source])
+    assert exc.value.diagnostics.get('entry_metadata') == 1
+
+
 def attached_vault(base, size, attachments=2):
     vault = PyKeePass(io.BytesIO(base.read_bytes()), password=MASTER)
     vault.add_binary(b'synthetic unrelated data' * 256)

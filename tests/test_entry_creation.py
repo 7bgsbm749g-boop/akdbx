@@ -37,13 +37,16 @@ def create(broker, flow, values):
     return result, password
 
 
-def setup_creation(namespace, template, tmp_path, title, account):
+def setup_creation(namespace, template, tmp_path, title, account, unnamed=False):
     path = tmp_path / 'synthetic.kdbx'
     shutil.copyfile(template, path)
     vault = PyKeePass(path, password=MASTER)
     original = vault.find_entries(title='Synthetic site', first=True)
     original.title, original.username, original.url = title, account, 'https://first.example.test/login'
     identity = original.uuid
+    if unnamed:
+        empty = vault.add_group(vault.root_group, '')
+        vault.add_group(empty, 'Web')
     vault.save(path)
     module = importlib.import_module(namespace + '.broker')
     broker = module.Broker(module.open_vault_with_password(path, MASTER), RecordingTyper())
@@ -53,12 +56,15 @@ def setup_creation(namespace, template, tmp_path, title, account):
 
 @pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
 @pytest.mark.parametrize('flow', FLOWS)
-@pytest.mark.parametrize('quoted', ['none', 'title', 'account'])
+@pytest.mark.parametrize('quoted', ['none', 'title', 'account', 'unicode', 'unnamed'])
 def test_distinct_origin_creation_keeps_exact_accepted_metadata(template, tmp_path, namespace, flow, quoted):
     """Different origins permit identical labels/accounts, including literal double quotes."""
     title = 'Sign in "Admin"' if quoted == 'title' else 'Sign in'
     account = '"user"@example.test' if quoted == 'account' else 'synthetic@example.test'
-    broker, path, identity = setup_creation(namespace, template, tmp_path, title, account)
+    if quoted == 'unicode':
+        title, account = 'Entrée "Admin" 🔑 �', 'usér@example.test'
+    broker, path, identity = setup_creation(namespace, template, tmp_path, title, account,
+                                           unnamed=quoted == 'unnamed')
     values = dict(title=title, username=account, url='https://second.example.test/login', group='Web')
     try:
         result, password = create(broker, flow, values)
@@ -71,7 +77,10 @@ def test_distinct_origin_creation_keeps_exact_accepted_metadata(template, tmp_pa
         assert len(added) == 1
         entry = added[0]
         assert (entry.title, entry.username, entry.password or '') == (title, account, password)
-        assert entry.uuid != identity and entry.group.name == 'Web'
+        assert entry.uuid != identity and entry.group.uuid == original.group.uuid
+        if quoted == 'unnamed':
+            assert any(group.name is None for group in reopened.groups)
+            assert len([group for group in reopened.groups if group.name == 'Web']) == 2
         if password:
             assert entry._element.find('String[Key="Password"]/Value').get('Protected') == 'True'
         if flow in {'google', 'github', 'email_code'}:
@@ -87,9 +96,55 @@ def test_distinct_origin_creation_keeps_exact_accepted_metadata(template, tmp_pa
         assert OLD not in json.dumps(search)
         if password:
             assert password not in json.dumps(search)
+        if quoted == 'unicode':
+            selected = next(item for item in search['entries'] if item['url'] == values['url'])
+            assert broker.dispatch(dict(action='fill', handle=selected['handle'], mode='username',
+                                        **target_request(broker)))['ok']
+            assert broker.typer.events[-1] == ('type', account)
         backups = list(path.parent.glob('.*.akdbx-backup-*'))
         assert len(backups) == 1 and stat.S_IMODE(backups[0].stat().st_mode) == 0o600
         assert PyKeePass(backups[0], password=MASTER).find_entries(uuid=identity, first=True).password == OLD
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('flow', FLOWS)
+@pytest.mark.parametrize('field,value', [('title', 'bad\ufffe'), ('title', 'bad\ud800'), ('username', 'bad\uffff'),
+                                       ('username', 'bad\u0085@example.test')])
+def test_unusable_creation_metadata_refused_before_staging(template, tmp_path, namespace, flow, field, value):
+    broker, path, _ = setup_creation(namespace, template, tmp_path, 'Original', 'original@example.test')
+    before = path.read_bytes()
+    values = dict(title='New account', username='new@example.test',
+                  url='https://second.example.test/login', group='Web')
+    values[field] = value
+    action = {'chosen': 'create-entry', 'generated': 'generate-entry',
+              'email_code': 'create-passwordless-entry'}.get(flow, 'create-sso-entry')
+    try:
+        request = dict(action=action, metadata=values)
+        if flow in {'google', 'github', 'email_code'}:
+            request['auth_method'] = flow
+        result = broker.dispatch(request)
+        assert not result['ok'], result
+        assert not broker.writes.operations and not broker.typer.events
+        assert path.read_bytes() == before and not list(path.parent.glob('.*.akdbx-backup-*'))
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('flow', ['chosen', 'generated'])
+@pytest.mark.parametrize('title', ['Display\u0085Name', 'Supplementary \U0001fffe'])
+def test_xml_valid_display_metadata_is_retained(template, tmp_path, namespace, flow, title):
+    broker, path, identity = setup_creation(namespace, template, tmp_path, 'Original', 'original@example.test')
+    values = dict(title=title, username='new@example.test', url='https://second.example.test', group='Web')
+    try:
+        result, password = create(broker, flow, values)
+        assert result['ok'] and result['state'] == 'saved', result
+        vault = PyKeePass(path, password=MASTER)
+        added = next(entry for entry in vault.entries if entry.url == values['url'])
+        assert added.title == title and added.password == password
+        assert vault.find_entries(uuid=identity, first=True).password == OLD
     finally:
         broker.unlock_notifications.close()
 

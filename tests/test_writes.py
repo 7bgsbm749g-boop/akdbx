@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import importlib
 import json
 import os
 import shutil
@@ -429,6 +430,61 @@ def test_future_entry_clock_refuses_password_update(deployed, future_in):
     code, _, page = private_post(socket, begin(broker))
     assert code == 409 and b'future-dated' in page and CHOSEN.encode() not in page
     assert path.read_bytes() == before and not typer.events
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('future_in', ['active', 'history', 'rollback'])
+def test_future_clock_blocks_generated_preparation_and_delivery(template, tmp_path, namespace, future_in):
+    module = importlib.import_module(namespace + '.broker')
+    path = tmp_path / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    vault = reopened(path)
+    entry = vault.find_entries(title='Synthetic site', first=True)
+    now = entry.mtime.timestamp()
+    if future_in != 'rollback':
+        entry.mtime += timedelta(days=365)
+        if future_in == 'history':
+            entry.save_history()
+            entry.mtime -= timedelta(days=366)
+        vault.save()
+    broker = module.Broker(module.open_vault_with_password(path, MASTER), RecordingTyper())
+    broker.writes.public_base = 'https://node.example:9443'
+    broker.wall_clock = lambda: now
+    before = path.read_bytes()
+    try:
+        prepared = begin(broker, 'generate-password')
+        if future_in == 'rollback':
+            assert prepared['ok'], prepared  # Same-second preparation must not wait for a newer second.
+            broker.wall_clock = lambda: now - 1
+            result = broker.dispatch(dict(action='fill-generated',
+                handle=prepared['fill_handles']['password'], target_url='https://example.test/reset',
+                **target_request(broker)))
+        else:
+            result = prepared
+            assert not broker.writes.operations
+        assert not result['ok'] and 'future-dated' in result['error'], result
+        assert not broker.typer.events and path.read_bytes() == before
+        assert not list(path.parent.glob('.*.akdbx-backup-*'))
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('bad,other', [('%FF', '%FE'), ('%C3', '%C2')])
+def test_private_form_rejects_lossy_percent_utf8_without_consuming_write(deployed, bad, other):
+    broker, typer, path, socket = deployed
+    prepared = begin(broker)
+    parts = urlsplit(prepared['private_url'])
+    route = parts.path + '?' + parts.query
+    before = path.read_bytes()
+    body = f'password=synthetic-{bad}-tail&confirmation=synthetic-{other}-tail&confirmed=yes'
+    status, _, page = call(socket, 'POST', route, body)
+    assert status == 400 and b'synthetic-' not in page
+    assert broker.writes.get(prepared['write_handle']).state == 'pending'
+    assert path.read_bytes() == before and not typer.events
+    assert not list(path.parent.glob('.*.akdbx-backup-*'))
+    valid = 'synthetic-\ufffd-tail'
+    assert private_post(socket, prepared, password=valid, confirmation=valid)[0] == 200
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == valid
 
 
 @pytest.mark.parametrize('clock', ['frozen', 'backward', 'invalid'])
