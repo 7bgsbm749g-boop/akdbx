@@ -55,7 +55,7 @@ Keep the broker process running. Open its private unlock page from your Tailscal
 
 Focus the username field before invoking `fill`. `login` types the username, presses Tab, then types the password. `--mode username` and `--mode password` fill one field. Before sending any keys, the broker rejects a requested fill if any field it needs contains a control character, including Tab, carriage return, or newline. The broker sends no submit key of its own, reads nothing back from the destination, and does not use the clipboard.
 
-There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; it emits a deprecation warning. All fill commands now require `--target`. Remove it from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
+There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; it emits a deprecation warning. All fill commands now require `--target`. Omit `--yes-on-fill` from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
 
 ### Unlock remotely over Tailscale
 

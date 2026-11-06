@@ -12,6 +12,8 @@ from time import monotonic, sleep
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
+import idna
+
 from .persistence import SaveError
 from .versions import active_entries, is_archive_group
 from .totp import TotpError, configured as totp_configured, https_origin, parse_setup
@@ -148,7 +150,15 @@ def site_origin(url):
     try:
         host = ipaddress.ip_address(host).compressed
     except ValueError:
-        host = host.encode('idna').decode('ascii').lower()
+        # Keep IDNA2008 deviations distinct while preserving accepted ASCII
+        # labels (including local underscores) and Unicode compatibility maps.
+        mapped = idna.uts46_remap(host, std3_rules=False, transitional=False)
+        labels = [label.encode('ascii') if label.isascii() else b'xn--' + label.encode('punycode')
+                  for label in mapped.split('.')]
+        checked = labels[:-1] if labels[-1] == b'' else labels
+        if not checked or any(not label or len(label) > 63 for label in checked):
+            raise WriteError('invalid site URL')
+        host = b'.'.join(labels).decode('ascii').lower()
     return parsed.scheme, host, port
 
 
@@ -248,6 +258,16 @@ class WriteManager:
         store = getattr(self.broker.vault, '_akdbx_store', None)
         return bool(self.public_base and store and store.writable_path and not store.recovery_required)
 
+    def _require_available(self):
+        store = getattr(self.broker.vault, '_akdbx_store', None)
+        try:
+            ready = bool(self.public_base and store and not store.recovery_required
+                         and store.check_write_inputs())
+        except (OSError, SaveError):
+            ready = False
+        if not ready:
+            raise WriteError('private writes unavailable; check activation, vault/key changes and path safety')
+
     def invalidate_revision(self, current=None, *, all_pending=False):
         self.revision += 1
         for other in self.operations.values():
@@ -293,8 +313,7 @@ class WriteManager:
             raise WriteError(f'{kind} auth_method must be ' + ' or '.join(methods))
         values = request.get('metadata')
         validate_identity_metadata(values, kind)
-        if not self.available():
-            raise WriteError('private writes unavailable; check activation and vault path safety')
+        self._require_available()
         vault = self.broker.vault
         group_for(vault, values['group'])
         if duplicate(vault, values):
@@ -333,8 +352,7 @@ class WriteManager:
                 raise WriteError('unknown or expired handle; search again') from None
             if not is_totp and passwordless_identity(entry):
                 raise WriteError('passwordless record has no separate password; use its sign-in method')
-        if not self.available():
-            raise WriteError('private writes unavailable; check activation and vault path safety')
+        self._require_available()
         values = request.get('metadata')
         if not isinstance(values, dict):
             raise WriteError('invalid destination metadata')
@@ -515,28 +533,31 @@ class WriteManager:
         op, mode = found
         if op.state != 'pending' or op.password is None or op.revision != self.revision:
             raise WriteError('stale generated password; start again')
-        if not self.available():
-            raise WriteError('private writes unavailable; check activation and vault path safety')
-        checked_ready = delivery_ready
-        clock_error = None
+        self._require_available()
+        preflight_error = None
+        entry, latest = None, None
         if op.uuid is not None:
             entries = [entry for entry in active_entries(self.broker.vault) if entry.uuid == op.uuid]
             if len(entries) != 1 or metadata(entries[0]) != op.values:
                 raise WriteError('entry changed; search again')
-            latest, _ = _entry_write_clock(entries[0], self.broker.wall_clock)
+            entry = entries[0]
+            latest, _ = _entry_write_clock(entry, self.broker.wall_clock)
 
-            def checked_ready():
-                nonlocal clock_error
-                if delivery_ready is not None and not delivery_ready():
-                    return False
-                try:
-                    # The vault lock keeps entry/history fixed during preflight;
-                    # only the wall clock needs a nonwaiting check at delivery.
-                    _entry_write_clock(entries[0], self.broker.wall_clock, latest=latest)
-                except WriteError as exc:
-                    clock_error = str(exc)
-                    raise
-                return True
+        def checked_ready():
+            nonlocal preflight_error
+            if delivery_ready is not None and not delivery_ready():
+                return False
+            try:
+                # Only metadata and the cached entry time are checked at the
+                # keyboard boundary; changed key contents are read beforehand.
+                if not self.available():
+                    raise WriteError('private writes unavailable; check activation, vault/key changes and path safety')
+                if entry is not None:
+                    _entry_write_clock(entry, self.broker.wall_clock, latest=latest)
+            except WriteError as exc:
+                preflight_error = str(exc)
+                raise
+            return True
         if set(request) - {'action', 'handle', 'target_url', 'start_deadline', 'target', 'target_protocol'}:
             raise WriteError('autofill not started: unsupported target request')
         target = request.get('target_url')
@@ -548,9 +569,9 @@ class WriteManager:
         proxy = SimpleNamespace(uuid=secrets.token_hex(16), password=op.password, username='')
         handle = self.broker._new_handle(proxy)
         response = self.broker._dispatch({'action': 'fill', 'handle': handle, 'mode': 'password', 'start_deadline': request.get('start_deadline'), 'target': request.get('target'), 'target_protocol': request.get('target_protocol')}, delivery_ready=checked_ready)
-        if clock_error is not None and response.get('delivery') != 'uncertain':
-            # Forward only our fixed clock reason, never a backend exception.
-            raise WriteError(clock_error) from None
+        if preflight_error is not None and response.get('delivery') != 'uncertain':
+            # Forward only our fixed preflight reason, never a backend exception.
+            raise WriteError(preflight_error) from None
         if response.get('ok'):
             op.filled.add(mode)
         return response

@@ -26,7 +26,8 @@ from test_merge import MASTER, SECRET, BASE_TIME, base, tombstone
 @pytest.fixture
 def refresh_case(tmp_path, base, request):
     keyfile = None
-    if getattr(request, 'param', False):
+    options = getattr(request, 'param', False)
+    if options is True:
         keyfile = tmp_path / 'synthetic.key'
         keyfile.write_bytes(b'synthetic-refresh-key-material-only')
     target = tmp_path / 'target.kdbx'
@@ -51,6 +52,15 @@ def refresh_case(tmp_path, base, request):
     assert first['state'] == 'saved', first
     broker_bytes = target.read_bytes()
     assert broker.vault._akdbx_store.verified_encrypted == broker_bytes
+    pending = None
+    if isinstance(options, dict) and options.get('stage_generated'):
+        # Stage while the broker snapshot is still current. An external edit
+        # must now prevent new generation, while refresh invalidates old work.
+        broker.writes.public_base = 'https://node.example:9443'
+        selected = broker.dispatch({'action': 'search', 'query': 'Broker only'})['entries'][0]
+        pending = broker.dispatch({'action': 'generate-password', 'handle': selected['handle'],
+                                   'metadata': {k: selected[k] for k in ('title', 'username', 'url', 'group')}})
+        assert pending['ok']
     external = PyKeePass(base, password=MASTER)
     external.add_entry(external.root_group, 'External only', 'external-account', SECRET)
     shared = external.find_entries(title='Shared', first=True)
@@ -75,7 +85,7 @@ def refresh_case(tmp_path, base, request):
     incoming.keyfile = str(keyfile) if keyfile else None
     incoming.save(source)
     return SimpleNamespace(broker=broker, target=target, source=source, broker_bytes=broker_bytes,
-                           external_bytes=target.read_bytes(), incoming_bytes=source.read_bytes(), keyfile=keyfile)
+                           external_bytes=target.read_bytes(), incoming_bytes=source.read_bytes(), keyfile=keyfile, pending=pending)
 
 
 def refresh(case, **options):
@@ -107,6 +117,7 @@ def assert_three_inputs(case, vault):
     assert len(vault.tree.findall('./Root/DeletedObjects/DeletedObject')) >= 3
 
 
+@pytest.mark.parametrize('refresh_case', [{'stage_generated': True}], indirect=True)
 def test_refresh_retains_all_three_inputs_preview_save_and_repeated_merge(refresh_case, capsys, caplog):
     case = refresh_case
     broker = case.broker
@@ -117,9 +128,10 @@ def test_refresh_retains_all_three_inputs_preview_save_and_repeated_merge(refres
     assert case.target.read_bytes() == case.external_bytes
     broker.writes.public_base = 'https://node.example:9443'
     selected = broker.dispatch({'action': 'search', 'query': 'Broker only'})['entries'][0]
-    pending = broker.dispatch({'action': 'generate-password', 'handle': selected['handle'],
+    refused = broker.dispatch({'action': 'generate-password', 'handle': selected['handle'],
                                'metadata': {k: selected[k] for k in ('title', 'username', 'url', 'group')}})
-    assert pending['ok']
+    assert not refused['ok'] and 'vault/key changes' in refused['error']
+    pending = case.pending
     selected = broker.dispatch({'action': 'search', 'query': 'Broker only'})['entries'][0]
     checked = refresh(case, check=True)
     assert checked['ok'] and checked['state'] == 'checked' and checked['target_refreshed']

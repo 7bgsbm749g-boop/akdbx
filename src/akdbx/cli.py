@@ -52,6 +52,8 @@ def _validate_socket_path(socket_path: Path, broker_uid: int) -> tuple[Path, int
             socket_path.parent, owner_uid=broker_uid,
         )
     except RuntimeError as exc:
+        if isinstance(exc.__cause__, FileNotFoundError):
+            raise FileNotFoundError from exc
         raise PermissionError(str(exc)) from exc
     try:
         socket_info = os.stat(

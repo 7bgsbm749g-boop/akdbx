@@ -1,9 +1,14 @@
 """Real permission/lock checks use only owned synthetic vaults and recording keys."""
 import fcntl
+import importlib
+import io
 import os
 import shutil
+import uuid
+from datetime import datetime, timezone
 
 import pytest
+from pykeepass import PyKeePass, create_database
 
 from akdbx import admission
 from akdbx.broker import Broker, open_vault_with_password
@@ -25,6 +30,207 @@ def vault_path(tmp_path, template):
     shutil.copyfile(template, path)
     path.chmod(0o400)
     return path
+
+
+@pytest.fixture(scope='module')
+def keyed_template(tmp_path_factory):
+    folder = tmp_path_factory.mktemp('keyed-readiness-template')
+    key = folder / 'synthetic.key'
+    key.write_bytes(bytes(range(32)))
+    key.chmod(0o400)
+    vault = create_database(io.BytesIO(), password=MASTER, keyfile=str(key))
+    parameters = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
+    parameters['I'].value = 1
+    parameters['M'].value = 1024 * 1024
+    web = vault.add_group(vault.root_group, 'Web')
+    entry = vault.add_entry(web, 'Synthetic site', 'synthetic-account', OLD,
+                            url='https://example.test/login')
+    entry.mtime = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    path = folder / 'synthetic.kdbx'
+    vault.save(path)
+    return path, key.read_bytes()
+
+
+def keyed_broker(tmp_path, keyed_template, namespace, typer=None):
+    template, material = keyed_template
+    folder = tmp_path / 'vault'
+    folder.mkdir(mode=0o700)
+    path, key = folder / 'synthetic.kdbx', tmp_path / 'synthetic.key'
+    shutil.copyfile(template, path)
+    key.write_bytes(material)
+    key.chmod(0o400)
+    module = importlib.import_module(namespace + '.broker')
+    broker = module.Broker(module.open_vault_with_password(path, MASTER, key),
+                           typer or RecordingTyper())
+    broker.writes.public_base = 'https://node.example:9443'
+    return broker, path, key
+
+
+def change_input(path, key, fault):
+    if fault == 'key':
+        key.chmod(0o600)
+        key.write_bytes(bytes(reversed(range(32))))
+        key.chmod(0o400)
+    else:
+        vault = PyKeePass(path, password=MASTER, keyfile=str(key))
+        vault.find_entries(title='Synthetic site', first=True).notes = 'External edit retained'
+        vault.save(path)
+
+
+def prepare_generated(broker, action):
+    if action == 'generate-password':
+        return begin(broker, action)
+    return broker.dispatch(dict(action=action, metadata=dict(title='New generated',
+        username='signup-user', url='https://example.test/signup', group='Web')))
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('action', ['generate-password', 'generate-entry'])
+@pytest.mark.parametrize('fault', ['key', 'target'])
+@pytest.mark.parametrize('timing', ['before', 'staged', 'one-fill'])
+@pytest.mark.parametrize('prior_failed_save', [False, True])
+def test_stale_inputs_refuse_generated_resets_before_delivery(
+    tmp_path, keyed_template, namespace, action, fault, timing, prior_failed_save,
+):
+    broker, path, key = keyed_broker(tmp_path, keyed_template, namespace)
+    try:
+        observed = broker.dispatch(dict(action='create-entry', metadata=dict(title='Observation',
+            username='observer', url='https://observation.example.test', group='Web'))) if prior_failed_save else None
+        prepared = None if timing == 'before' else prepare_generated(broker, action)
+        references = [] if prepared is None else list(prepared['fill_handles'].values())
+        if timing == 'one-fill':
+            assert broker.dispatch(dict(action='fill-generated', handle=references.pop(0),
+                target_url='https://example.test/reset', **target_request(broker)))['ok']
+        prior_events = list(broker.typer.events)
+        change_input(path, key, fault)
+        before = path.read_bytes()
+        if observed is not None:
+            failed = broker.writes.submit(broker.writes.get(observed['write_handle']),
+                                           'synthetic chosen', 'synthetic chosen', True)
+            assert not failed['ok'] and ('key file changed' if fault == 'key' else 'vault changed') in failed['error']
+        assert broker.dispatch(dict(action='ping'))['writes_available'] is False
+        if prepared is None:
+            assert not prepare_generated(broker, action)['ok']
+        else:
+            for reference in references:
+                result = broker.dispatch(dict(action='fill-generated', handle=reference,
+                    target_url='https://example.test/reset', **target_request(broker)))
+                assert not result['ok'], result
+            assert not commit(broker, prepared)['ok']
+        assert not prepare_generated(broker, action)['ok']
+        assert broker.typer.events == prior_events and path.read_bytes() == before
+        saved = PyKeePass(path, password=MASTER, keyfile=io.BytesIO(keyed_template[1]))
+        assert saved.find_entries(title='Synthetic site', first=True).password == OLD
+        selected = broker.dispatch(dict(action='search', query='Synthetic site'))['entries'][0]
+        assert broker.dispatch(dict(action='fill', handle=selected['handle'], mode='password',
+            **target_request(broker)))['ok']
+        assert broker.typer.events[-1] == ('type', OLD)
+        if fault == 'key':
+            key.chmod(0o600)
+            key.write_bytes(keyed_template[1])
+            key.chmod(0o400)
+            recovered = prepare_generated(broker, action)
+            assert recovered['ok'] and all(result['ok'] for result in fills(broker, recovered))
+            assert commit(broker, recovered)['state'] == 'saved'
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('action', ['generate-password', 'generate-entry'])
+@pytest.mark.parametrize('fault', ['key', 'target'])
+@pytest.mark.parametrize('hook', ['caller', 'backend'])
+def test_generated_delivery_rechecks_input_identity_after_preflight(
+    tmp_path, keyed_template, namespace, action, fault, hook,
+):
+    changed = [False]
+    def change_once():
+        if not changed[0]:
+            change_input(path, key, fault)
+            changed[0] = True
+
+    class StepTyper(RecordingTyper):
+        def deliver(self, identity, steps, ready, *, guard=None):
+            if hook == 'backend':
+                change_once()
+            return super().deliver(identity, steps, ready, guard=guard)
+
+    def caller_ready():
+        if hook == 'caller':
+            change_once()
+        return True
+
+    broker, path, key = keyed_broker(tmp_path, keyed_template, namespace, StepTyper())
+    try:
+        prepared = prepare_generated(broker, action)
+        assert prepared['ok']
+        result = broker.dispatch(dict(action='fill-generated',
+            handle=prepared['fill_handles']['password'], target_url='https://example.test/reset',
+            start_deadline=broker.clock() + importlib.import_module(namespace + '.broker').FILL_START_TIMEOUT,
+            **target_request(broker)), delivery_ready=caller_ready)
+        assert changed[0] and not result['ok'], result
+        assert not broker.typer.events
+        assert broker.dispatch(dict(action='ping'))['writes_available'] is False
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('action', ['merge', 'admit'])
+def test_stale_ordinary_inputs_keep_explicit_reconciliation_available(
+    vault_path, tmp_path, namespace, action,
+):
+    vault_path.chmod(0o600)
+    source = tmp_path / 'incoming.kdbx'
+    module = importlib.import_module(namespace + '.broker')
+    broker = module.Broker(module.open_vault_with_password(vault_path, MASTER), RecordingTyper())
+    broker.writes.public_base = 'https://node.example:9443'
+    try:
+        external = reopened(vault_path)
+        external.add_entry(external.root_group, 'External addition', 'external-account', OLD,
+                           url='https://external.example.test')
+        external.save(vault_path)
+        shutil.copyfile(vault_path, source)
+        status = broker.dispatch(dict(action='ping'))
+        assert not status['writes_available'] and status['merge_available']
+        request = dict(action=action, source=str(source), operation_id=uuid.uuid4().hex)
+        if action == 'admit':
+            snapshots = tmp_path / 'snapshots'
+            snapshots.mkdir(mode=0o700)
+            request.update(policy=admission.POLICY, verification=admission.VERIFICATION,
+                           snapshot_directory=str(snapshots))
+        else:
+            request['refresh_target'] = True
+        result = broker.dispatch(request)
+        assert result['ok'] and result['state'] in {'saved', 'unchanged'}, result.get('error', result)
+        assert result['target_refreshed'] is True
+        assert broker.dispatch(dict(action='ping'))['writes_available']
+        assert broker.vault.find_entries(title='External addition', first=True) is not None
+        generated = begin(broker, 'generate-password')
+        assert generated['ok'] and all(result['ok'] for result in fills(broker, generated))
+        assert commit(broker, generated)['state'] == 'saved'
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+def test_unchanged_key_input_checks_do_not_read_bodies_or_scan_receipts(
+    tmp_path, keyed_template, namespace, monkeypatch,
+):
+    broker, path, key = keyed_broker(tmp_path, keyed_template, namespace)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('readiness must use metadata for unchanged inputs')
+    try:
+        store = broker.vault._akdbx_store
+        monkeypatch.setattr(store, '_read', forbidden)
+        monkeypatch.setattr(store, '_read_keyfile', forbidden)
+        monkeypatch.setattr(store, '_check_keyfile', forbidden)
+        monkeypatch.setattr(store, '_scan_merge_recovery', forbidden)
+        assert broker.dispatch(dict(action='ping'))['writes_available']
+        generated = begin(broker, 'generate-password')
+        assert generated['ok'] and all(result['ok'] for result in fills(broker, generated))
+    finally:
+        broker.unlock_notifications.close()
 
 
 def lock_path(path):

@@ -24,6 +24,10 @@ class SaveError(Exception):
 WRITE_TOKEN_BYTES = 12
 
 
+def _file_identity(info):
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
 # Both shipped import names swap handlers on the same dependency logger.
 if __name__ == 'akdbx.persistence':
     _OPEN_LOCK = threading.RLock()
@@ -89,6 +93,7 @@ class VaultStore:
         self.recovery_required = False
         self.keyfile_path = None
         self.keyfile_digest = None
+        self.keyfile_expected = None
 
     @property
     def writable_path(self):
@@ -110,11 +115,16 @@ class VaultStore:
                 self._check_merge_names(directory)
             target = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                              dir_fd=directory)
-            self._file_info(target)
+            target_info = self._file_info(target)
+            # Reconciliation must remain available for an externally edited target.
+            if not merging and _file_identity(target_info) != self.expected[:5]:
+                return False
             if not os.access('.', os.W_OK | os.X_OK, dir_fd=directory, effective_ids=True):
                 return False
             if self.keyfile_path is not None:
                 keyfile = self._open_keyfile()
+                if not merging and _file_identity(os.fstat(keyfile)) != self.keyfile_expected:
+                    return False
             lock = self._open_write_lock(directory, create=False)
             external = self.snapshot_directory(directory)
             if merging and external is not None:
@@ -126,6 +136,18 @@ class VaultStore:
             for fd in (external, lock, keyfile, target, directory):
                 if fd is not None:
                     os.close(fd)
+
+    def check_write_inputs(self):
+        """Revalidate changed key metadata before an ordinary write is prepared."""
+        if self.keyfile_path is not None:
+            keyfile = self._open_keyfile()
+            try:
+                changed = _file_identity(os.fstat(keyfile)) != self.keyfile_expected
+            finally:
+                os.close(keyfile)
+            if changed:
+                self._check_keyfile()
+        return self.writable_path
 
     def _write_name(self, kind, token):
         return '.' + self.path.name + '.akdbx-' + kind + '-' + token
@@ -178,10 +200,9 @@ class VaultStore:
             with os.fdopen(os.dup(fd), "rb") as stream:
                 data = stream.read()
             after = os.fstat(fd)
-            identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
-            if identity(before) != identity(after):
+            if _file_identity(before) != _file_identity(after):
                 raise SaveError("vault changed on disk; restart and unlock")
-            return data, (*identity(after), hashlib.sha256(data).digest())
+            return data, (*_file_identity(after), hashlib.sha256(data).digest())
         finally:
             os.close(fd)
 
@@ -220,14 +241,22 @@ class VaultStore:
             os.close(fd)
             raise
 
-    def _read_keyfile(self):
+    def _read_keyfile(self, *, verify=False):
         """Use the same checked reader for initial key material and digest revalidation."""
         with os.fdopen(self._open_keyfile(), 'rb') as stream:
-            return stream.read()
+            before = os.fstat(stream.fileno())
+            data = stream.read()
+            after = os.fstat(stream.fileno())
+            if (_file_identity(before) != _file_identity(after)
+                    or verify and hashlib.sha256(data).digest() != self.keyfile_digest):
+                raise SaveError("key file changed on disk; restart and unlock")
+            if verify:
+                self.keyfile_expected = _file_identity(after)
+            return data
 
     def _check_keyfile(self):
-        if self.keyfile_path is not None and hashlib.sha256(self._read_keyfile()).digest() != self.keyfile_digest:
-            raise SaveError("key file changed on disk; restart and unlock")
+        if self.keyfile_path is not None:
+            self._read_keyfile(verify=True)
 
     def _check_merge_recovery(self, directory):
         """An interrupted native merge must stay blocked across broker restarts."""
