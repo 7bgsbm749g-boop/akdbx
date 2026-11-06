@@ -517,11 +517,26 @@ class WriteManager:
             raise WriteError('stale generated password; start again')
         if not self.available():
             raise WriteError('private writes unavailable; check activation and vault path safety')
+        checked_ready = delivery_ready
+        clock_error = None
         if op.uuid is not None:
             entries = [entry for entry in active_entries(self.broker.vault) if entry.uuid == op.uuid]
             if len(entries) != 1 or metadata(entries[0]) != op.values:
                 raise WriteError('entry changed; search again')
-            _entry_write_clock(entries[0], self.broker.wall_clock)
+            latest, _ = _entry_write_clock(entries[0], self.broker.wall_clock)
+
+            def checked_ready():
+                nonlocal clock_error
+                if delivery_ready is not None and not delivery_ready():
+                    return False
+                try:
+                    # The vault lock keeps entry/history fixed during preflight;
+                    # only the wall clock needs a nonwaiting check at delivery.
+                    _entry_write_clock(entries[0], self.broker.wall_clock, latest=latest)
+                except WriteError as exc:
+                    clock_error = str(exc)
+                    raise
+                return True
         if set(request) - {'action', 'handle', 'target_url', 'start_deadline', 'target', 'target_protocol'}:
             raise WriteError('autofill not started: unsupported target request')
         target = request.get('target_url')
@@ -532,7 +547,10 @@ class WriteManager:
         # Reuse the existing keyboard preflight/deadline/dispatch boundary.
         proxy = SimpleNamespace(uuid=secrets.token_hex(16), password=op.password, username='')
         handle = self.broker._new_handle(proxy)
-        response = self.broker._dispatch({'action': 'fill', 'handle': handle, 'mode': 'password', 'start_deadline': request.get('start_deadline'), 'target': request.get('target'), 'target_protocol': request.get('target_protocol')}, delivery_ready=delivery_ready)
+        response = self.broker._dispatch({'action': 'fill', 'handle': handle, 'mode': 'password', 'start_deadline': request.get('start_deadline'), 'target': request.get('target'), 'target_protocol': request.get('target_protocol')}, delivery_ready=checked_ready)
+        if clock_error is not None and response.get('delivery') != 'uncertain':
+            # Forward only our fixed clock reason, never a backend exception.
+            raise WriteError(clock_error) from None
         if response.get('ok'):
             op.filled.add(mode)
         return response
