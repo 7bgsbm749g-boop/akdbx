@@ -242,16 +242,29 @@ class VaultStore:
             raise
 
     def _read_keyfile(self, *, verify=False):
-        """Use the same checked reader for initial key material and digest revalidation."""
+        """Read initial material, or verify its pinned length/digest with bounded memory."""
         with os.fdopen(self._open_keyfile(), 'rb') as stream:
             before = os.fstat(stream.fileno())
-            data = stream.read()
-            after = os.fstat(stream.fileno())
-            if (_file_identity(before) != _file_identity(after)
-                    or verify and hashlib.sha256(data).digest() != self.keyfile_digest):
-                raise SaveError("key file changed on disk; restart and unlock")
             if verify:
-                self.keyfile_expected = _file_identity(after)
+                if self.keyfile_expected is None or before.st_size != self.keyfile_expected[2]:
+                    raise SaveError("key file changed on disk; restart and unlock")
+                digest = hashlib.sha256()
+                remaining = before.st_size
+                while remaining:
+                    chunk = stream.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        raise SaveError("key file changed on disk; restart and unlock")
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                if stream.read(1) or digest.digest() != self.keyfile_digest:
+                    raise SaveError("key file changed on disk; restart and unlock")
+                data = None
+            else:
+                data = stream.read()
+            after = os.fstat(stream.fileno())
+            if _file_identity(before) != _file_identity(after):
+                raise SaveError("key file changed on disk; restart and unlock")
+            self.keyfile_expected = _file_identity(after)
             return data
 
     def _check_keyfile(self):

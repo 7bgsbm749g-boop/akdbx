@@ -516,3 +516,143 @@ def test_temporary_lock_contention_does_not_disable_readiness(vault_path):
     finally:
         os.close(fd)
     assert broker.dispatch({'action': 'ping'})['writes_available'] is True
+
+
+class KeyReadBudget:
+    """Observe real key reads and fail before an unbounded allocation can occur."""
+    def __init__(self, stream, requests, *, reject=False, before_read=None):
+        self.stream = stream
+        self.requests = requests
+        self.reject = reject
+        self.before_read = before_read
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.stream.close()
+
+    def fileno(self):
+        return self.stream.fileno()
+
+    def read(self, size=-1):
+        self.requests.append(size)
+        assert not self.reject, 'wrong-size key contents were read'
+        assert 0 <= size <= 64 * 1024, 'key revalidation read exceeded its memory budget'
+        if self.before_read is not None:
+            callback, self.before_read = self.before_read, None
+            callback()
+        return self.stream.read(size)
+
+
+def watch_key_reads(monkeypatch, namespace, key, requests, **options):
+    module = importlib.import_module(namespace + '.persistence')
+    original = module.os.fdopen
+    identity = key.stat().st_dev, key.stat().st_ino
+
+    def fdopen(fd, *args, **kwargs):
+        info = os.fstat(fd)
+        stream = original(fd, *args, **kwargs)
+        if (info.st_dev, info.st_ino) == identity:
+            return KeyReadBudget(stream, requests, **options)
+        return stream
+
+    monkeypatch.setattr(module.os, 'fdopen', fdopen)
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('replacement_size', [0, 128 * 1024 * 1024])
+def test_ping_rejects_wrong_size_keys_before_read_and_recognizes_restoration(
+    tmp_path, keyed_template, namespace, replacement_size, monkeypatch,
+):
+    broker, path, key = keyed_broker(tmp_path, keyed_template, namespace)
+    before = path.read_bytes()
+    try:
+        key.chmod(0o600)
+        with key.open('r+b') as stream:
+            stream.truncate(replacement_size)
+        key.chmod(0o400)
+        requests = []
+        with monkeypatch.context() as patch:
+            watch_key_reads(patch, namespace, key, requests, reject=True)
+            for _ in range(3):
+                assert broker.dispatch(dict(action='ping'))['writes_available'] is False
+        assert requests == []
+        key.chmod(0o600)
+        key.write_bytes(keyed_template[1])
+        key.chmod(0o400)
+        assert broker.dispatch(dict(action='ping'))['writes_available'] is True
+        assert path.read_bytes() == before and not broker.typer.events
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+def test_ping_key_growth_after_stat_stays_within_original_length(
+    tmp_path, keyed_template, namespace, monkeypatch,
+):
+    broker, path, key = keyed_broker(tmp_path, keyed_template, namespace)
+    before = path.read_bytes()
+    try:
+        key.chmod(0o600)
+        key.write_bytes(keyed_template[1])
+        key.chmod(0o400)
+        requests = []
+
+        def grow():
+            key.chmod(0o600)
+            with key.open('r+b') as stream:
+                stream.truncate(128 * 1024 * 1024)
+            key.chmod(0o400)
+
+        with monkeypatch.context() as patch:
+            watch_key_reads(patch, namespace, key, requests, before_read=grow)
+            assert broker.dispatch(dict(action='ping'))['writes_available'] is False
+        assert requests and sum(requests) <= len(keyed_template[1]) + 1
+        key.chmod(0o600)
+        key.write_bytes(keyed_template[1])
+        key.chmod(0o400)
+        assert broker.dispatch(dict(action='ping'))['writes_available'] is True
+        assert path.read_bytes() == before and not broker.typer.events
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+def test_ping_streams_large_pinned_keys_and_rejects_same_size_content_changes(
+    tmp_path, keyed_template, namespace, monkeypatch,
+):
+    initial, path, key = keyed_broker(tmp_path, keyed_template, namespace)
+    initial.unlock_notifications.close()
+    vault = PyKeePass(path, password=MASTER, keyfile=str(key))
+    material = b'synthetic key bytes:' * 7000
+    key.chmod(0o600)
+    key.write_bytes(material)
+    vault.keyfile = str(key)
+    vault.save(path)
+    key.chmod(0o400)
+    module = importlib.import_module(namespace + '.broker')
+    broker = module.Broker(module.open_vault_with_password(path, MASTER, key), RecordingTyper())
+    broker.writes.public_base = 'https://node.example:9443'
+    before = path.read_bytes()
+    try:
+        requests = []
+        with monkeypatch.context() as patch:
+            watch_key_reads(patch, namespace, key, requests)
+            key.chmod(0o600)
+            key.write_bytes(material[:-1] + b'!')
+            key.chmod(0o400)
+            assert broker.dispatch(dict(action='ping'))['writes_available'] is False
+            assert len(requests) >= 3 and sum(requests) == len(material) + 1
+            requests.clear()
+            key.chmod(0o600)
+            key.write_bytes(material)
+            key.chmod(0o400)
+            assert broker.dispatch(dict(action='ping'))['writes_available'] is True
+            assert len(requests) >= 3 and sum(requests) == len(material) + 1
+            requests.clear()
+            assert broker.dispatch(dict(action='ping'))['writes_available'] is True
+            assert requests == []
+        assert path.read_bytes() == before and not broker.typer.events
+    finally:
+        broker.unlock_notifications.close()
