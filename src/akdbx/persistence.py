@@ -124,7 +124,8 @@ class VaultStore:
                 write_directory = self._directory()
                 try:
                     self._read(write_directory)
-                    self.writable_path = True
+                    self.writable_path = os.access('.', os.W_OK | os.X_OK,
+                                                   dir_fd=write_directory, effective_ids=True)
                 finally:
                     os.close(write_directory)
             except (OSError, SaveError):

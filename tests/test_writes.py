@@ -547,6 +547,55 @@ def test_unsafe_write_ancestry_preserves_read_only_unlock(tmp_path, template):
     assert not begin(broker)['ok']
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason='requires real directory permission denial')
+def test_read_only_target_directory_disables_resets_but_preserves_fill(tmp_path, template):
+    """Readiness must reject a stable denial before exposing a generated reset."""
+    directory = tmp_path / 'read-only'
+    directory.mkdir(mode=0o700)
+    path = directory / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    path.chmod(0o600)
+    before = path.read_bytes()
+    directory.chmod(0o500)
+    try:
+        assert not os.access(directory, os.W_OK)
+        broker = Broker(open_vault_with_password(path, MASTER), RecordingTyper())
+        broker.writes.public_base = 'https://node.example:9443'
+        status = broker.dispatch({'action': 'ping'})
+        assert status['locked'] is False and status['recovery_required'] is False
+        assert status['writes_available'] is False and status['merge_available'] is False
+        generated = begin(broker, 'generate-password')
+        created = broker.dispatch({'action': 'generate-entry', 'metadata': {
+            'title': 'Synthetic new entry', 'username': 'new-user',
+            'url': 'https://example.test/login', 'group': 'Web',
+        }})
+        for result in (generated, created):
+            assert result['ok'] is False and 'fill_handles' not in result
+        assert not broker.writes.operations
+        selected = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]
+        assert broker.dispatch({'action': 'fill', **target_request(broker),
+                                'handle': selected['handle'], 'mode': 'password'})['ok']
+        assert broker.typer.events == [('type', OLD)]
+        assert path.read_bytes() == before and list(directory.iterdir()) == [path]
+    finally:
+        directory.chmod(0o700)
+
+
+def test_read_only_vault_file_can_be_atomically_replaced(tmp_path, template):
+    directory = tmp_path / 'writable'
+    directory.mkdir(mode=0o700)
+    path = directory / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    path.chmod(0o400)
+    broker = Broker(open_vault_with_password(path, MASTER), RecordingTyper())
+    broker.writes.public_base = 'https://node.example:9443'
+    assert broker.dispatch({'action': 'ping'})['writes_available'] is True
+    prepared = begin(broker, 'generate-password')
+    assert prepared['ok'] and all(result['ok'] for result in fills(broker, prepared))
+    assert commit(broker, prepared)['state'] == 'saved'
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == broker.typer.events[0][1]
+
+
 def test_generated_deadline_disconnect_and_typing_failure_prevent_commit(deployed, monkeypatch):
     broker, typer, path, _ = deployed
     prepared = begin(broker, 'generate-password')
