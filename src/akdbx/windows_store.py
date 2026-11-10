@@ -10,9 +10,12 @@ import secrets
 import pywintypes
 import win32con
 import win32file
+import ntsecuritycon
 
 from .persistence import SaveError, open_encrypted
 from . import windows_security as security
+
+MOVEFILE_WRITE_THROUGH = 0x8
 
 
 def digest(data):
@@ -40,7 +43,7 @@ class WindowsVaultStore:
                 # Opening a directory with add-file rights checks readiness
                 # without creating a file or changing the vault.
                 with security.checked_handle(self.path.parent, directory=True, private=False,
-                        access=win32con.FILE_ADD_FILE | win32con.FILE_TRAVERSE | win32con.READ_CONTROL):
+                        access=ntsecuritycon.FILE_ADD_FILE | ntsecuritycon.FILE_TRAVERSE | win32con.READ_CONTROL):
                     pass
                 with security.checked_handle(self.path) as handle:
                     info = win32file.GetFileInformationByHandle(handle)
@@ -141,7 +144,7 @@ class WindowsVaultStore:
     @staticmethod
     def _replace(source, destination):
         win32file.MoveFileEx(str(source), str(destination),
-                             win32con.MOVEFILE_REPLACE_EXISTING | win32con.MOVEFILE_WRITE_THROUGH)
+                             win32con.MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
 
     def commit(self, vault, mutate, *, verify_candidate=None):
         if self.recovery_required:

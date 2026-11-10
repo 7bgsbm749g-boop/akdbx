@@ -20,6 +20,7 @@ import pywintypes
 import win32con
 import win32file
 import win32security
+import ntsecuritycon
 from pykeepass import PyKeePass, create_database
 
 from akdbx import cli
@@ -107,7 +108,7 @@ def test_private_file_roundtrip_and_public_acl_refusal(private_dir):
     acl = win32security.ACL()
     user = win32security.ConvertStringSidToSid(security.current_identity()[0])
     everyone = win32security.CreateWellKnownSid(win32security.WinWorldSid)
-    acl.AddAccessAllowedAce(win32security.ACL_REVISION, win32con.FILE_ALL_ACCESS, user)
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, user)
     acl.AddAccessAllowedAce(win32security.ACL_REVISION, win32con.GENERIC_READ, everyone)
     win32security.SetNamedSecurityInfo(str(path), win32security.SE_FILE_OBJECT,
                                      win32security.DACL_SECURITY_INFORMATION

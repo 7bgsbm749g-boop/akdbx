@@ -9,8 +9,10 @@ import win32file
 import win32security
 import win32process
 import pywintypes
+import ntsecuritycon
 
 TRUSTED_INSTALLER = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 
 
 @contextmanager
@@ -93,7 +95,7 @@ def _open_checked_handle(path, *, directory=False, private=True, access=None, cr
     if path.drive.startswith('\\\\') or ':' in str(path)[2:]:
         raise PermissionError('use a local Windows volume without alternate data streams')
     access = access if access is not None else win32con.GENERIC_READ | win32con.READ_CONTROL
-    flags = win32con.FILE_FLAG_OPEN_REPARSE_POINT
+    flags = FILE_FLAG_OPEN_REPARSE_POINT
     if directory:
         flags |= win32con.FILE_FLAG_BACKUP_SEMANTICS
     handle = win32file.CreateFile(str(path), access,
@@ -133,7 +135,7 @@ def trusted_directory(path):
             if part:
                 component /= part
             held.append(_open_checked_handle(component, directory=True, private=False,
-                                             access=win32con.FILE_READ_ATTRIBUTES | win32con.READ_CONTROL))
+                                             access=ntsecuritycon.FILE_READ_ATTRIBUTES | win32con.READ_CONTROL))
         yield path
     finally:
         for handle in reversed(held):

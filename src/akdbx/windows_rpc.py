@@ -46,7 +46,9 @@ def verify_peer(handle, *, server):
 def finish_io(handle, overlapped, timeout):
     milliseconds = max(1, int(timeout * 1000))
     if win32event.WaitForSingleObject(overlapped.hEvent, milliseconds) != win32event.WAIT_OBJECT_0:
-        win32file.CancelIoEx(handle, overlapped)
+        # This thread owns the handle's sole outstanding operation. pywin32
+        # exposes CancelIo (current thread), rather than CancelIoEx.
+        win32file.CancelIo(handle)
         # Drain cancellation before freeing OVERLAPPED or its pinned buffer.
         try:
             win32file.GetOverlappedResult(handle, overlapped, True)
@@ -213,7 +215,7 @@ def serve(path, broker, stop=None):
                     connection.close()
             finally:
                 if not connected:
-                    win32file.CancelIoEx(pending, overlapped)
+                    win32file.CancelIo(pending)
                     try:
                         win32file.GetOverlappedResult(pending, overlapped, True)
                     except pywintypes.error:
