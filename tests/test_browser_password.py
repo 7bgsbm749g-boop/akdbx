@@ -35,6 +35,89 @@ def fill(broker, pin, mode='password'):
     return broker.dispatch(dict(action='fill', handle=handle, mode=mode, target=pin['target'], target_protocol=1))
 
 
+def navigate_suffix(browser, suffix):
+    """Navigate only the synthetic page; retain its exact public URL."""
+    _, _, cdp, session, _, _ = browser
+    url = cdp.evaluate('location.origin + "/login"', session) + suffix
+    cdp.call('Page.navigate', {'url': url}, session)
+    wait_for(cdp, session, 'location.href === ' + json.dumps(url) + " && document.readyState === 'complete'")
+    return url
+
+
+@pytest.mark.parametrize(('mode', 'suffix'), [
+    ('password', '#signin'), ('password', '#account%2Fpassword'),
+    ('password', '?step=password#signin'), ('password', '#'),
+    ('username', '#signin'), ('login', '#signin'),
+])
+def test_exact_fragment_url_fills_only_retained_fields(synthetic_chromium, tmp_path, monkeypatch, mode, suffix):
+    url = navigate_suffix(synthetic_chromium, suffix)
+    broker, entry, request = prepare(synthetic_chromium, tmp_path, mode)
+    _, _, cdp, session, _, _ = synthetic_chromium
+    try:
+        frame = cdp.call('Page.getFrameTree', session=session)['frameTree']['frame']
+        # Real CDP splits the fragment, while Target and location.href retain it.
+        assert frame['url'] + frame['urlFragment'] == url
+        assert '#' not in frame['url']
+        assert request['top_url'] == url
+        def no_keys(*args, **kwargs):
+            pytest.fail('fragment password delivery attempted keyboard fallback')
+        monkeypatch.setattr(broker.typer, 'deliver', no_keys)
+        pin = broker.dispatch(request)
+        assert pin['ok'], pin
+        assert fill(broker, pin, mode) == dict(ok=True, filled=mode, target_delivery=DELIVERY)
+        assert cdp.evaluate('password.value', session) == ('' if mode == 'username' else entry.password)
+        assert cdp.evaluate('username.value', session) == ('' if mode == 'password' else entry.username)
+        assert cdp.evaluate('location.href', session) == url
+    finally:
+        broker.passwords.close()
+
+
+def test_fragment_pin_refuses_missing_different_or_decoded_fragment(synthetic_chromium, tmp_path):
+    url = navigate_suffix(synthetic_chromium, '#account%2Fpassword')
+    broker, entry, request = prepare(synthetic_chromium, tmp_path)
+    _, _, cdp, session, _, _ = synthetic_chromium
+    try:
+        for wrong_url in [url.split('#')[0], url.replace('%2F', '/'), url + '-other']:
+            assert broker.dispatch({**request, 'top_url': wrong_url}) == failure()
+        assert cdp.evaluate("Array.from(document.querySelectorAll('input')).every(e=>!e.value)", session)
+    finally:
+        broker.passwords.close()
+
+
+@pytest.mark.parametrize('restore', [False, True])
+@pytest.mark.parametrize('boundary', ['after-pin', 'before-setter'])
+def test_fragment_navigation_and_restoration_invalidate_pin(synthetic_chromium, tmp_path, monkeypatch, restore, boundary):
+    from akdbx.browser_password import FILL
+    url = navigate_suffix(synthetic_chromium, '#signin')
+    broker, entry, request = prepare(synthetic_chromium, tmp_path)
+    _, _, cdp, session, _, _ = synthetic_chromium
+    try:
+        pin = broker.dispatch(request)
+        assert pin['ok'], pin
+        def navigate():
+            # Restoring the exact URL must not resurrect the navigation-tainted pin.
+            cdp.evaluate("location.hash='other'" + (";history.replaceState(null,''," + json.dumps(url) + ')' if restore else ''), session)
+        if boundary == 'after-pin':
+            navigate()
+        else:
+            retained = broker.passwords.pins[pin['target']][1]
+            call = retained.connection.call
+            def change_before_setter(method, params=None, target_session=None, **kwargs):
+                if method == 'Runtime.callFunctionOn' and params.get('functionDeclaration') == FILL:
+                    navigate()
+                return call(method, params, target_session, **kwargs)
+            monkeypatch.setattr(retained.connection, 'call', change_before_setter)
+        def no_keys(*args, **kwargs):
+            pytest.fail('fragment race attempted keyboard fallback')
+        monkeypatch.setattr(broker.typer, 'deliver', no_keys)
+        assert not fill(broker, pin)['ok']
+        assert cdp.evaluate("Array.from(document.querySelectorAll('input')).every(e=>!e.value)", session)
+        if restore:
+            assert cdp.evaluate('location.href', session) == url
+    finally:
+        broker.passwords.close()
+
+
 @pytest.mark.parametrize('mode', ['password', 'username', 'login'])
 def test_saved_values_go_to_exact_elements_without_keys_or_tab(synthetic_chromium, tmp_path, mode):
     broker, entry, request = prepare(synthetic_chromium, tmp_path, mode)
@@ -153,8 +236,11 @@ def test_wrong_origin_mode_selector_frame_and_unsupported_profile(synthetic_chro
         broker.passwords.close()
 
 
-def test_generated_password_and_confirmation_use_dom_and_only_success_counts(synthetic_chromium, tmp_path, deployed):
+@pytest.mark.parametrize('suffix', ['', '#reset'])
+def test_generated_password_and_confirmation_use_dom_and_only_success_counts(synthetic_chromium, tmp_path, deployed, suffix):
     from test_writes import begin, commit, reopened
+    if suffix:
+        navigate_suffix(synthetic_chromium, suffix)
     _, entry, request = prepare(synthetic_chromium, tmp_path)
     _, _, cdp, session, _, _ = synthetic_chromium
     broker, _, path, _ = deployed

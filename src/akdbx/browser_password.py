@@ -29,6 +29,15 @@ MAX_PINS = 16
 MAX_MESSAGE = 256 * 1024
 
 
+def frame_url(frame):
+    """Reconstruct CDP's exact frame URL, without stripping or decoding anything."""
+    url, fragment = frame['url'], frame.get('urlFragment', '')
+    # Page.Frame.url excludes the fragment; urlFragment includes its leading #.
+    if not isinstance(url, str) or not isinstance(fragment, str) or '#' in url or fragment and not fragment.startswith('#'):
+        raise TargetError()
+    return url + fragment
+
+
 def endpoint(profile):
     if profile is None:
         raise TargetError()
@@ -287,7 +296,7 @@ class BrowserPasswords:
                 raise TargetError()
             session = connection.call('Target.attachToTarget', {'targetId': request['page_id'], 'flatten': True})['sessionId']
             frame = connection.call('Page.getFrameTree', session=session)['frameTree']['frame']
-            if frame['id'] != request['frame_id'] or frame['url'] != request['top_url']:
+            if frame['id'] != request['frame_id'] or frame_url(frame) != request['top_url']:
                 raise TargetError()  # Child frames and shadow DOM are deliberately unsupported.
             world = connection.call('Page.createIsolatedWorld', {'frameId': frame['id'], 'worldName': 'akdbx-password-v1'}, session)['executionContextId']
             args = [request['selector'], request.get('username_selector'), request['mode'], request['top_url']]
@@ -326,7 +335,7 @@ class BrowserPasswords:
                 raise TargetError()
             page = pin.connection.call('Target.getTargetInfo', {'targetId': pin.page_id})['targetInfo']
             frame = pin.connection.call('Page.getFrameTree', session=pin.session)['frameTree']['frame']
-            if page['url'] != pin.url or frame['url'] != pin.url or frame['id'] != pin.frame_id or not ready():
+            if page['url'] != pin.url or frame_url(frame) != pin.url or frame['id'] != pin.frame_id or not ready():
                 raise TargetError()
             # Sample renderer time without secrets. Using this older sample
             # plus the remaining host budget gives a conservative renderer

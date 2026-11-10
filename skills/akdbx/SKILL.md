@@ -153,12 +153,20 @@ A handle expires five minutes after search and is consumed on its first fill att
 
 ### 3. Prepare the actual destination
 
-Use supported browser tools to verify the site, account, exact HTTPS URL, page
-ID, main-frame ID and intended input. Read [password field delivery](references/target-fill.md)
-before the first fill. Require broker `password_fill_protocol: 1` and
+Use supported tools to verify the site, account and intended input. Read
+[password field delivery](references/target-fill.md) before the first fill.
+For DOM fills, also verify the exact HTTPS URL, page ID and main-frame ID.
+DOM fills require broker `password_fill_protocol: 1` and
 `password_fill_delivery: "chromium-password-dom-v1"`. The operator must configure
-`--password-browser-profile` at broker startup; absence or unsupported paths refuse.
+`--password-browser-profile` at broker startup for DOM fills; absence or
+unsupported DOM paths refuse.
 Do not change a live profile or restart the broker to bypass refusal.
+
+Username-only X11 fills use `pin-target --pid PID --window XID` and do not
+require a Chromium profile. Require `target_protocol: 1` and the
+`x11-send-event-v1` delivery receipt. These checks attest PID/window/focus only;
+the caller must verify the site and intended field. Password and login modes
+must use DOM delivery.
 
 For password and login modes, require a visible editable type=password input whose autocomplete field token is
 `current-password` or `new-password`. Valid ordered token lists such as
