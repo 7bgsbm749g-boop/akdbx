@@ -82,6 +82,7 @@ class Broker:
         handle_ttl: float = 300,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
+        notification_state_path=None,
     ) -> None:
         self.vault = vault
         self.typer = typer
@@ -97,7 +98,7 @@ class Broker:
         self.writes = WriteManager(self)
         self.merges = MergeManager(self)
         self.unlock_url: str | None = None
-        self.unlock_notifications = UnlockNotifications()
+        self.unlock_notifications = UnlockNotifications(state_path=notification_state_path)
 
     @property
     def locked(self) -> bool:

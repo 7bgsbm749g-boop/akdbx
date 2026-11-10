@@ -215,7 +215,7 @@ def test_invalid_callback_refused_without_echo(url, notifier):
     assert "secret" not in json.dumps(result)
 
 
-@pytest.mark.parametrize("ttl", [0, 59, 3601, True, 60.5, "600"])
+@pytest.mark.parametrize("ttl", [-1, 59, 3601, True, 60.5, "600"])
 def test_invalid_ttl_refused(ttl, notifier):
     manager, sent = notifier
     assert not manager.subscribe(registration(ttl=ttl), unlocked=False)["ok"]

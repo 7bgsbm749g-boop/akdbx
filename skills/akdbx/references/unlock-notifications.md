@@ -8,6 +8,15 @@ service needs to stay active. `status` must advertise
 registering anything. Installing a new CLI does not update a running broker;
 coordinate its normal upgrade/restart with its owner when needed.
 
+Wait until unlock or explicit cancellation by default. Require
+`unlock_notifications_until_unlock: true`; the current CLI uses `--ttl 0` and
+refuses an older broker instead of silently installing an expiring wait. This
+subscription has no waiting deadline. Delivery attempts still have bounded
+network timeouts and retry counts. Configure the service's `--notification-state`
+to an owned private persistent file (outside `/run` for reboot survival); pending
+callbacks are stored mode 0600 and restored after restart. No vault data is stored
+there, and callback URLs remain private bearer credentials.
+
 ## T3
 
 1. Create a native `schedule_task` with `schedule: {"type": "webhook"}`,
@@ -27,7 +36,7 @@ coordinate its normal upgrade/restart with its owner when needed.
 
    ```bash
    /absolute/path/to/akdbx/.venv/bin/akdbx subscribe-unlock \
-     --webhook-url-file /private/temporary/url-file --ttl 1800
+     --webhook-url-file /private/temporary/url-file
    ```
 
    Keep the same socket, broker UID and trusted unlock origin as `status`.
@@ -86,8 +95,11 @@ retracted.
 
 Receipts expose only the subscription ID, state and attempt count. States are
 `subscribed`, `pending`, `sending`, `delivered`, `failed`, `cancelled`, or
-`expired`. The default TTL is 1800 seconds, with a range of 60–3600 seconds.
-Expired receipts become unknown; at most 64 live receipts are retained. A broker
-restart drops in-memory subscriptions, so registration must be repeated after
-restart. No callback is promised after expiry. Remove stale host triggers when
-the workflow is next resumed or cancelled; passive webhook tasks do not poll.
+`expired`. The default is to wait until unlock/cancel (`--ttl 0`, receipt
+`expires_in: null`). Use a finite `--ttl 60..3600` only when the user requests a
+time-limited wait. At most 64 records are kept; completed receipts can be evicted
+to admit a new wait, but a live until-unlock subscription is not evicted by age.
+The configured persistent state preserves pending until-unlock callbacks across
+broker restarts and host reboots. Cancel the broker subscription and delete its
+host trigger when the original task is cancelled. Passive webhook tasks do not
+poll and need no resident listener or renewal timer.
