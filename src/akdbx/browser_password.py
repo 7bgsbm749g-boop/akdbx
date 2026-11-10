@@ -27,6 +27,8 @@ PROTOCOL = 1
 TTL = 30
 MAX_PINS = 16
 MAX_MESSAGE = 256 * 1024
+MAX_TCP_TABLE_BYTES = 64 * 1024 * 1024
+PEER_SCAN_TIMEOUT = 1.0
 
 
 def frame_url(frame):
@@ -74,7 +76,7 @@ def verify_peer(connection):
     Checking a listener before connect permits port reuse between the check and
     connect. The reciprocal ESTABLISHED tuple identifies this actual peer. Keep
     this socket for the WebSocket handshake; never reconnect or follow redirects.
-    Missing, ambiguous or oversized kernel tables refuse before sending data.
+    Missing, ambiguous, oversized or slow tables refuse before sending data.
     """
     local, remote = connection.getsockname(), connection.getpeername()
     if connection.family != socket.AF_INET or local[0] != '127.0.0.1' or remote[0] != '127.0.0.1':
@@ -83,20 +85,21 @@ def verify_peer(connection):
         return f'{int.from_bytes(socket.inet_aton(value[0]), sys.byteorder):08X}:{value[1]:04X}'.encode('ascii')
     server, client = address(remote), address(local)
     owners = []
+    consumed = 0
+    deadline = time.monotonic() + PEER_SCAN_TIMEOUT
     with open('/proc/self/net/tcp', 'rb') as table:
-        for _ in range(16384):
+        while True:
             line = table.readline(1025)
+            consumed += len(line)
+            if len(line) > 1024 or consumed > MAX_TCP_TABLE_BYTES or time.monotonic() >= deadline:
+                raise TargetError()
             if not line:
                 break
-            if len(line) > 1024:
-                raise TargetError()
             fields = line.split()
             if len(fields) >= 4 and fields[1:4] == [server, client, b'01']:
                 if len(fields) < 8:
                     raise TargetError()
                 owners.append(int(fields[7]))
-        else:
-            raise TargetError()
     if owners != [os.getuid()]:
         raise TargetError()
 

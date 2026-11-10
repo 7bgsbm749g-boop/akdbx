@@ -60,10 +60,39 @@ def test_real_connected_peer_uid_before_accept():
         verify_peer(client)
 
 
-@pytest.mark.parametrize('case', ['foreign', 'missing', 'duplicate', 'listener-only', 'client-only',
-                                  'malformed', 'oversized-line', 'oversized-table', 'unavailable'])
+@pytest.mark.parametrize('position', ['first', 'after-25000', 'exact-byte-budget'])
+def test_peer_in_large_kernel_table_is_verified_without_row_order_assumption(monkeypatch, position):
+    import io
+    from types import SimpleNamespace
+    import akdbx.browser_password as transport
+    loopback = f'{int.from_bytes(socket.inet_aton("127.0.0.1"), sys.byteorder):08X}'
+    match = f'0: {loopback}:3039 {loopback}:D431 01 0:0 0:0 0 {os.getuid()} 0 1\n'.encode()
+    unrelated = f'1: {loopback}:1234 {loopback}:5678 01 0:0 0:0 0 {os.getuid()} 0 2\n'.encode() * 25000
+    data = match + unrelated if position == 'first' else unrelated + match
+    # Isolate byte/row-order behavior from scheduler delays. The elapsed-time
+    # refusal is tested separately, and real socket/browser tests use real time.
+    monkeypatch.setattr(transport, 'time', SimpleNamespace(monotonic=lambda: 0.0))
+    if position == 'exact-byte-budget':
+        monkeypatch.setattr(transport, 'MAX_TCP_TABLE_BYTES', len(data))
+    class Connected:
+        family = socket.AF_INET
+        def getsockname(self):
+            return '127.0.0.1', 54321
+        def getpeername(self):
+            return '127.0.0.1', 12345
+    def table(path, mode):
+        assert path == '/proc/self/net/tcp' and mode == 'rb'
+        return io.BytesIO(data)
+    monkeypatch.setattr('builtins.open', table)
+    verify_peer(Connected())
+
+
+@pytest.mark.parametrize('case', ['foreign', 'missing', 'duplicate', 'late-duplicate', 'listener-only', 'client-only',
+                                  'malformed', 'oversized-line', 'oversized-table', 'scan-timeout', 'unavailable'])
 def test_connected_peer_refuses_untrusted_kernel_rows(monkeypatch, case):
     import io
+    from types import SimpleNamespace
+    import akdbx.browser_password as transport
     loopback = f'{int.from_bytes(socket.inet_aton("127.0.0.1"), sys.byteorder):08X}'
     server, client = f'{loopback}:3039', f'{loopback}:D431'
     row = f'0: {server} {client} 01 0:0 0:0 0 {os.getuid()} 0 1\n'
@@ -71,13 +100,22 @@ def test_connected_peer_refuses_untrusted_kernel_rows(monkeypatch, case):
         'foreign': row.replace(f' {os.getuid()} 0 1', f' {os.getuid() + 1} 0 1'),
         'missing': '',
         'duplicate': row * 2,
+        'late-duplicate': row + 'header\n' * 25000 + row,
         'listener-only': row.replace(client, '00000000:0000').replace(' 01 ', ' 0A '),
         'client-only': row.replace(f'{server} {client}', f'{client} {server}'),
         'malformed': f'0: {server} {client} 01\n',
         'oversized-line': 'x' * 1025,
-        'oversized-table': 'header\n' * 16384,
+        'oversized-table': row + 'header\n' * 256,
+        'scan-timeout': row,
         'unavailable': '',
     }[case].encode()
+    if case == 'oversized-table':
+        # A valid peer near the start must not permit a table over budget.
+        # Lower only the byte budget to keep this boundary fixture small.
+        monkeypatch.setattr(transport, 'MAX_TCP_TABLE_BYTES', len(row.encode()) + 10)
+    if case == 'scan-timeout':
+        clock = iter([0.0, 0.5, transport.PEER_SCAN_TIMEOUT + 0.1])
+        monkeypatch.setattr(transport, 'time', SimpleNamespace(monotonic=lambda: next(clock)))
     class Connected:
         family = socket.AF_INET
         def getsockname(self):
