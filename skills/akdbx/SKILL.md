@@ -5,7 +5,13 @@ description: Use the local KeePass broker to find and fill saved logins and TOTP
 
 # KeePass login and autofill
 
-Use this skill for the user's authorized login task. The broker exposes login metadata and sends credentials to a verified, pinned X11 application window. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
+Use this skill for the user's authorized login task. The broker exposes login metadata and sends credentials to a verified, pinned application window. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
+
+On native Windows, first read [Windows operation](references/windows.md). Its
+loopback HTTPS, named-pipe transport, HWND pins and separate field fills replace
+the Linux/X11/Tailscale-specific instructions below. Windows support is
+experimental and needs real desktop validation; do not treat a CI pass as proof
+that an application accepts fills. Merge and snapshot admission are Linux-only.
 
 ## Session delegation
 

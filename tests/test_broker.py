@@ -323,11 +323,19 @@ def test_serve_reclaims_owned_stale_socket(tmp_path):
     stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     stale.bind(str(socket_path))
     stale.close()
+    # Do not mistake the stale endpoint for running_broker's mode-0600
+    # readiness condition. Retain its inode so the filesystem cannot reuse it
+    # for the replacement before this identity assertion runs.
+    socket_path.chmod(0o700)
+    stale_fd = os.open(socket_path, os.O_PATH | os.O_NOFOLLOW)
     stale_identity = (socket_path.stat().st_dev, socket_path.stat().st_ino)
 
-    with running_broker(socket_path, Broker(None, RecordingTyper())):
-        current = socket_path.stat()
-        assert (current.st_dev, current.st_ino) != stale_identity
+    try:
+        with running_broker(socket_path, Broker(None, RecordingTyper())):
+            current = socket_path.stat()
+            assert (current.st_dev, current.st_ino) != stale_identity
+    finally:
+        os.close(stale_fd)
 
 
 def test_shutdown_does_not_unlink_replacement_socket(tmp_path):
