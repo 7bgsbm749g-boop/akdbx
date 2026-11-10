@@ -311,12 +311,19 @@ def test_recovery_readiness_during_save_is_busy_without_latching(synthetic_vault
         assert prepared.wait(5)
         assert store.check_write_inputs() is False
         assert store.recovery_required is False
+        opening = WindowsVaultStore(synthetic_vault)
+        with pytest.raises(SaveError, match='busy'):
+            opening.open('synthetic master')
+        assert opening.recovery_required is False
     finally:
         release.set()
         worker.join(5)
     assert not worker.is_alive() and not failures and len(saved) == 1
     assert store.check_write_inputs() and not store.recovery_required
     assert PyKeePass(str(synthetic_vault), password='synthetic master').entries[0].password == 'synthetic concurrent update'
+    reopened = opening.open('synthetic master')
+    assert not reopened._akdbx_store.recovery_required
+    assert reopened.entries[0].password == 'synthetic concurrent update'
 
 
 @pytest.mark.parametrize('cleanup_fails', [False, True])
@@ -375,3 +382,41 @@ def test_matching_recovery_artifacts_still_have_a_budget(synthetic_vault, monkey
     monkeypatch.setattr('akdbx.windows_store.os.scandir', scan)
     with pytest.raises(SaveError, match='scan budget'):
         store._check_recovery()
+
+
+@pytest.mark.parametrize('stage', ['validation', 'write', 'flush'])
+def test_cleanup_denial_preserves_original_file_error(private_dir, monkeypatch, stage):
+    path = private_dir / 'cleanup-denied-file'
+    primary = PermissionError('synthetic validation failure') if stage == 'validation' else OSError('synthetic I/O failure')
+    def fail(*_args, **_kwargs):
+        raise primary
+    if stage == 'validation':
+        original = security.check_acl
+        def check(handle, *, private=True):
+            if private:
+                fail()
+            original(handle, private=private)
+        monkeypatch.setattr(security, 'check_acl', check)
+    else:
+        monkeypatch.setattr(win32file, 'WriteFile' if stage == 'write' else 'FlushFileBuffers', fail)
+    unlink = Path.unlink
+    def deny(created, *args, **kwargs):
+        if created == path:
+            raise OSError('synthetic cleanup failure')
+        return unlink(created, *args, **kwargs)
+    monkeypatch.setattr(Path, 'unlink', deny)
+    with pytest.raises(type(primary)) as error:
+        security.write_new(path, b'synthetic bytes')
+    assert error.value is primary and path.exists()
+
+
+@pytest.mark.parametrize('data', [b'{"state":', b'\xffinvalid UTF-8', b'x' * 16385])
+def test_malformed_receipt_unlocks_into_blocked_recovery(synthetic_vault, data):
+    receipt = synthetic_vault.parent / ('.' + synthetic_vault.name + '.akdbx-commit-' + 'b' * 32 + '.json')
+    security.write_new(receipt, data)
+    reopened = open_vault_with_password(synthetic_vault, 'synthetic master')
+    broker = Broker(reopened, object())
+    status = broker.dispatch({'action': 'ping'})
+    assert status['locked'] is False and status['recovery_required'] is True
+    assert status['writes_available'] is False
+    assert broker.dispatch({'action': 'search'})['ok'] is False

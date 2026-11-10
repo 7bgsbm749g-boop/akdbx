@@ -1,5 +1,5 @@
 """Windows handle and ACL checks. Imported only on Windows; never print secrets."""
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 import os
 
@@ -116,7 +116,8 @@ def _open_checked_handle(path, *, directory=False, private=True, access=None, cr
         if creation == win32con.CREATE_NEW:
             # CreateFile succeeded: this call owns the new file, even when
             # validation refused it. A failed CreateFile never reaches here.
-            path.unlink()
+            with suppress(OSError):
+                path.unlink()
         raise
 
 
@@ -183,5 +184,6 @@ def write_new(path, data):
                     offset += written
                 win32file.FlushFileBuffers(handle)
         except BaseException:
-            path.unlink()
+            with suppress(OSError):
+                path.unlink()
             raise

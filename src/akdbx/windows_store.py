@@ -132,8 +132,12 @@ class WindowsVaultStore:
                     raise SaveError('Windows recovery directory exceeds the scan budget')
                 path = self.path.parent / entry.name
                 if path.name.startswith(prefix + 'commit-') and path.name.endswith('.json'):
-                    data, _ = security.read_private(path, limit=16384)
-                    receipt = json.loads(data)
+                    try:
+                        data, _ = security.read_private(path, limit=16384)
+                        receipt = json.loads(data)
+                    except ValueError:
+                        self.recovery_required = True
+                        continue
                     if (not isinstance(receipt, dict) or receipt.get('policy') != 'windows-save-v1'
                             or receipt.get('state') != 'saved'
                             or any(not isinstance(receipt.get(key), str) or len(receipt[key]) != 64
@@ -160,10 +164,13 @@ class WindowsVaultStore:
             vault = open_encrypted(encrypted, password, key_material)
             from .versions import archives
             self.verified_capsules = archives(vault)
-            self._check_keyfile()
-            if self._read()[1] != snapshot:
-                raise SaveError('vault changed on disk; restart and unlock')
-            self._check_recovery()
+            # A live prepared receipt is not failed recovery. Coordinate the
+            # final disk checks/scan with saves before adopting unlocked state.
+            with self._advisory_lock():
+                self._check_keyfile()
+                if self._read()[1] != snapshot:
+                    raise SaveError('vault changed on disk; restart and unlock')
+                self._check_recovery()
             self.expected, self.verified_encrypted = snapshot, encrypted
             vault._akdbx_store = self
             return vault

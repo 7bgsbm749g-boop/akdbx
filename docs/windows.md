@@ -139,9 +139,13 @@ nonsecret recovery receipts are staged. A `prepared` receipt around replacement
 blocks use after an uncertain save, including after restart. Preserve the target,
 backup and receipt for recovery; do not simply delete a blocking receipt. A Linux
 merge recovery bundle or admission locator also blocks Windows use, because this
-backend cannot verify those transactions. Recovery readiness checks use the same
-nonblocking lock as saves: a busy save makes writes temporarily unavailable and
-does not mark recovery as failed. Keep other editors and sync writers away during
+backend cannot verify those transactions. Unlock's final recovery scan and
+readiness checks use the same nonblocking lock as saves. The private folder must
+allow the broker's lock file. A busy save makes writes temporarily unavailable
+or delays unlocking until a retry, and does not mark recovery as failed.
+Malformed or oversized receipts leave the broker in recovery-required state
+after a valid unlock; they are not reported as an incorrect master password.
+Keep other editors and sync writers away during
 the entire save; advisory locks do not control them. The final snapshot check and
 replacement are separate operations. An external edit between them can be lost,
 and the retained backup may not contain that edit. This is not a claim of
