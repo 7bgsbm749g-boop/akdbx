@@ -157,16 +157,20 @@ Use supported tools to verify the site, account and intended input. Read
 [password field delivery](references/target-fill.md) before the first fill.
 For DOM fills, also verify the exact HTTPS URL, page ID and main-frame ID.
 DOM fills require broker `password_fill_protocol: 1` and
-`password_fill_delivery: "chromium-password-dom-v1"`. The operator must configure
-`--password-browser-profile` at broker startup for DOM fills; absence or
-unsupported DOM paths refuse.
+`password_fill_delivery: "chromium-password-dom-v1"`, plus
+`password_browser_configured: true`, from `status`. The operator can configure
+the profile at broker startup with `--password-browser-profile PATH` or
+`AKDBX_PASSWORD_BROWSER_PROFILE`. An unconfigured profile or unsupported DOM
+path refuses delivery.
 Do not change a live profile or restart the broker to bypass refusal.
 
 Username-only X11 fills use `pin-target --pid PID --window XID` and do not
-require a Chromium profile. Require `target_protocol: 1` and the
-`x11-send-event-v1` delivery receipt. These checks attest PID/window/focus only;
-the caller must verify the site and intended field. Password and login modes
-must use DOM delivery.
+require a Chromium profile. Require `target_fill_protocol: 1` and
+`target_fill_delivery: "x11-send-event-v1"` from `status`. The CLI supplies
+`target_protocol: 1` in the pin and fill requests. Successful pin/fill receipts
+must contain `target_delivery: "x11-send-event-v1"`. These checks attest
+PID/window/focus only; the caller must verify the site and intended field.
+Password and login modes must use DOM delivery.
 
 For password and login modes, require a visible editable type=password input whose autocomplete field token is
 `current-password` or `new-password`. Valid ordered token lists such as
@@ -182,7 +186,8 @@ version and a fresh pin. For password mode, focus the password field, then use `
 Login pins require `--mode login --username-selector USERNAME_SELECTOR`; focus the
 username first. Login fills both explicit DOM inputs without Tab. X11
 `pin-target` refuses password and login modes. Never fall back to password keys.
-For a username-only page, focus the username input and pin it with
+For a username-only DOM page, focus the username input and use
+`pin-password-target` with the same page/frame/exact-URL arguments and
 `--mode username --selector USERNAME_SELECTOR`.
 
 Choose the mode based on the observed form:
