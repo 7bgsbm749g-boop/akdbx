@@ -85,6 +85,7 @@ class Broker:
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         card_browser_profile: Path | None = None,
+        notification_state_path=None,
     ) -> None:
         self.vault = vault
         self.typer = typer
@@ -102,7 +103,7 @@ class Broker:
         self.card_targets = BrowserCards(card_browser_profile, clock=clock)
         self.merges = MergeManager(self)
         self.unlock_url: str | None = None
-        self.unlock_notifications = UnlockNotifications()
+        self.unlock_notifications = UnlockNotifications(state_path=notification_state_path)
 
     @property
     def locked(self) -> bool:

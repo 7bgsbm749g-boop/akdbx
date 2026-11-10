@@ -218,6 +218,7 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--web-unlock", action="store_true", help="compatibility flag: private web unlock is always enabled")
     start.add_argument("--unlock-socket", type=Path, help=argparse.SUPPRESS)
     start.add_argument("--unlock-url", help=argparse.SUPPRESS)
+    start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket")
     search = commands.add_parser("search", help="return matching non-secret login metadata")
     search.add_argument("query", nargs="?", default="")
     fill = commands.add_parser("fill", help="autofill using a handle returned by search")
@@ -265,7 +266,7 @@ def parser() -> argparse.ArgumentParser:
     subscribe = commands.add_parser("subscribe-unlock", help="register a one-shot HTTPS unlock webhook; no active agent wait")
     subscribe.add_argument("--webhook-url-file", required=True, type=Path,
                            help="owned mode-0600 file containing the private callback URL")
-    subscribe.add_argument("--ttl", type=int, default=1800, help="subscription lifetime, 60–3600 seconds (default: 1800)")
+    subscribe.add_argument("--ttl", type=int, default=0, help="0 waits until unlock/cancel (default); 60–3600 seconds only for an explicitly time-limited wait")
     for name in ("unlock-subscription-status", "unsubscribe-unlock"):
         command = commands.add_parser(name, help="inspect/cancel a one-shot unlock subscription")
         command.add_argument("subscription_id")
@@ -296,7 +297,8 @@ def main(argv: list[str] | None = None) -> int:
         keyfile = args.keyfile.expanduser() if args.keyfile else None
         if args.yes_on_fill:
             print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
-        broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile)
+        broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
+                        notification_state_path=args.notification_state or args.socket.with_name(args.socket.name + '.unlock-notifications.json'))
         unlock_name = ("agentic-kdbx-unlock.sock"
                        if args.socket.name == "agentic-kdbx.sock"
                        else "akdbx-unlock.sock")
@@ -379,6 +381,9 @@ def main(argv: list[str] | None = None) -> int:
                     or type(capabilities.get('unlock_notifications_protocol')) is not int
                     or capabilities['unlock_notifications_protocol'] != 1):
                 print(json.dumps({'ok': False, 'error': 'broker lacks unlock notification protocol 1; require broker 0.11.0 or newer; subscription not sent'}))
+                return 1
+            if args.ttl == 0 and capabilities.get('unlock_notifications_until_unlock') is not True:
+                print(json.dumps({'ok': False, 'error': 'broker lacks an until-unlock subscription; subscription not sent'}))
                 return 1
             payload.update(webhook_url=_read_webhook_url(args.webhook_url_file),
                            ttl=args.ttl, notification_protocol=1)

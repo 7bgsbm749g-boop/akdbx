@@ -71,7 +71,10 @@ original task. Do not ask the user to say “unlocked,” keep an agent turn wai
 or create a polling schedule. Read [unlock notifications](references/unlock-notifications.md)
 for registration, race handling and cleanup. In T3, create a webhook trigger bound
 to the current thread, register its private URL with `subscribe-unlock`, verify
-the subscription receipt, then end the turn. Outside T3, use the agent host's
+the subscription receipt (`expires_in: null`), then end the turn. Require
+`unlock_notifications_until_unlock: true` and use the until-unlock default. Do
+not select a TTL unless the user requests a time limit. Outside T3, use the agent
+host's
 incoming webhook or event adapter. A webhook must actually start a new agent
 turn; a shell listener alone does not do this. Report a missing host callback
 capability rather than claiming that automatic continuation is configured.
