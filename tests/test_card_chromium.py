@@ -121,8 +121,17 @@ def chrome(isolated_x11, tmp_path):
         try:
             process.wait(timeout=8)
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGTERM)
-            process.wait(timeout=5)
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # This group was created by this fixture with its own
+                    # browser profile and start_new_session=True.
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+            except ProcessLookupError:
+                process.wait(timeout=5)
         log.close()
         server.shutdown()
         server.server_close()
