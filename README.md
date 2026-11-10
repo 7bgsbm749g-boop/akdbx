@@ -118,6 +118,12 @@ profiles or fall back to X11. Keep this directory and the debugging connection
 private. An unconfigured/unsupported browser refuses fills; storage and search
 remain available.
 
+Before sending any WebSocket bytes, the broker verifies that its UID owns the
+server side of the connected loopback TCP socket using Linux's bounded
+/proc/self/net/tcp table. It keeps that exact socket and refuses redirects.
+Missing or ambiguous ownership data refuses the connection, including stale
+port files that point to another user's listener.
+
 Chrome's debugging port grants browser control. Loopback binding alone does
 not restrict it to one OS user. Use a host environment that restricts access
 to trusted clients; the private profile-directory checks do not provide network
