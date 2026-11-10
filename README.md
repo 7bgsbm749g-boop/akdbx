@@ -88,7 +88,7 @@ chat reply, active agent wait or polling schedule is needed. Other agent hosts
 can use their own incoming webhook/event adapters.
 
 ```bash
-.venv/bin/akdbx subscribe-unlock --webhook-url-file /private/url-file --ttl 1800
+.venv/bin/akdbx subscribe-unlock --webhook-url-file /private/url-file
 .venv/bin/akdbx unlock-subscription-status SUBSCRIPTION_ID
 .venv/bin/akdbx unsubscribe-unlock SUBSCRIPTION_ID
 ```
@@ -98,9 +98,12 @@ never echoed in receipts. Events contain only `event: "akdbx.unlocked"`,
 `locked: false` and opaque subscription/event IDs. Registration cannot miss a
 racing unlock; an already-unlocked broker queues the event immediately. Delivery
 runs outside the unlock request, uses verified HTTPS without redirects, and
-retries at most three times with the same event ID. Subscriptions expire after
-30 minutes by default, have a maximum one-hour lifetime, and do not survive a
-broker restart. The sender and receipt store are bounded. The agent must remove
+retries at most three times with the same event ID. Subscriptions wait until
+unlock or explicit cancellation by default. Pending
+callbacks survive restarts through the configured private notification-state
+file; choose persistent storage outside `/run` for host reboot survival. Only an
+explicitly requested time-limited wait uses `--ttl 60..3600`. Delivery attempts
+and the number of stored subscriptions remain bounded. The agent must remove
 the host trigger and recheck broker readiness before continuing.
 
 Require the running broker's `unlock_notifications_supported: true` and integer
