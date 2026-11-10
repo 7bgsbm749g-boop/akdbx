@@ -28,6 +28,11 @@ class DeliveryError(TargetError):
 
 
 def failure(started=False):
+    """Return fixed delivery failure text and a conservative started/uncertain status.
+
+    An uncertain result must not be retried automatically because keys may
+    already have reached the target; backend diagnostics are never included.
+    """
     return {'ok': False, 'error': ('autofill outcome uncertain: target delivery interrupted; do not retry automatically'
                                   if started else 'autofill not started: target unavailable, changed or unsupported; pin again'),
             'delivery': 'uncertain' if started else 'not-started'}
@@ -39,6 +44,12 @@ class TargetPins:
         self.pins = {}
 
     def pin(self, request):
+        """Capture an exact target identity and issue a short-lived opaque pin.
+
+        Require protocol 1, a positive integer PID and a valid window ID. Prune
+        expired pins and reject capacity overflow; backend capture must validate
+        the foreground target before a pin can authorize delivery.
+        """
         if set(request) != {'action', 'pid', 'window', 'target_protocol'} or type(request.get('target_protocol')) is not int or request['target_protocol'] != 1:
             raise TargetError()
         pid, window = request.get('pid'), request.get('window')
@@ -54,6 +65,10 @@ class TargetPins:
                 'expires_in': int(PIN_TTL), 'target_delivery': DELIVERY}
 
     def consume(self, request):
+        """Consume a target pin once, even when expired or the protocol is invalid.
+
+        Return its captured identity or raise TargetError before credential access.
+        """
         token = request.get('target')
         pin = self.pins.pop(token, None) if isinstance(token, str) else None
         if (pin is None or pin[0] <= self.clock() or type(request.get('target_protocol')) is not int
@@ -74,6 +89,11 @@ class Identity:
 
 
 def process_identity(pid):
+    """Identify a same-user process by start time and executable device/inode.
+
+    Reject foreign-owned proc entries; proc or executable lookup failures
+    propagate so a recycled or unavailable PID cannot be trusted.
+    """
     path = Path('/proc') / str(pid)
     if path.stat().st_uid != os.getuid():
         raise TargetError()
@@ -91,6 +111,11 @@ class X11Session:
     this is dispatch assurance, never proof of field receipt/authentication.
     """
     def __init__(self, pid, window):
+        """Open a private X11 connection and capture a checked foreground identity.
+
+        Require X-Resource 1.2, watch target/focus changes and close on setup
+        failure. The caller owns the session and must close it after use.
+        """
         from Xlib import X, Xatom, display
         self.X, self.Xatom = X, Xatom
         self.display = display.Display()
@@ -121,6 +146,10 @@ class X11Session:
             raise
 
     def _error(self, *_):
+        """Record native X11 failure without printing potentially credential-bearing diagnostics.
+
+        Later session checks turn this flag into a target failure.
+        """
         # Do not let python-xlib print native errors or credential-bearing data.
         self.bad = True
 
@@ -128,12 +157,20 @@ class X11Session:
         self.display.close()
 
     def _one(self, window, atom, kind):
+        """Read exactly one 32-bit X11 property value or raise TargetError.
+
+        Absent, wrong-format or multi-value properties cannot establish target identity.
+        """
         value = window.get_full_property(atom, kind)
         if value is None or value.format != 32 or len(value.value) != 1:
             raise TargetError()
         return int(value.value[0])
 
     def owner_pid(self, window):
+        """Require one local X-Resource PID for a window rather than trusting its label.
+
+        Ambiguous, missing or differently typed client-ID replies raise TargetError.
+        """
         from Xlib.ext import res
         values = self.display.res_query_client_ids([
             {'client': window.id, 'mask': res.LocalClientPIDMask}]).ids
@@ -142,6 +179,12 @@ class X11Session:
         return int(values[0].value[0])
 
     def snapshot(self):
+        """Capture a validated local foreground window, focus descendant and process identity.
+
+        Reject unmapped targets, ownership/host mismatches, invalid focus ancestry
+        and held keys or buttons. The snapshot cannot attest a browser tab or field;
+        all checks must continue during delivery to detect target changes.
+        """
         X = self.X
         if self._one(self.root, self.active_atom, self.Xatom.WINDOW) != self.window:
             raise TargetError()
@@ -177,6 +220,11 @@ class X11Session:
                         process_identity(self.pid), tuple(wm_class), machine)
 
     def check(self):
+        """Reject identity changes, watched X11 mutations and recorded native errors.
+
+        Synchronize and drain pending events so transient focus/structure changes
+        cannot be hidden by a later matching snapshot.
+        """
         if self.snapshot() != self.identity:
             raise TargetError()
         self.display.sync()
@@ -191,6 +239,11 @@ class X11Session:
             raise TargetError()
 
     def prepare(self, steps):
+        """Preflight all text and Tab steps against the existing core keyboard map.
+
+        Return keycode/shift pairs without sending events or changing global
+        keymaps. Unmapped characters raise TargetError before any credential key.
+        """
         # Use the first core layout group and explicit shift state. Refuse
         # unmapped characters before any key; never borrow/change keycodes.
         d = self.display
@@ -211,6 +264,11 @@ class X11Session:
         return result
 
     def send_pair(self, code):
+        """Send a press/release pair only to the captured focus window owner.
+
+        Use a fixed XID without propagation or global input. Sync and reject
+        native errors; successful dispatch is not proof of application receipt.
+        """
         from Xlib.protocol import event
         keycode, state = code
         # A fixed XID, propagate=False, event_mask=0 delivers only to its owner.
@@ -232,6 +290,10 @@ class X11Typer:
         self.session_factory = session_factory
 
     def capture(self, pid, window):
+        """Capture and check the target identity using a short-lived private session.
+
+        Always close the session; propagate failures without retaining X11 state.
+        """
         session = self.session_factory(pid, window)
         try:
             session.check()
@@ -240,6 +302,13 @@ class X11Typer:
             session.close()
 
     def deliver(self, identity, steps, ready, *, guard=None):
+        """Preflight and send steps only while the pinned identity and guards hold.
+
+        Check readiness before starting and the optional validity guard throughout,
+        including after the final pair. Bound delivery time, close the session and
+        raise DeliveryError with a conservative started flag on any failure.
+        Successful dispatch does not prove field receipt or authentication.
+        """
         started = False
         session = None
         try:

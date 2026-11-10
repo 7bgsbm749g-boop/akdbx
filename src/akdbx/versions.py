@@ -28,6 +28,10 @@ class PreservationError(Exception):
 
 
 def supported():
+    """Enable capsule preservation only for the explicitly tested PyKeePass version.
+
+    Return False when distribution metadata is absent instead of guessing compatibility.
+    """
     try:
         return version('pykeepass') == '4.2.0'
     except PackageNotFoundError:
@@ -39,6 +43,11 @@ def _json(value):
 
 
 def _packed(node):
+    """Pack the complete XML node representation, including comments, processing instructions and tails.
+
+    The result can contain plaintext secrets; retain it only inside private
+    capsule construction before encrypted persistence.
+    """
     from lxml import etree
     tag = '#comment' if node.tag is etree.Comment else '#pi' if node.tag is etree.ProcessingInstruction else node.tag
     attributes = {'target': node.target} if tag == '#pi' else dict(node.attrib)
@@ -46,6 +55,11 @@ def _packed(node):
 
 
 def _unpacked(value):
+    """Reconstruct private XML from a packed capsule after validating basic value types.
+
+    Preserve text and optional tails; malformed structure propagates errors
+    to the archive boundary, which must hide payload-bearing diagnostics.
+    """
     from lxml import etree
     tag, attributes, text, children, *tail = value
     if not isinstance(tag, str) or not isinstance(attributes, dict) or not isinstance(children, list):
@@ -69,6 +83,11 @@ def _unpacked(value):
 
 
 def _time(text, version):
+    """Normalize KDBX4 binary or ISO time spelling for private canonical comparison.
+
+    Try binary seconds first for KDBX4, then ISO format. Malformed values
+    propagate to callers that must report only fixed preservation errors.
+    """
     if version[0] >= 4:
         try:
             return (datetime(1, 1, 1, tzinfo=timezone.utc) + timedelta(
@@ -124,6 +143,12 @@ def _canonical(node, binaries, version, *, times):
                     'Times', 'String', 'Binary', 'AutoType', 'CustomData', 'QualityCheck', 'PreviousParentGroup',
                     'LastModificationTime', 'EntryUUID'}
     def visit(element, parent='', inherited_space=False):
+        """Build a private recursive projection using only certified representation equivalences.
+
+        Respect inherited XML space, replace attachment references with content
+        hashes and preserve unknown child order. Never expose this secret-bearing
+        projection or its hashes through errors or RPC.
+        """
         attributes = dict(element.attrib)
         space = attributes.get('{http://www.w3.org/XML/1998/namespace}space', 'preserve' if inherited_space else 'default') == 'preserve'
         if 'Protected' in attributes:
@@ -166,6 +191,12 @@ def _canonical(node, binaries, version, *, times):
 
 
 def entry_signature(entry):
+    """Return private canonical entry bytes for ambiguity and history retention checks.
+
+    Ignore access time and usage count, retain other relevant metadata and
+    attachment contents through canonicalization. The result contains secrets
+    and must never enter logs, receipts or agent responses.
+    """
     node = copy.deepcopy(entry._element)
     timeinfo = node.find('Times')
     if timeinfo is not None:
@@ -184,6 +215,11 @@ def is_archive_group(group):
 
 
 def active_entries(vault):
+    """Yield entries outside the reserved archive group and all its descendants.
+
+    Walk parent chains so capsule records cannot become searchable or fillable
+    credentials merely because their immediate group differs.
+    """
     for entry in vault.entries:
         group = getattr(entry, 'group', None)
         while group is not None and not is_archive_group(group):
@@ -193,6 +229,12 @@ def active_entries(vault):
 
 
 def _capsule(entry, group, binaries=None):
+    """Capture one original record and its recovery context for encrypted preservation.
+
+    Remove nested history but include directly referenced attachment bytes,
+    custom icons and parent group metadata without copying siblings. The
+    returned object contains secrets and must stay in private memory/storage.
+    """
     element = copy.deepcopy(entry._element)
     history = element.find('History')
     if history is not None:
@@ -220,6 +262,12 @@ def _capsule(entry, group, binaries=None):
 
 
 def capsule_identity(payload):
+    """Compute the capsule-v1 identity from validated original UUID and canonical content.
+
+    Resolve attachment/icon contents and include original group identity and
+    times. Invalid payloads propagate to a fixed-error archive boundary. This
+    secret-derived digest is internal, never an agent-visible diagnostic.
+    """
     node = _unpacked(payload['record'])
     if payload['schema'] != POLICY or node.tag != 'Entry':
         raise ValueError
@@ -279,6 +327,13 @@ def archives(vault, *, trusted=None):
 
 
 def collect(vaults, *, capture):
+    """Build a private capsule ledger from validated archives and optional original versions.
+
+    When capture is enabled, include each active entry and its history with
+    attachment/group context; first payload wins for an existing identity.
+    Do not mutate vaults or write files. Ledger bytes can contain secrets and
+    are intended only for encrypted preservation, never receipts or logging.
+    """
     ledger = {}
     for vault in vaults:
         for identity, data in archives(vault).items():
@@ -350,6 +405,11 @@ def ensure(vault, ledger):
 
 
 def verify(vault, ledger):
+    """Require every expected capsule payload to remain byte-for-byte in a validated archive.
+
+    Allow additional valid capsules, but raise fixed PreservationError on any
+    missing or changed expected version; do not expose identities or contents.
+    """
     actual = archives(vault)
     if any(identity not in actual or actual[identity] != data for identity, data in ledger.items()):
         raise PreservationError('preserved version verification failed; target not replaced')

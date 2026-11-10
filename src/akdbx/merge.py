@@ -47,6 +47,11 @@ def _digest(data):
 
 
 def _open(encrypted, vault):
+    """Open candidate ciphertext with the held vault credentials and a fresh key stream.
+
+    The returned vault and opening diagnostics are private; callers must
+    contain exceptions before constructing agent-visible receipts.
+    """
     keyfile = io.BytesIO(vault.keyfile.getvalue()) if vault.keyfile is not None else None
     return open_encrypted(encrypted, vault.password, keyfile)
 
@@ -56,6 +61,12 @@ def _entry_signature(entry):
 
 
 def _check_ambiguity(*vaults, preserve=False):
+    """Reject duplicate object UUIDs and unsupported same-second record conflicts.
+
+    Validate managed archives in every input. Unless preservation is explicitly
+    enabled, differing active/history signatures at one UUID/time raise a
+    fixed MergeError; no private signature data enters the error.
+    """
     for vault in vaults:
         ids = [item.uuid for item in [*vault.entries, *vault.groups]]
         if len(ids) != len(set(ids)):
@@ -73,6 +84,11 @@ def _check_ambiguity(*vaults, preserve=False):
 
 
 def _counts(vault):
+    """Return aggregate vault counts without entry identities or field values.
+
+    Exclude managed archive groups/entries from ordinary totals and report
+    archived versions separately; use only for nonsecret merge receipts.
+    """
     entries = list(versions.active_entries(vault))
     archive_groups = [group for group in vault.groups if versions.is_archive_group(group)]
     return {'entries': len(entries), 'groups': len(vault.groups) - len(archive_groups),
@@ -140,7 +156,14 @@ def verify_history(candidate, *originals, allow_deletions=True):
 
 
 def run_engine(bundle, vault, *, source_name='source.kdbx'):
-    """No secret argv/env/files. Raw engine output is discarded, even on error."""
+    """Run the fixed KeePassXC merge binary on encrypted bundle files with held credentials.
+
+    Reject master passwords incompatible with line input. Send the password
+    on stdin and any key file through a sealed memfd, never argv/environment
+    or plaintext files. Disable core dumps process-wide, discard native output
+    and enforce ENGINE_TIMEOUT. Failures become fixed MergeError text and
+    any key FD is closed. Candidate files can have changed even on failure.
+    """
     password = vault.password
     if not isinstance(password, str) or any(c in password for c in '\r\n\x00'):
         raise MergeError('merge requires a line-compatible master password')
@@ -180,6 +203,11 @@ class MergeManager:
         self._version = None
 
     def capabilities(self):
+        """Report merge policy support and current safe-write availability without vault data.
+
+        Probe the fixed native engine lazily once per manager. Extended group
+        profiles require exact 2.7.10; preservation also requires the tested parser.
+        """
         if not self._engine_checked:
             self._version = engine_version()
             self._engine_checked = True
@@ -215,6 +243,10 @@ class MergeManager:
 
     @staticmethod
     def _id(value):
+        """Require a 32-character lowercase hexadecimal durable merge operation ID.
+
+        Reject other types and spellings before using the ID in bundle paths.
+        """
         if not isinstance(value, str) or not ID_PATTERN.fullmatch(value):
             raise MergeError('operation ID must be 32 lowercase hexadecimal characters')
         return value
@@ -225,6 +257,11 @@ class MergeManager:
 
     @staticmethod
     def _receipt(directory, value):
+        """Durably replace a nonsecret receipt through an exclusively created next file.
+
+        Fsync the bundle after rename. An interrupted previous next file blocks
+        reuse instead of being silently overwritten; the directory FD is borrowed.
+        """
         data = json.dumps(value, sort_keys=True).encode('utf-8') + b'\n'
         name = 'receipt-next.json'
         # An interrupted previous receipt update is never silently overwritten.
@@ -233,6 +270,12 @@ class MergeManager:
         os.fsync(directory)
 
     def status(self, operation_id):
+        """Read a durable operation receipt, including when the broker vault is locked.
+
+        Check owned private bundle/file permissions and operation identity. Search
+        the bound external snapshot directory when needed. Preparing/prepared
+        receipts are reported uncertain; a missing receipt never implies success.
+        """
         operation_id = self._id(operation_id)
         store = self._store()
         directory = store._directory()
@@ -273,6 +316,17 @@ class MergeManager:
             os.close(directory)
 
     def begin(self, request):
+        """Perform one serialized encrypted merge or explicit exact-byte admission transaction.
+
+        The caller holds the broker vault lock. Validate policy, operation ID,
+        engine and safe paths before proceeding; an existing bundle returns its
+        receipt rather than starting another transaction. Hold the disk lock, retain
+        encrypted originals/candidate and durable intent, verify the selected
+        contract, and recheck both inputs and key file before replacement. Check
+        mode retains evidence without adoption. Successful adoption revokes prior
+        write/search authorizations. Uncertain replacement/adoption blocks further
+        writes for recovery; receipts contain only fixed errors and approved counts.
+        """
         started = time.monotonic()
         admitting = request.get('action') == 'admit'
         if admitting and (request.get('policy') != admission.POLICY or request.get('verification') != admission.VERIFICATION):
@@ -403,6 +457,12 @@ class MergeManager:
                     _check_ambiguity(*originals, preserve=preserve)
                     ledger = versions.collect(originals, capture=preserve)
                     def complete_stage(data, stage_originals, *, final=False):
+                        """Reopen and verify an encrypted native stage, restoring required capsules.
+
+                        On the final stage also synchronize deletions and check active selection
+                        or retained history. If repaired, resave only the encrypted candidate in
+                        the owned bundle; never modify an original input file.
+                        """
                         try:
                             stage = _open(data, self.broker.vault)
                         except Exception:

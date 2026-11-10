@@ -18,6 +18,10 @@ MAX_IMPORT = 32768
 
 
 def _varint(data, pos):
+    """Read one bounded unsigned 64-bit protobuf varint and return its next offset.
+
+    Raise ValueError for truncation, overflow or an unterminated encoding.
+    """
     value = 0
     for shift in range(0, 70, 7):
         if pos >= len(data):
@@ -33,6 +37,11 @@ def _varint(data, pos):
 
 
 def _fields(data, schema, repeated=()):
+    """Decode only the supplied varint/length-delimited schema into private values.
+
+    Reject unknown tags, wire mismatches, duplicate singular fields, truncated
+    values and excessive repetitions. Diagnostics must not expose decoded keys.
+    """
     result = {}
     pos = 0
     while pos < len(data):
@@ -57,6 +66,12 @@ def _fields(data, schema, repeated=()):
 
 
 def _configuration(data):
+    """Convert one migration record to a validated TOTP-only configuration.
+
+    Reject HOTP, nonzero counters and unsupported algorithm/digit enums. Decode
+    labels strictly as UTF-8 and reuse ordinary seed and URI validation. The
+    result contains a secret and must remain inside the private workflow.
+    """
     fields = _fields(data, {1: 2, 2: 2, 3: 2, 4: 0, 5: 0, 6: 0, 7: 0})
     if fields.get(6) != 2 or fields.get(7, 0) != 0:
         raise ValueError  # TOTP only, never silently convert HOTP.
@@ -72,7 +87,14 @@ def _configuration(data):
 
 
 def parse_import(payloads, *, label=''):
-    """Return configurations only to the private import workflow, never RPC."""
+    """Decode bounded private keys/URIs or one complete Google migration batch.
+
+    Accept 1..8 frames, up to 8192 characters each and 32768 in total, yielding
+    1..32 accounts. Require consistent batch identity, every unique part and
+    unique issuer/label pairs. A single ordinary setup uses parse_setup instead.
+    Return secret-bearing configurations only to private callers; all parsing
+    failures become a fixed TotpError without payload or decoder diagnostics.
+    """
     try:
         if (not isinstance(payloads, list) or not 1 <= len(payloads) <= MAX_FRAMES
                 or any(not isinstance(p, str) or not 0 < len(p) <= MAX_FRAME for p in payloads)

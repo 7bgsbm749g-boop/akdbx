@@ -53,6 +53,13 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
     def __init__(
         self, server_address, *args, **kwargs,
     ) -> None:
+        """Prepare a private Unix HTTP listener with bounded workers and lifecycle ownership.
+
+        Verify runtime ancestry, acquire a nonblocking lifecycle lock and reject
+        a live or unproven stale socket before base-server binding. No TCP socket
+        is created. After successful construction the caller owns server shutdown
+        and close, including release of the runtime and lifecycle descriptors.
+        """
         self._connection_slots = threading.BoundedSemaphore(MAX_HTTP_CONNECTIONS)
         self._deadline_lock = threading.Lock()
         self._deadlines: dict[socket.socket, ConnectionDeadline] = {}
@@ -79,11 +86,19 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
         super().__init__(str(socket_path), *args, **kwargs)
 
     def handle_error(self, request, client_address) -> None:
+        """Suppress HTTP worker tracebacks because exceptions may contain private form values.
+
+        No request URL, identity or submitted secret is sent to stderr.
+        """
         # Unexpected exceptions may carry private form values. Never print a
         # traceback or exception message from a private HTTP worker.
         return
 
     def service_actions(self) -> None:
+        """Discard expired staged secrets when the vault lock is immediately available.
+
+        Skip pruning during vault work rather than blocking the HTTP service loop.
+        """
         # Expired staged secrets must be discarded even with no new requests.
         manager = getattr(self, 'write_manager', None)
         if manager is not None and manager.broker._vault_lock.acquire(blocking=False):
@@ -93,6 +108,11 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
                 manager.broker._vault_lock.release()
 
     def get_request(self):
+        """Reserve bounded HTTP worker capacity before accepting an owned connection.
+
+        Set an inactivity timeout and release the slot if accept/setup fails.
+        Successful requests transfer slot release to the worker cleanup path.
+        """
         # Reserve capacity before accept(), so no more than the bounded worker
         # count can become application-owned connections at once. Connections
         # beyond the cap remain in the kernel's bounded listen queue.
@@ -109,6 +129,11 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
     def _expire_request(
         request: socket.socket, deadline: ConnectionDeadline,
     ) -> None:
+        """Mark the absolute request deadline expired and shut down its socket.
+
+        Ignore an already closed connection. This prevents slow senders from
+        extending lifetime by repeatedly resetting the inactivity timeout.
+        """
         # The socket timeout above limits inactivity. This watchdog additionally
         # prevents a peer from extending a connection forever by slowly sending
         # bytes just before each inactivity deadline.
@@ -119,11 +144,19 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
             pass
 
     def request_expired(self, request: socket.socket) -> bool:
+        """Reject connections with no tracked deadline or an expired absolute lifetime.
+
+        Consult the shared deadline under its lock before private side effects.
+        """
         with self._deadline_lock:
             deadline = self._deadlines.get(request)
         return deadline is None or deadline.expired()
 
     def process_request(self, request, client_address) -> None:
+        """Start a request worker and recover its socket/slot if thread creation fails.
+
+        Successful worker startup transfers cleanup to process_request_thread.
+        """
         try:
             super().process_request(request, client_address)
         except BaseException:
@@ -134,6 +167,12 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
             raise
 
     def process_request_thread(self, request, client_address) -> None:
+        """Run a private handler with an absolute watchdog and bounded admission slot.
+
+        Contain transport failures without logging requests. Cancel the timer,
+        remove the deadline, close the request and release capacity after handling.
+        An expired socket cannot itself cancel a vault opener already in progress.
+        """
         connection_deadline = ConnectionDeadline()
         with self._deadline_lock:
             self._deadlines[request] = connection_deadline
@@ -163,6 +202,11 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
             self._connection_slots.release()
 
     def server_bind(self) -> None:
+        """Bind the Unix HTTP endpoint with mode 0600 and retain its inode identity.
+
+        The identity allows close to remove only this server socket; no TCP port
+        is used and runtime validation occurs before this hook.
+        """
         # HTTPServer.server_bind assumes an INET (host, port) address.
         socketserver.TCPServer.server_bind(self)
         self.server_name = "localhost"
@@ -175,6 +219,12 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
         self._socket_identity = (info.st_dev, info.st_ino)
 
     def server_close(self) -> None:
+        """Close the server and revoke private write availability and pending operations.
+
+        Clear retained generated passwords, imports and fill references under the
+        vault lock. Unlink only this socket inode and release lifecycle/runtime FDs.
+        Call shutdown separately to stop a running serve_forever loop.
+        """
         super().server_close()
         manager = getattr(self, 'write_manager', None)
         if manager is not None:
@@ -221,6 +271,10 @@ class UnlockState:
         self.unlock_lock = threading.Lock()
 
     def token_matches(self, token: str) -> bool:
+        """Compare a submitted private unlock token under the authorization state lock.
+
+        Use constant-time comparison; matching does not reserve a rate-limit slot.
+        """
         with self.lock:
             return secrets.compare_digest(token, self.token)
 
@@ -258,6 +312,11 @@ class UnlockState:
             return "ready"
 
     def record_failure(self, attempt: int) -> None:
+        """Consume a reserved attempt and charge global and per-identity failure budgets.
+
+        Unknown or already consumed reservations have no effect; timestamps use
+        the monotonic clock so wall-clock changes cannot reset the window.
+        """
         with self.lock:
             identity = self.pending.pop(attempt, None)
             if identity is None:
@@ -267,6 +326,10 @@ class UnlockState:
             self.identity_failures.setdefault(identity, []).append(now)
 
     def record_success(self, attempt: int) -> None:
+        """Release the successful reservation and rotate the private unlock token.
+
+        Previously issued unlock URLs then fail subsequent token checks.
+        """
         with self.lock:
             self.pending.pop(attempt, None)
             self.token = secrets.token_urlsafe(32)
@@ -278,6 +341,11 @@ class UnlockState:
 
 
 def _page(title: str, body: str) -> bytes:
+    """Build a UTF-8 private page with an escaped title and caller-supplied HTML body.
+
+    The body is trusted markup; callers must escape any untrusted metadata and
+    must never interpolate submitted passwords, seeds or parser diagnostics.
+    """
     title = f"akdbx: {title}"
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
@@ -288,14 +356,28 @@ input,button{{box-sizing:border-box;width:100%;padding:.8rem;margin:.5rem 0;font
 
 
 def handler_for(state: UnlockState):
+    """Create handlers bound to one unlock state for a protected Unix HTTP endpoint.
+
+    Trust forwarded identity headers only behind the deployment proxy and
+    filesystem-protected socket. Disable request logging, enforce connection
+    deadlines and use private tokens for unlock and write authorization.
+    """
     class Handler(BaseHTTPRequestHandler):
         server_version = "akdbx"
         sys_version = ""
 
         def log_message(self, format, *args):
+            """Suppress access logs so tokens, user identities and form requests remain private.
+
+            BaseHTTPRequestHandler calls this hook for normal and error responses.
+            """
             return  # Never log URLs, identities, or form requests.
 
         def _identity_ok(self) -> bool:
+            """Require a nonempty identity header supplied by the trusted deployment proxy.
+
+            This is a presence check, not independent authentication of an arbitrary peer.
+            """
             return bool(self.headers.get("Tailscale-User-Login"))
 
         def _token(self) -> str:
@@ -305,6 +387,11 @@ def handler_for(state: UnlockState):
             return self.server.request_expired(self.request)
 
         def _send(self, status: HTTPStatus, body: bytes, *, content_type='text/html; charset=utf-8', import_page=False) -> None:
+            """Send a private response with no-store, no-referrer and restrictive CSP headers.
+
+            Import pages additionally permit same-origin scripts and local image
+            blobs. Callers must supply safe body content; transport errors propagate.
+            """
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -316,6 +403,14 @@ def handler_for(state: UnlockState):
             self.wfile.write(body)
 
         def _write_request(self) -> bool:
+            """Handle private password/TOTP forms and delegate QR/native import routes.
+
+            Return False for unrelated paths. Ordinary forms require forwarded identity
+            and a current token; import routes apply their own identity checks.
+            Read bounded form bodies outside the vault lock,
+            then recheck expiry and authorization before saving. Return only fixed
+            messages or escaped approved errors, never submitted secret values.
+            """
             from .import_web import handle_import
             if handle_import(self, state):
                 return True
@@ -374,6 +469,11 @@ def handler_for(state: UnlockState):
             return True
 
         def do_GET(self) -> None:
+            """Serve a private write form or the current token-authorized unlock page.
+
+            Require forwarded identity for unlock and escape displayed identity text.
+            GET never accepts a password or starts a vault-opening attempt.
+            """
             if self._write_request():
                 return
             if not self._identity_ok() or not state.token_matches(self._token()):
@@ -388,6 +488,13 @@ def handler_for(state: UnlockState):
             self._send(HTTPStatus.OK, _page("Unlock KeePass", body))
 
         def do_POST(self) -> None:
+            """Process private writes or one bounded, rate-limited unlock submission.
+
+            Authorize token/identity before reserving key-derivation capacity, serialize
+            openers and recheck deadline/token after waiting. Hide all opener errors;
+            on success unlock the broker and rotate the URL token. Always release the
+            reservation, including cancellation before the opener starts.
+            """
             if self._write_request():
                 return
             identity = self.headers.get("Tailscale-User-Login", "")
@@ -465,6 +572,12 @@ def start_unlock_server(
     public_base_url: str,
     opener: Callable = open_vault_with_password,
 ) -> tuple[ThreadingUnixHTTPServer, str]:
+    """Start a daemon Unix HTTP service and return its server plus private unlock URL.
+
+    Require an absolute socket path and bind private write/merge managers to
+    the configured deployment. The caller must validate the public origin and
+    call shutdown then server_close when finished to revoke pending writes.
+    """
     socket_path = Path(socket_path).expanduser()
     if not socket_path.is_absolute():
         raise ValueError("unlock socket path must be absolute")
