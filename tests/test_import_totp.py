@@ -274,18 +274,37 @@ def test_import_replacement_preserves_old_protected_history(deployed):
     assert parse_setup(entry.history[-1].otp).algorithm=='SHA1'
 
 
-def test_native_route_requires_same_uid_peer(deployed,monkeypatch):
+@pytest.mark.parametrize('early_body_close', [False, True])
+def test_native_route_requires_same_uid_peer(deployed,monkeypatch,early_body_close):
     from akdbx import cli
     broker, _, path, socket=deployed
     prepared=prepare(broker)
+    before=path.read_bytes()
     monkeypatch.setattr(cli,'_peer_credentials',lambda _: (123,os.getuid()+1,0))
     connection=UnixHTTPConnection(socket)
+    bodies=[]
+    if early_body_close:
+        original_send=connection.send
+        def send(data):
+            if isinstance(data,bytes) and data.startswith(b'{'):
+                bodies.append(True)
+                raise BrokenPipeError('synthetic foreign-UID early rejection')
+            return original_send(data)
+        monkeypatch.setattr(connection,'send',send)
     parts=urlsplit(prepared['private_url'])
-    connection.request('POST','/totp/capture?'+parts.query,
-        json.dumps({'payloads':[URI],'source_url':'https://example.test'}),{'Content-Type':'application/json'})
+    try:
+        connection.request('POST','/totp/capture?'+parts.query,
+            json.dumps({'payloads':[URI],'source_url':'https://example.test'}),{'Content-Type':'application/json'})
+    except BrokenPipeError:
+        # A foreign UID is rejected before body upload; read that actual
+        # response without resending the native mutation.
+        pass
     response=connection.getresponse()
     assert response.status==400 and KEY.encode() not in response.read()
     connection.close()
+    if early_body_close:
+        assert len(bodies)==1
+    assert path.read_bytes()==before
     assert not broker.writes.get(prepared['write_handle']).import_candidates
 
 
