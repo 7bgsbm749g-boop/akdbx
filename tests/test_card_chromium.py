@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from akdbx.broker import Broker
-from akdbx.browser_card import BrowserCards, CDP, browser_endpoint, failure, TTL, MAX_PINS
+from akdbx.browser_card import BrowserCards, CDP, CardTargetError, browser_endpoint, failure, TTL, MAX_PINS
 from akdbx.cards import FIELDS, MARKER
 from test_broker import Entry, Vault, RecordingTyper, running_broker
 from akdbx import cli
@@ -38,6 +38,19 @@ HTML = b'''<!doctype html><title>Synthetic card destination test</title>
 class CardEntry(Entry):
     def get_custom_property(self, key):
         return {MARKER: 'v1', **{field: CARD[k] for k, field in FIELDS.items()}}.get(key)
+
+
+def wait_for_browser_endpoint(profile, process, deadline):
+    # Chrome creates this file before publishing the complete header. Existence
+    # alone is not readiness. Reuse the production validator without weakening
+    # it, and retry only this non-secret test-browser startup phase.
+    while time.monotonic() < deadline:
+        assert process.poll() is None, 'isolated Chrome exited'
+        try:
+            return browser_endpoint(profile)
+        except (FileNotFoundError, CardTargetError):
+            time.sleep(.05)
+    raise AssertionError('isolated Chrome did not publish a valid debugging header')
 
 
 @pytest.fixture
@@ -91,9 +104,7 @@ def chrome(isolated_x11, tmp_path):
     cdp = None
     try:
         deadline = time.monotonic() + 20
-        while time.monotonic() < deadline and not (profile / 'DevToolsActivePort').exists():
-            assert process.poll() is None, 'isolated Chrome exited'
-            time.sleep(.05)
+        wait_for_browser_endpoint(profile, process, deadline)
         cdp = CDP(profile)
         page, session = None, None
         while time.monotonic() < deadline:

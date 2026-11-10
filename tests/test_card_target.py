@@ -1,5 +1,7 @@
 """Endpoint trust, authorization lifetimes and non-secret failure receipts."""
 import os
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,6 +41,38 @@ def test_endpoint_symlink_writable_file_and_replaceable_profile_refused(tmp_path
     assert browser_endpoint(profile) == 'ws://127.0.0.1:1234/devtools/browser/synthetic-id'
     profile.chmod(0o777)
     with pytest.raises(Exception): browser_endpoint(profile)
+
+
+def test_fixture_waits_for_complete_header_after_empty_file_creation(tmp_path, monkeypatch):
+    import test_card_chromium as lab
+    profile = tmp_path / 'profile'
+    profile.mkdir(mode=0o700)
+    active = profile / 'DevToolsActivePort'
+    active.write_text('')
+    active.chmod(0o600)
+    observed_incomplete = threading.Event()
+    original = browser_endpoint
+    def observe(path):
+        try:
+            return original(path)
+        except CardTargetError:
+            observed_incomplete.set()
+            raise
+    monkeypatch.setattr(lab, 'browser_endpoint', observe)
+    errors = []
+    def publish():
+        if not observed_incomplete.wait(2):
+            errors.append('reader did not reject the incomplete file')
+            return
+        active.write_text('1234\n/devtools/browser/synthetic-complete-id')
+    writer = threading.Thread(target=publish)
+    writer.start()
+    try:
+        endpoint = lab.wait_for_browser_endpoint(profile, SimpleNamespace(poll=lambda: None), time.monotonic()+3)
+        assert endpoint == 'ws://127.0.0.1:1234/devtools/browser/synthetic-complete-id'
+    finally:
+        writer.join(timeout=3)
+    assert observed_incomplete.is_set() and not writer.is_alive() and not errors
 
 
 class FakeCDP:
