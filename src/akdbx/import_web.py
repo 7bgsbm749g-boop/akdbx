@@ -16,6 +16,15 @@ ROUTES = {'/totp/import', '/totp/review', '/totp/capture',
 
 
 def handle_import(handler, state):
+    """Handle private import routes, returning False for unrelated paths.
+
+    Browser requests require identity and POST origin checks; native capture
+    requires a same-UID Unix peer and forbids forwarded identity headers. Bind
+    every route to a live private TOTP token, bound submitted bodies and
+    recheck authorization under the vault lock. Stage keys for review or save
+    only an explicitly confirmed selection. Catch failures with fixed page text
+    because parser diagnostics can contain keys; receipts contain no secrets.
+    """
     from .web_unlock import _page
     parsed = urlsplit(handler.path)
     route = parsed.path
@@ -23,6 +32,10 @@ def handle_import(handler, state):
         return False
 
     def send(status, body):
+        """Render a private import response using the restricted import-page headers.
+
+        Callers supply escaped markup or fixed text, never submitted setup keys.
+        """
         handler._send(status, _page('Private authenticator import', body), import_page=True)
 
     try:
@@ -126,6 +139,11 @@ def handle_import(handler, state):
 
 
 def _review(send, op, token):
+    """Render escaped account labels and destination metadata without setup secrets.
+
+    Require staged candidates and include the review nonce and explicit
+    confirmation control. Imported labels do not establish account ownership.
+    """
     if not op.import_candidates:
         send(HTTPStatus.CONFLICT, '<p>No captured import. Open the import page first.</p>')
         return

@@ -29,6 +29,11 @@ TIME_FIELDS = {'LastModificationTime', 'CreationTime', 'LastAccessTime', 'Expiry
 
 class SelectionError(versions.PreservationError):
     def __init__(self, categories):
+        """Expose fixed verification text and bounded counts of approved diagnostic categories.
+
+        Drop unknown categories and nonpositive/noninteger counts; do not include
+        entry identities, field names, values or secret hashes in the error.
+        """
         super().__init__('active version verification failed; target not replaced')
         # These are per-entry categories, never per-field details or secret hashes.
         self.diagnostics = {key: min(count, 2**31 - 1) for key, count in sorted(Counter(categories).items())
@@ -36,6 +41,11 @@ class SelectionError(versions.PreservationError):
 
 
 def decode_time(text, version):
+    """Decode a KDBX timestamp to UTC at native entry-selection second precision.
+
+    Treat naive times as UTC and reject invalid data with category-only
+    SelectionError; group clocks use a separate precision-preserving policy.
+    """
     try:
         value = datetime.fromisoformat(versions._time(text, version))
         return value.replace(tzinfo=value.tzinfo or timezone.utc).astimezone(timezone.utc).replace(microsecond=0)
@@ -44,6 +54,10 @@ def decode_time(text, version):
 
 
 def time_value(item, name):
+    """Require exactly one named Times child and decode its native selection clock.
+
+    Missing or repeated timestamps raise category-only SelectionError.
+    """
     nodes = item._element.findall('Times/' + name)
     if len(nodes) != 1:
         raise SelectionError(['unsupported_times'])
@@ -55,6 +69,10 @@ def modification_time(item):
 
 
 def _boolean(text):
+    """Accept recognized KDBX boolean spellings and reject unknown values.
+
+    Return a Python boolean or raise a structure-category SelectionError.
+    """
     result = versions._bool(text or '')
     if result not in {'True', 'False'}:
         raise SelectionError(['unsupported_structure'])
@@ -62,6 +80,10 @@ def _boolean(text):
 
 
 def _uuid(text):
+    """Decode a strict Base64 UUID, treating absent or all-zero values as None.
+
+    Malformed encodings raise category-only SelectionError without the input.
+    """
     if not text:
         return None
     try:
@@ -72,12 +94,22 @@ def _uuid(text):
 
 
 def _leaf(node, attributes=()):
+    """Read scalar XML text only when children and unexpected attributes are absent.
+
+    Return an empty string for missing text; unsupported structure raises
+    SelectionError rather than guessing which nested value to compare.
+    """
     if len(node) or set(node.attrib) - set(attributes):
         raise SelectionError(['unsupported_structure'])
     return node.text or ''
 
 
 def _pairs(element, tag, allowed_value_attributes=()):
+    """Read unique XML Key/Value pairs with an explicit value-attribute allowlist.
+
+    Reject duplicate keys or malformed containers; results include private
+    values and node references and must not leave the verifier.
+    """
     result = {}
     for node in element.findall(tag):
         if node.attrib or len(node) != 2 or {c.tag for c in node} != {'Key', 'Value'}:
@@ -92,12 +124,22 @@ def _pairs(element, tag, allowed_value_attributes=()):
 
 
 def _fields(entry):
+    """Project entry strings and their effective protection flags for private comparison.
+
+    Validate pair structure and both protection attributes; the returned
+    dictionary contains plaintext secrets and must never enter diagnostics.
+    """
     values = _pairs(entry._element, 'String', ('Protected', 'ProtectInMemory'))
     return {key: (value, any([_boolean(node.get(attr, 'False')) for attr in ('Protected', 'ProtectInMemory')]))
             for key, (value, node) in values.items()}
 
 
 def _attachments(entry):
+    """Resolve validated entry attachment references to private binary contents.
+
+    Reject unreadable or invalid references with category-only SelectionError;
+    never compare reference numbers as a substitute for attachment data.
+    """
     values = _pairs(entry._element, 'Binary', ('Ref',))
     try:
         return {key: entry._kp.binaries[int(node.get('Ref'))] for key, (_, node) in values.items()}
@@ -106,6 +148,11 @@ def _attachments(entry):
 
 
 def _times(entry):
+    """Project creation and enabled expiry semantics from a validated Times block.
+
+    Reject duplicate or unknown clock fields. Disabled expiry values remain
+    retained in capsules but do not affect active entry expiry selection.
+    """
     nodes = entry._element.findall('Times')
     if len(nodes) != 1 or nodes[0].attrib:
         raise SelectionError(['unsupported_times'])
@@ -124,6 +171,11 @@ def _times(entry):
 
 
 def _custom_data(entry):
+    """Read unique private CustomData values after validating optional item clocks.
+
+    Ignore native dictionary-clock and legacy entry report keys only. Reject
+    unsupported structure with category-only errors; never expose the values.
+    """
     containers = entry._element.findall('CustomData')
     if len(containers) > 1:
         raise SelectionError(['unsupported_structure'])
@@ -167,6 +219,12 @@ def _tags(text):
 
 
 def _metadata(entry):
+    """Project a copy of entry metadata under known native representation rules.
+
+    Return canonical data and an unknown-schema flag without changing the
+    entry. Normalize tags, icons and legacy quality flags while keeping
+    unknown metadata significant; the projection is private verifier state.
+    """
     from lxml import etree
     node = copy.deepcopy(entry._element)
     known = {'UUID', 'String', 'Binary', 'Times', 'History', 'CustomData', 'PreviousParentGroup',
@@ -219,6 +277,10 @@ class Expected:
 
 
 def _previous(entry):
+    """Read the optional previous-parent UUID and reject duplicate location metadata.
+
+    Missing or zero UUIDs map to None; malformed scalar data fails closed.
+    """
     nodes = entry._element.findall('PreviousParentGroup')
     if len(nodes) > 1:
         raise SelectionError(['unsupported_structure'])
@@ -226,6 +288,12 @@ def _previous(entry):
 
 
 def _expected(originals):
+    """Model ordered native entry and location selection from nonempty originals.
+
+    A newer location and newer record can come from different inputs; equal
+    modification seconds keep the earlier input. History never becomes active.
+    Return private expected states without mutating any input vault.
+    """
     result = {}
     root = originals[0].root_group.uuid
     # Match the two native stages: location is resolved before whole active
@@ -248,6 +316,13 @@ def _expected(originals):
 
 
 def verify(vault, originals):
+    """Verify active entries against ordered native selection without changing the vault.
+
+    Apply deletion clocks and compare data, protection, attachments, location
+    and supported metadata. Raise SelectionError with approved per-entry
+    category counts only; no identities, values or private projections escape.
+    Originals must be nonempty and ordered by the intended native merge stages.
+    """
     expected = _expected(originals)
     entries = list(versions.active_entries(vault))
     actual = {entry.uuid: entry for entry in entries}

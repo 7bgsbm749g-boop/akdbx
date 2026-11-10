@@ -14,5 +14,10 @@ VERIFICATION = 'keepassium-2.5.171-sequence-v1'
 
 
 def sequence(text):
+    """Split group tags on comma/semicolon and trim only ASCII spaces and tabs.
+
+    Drop empty tokens while preserving order, duplicates, case and all other
+    whitespace. This is sequence equivalence, not entry-tag set normalization.
+    """
     return tuple(token for part in re.split('[,;]', text or '')
                  if (token := part.strip(' \t')))

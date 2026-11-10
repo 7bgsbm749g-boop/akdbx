@@ -53,6 +53,10 @@ def _entry_changed_at(entry, wall_clock):
 
 
 def _generated_origin(url):
+    """Require an ASCII HTTPS origin for generated-password delivery.
+
+    Convert TOTP URL validation failures to fixed WriteError text.
+    """
     try:
         return https_origin(url)
     except TotpError:
@@ -87,6 +91,12 @@ def passwordless_identity(entry):
 
 
 def validate_identity_metadata(values, kind):
+    """Reject ambiguous or unsafe metadata for a passwordless identity.
+
+    Require a whitespace-free account and an ASCII HTTPS URL without query,
+    fragment or credentials. Invalid host spellings and control characters
+    raise WriteError; group existence is checked separately by the caller.
+    """
     try:
         if not isinstance(values, dict) or any(
             not isinstance(value, str) or any(unicodedata.category(c).startswith('C') for c in value)
@@ -121,10 +131,19 @@ def validate_identity_metadata(values, kind):
 
 
 def metadata(entry):
+    """Return destination fields used to recheck a selected entry before saving.
+
+    The result contains account metadata, never the password or OTP value.
+    """
     return dict(title=entry.title or '', username=entry.username or '', url=entry.url or '', group='/'.join(entry.path[:-1]))
 
 
 def site_origin(url):
+    """Return a normalized HTTP(S) scheme, host and effective port.
+
+    Reject missing hosts, credentials and port zero. IP addresses are compressed
+    and DNS names use IDNA; this is not the stricter ASCII HTTPS TOTP policy.
+    """
     parsed = urlsplit(url)
     if (
         parsed.scheme not in {'http', 'https'} or not parsed.hostname
@@ -142,6 +161,11 @@ def site_origin(url):
 
 
 def validate_metadata(values):
+    """Validate the exact destination field set and bound each UTF-8 value.
+
+    Reject controls, empty titles/accounts and invalid HTTP(S) origins. This
+    does not prove that a group exists or that the site owns the account.
+    """
     if set(values) != {'title', 'username', 'url', 'group'} or any(
         not isinstance(v, str) or len(v.encode('utf-8')) > 4096
         or any(ord(c) < 32 or ord(c) == 127 for c in v)
@@ -154,6 +178,10 @@ def validate_metadata(values):
 
 
 def group_for(vault, path):
+    """Resolve one existing destination group outside all archive subtrees.
+
+    Missing or duplicate path matches raise WriteError; no group is created.
+    """
     groups = []
     for group in vault.groups:
         if '/'.join(group.path) != path:
@@ -169,6 +197,11 @@ def group_for(vault, path):
 
 
 def duplicate(vault, values):
+    """Detect a case-insensitive account match on the same normalized origin.
+
+    Search active entries across groups, ignoring title and URL path. Entries
+    with unusable URLs do not establish a duplicate origin.
+    """
     # Conservative: same account on an origin anywhere in the vault is a
     # duplicate even if title, URL path or group differs.
     for entry in active_entries(vault):
@@ -212,10 +245,19 @@ class WriteManager:
         self.public_base = None
 
     def available(self):
+        """Report whether private writes have a base URL and a safe writable store.
+
+        A store that requires recovery disables writes even when already unlocked.
+        """
         store = getattr(self.broker.vault, '_akdbx_store', None)
         return bool(self.public_base and store and store.writable_path and not store.recovery_required)
 
     def invalidate_revision(self, current=None, *, all_pending=False):
+        """Advance the vault revision and revoke outstanding search handles.
+
+        Discard other imports and fail other pending generated writes, or all
+        pending writes when requested. Callers must hold the broker vault lock.
+        """
         self.revision += 1
         for other in self.operations.values():
             if other is not current:
@@ -230,6 +272,10 @@ class WriteManager:
             self.broker._handles.clear()
 
     def _prune(self):
+        """Remove expired operations and release their retained passwords and imports.
+
+        Expiry uses the broker monotonic clock; callers hold the vault lock.
+        """
         now = self.broker.clock()
         for handle, op in list(self.operations.items()):
             if op.expires <= now:
@@ -239,11 +285,19 @@ class WriteManager:
                 del self.operations[handle]
 
     def get(self, handle):
+        """Prune expired writes and look up an opaque agent status handle.
+
+        Return None for non-string or unknown handles; this does not authorize a save.
+        """
         self._prune()
         return self.operations.get(handle) if isinstance(handle, str) else None
 
     def by_token(self, token, kind='password'):
-        """Return a pending private operation for the current vault revision."""
+        """Find an unexpired private operation of the requested kind and revision.
+
+        Only pending operations without a generated password qualify. Return None
+        on no match; this private token is distinct from the agent status handle.
+        """
         self._prune()
         return next((op for op in self.operations.values()
                      if op.revision == self.revision and secrets.compare_digest(op.token, token)
@@ -256,6 +310,12 @@ class WriteManager:
         return self._create_identity(request, PASSWORDLESS_AUTH_METHODS, PASSWORDLESS_MARKER, 'passwordless')
 
     def _create_identity(self, request, methods, marker, kind):
+        """Save an explicit metadata-only identity with an allowed sign-in marker.
+
+        Reject extra fields, unsupported methods and duplicate accounts. Commit an
+        empty site password to an existing group, then invalidate prior handles.
+        The caller holds the vault lock; no secret input is accepted.
+        """
         # This explicit action accepts metadata only. It cannot accept a secret
         # or silently reinterpret an ordinary create-entry/password request.
         if set(request) != {'action', 'metadata', 'auth_method'}:
@@ -273,6 +333,10 @@ class WriteManager:
             raise WriteError('duplicate site/account; select an existing entry')
 
         def mutate(candidate):
+            """Recheck the group and duplicates on the candidate before adding markers.
+
+            The empty password records an external sign-in method, not a generated secret.
+            """
             group = group_for(candidate, values['group'])
             if duplicate(candidate, values):
                 raise WriteError('duplicate site/account; select an existing entry')
@@ -292,6 +356,14 @@ class WriteManager:
         return dict(ok=True, state='saved', metadata=dict(values), auth_method=method, passwordless=True)
 
     def begin(self, request):
+        """Authorize a bounded pending write after rechecking its destination.
+
+        Updates consume the search handle even on later failure. TOTP replacement
+        requires an explicit flag; setup data enters only through private HTTP/native
+        ingestion.
+        Generated passwords stay in memory and return one-use fill references.
+        Other writes return a private URL and a separate agent status handle.
+        """
         entry = None
         is_totp = request['action'] == 'setup-totp'
         if is_totp and (set(request) - {'action', 'handle', 'metadata', 'replace'} or type(request.get('replace', False)) is not bool):
@@ -373,6 +445,13 @@ class WriteManager:
         return {'ok': True, 'state': op.state, **({'error': op.error} if op.error else {})}
 
     def submit(self, op, password, confirmation, confirmed):
+        """Save a confirmed private password, preserving history for an update.
+
+        Input validation can be corrected without consuming the operation. Once a
+        save is attempted, the authorization is consumed even on failure. Recheck
+        revision and destination on the candidate; return fixed or approved error
+        text. Clear retained generated-password state after the save attempt.
+        """
         if op.kind != 'password' or op.state != 'pending' or op.expires <= self.broker.clock():
             return {'ok': False, 'error': 'unknown or expired write; start again'}
         try:
@@ -388,6 +467,11 @@ class WriteManager:
                 raise WriteError('stale write; search and start again')
             vault = self.broker.vault
             def mutate(candidate):
+                """Recheck the candidate destination before changing its password or adding it.
+
+                Updates save history with a strictly newer real timestamp and reject
+                passwordless identities. New entries must still pass duplicate checks.
+                """
                 if op.uuid is not None:
                     entries = [e for e in active_entries(candidate) if e.uuid == op.uuid]
                     if len(entries) != 1 or metadata(entries[0]) != op.values:
@@ -420,7 +504,13 @@ class WriteManager:
         return {'ok': False, 'error': op.error}
 
     def stage_totp_import(self, op, payloads, source=''):
-        """Private HTTP/native ingestion only. No secret-bearing RPC action."""
+        """Stage secret configurations for private review without changing the vault.
+
+        The caller holds the vault lock. Reject expired, stale or already staged
+        operations. Browser captures must match the destination HTTPS origin and
+        contain one account. Retain candidates and a fresh review nonce in memory;
+        retain only the source origin, never its path or query. No RPC entry point.
+        """
         from .import_totp import parse_import
         if (op.kind != 'totp' or op.state != 'pending' or op.expires <= self.broker.clock()
                 or op.revision != self.revision or not self.available() or op.import_candidates):
@@ -436,6 +526,11 @@ class WriteManager:
         op.import_source = ('https://' + urlsplit(source).netloc) if source else 'Private QR/key import'
 
     def confirm_totp_import(self, op, choice, nonce, confirmed):
+        """Save only the chosen staged account after nonce and explicit confirmation.
+
+        Invalid selections leave the operation unsaved. Delegate expiry, revision,
+        destination and replacement checks to submit_totp; no setup key is returned.
+        """
         candidates = op.import_candidates
         if (not candidates or not isinstance(nonce, str) or not op.import_nonce
                 or not secrets.compare_digest(nonce, op.import_nonce)
@@ -447,6 +542,14 @@ class WriteManager:
         return self.submit_totp(op, candidates[choice].uri(), True)
 
     def submit_totp(self, op, setup, confirmed):
+        """Persist one privately confirmed TOTP configuration in the selected entry.
+
+        Validation failures allow correction. A save attempt consumes authorization
+        and clears staged imports, including on failure. Recheck revision, entry
+        metadata and replacement permission; preserve history, force OTP protection
+        and verify the reopened encrypted candidate before replacement. A saved
+        receipt confirms vault persistence, not website acceptance.
+        """
         if op.kind != 'totp' or op.state != 'pending' or op.expires <= self.broker.clock():
             return {'ok': False, 'error': 'unknown or expired TOTP setup; start again'}
         # Validation errors allow correction on the same private page, but no
@@ -467,12 +570,21 @@ class WriteManager:
             vault = self.broker.vault
 
             def selected(candidate):
+                """Require one active candidate entry with the authorized UUID and metadata.
+
+                Raise WriteError if the selected destination changed or became ambiguous.
+                """
                 entries = [e for e in active_entries(candidate) if e.uuid == op.uuid]
                 if len(entries) != 1 or metadata(entries[0]) != op.values:
                     raise WriteError('entry changed; search again')
                 return entries[0]
 
             def mutate(candidate):
+                """Archive the previous entry state and set the protected standard OTP field.
+
+                Reject unapproved replacement and clocks that cannot yield a newer real
+                KDBX timestamp; mutate only the isolated commit candidate.
+                """
                 entry = selected(candidate)
                 if totp_configured(entry) and not op.replace:
                     raise WriteError('TOTP already configured; explicit --replace is required')
@@ -490,6 +602,10 @@ class WriteManager:
                 entry._element.find('./String[Key="otp"]/Value').set('Protected', 'True')
 
             def verify_saved(candidate):
+                """Reject an encrypted candidate that lost the OTP value or protection flag.
+
+                This check runs after reopening and before the target file is replaced.
+                """
                 entry = selected(candidate)
                 if (entry.otp != uri
                         or entry._element.find('./String[Key="otp"]/Value').get('Protected') != 'True'):
@@ -510,6 +626,12 @@ class WriteManager:
         return {'ok': False, 'error': op.error}
 
     def fill(self, request, delivery_ready):
+        """Consume a generated-password fill reference and deliver to a pinned target.
+
+        Reject stale operations and target-origin mismatches before delivery. Reuse
+        the broker deadline and keyboard guards; record a mode only on success.
+        Neither the password nor its confirmation is returned to the caller.
+        """
         self._prune()
         ref = request.get('handle')
         found = next(((op, op.fill_refs.pop(ref)) for op in self.operations.values() if isinstance(ref, str) and ref in op.fill_refs), None)
@@ -534,6 +656,11 @@ class WriteManager:
         return response
 
     def commit_generated(self, request):
+        """Save a generated password only after both fills and explicit site acceptance.
+
+        Unknown, expired or incomplete operations raise WriteError. The normal
+        submit path still rechecks revision and destination before committing.
+        """
         op = self.get(request.get('write_handle'))
         if op is None or op.state != 'pending' or op.password is None:
             raise WriteError('unknown or expired generated password; start again')

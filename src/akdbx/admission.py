@@ -35,12 +35,22 @@ GROUP_FIELDS = frozenset({'UUID', 'Name', 'Notes', 'IconID', 'CustomIconUUID', '
 
 class AdmissionError(versions.PreservationError):
     def __init__(self, categories):
+        """Report admission refusal with fixed text and bounded approved diagnostic counts.
+
+        Exclude unknown categories and any record identifiers or secret details.
+        """
         super().__init__('snapshot admission refused; reconcile explicitly and read the canonical file again')
         self.diagnostics = {k: min(v, 2**31 - 1) for k, v in sorted(Counter(categories).items())
                             if k in CATEGORIES and type(v) is int and v > 0}
 
 
 def _crypto(vault):
+    """Project stable KDBX4 encryption policy for private admission comparison.
+
+    Keep cipher, KDF parameters other than salt, protected-stream type and
+    unknown header data significant. Ignore salt, master seed, IV, compression
+    flags and the header terminator. Reject older formats with AdmissionError.
+    """
     if vault.version[0] != 4:
         raise AdmissionError(['encryption_policy'])
     header = vault.kdbx.header.value.dynamic_header
@@ -55,6 +65,11 @@ def _crypto(vault):
 
 
 def _group_time(text, vault):
+    """Normalize group clocks to UTC without discarding supported fractional precision.
+
+    Reject fractions beyond six digits and malformed times with category-only
+    AdmissionError. This is not the entry-selection whole-second bucket.
+    """
     # Group clocks are not entry-version timestamp buckets. Normalize timezone
     # representation while retaining supplied fractional precision. Ordinary
     # KDBX4 binary times are whole seconds; different ISO instants must refuse.
@@ -134,6 +149,12 @@ def _group_defaults(node, vault):
 
 
 def _shape(node, vault, *, group=False, tag_equivalence=False):
+    """Project supported database/group metadata on a private copy for comparison.
+
+    Reject repeated known fields, apply group defaults and optional sequence
+    tag equivalence, and ignore only listed UI/access metadata. Unknown fields
+    retain order; this projection never rewrites the incoming encrypted file.
+    """
     if node is None:
         return None
     node = copy.deepcopy(node)
@@ -183,6 +204,11 @@ def _shape(node, vault, *, group=False, tag_equivalence=False):
 
 
 def _custom_data(vault):
+    """Compare database CustomData with only native dictionary-clock changes ignored.
+
+    Reuse entry structural validation but retain KnownBad at database level;
+    that entry-only legacy exception does not apply to database settings.
+    """
     from types import SimpleNamespace
     meta = vault.tree.find('./Meta')
     values = selection._custom_data(SimpleNamespace(_element=meta, _kp=vault))
@@ -194,6 +220,11 @@ def _custom_data(vault):
 
 
 def _deleted(vault):
+    """Read unique, well-formed deletion UUIDs and native second-precision clocks.
+
+    Reject malformed tombstone structure or duplicate identities with
+    AdmissionError; return private mapping data only to the admission verifier.
+    """
     result = {}
     for node in vault.tree.findall('./Root/DeletedObjects/DeletedObject'):
         identity = node.findtext('UUID')
@@ -208,11 +239,15 @@ def _deleted(vault):
 
 
 def verify(incoming, originals, *, trusted_archives=None, group_verification=GROUP_VERIFICATION):
-    """No mutations, digests of secrets, native output or identities in errors.
+    """Prove byte-preserving admission containment without mutating any input vault.
 
-    Existing group properties/database settings must agree. Deliberately refuse
-    concurrent group/settings edits rather than guess their partial native
-    combination. Entry locations and active data use semantic-v1 selection.
+    Require nonempty ordered originals: current disk, then held state if
+    distinct. Verify encryption/settings, deletions, protected fields, retained
+    capsules and active entry semantics. Apply the explicitly selected group
+    contract; strict profiles refuse concurrent group metadata changes and the
+    native profile delegates group selection. Trusted archive caches must come
+    from verified originals. Return retained counts and the admitted capsule
+    ledger; errors expose only approved categories, never secret projections.
     """
     if group_verification not in GROUP_VERIFIERS:
         raise AdmissionError(['unsupported_structure'])

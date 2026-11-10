@@ -28,6 +28,11 @@ IDENTITY_CREATES = ('create-sso-entry', 'create-passwordless-entry')
 
 
 def default_socket() -> Path:
+    """Choose an existing canonical or legacy runtime socket path for upgrades.
+
+    Fall back to the canonical name if neither exists. Existence is not trust;
+    request still checks directory, socket and connected peer ownership.
+    """
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     base = Path(runtime) / "akdbx" if runtime else Path(f"/tmp/akdbx-{os.getuid()}")
     canonical = base / "akdbx.sock"
@@ -45,7 +50,11 @@ def default_socket() -> Path:
 
 
 def _validate_socket_path(socket_path: Path, broker_uid: int) -> tuple[Path, int]:
-    """Open a trusted runtime leaf and validate its socket relative to that fd."""
+    """Validate an owned mode-0600 socket below a trusted private runtime leaf.
+
+    Return its absolute path and an owned directory FD for anchored connection.
+    The caller must close the FD; unsafe paths raise PermissionError.
+    """
     socket_path = Path(os.path.abspath(os.fspath(socket_path)))
     try:
         runtime_path, runtime_fd = open_private_runtime_directory(
@@ -70,6 +79,11 @@ def _validate_socket_path(socket_path: Path, broker_uid: int) -> tuple[Path, int
 
 
 def _peer_credentials(client: socket.socket) -> tuple[int, int, int]:
+    """Read Linux Unix-socket peer PID, UID and GID from the kernel.
+
+    Fail if SO_PEERCRED is unavailable; never substitute pathname ownership
+    for verification of the process on the connected end.
+    """
     if not hasattr(socket, "SO_PEERCRED"):
         raise RuntimeError("Unix peer credential verification is unavailable on this platform")
     size = struct.calcsize("3i")
@@ -77,6 +91,12 @@ def _peer_credentials(client: socket.socket) -> tuple[int, int, int]:
 
 
 def _validate_unlock_url(url: object, expected_origin: str) -> None:
+    """Reject private URLs outside the configured HTTPS origin or token shape.
+
+    Require one nonempty token, no credentials and no fragment. Invalid
+    configuration raises ValueError; untrusted responses raise ProtocolError.
+    This checks origin and query, not a route-specific path allowlist.
+    """
     if not isinstance(url, str):
         raise ProtocolError("invalid unlock URL")
     expected = urlsplit(expected_origin)
@@ -120,6 +140,12 @@ def _validate_unlock_url(url: object, expected_origin: str) -> None:
 
 
 def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
+    """Validate common broker response types and every returned private URL.
+
+    Check configured origin even when no URL is present. Return the original
+    dictionary on success; this does not replace command-specific receipt
+    validation or filter arbitrary extra response fields.
+    """
     # Validate configuration even when an unlocked response has no URL.
     expected = urlsplit(expected_unlock_origin)
     try:
@@ -163,6 +189,12 @@ def request(
     broker_uid: int | None = None,
     expected_unlock_origin: str = DEFAULT_UNLOCK_ORIGIN,
 ) -> dict:
+    """Exchange one RPC with a socket- and peer-verified broker and validate its reply.
+
+    Use action-specific timeouts, an anchored socket path and the expected UID.
+    Always close socket and runtime FD. Transport failure after send does not
+    prove that a fill or save was not performed; callers must report uncertainty.
+    """
     broker_uid = os.getuid() if broker_uid is None else broker_uid
     socket_path, runtime_fd = _validate_socket_path(socket_path, broker_uid)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -195,6 +227,11 @@ def _read_webhook_url(path: Path) -> str:
 
 
 def parser() -> argparse.ArgumentParser:
+    """Build the command interface without opening a vault or contacting a broker.
+
+    Read deployment defaults from the environment and inspect runtime socket
+    existence. Private secret values have no command-line input option.
+    """
     result = argparse.ArgumentParser(prog="akdbx", description="Secret-withholding KeePass autofill broker")
     result.add_argument("--version", action="version", version=__version__)
     result.add_argument("--socket", type=Path, default=default_socket())
@@ -286,6 +323,14 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the broker service or send a metadata/handle command with capability checks.
+
+    Service mode starts locked and exposes a private unlock URL without terminal
+    password input. Client mode checks sensitive operation receipts before
+    printing JSON, and reports uncertain writes/fills without automatic retry.
+    Return zero on success, one for broker rejection and two for client/trust
+    or transport failures; argparse handles usage errors separately.
+    """
     args = parser().parse_args(argv)
     if args.command == "serve":
         database = args.database.expanduser()

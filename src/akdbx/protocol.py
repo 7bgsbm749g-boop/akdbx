@@ -14,6 +14,11 @@ class ProtocolError(Exception):
 
 
 def send_message(sock: socket.socket, value: dict[str, Any]) -> None:
+    """Send a UTF-8 JSON object with a four-byte network-order length prefix.
+
+    Reject encoded payloads above MAX_MESSAGE with ProtocolError before sending.
+    Serialization and socket errors propagate; callers must sanitize failures.
+    """
     data = json.dumps(value, separators=(",", ":")).encode("utf-8")
     if len(data) > MAX_MESSAGE:
         raise ProtocolError("message too large")
@@ -21,6 +26,11 @@ def send_message(sock: socket.socket, value: dict[str, Any]) -> None:
 
 
 def _read_exact(sock: socket.socket, size: int, deadline: float | None = None) -> bytes:
+    """Receive exactly size bytes, rejecting early EOF with ProtocolError.
+
+    An absolute monotonic deadline bounds all reads and changes the socket
+    timeout to the remaining budget; timeout and socket errors propagate.
+    """
     chunks: list[bytes] = []
     remaining = size
     while remaining:
@@ -38,6 +48,12 @@ def _read_exact(sock: socket.socket, size: int, deadline: float | None = None) -
 
 
 def receive_message(sock: socket.socket, *, deadline: float | None = None) -> dict[str, Any]:
+    """Read one bounded length-prefixed JSON object from the socket.
+
+    Apply the same absolute monotonic deadline to header and body. Reject
+    oversize, malformed or non-object messages with ProtocolError. Leave
+    trailing data unread for the caller to reject; no peer authentication here.
+    """
     size = struct.unpack("!I", _read_exact(sock, 4, deadline))[0]
     if size > MAX_MESSAGE:
         raise ProtocolError("message too large")

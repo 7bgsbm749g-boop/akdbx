@@ -23,6 +23,10 @@ CATEGORIES = frozenset({'group_membership', 'group_properties', 'group_times',
 
 class GroupSelectionError(versions.PreservationError):
     def __init__(self, categories):
+        """Keep group verification failures limited to fixed text and approved category counts.
+
+        Filter unknown categories and cap positive integer counts without exposing UUIDs.
+        """
         super().__init__('native group selection verification failed; target not replaced')
         self.diagnostics = {k: min(v, 2**31 - 1) for k, v in sorted(Counter(categories).items())
                             if k in CATEGORIES and type(v) is int and v > 0}
@@ -53,6 +57,12 @@ def _clock(state, name):
 
 
 def _read(group, vault):
+    """Project supported group metadata without copying child entries or subgroups.
+
+    Reject unknown/duplicate fields, fractional native clocks and invalid icon
+    numbers. Normalize known defaults and custom-icon selection on a copy;
+    return the original parent UUID with the private projected state.
+    """
     from .admission import GROUP_FIELDS, _group_defaults
     original = group._element
     if original.attrib or (original.text or '').strip():
@@ -90,6 +100,10 @@ def _read(group, vault):
 
 
 def _parent(states, identity, parent):
+    """Reject cycles and missing ancestors in the modeled group parent chain.
+
+    This checks topology only and raises category-only GroupSelectionError.
+    """
     current = parent
     seen = {identity}
     while current is not None:
@@ -106,6 +120,11 @@ def _fields(state):
 
 
 def _deletions(vaults):
+    """Combine group deletion clocks using the earliest instant for each UUID.
+
+    Reject fractional tombstones that native whole-second selection cannot
+    represent; return private identities and clocks for verification only.
+    """
     from .admission import _group_time
     deleted = {}
     for vault in vaults:
@@ -121,6 +140,14 @@ def _deletions(vaults):
 
 
 def verify(incoming, originals):
+    """Verify ordered native group selection, moves and deletions without mutating inputs.
+
+    Require a shared root and no cross-input entry/group UUID type changes.
+    Model only supported KeePassXC 2.7.10 property rules and refuse unknown
+    metadata or invalid topology. Use incoming occupancy for deletion checks;
+    entry containment must be verified separately. Errors contain categories
+    only. Originals must be nonempty and in native stage order.
+    """
     all_inputs = (*originals, incoming)
     root = originals[0].root_group.uuid
     if any(v.root_group.uuid != root for v in all_inputs):

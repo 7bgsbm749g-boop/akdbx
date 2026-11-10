@@ -33,6 +33,10 @@ class Configuration:
     issuer: str = ''
 
     def uri(self):
+        """Serialize the secret into a standard TOTP URI for private storage or parsing.
+
+        The returned string includes the seed; never log it or expose it through RPC.
+        """
         parameters = dict(secret=base64.b32encode(self.secret).decode('ascii').rstrip('='),
                           algorithm=self.algorithm, digits=str(self.digits), period=str(self.period))
         if self.issuer:
@@ -41,7 +45,14 @@ class Configuration:
 
 
 def parse_setup(value, *, label=''):
-    """Accept a Base32 key or a strict otpauth TOTP URI, never HOTP or migrations."""
+    """Parse a private Base32 key or strict TOTP URI into secret configuration.
+
+    Bound input and output to 4096 characters; accept 10..128 seed bytes, known
+    algorithms, 6/8 digits and periods of 15..120 seconds. Reject HOTP, migration
+    URIs, duplicate/unknown parameters and inconsistent issuer labels. Manual
+    keys allow space-separated groups. Failures become a fixed TotpError with
+    no submitted value or underlying parser diagnostic.
+    """
     try:
         if not isinstance(value, str) or not 0 < len(value) <= MAX_SETUP_LENGTH:
             raise ValueError
@@ -101,6 +112,11 @@ def configured(entry):
 
 
 def read_configuration(entry):
+    """Read and validate only the standard saved otpauth TOTP property.
+
+    Missing or legacy values raise fixed TotpError text; do not guess a format
+    from custom fields. The returned configuration contains secret material.
+    """
     value = getattr(entry, 'otp', None)
     if value is None:
         raise TotpError('no TOTP configuration on this entry; import it privately first')
@@ -112,6 +128,11 @@ def read_configuration(entry):
 
 
 def code_at(configuration, timestamp):
+    """Compute a zero-padded RFC 6238 code for an already validated configuration.
+
+    Reject boolean, nonfinite, negative or out-of-counter-range timestamps with
+    TotpError. The returned code is a secret for local delivery, never RPC.
+    """
     if (isinstance(timestamp, bool) or not isinstance(timestamp, (int, float))
             or not math.isfinite(timestamp) or timestamp < 0):
         raise TotpError('invalid authenticator clock; no code filled')
@@ -125,6 +146,12 @@ def code_at(configuration, timestamp):
 
 
 def https_origin(url):
+    """Require an ASCII HTTPS URL and return its normalized origin tuple.
+
+    Reject credentials, backslashes, whitespace and controls with fixed
+    TotpError text. Require punycode rather than Unicode host spelling. This
+    validates a caller assertion; it does not attest the active browser page.
+    """
     # Validate before reading OTP data. This is a caller-supplied assertion,
     # not a DOM/origin attestation by the X11 transport.
     from .writes import site_origin

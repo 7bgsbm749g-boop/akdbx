@@ -24,10 +24,20 @@ RECEIPT = {'ok': True, 'state': 'awaiting-private-confirmation'}
 
 
 def config_path():
+    """Locate the native-host configuration under XDG_CONFIG_HOME or the home fallback.
+
+    This computes a path only; it neither reads configuration nor contacts Chrome.
+    """
     return Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'akdbx' / 'browser-import.json'
 
 
 def load_config(path):
+    """Read a bounded native-host configuration from a verified private directory.
+
+    Reject symlinks, nonregular files, foreign owners, group/other permissions
+    and invalid field sets or extension IDs. Return configuration only; origin
+    and socket trust checks occur during capture. Always close the directory FD.
+    """
     from .runtime import open_private_runtime_directory
     _, directory = open_private_runtime_directory(path.parent)
     try:
@@ -48,7 +58,13 @@ def load_config(path):
 
 
 def capture(message, config):
-    """Only the native host calls this. Do not add an agent-facing equivalent."""
+    """Forward private setup data over the configured same-user Unix socket only.
+
+    Require the configured HTTPS origin and /totp token path, bound the JSON
+    body and verify peer UID. Accept only the exact fixed confirmation receipt.
+    Any validation or transport failure propagates to native_session for a
+    fixed error; no agent-facing equivalent may expose these secret payloads.
+    """
     from .cli import _validate_socket_path, _validate_unlock_url, _peer_credentials
     from .runtime import anchored_socket_path
     if not isinstance(message, dict) or set(message) != {'private_url', 'source_url', 'payloads'}:
@@ -84,6 +100,10 @@ def capture(message, config):
 
 
 def _read_exact(stream, size):
+    """Read exactly the requested native-message bytes or raise ValueError on EOF.
+
+    The caller must validate the size budget before requesting a payload.
+    """
     data = bytearray()
     while len(data) < size:
         chunk = stream.read(size - len(data))
@@ -94,6 +114,12 @@ def _read_exact(stream, size):
 
 
 def native_session(incoming, outgoing, config, caller):
+    """Handle one bounded Chrome message from the configured extension origin.
+
+    Write and flush one little-endian length-prefixed receipt. Convert all
+    capture/parsing errors to fixed text so secret payloads cannot reach stdout
+    through diagnostics; output stream failures still propagate.
+    """
     try:
         if caller != 'chrome-extension://' + config['extension_id'] + '/':
             raise ValueError
@@ -110,6 +136,11 @@ def native_session(incoming, outgoing, config, caller):
 
 
 def build_extension(destination):
+    """Copy packaged extension and offline decoder assets to a new directory.
+
+    Refuse an existing destination and do not create missing parents. Failures
+    can leave a partial directory; no browser profile or vault is accessed.
+    """
     # Never replace an existing profile or extension directory.
     destination.mkdir(mode=0o700, parents=False, exist_ok=False)
     for item in files('akdbx').joinpath('browser_extension').iterdir():
@@ -120,7 +151,13 @@ def build_extension(destination):
 
 
 def install_host(args):
-    """Register the invoked console script without selecting another PATH install."""
+    """Register the invoked installed native-host script for one extension origin.
+
+    Validate the origin and extension ID; exclusively create private config
+    and manifest files without overwriting either. On failure, remove only
+    files whose inode still matches this attempt. This writes installation
+    files but does not contact Chrome or the broker.
+    """
     from .cli import _validate_unlock_url
     from .runtime import prepare_private_runtime_directory
     if not re.fullmatch('[a-p]{32}', args.extension_id):
@@ -164,6 +201,12 @@ def install_host(args):
 
 
 def main(argv=None):
+    """Run one native exchange or an explicit extension build/host installation.
+
+    Native mode returns a fixed framed failure on bad config and exits zero;
+    installation failures print fixed text and return one. No secret request
+    is exposed as an agent command or echoed as a diagnostic.
+    """
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0].startswith('chrome-extension://'):
         try:

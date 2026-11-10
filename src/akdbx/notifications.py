@@ -25,6 +25,12 @@ def capabilities() -> dict:
 
 
 def validate_webhook_url(value: object) -> str:
+    """Validate a bounded printable-ASCII HTTPS callback without credentials or fragment.
+
+    Return its original spelling; reject missing hosts, port zero and URL
+    parse errors with fixed ValueError text. Queries may hold bearer tokens
+    and must remain private.
+    """
     try:
         if not isinstance(value, str) or not value or len(value) > 4096:
             raise ValueError
@@ -45,6 +51,11 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def post_event(url: str, payload: dict) -> None:
+    """Deliver one callback attempt in an isolated child with an absolute timeout.
+
+    Bound JSON input, pass the private URL only on stdin and discard child
+    output. Convert every failure to fixed OSError text; no retry occurs here.
+    """
     # urllib's timeout limits socket inactivity, not DNS or the total time to
     # receive headers. Isolate one attempt so even those operations can be
     # killed and reaped at the absolute deadline. No URL/token enters argv,
@@ -61,6 +72,11 @@ def post_event(url: str, payload: dict) -> None:
 
 
 def _post_event(url: str, payload: dict) -> None:
+    """POST one notification without environment proxies or redirected token forwarding.
+
+    Require a 2xx response and ignore its body. The socket timeout is not a
+    complete lifetime limit; post_event supplies the outer process deadline.
+    """
     # Do not forward a private webhook token through redirects or env proxies.
     opener = build_opener(ProxyHandler({}), _NoRedirect())
     request = Request(url, data=json.dumps(payload).encode("utf-8"), method="POST",
@@ -95,6 +111,10 @@ class UnlockNotifications:
         self._worker: threading.Thread | None = None
 
     def _prune(self):
+        """Drop expired subscriptions unless a send is currently in progress.
+
+        The caller holds the notification lock; this does not contact callbacks.
+        """
         now = self._clock()
         for key, item in list(self._items.items()):
             if item.expires_at <= now and item.state != "sending":
@@ -106,6 +126,13 @@ class UnlockNotifications:
                 "attempts": item.attempts}
 
     def subscribe(self, request: dict, *, unlocked: bool) -> dict:
+        """Register or reuse a bounded one-shot unlock subscription without echoing its URL.
+
+        Require protocol 1 and a TTL of 60..3600 seconds. Under the notification
+        lock, deduplicate live URLs by hash and queue immediate delivery if already
+        unlocked. Broker callers must serialize registration with unlock to avoid
+        missing a transition; receipts contain only IDs, state and attempt counts.
+        """
         if type(request.get("notification_protocol")) is not int or request["notification_protocol"] != 1:
             return {"ok": False, "error": "unlock notification protocol 1 required"}
         try:
@@ -134,6 +161,11 @@ class UnlockNotifications:
             return {**self._receipt(key, item), "expires_in": ttl}
 
     def publish(self) -> None:
+        """Queue subscribed callbacks once when the broker becomes unlocked.
+
+        Prune expired items under the lock and start at most one sender. Delivered
+        or cancelled subscriptions are not rearmed by later publish calls.
+        """
         with self._lock:
             self._prune()
             for item in self._items.values():
@@ -142,6 +174,11 @@ class UnlockNotifications:
             self._start_worker()
 
     def status(self, key: object, *, cancel=False) -> dict:
+        """Return a secret-free subscription receipt or cancel remaining attempts.
+
+        Cancellation clears the retained URL but cannot recall a callback already
+        being sent; unknown or expired IDs return a fixed failure.
+        """
         with self._lock:
             self._prune()
             item = self._items.get(key) if isinstance(key, str) else None
@@ -153,6 +190,11 @@ class UnlockNotifications:
             return self._receipt(key, item)
 
     def _start_worker(self):
+        """Start one daemon sender only when pending callbacks exist.
+
+        The caller holds the lock. If thread startup fails, mark pending items
+        failed and clear their private URLs rather than leaking diagnostics.
+        """
         # Called under _lock. At most one sender, and no idle listener process.
         if self._worker is not None or not any(i.state == "pending" for i in self._items.values()):
             return
@@ -166,6 +208,12 @@ class UnlockNotifications:
                     item.state, item.url = "failed", ""
 
     def _deliver(self):
+        """Send pending unlock events with bounded retries and a stable event ID.
+
+        Release the state lock during network work, check expiry/cancellation
+        before each attempt and clear URLs at terminal states. Contain sender
+        exceptions without logging tokens; retry delivery can repeat an event.
+        """
         while not self._stop.is_set():
             with self._lock:
                 self._prune()
@@ -204,6 +252,11 @@ class UnlockNotifications:
             self._worker = None
 
     def close(self):
+        """Stop new notification attempts and cancel retained active subscriptions.
+
+        Clear callback URLs and wait a bounded time for the worker; an in-flight
+        callback can complete, so cancellation does not prove nondelivery.
+        """
         self._stop.set()
         with self._lock:
             for item in self._items.values():

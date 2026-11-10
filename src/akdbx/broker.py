@@ -83,6 +83,11 @@ class Broker:
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
     ) -> None:
+        """Initialize an optionally locked broker with independent authorization and fill locks.
+
+        The supplied typer performs local delivery; construction neither opens a
+        vault nor starts listeners. Handles use a private random authentication key.
+        """
         self.vault = vault
         self.typer = typer
         self.targets = TargetPins(typer, clock)
@@ -105,6 +110,11 @@ class Broker:
             return self.vault is None
 
     def unlock(self, vault: VaultLike) -> bool:
+        """Publish one locked-to-unlocked transition under the state lock.
+
+        Return False without replacing an already open vault. A successful change
+        notifies registered unlock subscribers without disclosing credentials.
+        """
         with self._state_lock:
             if self.vault is not None:
                 return False
@@ -113,6 +123,11 @@ class Broker:
             return True
 
     def _new_handle(self, entry: EntryLike) -> str:
+        """Issue a bounded, expiring, opaque one-use authorization for an entry.
+
+        Prune expired handles and evict the oldest live authorization at capacity
+        under the state lock. The response token contains no entry fields.
+        """
         nonce = secrets.token_bytes(16)
         tag = hmac.new(self._key, nonce + str(entry.uuid).encode(), hashlib.sha256).digest()[:16]
         handle = (nonce + tag).hex()
@@ -133,6 +148,11 @@ class Broker:
                 self._handles.pop(handle, None)
 
     def _resolve(self, handle: object) -> EntryLike:
+        """Consume one search handle and return its entry for a local operation.
+
+        Reject non-string, unknown or expired handles with ValueError. Consumption
+        is final even when later target validation or delivery fails.
+        """
         if not isinstance(handle, str):
             raise ValueError("invalid handle")
         now = self.clock()
@@ -161,6 +181,13 @@ class Broker:
                 raise ValueError("unsafe credential text")
 
     def dispatch(self, request: dict, *, delivery_ready=None) -> dict:
+        """Route one RPC while serializing vault mutations, reads and keyboard access.
+
+        Register unlock subscriptions atomically with unlock; reject busy merges
+        without starting them. Supply an internal fill deadline when needed.
+        Delivery readiness is rechecked before secret delivery; responses omit
+        secret values, and merge exceptions receive fixed or approved error text.
+        """
         action = request.get("action")
         if action == "subscribe-unlock":
             # Share unlock's lock so registration cannot miss a racing unlock.
@@ -197,6 +224,14 @@ class Broker:
         *,
         delivery_ready: Callable[[], bool] | None = None,
     ) -> dict:
+        """Execute an authorized action with secret-free responses and guarded delivery.
+
+        Refuse locked/recovery-blocked vault work. Search returns bounded metadata
+        and one-use handles; fills consume both entry and target authorizations
+        before secret access. Validate deadline, caller, text and TOTP origin/time
+        before typing; sanitize backend errors once credentials can be involved.
+        The caller supplies the vault lock for operations that require it.
+        """
         internal_dispatch = delivery_ready is None
         if delivery_ready is None:
             delivery_ready = lambda: True
@@ -394,6 +429,11 @@ class Broker:
 
 
 def open_vault_with_password(database: Path, password: str, keyfile: Path | None = None):
+    """Open an encrypted database through VaultStore using privately supplied credentials.
+
+    The returned vault carries its store for verified saves. This does not
+    sanitize arbitrary opening errors; boundary callers must hide diagnostics.
+    """
     from .persistence import VaultStore
     return VaultStore(database).open(password, keyfile)
 
@@ -439,6 +479,13 @@ def _connection_is_alive(connection: socket.socket) -> bool:
 
 
 def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
+    """Serve bounded one-request RPC workers on a private same-user Unix socket.
+
+    Verify runtime ancestry and hold a lifecycle lock; never replace a live or
+    uncertain endpoint. At capacity, close new connections without dispatch.
+    On stop or failure close the listener and notifications, briefly join
+    workers, and unlink only this listener inode before releasing descriptors.
+    """
     socket_path = Path(os.path.abspath(os.fspath(socket_path)))
     runtime_path, runtime_fd = prepare_private_runtime_directory(socket_path.parent)
     socket_path = runtime_path / socket_path.name
@@ -460,6 +507,10 @@ def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
         admission = threading.BoundedSemaphore(MAX_RPC_WORKERS)
 
         def run_connection(connection: socket.socket) -> None:
+            """Serve one owned connection and always release its worker admission slot.
+
+            Remove the current worker from the tracked set even if dispatch fails.
+            """
             try:
                 _serve_connection(connection, broker)
             finally:

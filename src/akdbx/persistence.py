@@ -30,6 +30,10 @@ def open_encrypted(encrypted, password, keyfile=None):
         failed = False
 
         def emit(self, record):
+            """Record protected-stream decode errors without formatting or forwarding their messages.
+
+            An error-level record causes the enclosing open to reject partial decoding.
+            """
             if record.levelno >= logging.ERROR:
                 self.failed = True
     # PyKeePass reports an inner protected-stream decode failure through this
@@ -55,6 +59,11 @@ def open_encrypted(encrypted, password, keyfile=None):
 
 class VaultStore:
     def __init__(self, database: Path, *, strict_path=False):
+        """Initialize disk identity and recovery tracking without opening vault contents.
+
+        Ordinary paths resolve existing symlinks; strict_path keeps absolute lexical
+        components for later no-follow checks. No write eligibility is assumed yet.
+        """
         self.path = (Path(os.path.abspath(Path(database).expanduser())) if strict_path
                      else Path(database).expanduser().resolve(strict=True))
         self.expected = None
@@ -66,6 +75,11 @@ class VaultStore:
         self.keyfile_digest = None
 
     def _directory(self, *, writing=True):
+        """Open vault ancestry component by component without following directory symlinks.
+
+        For writes, reject untrusted owners or replaceable ancestry except root
+        sticky directories. Return an owned parent FD; the caller must close it.
+        """
         # Anchor each component rather than racing lstat against a full-path open.
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
         current = os.open(self.path.anchor, flags)
@@ -87,6 +101,12 @@ class VaultStore:
                 os.close(current)
 
     def _read(self, directory, *, writing=True):
+        """Read an anchored regular vault file and return bytes plus a disk fingerprint.
+
+        For writes, require same-user ownership and a single hard link. Compare
+        metadata before/after reading and include a ciphertext digest in the
+        fingerprint; concurrent changes raise SaveError. The parent FD is borrowed.
+        """
         fd = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
         try:
             before = os.fstat(fd)
@@ -103,6 +123,13 @@ class VaultStore:
             os.close(fd)
 
     def open(self, password, keyfile=None):
+        """Open and verify the encrypted vault, retaining ciphertext and disk identity.
+
+        Privately load any key file, validate archive capsules and recheck both
+        inputs before binding the store. Probe write safety separately, allowing
+        a readable vault to remain read-only. Scan durable merge recovery markers
+        before return; callers must contain secret-bearing dependency exceptions.
+        """
         directory = self._directory(writing=False)
         try:
             encrypted, snapshot = self._read(directory, writing=False)
@@ -136,6 +163,10 @@ class VaultStore:
             os.close(directory)
 
     def _check_keyfile(self):
+        """Reject changed key-file bytes before trusting or committing the open vault.
+
+        Compare the current key-file byte digest with the opening snapshot.
+        """
         if self.keyfile_path is not None and hashlib.sha256(self.keyfile_path.read_bytes()).digest() != self.keyfile_digest:
             raise SaveError("key file changed on disk; restart and unlock")
 
@@ -201,6 +232,11 @@ class VaultStore:
                 os.close(external)
 
     def _scan_merge_recovery(self, directory):
+        """Mark the store recovery-blocked for incomplete or unreadable merge receipts.
+
+        Inspect matching anchored bundle directories without following symlinks.
+        Missing, malformed or nonterminal receipts fail closed across restarts.
+        """
         prefix = '.' + self.path.name + '.akdbx-merge-'
         for name in os.listdir(directory):
             if not name.startswith(prefix) or name.endswith('.replace'):
@@ -239,6 +275,10 @@ class VaultStore:
             os.close(fd)
 
     def check_current(self, directory, snapshot):
+        """Require unchanged ciphertext identity and the same open parent directory.
+
+        Raise SaveError if the file or parent pathname changed since the snapshot.
+        """
         if self._read(directory)[1] != snapshot:
             raise SaveError('vault changed on disk; restart and unlock')
         parent = os.stat(self.path.parent, follow_symlinks=False)
@@ -247,7 +287,15 @@ class VaultStore:
             raise SaveError('vault directory changed; restart and unlock')
 
     def commit(self, vault, mutate, *, verify_candidate=None):
-        """Return a reopened, verified candidate only after durable replacement."""
+        """Commit an isolated mutation only after verifying an encrypted round trip.
+
+        Wait at most four seconds for the disk lock; recheck key file, ciphertext
+        and parent identity. Run optional candidate verification before replacement,
+        retain an encrypted backup, fsync staging and atomically replace the target.
+        Return the reopened candidate and update the store fingerprint on success.
+        A possibly completed replacement sets recovery_required and raises fixed
+        SaveError text; do not retry an uncertain outcome automatically.
+        """
         if self.recovery_required:
             raise SaveError("save outcome uncertain; restart and unlock")
         from .versions import archives, verify
@@ -334,6 +382,11 @@ class VaultStore:
 
     @staticmethod
     def _write_file(directory, name, data):
+        """Exclusively create, write and fsync a mode-0600 file below the supplied FD.
+
+        Never follow or overwrite an existing name. Callers supply encrypted data
+        or nonsecret metadata and must fsync the directory for durable creation.
+        """
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
         with os.fdopen(fd, 'wb') as stream:
             stream.write(data)

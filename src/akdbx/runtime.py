@@ -12,6 +12,11 @@ SOCKET_PROBE_TIMEOUT = 0.2
 
 
 def _validate_trusted_ancestor(info: os.stat_result, path: Path, owner_uid: int) -> None:
+    """Reject non-directory, foreign-owned or replaceable runtime ancestry.
+
+    Only root or the expected UID may own ancestors. Writable ancestors require
+    root ownership and the sticky bit, as with /tmp; violations raise RuntimeError.
+    """
     if not stat.S_ISDIR(info.st_mode):
         raise RuntimeError(f"runtime ancestor is not a directory: {path}")
     if info.st_uid not in {0, owner_uid}:
@@ -49,6 +54,12 @@ def open_private_runtime_directory(
 def _open_private_runtime_directory(
     directory: Path, *, owner_uid: int | None, create: bool,
 ) -> tuple[Path, int]:
+    """Walk runtime ancestry through no-follow directory descriptors and verify trust.
+
+    Optionally create only the leaf; require its owner and exact 0700 mode.
+    Return an absolute path and an owned leaf FD that the caller must close.
+    Reject filesystem root, symlinks and unsafe ancestry without repairing them.
+    """
     owner_uid = os.getuid() if owner_uid is None else owner_uid
     directory = Path(os.path.abspath(os.fspath(directory)))
     if directory == Path(directory.anchor):
@@ -112,6 +123,11 @@ def anchored_socket_path(directory_fd: int, socket_name: str) -> str:
 
 
 def acquire_lifecycle_lock(directory_fd: int, socket_name: str) -> int:
+    """Acquire an exclusive nonblocking lock for this runtime socket lifecycle.
+
+    Require a same-user regular 0600 lock file. Return its owned FD on success;
+    the caller must close it to release the lock. Unsafe or busy locks fail.
+    """
     lock_name = f".{socket_name}.lock"
     flags = os.O_CREAT | os.O_RDWR | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
@@ -167,6 +183,10 @@ def remove_stale_socket(socket_path: Path, directory_fd: int, socket_name: str) 
 
 
 def unlink_socket_if_same(directory_fd: int, socket_name: str, identity: tuple[int, int] | None) -> None:
+    """Remove a runtime socket pathname only if its device/inode still matches.
+
+    A missing or replaced path is left alone; the directory FD stays caller-owned.
+    """
     try:
         info = os.stat(socket_name, dir_fd=directory_fd, follow_symlinks=False)
     except FileNotFoundError:
