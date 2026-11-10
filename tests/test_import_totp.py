@@ -307,7 +307,9 @@ def test_host_install_is_explicit_and_refuses_overwrite(tmp_path,monkeypatch):
     from types import SimpleNamespace
     base=tmp_path/'configuration';base.mkdir(mode=0o700)
     monkeypatch.setenv('XDG_CONFIG_HOME',str(base))
-    monkeypatch.setattr(browser_import.shutil,'which',lambda _: '/synthetic/bin/akdbx-browser-import')
+    executable=tmp_path/'akdbx-browser-import'
+    executable.write_text('#!/bin/sh\nexit 1\n');executable.chmod(0o700)
+    monkeypatch.setattr(sys,'argv',[str(executable)])
     args=SimpleNamespace(extension_id='a'*32,origin='https://private.example:9443',socket=tmp_path/'unlock.sock',manifest_dir=tmp_path/'NativeMessagingHosts')
     browser_import.install_host(args)
     path=browser_import.config_path()
@@ -315,8 +317,32 @@ def test_host_install_is_explicit_and_refuses_overwrite(tmp_path,monkeypatch):
     assert path.stat().st_mode & 0o777==0o600
     assert browser_import.load_config(path)['extension_id']=='a'*32
     saved=manifest.read_bytes();config=path.read_bytes()
+    assert json.loads(saved)['path']==str(executable)
     with pytest.raises(ValueError):browser_import.install_host(args)
     assert manifest.read_bytes()==saved and path.read_bytes()==config
+
+
+@pytest.mark.parametrize('competing_install', [False, True])
+def test_host_install_records_invoked_script_without_path_lookup(tmp_path, competing_install):
+    """An absolute console command must not select a missing or competing PATH host."""
+    installation=tmp_path/'intended install';installation.mkdir()
+    executable=installation/'akdbx-browser-import'
+    executable.write_text(f'#!{sys.executable}\nfrom akdbx.browser_import import main\nraise SystemExit(main())\n')
+    executable.chmod(0o700)
+    other=tmp_path/'other-bin';other.mkdir()
+    if competing_install:
+        wrong=other/'akdbx-browser-import'
+        wrong.write_text('#!/bin/sh\nexit 99\n');wrong.chmod(0o700)
+    configuration=tmp_path/'config';configuration.mkdir(mode=0o700)
+    manifests=tmp_path/'NativeMessagingHosts'
+    result=subprocess.run([str(executable),'install-host','--extension-id','a'*32,
+        '--origin','https://private.example:9443','--socket',str(tmp_path/'unlock.sock'),
+        '--manifest-dir',str(manifests)],env={**os.environ,'PATH':str(other),
+        'XDG_CONFIG_HOME':str(configuration),'PYTHONPATH':str(Path(browser_import.__file__).parents[1])},
+        cwd=tmp_path,capture_output=True,text=True,timeout=15)
+    assert result.returncode==0,result.stderr
+    manifest=json.loads((manifests/(browser_import.HOST_NAME+'.json')).read_text())
+    assert manifest['path']==str(executable)
 
 
 def test_importer_capabilities_are_independent_and_strict():

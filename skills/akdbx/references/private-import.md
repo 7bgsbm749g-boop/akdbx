@@ -82,6 +82,8 @@ broker's **HTTP unlock socket**, not its agent RPC socket:
 
 The manifest directory belongs to the user-data root (the parent of `Default`),
 not the `Default` profile directory. It must already have an existing parent.
+Run the installed console script from the intended environment as shown above.
+The installer records that exact script, even when its directory is not on `PATH`.
 The installer creates mode-0600 configuration at
 `${XDG_CONFIG_HOME:-~/.config}/akdbx/browser-import.json` and one native-host
 manifest. It refuses to overwrite existing files. Use the same config environment

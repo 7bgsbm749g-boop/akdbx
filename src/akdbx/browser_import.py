@@ -10,7 +10,6 @@ import http.client
 import json
 import os
 import re
-import shutil
 import socket
 import stat
 import struct
@@ -121,14 +120,16 @@ def build_extension(destination):
 
 
 def install_host(args):
+    """Register the invoked console script without selecting another PATH install."""
     from .cli import _validate_unlock_url
     from .runtime import prepare_private_runtime_directory
     if not re.fullmatch('[a-p]{32}', args.extension_id):
         raise ValueError('invalid extension ID')
     _validate_unlock_url(args.origin.rstrip('/') + '/totp?token=configuration-check', args.origin)
-    executable = shutil.which('akdbx-browser-import')
-    if not executable:
-        raise ValueError('install the akdbx package first')
+    executable = Path(sys.argv[0]).absolute()
+    if (executable.name != 'akdbx-browser-import' or not executable.is_file()
+            or not os.access(executable, os.X_OK)):
+        raise ValueError('run the installed akdbx-browser-import console script')
     path = config_path()
     args.manifest_dir.mkdir(mode=0o700, parents=False, exist_ok=True)
     manifest = args.manifest_dir / (HOST_NAME + '.json')
