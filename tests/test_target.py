@@ -173,7 +173,7 @@ def test_compatible_cli_passes_target_protocol_and_rejects_missing_delivery_rece
     calls = []
     def request(path, payload, **kwargs):
         calls.append(payload)
-        return dict(ok=True, **capabilities()) if payload['action'] == 'ping' else dict(ok=True, filled='password')
+        return dict(ok=True, **capabilities(), password_fill_protocol=1, password_fill_delivery='chromium-password-dom-v1') if payload['action'] == 'ping' else dict(ok=True, filled='password')
     monkeypatch.setattr(cli, 'request', request)
     assert cli.main(['fill', 'synthetic-handle', '--mode', 'password', '--target', 'synthetic-pin']) == 2
     assert calls[1]['target'] == 'synthetic-pin' and calls[1]['target_protocol'] == 1

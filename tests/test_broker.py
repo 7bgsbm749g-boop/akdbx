@@ -59,6 +59,9 @@ class RecordingTyper:
             else:
                 self.type_text(text)
 
+    def deliver_password(self, identity, steps, ready, *, site_url=None):
+        self.deliver(identity, steps, ready)
+
     def type_text(self, text):
         self.events.append(("type", text))
 
@@ -70,7 +73,8 @@ def target_capabilities():
     # An independent protocol expectation; this fixture also imports under
     # frozen pre-target broker versions in compatibility regressions.
     return dict(target_fill_required=True, target_fill_protocol=1,
-                target_fill_delivery='x11-send-event-v1')
+                target_fill_delivery='x11-send-event-v1', password_fill_protocol=1,
+                password_fill_delivery='chromium-password-dom-v1', password_browser_configured=False)
 
 
 def target_request(broker):
@@ -109,7 +113,7 @@ def test_fill_without_terminal_returns_only_receipt_and_consumes_handle(mode, ex
     handle = broker.dispatch({"action": "search", "query": "Example"})["entries"][0]["handle"]
     assert typer.events == []
     response = broker.dispatch({"action": "fill", **target_request(broker), "handle": handle, "mode": mode})
-    assert response == {"ok": True, "filled": mode, "target_delivery": "x11-send-event-v1"}
+    assert response == {"ok": True, "filled": mode, "target_delivery": "x11-send-event-v1" if mode == "username" else "chromium-password-dom-v1"}
     assert SECRET not in json.dumps(response)
     assert typer.events == expected
     assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle})["ok"] is False
@@ -163,7 +167,7 @@ def test_handle_resolution_prunes_other_expired_handles():
 
     now[0] += 200
     assert broker.dispatch({"action": "fill", **target_request(broker), "handle": current}) == {
-        "ok": True, "filled": "login", "target_delivery": "x11-send-event-v1",
+        "ok": True, "filled": "login", "target_delivery": "chromium-password-dom-v1",
     }
     assert expired not in broker._handles
 
@@ -179,7 +183,7 @@ def test_outstanding_handles_are_bounded_by_evicting_oldest():
     assert broker.dispatch({"action": "fill", **target_request(broker), "handle": issued[0]})["ok"] is False
     assert typer.events == []
     assert broker.dispatch({"action": "fill", **target_request(broker), "handle": issued[-1]}) == {
-        "ok": True, "filled": "login", "target_delivery": "x11-send-event-v1",
+        "ok": True, "filled": "login", "target_delivery": "chromium-password-dom-v1",
     }
 
 
@@ -781,7 +785,7 @@ def test_real_encrypted_kdbx_round_trip_never_returns_secret(tmp_path):
     search = broker.dispatch({"action": "search", "query": "real.example"})
     assert SECRET not in json.dumps(search)
     fill = broker.dispatch({"action": "fill", **target_request(broker), "handle": search["entries"][0]["handle"], "mode": "password"})
-    assert fill == {"ok": True, "filled": "password", "target_delivery": "x11-send-event-v1"}
+    assert fill == {"ok": True, "filled": "password", "target_delivery": "chromium-password-dom-v1"}
     assert typer.events == [("type", SECRET)]
 
 

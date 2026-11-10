@@ -29,10 +29,10 @@ the rebrand does not migrate or rewrite private vault data.
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
   peer UID before sending a request.
 - The broker starts locked. The user enters the master password only on the private Tailscale HTTPS unlock page, never in chat, terminal input, arguments, or environment variables.
-- After unlock, an explicit `fill` invokes keyboard delivery immediately, without terminal approval. The caller must verify the destination and focus the intended field first.
+- After unlock, password fills use an explicitly configured Chromium CDP connection and a retained DOM password input. They never send password keys or Tab. Unsupported targets refuse delivery without terminal approval.
 - Errors are deliberately generic after the typing boundary.
 
-This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Version 0.9.0 requires a short-lived target pin and directed X11 delivery; see [the target contract](skills/akdbx/references/target-fill.md). It verifies the local process, foreground window and X input focus through dispatch. Browser field/tab/origin and application acceptance remain caller checks; X11 metadata is not a hostile-process security boundary. Python cannot guarantee memory zeroization.
+This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Password fills require a short-lived DOM target pin; see [the target contract](skills/akdbx/references/target-fill.md). The broker verifies the exact HTTPS page, main frame and retained editable password input. X11 window pins refuse password/login delivery. Application acceptance remains a caller check; malicious pages and compromised local processes are outside this boundary. Python cannot guarantee memory zeroization.
 
 ## Install and run
 
@@ -49,11 +49,14 @@ Keep the broker process running. Open its private unlock page from your Tailscal
 
 ```bash
 .venv/bin/akdbx search github.com
-.venv/bin/akdbx pin-target --pid VERIFIED_PID --window VERIFIED_X11_CLIENT_WINDOW
+.venv/bin/akdbx pin-password-target --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
+  --top-url VERIFIED_EXACT_HTTPS_URL --selector '#password' --mode password
 .venv/bin/akdbx fill HANDLE_FROM_SEARCH --mode login --target TARGET_FROM_PIN
 ```
 
-Focus the username field before invoking `fill`. `login` types the username, presses Tab, then types the password. `--mode username` and `--mode password` fill one field. Before sending any keys, the broker rejects a requested fill if any field it needs contains a control character, including Tab, carriage return, or newline. The broker sends no submit key of its own, reads nothing back from the destination, and does not use the clipboard.
+Configure `serve --password-browser-profile PATH` (or `AKDBX_PASSWORD_BROWSER_PROFILE`) with the operator-selected private Chrome user data directory and remote debugging enabled. The broker does not start or change Chrome. The profile must be owned, mode 0700, without symlink components; launch Chrome with `umask 077` so `DevToolsActivePort` is not writable by other users. No profile means password fills refuse. Treat CDP as a privileged local interface.
+
+Focus the password input before pinning. For `login`, pin with `--mode login --selector PASSWORD_SELECTOR --username-selector USERNAME_SELECTOR` and focus the username first. Username inputs require `autocomplete="username"`; password inputs require `autocomplete="current-password"` or `autocomplete="new-password"`. Login fills both retained nodes with native DOM setters, without Tab or focus changes. Both saved and generated passwords require this path; a legacy X11 pin refuses them. HTTPS main-frame standard inputs are supported; child frames, shadow DOM, custom controls, and ambiguous or changed fields refuse. The broker sends no submit key and does not use the clipboard.
 
 There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; it emits a deprecation warning. All fill commands now require `--target`. Remove it from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
 
@@ -507,14 +510,16 @@ this patch does not prove unrestricted native phone sync. No production or
 native iPhone test is claimed.
 
 
-## Target-window regression checks (0.9.0)
+## Password destination regression checks
 
-`tests/test_target*.py` covers required pins, legacy broker downgrade refusal,
-PID/window/focus switches, partial delivery and generated-password commit
-refusal. Native widget/browser checks launch a fresh Xvfb display (never the shared desktop display).
-The Chromium test uses a new temporary profile and synthetic HTML fields; CDP
-only prepares/observes them, while production X11Typer sends all nonempty input.
-It passed six separate username/password fills and a username–Tab–password fill
-on Chrome 153.0.8010.47. Optional native checks skip when Xvfb/Chromium is absent;
-record those skips explicitly. No real vault, canonical browser/profile or live
-broker is used. Run heavy batches through the configured resource-manager queue.
+`tests/test_browser_password.py` uses synthetic credentials, temporary Chrome
+profiles, loopback HTTPS pages and separate Xvfb desktops (never the shared
+desktop). It reproduces the former X11 omnibox delivery and checks direct DOM
+saved/generated fills, login without Tab, wrong-field/selector/type changes,
+replacement, focus restoration, tab changes, navigation and commit refusal.
+`tests/test_password_endpoint.py` checks endpoint configuration and pin cleanup.
+Existing native X11 tests cover the remaining username/TOTP transport.
+Optional browser tests require Xvfb, Chromium, OpenSSL, xdotool and ImageMagick;
+record skips explicitly. Store test output and temporary files outside project
+checkouts, for example with pytest `--basetemp` in a private evidence directory.
+Run heavy batches through the configured resource-manager queue.

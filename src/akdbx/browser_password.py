@@ -1,0 +1,257 @@
+"""Opt-in Chromium password delivery to retained DOM nodes; never keyboard input.
+
+CDP is a privileged local interface. The operator selects the profile at broker
+startup, never through RPC. Hostile pages/OS and other local debugging clients
+are outside this boundary. Unsupported frames/controls fail closed.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import stat
+import time
+
+from .target import TargetError, DeliveryError
+from .totp import https_origin
+
+DELIVERY = 'chromium-password-dom-v1'
+PROTOCOL = 1
+TTL = 30
+MAX_PINS = 16
+MAX_MESSAGE = 256 * 1024
+
+
+def endpoint(profile):
+    if profile is None:
+        raise TargetError()
+    path = Path(os.path.abspath(os.fspath(profile)))
+    # Do not follow a substituted profile or ancestor symlink.
+    for item in [*reversed(path.parents), path]:
+        info = item.lstat()
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_mode & 0o022 and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX):
+            raise TargetError()
+    info = path.lstat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise TargetError()
+    directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fd = os.open('DevToolsActivePort', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022 or info.st_size > 256:
+                raise TargetError()
+            data = os.read(fd, 257).decode('ascii')
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory)
+    match = re.fullmatch(r'([1-9][0-9]{0,4})\n(/devtools/browser/[a-zA-Z0-9-]{1,80})\n?', data)
+    if match is None or int(match[1]) > 65535:
+        raise TargetError()
+    return 'ws://127.0.0.1:' + match[1] + match[2]
+
+
+class CDP:
+    def __init__(self, profile):
+        import websocket
+        self.socket = websocket.create_connection(endpoint(profile), timeout=2, suppress_origin=True,
+                                                   http_no_proxy=['127.0.0.1'])
+        self.counter = 0
+
+    def close(self):
+        try:
+            self.socket.close(timeout=0.2)
+        except Exception:
+            pass
+
+    def call(self, method, params=None, session=None, *, timeout=3):
+        self.counter += 1
+        request = dict(id=self.counter, method=method, params=params or {})
+        if session is not None:
+            request['sessionId'] = session
+        deadline = time.monotonic() + timeout
+        self.socket.send(json.dumps(request))
+        for _ in range(256):
+            self.socket.settimeout(max(.001, deadline - time.monotonic()))
+            raw = self.socket.recv()
+            if time.monotonic() >= deadline or len(raw) > MAX_MESSAGE:
+                raise TargetError()
+            response = json.loads(raw)
+            if response.get('id') == self.counter:
+                if 'error' in response:
+                    raise TargetError()
+                return response['result']
+        raise TargetError()
+
+
+# Both scripts run in a fresh isolated world. Retain the actual elements, native
+# setter/getters and document, never resolve a replacement by selector on fill.
+CAPTURE = r'''(function(selector, usernameSelector, mode, url) {
+  if (!isSecureContext || location.href !== url || !document.hasFocus() || document.visibilityState !== 'visible') throw 0;
+  const query = s => { const a = document.querySelectorAll(s); if (a.length !== 1) throw 0; return a[0]; };
+  const password = mode === 'username' ? null : query(selector);
+  const username = mode === 'password' ? null : query(mode === 'username' ? selector : usernameSelector);
+  const created = performance.now();
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  const type = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'type').get;
+  const autocomplete = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'autocomplete').get;
+  const valid = (e, secret) => {
+    if (!(e instanceof HTMLInputElement) || !e.isConnected || e.ownerDocument !== document || e.disabled || e.readOnly || e.closest('[inert]')) return false;
+    const t = type.call(e), r = e.getBoundingClientRect(), s = getComputedStyle(e);
+    return (secret ? t === 'password' && ['current-password','new-password'].includes(autocomplete.call(e)) : ['text','email'].includes(t) && autocomplete.call(e) === 'username') && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none' && s.opacity !== '0';
+  };
+  let tainted = false;
+  const dirty = () => { tainted = true; };
+  if (!window.navigation) throw 0;
+  window.navigation.addEventListener('navigate', dirty);
+  window.addEventListener('blur', dirty, true);
+  document.addEventListener('visibilitychange', dirty, true);
+  document.addEventListener('focusin', dirty, true);
+  const observer = new MutationObserver(records => {
+    for (const r of records) if (r.type === 'childList' && [...r.removedNodes].some(n => n === password || n === username || n.contains(password) || n.contains(username))) dirty();
+  });
+  observer.observe(document, {childList:true, subtree:true});
+  const dispose = () => {
+    window.navigation.removeEventListener('navigate', dirty);
+    window.removeEventListener('blur', dirty, true);
+    document.removeEventListener('visibilitychange', dirty, true);
+    document.removeEventListener('focusin', dirty, true);
+    observer.disconnect();
+  };
+  const originalFocus = document.activeElement;
+  const check = () => performance.now() - created < 30000 && !tainted && isSecureContext && location.href === url && document.hasFocus() && document.visibilityState === 'visible' && document.activeElement === originalFocus &&
+    (!password || valid(password, true) && query(selector) === password) &&
+    (!username || valid(username, false) && query(mode === 'username' ? selector : usernameSelector) === username) &&
+    (!password || !username || password !== username && password.form === username.form);
+  if (!check() || originalFocus !== (username || password)) { dispose(); throw 0; }
+  return {password, username, setter, check, mode, url, dispose};
+})'''
+FILL = r'''function(mode, username, password, deadline) {
+  if (mode !== this.mode || !this.check() || performance.now() >= deadline) return false;
+  // Native setters do not dispatch page handlers. No key, Tab, focus change,
+  // await, or re-selection occurs between validation and assignment.
+  if (this.username) this.setter.call(this.username, username);
+  if (this.password) this.setter.call(this.password, password);
+  // Send compatibility notifications only after all assignments are complete.
+  for (const e of [this.username, this.password]) if (e) {
+    e.dispatchEvent(new Event('input', {bubbles:true}));
+    e.dispatchEvent(new Event('change', {bubbles:true}));
+  }
+  return true;
+}'''
+
+
+@dataclass
+class PasswordPin:
+    connection: CDP
+    session: str
+    object_id: str
+    page_id: str
+    frame_id: str
+    url: str
+    mode: str
+
+    def close(self):
+        try:
+            self.connection.call('Runtime.callFunctionOn', {'objectId': self.object_id,
+                                 'functionDeclaration': 'function() { this.dispose(); }'}, self.session, timeout=0.2)
+            self.connection.call('Runtime.releaseObject', {'objectId': self.object_id}, self.session, timeout=0.2)
+        except Exception:
+            pass
+        finally:
+            self.connection.close()
+
+
+class BrowserPasswords:
+    def __init__(self, profile=None, *, clock=time.monotonic):
+        self.profile, self.clock = profile, clock
+        self.pins = {}
+
+    def prune(self):
+        for token, (expiry, pin) in list(self.pins.items()):
+            if expiry <= self.clock():
+                self.pins.pop(token)
+                pin.close()
+
+    def close(self):
+        pins, self.pins = self.pins, {}
+        for _, pin in pins.values():
+            pin.close()
+
+    def pin(self, request):
+        self.prune()
+        required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode'}
+        if (set(request) != required | ({'username_selector'} if request.get('mode') == 'login' else set())
+                or type(request.get('password_protocol')) is not int or request['password_protocol'] != PROTOCOL
+                or request.get('mode') not in {'username', 'password', 'login'} or len(self.pins) >= MAX_PINS):
+            raise TargetError()
+        for key in required - {'action', 'password_protocol'} | ({'username_selector'} if request['mode'] == 'login' else set()):
+            if not isinstance(request[key], str) or not 0 < len(request[key]) <= 4096:
+                raise TargetError()
+        https_origin(request['top_url'])
+        connection = CDP(self.profile)
+        try:
+            page = connection.call('Target.getTargetInfo', {'targetId': request['page_id']})['targetInfo']
+            if page['type'] != 'page' or page['url'] != request['top_url']:
+                raise TargetError()
+            session = connection.call('Target.attachToTarget', {'targetId': request['page_id'], 'flatten': True})['sessionId']
+            frame = connection.call('Page.getFrameTree', session=session)['frameTree']['frame']
+            if frame['id'] != request['frame_id'] or frame['url'] != request['top_url']:
+                raise TargetError()  # Child frames and shadow DOM are deliberately unsupported.
+            world = connection.call('Page.createIsolatedWorld', {'frameId': frame['id'], 'worldName': 'akdbx-password-v1'}, session)['executionContextId']
+            args = [request['selector'], request.get('username_selector'), request['mode'], request['top_url']]
+            result = connection.call('Runtime.evaluate', {'expression': CAPTURE + '(' + ','.join(json.dumps(v) for v in args) + ')', 'contextId': world}, session)
+            if 'exceptionDetails' in result or result['result'].get('type') != 'object' or 'objectId' not in result['result']:
+                raise TargetError()
+            pin = PasswordPin(connection, session, result['result']['objectId'], page['targetId'], frame['id'], request['top_url'], request['mode'])
+            token = secrets.token_hex(32)
+            self.pins[token] = self.clock() + TTL, pin
+            return dict(ok=True, target=token, expires_in=TTL, target_delivery=DELIVERY)
+        except Exception:
+            connection.close()
+            raise TargetError() from None
+
+    def consume(self, token):
+        self.prune()
+        found = self.pins.pop(token, None)
+        if found is None:
+            raise TargetError()
+        return found[1]
+
+    def deliver(self, pin, mode, username, password, site_url, ready, start_deadline):
+        started = False
+        try:
+            if mode != pin.mode or https_origin(site_url) != https_origin(pin.url):
+                raise TargetError()
+            page = pin.connection.call('Target.getTargetInfo', {'targetId': pin.page_id})['targetInfo']
+            frame = pin.connection.call('Page.getFrameTree', session=pin.session)['frameTree']['frame']
+            if page['url'] != pin.url or frame['url'] != pin.url or frame['id'] != pin.frame_id or not ready():
+                raise TargetError()
+            # Sample renderer time without secrets. Using this older sample
+            # plus the remaining host budget gives a conservative renderer
+            # deadline, even if the subsequent fill command sits in its queue.
+            sample = pin.connection.call('Runtime.callFunctionOn', {
+                'objectId': pin.object_id, 'functionDeclaration': 'function() { return performance.now(); }',
+                'returnByValue': True,
+            }, pin.session)
+            timestamp = sample['result']['value']
+            remaining = min(start_deadline - self.clock(), TTL)
+            if type(timestamp) not in {int, float} or remaining <= 0 or not ready():
+                raise TargetError()
+            renderer_deadline = timestamp + remaining * 1000
+            started = True
+            result = pin.connection.call('Runtime.callFunctionOn', {
+                'objectId': pin.object_id, 'functionDeclaration': FILL,
+                'arguments': [{'value': v} for v in (mode, username, password, renderer_deadline)], 'returnByValue': True,
+            }, pin.session)
+            if 'exceptionDetails' in result:
+                raise TargetError()
+            if result['result'].get('value') is not True:
+                started = False
+                raise TargetError()
+        except Exception:
+            raise DeliveryError(started) from None

@@ -1,3 +1,8 @@
+Password and confirmation fills now require fresh DOM password pins from
+`pin-password-target`, with `chromium-password-dom-v1` receipts. X11 pins refuse
+passwords. Read [password field delivery](target-fill.md) for operator setup,
+explicit selectors, supported controls, and race checks before this workflow.
+
 # Create passwords and passwordless identity records
 
 Password writes require CLI and broker version **0.2.0 or newer**. The current
@@ -77,8 +82,8 @@ metadata. Omit reset tokens, verification codes and other private query values
 from command arguments:
 
 ```bash
-# Focus and verify the password field, then obtain a fresh pin-target token.
-akdbx fill-generated PASSWORD_FILL_HANDLE --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN
+# Focus and verify the password field, then obtain a fresh pin-password-target token.
+akdbx fill-generated --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN -- PASSWORD_FILL_HANDLE
 ```
 
 Then focus the confirmation field, verify again, and run:
@@ -94,9 +99,7 @@ both the entry URL and asserted target URL to use ASCII HTTPS spelling, with
 punycode for internationalized hosts. Unicode URLs, whitespace and backslashes
 are refused. The broker checks that
 the supplied target origin (scheme, host, effective port) matches the selected
-entry. This is an additional guard: target-pinned X11 delivery cannot independently
-inspect the browser or guarantee focus. The originating agent must verify the
-real form through its GUI workflow. Cross-origin reset sites are refused; do
+entry. The broker also checks the actual pinned HTTPS document origin and retained password input. The originating agent must verify the selected account and real form through its browser workflow. Cross-origin reset sites are refused; do
 not falsify the URL to bypass this check. Never inspect password field values,
 read the clipboard, capture an unmasked secret, or evaluate page input values.
 

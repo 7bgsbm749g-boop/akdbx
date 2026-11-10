@@ -11,6 +11,9 @@ import select
 import shutil
 import subprocess
 import sys
+import ssl
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import time
 from urllib.parse import quote
 
@@ -65,14 +68,36 @@ def synthetic_chromium(isolated_x11, tmp_path):
     agent_read, child_write = os.pipe()
     profile = tmp_path / 'synthetic-chromium-profile'
     html = '''<!doctype html><title>Agentic synthetic transport lab</title>
-    <label>Username<input id="username" autocomplete="off"></label>
+    <label>Username<input id="username" autocomplete="username"></label>
     <label>Password<input id="password" type="password" autocomplete="new-password"></label>
     <script>window.syntheticEvents=[];
     document.addEventListener('input', e=>syntheticEvents.push({field:e.target.id,trusted:e.isTrusted}));</script>'''
+    certificate, key = tmp_path / 'lab.crt', tmp_path / 'lab.key'
+    subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+                    '-subj', '/CN=127.0.0.1', '-keyout', str(key), '-out', str(certificate)],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            data = html.encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        def log_message(self, *args):
+            pass
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certificate, key)
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    url = 'https://127.0.0.1:' + str(server.server_port) + '/login'
+    profile.mkdir(mode=0o700)
     args = [binary, '--user-data-dir=' + str(profile), '--no-first-run', '--no-default-browser-check',
             '--disable-background-networking', '--disable-component-update', '--disable-sync',
             '--disable-extensions', '--ozone-platform=x11', '--disable-gpu', '--disable-dev-shm-usage', '--renderer-process-limit=1',
-            '--remote-debugging-pipe', '--app=data:text/html,' + quote(html)]
+            '--remote-debugging-pipe', '--remote-debugging-port=0', '--ignore-certificate-errors', url]
     # A tiny exec shim binds only the child's fd 3/4, without changing the
     # parent's descriptors or sharing any canonical browser connection.
     shim = 'import os,sys;os.dup2(int(sys.argv[1]),3);os.dup2(int(sys.argv[2]),4);os.execv(sys.argv[3],sys.argv[3:])'
@@ -81,7 +106,7 @@ def synthetic_chromium(isolated_x11, tmp_path):
     log = (tmp_path / 'synthetic-chromium.log').open('wb')
     process = subprocess.Popen([sys.executable, '-c', shim, str(child_read), str(child_write), *args],
                                pass_fds=(child_read, child_write), env=environment,
-                               stdout=subprocess.DEVNULL, stderr=log, start_new_session=True)
+                               stdout=subprocess.DEVNULL, stderr=log, start_new_session=True, umask=0o077)
     os.close(child_read)
     os.close(child_write)
     cdp = PipeCDP(agent_write, agent_read, process)
@@ -140,6 +165,9 @@ def synthetic_chromium(isolated_x11, tmp_path):
         os.close(agent_write)
         os.close(agent_read)
         log.close()
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
 
 
 def wait_for(cdp, session, expression):
@@ -151,36 +179,18 @@ def wait_for(cdp, session, expression):
     raise AssertionError('directed X11 keys did not reach the expected synthetic Chromium field')
 
 
-def test_production_transport_reaches_real_chromium_username_password_and_tab(synthetic_chromium):
+def test_x11_window_pins_refuse_password_and_login(synthetic_chromium):
     lab, process, cdp, session, window, version = synthetic_chromium
-    username = 'Synthetic.User+42@example.test'
-    password = 'Synthetic-ONLY!$`\\Aa19'
-    broker = Broker(Vault([Entry(username=username, password=password)]), X11Typer())
-    def fill(mode):
+    broker = Broker(Vault([Entry()]), X11Typer())
+    for mode in ['password', 'login']:
+        cdp.evaluate("username.value='';password.value='';password.focus()", session)
+        lab.activate(window)
         handle = broker.dispatch(dict(action='search'))['entries'][0]['handle']
         pin = broker.dispatch(dict(action='pin-target', pid=process.pid, window=window.id, target_protocol=1))
         assert pin['ok']
         result = broker.dispatch(dict(action='fill', mode=mode, handle=handle, target=pin['target'], target_protocol=1))
-        assert result == dict(ok=True, filled=mode, target_delivery=DELIVERY)
-    count = 0
-    for _ in range(3):
-        for field, text in [('username', username), ('password', password)]:
-            cdp.evaluate("username.value='';password.value='';document.getElementById(" + json.dumps(field) + ").focus()", session)
-            assert cdp.evaluate('document.activeElement.id', session) == field
-            lab.activate(window)
-            fill(field)
-            wait_for(cdp, session, 'document.getElementById(' + json.dumps(field) + ').value === ' + json.dumps(text))
-            other = 'password' if field == 'username' else 'username'
-            assert cdp.evaluate('document.getElementById(' + json.dumps(other) + ').value.length', session) == 0
-            count += 1
-    cdp.evaluate("username.value='';password.value='';username.focus()", session)
-    lab.activate(window)
-    fill('login')
-    wait_for(cdp, session, 'username.value === ' + json.dumps(username) + ' && password.value === ' + json.dumps(password))
-    assert cdp.evaluate('document.activeElement.id', session) == 'password'
-    print(json.dumps(dict(browser=version, separate_field_fills=count, combined_login_fills=1,
-                          username_matches=True, password_matches=True, tab_matches=True,
-                          isolated_desktop=True, temporary_profile=True)))
+        assert not result['ok'] and result['delivery'] == 'not-started'
+        assert cdp.evaluate("username.value === '' && password.value === ''", session)
 
 
 def test_totp_reaches_only_focused_synthetic_chromium_field(synthetic_chromium):

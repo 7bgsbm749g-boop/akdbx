@@ -153,46 +153,30 @@ A handle expires five minutes after search and is consumed on its first fill att
 
 ### 3. Prepare the actual destination
 
-Use the available GUI/browser tools to confirm the app/site and focus the intended field on the broker's desktop. Follow those tools' interaction instructions. The broker types into its configured X11 desktop; obtain the display and authorization settings from private local configuration. See the setup reference if necessary.
+Use supported browser tools to verify the site, account, exact HTTPS URL, page
+ID, main-frame ID and intended input. Read [password field delivery](references/target-fill.md)
+before the first fill. Require broker `password_fill_protocol: 1` and
+`password_fill_delivery: "chromium-password-dom-v1"`. The operator must configure
+`--password-browser-profile` at broker startup; absence or unsupported paths refuse.
+Do not change a live profile or restart the broker to bypass refusal.
 
-Version 0.9.0 requires target fill protocol 1 for every saved/generated fill.
-Read [target-pinned delivery](references/target-fill.md) before the first use.
-Check CLI `--version` and broker `status`: require `target_fill_required: true`,
-integer `target_fill_protocol: 1`, and `target_fill_delivery: "x11-send-event-v1"`.
-The CLI refuses older or incompatible brokers before sending any target request.
-Never remove `--target` or use an older CLI to work around a refusal.
-
-Verify the exact application process and X11 client window independently with
-the supported desktop tool, including the canonical Chrome profile when relevant.
-Bring that window to the foreground, confirm the site URL and account, then focus
-the intended field. A background click alone does not establish foreground focus.
-Use that verified PID and window ID; do not copy the current foreground identity
-blindly. Search first, prepare focus, then pin immediately before filling:
-
-```bash
-/absolute/path/to/akdbx/.venv/bin/akdbx pin-target --pid VERIFIED_PID --window VERIFIED_X11_CLIENT_WINDOW
-```
-
-The result includes a private `target` token, valid for 30 seconds and one fill.
-Each separate username/password/generated-confirmation fill needs a new pin.
-The pin records process start/executable identity, window class and host, and
-exact X input-focus window. A changed or unknown destination is refused.
-The broker checks identity and focus events before and after each key pair and
-sends directly to the pinned X window owner without propagation. It uses no
-global keyboard fallback, keymap changes, clipboard, or X server/keyboard grabs.
-This protects against an ordinary foreground switch redirecting keys into
-another application. It cannot verify a DOM field, browser tab, or page origin;
-those remain the caller's responsibility. Keep focus stable through completion.
+Require a visible editable type=password input with autocomplete current-password
+or new-password. Other controls refuse. Focus the password field, then use `pin-password-target --page-id PAGE_ID
+--frame-id MAIN_FRAME_ID --top-url EXACT_HTTPS_URL --selector PASSWORD_SELECTOR
+--mode password`. Each fill needs its own 30-second single-use target token.
+Login pins require `--mode login --username-selector USERNAME_SELECTOR`; focus the
+username first. Login fills both explicit DOM inputs without Tab. X11
+`pin-target` refuses password and login modes. Never fall back to password keys.
 
 Choose the mode based on the observed form:
 
 | Mode | Where to focus | Broker action |
 | --- | --- | --- |
-| `login` | Username field, with a verified single Tab to password | Username, Tab, password |
+| `login` | Explicit username input | Native setters for both explicit inputs; no Tab |
 | `username` | Username field | Username only |
 | `password` | Password field | Password only |
 
-For multi-step sign-in or uncertain Tab order, use separate username and password fills, with a new search/handle for the second step. The broker sends no submit key of its own. It rejects a fill before sending any keys if a required credential field contains a control character (including Tab, carriage return, or newline). Do not navigate or move focus while a fill is pending.
+For multi-step sign-in, use separate username and password fills, with a new search/handle for the second step. The broker sends no submit key of its own. It rejects a fill before sending any keys if a required credential field contains a control character (including Tab, carriage return, or newline). Do not navigate or move focus while a fill is pending.
 
 ### 4. Fill once and verify the outcome
 
@@ -203,12 +187,12 @@ For multi-step sign-in or uncertain Tab order, use separate username and passwor
 On success the response is only a receipt, such as:
 
 ```json
-{"ok": true, "filled": "password", "target_delivery": "x11-send-event-v1"}
+{"ok": true, "filled": "password", "target_delivery": "chromium-password-dom-v1"}
 ```
 
-This receipt means guarded dispatch completed; it does not prove the intended field received the text or that sign-in succeeded. Submit the form through the authorized app workflow and verify a non-secret result such as the expected account page or authenticated navigation.
+This receipt means guarded dispatch completed; it does not prove the page accepted the value or that sign-in succeeded. Submit the form through the authorized app workflow and verify a non-secret result such as the expected account page or authenticated navigation.
 
-The user has authorized fills without per-fill approval. Once the user privately unlocks the vault, an explicit `fill` immediately types into the focused destination. Do not ask for another approval or require access to the broker's terminal. Unlock and search alone never type anything. The unlocked broker, fresh single-use handle, explicit fill invocation, and verified target focus and fresh target pin remain required.
+The user has authorized fills without per-fill approval. Once the user privately unlocks the vault, an explicit `fill` immediately sets the pinned DOM input. Do not ask for another approval or require access to the broker's terminal. Unlock and search alone never type anything. The unlocked broker, fresh single-use handle, explicit fill invocation, and verified target focus and fresh target pin remain required.
 
 `--yes-on-fill` is a deprecated no-op, accepted only for command compatibility. New commands should omit it. Every new broker uses private web unlock, including when `--web-unlock` is omitted; terminal master-password entry is no longer supported.
 

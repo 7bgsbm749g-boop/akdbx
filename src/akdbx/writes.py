@@ -531,7 +531,7 @@ class WriteManager:
         if _generated_origin(target) != _generated_origin(op.values['url']):
             raise WriteError('target site mismatch; no password filled')
         # Reuse the existing keyboard preflight/deadline/dispatch boundary.
-        proxy = SimpleNamespace(uuid=secrets.token_hex(16), password=op.password, username='')
+        proxy = SimpleNamespace(uuid=secrets.token_hex(16), password=op.password, username='', url=op.values['url'])
         handle = self.broker._new_handle(proxy)
         response = self.broker._dispatch({'action': 'fill', 'handle': handle, 'mode': 'password', 'start_deadline': request.get('start_deadline'), 'target': request.get('target'), 'target_protocol': request.get('target_protocol')}, delivery_ready=delivery_ready)
         if response.get('ok'):
