@@ -45,6 +45,8 @@ def test_endpoint_symlink_writable_file_and_replaceable_profile_refused(tmp_path
 
 def test_foreign_uid_endpoint_receives_no_websocket_bytes(tmp_path):
     """A stale owned port file must not authorize another user's listener."""
+    if os.environ.get('AKDBX_TEST_FOREIGN_UID') != '1':
+        pytest.skip('foreign-UID regression requires AKDBX_TEST_FOREIGN_UID=1 and sudo -n -u nobody')
     import select
     import shutil
     import subprocess
@@ -304,6 +306,47 @@ def test_fixture_transient_retries_stop_at_startup_deadline(tmp_path, monkeypatc
     with pytest.raises(AssertionError, match='did not accept a verified debugging connection'):
         lab.connect_test_browser(profile, SimpleNamespace(poll=lambda: None), .1)
     assert clock[0] == .1 and len(attempts) == 2
+
+
+@pytest.mark.parametrize('missing', ['browser', 'openssl', 'Xvfb'])
+@pytest.mark.parametrize('required', [False, True])
+def test_missing_browser_dependencies_skip_locally_and_fail_in_card_ci(monkeypatch, missing, required):
+    import test_card_chromium as lab
+    tools = {'google-chrome': '/synthetic/chrome', 'openssl': '/synthetic/openssl', 'Xvfb': '/synthetic/Xvfb'}
+    tools.pop('google-chrome' if missing == 'browser' else missing)
+    monkeypatch.setattr(lab.shutil, 'which', tools.get)
+    if required:
+        monkeypatch.setenv('AKDBX_REQUIRE_CARD_CHROMIUM', '1')
+    else:
+        monkeypatch.delenv('AKDBX_REQUIRE_CARD_CHROMIUM', raising=False)
+    with pytest.raises(pytest.fail.Exception if required else pytest.skip.Exception):
+        lab.card_browser_binary()
+
+
+def test_card_browser_dependency_check_accepts_chromium_fallback(monkeypatch):
+    import test_card_chromium as lab
+    tools = {'chromium': '/synthetic/chromium', 'openssl': '/synthetic/openssl', 'Xvfb': '/synthetic/Xvfb'}
+    monkeypatch.setattr(lab.shutil, 'which', tools.get)
+    monkeypatch.setenv('AKDBX_REQUIRE_CARD_CHROMIUM', '1')
+    assert lab.card_browser_binary() == '/synthetic/chromium'
+
+
+def test_foreign_uid_test_does_not_start_process_without_opt_in(monkeypatch):
+    import subprocess
+    monkeypatch.delenv('AKDBX_TEST_FOREIGN_UID', raising=False)
+    def forbidden(*args, **kwargs):
+        pytest.fail('foreign-UID process started without opt-in')
+    monkeypatch.setattr(subprocess, 'Popen', forbidden)
+    with pytest.raises(pytest.skip.Exception):
+        test_foreign_uid_endpoint_receives_no_websocket_bytes(None)
+
+
+def test_required_foreign_uid_test_fails_when_sudo_is_missing(monkeypatch):
+    import shutil
+    monkeypatch.setenv('AKDBX_TEST_FOREIGN_UID', '1')
+    monkeypatch.setattr(shutil, 'which', lambda _: None)
+    with pytest.raises(AssertionError, match='requires sudo'):
+        test_foreign_uid_endpoint_receives_no_websocket_bytes(None)
 
 
 class FakeCDP:

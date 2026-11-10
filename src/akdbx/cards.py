@@ -172,11 +172,15 @@ class CardManager:
                     private_url=writes.public_base.rstrip('/') + '/card?token=' + op.token)
 
     def submit(self, op, values, confirmed):
+        """Keep invalid forms pending; make attempted persistence failures terminal."""
         if (not confirmed or op.kind != 'card' or op.state != 'pending'
                 or op.revision != self.broker.writes.revision or op.expires <= self.broker.clock()):
             return dict(ok=False, error='invalid or expired card save')
         try:
             values = validate(values)
+        except WriteError:
+            return dict(ok=False, error='check cardholder name, card number, two-digit month, four-digit year and optional security code')
+        try:
             def mutate(candidate):
                 group = group_for(candidate, op.values['group'])
                 if op.uuid is None:

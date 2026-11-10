@@ -450,6 +450,18 @@ Remote unlock requires Tailscale Serve to proxy HTTPS to the broker's Unix socke
 .venv/bin/pytest -q
 ```
 
+Card browser tests skip locally if Chrome/Chromium, Xvfb or openssl is missing.
+The foreign-UID listener test requires an explicit opt-in and passwordless
+`sudo -n -u nobody`. To require both native checks locally, install those
+dependencies and run:
+
+```bash
+AKDBX_REQUIRE_CARD_CHROMIUM=1 AKDBX_TEST_FOREIGN_UID=1 \
+  .venv/bin/pytest tests/test_cards.py tests/test_card_target.py tests/test_card_chromium.py -q
+```
+
+Card CI enables both requirements and rejects any skipped case.
+
 Merge integration tests require the native KeePassXC CLI dependency above.
 Tests generate synthetic KDBXs under pytest's temporary directory, with isolated
 RPC and HTTP Unix sockets. Keep temporary fixtures outside every synced vault;

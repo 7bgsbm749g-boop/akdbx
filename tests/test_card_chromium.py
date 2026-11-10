@@ -68,11 +68,23 @@ def connect_test_browser(profile, process, deadline):
     raise AssertionError('isolated Chrome did not accept a verified debugging connection')
 
 
-@pytest.fixture
-def chrome(isolated_x11, tmp_path):
+def card_browser_binary():
+    """Require all native dependencies in card CI; allow optional local runs."""
     binary = shutil.which('google-chrome') or shutil.which('chromium')
-    if not binary or not shutil.which('openssl'):
-        pytest.fail('Card safety tests require Chrome/Chromium, Xvfb and openssl')
+    if not binary or not shutil.which('openssl') or not shutil.which('Xvfb'):
+        message = 'Card safety tests require Chrome/Chromium, Xvfb and openssl'
+        if os.environ.get('AKDBX_REQUIRE_CARD_CHROMIUM') == '1':
+            pytest.fail(message)
+        pytest.skip(message + '; set AKDBX_REQUIRE_CARD_CHROMIUM=1 to require them')
+    return binary
+
+
+@pytest.fixture
+def chrome(tmp_path, request):
+    binary = card_browser_binary()
+    # Check dependencies before the optional shared Xvfb fixture can skip, so
+    # missing Xvfb is a hard failure when card CI requires browser coverage.
+    isolated_x11 = request.getfixturevalue('isolated_x11')
     cert, key = tmp_path / 'cert.pem', tmp_path / 'key.pem'
     subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
                     '-subj', '/CN=127.0.0.1', '-keyout', str(key), '-out', str(cert)],

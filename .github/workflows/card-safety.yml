@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -47,6 +48,9 @@ jobs:
           sudo install -o root -g root -m 755 "$RUNNER_TEMP/keepassxc-cli" /usr/bin/keepassxc-cli
           test "$(env -i LANG=C.UTF-8 /usr/bin/keepassxc-cli --version)" = 2.7.10
       - name: Test card persistence, authorization and real browser delivery
+        env:
+          AKDBX_REQUIRE_CARD_CHROMIUM: '1'
+          AKDBX_TEST_FOREIGN_UID: '1'
         run: >-
           python -m pytest tests/test_cards.py tests/test_card_target.py
           tests/test_card_chromium.py tests/test_broker.py tests/test_cli.py
@@ -55,6 +59,17 @@ jobs:
           tests/test_notifications_persistent.py
           -q --junitxml=${{ runner.temp }}/card-safety.xml
           --basetemp=${{ runner.temp }}/akdbx-tests
+      - name: Require every card safety case to run
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          cases = list(ET.parse(os.path.join(os.environ['RUNNER_TEMP'], 'card-safety.xml')).iter('testcase'))
+          assert cases, 'card safety tests did not run'
+          skipped = sum(case.find('skipped') is not None for case in cases)
+          assert skipped == 0, f'{skipped} card safety cases were skipped'
+          print(f'All {len(cases)} card safety cases ran without skips.')
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:

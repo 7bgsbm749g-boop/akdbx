@@ -93,6 +93,39 @@ def test_bad_card_never_changes_encrypted_vault_or_echoes_input(deployed, change
     assert code in {400, 409}
     assert path.read_bytes() == original
     assert CARD['number'].encode() not in page
+    assert broker.writes.operations[prepared['write_handle']].state == 'pending'
+
+
+@pytest.mark.parametrize('update', [False, True])
+def test_validation_typo_keeps_same_private_save_retryable(deployed, update):
+    broker, typer, path, socket = deployed
+    if update:
+        selected = save(deployed)
+        prepared = broker.dispatch(dict(action='update-card', card_protocol=1,
+            handle=selected['handle'], metadata=dict(title=selected['title'], group=selected['group'])))
+    else:
+        prepared = begin(broker)
+    before, revision = path.read_bytes(), broker.writes.revision
+    operation = broker.writes.operations[prepared['write_handle']]
+    token, expiry = operation.token, operation.expires
+    code, _, page = post(socket, prepared, dict(CARD, month='9'))
+    assert code == 409 and CARD['number'].encode() not in page
+    assert operation.state == 'pending' and operation.error is None
+    assert operation.token == token and operation.expires == expiry
+    assert path.read_bytes() == before and broker.writes.revision == revision
+    assert CARD['number'] not in json.dumps(operation.values)
+    assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle'])) == dict(ok=True, state='pending')
+    parts = urlsplit(prepared['private_url'])
+    code, _, page = call(socket, 'GET', parts.path + '?' + parts.query)
+    assert code == 200 and CARD['number'].encode() not in page
+    corrected = dict(CARD, csc='456')
+    assert post(socket, prepared, corrected)[0] == 200
+    entry = reopened(path).find_entries(title='Synthetic Visa', first=True)
+    assert read_card(entry) == corrected
+    if update:
+        assert read_card(entry.history[-1]) == CARD
+    assert post(socket, prepared, corrected)[0] == 404
+    assert typer.events == []
 
 
 def test_optional_security_code_and_formatted_number(deployed):
@@ -174,6 +207,8 @@ def test_reopen_verification_refuses_lost_field_protection_before_replacing_vaul
     assert post(socket, prepared)[0] == 409
     assert path.read_bytes() == before
     assert search(broker)['entries'] == []
+    assert broker.writes.operations[prepared['write_handle']].state == 'failed'
+    assert post(socket, prepared)[0] == 404
 
 
 def test_external_vault_change_refuses_card_save_and_preserves_external_bytes(deployed):
