@@ -452,7 +452,12 @@ def test_two_independent_brokers_serialized_against_same_file(tmp_path, template
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == CHOSEN
 
 
-def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
+def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog, monkeypatch):
+    import secrets
+    original = secrets.token_urlsafe
+    # Exercise real generated-fill, commit/status and cancellation commands even
+    # when URL-safe randomness would produce an option-looking CLI handle.
+    monkeypatch.setattr(secrets, 'token_urlsafe', lambda size: '-test-' + original(size))
     broker, typer, path, socket = deployed
     prefix = ['--socket', str(socket.with_name('cli.sock')), '--unlock-origin', 'https://node.example:9443']
     def command(*args, expected=0):
@@ -465,7 +470,7 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
         return json.loads(captured.out)
     with running_broker(socket.with_name('cli.sock'), broker):
         status = command('status')
-        assert status['version'] == '0.12.0' and status['writes_available']
+        assert status['version'] == '0.13.0' and status['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]
         args = [arg for field in ('title', 'username', 'url', 'group') for arg in ('--' + field, selected[field])]
         generated = command('generate-password', selected['handle'], *args, '--length', '28', '--symbols', '')
@@ -485,7 +490,10 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == generated_secret
 
 
-def test_actual_installed_executable_against_running_synthetic_broker(deployed, capsys):
+def test_actual_installed_executable_against_running_synthetic_broker(deployed, capsys, monkeypatch):
+    import secrets
+    original = secrets.token_urlsafe
+    monkeypatch.setattr(secrets, 'token_urlsafe', lambda size: '-test-' + original(size))
     import subprocess
     import sys
     from pathlib import Path
@@ -500,7 +508,7 @@ def test_actual_installed_executable_against_running_synthetic_broker(deployed, 
         assert all(secret not in result.stdout for secret in (MASTER, OLD, CHOSEN))
         return json.loads(result.stdout)
     version = subprocess.run([str(executable), '--version'], text=True, capture_output=True, check=True)
-    assert version.stdout.strip() == '0.12.0'
+    assert version.stdout.strip() == '0.13.0'
     with running_broker(socket.with_name('installed-cli.sock'), broker):
         assert command('status')['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]

@@ -96,7 +96,7 @@ def test_search_response_never_contains_password_or_internal_uuid():
 
 def test_status_is_secret_free():
     broker, _ = make_broker()
-    assert broker.dispatch({"action": "ping"}) == {"ok": True, "locked": False, "version": "0.12.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
+    assert broker.dispatch({"action": "ping"}) == {"ok": True, "locked": False, "version": "0.13.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
 
 
 @pytest.mark.parametrize("mode, expected", [
@@ -284,7 +284,7 @@ def test_second_broker_refuses_live_socket_without_disrupting_first(tmp_path):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.12.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.13.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
 
 
 def test_serve_rejects_unsafe_custom_runtime_directory_without_chmod(tmp_path):
@@ -324,14 +324,21 @@ def test_serve_reclaims_owned_stale_socket(tmp_path):
     stale.bind(str(socket_path))
     stale.close()
     with running_broker(socket_path, Broker(None, RecordingTyper())):
-        # A filesystem may immediately reuse the stale socket's inode. Prove
-        # recovery by talking to the replacement listener instead of its inode.
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(1)
-            client.connect(str(socket_path))
-            send_message(client, {"action": "ping"})
-            response = receive_message(client)
-            assert response["ok"] is True and response["locked"] is True
+        # The filesystem may reuse an inode immediately. A successful protocol
+        # exchange proves the stale endpoint was reclaimed and is now served.
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.settimeout(1)
+                    client.connect(str(socket_path))
+                    send_message(client, {'action': 'ping'})
+                    response = receive_message(client)
+                    assert response['ok'] is True and response['locked'] is True
+                break
+            except (FileNotFoundError, ConnectionRefusedError):
+                assert time.monotonic() < deadline
+                time.sleep(.005)
 
 
 def test_shutdown_does_not_unlink_replacement_socket(tmp_path):
@@ -362,7 +369,7 @@ def test_idle_unix_client_does_not_block_other_requests(tmp_path):
                 client.settimeout(0.5)
                 client.connect(str(socket_path))
                 send_message(client, {"action": "ping"})
-                assert receive_message(client) == {"ok": True, "locked": False, "version": "0.12.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
+                assert receive_message(client) == {"ok": True, "locked": False, "version": "0.13.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
 
 
 def test_rpc_worker_admission_is_bounded_and_recovers(tmp_path, monkeypatch):
@@ -421,7 +428,7 @@ def test_rpc_worker_admission_is_bounded_and_recovers(tmp_path, monkeypatch):
                         client.settimeout(0.5)
                         client.connect(str(socket_path))
                         send_message(client, {"action": "ping"})
-                        assert receive_message(client) == {"ok": True, "locked": True, "version": "0.12.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
+                        assert receive_message(client) == {"ok": True, "locked": True, "version": "0.13.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
                     break
                 except (ConnectionError, TimeoutError):
                     assert time.monotonic() < deadline
@@ -463,7 +470,7 @@ def test_rpc_absolute_frame_deadline_stops_header_drip_and_recovers(
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.12.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.13.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
 
 
 def test_rpc_worker_start_failure_is_local_and_cleanup_still_completes(
@@ -492,7 +499,7 @@ def test_rpc_worker_start_failure_is_local_and_cleanup_still_completes(
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.12.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": True, "version": "0.13.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
 
     assert not socket_path.exists()
     with running_broker(socket_path, Broker(None, RecordingTyper())):
@@ -510,7 +517,7 @@ def test_disconnected_unix_client_does_not_stop_broker(tmp_path):
             client.settimeout(0.5)
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.12.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.13.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
 
 
 def test_oversized_metadata_returns_generic_error_and_broker_stays_up(tmp_path):
@@ -525,7 +532,7 @@ def test_oversized_metadata_returns_generic_error_and_broker_stays_up(tmp_path):
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.connect(str(socket_path))
             send_message(client, {"action": "ping"})
-            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.12.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
+            assert receive_message(client) == {"ok": True, "locked": False, "version": "0.13.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
 
 
 def test_unrelated_oversized_metadata_does_not_block_matching_entry():

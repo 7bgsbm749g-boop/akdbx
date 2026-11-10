@@ -89,6 +89,7 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
         if manager is not None and manager.broker._vault_lock.acquire(blocking=False):
             try:
                 manager._prune()
+                manager.broker.card_targets.prune()
             finally:
                 manager.broker._vault_lock.release()
 
@@ -179,6 +180,7 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
         manager = getattr(self, 'write_manager', None)
         if manager is not None:
             with manager.broker._vault_lock:
+                manager.broker.card_targets.close()
                 manager.public_base = None
                 for op in manager.operations.values():
                     op.password = None
@@ -320,9 +322,9 @@ def handler_for(state: UnlockState):
             if handle_import(self, state):
                 return True
             route = urlsplit(self.path).path
-            if route not in {'/write', '/totp'}:
+            if route not in {'/write', '/totp', '/card'}:
                 return False
-            kind = 'totp' if route == '/totp' else 'password'
+            kind = 'totp' if route == '/totp' else 'card' if route == '/card' else 'password'
             if not self._identity_ok():
                 self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Invalid password request.</p>'))
                 return True
@@ -334,13 +336,21 @@ def handler_for(state: UnlockState):
                 if self.command == 'GET':
                     destination = ''.join(f'<dt>{html.escape(key)}</dt><dd>{html.escape(value)}</dd>' for key, value in op.values.items())
                     action = route + '?token=' + html.escape(op.token, quote=True)
-                    if kind == 'totp':
+                    if kind == 'card':
+                        fields = ''.join(f'<label>{label}<input name="{key}" type="{typ}" maxlength="{limit}" {required} autocomplete="off"></label>' for key, label, typ, limit, required in (
+                            ('name', 'Cardholder name', 'text', 128, 'required'),
+                            ('number', 'Card number', 'password', 32, 'required'),
+                            ('month', 'Expiry month (MM)', 'text', 2, 'required'),
+                            ('year', 'Expiry year (YYYY)', 'text', 4, 'required'),
+                            ('csc', 'Security code (optional)', 'password', 4, '')))
+                        body = f'<dl>{destination}</dl><form method="post" action="{action}" autocomplete="off">{fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this card and destination</label><button>Save card to KeePass</button></form>'
+                    elif kind == 'totp':
                         replacement = '<p>This replaces the saved authenticator key.</p>' if op.replace else ''
                         body = f'<dl>{destination}</dl><p>Import the setup key or otpauth URI for this account. This saves an authenticator in KeePass; it does not change the website. Keep a separate recovery method.</p>{replacement}<form method="post" action="{action}" autocomplete="off"><label>Setup key or otpauth TOTP URI</label><input name="setup" type="password" required maxlength="4096" autocomplete="off"><label><input type="checkbox" name="confirmed" value="yes" required>I confirm this account and authenticator key</label><button>Save authenticator</button></form>'
                         body += '<p><a href="/totp/import?token=' + html.escape(op.token, quote=True) + '">Import QR images / Google export, or review a browser capture</a></p>'
                     else:
                         body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes KeePass only.</p><form method="post" action="{action}" autocomplete="off"><label>Chosen password</label><input name="password" type="password" required autocomplete="new-password"><label>Repeat password</label><input name="confirmation" type="password" required autocomplete="new-password"><label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label><button>Save to KeePass</button></form>'
-                    self._send(HTTPStatus.OK, _page('Confirm KeePass authenticator' if kind == 'totp' else 'Confirm KeePass password', body))
+                    self._send(HTTPStatus.OK, _page('Save KeePass card' if kind == 'card' else 'Confirm KeePass authenticator' if kind == 'totp' else 'Confirm KeePass password', body))
                     return True
             # Read outside the vault lock so a stalled user cannot block fills.
             try:
@@ -350,10 +360,12 @@ def handler_for(state: UnlockState):
                 raw = self.rfile.read(length)
                 if len(raw) != length or self._expired():
                     return True
-                values = parse_qs(raw.decode('utf-8'), strict_parsing=True)
+                values = parse_qs(raw.decode('utf-8'), strict_parsing=True, keep_blank_values=True, errors='strict')
                 if any(len(v) != 1 for v in values.values()):
                     raise ValueError
                 if kind == 'totp' and set(values) - {'setup', 'confirmed'}:
+                    raise ValueError
+                if kind == 'card' and set(values) != {'name', 'number', 'month', 'year', 'csc', 'confirmed'}:
                     raise ValueError
             except Exception:
                 self._send(HTTPStatus.BAD_REQUEST, _page('Invalid request', '<p>Request rejected.</p>'))
@@ -364,12 +376,14 @@ def handler_for(state: UnlockState):
                 if op is None or self._expired():
                     self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Invalid or expired password request.</p>'))
                     return True
-                if kind == 'totp':
+                if kind == 'card':
+                    result = state.broker.cards.submit(op, {k: values[k][0] for k in ('name', 'number', 'month', 'year', 'csc')}, values.get('confirmed') == ['yes'])
+                elif kind == 'totp':
                     result = state.broker.writes.submit_totp(op, values.get('setup', [''])[0], values.get('confirmed') == ['yes'])
                 else:
                     result = state.broker.writes.submit(op, values.get('password', [''])[0], values.get('confirmation', [''])[0], values.get('confirmed') == ['yes'])
             # No submitted fields, parser exceptions or secrets enter the page.
-            body = ('<p>Authenticator saved to KeePass. You may close this page.</p>' if kind == 'totp' else '<p>Password saved to KeePass. You may close this page.</p>') if result['ok'] else '<p>' + html.escape(result['error']) + '</p>'
+            body = ('<p>Card saved to KeePass. You may close this page.</p>' if kind == 'card' else '<p>Authenticator saved to KeePass. You may close this page.</p>' if kind == 'totp' else '<p>Password saved to KeePass. You may close this page.</p>') if result['ok'] else '<p>' + html.escape(result['error']) + '</p>'
             self._send(HTTPStatus.OK if result['ok'] else HTTPStatus.CONFLICT, _page('KeePass save result', body))
             return True
 

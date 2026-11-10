@@ -126,8 +126,17 @@ def synthetic_chromium(isolated_x11, tmp_path):
             process.wait(timeout=8)
         except subprocess.TimeoutExpired:
             import signal
-            os.killpg(process.pid, signal.SIGTERM)
-            process.wait(timeout=5)
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # start_new_session=True makes this the fixture's exact
+                    # disposable process group, never the shared browser.
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+            except ProcessLookupError:
+                process.wait(timeout=5)
         os.close(agent_write)
         os.close(agent_read)
         log.close()

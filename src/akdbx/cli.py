@@ -20,6 +20,7 @@ from .runtime import anchored_socket_path, open_private_runtime_directory
 from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
 from .notifications import validate_webhook_url
+from . import card_cli
 
 
 # Reserved example domain: deployment addresses belong in local configuration.
@@ -169,7 +170,7 @@ def request(
     if payload.get('action') in {'merge', 'admit'}:
         timeout = 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
     else:
-        timeout = 240 if payload.get('action') in IDENTITY_CREATES else 5
+        timeout = 240 if payload.get('action') in IDENTITY_CREATES else 15 if payload.get('action') == 'pin-card-target' else 5
     client.settimeout(timeout)
     try:
         client.connect(anchored_socket_path(runtime_fd, socket_path.name))
@@ -207,8 +208,11 @@ def parser() -> argparse.ArgumentParser:
         help="deployment HTTPS origin for private pages (or AKDBX_UNLOCK_ORIGIN); default is a non-routable example",
     )
     commands = result.add_subparsers(dest="command", required=True)
+    card_cli.add_parsers(commands)
     start = commands.add_parser("serve", help="unlock a KDBX and run the local broker")
     start.add_argument("database", type=Path)
+    start.add_argument('--card-browser-profile', type=Path, default=os.environ.get('AKDBX_CARD_BROWSER_PROFILE'),
+                       help='existing private Chrome user-data directory with local CDP enabled; no browser is launched')
     start.add_argument("--keyfile", type=Path)
     start.add_argument("--yes-on-fill", action="store_true", help="deprecated no-op: fills no longer require terminal approval")
     start.add_argument("--web-unlock", action="store_true", help="compatibility flag: private web unlock is always enabled")
@@ -293,7 +297,8 @@ def main(argv: list[str] | None = None) -> int:
         keyfile = args.keyfile.expanduser() if args.keyfile else None
         if args.yes_on_fill:
             print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
-        broker = Broker(None, X11Typer(), notification_state_path=args.notification_state or args.socket.with_name(args.socket.name + '.unlock-notifications.json'))
+        broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
+                        notification_state_path=args.notification_state or args.socket.with_name(args.socket.name + '.unlock-notifications.json'))
         unlock_name = ("agentic-kdbx-unlock.sock"
                        if args.socket.name == "agentic-kdbx.sock"
                        else "akdbx-unlock.sock")
@@ -311,6 +316,9 @@ def main(argv: list[str] | None = None) -> int:
             unlock_server.shutdown()
             unlock_server.server_close()
         return 0
+    if args.command in card_cli.COMMANDS:
+        return card_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
+                                                        expected_unlock_origin=args.unlock_origin))
     payload = {"action": "ping" if args.command == "status" else args.command}
     if args.command in {'unlock-subscription-status', 'unsubscribe-unlock'}:
         payload['subscription_id'] = args.subscription_id
