@@ -11,7 +11,10 @@ The operator must explicitly configure `serve --password-browser-profile PATH`
 or `AKDBX_PASSWORD_BROWSER_PROFILE`. PATH is the Chrome user data directory of
 the intended browser, started with `--user-data-dir=PATH` and
 `--remote-debugging-port=0` so it writes `DevToolsActivePort`. A fixed port does
-not create that file for this transport. The broker never launches
+not create that file for this transport. For Chrome 136 and later, PATH must be
+a non-default user-data root; explicitly naming Chrome's default data directory
+is unsupported. A profile named `Default` within a custom root is a separate
+concept. The broker never launches
 or changes a browser, discovers profiles, or accepts an endpoint in an RPC.
 The profile must be owned by the broker UID, mode 0700, with no symlink components.
 Its bounded regular `DevToolsActivePort` must be owned by that UID and not writable
@@ -26,6 +29,18 @@ Do not restart a live broker, alter its browser/profile, or deploy this source
 repair without the owning workflow's authorization. Existing processes retain
 their old code until an authorized update and restart.
 
+## Exact URL privacy limitation
+
+`pin-password-target --top-url` must receive the exact observed page URL;
+the broker compares the full URL, including any query and fragment. Supplying
+only an origin or sanitized URL cannot authorize that page. The CLI has no
+private file/stdin input for this URL. If it contains a reset token, verification
+code, or other private value, this CLI pin workflow is unsupported: do not put
+that value in command arguments, logs, or notes, or change the live URL to bypass
+the check. Continue only if the site's normal authorized flow provides a
+verified password page with a secret-free exact URL; otherwise report this
+limitation and refuse the fill.
+
 ## Caller workflow
 
 1. Check `status` for integer `password_fill_protocol: 1` and
@@ -33,7 +48,7 @@ their old code until an authorized update and restart.
    `password_browser_configured: true`.
 2. Verify the selected account, exact HTTPS page URL, page ID, main-frame ID,
    and intended field with supported browser tools. Do not read a filled value.
-3. Focus the intended password field, then pin it immediately:
+3. For password mode, focus the intended password field, then pin it immediately:
 
    ```sh
    akdbx pin-password-target --page-id PAGE_ID --frame-id MAIN_FRAME_ID \

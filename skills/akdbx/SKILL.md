@@ -11,7 +11,7 @@ use login/password fills, clipboard operations or generic typing for card values
 Card filling does not authorize submitting a purchase. The login workflow below
 does not apply to card entries.
 
-Use this skill for the user's authorized login task. The broker exposes login metadata and sends credentials to a verified, pinned X11 application window. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
+Use this skill for the user's authorized login task. The broker exposes login metadata and delivers passwords to verified, retained Chromium DOM inputs. Username/TOTP routes can use pinned X11 targets. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
 
 ## Session delegation
 
@@ -160,18 +160,22 @@ before the first fill. Require broker `password_fill_protocol: 1` and
 `--password-browser-profile` at broker startup; absence or unsupported paths refuse.
 Do not change a live profile or restart the broker to bypass refusal.
 
-Require a visible editable type=password input whose autocomplete field token is
+For password and login modes, require a visible editable type=password input whose autocomplete field token is
 `current-password` or `new-password`. Valid ordered token lists such as
 `current-password webauthn` are supported, including optional `section-*` and
-`shipping`/`billing` prefixes. Username inputs require the `username` field token.
+`shipping`/`billing` prefixes. Username-only DOM pins require only a visible
+editable text/email input with the `username` field token; a password input
+does not need to exist on that page.
 Unknown, conflicting, duplicate or misplaced tokens refuse. Do not remove
 `webauthn` or rewrite page attributes to bypass refusal; use the supported broker
-version and a fresh pin. Focus the password field, then use `pin-password-target --page-id PAGE_ID
+version and a fresh pin. For password mode, focus the password field, then use `pin-password-target --page-id PAGE_ID
 --frame-id MAIN_FRAME_ID --top-url EXACT_HTTPS_URL --selector PASSWORD_SELECTOR
 --mode password`. Each fill needs its own 30-second single-use target token.
 Login pins require `--mode login --username-selector USERNAME_SELECTOR`; focus the
 username first. Login fills both explicit DOM inputs without Tab. X11
 `pin-target` refuses password and login modes. Never fall back to password keys.
+For a username-only page, focus the username input and pin it with
+`--mode username --selector USERNAME_SELECTOR`.
 
 Choose the mode based on the observed form:
 
@@ -308,7 +312,7 @@ private URLs inside the private task workflow and out of notes/reports.
 A rejected or cancelled site reset must never update KeePass. Cancel the staged
 write; failures, conflicts, expiry and restart must be reported and reconciled
 as described in the reference. A `saved` receipt confirms durable vault update;
-a fill receipt confirms keyboard dispatch only.
+a fill receipt confirms guarded dispatch only.
 
 ## Recovery and reporting
 

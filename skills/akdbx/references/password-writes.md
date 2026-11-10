@@ -81,10 +81,21 @@ The generated secret has a five-minute authorization; broker expiry cleanup
 discards it even when no further request arrives. Generation does not change KeePass or type anything.
 
 Verify the reset site, correct account, form and focused password field on the
-**same desktop as the broker**. Keep focus stable. Pass the independently
-observed URL origin or sanitized URL, never a URL merely copied from entry
-metadata. Omit reset tokens, verification codes and other private query values
-from command arguments:
+**same desktop as the broker**. Keep focus stable. For `fill-generated
+--target-url`, pass the independently observed origin or a secret-free URL,
+never a URL merely copied from entry metadata. Omit reset tokens, verification
+codes and other private values from command arguments.
+
+The preceding `pin-password-target --top-url` has a different contract: it needs
+the exact observed page URL, not its sanitized form. There is no private URL
+input in this CLI. If that exact URL contains a private token, the pin/fill
+workflow is unsupported; a sanitized `--target-url` does not remove this limit.
+Use a secret-free password page reached through the site's normal authorized
+flow if available, or report the limitation and refuse the fill. Never change
+the page URL or weaken the exact match to work around it. See the
+[exact-URL privacy limitation](target-fill.md#exact-url-privacy-limitation).
+
+For a supported secret-free page:
 
 ```bash
 # Focus and verify the password field, then obtain a fresh pin-password-target token.
