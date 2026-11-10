@@ -55,8 +55,13 @@ def private(socket, prepared, path, values=None, origin='https://node.example:94
         headers['Tailscale-User-Login'] = 'synthetic@example.test'
     if origin is not None:
         headers['Origin'] = origin
-    connection.request('POST' if values is not None else 'GET', path + '?' + parsed.query,
-                       urlencode(values) if values is not None else None, headers)
+    try:
+        connection.request('POST' if values is not None else 'GET', path + '?' + parsed.query,
+                           urlencode(values) if values is not None else None, headers)
+    except BrokenPipeError:
+        # The server can reject headers (including Content-Length) before a
+        # form upload completes. Read that response; never resend a mutation.
+        pass
     response = connection.getresponse()
     result = response.status, dict(response.headers), response.read()
     connection.close()
@@ -290,6 +295,30 @@ def test_large_deep_and_wrong_format_http_is_secret_free(deployed):
     for payload in ['['*2000+KEY+']'*2000,'["'+KEY+'"]'+'x'*70000,'{"payloads":"'+KEY+'"}']:
         status,_,body=private(socket,prepared,'/totp/import',{'payloads':payload})
         assert status==400 and KEY.encode() not in body
+    assert not broker.writes.get(prepared['write_handle']).import_candidates
+
+
+def test_early_oversized_rejection_is_read_without_resending(deployed, monkeypatch):
+    broker, _, path, socket = deployed
+    before = path.read_bytes()
+    prepared = prepare(broker)
+    requests, bodies = [], []
+    class EarlyRejection(UnixHTTPConnection):
+        def request(self, *args, **kwargs):
+            requests.append(True)
+            return super().request(*args, **kwargs)
+        def send(self, data):
+            if isinstance(data, bytes) and data.startswith(b'payloads='):
+                bodies.append(True)
+                # Headers have reached the real server. Its Content-Length
+                # check rejects this body before upload can finish.
+                raise BrokenPipeError('synthetic early rejection')
+            return super().send(data)
+    monkeypatch.setattr(sys.modules[__name__], 'UnixHTTPConnection', EarlyRejection)
+    status, _, body = private(socket, prepared, '/totp/import', {'payloads': KEY + 'x'*70000})
+    assert status == 400 and KEY.encode() not in body
+    assert len(requests) == len(bodies) == 1
+    assert path.read_bytes() == before
     assert not broker.writes.get(prepared['write_handle']).import_candidates
 
 
