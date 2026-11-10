@@ -89,7 +89,7 @@ def test_native_pipe_roundtrip_verifies_server_and_refuses_second_broker(monkeyp
         thread.join(5)
     assert not thread.is_alive() and not failures
     # The first-instance flag permits a clean restart after all owned handles close.
-    with original(str(name), first=True):
+    with security.managed_handle(original(str(name), first=True)):
         pass
 
 

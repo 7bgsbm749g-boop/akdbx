@@ -13,11 +13,20 @@ import pywintypes
 TRUSTED_INSTALLER = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 
 
+@contextmanager
+def managed_handle(handle):
+    # pywin32 PyHANDLE supplies Close(), but is not a context manager.
+    try:
+        yield handle
+    finally:
+        handle.Close()
+
+
 def process_identity(pid):
     """Verify user/session and keep a process handle to prevent PID reuse."""
     handle = win32api.OpenProcess(0x1000 | win32con.SYNCHRONIZE, False, pid)
     try:
-        with win32security.OpenProcessToken(handle, win32con.TOKEN_QUERY) as token:
+        with managed_handle(win32security.OpenProcessToken(handle, win32con.TOKEN_QUERY)) as token:
             sid = win32security.ConvertSidToStringSid(
                 win32security.GetTokenInformation(token, win32security.TokenUser)[0])
             session = win32security.GetTokenInformation(token, win32security.TokenSessionId)
@@ -79,7 +88,7 @@ def check_acl(handle, *, private=True):
             raise PermissionError('Windows path grants unsafe access to another user')
 
 
-def checked_handle(path, *, directory=False, private=True, access=None, creation=win32con.OPEN_EXISTING):
+def _open_checked_handle(path, *, directory=False, private=True, access=None, creation=win32con.OPEN_EXISTING):
     path = Path(os.path.abspath(path))
     if path.drive.startswith('\\\\') or ':' in str(path)[2:]:
         raise PermissionError('use a local Windows volume without alternate data streams')
@@ -106,6 +115,12 @@ def checked_handle(path, *, directory=False, private=True, access=None, creation
 
 
 @contextmanager
+def checked_handle(path, **options):
+    with managed_handle(_open_checked_handle(path, **options)) as handle:
+        yield handle
+
+
+@contextmanager
 def trusted_directory(path):
     """Hold all components without delete sharing; refuse junctions and UNC."""
     path = Path(os.path.abspath(Path(path).expanduser()))
@@ -117,8 +132,8 @@ def trusted_directory(path):
         for part in ('', *path.parts[1:]):
             if part:
                 component /= part
-            held.append(checked_handle(component, directory=True, private=False,
-                                       access=win32con.FILE_READ_ATTRIBUTES | win32con.READ_CONTROL))
+            held.append(_open_checked_handle(component, directory=True, private=False,
+                                             access=win32con.FILE_READ_ATTRIBUTES | win32con.READ_CONTROL))
         yield path
     finally:
         for handle in reversed(held):
