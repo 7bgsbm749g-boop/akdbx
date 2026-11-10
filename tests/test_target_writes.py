@@ -45,14 +45,33 @@ def test_partial_generated_fills_are_not_counted_and_cannot_commit(deployed, mon
 
 @pytest.mark.parametrize('target_data', [{}, {'target': 'unknown', 'target_protocol': 1},
                                        {'target': 'unknown', 'target_protocol': 1, 'global_fallback': True}])
-def test_generated_fill_never_bypasses_required_target(deployed, target_data):
+def test_generated_target_refusal_consumes_ref_even_with_new_pin(deployed, target_data):
     broker, typer, _, _ = deployed
     generated = begin(broker, 'generate-password')
     ref = generated['fill_handles']['password']
     request = dict(action='fill-generated', handle=ref, target_url='https://example.test/reset', **target_data)
-    assert not broker.dispatch(request)['ok']
-    assert not broker.dispatch({**request, **target_request(broker, 'password')})['ok']
+    expected = ({'ok': False, 'error': 'autofill not started: unsupported target request'}
+                if 'global_fallback' in target_data else failure(False))
+    assert broker.dispatch(request) == expected
+    assert not typer.events and not broker.writes.get(generated['write_handle']).filled
+    # A new target cannot revive a consumed single-use fill authorization.
+    assert broker.dispatch({**request, **target_request(broker, 'password')}) == {
+        'ok': False, 'error': 'unknown or expired generated fill handle; start again'}
     assert not commit(broker, generated)['ok'] and not typer.events
+
+
+def test_live_generated_ref_and_dom_pin_cannot_enable_global_fallback(deployed):
+    broker, typer, _, _ = deployed
+    generated = begin(broker, 'generate-password')
+    ref = generated['fill_handles']['password']
+    pin = target_request(broker, 'password')
+    assert ref in broker.writes.get(generated['write_handle']).fill_refs
+    assert pin['target'] in broker.passwords.pins
+    result = broker.dispatch(dict(action='fill-generated', handle=ref,
+                target_url='https://example.test/reset', global_fallback=True, **pin))
+    assert result == {'ok': False, 'error': 'autofill not started: unsupported target request'}
+    assert not broker.writes.get(generated['write_handle']).filled and not typer.events
+    assert not commit(broker, generated)['ok']
 
 
 @pytest.mark.parametrize('mode', ['password', 'login'])

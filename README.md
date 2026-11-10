@@ -55,7 +55,7 @@ Keep the broker process running. Open its private unlock page from your Tailscal
 .venv/bin/akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
 ```
 
-Before starting the broker, choose the private Chrome user data directory shown above (or set `AKDBX_PASSWORD_BROWSER_PROFILE`) and enable remote debugging in that browser. The broker does not start or change Chrome. The profile must be owned, mode 0700, without symlink components; launch Chrome with `umask 077` so `DevToolsActivePort` is not writable by other users. On Linux, the broker also verifies the kernel UID of the connected TCP peer before the WebSocket handshake. An unavailable or ambiguous ownership check refuses; redirects and reconnection are forbidden. No profile means password fills refuse. Treat CDP as a privileged local interface.
+Before starting the broker, choose the private Chrome user data directory shown above (or set `AKDBX_PASSWORD_BROWSER_PROFILE`). Configure that browser's startup with `--user-data-dir=/absolute/path/to/chrome-user-data --remote-debugging-port=0` so Chrome writes its selected port and browser endpoint to `DevToolsActivePort`. A fixed debugging port does not provide that file for this transport. The broker does not start or change Chrome. The profile must be owned, mode 0700, without symlink components; launch Chrome with `umask 077` so `DevToolsActivePort` is not writable by other users. On Linux, the broker also verifies the kernel UID of the connected TCP peer before the WebSocket handshake. An unavailable or ambiguous ownership check refuses; redirects and reconnection are forbidden. No profile means password fills refuse. Treat CDP as a privileged local interface.
 
 Focus the password input before pinning. For `login`, pin with `--mode login --selector PASSWORD_SELECTOR --username-selector USERNAME_SELECTOR` and focus the username first. Username inputs require `autocomplete="username"`; password inputs require `autocomplete="current-password"` or `autocomplete="new-password"`. Login fills both retained nodes with native DOM setters, without Tab or focus changes. Both saved and generated passwords require this path; a legacy X11 pin refuses them. HTTPS main-frame standard inputs are supported; child frames, shadow DOM, custom controls, and ambiguous or changed fields refuse. The broker sends no submit key and does not use the clipboard.
 
@@ -395,7 +395,10 @@ password. Read [the exact SSO workflow and activation requirements](skills/akdbx
 
 `akdbx --version` reports the CLI version. Broker `status` reports its own
 `version`, `writes_available` and `recovery_required`; require an unlocked,
-write-capable broker version 0.2.0 or newer before changing a website password.
+write-capable broker version 0.12.0 or newer before changing a website password.
+Password fills also require integer `password_fill_protocol: 1`,
+`password_fill_delivery: "chromium-password-dom-v1"`, and
+`password_browser_configured: true` in the running broker's status.
 
 - `create-entry --title TITLE --username ACCOUNT --url SITE --group GROUP`
 - `update-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP`

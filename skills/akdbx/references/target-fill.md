@@ -9,12 +9,16 @@ clients. There is no password keyboard fallback.
 
 The operator must explicitly configure `serve --password-browser-profile PATH`
 or `AKDBX_PASSWORD_BROWSER_PROFILE`. PATH is the Chrome user data directory of
-the intended browser with remote debugging enabled. The broker never launches
+the intended browser, started with `--user-data-dir=PATH` and
+`--remote-debugging-port=0` so it writes `DevToolsActivePort`. A fixed port does
+not create that file for this transport. The broker never launches
 or changes a browser, discovers profiles, or accepts an endpoint in an RPC.
 The profile must be owned by the broker UID, mode 0700, with no symlink components.
 Its bounded regular `DevToolsActivePort` must be owned by that UID and not writable
 by group/others (launch Chrome with `umask 077`). The broker connects only to the
-loopback browser websocket described by that file. Protect this privileged CDP
+loopback browser websocket described by that file. Before its handshake, Linux
+kernel metadata must identify the broker UID on the actual connected peer;
+unverifiable ownership and redirects refuse. Protect this privileged CDP
 interface and profile from other local users. Configuration is not proof of
 protection against malicious processes running as the broker user.
 
@@ -25,7 +29,8 @@ their old code until an authorized update and restart.
 ## Caller workflow
 
 1. Check `status` for integer `password_fill_protocol: 1` and
-   `password_fill_delivery: "chromium-password-dom-v1"`.
+   `password_fill_delivery: "chromium-password-dom-v1"`, plus
+   `password_browser_configured: true`.
 2. Verify the selected account, exact HTTPS page URL, page ID, main-frame ID,
    and intended field with supported browser tools. Do not read a filled value.
 3. Focus the intended password field, then pin it immediately:

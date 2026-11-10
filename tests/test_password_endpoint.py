@@ -118,7 +118,8 @@ with socket.socket() as listener:
         try:
             assert select.select([process.stdout], [], [], 3)[0], 'listener did not start'
             line = process.stdout.readline().strip()
-            if not line and process.poll() is not None:
+            if not line:
+                process.wait(timeout=5)
                 pytest.skip('unprivileged foreign-UID test requires sudo permission')
             port = int(line)
             metadata = profile / 'DevToolsActivePort'
