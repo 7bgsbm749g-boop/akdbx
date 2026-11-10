@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 from http.client import HTTPSConnection
 import ipaddress
 import ssl
+import subprocess
+import sys
 import threading
 from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
@@ -16,6 +18,14 @@ from cryptography.x509.oid import NameOID
 from akdbx.broker import Broker
 from akdbx.web_unlock import UnlockState, handler_for
 from akdbx.windows_unlock import WindowsHTTPServer, local_origin
+
+
+def test_cli_import_does_not_require_unix_socket_support():
+    probe = subprocess.run([sys.executable, '-c',
+        "import socket; socket.__dict__.pop('AF_UNIX', None); "
+        "from akdbx import cli; cli.main(['--version'])"],
+        capture_output=True, text=True, timeout=10)
+    assert probe.returncode == 0, probe.stderr
 
 
 @pytest.fixture

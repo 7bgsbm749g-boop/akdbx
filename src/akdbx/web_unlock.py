@@ -46,13 +46,17 @@ class ConnectionDeadline:
 class ThreadingUnixHTTPServer(ThreadingHTTPServer):
     """HTTP over a filesystem-protected Unix socket for Tailscale Serve."""
 
-    address_family = socket.AF_UNIX
+    # Windows CPython does not expose AF_UNIX. The Windows subclass supplies
+    # AF_INET and its own initializer; keep importing the shared handler safe.
+    address_family = getattr(socket, 'AF_UNIX', None)
     daemon_threads = True
     request_queue_size = MAX_HTTP_CONNECTIONS
 
     def __init__(
         self, server_address, *args, **kwargs,
     ) -> None:
+        if self.address_family is None:
+            raise RuntimeError('Unix HTTP backend is unavailable on this platform')
         self._connection_slots = threading.BoundedSemaphore(MAX_HTTP_CONNECTIONS)
         self._deadline_lock = threading.Lock()
         self._deadlines: dict[socket.socket, ConnectionDeadline] = {}
