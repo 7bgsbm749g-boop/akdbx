@@ -118,6 +118,12 @@ profiles or fall back to X11. Keep this directory and the debugging connection
 private. An unconfigured/unsupported browser refuses fills; storage and search
 remain available.
 
+Chrome's debugging port grants browser control. Loopback binding alone does
+not restrict it to one OS user. Use a host environment that restricts access
+to trusted clients; the private profile-directory checks do not provide network
+authentication for CDP. Do not enable a debugging port as an automatic workaround
+for a refused fill.
+
 After independently verifying the merchant and payment form, obtain the page
 and frame IDs through your browser's DOM inspection tools, bring the intended
 field into view, and pin its exact selector and autocomplete field type:

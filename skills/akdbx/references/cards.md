@@ -56,6 +56,9 @@ the unsupported field/frame or missing browser configuration instead. The
 operator configures the existing browser's private local CDP connection through
 `serve --card-browser-profile USER_DATA_DIR` or `AKDBX_CARD_BROWSER_PROFILE`;
 this is deployment configuration, not an agent-selected endpoint or new profile.
+Chrome's debugging port is a browser-control interface. Loopback alone does not
+isolate it from other local users. The operator must provide host access controls
+for trusted clients; profile ownership checks do not authenticate CDP clients.
 
 ## Verify without reading secrets
 
