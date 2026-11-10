@@ -182,6 +182,8 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
                 manager.public_base = None
                 for op in manager.operations.values():
                     op.password = None
+                    op.import_candidates = ()
+                    op.import_nonce = None
                     op.fill_refs.clear()
                     if op.state == 'pending':
                         op.state = 'cancelled'
@@ -302,18 +304,21 @@ def handler_for(state: UnlockState):
         def _expired(self) -> bool:
             return self.server.request_expired(self.request)
 
-        def _send(self, status: HTTPStatus, body: bytes) -> None:
+        def _send(self, status: HTTPStatus, body: bytes, *, content_type='text/html; charset=utf-8', import_page=False) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'" + ("; script-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'" if import_page else ""))
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
             self.wfile.write(body)
 
         def _write_request(self) -> bool:
+            from .import_web import handle_import
+            if handle_import(self, state):
+                return True
             route = urlsplit(self.path).path
             if route not in {'/write', '/totp'}:
                 return False
@@ -332,6 +337,7 @@ def handler_for(state: UnlockState):
                     if kind == 'totp':
                         replacement = '<p>This replaces the saved authenticator key.</p>' if op.replace else ''
                         body = f'<dl>{destination}</dl><p>Import the setup key or otpauth URI for this account. This saves an authenticator in KeePass; it does not change the website. Keep a separate recovery method.</p>{replacement}<form method="post" action="{action}" autocomplete="off"><label>Setup key or otpauth TOTP URI</label><input name="setup" type="password" required maxlength="4096" autocomplete="off"><label><input type="checkbox" name="confirmed" value="yes" required>I confirm this account and authenticator key</label><button>Save authenticator</button></form>'
+                        body += '<p><a href="/totp/import?token=' + html.escape(op.token, quote=True) + '">Import QR images / Google export, or review a browser capture</a></p>'
                     else:
                         body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes KeePass only.</p><form method="post" action="{action}" autocomplete="off"><label>Chosen password</label><input name="password" type="password" required autocomplete="new-password"><label>Repeat password</label><input name="confirmation" type="password" required autocomplete="new-password"><label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label><button>Save to KeePass</button></form>'
                     self._send(HTTPStatus.OK, _page('Confirm KeePass authenticator' if kind == 'totp' else 'Confirm KeePass password', body))

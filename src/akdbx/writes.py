@@ -198,6 +198,9 @@ class Write:
     fill_refs: dict = field(default_factory=dict, repr=False)
     kind: str = 'password'
     replace: bool = False
+    import_candidates: tuple = field(default=(), repr=False)
+    import_nonce: str | None = field(default=None, repr=False)
+    import_source: str = ''
 
 
 class WriteManager:
@@ -215,6 +218,9 @@ class WriteManager:
     def invalidate_revision(self, current=None, *, all_pending=False):
         self.revision += 1
         for other in self.operations.values():
+            if other is not current:
+                other.import_candidates = ()
+                other.import_nonce = None
             if other is not current and other.state == 'pending' and (all_pending or other.password is not None):
                 other.state = 'failed'
                 other.error = 'stale write; search and start again'
@@ -228,6 +234,8 @@ class WriteManager:
         for handle, op in list(self.operations.items()):
             if op.expires <= now:
                 op.password = None
+                op.import_candidates = ()
+                op.import_nonce = None
                 del self.operations[handle]
 
     def get(self, handle):
@@ -354,10 +362,14 @@ class WriteManager:
             op.error = 'stale write; search and start again'
             op.password = None
             op.fill_refs.clear()
+            op.import_candidates = ()
+            op.import_nonce = None
         if cancel and op.state == 'pending':
             op.state = 'cancelled'
             op.password = None
             op.fill_refs.clear()
+            op.import_candidates = ()
+            op.import_nonce = None
         return {'ok': True, 'state': op.state, **({'error': op.error} if op.error else {})}
 
     def submit(self, op, password, confirmation, confirmed):
@@ -407,6 +419,33 @@ class WriteManager:
         op.fill_refs.clear()
         return {'ok': False, 'error': op.error}
 
+    def stage_totp_import(self, op, payloads, source=''):
+        """Private HTTP/native ingestion only. No secret-bearing RPC action."""
+        from .import_totp import parse_import
+        if (op.kind != 'totp' or op.state != 'pending' or op.expires <= self.broker.clock()
+                or op.revision != self.revision or not self.available() or op.import_candidates):
+            raise WriteError('stale or already captured import; start again')
+        if source and https_origin(source) != https_origin(op.values['url']):
+            raise WriteError('capture site does not match selected vault entry')
+        configs = parse_import(payloads, label=op.values['username'])
+        if source and len(configs) != 1:
+            raise WriteError('browser capture requires one TOTP setup')
+        op.import_candidates = configs
+        op.import_nonce = secrets.token_urlsafe(32)
+        # Store origin only, never a page path/query that may itself carry keys.
+        op.import_source = ('https://' + urlsplit(source).netloc) if source else 'Private QR/key import'
+
+    def confirm_totp_import(self, op, choice, nonce, confirmed):
+        candidates = op.import_candidates
+        if (not candidates or not isinstance(nonce, str) or not op.import_nonce
+                or not secrets.compare_digest(nonce, op.import_nonce)
+                or type(choice) is not int or not 0 <= choice < len(candidates)):
+            return {'ok': False, 'error': 'invalid import selection; start again'}
+        if confirmed is not True:
+            return {'ok': False, 'error': 'confirm the destination and imported account'}
+        # submit_totp rechecks revision, destination, replacement and persistence.
+        return self.submit_totp(op, candidates[choice].uri(), True)
+
     def submit_totp(self, op, setup, confirmed):
         if op.kind != 'totp' or op.state != 'pending' or op.expires <= self.broker.clock():
             return {'ok': False, 'error': 'unknown or expired TOTP setup; start again'}
@@ -420,6 +459,8 @@ class WriteManager:
         except Exception:
             return {'ok': False, 'error': 'confirm the account and enter a supported TOTP setup key or URI'}
         op.state = 'failed'
+        op.import_candidates = ()
+        op.import_nonce = None
         try:
             if op.revision != self.revision or not self.available():
                 raise WriteError('stale TOTP setup; search and start again')

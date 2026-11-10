@@ -20,7 +20,7 @@ class TotpError(ValueError):
 
 
 def capabilities():
-    return dict(totp_supported=True, totp_protocol=1)
+    return dict(totp_supported=True, totp_protocol=1, totp_import_supported=True, totp_import_protocol=1)
 
 
 @dataclass(frozen=True)

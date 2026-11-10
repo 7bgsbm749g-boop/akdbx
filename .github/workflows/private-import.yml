@@ -1,0 +1,47 @@
+name: Private authenticator import
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: private-import-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  synthetic-import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install isolated test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb x11-utils
+          python -m pip install '.[test]'
+      - name: Test private import, native transport, and synthetic Chromium
+        run: |
+          python -m pytest -q tests/test_import_totp.py tests/test_import_browser.py tests/test_totp.py tests/test_web_unlock.py tests/test_protocol.py
+          node --test tests/test_browser_import.js
+      - name: Verify wheel includes offline assets and native host
+        run: |
+          python -m pip wheel --no-deps --wheel-dir /tmp/akdbx-wheel .
+          python - <<'PY'
+          import pathlib, zipfile
+          wheel = next(pathlib.Path('/tmp/akdbx-wheel').glob('akdbx-*.whl'))
+          with zipfile.ZipFile(wheel) as archive:
+              for name in ('akdbx/import_assets/jsQR.js', 'akdbx/import_assets/jsQR.LICENSE',
+                           'akdbx/import_assets/import.js', 'akdbx/browser_extension/manifest.json',
+                           'akdbx/browser_extension/popup.js', 'akdbx/browser_import.py'):
+                  assert archive.read(name)
+          PY

@@ -207,6 +207,13 @@ Each fill carries a short start deadline. An `autofill not started` response mea
 
 ## Complete authenticator-code verification directly
 
+For an explicitly requested private key transfer, version 0.12.0 adds the
+[private QR/Google export importer and optional browser native host](references/private-import.md).
+This trusted component transfers keys directly to the broker; it is not
+permission for the agent to inspect QR images, setup fields, app storage or
+clipboard contents. The user privately confirms the imported account/destination.
+Never disable/reset website 2FA to bypass a source app's export restriction.
+
 When the site offers an authenticator code, use the selected account's saved
 TOTP through `fill-totp` instead of requesting a phone approval. Read
 [the authenticator workflow](references/totp.md) before the first use. Require

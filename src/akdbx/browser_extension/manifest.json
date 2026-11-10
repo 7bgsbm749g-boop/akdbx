@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "akdbx Private Authenticator Import",
+  "version": "1.0.0",
+  "description": "Send a selected site's setup QR directly to your local akdbx broker for private confirmation.",
+  "permissions": ["activeTab", "scripting", "nativeMessaging"],
+  "action": {"default_popup": "popup.html"},
+  "content_security_policy": {"extension_pages": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'"}
+}
