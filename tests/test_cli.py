@@ -586,3 +586,12 @@ def test_rebrand_fallback_does_not_bypass_symlink_checks(monkeypatch, tmp_path, 
         captured = capsys.readouterr()
         assert not captured.out
         assert "symlink" in captured.err.lower()
+
+
+@pytest.mark.parametrize('option', ['--tls-cert', '--tls-key'])
+def test_linux_serve_rejects_windows_tls_options_cleanly(option, tmp_path, capsys):
+    assert cli.main(['--socket', str(tmp_path / 'unused.sock'), 'serve',
+                     str(tmp_path / 'unused.kdbx'), option, 'unused.pem']) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and 'Windows options' in captured.err
+    assert 'Traceback' not in captured.err

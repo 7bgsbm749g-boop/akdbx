@@ -25,7 +25,8 @@ vault with invented credentials until the desktop checklist below passes.
   OneDrive placeholder paths can be reparse points and are not supported.
 - Vault reads and saved candidates are limited to 128 MiB; key files to 1 MiB.
   Write artifacts must fit 255 UTF-16 units per filename and the 260-unit Win32
-  path budget. Recovery scans stop at 10,000 directory entries.
+  path budget. Recovery scans stop at 10,000 matching vault artifacts;
+  unrelated files do not consume this budget.
 - The broker, CLI and target app must run as the same Windows user in the same
   desktop session. Run normally, without elevation. Secure desktop/UAC prompts and
   apps at a higher integrity level are not supported. Services without an
@@ -138,8 +139,12 @@ nonsecret recovery receipts are staged. A `prepared` receipt around replacement
 blocks use after an uncertain save, including after restart. Preserve the target,
 backup and receipt for recovery; do not simply delete a blocking receipt. A Linux
 merge recovery bundle or admission locator also blocks Windows use, because this
-backend cannot verify those transactions. Keep other editors and sync writers
-away during a save; advisory locks do not control them. This is not a claim of
+backend cannot verify those transactions. Recovery readiness checks use the same
+nonblocking lock as saves: a busy save makes writes temporarily unavailable and
+does not mark recovery as failed. Keep other editors and sync writers away during
+the entire save; advisory locks do not control them. The final snapshot check and
+replacement are separate operations. An external edit between them can be lost,
+and the retained backup may not contain that edit. This is not a claim of
 power-loss safety on every storage device.
 
 ## Validation before production use

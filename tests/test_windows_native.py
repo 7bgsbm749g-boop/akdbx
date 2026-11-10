@@ -1,5 +1,6 @@
 """Native Windows IPC, ACL and encrypted persistence tests; no desktop input."""
 import io
+from contextlib import contextmanager
 from http.client import HTTPSConnection
 import json
 import os
@@ -9,6 +10,7 @@ import socket
 import ssl
 import threading
 import uuid
+from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
 
 import pytest
@@ -245,3 +247,131 @@ def test_native_https_unlock_password_totp_and_identity_saves(synthetic_vault, c
         server.shutdown()
         server.server_close()
         broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('failure', [ValueError('synthetic private detail'),
+    OSError('synthetic private detail'), pywintypes.error(5, 'synthetic', 'synthetic private detail')])
+def test_windows_serve_startup_errors_are_clean_and_private(monkeypatch, capsys, failure):
+    def fail(*_args, **_kwargs):
+        raise failure
+    monkeypatch.setattr('akdbx.windows_unlock.start_windows_unlock_server', fail)
+    assert cli.main(['--socket', str(rpc.default_pipe()), 'serve', 'unused.kdbx']) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and 'could not start Windows HTTPS unlock' in captured.err
+    assert 'synthetic private detail' not in captured.err and 'Traceback' not in captured.err
+
+
+@pytest.mark.parametrize('stage', ['validation', 'write', 'flush'])
+def test_failed_new_file_is_removed(private_dir, monkeypatch, stage):
+    path = private_dir / 'partial-private-file'
+    def fail(*_args, **_kwargs):
+        raise OSError('synthetic file failure')
+    if stage == 'validation':
+        original = security.check_acl
+        def check(handle, *, private=True):
+            if private:
+                fail()
+            original(handle, private=private)
+        monkeypatch.setattr(security, 'check_acl', check)
+    else:
+        monkeypatch.setattr(win32file, 'WriteFile' if stage == 'write' else 'FlushFileBuffers', fail)
+    with pytest.raises(OSError, match='synthetic file failure'):
+        security.write_new(path, b'synthetic partial bytes')
+    assert not path.exists()
+
+
+def test_new_file_collision_preserves_existing_bytes(private_dir):
+    path = private_dir / 'existing-private-file'
+    security.write_new(path, b'synthetic original')
+    with pytest.raises(pywintypes.error):
+        security.write_new(path, b'synthetic replacement')
+    assert security.read_private(path)[0] == b'synthetic original'
+
+
+def test_recovery_readiness_during_save_is_busy_without_latching(synthetic_vault, monkeypatch):
+    vault = open_vault_with_password(synthetic_vault, 'synthetic master')
+    store = vault._akdbx_store
+    prepared, release = threading.Event(), threading.Event()
+    failures, saved = [], []
+    original = security.write_new
+    def pause_receipt(path, data):
+        original(path, data)
+        if '.akdbx-commit-' in Path(path).name:
+            prepared.set()
+            assert release.wait(5)
+    monkeypatch.setattr(security, 'write_new', pause_receipt)
+    def save():
+        try:
+            saved.append(store.commit(vault, lambda candidate: setattr(candidate.entries[0], 'password', 'synthetic concurrent update')))
+        except BaseException as error:
+            failures.append(error)
+    worker = threading.Thread(target=save, daemon=True)
+    worker.start()
+    try:
+        assert prepared.wait(5)
+        assert store.check_write_inputs() is False
+        assert store.recovery_required is False
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive() and not failures and len(saved) == 1
+    assert store.check_write_inputs() and not store.recovery_required
+    assert PyKeePass(str(synthetic_vault), password='synthetic master').entries[0].password == 'synthetic concurrent update'
+
+
+@pytest.mark.parametrize('cleanup_fails', [False, True])
+def test_pre_replace_abort_cleans_receipt_or_latches_cleanup_failure(synthetic_vault, monkeypatch, cleanup_fails):
+    vault = open_vault_with_password(synthetic_vault, 'synthetic master')
+    store = vault._akdbx_store
+    external = PyKeePass(str(synthetic_vault), password='synthetic master')
+    original = security.write_new
+    def edit_after_receipt(path, data):
+        original(path, data)
+        if '.akdbx-commit-' in Path(path).name:
+            external.entries[0].password = 'synthetic external save'
+            external.save()
+    monkeypatch.setattr(security, 'write_new', edit_after_receipt)
+    if cleanup_fails:
+        unlink = Path.unlink
+        def refuse_receipt(path, *args, **kwargs):
+            if '.akdbx-commit-' in path.name:
+                raise OSError('synthetic cleanup denial')
+            return unlink(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'unlink', refuse_receipt)
+    with pytest.raises(SaveError, match='changed on disk'):
+        store.commit(vault, lambda candidate: None)
+    assert store.recovery_required is cleanup_fails
+    receipts = list(synthetic_vault.parent.glob('.*.akdbx-commit-*.json'))
+    assert bool(receipts) is cleanup_fails
+    reopened = open_vault_with_password(synthetic_vault, 'synthetic master')
+    assert reopened._akdbx_store.recovery_required is cleanup_fails
+    assert reopened.entries[0].password == 'synthetic external save'
+
+
+@pytest.mark.parametrize('receipt_state', ['saved', 'prepared'])
+def test_recovery_scan_ignores_unrelated_entries_but_finds_receipts(synthetic_vault, monkeypatch, receipt_state):
+    store = WindowsVaultStore(synthetic_vault)
+    receipt = synthetic_vault.parent / ('.' + synthetic_vault.name + '.akdbx-commit-' + 'a' * 32 + '.json')
+    security.write_new(receipt, json.dumps({'state': receipt_state, 'policy': 'windows-save-v1',
+                       'previous_sha256': '0' * 64, 'candidate_sha256': '1' * 64}).encode())
+    @contextmanager
+    def scan(_path):
+        def entries():
+            for index in range(10001):
+                yield SimpleNamespace(name=f'unrelated-{index}')
+            yield SimpleNamespace(name=receipt.name)
+        yield entries()
+    monkeypatch.setattr('akdbx.windows_store.os.scandir', scan)
+    store._check_recovery()
+    assert store.recovery_required is (receipt_state == 'prepared')
+
+
+def test_matching_recovery_artifacts_still_have_a_budget(synthetic_vault, monkeypatch):
+    store = WindowsVaultStore(synthetic_vault)
+    prefix = '.' + synthetic_vault.name + '.akdbx-backup-'
+    @contextmanager
+    def scan(_path):
+        yield (SimpleNamespace(name=prefix + str(index)) for index in range(10001))
+    monkeypatch.setattr('akdbx.windows_store.os.scandir', scan)
+    with pytest.raises(SaveError, match='scan budget'):
+        store._check_recovery()

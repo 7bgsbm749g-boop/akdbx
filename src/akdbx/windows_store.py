@@ -1,5 +1,6 @@
 """Encrypted-only Windows saves with ACLs, locks and durable recovery receipts."""
 import copy
+from contextlib import contextmanager
 import hashlib
 import io
 import json
@@ -73,17 +74,36 @@ class WindowsVaultStore:
             return False
 
     def check_write_inputs(self):
+        """Scan recovery only while holding the same disk lock as a save."""
         try:
             self._check_keyfile()
             with security.trusted_directory(self.path.parent):
-                try:
-                    self._check_recovery()
-                except Exception:
-                    self.recovery_required = True
-                    raise
+                with self._advisory_lock():
+                    try:
+                        self._check_recovery()
+                    except Exception:
+                        self.recovery_required = True
+                        raise
             return self.writable_path
         except (OSError, SaveError, pywintypes.error, ValueError):
             return False
+
+    @contextmanager
+    def _advisory_lock(self):
+        """Exclude other Windows save/recovery operations without waiting."""
+        lock_path = self.path.parent / ('.' + self.path.name + '.akdbx.lock')
+        with security.checked_handle(lock_path, access=win32con.GENERIC_READ | win32con.GENERIC_WRITE
+                                     | win32con.READ_CONTROL, creation=win32con.OPEN_ALWAYS) as lock:
+            overlapped = pywintypes.OVERLAPPED()
+            try:
+                win32file.LockFileEx(lock, win32con.LOCKFILE_EXCLUSIVE_LOCK
+                                     | win32con.LOCKFILE_FAIL_IMMEDIATELY, 1, 0, overlapped)
+            except pywintypes.error:
+                raise SaveError('vault write busy; update not saved') from None
+            try:
+                yield
+            finally:
+                win32file.UnlockFileEx(lock, 1, 0, overlapped)
 
     def _read(self):
         encrypted, identity = security.read_private(self.path)
@@ -100,22 +120,29 @@ class WindowsVaultStore:
             self.keyfile_expected = (*info[:2], *info[3:])
 
     def _check_recovery(self):
+        """Bound recovery artifact reads without counting unrelated files."""
         prefix = '.' + self.path.name + '.akdbx-'
-        for index, path in enumerate(self.path.parent.iterdir()):
-            if index >= 10000:
-                raise SaveError('Windows recovery directory exceeds the scan budget')
-            if path.name.startswith(prefix + 'commit-') and path.name.endswith('.json'):
-                data, _ = security.read_private(path, limit=16384)
-                receipt = json.loads(data)
-                if (not isinstance(receipt, dict) or receipt.get('policy') != 'windows-save-v1'
-                        or receipt.get('state') != 'saved'
-                        or any(not isinstance(receipt.get(key), str) or len(receipt[key]) != 64
-                               or any(c not in '0123456789abcdef' for c in receipt[key])
-                               for key in ('previous_sha256', 'candidate_sha256'))):
+        matched = 0
+        with os.scandir(self.path.parent) as entries:
+            for entry in entries:
+                if not entry.name.startswith(prefix):
+                    continue
+                matched += 1
+                if matched > 10000:
+                    raise SaveError('Windows recovery directory exceeds the scan budget')
+                path = self.path.parent / entry.name
+                if path.name.startswith(prefix + 'commit-') and path.name.endswith('.json'):
+                    data, _ = security.read_private(path, limit=16384)
+                    receipt = json.loads(data)
+                    if (not isinstance(receipt, dict) or receipt.get('policy') != 'windows-save-v1'
+                            or receipt.get('state') != 'saved'
+                            or any(not isinstance(receipt.get(key), str) or len(receipt[key]) != 64
+                                   or any(c not in '0123456789abcdef' for c in receipt[key])
+                                   for key in ('previous_sha256', 'candidate_sha256'))):
+                        self.recovery_required = True
+                elif path.name.startswith(prefix + 'merge-'):
+                    # Never hide a transaction made by the Linux backend.
                     self.recovery_required = True
-            elif path.name.startswith(prefix + 'merge-'):
-                # Never hide a transaction made by the Linux backend.
-                self.recovery_required = True
         # An admission binding means recovery may live elsewhere. Windows does
         # not implement this protocol and must not silently ignore its locator.
         if (self.path.parent / (prefix + 'admission.json')).exists():
@@ -151,20 +178,13 @@ class WindowsVaultStore:
             raise SaveError('save outcome uncertain; restart and unlock')
         from .versions import archives, verify
         retained = archives(vault)
-        staging = receipt_temp = None
+        staging = receipt_temp = receipt_path = None
+        receipt_owned = False
         attempted = False
         with security.trusted_directory(self.path.parent):
             if not self.check_write_inputs():
                 raise SaveError('private writes unavailable; check vault/key changes and path safety')
-            lock_path = self.path.parent / ('.' + self.path.name + '.akdbx.lock')
-            with security.checked_handle(lock_path, access=win32con.GENERIC_READ | win32con.GENERIC_WRITE
-                                         | win32con.READ_CONTROL, creation=win32con.OPEN_ALWAYS) as lock:
-                overlapped = pywintypes.OVERLAPPED()
-                try:
-                    win32file.LockFileEx(lock, win32con.LOCKFILE_EXCLUSIVE_LOCK
-                                         | win32con.LOCKFILE_FAIL_IMMEDIATELY, 1, 0, overlapped)
-                except pywintypes.error:
-                    raise SaveError('vault write busy; update not saved') from None
+            with self._advisory_lock():
                 try:
                     self._check_recovery()
                     if self.recovery_required:
@@ -187,15 +207,17 @@ class WindowsVaultStore:
                     identifier = secrets.token_hex(16)
                     prefix = '.' + self.path.name + '.akdbx-'
                     backup = self.path.parent / (prefix + 'backup-' + identifier)
-                    staging = self.path.parent / (prefix + 'write-' + identifier)
+                    staging_path = self.path.parent / (prefix + 'write-' + identifier)
                     receipt_path = self.path.parent / (prefix + 'commit-' + identifier + '.json')
                     receipt = {'state': 'prepared', 'previous_sha256': digest(previous),
                                'candidate_sha256': digest(encrypted), 'policy': 'windows-save-v1'}
                     security.write_new(backup, previous)
-                    security.write_new(staging, encrypted)
+                    security.write_new(staging_path, encrypted)
+                    staging = staging_path
                     # A receipt survives a crash around replacement and blocks
                     # further use after restart until the transaction is checked.
                     security.write_new(receipt_path, json.dumps(receipt).encode())
+                    receipt_owned = True
                     self._check_keyfile()
                     if self._read()[1] != snapshot:
                         raise SaveError('vault changed on disk; restart and unlock')
@@ -205,8 +227,9 @@ class WindowsVaultStore:
                     persisted, next_snapshot = self._read()
                     if persisted != encrypted:
                         raise SaveError('save outcome uncertain; restart and unlock')
-                    receipt_temp = self.path.parent / (prefix + 'receipt-' + identifier)
-                    security.write_new(receipt_temp, json.dumps({**receipt, 'state': 'saved'}).encode())
+                    receipt_temp_path = self.path.parent / (prefix + 'receipt-' + identifier)
+                    security.write_new(receipt_temp_path, json.dumps({**receipt, 'state': 'saved'}).encode())
+                    receipt_temp = receipt_temp_path
                     self._replace(receipt_temp, receipt_path)
                     receipt_temp = None
                     self.expected, self.verified_encrypted = next_snapshot, encrypted
@@ -217,6 +240,21 @@ class WindowsVaultStore:
                     if attempted:
                         self.recovery_required = True
                         raise SaveError('save outcome uncertain; restart and unlock') from None
+                    if receipt_owned:
+                        try:
+                            receipt_path.unlink()
+                        except FileNotFoundError:
+                            pass
+                        except OSError:
+                            self.recovery_required = True
+                    # If receipt creation/cleanup failed, inspect what remains
+                    # under the lock. Never unlink a pre-existing receipt whose
+                    # CREATE_NEW failed, but latch any incomplete artifact.
+                    if receipt_path is not None:
+                        try:
+                            self._check_recovery()
+                        except Exception:
+                            self.recovery_required = True
                     raise
                 finally:
                     for path in (staging, receipt_temp):
@@ -225,4 +263,3 @@ class WindowsVaultStore:
                                 path.unlink()
                             except OSError:
                                 pass
-                    win32file.UnlockFileEx(lock, 1, 0, overlapped)

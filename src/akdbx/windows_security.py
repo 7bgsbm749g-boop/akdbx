@@ -113,6 +113,10 @@ def _open_checked_handle(path, *, directory=False, private=True, access=None, cr
         return handle
     except BaseException:
         handle.Close()
+        if creation == win32con.CREATE_NEW:
+            # CreateFile succeeded: this call owns the new file, even when
+            # validation refused it. A failed CreateFile never reaches here.
+            path.unlink()
         raise
 
 
@@ -164,13 +168,20 @@ def read_private(path, *, limit=128 * 1024 * 1024):
 
 
 def write_new(path, data):
+    """Create and flush one private file, removing it if this call fails."""
+    path = Path(path)
     with trusted_directory(Path(path).parent):
-        with checked_handle(path, access=win32con.GENERIC_WRITE | win32con.READ_CONTROL,
-                            creation=win32con.CREATE_NEW) as handle:
-            offset = 0
-            while offset < len(data):
-                _, written = win32file.WriteFile(handle, data[offset:offset + 1024 * 1024])
-                if not written:
-                    raise OSError('private file write was incomplete')
-                offset += written
-            win32file.FlushFileBuffers(handle)
+        handle = _open_checked_handle(path, access=win32con.GENERIC_WRITE | win32con.READ_CONTROL,
+                                      creation=win32con.CREATE_NEW)
+        try:
+            with managed_handle(handle):
+                offset = 0
+                while offset < len(data):
+                    _, written = win32file.WriteFile(handle, data[offset:offset + 1024 * 1024])
+                    if not written:
+                        raise OSError('private file write was incomplete')
+                    offset += written
+                win32file.FlushFileBuffers(handle)
+        except BaseException:
+            path.unlink()
+            raise

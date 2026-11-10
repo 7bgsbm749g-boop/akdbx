@@ -75,3 +75,12 @@ def test_totp_guard_expiring_after_send_stops_dispatch():
     with pytest.raises(DeliveryError) as error:
         typer(native).deliver(native.identity, ['123456'], lambda: True, guard=lambda: not native.sent)
     assert error.value.started and native.sent == [(457, ord('1'))]
+
+
+@pytest.mark.parametrize('text', ['prefix\ud800', 'prefix\udfff'])
+def test_lone_surrogate_refused_without_dispatch_or_disclosure(text):
+    native = Native(123)
+    with pytest.raises(DeliveryError) as error:
+        typer(native).deliver(native.identity, [text], lambda: True)
+    assert not error.value.started and not native.sent and native.closed
+    assert 'prefix' not in str(error.value)

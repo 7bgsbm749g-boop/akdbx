@@ -341,14 +341,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.yes_on_fill:
             print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
         if os.name == 'nt':
+            import pywintypes
             from .windows_target import WindowsTyper
             from .windows_unlock import start_windows_unlock_server
             broker = Broker(None, WindowsTyper())
-            unlock_server, unlock_url = start_windows_unlock_server(
-                broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key)
+            try:
+                unlock_server, unlock_url = start_windows_unlock_server(
+                    broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key)
+            except (OSError, ValueError, pywintypes.error):
+                broker.unlock_notifications.close()
+                print('could not start Windows HTTPS unlock; check origin, TLS files, permissions and port', file=sys.stderr)
+                return 2
         else:
             if args.tls_cert is not None or args.tls_key is not None:
-                raise ValueError('--tls-cert and --tls-key are Windows options; Linux uses Tailscale Serve')
+                print('--tls-cert and --tls-key are Windows options; Linux uses Tailscale Serve', file=sys.stderr)
+                return 2
             broker = Broker(None, X11Typer())
         unlock_name = ("agentic-kdbx-unlock.sock"
                        if args.socket.name == "agentic-kdbx.sock"
