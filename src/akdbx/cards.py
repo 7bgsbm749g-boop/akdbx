@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from .persistence import SaveError
 from .versions import active_entries
-from .writes import Write, WriteError, MAX_WRITES, group_for
+from .writes import Write, WriteError, MAX_WRITES, group_for, _entry_changed_at
 
 MARKER = 'akdbx.card'
 FIELDS = {key: 'akdbx.card.' + key for key in ('name', 'number', 'month', 'year', 'csc')}
@@ -182,17 +182,24 @@ class CardManager:
                 if op.uuid is None:
                     if any(is_card(e) and e.title == op.values['title'] and e.group == group for e in active_entries(candidate)):
                         raise WriteError('duplicate card title in destination group')
-                    entry = candidate.add_entry(group, op.values['title'], '', '')
+                    from pykeepass.entry import Entry
+                    entry = Entry(title=op.values['title'], username='', password='', kp=candidate)
+                    group.append(entry)
+                    changed_at = None
                 else:
                     matches = [e for e in active_entries(candidate) if e.uuid == op.uuid]
                     if len(matches) != 1 or not is_card(matches[0]):
                         raise WriteError('card no longer available')
                     entry = matches[0]
+                    changed_at = _entry_changed_at(entry, self.broker.wall_clock)
                     entry.save_history()
                 entry.set_custom_property(MARKER, 'v1')
                 for key, field in FIELDS.items():
                     entry.set_custom_property(field, values[key], protect=True)
-                entry.touch(modify=True)
+                if changed_at is None:
+                    entry.touch(modify=True)
+                else:
+                    entry.mtime = changed_at
             def verify(candidate):
                 matches = [e for e in active_entries(candidate) if is_card(e)
                            and e.title == op.values['title'] and '/'.join(e.path[:-1]) == op.values['group']]

@@ -1,4 +1,4 @@
-# Card storage and field-bound delivery (0.12.0)
+# Card storage and field-bound delivery (0.13.0)
 
 Require CLI/broker card protocol 1: `cards_supported: true`, integer
 `card_protocol: 1`, `card_delivery: "cdp-card-element-v1"`. `card_browser_configured`

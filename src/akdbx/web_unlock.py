@@ -360,7 +360,7 @@ def handler_for(state: UnlockState):
                 raw = self.rfile.read(length)
                 if len(raw) != length or self._expired():
                     return True
-                values = parse_qs(raw.decode('utf-8'), strict_parsing=True, keep_blank_values=True)
+                values = parse_qs(raw.decode('utf-8'), strict_parsing=True, keep_blank_values=True, errors='strict')
                 if any(len(v) != 1 for v in values.values()):
                     raise ValueError
                 if kind == 'totp' and set(values) - {'setup', 'confirmed'}:

@@ -79,7 +79,7 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
-### Payment cards (0.12.0)
+### Payment cards (0.13.0)
 
 Cards use ordinary KDBX entries with custom fields; no format extension is
 needed. `akdbx.card=v1` identifies a card. Cardholder name, number, expiry month,

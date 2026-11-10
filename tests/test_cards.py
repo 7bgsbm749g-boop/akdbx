@@ -188,6 +188,53 @@ def test_external_vault_change_refuses_card_save_and_preserves_external_bytes(de
     assert reopened(path).find_entries(title='Synthetic external edit', first=True)
 
 
+def test_card_label_with_both_quotes_is_saved_literally(deployed):
+    broker, _, path, socket = deployed
+    title = 'Synthetic "personal" card of O\'Brien'
+    prepared = broker.dispatch(dict(action='create-card', card_protocol=1, metadata=dict(title=title, group='Web')))
+    assert prepared['ok'] and post(socket, prepared)[0] == 200
+    assert search(broker)['entries'][0]['title'] == title
+    assert any(entry.title == title and read_card(entry) == CARD for entry in reopened(path).entries)
+
+
+def test_same_second_update_has_strictly_newer_clock_and_future_history_refuses(deployed):
+    from datetime import timedelta
+    selected = save(deployed)
+    broker, _, path, socket = deployed
+    result = broker.dispatch(dict(action='update-card', card_protocol=1, handle=selected['handle'],
+                                  metadata=dict(title=selected['title'], group=selected['group'])))
+    assert post(socket, result, dict(CARD, csc='456'))[0] == 200
+    entry = reopened(path).find_entries(title=selected['title'], first=True)
+    assert entry.mtime > entry.history[-1].mtime
+    live = next(e for e in broker.vault.entries if e.get_custom_property(MARKER))
+    live.mtime += timedelta(days=1)
+    selected = search(broker)['entries'][0]
+    result = broker.dispatch(dict(action='update-card', card_protocol=1, handle=selected['handle'],
+                                  metadata=dict(title=selected['title'], group=selected['group'])))
+    before = path.read_bytes()
+    assert post(socket, result, dict(CARD, csc='789'))[0] == 409
+    assert path.read_bytes() == before
+
+
+def test_secret_in_error_receipt_is_withheld(monkeypatch, capsys):
+    def request(_socket, payload, **kwargs):
+        return dict(ok=True, cards_supported=True, card_protocol=1, card_delivery=DELIVERY) if payload['action'] == 'ping' else dict(ok=False, error=CARD['number'])
+    monkeypatch.setattr(cli, 'request', request)
+    assert cli.main(['fill-card', 'h', '--target', 't', '--field', 'cc-number']) == 2
+    output = capsys.readouterr()
+    assert CARD['number'] not in output.out + output.err
+
+
+def test_malformed_percent_encoded_private_values_refuse_without_save(deployed):
+    broker, _, path, socket = deployed
+    prepared = begin(broker)
+    parts = urlsplit(prepared['private_url'])
+    before = path.read_bytes()
+    body = urlencode({k: v for k, v in dict(CARD, confirmed='yes').items() if k != 'name'}) + '&name=%FF'
+    assert call(socket, 'POST', parts.path + '?' + parts.query, body)[0] == 400
+    assert path.read_bytes() == before
+
+
 def test_cli_checks_protocol_and_withholds_secret_bearing_receipts(monkeypatch, capsys):
     calls = []
     def request(_socket, payload, **kwargs):

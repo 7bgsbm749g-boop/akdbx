@@ -5,10 +5,13 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-from .browser_card import DELIVERY
+from .browser_card import DELIVERY, failure
 from .cards import FILL_FIELDS
 
 COMMANDS = {'create-card', 'update-card', 'search-cards', 'pin-card-target', 'fill-card'}
+ERRORS = {'vault locked', 'save outcome uncertain; restart and unlock', 'request failed',
+          'card operation refused; check selection and destination', 'card operation failed',
+          failure()['error'], failure(True)['error']}
 
 
 def add_parsers(commands):
@@ -33,7 +36,8 @@ def add_parsers(commands):
 
 def valid_receipt(command, response, args):
     if response.get('ok') is not True:
-        return (set(response) <= {'ok', 'error', 'unlock_url', 'delivery'}
+        return (response.get('ok') is False and response.get('error') in ERRORS
+                and set(response) <= {'ok', 'error', 'unlock_url', 'delivery'}
                 and response.get('delivery', 'not-started') in {'not-started', 'uncertain'})
     if command in {'create-card', 'update-card'}:
         return (set(response) == {'ok', 'state', 'write_handle', 'private_url'} and response.get('state') == 'pending'

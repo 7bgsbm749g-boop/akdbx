@@ -63,10 +63,18 @@ def chrome(isolated_x11, tmp_path):
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.load_cert_chain(cert, key)
-    server.socket = tls.wrap_socket(server.socket, server_side=True)
+    class TLSServer(ThreadingHTTPServer):
+        def get_request(self):
+            client, address = self.socket.accept()
+            client.settimeout(2)
+            try:
+                return tls.wrap_socket(client, server_side=True), address
+            except BaseException:
+                client.close()
+                raise
+    server = TLSServer(('127.0.0.1', 0), Handler)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     url = 'https://127.0.0.1:' + str(server.server_port) + '/payment'
