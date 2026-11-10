@@ -206,6 +206,7 @@ class Broker:
         *,
         delivery_ready: Callable[[], bool] | None = None,
     ) -> dict:
+        """Handle capabilities and authorized vault, target, and write actions."""
         internal_dispatch = delivery_ready is None
         if delivery_ready is None:
             delivery_ready = lambda: True

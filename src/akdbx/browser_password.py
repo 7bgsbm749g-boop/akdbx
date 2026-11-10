@@ -286,8 +286,8 @@ class BrowserPasswords:
         if (set(request) != required | optional | ({'username_selector'} if request.get('mode') == 'login' else set())
                 or type(request.get('password_protocol')) is not int or request['password_protocol'] != PROTOCOL
                 or request.get('mode') not in {'username', 'password', 'login'}
-                or optional and (request['mode'] != 'password' or not isinstance(request['password_purpose'], str)
-                                 or request['password_purpose'] not in {'current-password', 'new-password'})):
+                or (optional and (request['mode'] != 'password' or not isinstance(request['password_purpose'], str)
+                                  or request['password_purpose'] not in {'current-password', 'new-password'}))):
             raise TargetError()
         for key in required - {'action', 'password_protocol'} | ({'username_selector'} if request['mode'] == 'login' else set()):
             if not isinstance(request[key], str) or not 0 < len(request[key]) <= 4096:

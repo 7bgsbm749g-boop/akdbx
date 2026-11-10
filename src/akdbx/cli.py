@@ -197,6 +197,7 @@ def _read_webhook_url(path: Path) -> str:
 
 
 def parser() -> argparse.ArgumentParser:
+    """Build command parsers for broker, vault, and target operations."""
     result = argparse.ArgumentParser(prog="akdbx", description="Secret-withholding KeePass autofill broker")
     result.add_argument("--version", action="version", version=__version__)
     result.add_argument("--socket", type=Path, default=default_socket())
@@ -301,6 +302,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one CLI command and return its process exit status."""
     args = parser().parse_args(argv)
     if args.command == "serve":
         database = args.database.expanduser()

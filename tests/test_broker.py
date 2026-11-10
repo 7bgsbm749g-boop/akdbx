@@ -67,8 +67,7 @@ class RecordingTyper:
 
 
 def target_capabilities():
-    # An independent protocol expectation; this fixture also imports under
-    # frozen pre-target broker versions in compatibility regressions.
+    """Return independent capabilities, including for frozen broker fixtures."""
     return dict(target_fill_required=True, target_fill_protocol=1,
                 target_fill_delivery='x11-send-event-v1', password_fill_protocol=1, password_purpose_protocol=1,
                 password_fill_delivery='chromium-password-dom-v1', password_browser_configured=False)
