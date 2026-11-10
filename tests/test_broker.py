@@ -59,9 +59,6 @@ class RecordingTyper:
             else:
                 self.type_text(text)
 
-    def deliver_password(self, identity, steps, ready, *, site_url=None):
-        self.deliver(identity, steps, ready)
-
     def type_text(self, text):
         self.events.append(("type", text))
 
@@ -77,10 +74,40 @@ def target_capabilities():
                 password_fill_delivery='chromium-password-dom-v1', password_browser_configured=False)
 
 
-def target_request(broker):
+def x11_target_request(broker):
     result = broker.dispatch({'action': 'pin-target', 'pid': 123, 'window': 456, 'target_protocol': 1})
     assert result['ok']
     return dict(target=result['target'], target_protocol=1)
+
+
+def target_request(broker):
+    """Issue a test DOM pin for broker tests; real Chromium tests bind real nodes.
+
+    RecordingTyper records abstract steps only. It is not a keyboard backend
+    in this fixture. X11 refusal tests must use x11_target_request instead.
+    """
+    import importlib
+    import secrets
+    assert isinstance(broker.typer, RecordingTyper)
+    module = importlib.import_module(broker.__class__.__module__.rsplit('.', 1)[0] + '.browser_password')
+    if not getattr(broker.passwords, '_recording_fixture', False):
+        class RecordingPasswords(module.BrowserPasswords):
+            _recording_fixture = True
+            def deliver(self, pin, mode, username, password, site_url, ready, start_deadline):
+                steps = [username, None, password] if mode == 'login' else [username if mode == 'username' else password]
+                broker.typer.deliver(pin, steps, ready)
+        broker.passwords = RecordingPasswords(clock=broker.clock)
+    class Connection:
+        def call(self, *args, **kwargs):
+            return {}
+        def close(self):
+            pass
+    token = secrets.token_hex(32)
+    pin = module.PasswordPin(Connection(), 'synthetic-session', 'synthetic-node',
+                             'synthetic-page', 'synthetic-frame', Entry.url, 'login')
+    with broker.passwords._lock:
+        broker.passwords.pins[token] = broker.clock() + 30, pin
+    return dict(target=token, target_protocol=1)
 
 
 def make_broker(clock=lambda: 10):
@@ -113,7 +140,7 @@ def test_fill_without_terminal_returns_only_receipt_and_consumes_handle(mode, ex
     handle = broker.dispatch({"action": "search", "query": "Example"})["entries"][0]["handle"]
     assert typer.events == []
     response = broker.dispatch({"action": "fill", **target_request(broker), "handle": handle, "mode": mode})
-    assert response == {"ok": True, "filled": mode, "target_delivery": "x11-send-event-v1" if mode == "username" else "chromium-password-dom-v1"}
+    assert response == {"ok": True, "filled": mode, "target_delivery": "chromium-password-dom-v1"}
     assert SECRET not in json.dumps(response)
     assert typer.events == expected
     assert broker.dispatch({"action": "fill", **target_request(broker), "handle": handle})["ok"] is False

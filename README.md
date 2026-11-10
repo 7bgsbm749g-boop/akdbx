@@ -51,7 +51,7 @@ Keep the broker process running. Open its private unlock page from your Tailscal
 .venv/bin/akdbx search github.com
 .venv/bin/akdbx pin-password-target --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
   --top-url VERIFIED_EXACT_HTTPS_URL --selector '#password' --mode password
-.venv/bin/akdbx fill HANDLE_FROM_SEARCH --mode login --target TARGET_FROM_PIN
+.venv/bin/akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
 ```
 
 Configure `serve --password-browser-profile PATH` (or `AKDBX_PASSWORD_BROWSER_PROFILE`) with the operator-selected private Chrome user data directory and remote debugging enabled. The broker does not start or change Chrome. The profile must be owned, mode 0700, without symlink components; launch Chrome with `umask 077` so `DevToolsActivePort` is not writable by other users. No profile means password fills refuse. Treat CDP as a privileged local interface.

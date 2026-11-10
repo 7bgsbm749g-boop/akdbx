@@ -15,7 +15,7 @@ from akdbx import cli
 from akdbx.broker import Broker, open_vault_with_password
 from akdbx.persistence import VaultStore
 from akdbx.versions import ARCHIVE_UUID
-from test_broker import target_request, RecordingTyper, running_broker
+from test_broker import x11_target_request as target_request, RecordingTyper, running_broker
 from test_writes import MASTER, OLD, CHOSEN, deployed, template, begin, private_post, reopened
 
 

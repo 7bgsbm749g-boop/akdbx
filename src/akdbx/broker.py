@@ -65,7 +65,6 @@ class VaultLike(Protocol):
 
 class Typer(Protocol):
     def capture(self, pid: int, window: int) -> object: ...
-    def deliver_password(self, identity: object, steps: list[str | None], ready: Callable[[], bool], *, site_url: str | None = None) -> None: ...
     def deliver(self, identity: object, steps: list[str | None], ready: Callable[[], bool], *, guard: Callable[[], bool] | None = None) -> None: ...
 
 
@@ -196,7 +195,7 @@ class Broker:
         if action in {'fill', 'fill-generated', 'fill-totp', 'fill-card'} and delivery_ready is None and 'start_deadline' not in request:
             request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
         # Search and write operations observe a consistent vault/revision.
-        if action in {"pin-password-target", "pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated", "create-card", "update-card", "search-cards", "pin-card-target", "fill-card"}:
+        if action in {"pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated", "create-card", "update-card", "search-cards", "pin-card-target", "fill-card"}:
             with self._vault_lock:
                 return self._dispatch(request, delivery_ready=delivery_ready)
         return self._dispatch(request, delivery_ready=delivery_ready)
@@ -321,12 +320,15 @@ class Broker:
             try:
                 entry = self._resolve(request.get("handle"))
                 token = request.get('target')
-                if isinstance(token, str) and token in self.passwords.pins:
-                    target = self.passwords.consume(token)
-                    if type(request.get('target_protocol')) is not int or request['target_protocol'] != 1:
-                        raise TargetError()
+                if isinstance(token, str):
+                    try:
+                        target = self.passwords.consume(token)
+                    except TargetError:
+                        target = self.targets.consume(request)
                 else:
                     target = self.targets.consume(request)
+                if isinstance(target, PasswordPin) and (type(request.get('target_protocol')) is not int or request['target_protocol'] != 1):
+                    raise TargetError()
                 allowed = {'action', 'handle', 'start_deadline', 'target', 'target_protocol'}
                 allowed.add('target_url' if action == 'fill-totp' else 'mode')
                 if set(request) - allowed:
@@ -369,6 +371,11 @@ class Broker:
                         return {'ok': False, 'error': 'card record requires card fill; no keys sent'}
                     if mode not in {'username', 'totp'} and passwordless_identity(entry):
                         return {'ok': False, 'error': 'passwordless record has no separate password; no keys sent'}
+
+                    # A keyboard backend cannot authorize browser password delivery.
+                    # Refuse before reading the password, irrespective of its methods.
+                    if mode in {"login", "password"} and not isinstance(target, PasswordPin):
+                        raise DeliveryError(False)
 
                     # Materialize and validate every value needed by this mode
                     # before emitting any event. Entry access and validation
@@ -419,8 +426,8 @@ class Broker:
                     elif mode == "username":
                         self.typer.deliver(target, steps, ready)
                     else:
-                        self.typer.deliver_password(target, steps, ready, site_url=entry.url)
-                    return {"ok": True, "filled": mode, "target_delivery": PASSWORD_DELIVERY if isinstance(target, PasswordPin) or mode in {"password", "login"} else DELIVERY}
+                        raise DeliveryError(False)
+                    return {"ok": True, "filled": mode, "target_delivery": PASSWORD_DELIVERY if isinstance(target, PasswordPin) else DELIVERY}
                 finally:
                     self._keyboard_lock.release()
             except DeliveryError as exc:

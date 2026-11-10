@@ -53,3 +53,38 @@ def test_generated_fill_never_bypasses_required_target(deployed, target_data):
     assert not broker.dispatch(request)['ok']
     assert not broker.dispatch({**request, **target_request(broker)})['ok']
     assert not commit(broker, generated)['ok'] and not typer.events
+
+
+@pytest.mark.parametrize('mode', ['password', 'login'])
+def test_broker_refuses_x11_passwords_even_if_backend_offers_to_type(mode):
+    from test_broker import x11_target_request
+    class UnsafeKeyboard(RecordingTyper):
+        def deliver_password(self, identity, steps, ready, **kwargs):
+            self.deliver(identity, steps, ready)
+    class UnreadPassword:
+        uuid, title, username, url, path = Entry.uuid, Entry.title, Entry.username, Entry.url, Entry.path
+        @property
+        def password(self):
+            raise AssertionError('password must not be read for an X11 pin')
+    typer = UnsafeKeyboard()
+    broker = Broker(Vault([UnreadPassword()]), typer)
+    handle = broker.dispatch(dict(action='search'))['entries'][0]['handle']
+    result = broker.dispatch(dict(action='fill', handle=handle, mode=mode, **x11_target_request(broker)))
+    assert result == failure(False)
+    assert 'target_delivery' not in result and not typer.events
+
+
+def test_generated_x11_refusal_does_not_trust_backend_or_certify_commit(deployed, monkeypatch):
+    from test_broker import x11_target_request
+    broker, typer, path, _ = deployed
+    calls = []
+    monkeypatch.setattr(typer, 'deliver_password', lambda *a, **kw: calls.append(True), raising=False)
+    generated = begin(broker, 'generate-password')
+    for ref in generated['fill_handles'].values():
+        result = broker.dispatch(dict(action='fill-generated', handle=ref,
+                    target_url='https://example.test/reset', **x11_target_request(broker)))
+        assert result == failure(False)
+    assert not calls and not typer.events
+    assert not broker.writes.get(generated['write_handle']).filled
+    assert not commit(broker, generated)['ok']
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == OLD

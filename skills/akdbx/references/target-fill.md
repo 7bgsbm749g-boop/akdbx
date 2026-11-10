@@ -69,7 +69,9 @@ page. A failed or uncertain fill does not count toward `commit-password`.
 ## Race checks and limits
 
 Each pin owns one CDP connection, isolated JavaScript world, and retained element
-references. There are at most 16 pins. Expired pins are closed on the next pin or
+references. There are at most 16 pins, including captures in progress. Browser
+pin I/O runs outside the vault lock; a separate lock protects token publication
+and consumption. Expired pins are closed on the next pin or
 consume; broker shutdown closes all remaining pins. Consumption closes the pin
 on every outcome. Fill rechecks the page/frame identity, exact URL, document,
 unique selector, same node, field type, visibility/editability, active element,

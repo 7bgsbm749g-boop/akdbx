@@ -14,6 +14,7 @@ import re
 import secrets
 import stat
 import time
+import threading
 
 from .target import TargetError, DeliveryError
 from .totp import https_origin
@@ -167,33 +168,56 @@ class PasswordPin:
 
 
 class BrowserPasswords:
+    """Own bounded browser pins with map synchronization separate from the vault."""
     def __init__(self, profile=None, *, clock=time.monotonic):
         self.profile, self.clock = profile, clock
         self.pins = {}
+        self._lock = threading.Lock()
+        self._creating = 0
+        self._closed = False
 
     def prune(self):
-        for token, (expiry, pin) in list(self.pins.items()):
-            if expiry <= self.clock():
-                self.pins.pop(token)
-                pin.close()
+        """Remove expired pins atomically; perform their CDP cleanup outside locks."""
+        now = self.clock()
+        with self._lock:
+            expired = [self.pins.pop(token)[1] for token, (expiry, _) in list(self.pins.items()) if expiry <= now]
+        for pin in expired:
+            pin.close()
 
     def close(self):
-        pins, self.pins = self.pins, {}
+        """Refuse new pins and close retained pins without holding the map lock."""
+        with self._lock:
+            self._closed = True
+            pins, self.pins = self.pins, {}
         for _, pin in pins.values():
             pin.close()
 
     def pin(self, request):
+        """Reserve capacity atomically and capture the DOM target outside locks."""
         self.prune()
         required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode'}
         if (set(request) != required | ({'username_selector'} if request.get('mode') == 'login' else set())
                 or type(request.get('password_protocol')) is not int or request['password_protocol'] != PROTOCOL
-                or request.get('mode') not in {'username', 'password', 'login'} or len(self.pins) >= MAX_PINS):
+                or request.get('mode') not in {'username', 'password', 'login'}):
             raise TargetError()
         for key in required - {'action', 'password_protocol'} | ({'username_selector'} if request['mode'] == 'login' else set()):
             if not isinstance(request[key], str) or not 0 < len(request[key]) <= 4096:
                 raise TargetError()
         https_origin(request['top_url'])
+        with self._lock:
+            if self._closed or len(self.pins) + self._creating >= MAX_PINS:
+                raise TargetError()
+            self._creating += 1
+        try:
+            return self._capture(request)
+        finally:
+            with self._lock:
+                self._creating -= 1
+
+    def _capture(self, request):
+        """Do browser I/O outside the vault/map locks, then publish one pin."""
         connection = CDP(self.profile)
+        pin = None
         try:
             page = connection.call('Target.getTargetInfo', {'targetId': request['page_id']})['targetInfo']
             if page['type'] != 'page' or page['url'] != request['top_url']:
@@ -209,16 +233,26 @@ class BrowserPasswords:
                 raise TargetError()
             pin = PasswordPin(connection, session, result['result']['objectId'], page['targetId'], frame['id'], request['top_url'], request['mode'])
             token = secrets.token_hex(32)
-            self.pins[token] = self.clock() + TTL, pin
+            with self._lock:
+                if self._closed:
+                    raise TargetError()
+                self.pins[token] = self.clock() + TTL, pin
             return dict(ok=True, target=token, expires_in=TTL, target_delivery=DELIVERY)
         except Exception:
-            connection.close()
+            if pin is not None:
+                pin.close()
+            else:
+                connection.close()
             raise TargetError() from None
 
     def consume(self, token):
-        self.prune()
-        found = self.pins.pop(token, None)
+        """Atomically take one token; never sweep other pins during a fill."""
+        with self._lock:
+            found = self.pins.pop(token, None)
         if found is None:
+            raise TargetError()
+        if found[0] <= self.clock():
+            found[1].close()
             raise TargetError()
         return found[1]
 

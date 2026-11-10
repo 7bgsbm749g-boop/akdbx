@@ -14,7 +14,7 @@ from akdbx import cli
 from akdbx.broker import Broker, open_vault_with_password
 from akdbx.persistence import VaultStore
 from akdbx.target import DeliveryError, failure
-from test_broker import RecordingTyper, running_broker, target_request
+from test_broker import RecordingTyper, running_broker, x11_target_request as target_request
 from test_writes import MASTER, OLD, CHOSEN, begin, commit, deployed, fills, private_post, reopened, template
 
 

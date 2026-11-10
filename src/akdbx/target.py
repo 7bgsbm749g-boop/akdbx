@@ -239,10 +239,6 @@ class X11Typer:
         finally:
             session.close()
 
-    def deliver_password(self, identity, steps, ready, *, site_url=None):
-        # A window pin cannot prove which browser control receives keys.
-        raise DeliveryError(False)
-
     def deliver(self, identity, steps, ready, *, guard=None):
         started = False
         session = None

@@ -80,3 +80,94 @@ def test_pin_capacity_refuses_before_connect(monkeypatch):
     with pytest.raises(TargetError):
         targets.pin(dict(action='pin-password-target', password_protocol=1, page_id='synthetic-page',
                          frame_id='synthetic-frame', top_url='https://example.test/login', selector='#password', mode='password'))
+
+
+def test_stalled_browser_pin_does_not_block_vault_search(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from akdbx import browser_password
+    from akdbx.broker import Broker
+    from test_broker import Entry, Vault, RecordingTyper
+    entered, release = threading.Event(), threading.Event()
+    def stalled(profile):
+        entered.set()
+        assert release.wait(5), 'synthetic CDP stall was not released'
+        raise TargetError()
+    monkeypatch.setattr(browser_password, 'CDP', stalled)
+    broker = Broker(Vault([Entry()]), RecordingTyper())
+    request = dict(action='pin-password-target', password_protocol=1, page_id='page', frame_id='frame',
+                   top_url='https://example.test/login', selector='#password', mode='password')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = pool.submit(broker.dispatch, request)
+        try:
+            assert entered.wait(2)
+            result = pool.submit(broker.dispatch, dict(action='search')).result(timeout=1)
+            assert result['ok'] and len(result['entries']) == 1
+            assert not pending.done()
+        finally:
+            release.set()
+        assert not pending.result(timeout=2)['ok']
+    assert broker.passwords._creating == 0
+
+
+def test_concurrent_pin_capacity_counts_connections_in_progress(monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from akdbx import browser_password
+    entered = threading.Barrier(3)
+    release = threading.Event()
+    calls = []
+    def stalled(profile):
+        calls.append(True)
+        entered.wait(timeout=2)
+        assert release.wait(5)
+        raise TargetError()
+    monkeypatch.setattr(browser_password, 'MAX_PINS', 2)
+    monkeypatch.setattr(browser_password, 'CDP', stalled)
+    targets = BrowserPasswords()
+    request = dict(action='pin-password-target', password_protocol=1, page_id='page', frame_id='frame',
+                   top_url='https://example.test/login', selector='#password', mode='password')
+    def attempt():
+        with pytest.raises(TargetError):
+            targets.pin(request)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pending = [pool.submit(attempt) for _ in range(2)]
+        try:
+            entered.wait(timeout=2)
+            attempt()
+            assert len(calls) == 2 and targets._creating == 2
+        finally:
+            release.set()
+        for future in pending:
+            future.result(timeout=2)
+    assert targets._creating == 0 and not targets.pins
+
+
+def test_shutdown_during_pin_capture_closes_connection_and_refuses_pin(monkeypatch):
+    from akdbx import browser_password
+    targets = BrowserPasswords()
+    class Connection:
+        closed = False
+        def __init__(self, profile):
+            pass
+        def close(self):
+            self.closed = True
+        def call(self, method, params=None, session=None, **kwargs):
+            if method == 'Target.getTargetInfo':
+                return {'targetInfo': dict(type='page', url='https://example.test/login', targetId='page')}
+            if method == 'Target.attachToTarget':
+                return dict(sessionId='session')
+            if method == 'Page.getFrameTree':
+                return {'frameTree': {'frame': dict(id='frame', url='https://example.test/login')}}
+            if method == 'Page.createIsolatedWorld':
+                return dict(executionContextId=1)
+            if method == 'Runtime.evaluate':
+                targets.close()
+                return {'result': dict(type='object', objectId='node')}
+            return {}
+    connection = Connection(None)
+    monkeypatch.setattr(browser_password, 'CDP', lambda profile: connection)
+    with pytest.raises(TargetError):
+        targets.pin(dict(action='pin-password-target', password_protocol=1, page_id='page', frame_id='frame',
+                         top_url='https://example.test/login', selector='#password', mode='password'))
+    assert connection.closed and not targets.pins and targets._creating == 0

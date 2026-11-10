@@ -220,7 +220,6 @@ def test_change_after_python_preflight_before_renderer_assignment(synthetic_chro
         def no_keys(*args, **kwargs):
             pytest.fail('DOM password delivery attempted keyboard fallback')
         monkeypatch.setattr(broker.typer, 'deliver', no_keys)
-        monkeypatch.setattr(broker.typer, 'deliver_password', no_keys)
         assert not fill(broker, pin)['ok']
         assert cdp.evaluate("Array.from(document.querySelectorAll('input')).every(e=>!e.value)", session)
     finally:
