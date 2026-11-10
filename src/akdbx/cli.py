@@ -143,6 +143,10 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
             raise ProtocolError("invalid broker response")
     if 'version' in response and not isinstance(response['version'], str):
         raise ProtocolError("invalid broker response")
+    if 'totp_import_supported' in response and type(response['totp_import_supported']) is not bool:
+        raise ProtocolError("invalid importer capability")
+    if 'totp_import_protocol' in response and (type(response['totp_import_protocol']) is not int or response['totp_import_protocol'] != 1):
+        raise ProtocolError("unsupported importer protocol")
     if "error" in response and not isinstance(response["error"], str):
         raise ProtocolError("invalid broker response")
     if "private_url" in response:

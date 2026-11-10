@@ -114,8 +114,19 @@ for exact T3 registration, cleanup and recovery.
 without returning the key or code to the agent. It supports RFC 6238 SHA-1,
 SHA-256 and SHA-512, six or eight digits, and periods from 15 to 120 seconds.
 The default for a manual Base32 key is SHA-1, six digits and 30 seconds.
-Other settings require an `otpauth://totp/` URI. HOTP, Steam codes and migration
-QR payloads are not supported. There is no code-reveal or key-export command.
+Other settings require an `otpauth://totp/` URI. HOTP and Steam codes are not
+supported. There is no code-reveal or key-export command.
+
+Version 0.12.0 adds [private QR/Google transfer import and Chrome native capture](skills/akdbx/references/private-import.md).
+The private setup page can decode QR images on the user's device, review a
+complete Google export batch, and save one explicitly selected account to an
+existing entry. It copies the existing key without removing phone accounts or
+changing website 2FA. An optional Linux Chrome extension sends one selected
+site's setup QR directly to a local native host/broker; private confirmation is
+still required before any save. The agent receives only receipts, never keys,
+codes or QR images. Authy/Microsoft export restrictions are not bypassed.
+Require `totp_import_supported: true` and integer `totp_import_protocol: 1` in
+the running broker. Installation does not activate an already-running broker.
 
 Check that `status` advertises `totp_supported: true`, integer `totp_protocol: 1`,
 and the existing target-fill protocol. New CLI commands refuse old brokers.

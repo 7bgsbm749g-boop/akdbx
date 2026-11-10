@@ -105,8 +105,16 @@ force a save. The broker never invents a future modification time.
 Supported: RFC 6238 SHA1/SHA256/SHA512, six/eight digits, 15..120-second periods.
 A bare Base32 key defaults to SHA1, six digits, 30 seconds. A URI carries other
 settings. Unsupported formats and duplicate/unknown URI parameters are
-rejected; HOTP, Steam and authenticator migration payloads are unsupported.
+rejected; HOTP and Steam are unsupported. The ordinary manual-setup path rejects
+authenticator migration payloads; the separate private importer below accepts
+supported Google export batches.
 No legacy KeePass OTP custom-field formats are automatically migrated.
+
+Version 0.12.0 adds a separate [private QR/Google export importer and browser
+capture workflow](private-import.md). The ordinary `parse_setup`/RPC path still
+rejects migration payloads; only the private importer accepts them. Require its
+own advertised protocol, keep the user's private import page outside agent
+observation, and never use a website reset as a transfer shortcut.
 
 This replaces routine code entry only. Push approvals, SMS, passkeys, device
 requirements, account recovery and organization policies remain separate.
