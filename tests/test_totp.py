@@ -359,7 +359,12 @@ def test_totp_on_provider_identity_does_not_enable_password_fill():
     assert typer.events == [('type', '050471')]
 
 
-def test_cli_private_setup_and_fill_over_real_rpc(deployed, tmp_path, capsys):
+def test_cli_private_setup_and_fill_over_real_rpc(deployed, tmp_path, capsys, monkeypatch):
+    import secrets
+    original = secrets.token_urlsafe
+    # Force the random-token case that argparse treats as an option. Private
+    # URL tokens may contain dashes; CLI authorization handles must remain safe.
+    monkeypatch.setattr(secrets, 'token_urlsafe', lambda size: '-test-' + original(size))
     broker, typer, path, web_socket = deployed
     rpc_socket = tmp_path / 'rpc-private' / 'rpc.sock'
     prefix = ['--socket', str(rpc_socket), '--unlock-origin', 'https://node.example:9443']

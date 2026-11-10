@@ -328,7 +328,9 @@ class WriteManager:
         self._prune()
         if len(self.operations) >= MAX_WRITES:
             raise WriteError('too many pending writes; cancel or wait')
-        handle = secrets.token_urlsafe(32)
+        # These references are CLI positionals. URL-safe randomness can begin
+        # with '-' and be parsed as an option; hex keeps all 256 random bits.
+        handle = secrets.token_hex(32)
         op = Write(secrets.token_urlsafe(32), self.broker.clock() + self.broker.handle_ttl, self.revision, dict(values), entry.uuid if entry else None)
         if is_totp:
             op.kind = 'totp'
@@ -348,7 +350,7 @@ class WriteManager:
                 if all(any(c in group for c in password) for group in (string.ascii_lowercase, string.ascii_uppercase, string.digits, *([symbols] if symbols else []))):
                     break
             op.password = password
-            op.fill_refs = {secrets.token_urlsafe(32): mode for mode in ('password', 'confirmation')}
+            op.fill_refs = {secrets.token_hex(32): mode for mode in ('password', 'confirmation')}
         self.operations[handle] = op
         if op.password is not None:
             return {'ok': True, 'write_handle': handle, 'state': op.state, 'fill_handles': {mode: ref for ref, mode in op.fill_refs.items()}}

@@ -452,7 +452,12 @@ def test_two_independent_brokers_serialized_against_same_file(tmp_path, template
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == CHOSEN
 
 
-def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
+def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog, monkeypatch):
+    import secrets
+    original = secrets.token_urlsafe
+    # Exercise real generated-fill, commit/status and cancellation commands even
+    # when URL-safe randomness would produce an option-looking CLI handle.
+    monkeypatch.setattr(secrets, 'token_urlsafe', lambda size: '-test-' + original(size))
     broker, typer, path, socket = deployed
     prefix = ['--socket', str(socket.with_name('cli.sock')), '--unlock-origin', 'https://node.example:9443']
     def command(*args, expected=0):
@@ -485,7 +490,10 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog):
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == generated_secret
 
 
-def test_actual_installed_executable_against_running_synthetic_broker(deployed, capsys):
+def test_actual_installed_executable_against_running_synthetic_broker(deployed, capsys, monkeypatch):
+    import secrets
+    original = secrets.token_urlsafe
+    monkeypatch.setattr(secrets, 'token_urlsafe', lambda size: '-test-' + original(size))
     import subprocess
     import sys
     from pathlib import Path
