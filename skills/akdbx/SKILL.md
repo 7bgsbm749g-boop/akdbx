@@ -178,6 +178,12 @@ For password and login modes, require a visible editable type=password input who
 `shipping`/`billing` prefixes. Username-only DOM pins require only a visible
 editable text/email input with the `username` field token; a password input
 does not need to exist on that page.
+For a verified password-only field with no autofill hint or `autocomplete=on`,
+the target-fill guide documents the explicit `--password-purpose` option.
+Require integer `password_purpose_protocol: 1`, independently verify sign-in
+versus new-password purpose, and keep every normal DOM pin check. Other
+unsupported/conflicting hints still refuse; do not rewrite the live page.
+
 Unknown, conflicting, duplicate or misplaced tokens refuse. Do not remove
 `webauthn` or rewrite page attributes to bypass refusal; use the supported broker
 version and a fresh pin. For password mode, focus the password field, then use `pin-password-target --page-id PAGE_ID

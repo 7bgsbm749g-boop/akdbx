@@ -92,6 +92,26 @@ non-HTTPS pages, custom controls, hidden/disabled/read-only/inert fields,
 ambiguous selectors, and profiles without the configured CDP interface refuse.
 Do not weaken checks to work around refusal.
 
+### Password inputs without semantic autofill hints
+
+Some login forms omit `autocomplete` or set it to `on`. The default still
+refuses these fields. With integer `password_purpose_protocol: 1`, a caller who
+independently verified the field's purpose can use password-only mode with
+`--password-purpose current-password` (sign-in) or `new-password` (an authorized
+password creation/change). Verify the exact HTTPS URL, main frame, unique
+selector, visible editable `type=password` input and current focus first.
+Fill any username separately; this option is refused in username and login modes.
+
+The option accepts only missing/empty hints or the single token `on`, or a valid
+semantic token list whose password purpose matches the declaration. It never
+overrides `off`, unknown/malformed/duplicate hints, conflicting purposes,
+non-password inputs, hidden fields, ambiguous selectors or focus changes.
+The raw password hint must remain unchanged between capture and fill. All
+normal origin, retained-node, navigation, focus, deadline and single-use checks
+remain in force, and delivery still uses the broker's DOM setters. Do not add
+or rewrite site attributes. Check the capability before sending this option;
+an older broker must be upgraded through its owning deployment workflow.
+
 Each generated password and confirmation reference needs a fresh password-mode
 DOM pin for its actual input, then `fill-generated --target-url VERIFIED_URL
 --target TARGET -- REF`. The saved/generated entry's HTTPS origin must match the pinned

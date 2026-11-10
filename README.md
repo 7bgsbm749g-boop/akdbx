@@ -59,6 +59,16 @@ Before starting the broker, choose the private Chrome user data directory shown 
 
 Focus the password input before pinning. For `login`, pin with `--mode login --selector PASSWORD_SELECTOR --username-selector USERNAME_SELECTOR` and focus the username first. Username inputs require autocomplete field token `username`; password inputs require `current-password` or `new-password`. Valid ordered lists such as `current-password webauthn` and optional section/address prefixes are supported; malformed or conflicting tokens refuse. Delivery never rewrites the page's autocomplete attributes. Login fills both retained nodes with native DOM setters, without Tab or focus changes. Both saved and generated passwords require this path; a legacy X11 pin refuses them. HTTPS main-frame standard inputs are supported; child frames, shadow DOM, custom controls, and ambiguous or changed fields refuse. The broker sends no submit key and does not use the clipboard.
 
+Some login forms omit semantic autofill hints or use `autocomplete="on"`.
+When `status` advertises integer `password_purpose_protocol: 1`, callers who
+independently verified a password-only field can pin it with
+`--password-purpose current-password` (or `new-password` for an authorized
+creation/change). The default remains strict. The option does not support
+username/login modes or override `off`, malformed hints or a conflicting
+password purpose; exact page, origin, retained input, focus and expiry checks
+remain mandatory. It never edits site attributes or enables keyboard passwords.
+See [the field-purpose contract](skills/akdbx/references/target-fill.md#password-inputs-without-semantic-autofill-hints).
+
 There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; it emits a deprecation warning. All fill commands now require `--target`. Remove it from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
 
 ### Unlock remotely over Tailscale

@@ -156,7 +156,7 @@ class CDP:
 
 # Both scripts run in a fresh isolated world. Retain the actual elements, native
 # setter/getters and document, never resolve a replacement by selector on fill.
-CAPTURE = r'''(function(selector, usernameSelector, mode, url) {
+CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose) {
   if (!isSecureContext || location.href !== url || !document.hasFocus() || document.visibilityState !== 'visible') throw 0;
   const query = s => { const a = document.querySelectorAll(s); if (a.length !== 1) throw 0; return a[0]; };
   const password = mode === 'username' ? null : query(selector);
@@ -165,15 +165,23 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url) {
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
   const type = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'type').get;
   const attribute = Element.prototype.getAttribute;
+  const originalPasswordAutocomplete = password ? attribute.call(password, 'autocomplete') : null;
   const hasAutocomplete = (e, secret) => {
     // The autocomplete IDL getter can deduplicate malformed raw token lists.
     const value = attribute.call(e, 'autocomplete') || '';
     if (value.length > 4096) return false;
     const tokens = value.split(/[\t\n\f\r ]+/).filter(Boolean).map(t => t.replace(/[A-Z]/g, c => c.toLowerCase()));
+    // A caller may explicitly attest a password-only field's purpose when the
+    // site supplies no semantic hint. Never infer it from a name or rewrite DOM.
+    if (secret && passwordPurpose) {
+      if (attribute.call(e, 'autocomplete') !== originalPasswordAutocomplete) return false;
+      if (tokens.length === 0 || tokens.length === 1 && tokens[0] === 'on') return true;
+    }
     if (tokens[0]?.startsWith('section-')) tokens.shift();
     if (['shipping','billing'].includes(tokens[0])) tokens.shift();
     if (tokens[tokens.length - 1] === 'webauthn') tokens.pop();
-    return tokens.length === 1 && (secret ? ['current-password','new-password'] : ['username']).includes(tokens[0]);
+    return tokens.length === 1 && (secret ? ['current-password','new-password'] : ['username']).includes(tokens[0]) &&
+      (!secret || !passwordPurpose || tokens[0] === passwordPurpose);
   };
   const valid = (e, secret) => {
     if (!(e instanceof HTMLInputElement) || !e.isConnected || e.ownerDocument !== document || e.disabled || e.readOnly || e.closest('[inert]')) return false;
@@ -188,9 +196,12 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url) {
   document.addEventListener('visibilitychange', dirty, true);
   document.addEventListener('focusin', dirty, true);
   const observer = new MutationObserver(records => {
-    for (const r of records) if (r.type === 'childList' && [...r.removedNodes].some(n => n === password || n === username || n.contains(password) || n.contains(username))) dirty();
+    for (const r of records) {
+      if (r.type === 'childList' && [...r.removedNodes].some(n => n === password || n === username || n.contains(password) || n.contains(username))) dirty();
+      if (passwordPurpose && r.type === 'attributes' && r.target === password) dirty();
+    }
   });
-  observer.observe(document, {childList:true, subtree:true});
+  observer.observe(document, {childList:true, subtree:true, ...(passwordPurpose ? {attributes:true, attributeFilter:['autocomplete','type']} : {})});
   const dispose = () => {
     window.navigation.removeEventListener('navigate', dirty);
     window.removeEventListener('blur', dirty, true);
@@ -271,9 +282,12 @@ class BrowserPasswords:
         """Reserve capacity atomically and capture the DOM target outside locks."""
         self.prune()
         required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode'}
-        if (set(request) != required | ({'username_selector'} if request.get('mode') == 'login' else set())
+        optional = {'password_purpose'} if 'password_purpose' in request else set()
+        if (set(request) != required | optional | ({'username_selector'} if request.get('mode') == 'login' else set())
                 or type(request.get('password_protocol')) is not int or request['password_protocol'] != PROTOCOL
-                or request.get('mode') not in {'username', 'password', 'login'}):
+                or request.get('mode') not in {'username', 'password', 'login'}
+                or optional and (request['mode'] != 'password' or not isinstance(request['password_purpose'], str)
+                                 or request['password_purpose'] not in {'current-password', 'new-password'})):
             raise TargetError()
         for key in required - {'action', 'password_protocol'} | ({'username_selector'} if request['mode'] == 'login' else set()):
             if not isinstance(request[key], str) or not 0 < len(request[key]) <= 4096:
@@ -302,7 +316,7 @@ class BrowserPasswords:
             if frame['id'] != request['frame_id'] or frame_url(frame) != request['top_url']:
                 raise TargetError()  # Child frames and shadow DOM are deliberately unsupported.
             world = connection.call('Page.createIsolatedWorld', {'frameId': frame['id'], 'worldName': 'akdbx-password-v1'}, session)['executionContextId']
-            args = [request['selector'], request.get('username_selector'), request['mode'], request['top_url']]
+            args = [request['selector'], request.get('username_selector'), request['mode'], request['top_url'], request.get('password_purpose')]
             result = connection.call('Runtime.evaluate', {'expression': CAPTURE + '(' + ','.join(json.dumps(v) for v in args) + ')', 'contextId': world}, session)
             if 'exceptionDetails' in result or result['result'].get('type') != 'object' or 'objectId' not in result['result']:
                 raise TargetError()
