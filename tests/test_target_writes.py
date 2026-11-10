@@ -17,7 +17,7 @@ def test_saved_fill_target_failure_is_secret_free_and_consumed(started, capsys, 
             error.args = (str(steps),)  # a backend error can contain a secret
             raise error
     broker = Broker(Vault([Entry()]), Interrupted())
-    pin = target_request(broker)
+    pin = target_request(broker, 'password')
     handle = broker.dispatch(dict(action='search'))['entries'][0]['handle']
     result = broker.dispatch(dict(action='fill', mode='password', handle=handle, **pin))
     assert result == failure(started)
@@ -33,7 +33,7 @@ def test_partial_generated_fills_are_not_counted_and_cannot_commit(deployed, mon
         raise DeliveryError(True)
     monkeypatch.setattr(typer, 'deliver', interrupted)
     for ref in generated['fill_handles'].values():
-        request = dict(action='fill-generated', handle=ref, target_url='https://example.test/reset', **target_request(broker))
+        request = dict(action='fill-generated', handle=ref, target_url='https://example.test/reset', **target_request(broker, 'password'))
         assert broker.dispatch(request) == failure(True)
         assert not broker.dispatch(request)['ok']
     assert not broker.writes.get(generated['write_handle']).filled
@@ -51,7 +51,7 @@ def test_generated_fill_never_bypasses_required_target(deployed, target_data):
     ref = generated['fill_handles']['password']
     request = dict(action='fill-generated', handle=ref, target_url='https://example.test/reset', **target_data)
     assert not broker.dispatch(request)['ok']
-    assert not broker.dispatch({**request, **target_request(broker)})['ok']
+    assert not broker.dispatch({**request, **target_request(broker, 'password')})['ok']
     assert not commit(broker, generated)['ok'] and not typer.events
 
 

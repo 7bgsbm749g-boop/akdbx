@@ -78,7 +78,7 @@ def private_post(socket, result, password=CHOSEN, confirmation=CHOSEN, confirmed
 
 
 def fills(broker, result, target='https://example.test/reset'):
-    return [broker.dispatch({'action': 'fill-generated', **target_request(broker), 'handle': ref, 'target_url': target}) for ref in result['fill_handles'].values()]
+    return [broker.dispatch({'action': 'fill-generated', **target_request(broker, 'password'), 'handle': ref, 'target_url': target}) for ref in result['fill_handles'].values()]
 
 
 def commit(broker, result, accepted=True):
@@ -106,7 +106,7 @@ def test_private_update_preserves_vault_and_is_immediately_fillable(deployed, ca
     assert code == 200 and CHOSEN.encode() not in page and MASTER.encode() not in page
     assert private_post(socket, prepared)[0] == 404
     assert broker.dispatch({'action': 'write-status', 'write_handle': prepared['write_handle']}) == {'ok': True, 'state': 'saved'}
-    assert not broker.dispatch({'action': 'fill', **target_request(broker), 'handle': stale})['ok']
+    assert not broker.dispatch({'action': 'fill', **target_request(broker, 'password'), 'handle': stale})['ok']
     vault = reopened(path)
     entry = vault.find_entries(title='Synthetic site', first=True)
     assert entry.password == CHOSEN and entry.notes == 'preserve notes'
@@ -114,7 +114,7 @@ def test_private_update_preserves_vault_and_is_immediately_fillable(deployed, ca
     assert entry.history[-1].password == OLD
     assert vault.find_entries(title='Unrelated', first=True).password == 'synthetic-unrelated-secret'
     fresh = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]['handle']
-    assert broker.dispatch({'action': 'fill', **target_request(broker), 'handle': fresh, 'mode': 'password'})['ok']
+    assert broker.dispatch({'action': 'fill', **target_request(broker, 'password'), 'handle': fresh, 'mode': 'password'})['ok']
     assert typer.events == [('type', CHOSEN)]
     backups = list(path.parent.glob('.*.akdbx-backup-*'))
     assert len(backups) == 1
@@ -146,7 +146,7 @@ def test_wrong_entry_metadata_rejected_and_handle_consumed(deployed, field, valu
     values = {key: selected[key] for key in ('title', 'username', 'url', 'group')}
     result = broker.dispatch({'action': 'update-password', 'handle': selected['handle'], 'metadata': {**values, field: value}})
     assert not result['ok'] and 'mismatch' in result['error']
-    assert not broker.dispatch({'action': 'fill', **target_request(broker), 'handle': selected['handle']})['ok']
+    assert not broker.dispatch({'action': 'fill', **target_request(broker, 'password'), 'handle': selected['handle']})['ok']
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == OLD
 
 
@@ -310,7 +310,7 @@ def test_ambiguous_rename_blocks_old_credentials_and_preserves_backup(deployed, 
     prepared = begin(broker)
     original = path.read_bytes()
     selected = broker.dispatch(dict(action='search', query='Synthetic site'))['entries'][0]
-    pin = target_request(broker)
+    pin = target_request(broker, 'password')
     real_replace = os.replace
     store = broker.vault._akdbx_store
 
@@ -462,7 +462,9 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog, 
     prefix = ['--socket', str(socket.with_name('cli.sock')), '--unlock-origin', 'https://node.example:9443']
     def command(*args, expected=0):
         if args[0] == "fill-generated":
-            args = (*args, "--target", target_request(broker)["target"])
+            args = (args[0], *args[2:], "--target", target_request(broker, 'password')["target"], "--", args[1])
+        elif args[0] in {'commit-password', 'write-status', 'cancel-write'}:
+            args = (args[0], *args[2:], '--', args[1])
         assert cli.main([*prefix, *args]) == expected
         captured = capsys.readouterr()
         assert not captured.err
@@ -502,7 +504,9 @@ def test_actual_installed_executable_against_running_synthetic_broker(deployed, 
     prefix = [str(executable), '--socket', str(socket.with_name('installed-cli.sock')), '--unlock-origin', 'https://node.example:9443']
     def command(*args):
         if args[0] == "fill-generated":
-            args = (*args, "--target", target_request(broker)["target"])
+            args = (args[0], *args[2:], "--target", target_request(broker, 'password')["target"], "--", args[1])
+        elif args[0] in {'commit-password', 'write-status', 'cancel-write'}:
+            args = (args[0], *args[2:], '--', args[1])
         result = subprocess.run([*prefix, *args], text=True, capture_output=True, timeout=30)
         assert result.returncode == 0 and not result.stderr
         assert all(secret not in result.stdout for secret in (MASTER, OLD, CHOSEN))
@@ -538,7 +542,7 @@ def test_unsafe_write_ancestry_preserves_read_only_unlock(tmp_path, template):
     broker.writes.public_base = 'https://node.example:9443'
     assert not broker.dispatch({'action': 'ping'})['writes_available']
     selected = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]
-    assert broker.dispatch({'action': 'fill', **target_request(broker), 'handle': selected['handle'], 'mode': 'password'})['ok']
+    assert broker.dispatch({'action': 'fill', **target_request(broker, 'password'), 'handle': selected['handle'], 'mode': 'password'})['ok']
     assert not begin(broker)['ok']
 
 
@@ -546,11 +550,11 @@ def test_generated_deadline_disconnect_and_typing_failure_prevent_commit(deploye
     broker, typer, path, _ = deployed
     prepared = begin(broker, 'generate-password')
     password_ref = prepared['fill_handles']['password']
-    assert not broker.dispatch({'action': 'fill-generated', **target_request(broker), 'handle': password_ref, 'target_url': 'https://example.test/reset', 'start_deadline': time.monotonic() - 1})['ok']
+    assert not broker.dispatch({'action': 'fill-generated', **target_request(broker, 'password'), 'handle': password_ref, 'target_url': 'https://example.test/reset', 'start_deadline': time.monotonic() - 1})['ok']
     assert typer.events == []
     assert not commit(broker, prepared)['ok']
     prepared = begin(broker, 'generate-password')
-    assert not broker.dispatch({'action': 'fill-generated', **target_request(broker), 'handle': prepared['fill_handles']['password'], 'target_url': 'https://example.test/reset', 'start_deadline': time.monotonic() + 1}, delivery_ready=lambda: False)['ok']
+    assert not broker.dispatch({'action': 'fill-generated', **target_request(broker, 'password'), 'handle': prepared['fill_handles']['password'], 'target_url': 'https://example.test/reset', 'start_deadline': time.monotonic() + 1}, delivery_ready=lambda: False)['ok']
     assert typer.events == []
     prepared = begin(broker, 'generate-password')
     def failure(text):

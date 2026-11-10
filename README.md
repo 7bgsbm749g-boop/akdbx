@@ -1,6 +1,6 @@
 # akdbx
 
-`akdbx` is a local KeePass (`.kdbx`) autofill broker designed for AI agents. Agents may search login metadata and choose an opaque, short-lived handle. They never receive the password: the broker sends it to a verified, pinned X11 application window and returns only a success receipt.
+`akdbx` is a local KeePass (`.kdbx`) autofill broker designed for AI agents. Agents may search login metadata and choose an opaque, short-lived handle. They never receive the password: the broker sends it to a retained Chromium DOM password input and returns only a success receipt.
 
 Source and issue tracker: [7bgsbm749g-boop/akdbx](https://github.com/7bgsbm749g-boop/akdbx).
 
@@ -42,7 +42,8 @@ Linux desktop with X11, X-Resource 1.2 local PID support and EWMH window-manager
 python3 -m venv .venv
 .venv/bin/pip install -e .
 .venv/bin/akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" \
-  serve /absolute/path/to/passwords.kdbx --web-unlock
+  serve /absolute/path/to/passwords.kdbx --web-unlock \
+  --password-browser-profile /absolute/path/to/chrome-user-data
 ```
 
 Keep the broker process running. Open its private unlock page from your Tailscale-connected device and enter the master password there. The broker needs no terminal input and can run in a persistent agent PTY that the user cannot access. After unlocking, use another shell—or an agent—to search, focus the destination, and explicitly fill:
@@ -54,7 +55,7 @@ Keep the broker process running. Open its private unlock page from your Tailscal
 .venv/bin/akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
 ```
 
-Configure `serve --password-browser-profile PATH` (or `AKDBX_PASSWORD_BROWSER_PROFILE`) with the operator-selected private Chrome user data directory and remote debugging enabled. The broker does not start or change Chrome. The profile must be owned, mode 0700, without symlink components; launch Chrome with `umask 077` so `DevToolsActivePort` is not writable by other users. No profile means password fills refuse. Treat CDP as a privileged local interface.
+Before starting the broker, choose the private Chrome user data directory shown above (or set `AKDBX_PASSWORD_BROWSER_PROFILE`) and enable remote debugging in that browser. The broker does not start or change Chrome. The profile must be owned, mode 0700, without symlink components; launch Chrome with `umask 077` so `DevToolsActivePort` is not writable by other users. On Linux, the broker also verifies the kernel UID of the connected TCP peer before the WebSocket handshake. An unavailable or ambiguous ownership check refuses; redirects and reconnection are forbidden. No profile means password fills refuse. Treat CDP as a privileged local interface.
 
 Focus the password input before pinning. For `login`, pin with `--mode login --selector PASSWORD_SELECTOR --username-selector USERNAME_SELECTOR` and focus the username first. Username inputs require `autocomplete="username"`; password inputs require `autocomplete="current-password"` or `autocomplete="new-password"`. Login fills both retained nodes with native DOM setters, without Tab or focus changes. Both saved and generated passwords require this path; a legacy X11 pin refuses them. HTTPS main-frame standard inputs are supported; child frames, shadow DOM, custom controls, and ambiguous or changed fields refuse. The broker sends no submit key and does not use the clipboard.
 
@@ -66,7 +67,8 @@ On your host, set the private deployment origin as described above, then start t
 
 ```bash
 .venv/bin/akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" \
-  serve /absolute/path/to/passwords.kdbx --web-unlock
+  serve /absolute/path/to/passwords.kdbx --web-unlock \
+  --password-browser-profile /absolute/path/to/chrome-user-data
 ```
 
 The broker starts locked. `status` and `search` responses provide a one-time unlock link under your configured HTTPS origin. Open it from a device signed into the tailnet, enter the KDBX master password, and then use the broker normally. The backend listens only on a Unix-domain socket in the broker's private runtime directory; it does not open a TCP port. Tailscale Serve supplies HTTPS, tailnet access control, and the authenticated identity header. The filesystem boundary prevents another local UID from replacing a stopped backend behind the trusted HTTPS origin. The page and URL are non-cacheable, attempts are rate-limited, request logging is disabled, and the URL token is replaced after a successful unlock.
@@ -398,10 +400,10 @@ write-capable broker version 0.2.0 or newer before changing a website password.
 - `create-entry --title TITLE --username ACCOUNT --url SITE --group GROUP`
 - `update-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP`
 - `generate-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP [--length 24] [--symbols '!@#$%*-_+=?']`
-- `fill-generated SINGLE_USE_FILL_HANDLE --target-url VERIFIED_RESET_URL --target TARGET_FROM_FRESH_PIN`
-- `commit-password WRITE_HANDLE --site-accepted`
-- `write-status WRITE_HANDLE`
-- `cancel-write WRITE_HANDLE`
+- `fill-generated --target-url VERIFIED_RESET_URL --target TARGET_FROM_FRESH_PIN -- SINGLE_USE_FILL_HANDLE`
+- `commit-password --site-accepted -- WRITE_HANDLE`
+- `write-status -- WRITE_HANDLE`
+- `cancel-write -- WRITE_HANDLE`
 
 Update/generation requires all exact search metadata and consumes the fresh
 search handle. Creation checks the destination group and rejects duplicate

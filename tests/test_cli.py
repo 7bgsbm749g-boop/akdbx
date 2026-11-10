@@ -64,7 +64,9 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
 
         def command(*args, expected_exit=0):
             if args[0] == 'fill':
-                args = (*args, '--target', ('synthetic-locked-pin' if broker.locked else target_request(broker)['target']))
+                mode = args[args.index('--mode') + 1] if '--mode' in args else 'login'
+                pin = 'synthetic-locked-pin' if broker.locked else target_request(broker, mode)['target']
+                args = (*args, '--target', pin)
             assert cli.main([*prefix, *args]) == expected_exit
             captured = capsys.readouterr()
             assert not captured.err
@@ -403,3 +405,29 @@ def test_password_pin_cli_passes_only_explicit_dom_metadata(monkeypatch, capsys)
                     page_id='page', frame_id='frame', top_url='https://example.test/login',
                     selector='#password', mode='password')]
     assert json.loads(capsys.readouterr().out)['target_delivery'] == 'chromium-password-dom-v1'
+
+
+@pytest.mark.parametrize('options, error', [
+    (['--mode', 'login'], '--mode login requires --username-selector'),
+    (['--mode', 'login', '--username-selector', ''], '--mode login requires --username-selector'),
+    (['--username-selector', '#username'], '--username-selector is only valid with --mode login'),
+    (['--mode', 'username', '--username-selector', '#username'], '--username-selector is only valid with --mode login'),
+])
+def test_password_pin_selector_errors_are_local(monkeypatch, capsys, options, error):
+    def forbidden(*args, **kwargs):
+        pytest.fail('invalid selector combination reached broker RPC')
+    monkeypatch.setattr(cli, 'request', forbidden)
+    assert cli.main(['pin-password-target', '--page-id', 'page', '--frame-id', 'frame',
+                     '--top-url', 'https://example.test/login', '--selector', '#password', *options]) == 2
+    assert capsys.readouterr() == ('', error + '\n')
+
+
+@pytest.mark.parametrize('command, options, field', [
+    ('fill-generated', ['--target-url', 'https://example.test/reset', '--target', 'synthetic-pin'], 'handle'),
+    ('commit-password', ['--site-accepted'], 'write_handle'),
+    ('write-status', [], 'write_handle'),
+    ('cancel-write', [], 'write_handle'),
+])
+def test_generated_handles_starting_with_hyphen_use_positional_separator(command, options, field):
+    args = cli.parser().parse_args([command, *options, '--', '-synthetic-opaque-handle'])
+    assert getattr(args, field) == '-synthetic-opaque-handle'

@@ -90,8 +90,10 @@ Then focus the confirmation field, verify again, and run:
 
 ```bash
 # Focus and verify the confirmation field, then obtain another fresh pin.
-akdbx fill-generated CONFIRMATION_FILL_HANDLE --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN
+akdbx fill-generated --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN -- CONFIRMATION_FILL_HANDLE
 ```
+
+Keep opaque fill and write handles after `--`, as shown, because a handle can begin with `-`.
 
 Each reference permits only one attempt and types only the staged password,
 without Tab or submit. Both fills use the same secret. Generated resets require
@@ -108,8 +110,8 @@ Submit the reset through the authorized website workflow. Verify non-secret
 A fill receipt alone is insufficient. Only then run:
 
 ```bash
-akdbx commit-password WRITE_HANDLE --site-accepted
-akdbx write-status WRITE_HANDLE
+akdbx commit-password --site-accepted -- WRITE_HANDLE
+akdbx write-status -- WRITE_HANDLE
 ```
 
 Commit requires both successful fill dispatches plus explicit site acceptance.
@@ -291,8 +293,8 @@ The isolated repair thread must not perform live activation or real vault work.
 ## Cancellation and recovery
 
 ```bash
-akdbx cancel-write WRITE_HANDLE
-akdbx write-status WRITE_HANDLE
+akdbx cancel-write -- WRITE_HANDLE
+akdbx write-status -- WRITE_HANDLE
 ```
 
 - **Site rejection or cancellation before acceptance:** cancel the staged write.

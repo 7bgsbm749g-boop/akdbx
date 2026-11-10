@@ -12,9 +12,12 @@ import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import stat
+import sys
 import time
 import threading
+from urllib.parse import urlsplit
 
 from .target import TargetError, DeliveryError
 from .totp import https_origin
@@ -56,11 +59,61 @@ def endpoint(profile):
     return 'ws://127.0.0.1:' + match[1] + match[2]
 
 
+def verify_peer(connection):
+    """Require our UID on the server side of this connected Linux TCP socket.
+
+    Checking a listener before connect permits port reuse between the check and
+    connect. The reciprocal ESTABLISHED tuple identifies this actual peer. Keep
+    this socket for the WebSocket handshake; never reconnect or follow redirects.
+    Missing, ambiguous or oversized kernel tables refuse before sending data.
+    """
+    local, remote = connection.getsockname(), connection.getpeername()
+    if connection.family != socket.AF_INET or local[0] != '127.0.0.1' or remote[0] != '127.0.0.1':
+        raise TargetError()
+    def address(value):
+        return f'{int.from_bytes(socket.inet_aton(value[0]), sys.byteorder):08X}:{value[1]:04X}'.encode('ascii')
+    server, client = address(remote), address(local)
+    owners = []
+    with open('/proc/self/net/tcp', 'rb') as table:
+        for _ in range(16384):
+            line = table.readline(1025)
+            if not line:
+                break
+            if len(line) > 1024:
+                raise TargetError()
+            fields = line.split()
+            if len(fields) >= 4 and fields[1:4] == [server, client, b'01']:
+                if len(fields) < 8:
+                    raise TargetError()
+                owners.append(int(fields[7]))
+        else:
+            raise TargetError()
+    if owners != [os.getuid()]:
+        raise TargetError()
+
+
 class CDP:
     def __init__(self, profile):
         import websocket
-        self.socket = websocket.create_connection(endpoint(profile), timeout=2, suppress_origin=True,
-                                                   http_no_proxy=['127.0.0.1'])
+        url = endpoint(profile)
+        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connection = None
+        try:
+            raw.settimeout(2)
+            raw.connect(('127.0.0.1', urlsplit(url).port))
+            verify_peer(raw)
+            connection = websocket.create_connection(url, socket=raw, redirect_limit=0, timeout=2,
+                                                      suppress_origin=True, http_no_proxy=['127.0.0.1'])
+            if connection.sock is not raw or connection.getstatus() != 101:
+                raise TargetError()
+        except BaseException:
+            try:
+                if connection is not None:
+                    connection.close(timeout=0.2)
+            finally:
+                raw.close()
+            raise
+        self.socket = connection
         self.counter = 0
 
     def close(self):

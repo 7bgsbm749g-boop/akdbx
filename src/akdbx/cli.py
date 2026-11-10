@@ -333,6 +333,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {'unlock-subscription-status', 'unsubscribe-unlock'}:
         payload['subscription_id'] = args.subscription_id
     elif args.command == 'pin-password-target':
+        if args.mode == 'login' and not args.username_selector:
+            print('--mode login requires --username-selector', file=sys.stderr)
+            return 2
+        if args.mode != 'login' and args.username_selector is not None:
+            print('--username-selector is only valid with --mode login', file=sys.stderr)
+            return 2
         payload.update(password_protocol=1, page_id=args.page_id, frame_id=args.frame_id, top_url=args.top_url,
                        selector=args.selector, mode=args.mode)
         if args.username_selector is not None:

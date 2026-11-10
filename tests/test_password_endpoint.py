@@ -1,10 +1,12 @@
 """The caller cannot select a debugging endpoint or weaken profile checks."""
 import os
 from pathlib import Path
+import socket
+import sys
 
 import pytest
 
-from akdbx.browser_password import BrowserPasswords, endpoint
+from akdbx.browser_password import BrowserPasswords, CDP, endpoint, verify_peer
 from akdbx.target import TargetError
 
 
@@ -46,6 +48,122 @@ def test_exact_endpoint_and_symlink_permissions(profile, tmp_path):
     link.symlink_to(profile)
     with pytest.raises(TargetError):
         endpoint(link)
+
+
+def test_real_connected_peer_uid_before_accept():
+    # The kernel must identify the server even before userspace accept().
+    with socket.socket() as listener, socket.socket() as client:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        client.settimeout(2)
+        client.connect(listener.getsockname())
+        verify_peer(client)
+
+
+@pytest.mark.parametrize('case', ['foreign', 'missing', 'duplicate', 'listener-only', 'client-only',
+                                  'malformed', 'oversized-line', 'oversized-table', 'unavailable'])
+def test_connected_peer_refuses_untrusted_kernel_rows(monkeypatch, case):
+    import io
+    loopback = f'{int.from_bytes(socket.inet_aton("127.0.0.1"), sys.byteorder):08X}'
+    server, client = f'{loopback}:3039', f'{loopback}:D431'
+    row = f'0: {server} {client} 01 0:0 0:0 0 {os.getuid()} 0 1\n'
+    data = {
+        'foreign': row.replace(f' {os.getuid()} 0 1', f' {os.getuid() + 1} 0 1'),
+        'missing': '',
+        'duplicate': row * 2,
+        'listener-only': row.replace(client, '00000000:0000').replace(' 01 ', ' 0A '),
+        'client-only': row.replace(f'{server} {client}', f'{client} {server}'),
+        'malformed': f'0: {server} {client} 01\n',
+        'oversized-line': 'x' * 1025,
+        'oversized-table': 'header\n' * 16384,
+        'unavailable': '',
+    }[case].encode()
+    class Connected:
+        family = socket.AF_INET
+        def getsockname(self):
+            return '127.0.0.1', 54321
+        def getpeername(self):
+            return '127.0.0.1', 12345
+    def table(path, mode):
+        assert path == '/proc/self/net/tcp' and mode == 'rb'
+        if case == 'unavailable':
+            raise PermissionError()
+        return io.BytesIO(data)
+    monkeypatch.setattr('builtins.open', table)
+    with pytest.raises((TargetError, PermissionError)):
+        verify_peer(Connected())
+
+
+def test_foreign_uid_listener_receives_no_websocket_bytes(profile):
+    """An owned stale port file cannot authorize a different UID's TCP peer."""
+    import select
+    import shutil
+    import subprocess
+    sudo = shutil.which('sudo')
+    if sudo is None:
+        pytest.skip('requires sudo -n -u nobody for the isolated foreign-UID listener')
+    script = '''import socket
+with socket.socket() as listener:
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(1)
+    listener.settimeout(5)
+    print(listener.getsockname()[1], flush=True)
+    connection, _ = listener.accept()
+    with connection:
+        connection.settimeout(3)
+        print(len(connection.recv(4096)), flush=True)
+'''
+    with subprocess.Popen([sudo, '-n', '-u', 'nobody', '/usr/bin/python3', '-c', script],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+        try:
+            assert select.select([process.stdout], [], [], 3)[0], 'listener did not start'
+            line = process.stdout.readline().strip()
+            if not line and process.poll() is not None:
+                pytest.skip('unprivileged foreign-UID test requires sudo permission')
+            port = int(line)
+            metadata = profile / 'DevToolsActivePort'
+            metadata.write_text(f'{port}\n/devtools/browser/synthetic-stale-file')
+            metadata.chmod(0o600)
+            with pytest.raises(TargetError):
+                CDP(profile)
+            assert process.stdout.readline().strip() == '0'
+        finally:
+            # The server has bounded accept/read timeouts; no persistent process.
+            process.wait(timeout=10)
+        assert process.returncode == 0
+
+
+def test_websocket_redirect_never_opens_another_connection(profile):
+    from concurrent.futures import ThreadPoolExecutor
+    import websocket
+    with socket.socket() as listener, socket.socket() as redirected:
+        for server in (listener, redirected):
+            server.bind(('127.0.0.1', 0))
+            server.listen(1)
+            server.settimeout(3)
+        metadata = profile / 'DevToolsActivePort'
+        metadata.write_text(f'{listener.getsockname()[1]}\n/devtools/browser/synthetic-redirect')
+        metadata.chmod(0o600)
+        def reply():
+            connection, _ = listener.accept()
+            with connection:
+                connection.settimeout(3)
+                data = b''
+                while b'\r\n\r\n' not in data and len(data) < 8192:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                connection.sendall(f'HTTP/1.1 302 Found\r\nLocation: ws://127.0.0.1:{redirected.getsockname()[1]}/devtools/browser/other\r\nContent-Length: 0\r\n\r\n'.encode())
+                return data
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            response = pool.submit(reply)
+            with pytest.raises(websocket.WebSocketException):
+                CDP(profile)
+            assert response.result(timeout=4).startswith(b'GET /devtools/browser/synthetic-redirect ')
+        redirected.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            redirected.accept()
 
 
 def test_expiry_capacity_consumption_and_close(monkeypatch):
