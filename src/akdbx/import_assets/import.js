@@ -9,14 +9,21 @@
   const form = hidden.form;
   let busy = false;
   let payloads = [];
-  function clear() {
+  let inputRevision = 0;
+  function invalidate() {
+    inputRevision++;
     payloads = [];
+    hidden.value = "";
+    message.textContent = "";
+  }
+  function clear() {
+    invalidate();
     for (const element of [images, camera, manual, hidden]) element.value = "";
   }
-  images.onchange = () => { camera.value = ""; payloads = []; hidden.value = ""; };
-  camera.onchange = () => { images.value = ""; payloads = []; hidden.value = ""; };
-  manual.oninput = () => { payloads = []; hidden.value = ""; };
-  async function decode() {
+  images.onchange = () => { camera.value = ""; invalidate(); };
+  camera.onchange = () => { images.value = ""; invalidate(); };
+  manual.oninput = invalidate;
+  async function decode(revision) {
     const selected = Array.from(camera.files.length ? camera.files : images.files);
     if (!selected.length || selected.length > 8) throw new Error();
     const result = [];
@@ -29,6 +36,7 @@
       try {
         image.src = url;
         await image.decode();
+        if (revision !== inputRevision) return false;
         if (!image.naturalWidth || !image.naturalHeight || image.naturalWidth > 4096 || image.naturalHeight > 4096) throw new Error();
         canvas.width = image.naturalWidth;
         canvas.height = image.naturalHeight;
@@ -45,32 +53,45 @@
         URL.revokeObjectURL(url);
       }
     }
+    if (revision !== inputRevision) return false;
     payloads = result;
     manual.value = "";
     message.textContent = "QR data read privately. Select Review accounts to continue.";
+    return true;
   }
   document.getElementById("decode").onclick = async () => {
     if (busy) return;
     busy = true;
-    try { await decode(); }
-    catch { clear(); message.textContent = "Could not read a supported QR image. Try PNG/JPEG/WebP or enter the original setup key."; }
+    const revision = inputRevision;
+    try { await decode(revision); }
+    catch {
+      if (revision === inputRevision) {
+        clear(); message.textContent = "Could not read a supported QR image. Try PNG/JPEG/WebP or enter the original setup key.";
+      }
+    }
     finally { busy = false; }
   };
   form.onsubmit = async event => {
     event.preventDefault();
     if (busy) return;
     busy = true;
+    let revision = inputRevision;
     try {
       if (manual.value.trim()) payloads = [manual.value.trim()];
-      else if (!payloads.length) await decode();
+      else if (!payloads.length && !await decode(revision)) return;
+      if (revision !== inputRevision) return;
       const body = new URLSearchParams({payloads: JSON.stringify(payloads)});
       clear();
+      revision = inputRevision;
       const response = await fetch(form.action, {method: "POST", body, cache: "no-store", credentials: "same-origin", redirect: "error"});
+      if (revision !== inputRevision) return;
       if (!response.ok) throw new Error();
       location.replace("/totp/review" + location.search);
     } catch {
-      clear();
-      message.textContent = "Import not confirmed. Check the request status; use a complete supported export or a fresh request.";
+      if (revision === inputRevision) {
+        clear();
+        message.textContent = "Import not confirmed. Check the request status; use a complete supported export or a fresh request.";
+      }
     } finally { busy = false; }
   };
   addEventListener("pagehide", clear);
