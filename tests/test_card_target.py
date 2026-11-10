@@ -216,6 +216,96 @@ def test_fixture_waits_for_complete_header_after_empty_file_creation(tmp_path, m
     assert observed_incomplete.is_set() and not writer.is_alive() and not errors
 
 
+def test_fixture_reconnects_after_pre_pin_websocket_peer_closes(tmp_path):
+    import base64
+    import hashlib
+    import socket
+    from concurrent.futures import ThreadPoolExecutor
+    import test_card_chromium as lab
+    profile = tmp_path / 'profile'
+    profile.mkdir(mode=0o700)
+    release = threading.Event()
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(2)
+        listener.settimeout(3)
+        (profile / 'DevToolsActivePort').write_text(
+            f'{listener.getsockname()[1]}\n/devtools/browser/synthetic-startup')
+        (profile / 'DevToolsActivePort').chmod(0o600)
+        def serve():
+            requests = []
+            for attempt in range(2):
+                connection, _ = listener.accept()
+                with connection:
+                    connection.settimeout(3)
+                    data = b''
+                    while b'\r\n\r\n' not in data and len(data) < 8192:
+                        chunk = connection.recv(4096)
+                        if not chunk:
+                            break
+                        data += chunk
+                    requests.append(data)
+                    if attempt == 0:
+                        continue  # Own server is not ready for its first handshake.
+                    key = next(line.split(b':', 1)[1].strip() for line in data.splitlines()
+                               if line.lower().startswith(b'sec-websocket-key:'))
+                    accept = base64.b64encode(hashlib.sha1(
+                        key + b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest())
+                    connection.sendall(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n'
+                        b'Connection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + b'\r\n\r\n')
+                    assert release.wait(3), 'test did not close its prepared connection'
+            return requests
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            response = pool.submit(serve)
+            cdp = None
+            try:
+                cdp = lab.connect_test_browser(profile, SimpleNamespace(poll=lambda: None),
+                                               time.monotonic()+5)
+                assert cdp.socket.getstatus() == 101
+            finally:
+                if cdp is not None:
+                    cdp.close()
+                release.set()
+            requests = response.result(timeout=4)
+            assert len(requests) == 2
+            assert all(r.startswith(b'GET /devtools/browser/synthetic-startup ') for r in requests)
+
+
+@pytest.mark.parametrize('error', [CardTargetError, PermissionError])
+def test_fixture_does_not_retry_security_refusals(tmp_path, monkeypatch, error):
+    import test_card_chromium as lab
+    profile = tmp_path / 'profile'
+    profile.mkdir(mode=0o700)
+    (profile / 'DevToolsActivePort').write_text('12345\n/devtools/browser/synthetic-refusal')
+    (profile / 'DevToolsActivePort').chmod(0o600)
+    attempts = []
+    def refused(_):
+        attempts.append(True)
+        raise error()
+    monkeypatch.setattr(lab, 'CDP', refused)
+    with pytest.raises(error):
+        lab.connect_test_browser(profile, SimpleNamespace(poll=lambda: None), time.monotonic()+3)
+    assert len(attempts) == 1
+
+
+def test_fixture_transient_retries_stop_at_startup_deadline(tmp_path, monkeypatch):
+    import test_card_chromium as lab
+    profile = tmp_path / 'profile'
+    profile.mkdir(mode=0o700)
+    (profile / 'DevToolsActivePort').write_text('12345\n/devtools/browser/synthetic-timeout')
+    (profile / 'DevToolsActivePort').chmod(0o600)
+    clock, attempts = [0.0], []
+    def sleep(seconds): clock[0] += seconds
+    def timeout(_):
+        attempts.append(True)
+        raise TimeoutError()
+    monkeypatch.setattr(lab, 'time', SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep))
+    monkeypatch.setattr(lab, 'CDP', timeout)
+    with pytest.raises(AssertionError, match='did not accept a verified debugging connection'):
+        lab.connect_test_browser(profile, SimpleNamespace(poll=lambda: None), .1)
+    assert clock[0] == .1 and len(attempts) == 2
+
+
 class FakeCDP:
     def __init__(self, result='filled', fail_at=None):
         self.result, self.fail_at, self.closed, self.calls = result, fail_at, 0, []

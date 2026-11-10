@@ -53,6 +53,21 @@ def wait_for_browser_endpoint(profile, process, deadline):
     raise AssertionError('isolated Chrome did not publish a valid debugging header')
 
 
+def connect_test_browser(profile, process, deadline):
+    import websocket
+    # The published port file can precede a responsive WebSocket server. Retry
+    # only preparation of this owned synthetic browser, before pinning any DOM
+    # target. Peer ownership/permission/protocol errors still fail immediately.
+    while time.monotonic() < deadline:
+        wait_for_browser_endpoint(profile, process, deadline)
+        try:
+            return CDP(profile)
+        except (ConnectionRefusedError, ConnectionResetError, BrokenPipeError, TimeoutError,
+                websocket.WebSocketTimeoutException, websocket.WebSocketConnectionClosedException):
+            time.sleep(.05)
+    raise AssertionError('isolated Chrome did not accept a verified debugging connection')
+
+
 @pytest.fixture
 def chrome(isolated_x11, tmp_path):
     binary = shutil.which('google-chrome') or shutil.which('chromium')
@@ -103,9 +118,10 @@ def chrome(isolated_x11, tmp_path):
         env=environment, stdout=subprocess.DEVNULL, stderr=log, start_new_session=True, umask=0o077)
     cdp = None
     try:
-        deadline = time.monotonic() + 20
-        wait_for_browser_endpoint(profile, process, deadline)
-        cdp = CDP(profile)
+        # Cold CI Chrome preparation gets a separate bounded budget. Production
+        # connection/fill deadlines and every post-pin assertion are unchanged.
+        deadline = time.monotonic() + 60
+        cdp = connect_test_browser(profile, process, deadline)
         page, session = None, None
         while time.monotonic() < deadline:
             pages = [t for t in cdp.call('Target.getTargets')['targetInfos'] if t['type'] == 'page' and t['url'] == url]

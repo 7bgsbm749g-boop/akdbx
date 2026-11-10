@@ -59,4 +59,6 @@ jobs:
         if: always()
         with:
           name: card-safety-results
-          path: ${{ runner.temp }}/card-safety.xml
+          path: |
+            ${{ runner.temp }}/card-safety.xml
+            ${{ runner.temp }}/akdbx-tests/**/chrome.log
