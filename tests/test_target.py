@@ -215,7 +215,13 @@ def isolated_x11(tmp_path, monkeypatch):
     finally:
         os.close(read_fd)
         process.terminate()
-        process.wait(timeout=5)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            # This exact child is the fixture's disposable X server. A slow
+            # shutdown must not leak it or affect any shared desktop process.
+            process.kill()
+            process.wait(timeout=5)
 
 
 def key_events(lab):

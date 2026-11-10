@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -23,6 +25,27 @@ jobs:
           sudo apt-get install -y xvfb openssl
           command -v google-chrome
           python -m pip install -e '.[test]'
+      - name: Install pinned native merge verifier on disposable runner
+        run: |
+          mkdir -p "$RUNNER_TEMP/keepassxc"
+          cd "$RUNNER_TEMP/keepassxc"
+          curl --fail --location --max-time 90 --max-filesize 67108864 \
+            --output KeePassXC.AppImage \
+            https://github.com/keepassxreboot/keepassxc/releases/download/2.7.10/KeePassXC-2.7.10-x86_64.AppImage
+          echo '3f8308a4d905d067367d541b4dccd5e80700798039046ffc388ede4f50887b36  KeePassXC.AppImage' | sha256sum --check
+          chmod 700 KeePassXC.AppImage
+          ./KeePassXC.AppImage --appimage-extract > extract.log
+          sudo mkdir -p /opt/akdbx-ci-keepassxc
+          sudo cp -a squashfs-root/. /opt/akdbx-ci-keepassxc/
+          sudo chown -R root:root /opt/akdbx-ci-keepassxc
+          sudo chmod -R go-w /opt/akdbx-ci-keepassxc
+          cat > "$RUNNER_TEMP/keepassxc-cli" <<'SH'
+          #!/bin/sh
+          export LD_LIBRARY_PATH=/opt/akdbx-ci-keepassxc/usr/lib
+          exec /opt/akdbx-ci-keepassxc/usr/bin/keepassxc-cli "$@"
+          SH
+          sudo install -o root -g root -m 755 "$RUNNER_TEMP/keepassxc-cli" /usr/bin/keepassxc-cli
+          test "$(env -i LANG=C.UTF-8 /usr/bin/keepassxc-cli --version)" = 2.7.10
       - name: Test card persistence, authorization and real browser delivery
         run: >-
           python -m pytest tests/test_cards.py tests/test_card_target.py
