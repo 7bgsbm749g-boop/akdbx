@@ -294,7 +294,20 @@ def handler_for(state: UnlockState):
             return  # Never log URLs, identities, or form requests.
 
         def _identity_ok(self) -> bool:
-            return bool(self.headers.get("Tailscale-User-Login"))
+            return bool(self._identity())
+
+        def _identity(self) -> str:
+            # Linux uses a protected Unix backend and Tailscale's identity
+            # header. Windows terminates trusted HTTPS on loopback itself;
+            # never accept a caller-supplied proxy identity on that listener.
+            origin = getattr(self.server, 'local_origin', None)
+            if origin is not None:
+                expected = urlsplit(origin)
+                if (self.headers.get_all('Host', []) != [expected.netloc]
+                        or self.headers.get_all('Origin', []) not in ([], [origin])):
+                    return ''
+                return 'local Windows user'
+            return self.headers.get('Tailscale-User-Login', '')
 
         def _token(self) -> str:
             return parse_qs(urlsplit(self.path).query).get("token", [""])[0]
@@ -377,14 +390,14 @@ def handler_for(state: UnlockState):
                 self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The KeePass broker is ready. You may close this page.</p>"))
                 return
             action = "?token=" + html.escape(state.token, quote=True)
-            login = html.escape(self.headers.get("Tailscale-User-Login", ""))
+            login = html.escape(self._identity())
             body = f'<p>Unlocking for <strong>{login}</strong>.</p><form method="post" action="{action}" autocomplete="off"><label>Master password</label><input name="password" type="password" required autofocus autocomplete="current-password"><button type="submit">Unlock vault</button></form>'
             self._send(HTTPStatus.OK, _page("Unlock KeePass", body))
 
         def do_POST(self) -> None:
             if self._write_request():
                 return
-            identity = self.headers.get("Tailscale-User-Login", "")
+            identity = self._identity()
             submitted_token = self._token()
             if not identity or not state.token_matches(submitted_token):
                 self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))

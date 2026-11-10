@@ -8,14 +8,15 @@ import secrets
 import socket
 import time
 
-DELIVERY = 'x11-send-event-v1'
+DELIVERY = 'win32-char-v1' if os.name == 'nt' else 'x11-send-event-v1'
 PIN_TTL = 30.0
 MAX_PINS = 128
 DELIVERY_TIMEOUT = 3.0
 
 
 def capabilities():
-    return dict(target_fill_required=True, target_fill_protocol=1, target_fill_delivery=DELIVERY)
+    return dict(target_fill_required=True, target_fill_protocol=1, target_fill_delivery=DELIVERY,
+                **({'target_fill_modes': ['username', 'password']} if os.name == 'nt' else {}))
 
 
 class TargetError(Exception):
@@ -42,7 +43,8 @@ class TargetPins:
         if set(request) != {'action', 'pid', 'window', 'target_protocol'} or type(request.get('target_protocol')) is not int or request['target_protocol'] != 1:
             raise TargetError()
         pid, window = request.get('pid'), request.get('window')
-        if type(pid) is not int or pid <= 0 or type(window) is not int or not 1 < window <= 0xffffffff:
+        maximum = 0xffffffffffffffff if os.name == 'nt' else 0xffffffff
+        if type(pid) is not int or pid <= 0 or type(window) is not int or not 1 < window <= maximum:
             raise TargetError()
         self.pins = {key: value for key, value in self.pins.items() if value[0] > self.clock()}
         if len(self.pins) >= MAX_PINS:

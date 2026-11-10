@@ -394,7 +394,10 @@ class Broker:
 
 
 def open_vault_with_password(database: Path, password: str, keyfile: Path | None = None):
-    from .persistence import VaultStore
+    if os.name == 'nt':
+        from .windows_store import WindowsVaultStore as VaultStore
+    else:
+        from .persistence import VaultStore
     return VaultStore(database).open(password, keyfile)
 
 
@@ -429,6 +432,8 @@ def _serve_connection(connection: socket.socket, broker: Broker) -> None:
 def _connection_is_alive(connection: socket.socket) -> bool:
     """Check that a one-request RPC has neither EOF nor trailing input pending."""
     try:
+        if os.name == 'nt':
+            return connection.is_alive()
         readable, _, _ = select.select([connection], [], [], 0)
         # After receive_message consumed the one permitted request, readability
         # means either EOF or unexpected trailing protocol bytes. Neither state
@@ -439,6 +444,9 @@ def _connection_is_alive(connection: socket.socket) -> bool:
 
 
 def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
+    if os.name == 'nt':
+        from .windows_rpc import serve as windows_serve
+        return windows_serve(socket_path, broker, stop)
     socket_path = Path(os.path.abspath(os.fspath(socket_path)))
     runtime_path, runtime_fd = prepare_private_runtime_directory(socket_path.parent)
     socket_path = runtime_path / socket_path.name

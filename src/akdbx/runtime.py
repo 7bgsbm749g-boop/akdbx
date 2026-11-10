@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
 import socket
 import stat
 from pathlib import Path
+
+if os.name != 'nt':
+    import fcntl
 
 
 SOCKET_PROBE_TIMEOUT = 0.2

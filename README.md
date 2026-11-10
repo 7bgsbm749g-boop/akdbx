@@ -1,6 +1,15 @@
 # akdbx
 
-`akdbx` is a local KeePass (`.kdbx`) autofill broker designed for AI agents. Agents may search login metadata and choose an opaque, short-lived handle. They never receive the password: the broker sends it to a verified, pinned X11 application window and returns only a success receipt.
+`akdbx` is a local KeePass (`.kdbx`) autofill broker designed for AI agents. Agents may search login metadata and choose an opaque, short-lived handle. They never receive the password: the broker sends it to a verified, pinned application window and returns only a dispatch receipt.
+
+Linux/X11 is the established backend. An **experimental native Windows backend**
+adds local named pipes, Windows access checks, directed Unicode window messages,
+encrypted saves, and a local HTTPS unlock page. It requires separate username and
+password fills; native merge and snapshot admission remain Linux-only. Real
+Windows desktop/browser acceptance is still pending. See [Windows setup and
+validation](docs/windows.md) before using it, and use synthetic vaults until those
+checks pass. The Linux-specific security and Tailscale instructions below do not
+describe the Windows transport.
 
 Source and issue tracker: [7bgsbm749g-boop/akdbx](https://github.com/7bgsbm749g-boop/akdbx).
 

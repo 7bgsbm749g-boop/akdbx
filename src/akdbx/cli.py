@@ -28,6 +28,9 @@ IDENTITY_CREATES = ('create-sso-entry', 'create-passwordless-entry')
 
 
 def default_socket() -> Path:
+    if os.name == 'nt':
+        from .windows_rpc import default_pipe
+        return default_pipe()
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     base = Path(runtime) / "akdbx" if runtime else Path(f"/tmp/akdbx-{os.getuid()}")
     canonical = base / "akdbx.sock"
@@ -162,6 +165,14 @@ def request(
     expected_unlock_origin: str = DEFAULT_UNLOCK_ORIGIN,
     before_send=None,
 ) -> dict:
+    if os.name == 'nt':
+        from .windows_rpc import connect
+        if broker_uid is not None:
+            raise ValueError('--broker-uid is a Linux option; Windows requires the same user/session')
+        with connect(socket_path) as client:
+            client.settimeout(240 if payload.get('action') in (*IDENTITY_CREATES, 'commit-password') else 5)
+            send_message(client, payload, before_send=before_send)
+            return _validate_response(receive_message(client), expected_unlock_origin)
     broker_uid = os.getuid() if broker_uid is None else broker_uid
     socket_path, runtime_fd = _validate_socket_path(socket_path, broker_uid)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -184,6 +195,13 @@ def request(
 
 def _read_webhook_url(path: Path) -> str:
     """Read a private callback without placing its bearer token in argv/output."""
+    if os.name == 'nt':
+        from .windows_security import read_private
+        try:
+            data, _ = read_private(path, limit=4096)
+            return validate_webhook_url(data.decode('utf-8').strip())
+        except Exception:
+            raise ValueError('could not read the private Windows webhook URL file') from None
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "r", encoding="utf-8") as source:
         info = os.fstat(source.fileno())
@@ -215,11 +233,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--version", action="version", version=__version__)
     result.add_argument("--socket", type=Path)
     result.add_argument(
-        "--broker-uid", type=int, default=os.environ.get("AKDBX_BROKER_UID", os.getuid()),
+        "--broker-uid", type=int, default=(None if os.name == 'nt' else os.environ.get("AKDBX_BROKER_UID", os.getuid())),
         help="expected operating-system UID of the broker",
     )
     result.add_argument(
-        "--unlock-origin", default=os.environ.get("AKDBX_UNLOCK_ORIGIN", DEFAULT_UNLOCK_ORIGIN),
+        "--unlock-origin", default=os.environ.get("AKDBX_UNLOCK_ORIGIN", 'https://localhost:9443' if os.name == 'nt' else DEFAULT_UNLOCK_ORIGIN),
         help="deployment HTTPS origin for private pages (or AKDBX_UNLOCK_ORIGIN); default is a non-routable example",
     )
     commands = result.add_subparsers(dest="command", required=True)
@@ -230,6 +248,8 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--web-unlock", action="store_true", help="compatibility flag: private web unlock is always enabled")
     start.add_argument("--unlock-socket", type=Path, help=argparse.SUPPRESS)
     start.add_argument("--unlock-url", help=argparse.SUPPRESS)
+    start.add_argument('--tls-cert', type=Path, help='Windows: trusted PEM certificate for the local HTTPS unlock page')
+    start.add_argument('--tls-key', type=Path, help='Windows: private PEM certificate key with a restrictive DACL')
     search = commands.add_parser("search", help="return matching non-secret login metadata")
     search.add_argument("query", nargs="?", default="")
     fill = commands.add_parser("fill", help="autofill using a handle returned by search")
@@ -237,7 +257,7 @@ def parser() -> argparse.ArgumentParser:
     fill.add_argument("--mode", choices=("login", "username", "password"), default="login")
     pin = commands.add_parser('pin-target', help='pin an independently verified local foreground PID/window and current input-focus window for 30 seconds')
     pin.add_argument('--pid', type=int, required=True)
-    pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID, decimal or 0x hex')
+    pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID or Windows top-level HWND, decimal or 0x hex')
     for name in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password', 'setup-totp'):
         help_text = {
             'create-sso-entry': 'save a Google/GitHub SSO identity (no password form)',
@@ -303,6 +323,12 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if os.name == 'nt' and args.broker_uid is not None:
+        print('--broker-uid applies only to Linux; Windows requires the same user/session', file=sys.stderr)
+        return 2
+    if os.name == 'nt' and args.command == 'fill' and args.mode == 'login':
+        print('Windows requires separate --mode username and --mode password fills with fresh handles and pins', file=sys.stderr)
+        return 2
     if args.socket is None:
         try:
             args.socket = default_socket()
@@ -314,15 +340,25 @@ def main(argv: list[str] | None = None) -> int:
         keyfile = args.keyfile.expanduser() if args.keyfile else None
         if args.yes_on_fill:
             print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
-        broker = Broker(None, X11Typer())
+        if os.name == 'nt':
+            from .windows_target import WindowsTyper
+            from .windows_unlock import start_windows_unlock_server
+            broker = Broker(None, WindowsTyper())
+            unlock_server, unlock_url = start_windows_unlock_server(
+                broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key)
+        else:
+            if args.tls_cert is not None or args.tls_key is not None:
+                raise ValueError('--tls-cert and --tls-key are Windows options; Linux uses Tailscale Serve')
+            broker = Broker(None, X11Typer())
         unlock_name = ("agentic-kdbx-unlock.sock"
                        if args.socket.name == "agentic-kdbx.sock"
                        else "akdbx-unlock.sock")
         unlock_socket = args.unlock_socket or args.socket.with_name(unlock_name)
-        unlock_server, unlock_url = start_unlock_server(
-            broker, database, keyfile, unlock_socket, args.unlock_url or args.unlock_origin,
-        )
-        print(f"Vault locked. Open over Tailscale: {unlock_url}", file=sys.stderr)
+        if os.name != 'nt':
+            unlock_server, unlock_url = start_unlock_server(
+                broker, database, keyfile, unlock_socket, args.unlock_url or args.unlock_origin,
+            )
+        print(f"Vault locked. Open the private HTTPS page: {unlock_url}", file=sys.stderr)
         print(f"Broker ready at {args.socket}; Ctrl-C locks it.", file=sys.stderr)
         try:
             serve(args.socket, broker)
