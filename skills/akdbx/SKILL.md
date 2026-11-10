@@ -160,8 +160,13 @@ before the first fill. Require broker `password_fill_protocol: 1` and
 `--password-browser-profile` at broker startup; absence or unsupported paths refuse.
 Do not change a live profile or restart the broker to bypass refusal.
 
-Require a visible editable type=password input with autocomplete current-password
-or new-password. Other controls refuse. Focus the password field, then use `pin-password-target --page-id PAGE_ID
+Require a visible editable type=password input whose autocomplete field token is
+`current-password` or `new-password`. Valid ordered token lists such as
+`current-password webauthn` are supported, including optional `section-*` and
+`shipping`/`billing` prefixes. Username inputs require the `username` field token.
+Unknown, conflicting, duplicate or misplaced tokens refuse. Do not remove
+`webauthn` or rewrite page attributes to bypass refusal; use the supported broker
+version and a fresh pin. Focus the password field, then use `pin-password-target --page-id PAGE_ID
 --frame-id MAIN_FRAME_ID --top-url EXACT_HTTPS_URL --selector PASSWORD_SELECTOR
 --mode password`. Each fill needs its own 30-second single-use target token.
 Login pins require `--mode login --username-selector USERNAME_SELECTOR`; focus the

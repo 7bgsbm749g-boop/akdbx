@@ -52,16 +52,27 @@ their old code until an authorized update and restart.
 
 `login` mode requires `--selector PASSWORD_SELECTOR --username-selector
 USERNAME_SELECTOR --mode login`. Focus the username input first. The username
-must be a text/email input with `autocomplete="username"`; the password must be
-an editable visible input with type password and autocomplete `current-password`
-or `new-password`. Both must belong to the same form
+must be a text/email input with autocomplete field token `username`; the password
+must be an editable visible input with type password and field token
+`current-password` or `new-password`. Both must belong to the same form
 (or both have no form). Native setters fill both retained nodes without Tab,
 focus changes, submit keys, or script callbacks between assignments. Input and
 change notifications run only after both assignments. Pages that need trusted
 keystrokes or a multi-step login must use separate supported fills or refuse.
 
+Autocomplete uses the [HTML ordered token grammar](https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#autofilling-form-controls:-the-autocomplete-attribute):
+an optional `section-*` token, optional `shipping` or `billing`, the required
+field token, then an optional final `webauthn`. For example,
+`current-password webauthn` and `section-login username webauthn` are supported.
+Tokens are ASCII case-insensitive and separated by ASCII whitespace. Unknown,
+conflicting, repeated or misordered tokens, `on`/`off`, and lists over 4096
+characters refuse. Capture and the final synchronous check parse the raw
+attribute with a captured native getter; browser property normalization cannot
+hide duplicate tokens.
+Delivery does not rewrite attributes; never alter a page to bypass refusal.
+
 For a username-only DOM fill, use `--mode username` and select the username
-input. It also requires `autocomplete="username"`. Child frames, shadow DOM,
+input. It also requires the `username` field token. Child frames, shadow DOM,
 non-HTTPS pages, custom controls, hidden/disabled/read-only/inert fields,
 ambiguous selectors, and profiles without the configured CDP interface refuse.
 Do not weaken checks to work around refusal.

@@ -152,11 +152,21 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url) {
   const created = performance.now();
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
   const type = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'type').get;
-  const autocomplete = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'autocomplete').get;
+  const attribute = Element.prototype.getAttribute;
+  const hasAutocomplete = (e, secret) => {
+    // The autocomplete IDL getter can deduplicate malformed raw token lists.
+    const value = attribute.call(e, 'autocomplete') || '';
+    if (value.length > 4096) return false;
+    const tokens = value.split(/[\t\n\f\r ]+/).filter(Boolean).map(t => t.replace(/[A-Z]/g, c => c.toLowerCase()));
+    if (tokens[0]?.startsWith('section-')) tokens.shift();
+    if (['shipping','billing'].includes(tokens[0])) tokens.shift();
+    if (tokens[tokens.length - 1] === 'webauthn') tokens.pop();
+    return tokens.length === 1 && (secret ? ['current-password','new-password'] : ['username']).includes(tokens[0]);
+  };
   const valid = (e, secret) => {
     if (!(e instanceof HTMLInputElement) || !e.isConnected || e.ownerDocument !== document || e.disabled || e.readOnly || e.closest('[inert]')) return false;
     const t = type.call(e), r = e.getBoundingClientRect(), s = getComputedStyle(e);
-    return (secret ? t === 'password' && ['current-password','new-password'].includes(autocomplete.call(e)) : ['text','email'].includes(t) && autocomplete.call(e) === 'username') && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none' && s.opacity !== '0';
+    return (secret ? t === 'password' : ['text','email'].includes(t)) && hasAutocomplete(e, secret) && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none' && s.opacity !== '0';
   };
   let tainted = false;
   const dirty = () => { tainted = true; };
