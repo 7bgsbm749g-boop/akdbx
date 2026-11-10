@@ -79,6 +79,73 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
+### Payment cards (0.12.0)
+
+Cards use ordinary KDBX entries with custom fields; no format extension is
+needed. `akdbx.card=v1` identifies a card. Cardholder name, number, expiry month,
+expiry year and optional security code use protected custom strings named
+`akdbx.card.name`, `.number`, `.month`, `.year` and `.csc`. These field names are
+akdbx conventions; other clients can display them as custom fields.
+
+`create-card --title LABEL --group EXISTING_GROUP` opens a private card-save
+workflow. Enter card values only on the returned private HTTPS page. Never
+put them in command arguments, agent messages or notes. `update-card HANDLE
+--title EXACT_TITLE --group EXACT_GROUP` prepares an update. Updates preserve
+the previous entry in KDBX History. `write-status` and `cancel-write` apply to
+these saves. Persistence reopens and verifies every protected field before
+replacing the encrypted vault. A private page expires after five minutes.
+
+`search-cards QUERY` returns only title, group, brand, last four digits and a
+single-use handle. Ordinary login search excludes card entries; password
+operations refuse card records. Expired cards cannot be filled.
+
+Card delivery uses a retained DOM element in a private isolated JavaScript world
+through Chrome DevTools Protocol. It never sends keyboard events, Tab or submit,
+and cannot direct input into the browser address bar through keyboard focus.
+The broker checks the exact HTTPS page/frame URLs, unique selector, matching
+`autocomplete` card token, element identity, editability, visibility and
+occlusion. It repeats the checks in the same JavaScript task as the native value
+setter. A focus change cannot select a different destination. Replacement,
+navigation, expiry or unsupported markup refuses the fill. An interrupted
+delivery is reported as uncertain and must not be retried automatically.
+
+Configure the broker with `serve DB --card-browser-profile /absolute/USER_DATA_DIR`
+or `AKDBX_CARD_BROWSER_PROFILE`. This must be the existing, owned, mode-0700
+Chrome **user-data directory**, containing an owned, non-symlink,
+non-group/world-writable `DevToolsActivePort` file from a loopback debugging
+port. The broker does not launch/restart Chrome, enable debugging, change
+profiles or fall back to X11. Keep this directory and the debugging connection
+private. An unconfigured/unsupported browser refuses fills; storage and search
+remain available.
+
+After independently verifying the merchant and payment form, obtain the page
+and frame IDs through your browser's DOM inspection tools, bring the intended
+field into view, and pin its exact selector and autocomplete field type:
+
+```bash
+akdbx search-cards 'Personal Visa'
+akdbx pin-card-target --page-id PAGE_ID --frame-id FRAME_ID \
+  --top-url https://merchant.example/checkout \
+  --frame-url https://merchant.example/checkout \
+  --selector '#card-number' --field cc-number
+akdbx fill-card CARD_HANDLE --target CARD_TARGET --field cc-number
+```
+
+Pins last 30 seconds and are consumed on the first fill attempt. Use a fresh
+search handle and pin for each field. Supported types are `cc-name`, `cc-number`,
+`cc-exp-month`, `cc-exp-year`, `cc-exp` and `cc-csc`. Combined expiry requires
+`--format MM/YY` or `MM/YYYY`; expiry year requires `--format YY` or `YYYY`.
+Month/year selects are supported when the value matches an unambiguous option.
+Main frames and same-origin iframes are supported. Cross-origin payment frames,
+shadow DOM, unannotated fields and native applications are refused in protocol 1.
+
+The success receipt contains only the field type and transport, never a card
+value. It confirms the element accepted the value at dispatch; it does not
+prove merchant acceptance or authorize a purchase. The intended page receives
+the card values. A malicious page, compromised browser or process with the same
+OS-user privileges remains outside this boundary. Do not read filled card values
+back through browser tools or capture unmasked fields in screenshots.
+
 ### Unlock notifications (0.11.0)
 
 Agents can subscribe to a one-shot unlock webhook and end their turn. In T3,

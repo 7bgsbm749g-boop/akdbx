@@ -1,9 +1,15 @@
 ---
 name: akdbx
-description: Use the local KeePass broker to find and fill saved logins and TOTP authenticator codes, save passwords or passwordless identities, or merge and conditionally admit encrypted KDBX databases without returning secrets to the agent. Use for authorized login and related verification, account save, vault merge, or private Tailscale unlock.
+description: Use the local KeePass broker to save and fill logins, payment cards and TOTP codes without returning secrets to the agent, or merge encrypted KDBX databases. Use for authorized login, card autofill, account save, vault merge, or private Tailscale unlock.
 ---
 
 # KeePass login and autofill
+
+For an authorized payment-card save or fill, read [card workflows](references/cards.md).
+Card delivery uses a verified DOM element and has no keyboard fallback. Never
+use login/password fills, clipboard operations or generic typing for card values.
+Card filling does not authorize submitting a purchase. The login workflow below
+does not apply to card entries.
 
 Use this skill for the user's authorized login task. The broker exposes login metadata and sends credentials to a verified, pinned X11 application window. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
 

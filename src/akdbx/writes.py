@@ -303,6 +303,9 @@ class WriteManager:
                 entry = self.broker._resolve(request.get('handle'))
             except ValueError:
                 raise WriteError('unknown or expired handle; search again') from None
+            from .cards import is_card
+            if is_card(entry):
+                raise WriteError('card record requires card save')
             if not is_totp and passwordless_identity(entry):
                 raise WriteError('passwordless record has no separate password; use its sign-in method')
         if not self.available():

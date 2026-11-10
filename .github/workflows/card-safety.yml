@@ -1,0 +1,38 @@
+name: Card safety
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  card-safety:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install browser test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb openssl
+          command -v google-chrome
+          python -m pip install -e '.[test]'
+      - name: Test card persistence, authorization and real browser delivery
+        run: >-
+          python -m pytest tests/test_cards.py tests/test_card_target.py
+          tests/test_card_chromium.py tests/test_broker.py tests/test_cli.py
+          tests/test_writes.py tests/test_web_unlock.py tests/test_totp.py
+          tests/test_sso.py tests/test_email_code.py tests/test_notifications.py
+          -q --junitxml=${{ runner.temp }}/card-safety.xml
+          --basetemp=${{ runner.temp }}/akdbx-tests
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: card-safety-results
+          path: ${{ runner.temp }}/card-safety.xml
