@@ -64,7 +64,9 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
 
         def command(*args, expected_exit=0):
             if args[0] == 'fill':
-                args = (*args, '--target', ('synthetic-locked-pin' if broker.locked else target_request(broker)['target']))
+                mode = args[args.index('--mode') + 1] if '--mode' in args else 'login'
+                pin = 'synthetic-locked-pin' if broker.locked else target_request(broker, mode)['target']
+                args = (*args, '--target', pin)
             assert cli.main([*prefix, *args]) == expected_exit
             captured = capsys.readouterr()
             assert not captured.err
@@ -95,7 +97,7 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
             search = command("search", "example")
             assert typer.events == []  # Unlock/search must not trigger a fill.
             handle = search["entries"][0]["handle"]
-            assert command("fill", handle, "--mode", "login") == {"ok": True, "filled": "login", "target_delivery": "x11-send-event-v1"}
+            assert command("fill", handle, "--mode", "login") == {"ok": True, "filled": "login", "target_delivery": "chromium-password-dom-v1"}
             expected = [("type", Entry.username), ("key", "tab"), ("type", SECRET)]
             assert typer.events == expected
             assert command("fill", handle, expected_exit=1)["error"] == "unknown or expired handle; search again"
@@ -372,3 +374,60 @@ def test_rebrand_fallback_does_not_bypass_symlink_checks(monkeypatch, tmp_path, 
         captured = capsys.readouterr()
         assert not captured.out
         assert "symlink" in captured.err.lower()
+
+
+@pytest.mark.parametrize('capabilities', [
+    {}, {'password_fill_protocol': True, 'password_fill_delivery': 'chromium-password-dom-v1'},
+    {'password_fill_protocol': 1, 'password_fill_delivery': 'x11-send-event-v1'},
+])
+def test_password_commands_do_not_downgrade_to_window_only_broker(monkeypatch, capsys, capabilities):
+    calls = []
+    def request(path, payload, **kwargs):
+        calls.append(payload)
+        return dict(ok=True, **capabilities)
+    monkeypatch.setattr(cli, 'request', request)
+    assert cli.main(['fill', 'synthetic', '--mode', 'password', '--target', 'synthetic']) == 1
+    assert calls == [{'action': 'ping'}]
+    assert 'not sent' in capsys.readouterr().out
+
+
+def test_password_pin_cli_passes_only_explicit_dom_metadata(monkeypatch, capsys):
+    calls = []
+    def request(path, payload, **kwargs):
+        calls.append(payload)
+        if payload['action'] == 'ping':
+            return dict(ok=True, password_fill_protocol=1, password_fill_delivery='chromium-password-dom-v1')
+        return dict(ok=True, target='a' * 64, expires_in=30, target_delivery='chromium-password-dom-v1')
+    monkeypatch.setattr(cli, 'request', request)
+    assert cli.main(['pin-password-target', '--page-id', 'page', '--frame-id', 'frame',
+                     '--top-url', 'https://example.test/login', '--selector', '#password']) == 0
+    assert calls == [dict(action='ping'), dict(action='pin-password-target', password_protocol=1,
+                    page_id='page', frame_id='frame', top_url='https://example.test/login',
+                    selector='#password', mode='password')]
+    assert json.loads(capsys.readouterr().out)['target_delivery'] == 'chromium-password-dom-v1'
+
+
+@pytest.mark.parametrize('options, error', [
+    (['--mode', 'login'], '--mode login requires --username-selector'),
+    (['--mode', 'login', '--username-selector', ''], '--mode login requires --username-selector'),
+    (['--username-selector', '#username'], '--username-selector is only valid with --mode login'),
+    (['--mode', 'username', '--username-selector', '#username'], '--username-selector is only valid with --mode login'),
+])
+def test_password_pin_selector_errors_are_local(monkeypatch, capsys, options, error):
+    def forbidden(*args, **kwargs):
+        pytest.fail('invalid selector combination reached broker RPC')
+    monkeypatch.setattr(cli, 'request', forbidden)
+    assert cli.main(['pin-password-target', '--page-id', 'page', '--frame-id', 'frame',
+                     '--top-url', 'https://example.test/login', '--selector', '#password', *options]) == 2
+    assert capsys.readouterr() == ('', error + '\n')
+
+
+@pytest.mark.parametrize('command, options, field', [
+    ('fill-generated', ['--target-url', 'https://example.test/reset', '--target', 'synthetic-pin'], 'handle'),
+    ('commit-password', ['--site-accepted'], 'write_handle'),
+    ('write-status', [], 'write_handle'),
+    ('cancel-write', [], 'write_handle'),
+])
+def test_generated_handles_starting_with_hyphen_use_positional_separator(command, options, field):
+    args = cli.parser().parse_args([command, *options, '--', '-synthetic-opaque-handle'])
+    assert getattr(args, field) == '-synthetic-opaque-handle'

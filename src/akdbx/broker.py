@@ -24,6 +24,7 @@ from .persistence import SaveError
 from .versions import active_entries
 from .totp import (MIN_VALIDITY, TotpError, capabilities as totp_capabilities,
                    configured as totp_configured, read_configuration, code_at, https_origin)
+from .browser_password import BrowserPasswords, PasswordPin, DELIVERY as PASSWORD_DELIVERY
 from . import __version__
 from .notifications import UnlockNotifications, capabilities as notification_capabilities
 from .protocol import ProtocolError, receive_message, send_message
@@ -86,10 +87,12 @@ class Broker:
         wall_clock: Callable[[], float] = time.time,
         card_browser_profile: Path | None = None,
         notification_state_path=None,
+        password_browser_profile=None,
     ) -> None:
         self.vault = vault
         self.typer = typer
         self.targets = TargetPins(typer, clock)
+        self.passwords = BrowserPasswords(password_browser_profile, clock=clock)
         self.handle_ttl = handle_ttl
         self.clock = clock
         self.wall_clock = wall_clock
@@ -203,16 +206,22 @@ class Broker:
         *,
         delivery_ready: Callable[[], bool] | None = None,
     ) -> dict:
+        """Handle capabilities and authorized vault, target, and write actions."""
         internal_dispatch = delivery_ready is None
         if delivery_ready is None:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), "generated_entry_protocol": 1, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if self.locked:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
             return {"ok": False, "error": "save outcome uncertain; restart and unlock"}
+        if action == 'pin-password-target':
+            try:
+                return self.passwords.pin(request)
+            except Exception:
+                return target_failure()
         if action == 'pin-target':
             try:
                 return self.targets.pin(request)
@@ -308,9 +317,19 @@ class Broker:
                 entries.append(candidate)
             return {"ok": True, "entries": entries}
         if action in {'fill', 'fill-totp'}:
+            target = None
             try:
                 entry = self._resolve(request.get("handle"))
-                target = self.targets.consume(request)
+                token = request.get('target')
+                if isinstance(token, str):
+                    try:
+                        target = self.passwords.consume(token)
+                    except TargetError:
+                        target = self.targets.consume(request)
+                else:
+                    target = self.targets.consume(request)
+                if isinstance(target, PasswordPin) and (type(request.get('target_protocol')) is not int or request['target_protocol'] != 1):
+                    raise TargetError()
                 allowed = {'action', 'handle', 'start_deadline', 'target', 'target_protocol'}
                 allowed.add('target_url' if action == 'fill-totp' else 'mode')
                 if set(request) - allowed:
@@ -328,8 +347,12 @@ class Broker:
                 ):
                     raise ValueError("autofill not started: invalid deadline")
             except TargetError:
+                if isinstance(target, PasswordPin):
+                    target.close()
                 return target_failure()
             except ValueError as exc:
+                if isinstance(target, PasswordPin):
+                    target.close()
                 return {"ok": False, "error": str(exc)}
             # Once credentials are accessed, backend errors must never reach RPC
             # responses: exception messages can contain the text being typed.
@@ -349,6 +372,11 @@ class Broker:
                         return {'ok': False, 'error': 'card record requires card fill; no keys sent'}
                     if mode not in {'username', 'totp'} and passwordless_identity(entry):
                         return {'ok': False, 'error': 'passwordless record has no separate password; no keys sent'}
+
+                    # A keyboard backend cannot authorize browser password delivery.
+                    # Refuse before reading the password, irrespective of its methods.
+                    if mode in {"login", "password"} and not isinstance(target, PasswordPin):
+                        raise DeliveryError(False)
 
                     # Materialize and validate every value needed by this mode
                     # before emitting any event. Entry access and validation
@@ -387,13 +415,20 @@ class Broker:
 
                     steps = [username, None, password] if mode == 'login' else [username if mode == 'username' else password]
                     ready = lambda: self.clock() < start_deadline and delivery_ready() and code_valid()
-                    if mode == 'totp':
+                    if isinstance(target, PasswordPin):
+                        if mode == 'totp':
+                            raise DeliveryError(False)
+                        self.passwords.deliver(target, mode, username if mode != 'password' else '',
+                                               password if mode != 'username' else '', entry.url, ready, start_deadline)
+                    elif mode == 'totp':
                         self.typer.deliver(target, steps, ready, guard=code_valid)
                         if not code_valid():
                             return target_failure(True)
-                    else:
+                    elif mode == "username":
                         self.typer.deliver(target, steps, ready)
-                    return {"ok": True, "filled": mode, "target_delivery": DELIVERY}
+                    else:
+                        raise DeliveryError(False)
+                    return {"ok": True, "filled": mode, "target_delivery": PASSWORD_DELIVERY if isinstance(target, PasswordPin) else DELIVERY}
                 finally:
                     self._keyboard_lock.release()
             except DeliveryError as exc:
@@ -402,6 +437,12 @@ class Broker:
                 return {'ok': False, 'error': 'autofill not started: ' + str(exc)}
             except Exception:
                 return {"ok": False, "error": "autofill failed"}
+            finally:
+                if isinstance(target, PasswordPin):
+                    try:
+                        target.close()
+                    except Exception:
+                        pass
         return {"ok": False, "error": "unknown action"}
 
 

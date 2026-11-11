@@ -17,3 +17,9 @@ def no_terminal_input(monkeypatch):
     monkeypatch.setattr(sys, "stdin", UnreadableStdin())
     monkeypatch.setattr("builtins.input", reject_input)
     monkeypatch.setattr("getpass.getpass", reject_input)
+
+
+@pytest.fixture
+def tmp_path(tmp_path_factory):
+    # Evidence roots can be long. Keep AF_UNIX test sockets below sun_path.
+    return tmp_path_factory.mktemp('t')

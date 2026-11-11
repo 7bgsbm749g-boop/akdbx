@@ -12,7 +12,7 @@ from akdbx.broker import Broker
 from akdbx.target import DeliveryError, failure
 from akdbx.totp import (Configuration, TotpError, code_at, configured,
                         parse_setup, read_configuration)
-from test_broker import Entry, RecordingTyper, Vault, running_broker, target_request
+from test_broker import Entry, RecordingTyper, Vault, running_broker, x11_target_request as target_request
 from test_web_unlock import call
 from test_writes import MASTER, OLD, begin, deployed, private_post, reopened, template
 

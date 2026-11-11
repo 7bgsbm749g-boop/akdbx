@@ -16,6 +16,7 @@ from . import __version__
 from .broker import Broker, FILL_START_TIMEOUT, serve
 from .protocol import ProtocolError, receive_message, send_message
 from .target import X11Typer, DELIVERY
+from .browser_password import DELIVERY as PASSWORD_DELIVERY
 from .runtime import anchored_socket_path, open_private_runtime_directory
 from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
@@ -196,6 +197,7 @@ def _read_webhook_url(path: Path) -> str:
 
 
 def parser() -> argparse.ArgumentParser:
+    """Build command parsers for broker, vault, and target operations."""
     result = argparse.ArgumentParser(prog="akdbx", description="Secret-withholding KeePass autofill broker")
     result.add_argument("--version", action="version", version=__version__)
     result.add_argument("--socket", type=Path, default=default_socket())
@@ -214,6 +216,8 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument('--card-browser-profile', type=Path, default=os.environ.get('AKDBX_CARD_BROWSER_PROFILE'),
                        help='existing private Chrome user-data directory with local CDP enabled; no browser is launched')
     start.add_argument("--keyfile", type=Path)
+    start.add_argument("--password-browser-profile", type=Path, default=os.environ.get("AKDBX_PASSWORD_BROWSER_PROFILE"),
+                       help="operator-selected private Chrome user data directory with remote debugging enabled")
     start.add_argument("--yes-on-fill", action="store_true", help="deprecated no-op: fills no longer require terminal approval")
     start.add_argument("--web-unlock", action="store_true", help="compatibility flag: private web unlock is always enabled")
     start.add_argument("--unlock-socket", type=Path, help=argparse.SUPPRESS)
@@ -227,6 +231,13 @@ def parser() -> argparse.ArgumentParser:
     pin = commands.add_parser('pin-target', help='pin an independently verified local foreground PID/window and current input-focus window for 30 seconds')
     pin.add_argument('--pid', type=int, required=True)
     pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID, decimal or 0x hex')
+    password_pin = commands.add_parser('pin-password-target', help='pin an exact HTTPS main-frame password field; no keyboard fallback')
+    for flag in ('page-id', 'frame-id', 'top-url', 'selector'):
+        password_pin.add_argument('--' + flag, required=True)
+    password_pin.add_argument('--mode', choices=('password', 'username', 'login'), default='password')
+    password_pin.add_argument('--username-selector', help='required in login mode; no Tab traversal')
+    password_pin.add_argument('--password-purpose', choices=('current-password', 'new-password'),
+                              help='explicitly verified purpose for password-only fields with absent or on autocomplete')
     for name in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password', 'setup-totp'):
         help_text = {
             'create-sso-entry': 'save a Google/GitHub SSO identity (no password form)',
@@ -291,6 +302,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one CLI command and return its process exit status."""
     args = parser().parse_args(argv)
     if args.command == "serve":
         database = args.database.expanduser()
@@ -298,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.yes_on_fill:
             print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
         broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
+                        password_browser_profile=args.password_browser_profile,
                         notification_state_path=args.notification_state or args.socket.with_name(args.socket.name + '.unlock-notifications.json'))
         unlock_name = ("agentic-kdbx-unlock.sock"
                        if args.socket.name == "agentic-kdbx.sock"
@@ -313,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             print("\nBroker locked.", file=sys.stderr)
         finally:
+            broker.passwords.close()
             unlock_server.shutdown()
             unlock_server.server_close()
         return 0
@@ -322,6 +336,22 @@ def main(argv: list[str] | None = None) -> int:
     payload = {"action": "ping" if args.command == "status" else args.command}
     if args.command in {'unlock-subscription-status', 'unsubscribe-unlock'}:
         payload['subscription_id'] = args.subscription_id
+    elif args.command == 'pin-password-target':
+        if args.mode == 'login' and not args.username_selector:
+            print('--mode login requires --username-selector', file=sys.stderr)
+            return 2
+        if args.mode != 'login' and args.username_selector is not None:
+            print('--username-selector is only valid with --mode login', file=sys.stderr)
+            return 2
+        if args.password_purpose is not None and args.mode != 'password':
+            print('--password-purpose requires --mode password', file=sys.stderr)
+            return 2
+        payload.update(password_protocol=1, page_id=args.page_id, frame_id=args.frame_id, top_url=args.top_url,
+                       selector=args.selector, mode=args.mode)
+        if args.username_selector is not None:
+            payload['username_selector'] = args.username_selector
+        if args.password_purpose is not None:
+            payload['password_purpose'] = args.password_purpose
     elif args.command == 'pin-target':
         payload.update(pid=args.pid, window=args.window, target_protocol=1)
     elif args.command == "search":
@@ -401,10 +431,20 @@ def main(argv: list[str] | None = None) -> int:
                     or capabilities.get('generated_entry_protocol') != 1):
                 print(json.dumps({'ok': False, 'error': 'broker lacks generated entry protocol 1; generation not sent'}))
                 return 1
-        if args.command in {'pin-target', 'fill', 'fill-generated', 'fill-totp'}:
+        if args.command in {'pin-password-target', 'pin-target', 'fill', 'fill-generated', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
-            if (capabilities.get('ok') is not True or capabilities.get('target_fill_required') is not True
+            if args.command in {'pin-password-target', 'fill-generated'} or args.command == 'fill' and args.mode != 'username':
+                if (capabilities.get('ok') is not True or type(capabilities.get('password_fill_protocol')) is not int
+                        or capabilities.get('password_fill_protocol') != 1
+                        or capabilities.get('password_fill_delivery') != PASSWORD_DELIVERY):
+                    print(json.dumps({'ok': False, 'error': 'broker lacks DOM password delivery; target request not sent'}))
+                    return 1
+            if args.command == 'pin-password-target' and args.password_purpose is not None:
+                if type(capabilities.get('password_purpose_protocol')) is not int or capabilities['password_purpose_protocol'] != 1:
+                    print(json.dumps({'ok': False, 'error': 'broker lacks explicit password purpose protocol 1; target request not sent'}))
+                    return 1
+            if args.command != 'pin-password-target' and (capabilities.get('ok') is not True or capabilities.get('target_fill_required') is not True
                     or type(capabilities.get('target_fill_protocol')) is not int
                     or capabilities.get('target_fill_protocol') != 1
                     or capabilities.get('target_fill_delivery') != DELIVERY):
@@ -498,6 +538,14 @@ def main(argv: list[str] | None = None) -> int:
                 or not response['write_handle'] or urlsplit(response.get('private_url', '')).path != '/totp'):
             print('TOTP setup outcome unconfirmed: receipt rejected; inspect status before any retry', file=sys.stderr)
             return 2
+    if args.command == 'pin-password-target' and response.get('ok'):
+        token = response.get('target')
+        if (set(response) != {'ok', 'target', 'expires_in', 'target_delivery'} or not isinstance(token, str)
+                or len(token) != 64 or any(c not in '0123456789abcdef' for c in token)
+                or type(response.get('expires_in')) is not int or response['expires_in'] != 30
+                or response.get('target_delivery') != PASSWORD_DELIVERY):
+            print('password pin outcome unconfirmed: receipt rejected', file=sys.stderr)
+            return 2
     if args.command in {'pin-target', 'fill', 'fill-generated', 'fill-totp'} and response.get('ok'):
         invalid_pin = args.command == 'pin-target' and (
             not isinstance(response.get('target'), str) or len(response['target']) != 64
@@ -507,7 +555,10 @@ def main(argv: list[str] | None = None) -> int:
             or type(response.get('expires_in')) is not int or response['expires_in'] != 30)
         invalid_fill = args.command in {'fill', 'fill-generated', 'fill-totp'} and (
             response.get('filled') != (args.mode if args.command == 'fill' else 'totp' if args.command == 'fill-totp' else 'password'))
-        if response.get('target_delivery') != DELIVERY or invalid_pin or invalid_fill:
+        expected_delivery = PASSWORD_DELIVERY if args.command == 'fill-generated' or args.command == 'fill' and args.mode != 'username' else DELIVERY
+        if args.command == 'fill' and args.mode == 'username' and response.get('target_delivery') == PASSWORD_DELIVERY:
+            expected_delivery = PASSWORD_DELIVERY
+        if response.get('target_delivery') != expected_delivery or invalid_pin or invalid_fill:
             print('target operation outcome unconfirmed: receipt rejected; do not retry automatically', file=sys.stderr)
             return 2
     if args.command in {'merge', 'admit'} and response.get('error') == 'vault locked':

@@ -1,7 +1,13 @@
+Password and confirmation fills now require fresh DOM password pins from
+`pin-password-target`, with `chromium-password-dom-v1` receipts. X11 pins refuse
+passwords. Read [password field delivery](target-fill.md) for operator setup,
+explicit selectors, supported controls, and race checks before this workflow.
+
 # Create passwords and passwordless identity records
 
-Password writes require CLI and broker version **0.2.0 or newer**. The current
-release is **0.9.1**. All fills require [target protocol 1](target-fill.md).
+Password workflows in this guide require CLI and broker version **0.12.0 or newer**
+and the DOM delivery capabilities below. The current release is **0.12.0**.
+All password fills require [DOM password protocol 1](target-fill.md).
 Native email-code creation requires **0.9.1** and its separate passwordless
 protocol below. Passwordless SSO creation requires CLI and broker **0.8.1 or
 newer** plus the exact capabilities below. Locate the absolute CLI path in
@@ -12,8 +18,12 @@ are placeholders, never actual handles or links for a note.
 
 ## Check activation and select an existing entry
 
-Run `akdbx --version` and `akdbx status`. For this release require `version: "0.9.1"`,
+Run `akdbx --version` and `akdbx status`. Require version **0.12.0 or newer**,
 `locked: false`, `writes_available: true`, and `recovery_required: false`.
+Before password fills, also require integer `password_fill_protocol: 1`,
+`password_fill_delivery: "chromium-password-dom-v1"`, and
+`password_browser_configured: true` from the running broker. Version alone does
+not establish these capabilities.
 An old running broker may omit these fields even though the fresh CLI has new
 commands. Never try a real reset with an incompatible broker. Updating the
 editable installation or skill does not activate the running Python process.
@@ -71,22 +81,35 @@ The generated secret has a five-minute authorization; broker expiry cleanup
 discards it even when no further request arrives. Generation does not change KeePass or type anything.
 
 Verify the reset site, correct account, form and focused password field on the
-**same desktop as the broker**. Keep focus stable. Pass the independently
-observed URL origin or sanitized URL, never a URL merely copied from entry
-metadata. Omit reset tokens, verification codes and other private query values
-from command arguments:
+**same desktop as the broker**. Keep focus stable. For `fill-generated
+--target-url`, pass the independently observed origin or a secret-free URL,
+never a URL merely copied from entry metadata. Omit reset tokens, verification
+codes and other private values from command arguments.
+
+The preceding `pin-password-target --top-url` has a different contract: it needs
+the exact observed page URL, not its sanitized form. There is no private URL
+input in this CLI. If that exact URL contains a private token, the pin/fill
+workflow is unsupported; a sanitized `--target-url` does not remove this limit.
+Use a secret-free password page reached through the site's normal authorized
+flow if available, or report the limitation and refuse the fill. Never change
+the page URL or weaken the exact match to work around it. See the
+[exact-URL privacy limitation](target-fill.md#exact-url-privacy-limitation).
+
+For a supported secret-free page:
 
 ```bash
-# Focus and verify the password field, then obtain a fresh pin-target token.
-akdbx fill-generated PASSWORD_FILL_HANDLE --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN
+# Focus and verify the password field, then obtain a fresh pin-password-target token.
+akdbx fill-generated --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN -- PASSWORD_FILL_HANDLE
 ```
 
 Then focus the confirmation field, verify again, and run:
 
 ```bash
 # Focus and verify the confirmation field, then obtain another fresh pin.
-akdbx fill-generated CONFIRMATION_FILL_HANDLE --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN
+akdbx fill-generated --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN -- CONFIRMATION_FILL_HANDLE
 ```
+
+Keep opaque fill and write handles after `--`, as shown, because a handle can begin with `-`.
 
 Each reference permits only one attempt and types only the staged password,
 without Tab or submit. Both fills use the same secret. Generated resets require
@@ -94,9 +117,7 @@ both the entry URL and asserted target URL to use ASCII HTTPS spelling, with
 punycode for internationalized hosts. Unicode URLs, whitespace and backslashes
 are refused. The broker checks that
 the supplied target origin (scheme, host, effective port) matches the selected
-entry. This is an additional guard: target-pinned X11 delivery cannot independently
-inspect the browser or guarantee focus. The originating agent must verify the
-real form through its GUI workflow. Cross-origin reset sites are refused; do
+entry. The broker also checks the actual pinned HTTPS document origin and retained password input. The originating agent must verify the selected account and real form through its browser workflow. Cross-origin reset sites are refused; do
 not falsify the URL to bypass this check. Never inspect password field values,
 read the clipboard, capture an unmasked secret, or evaluate page input values.
 
@@ -105,8 +126,8 @@ Submit the reset through the authorized website workflow. Verify non-secret
 A fill receipt alone is insufficient. Only then run:
 
 ```bash
-akdbx commit-password WRITE_HANDLE --site-accepted
-akdbx write-status WRITE_HANDLE
+akdbx commit-password --site-accepted -- WRITE_HANDLE
+akdbx write-status -- WRITE_HANDLE
 ```
 
 Commit requires both successful fill dispatches plus explicit site acceptance.
@@ -288,8 +309,8 @@ The isolated repair thread must not perform live activation or real vault work.
 ## Cancellation and recovery
 
 ```bash
-akdbx cancel-write WRITE_HANDLE
-akdbx write-status WRITE_HANDLE
+akdbx cancel-write -- WRITE_HANDLE
+akdbx write-status -- WRITE_HANDLE
 ```
 
 - **Site rejection or cancellation before acceptance:** cancel the staged write.

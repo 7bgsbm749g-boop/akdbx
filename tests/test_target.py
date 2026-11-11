@@ -14,7 +14,7 @@ from akdbx import cli
 from akdbx.broker import Broker
 from akdbx.target import (DELIVERY, DeliveryError, Identity, TargetError,
                                  X11Session, X11Typer, capabilities, failure)
-from test_broker import Entry, RecordingTyper, Vault, target_request
+from test_broker import Entry, RecordingTyper, Vault, x11_target_request as target_request
 
 
 def selected(broker):
@@ -46,11 +46,11 @@ def test_expired_pin_and_reused_pin_never_type():
     broker = Broker(Vault([Entry()]), RecordingTyper(), clock=lambda: now[0])
     pin = target_request(broker)
     now[0] = 30
-    assert broker.dispatch(dict(action='fill', handle=selected(broker), **pin)) == failure()
+    assert broker.dispatch(dict(action='fill', mode='username', handle=selected(broker), **pin)) == failure()
     pin = target_request(broker)
-    assert broker.dispatch(dict(action='fill', handle=selected(broker), **pin))['ok']
+    assert broker.dispatch(dict(action='fill', mode='username', handle=selected(broker), **pin))['ok']
     broker.typer.events.clear()
-    assert broker.dispatch(dict(action='fill', handle=selected(broker), **pin)) == failure()
+    assert broker.dispatch(dict(action='fill', mode='username', handle=selected(broker), **pin)) == failure()
     assert broker.typer.events == []
 
 
@@ -173,7 +173,7 @@ def test_compatible_cli_passes_target_protocol_and_rejects_missing_delivery_rece
     calls = []
     def request(path, payload, **kwargs):
         calls.append(payload)
-        return dict(ok=True, **capabilities()) if payload['action'] == 'ping' else dict(ok=True, filled='password')
+        return dict(ok=True, **capabilities(), password_fill_protocol=1, password_fill_delivery='chromium-password-dom-v1') if payload['action'] == 'ping' else dict(ok=True, filled='password')
     monkeypatch.setattr(cli, 'request', request)
     assert cli.main(['fill', 'synthetic-handle', '--mode', 'password', '--target', 'synthetic-pin']) == 2
     assert calls[1]['target'] == 'synthetic-pin' and calls[1]['target_protocol'] == 1
