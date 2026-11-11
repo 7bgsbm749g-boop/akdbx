@@ -355,19 +355,25 @@ class FakeCDP:
     def close(self): self.closed += 1
     def call(self, method, params=None, session=None):
         self.calls.append(method)
-        if method == self.fail_at:
+        writing = method == 'Runtime.callFunctionOn' and 'this.fill(value' in params.get('functionDeclaration','')
+        if method == self.fail_at and (method != 'Runtime.callFunctionOn' or writing):
             raise RuntimeError('4111111111111111 MUST NOT escape')
         if method == 'Page.getFrameTree':
             return dict(frameTree=dict(frame=dict(id='frame', url='https://example.test/pay')))
+        if method == 'DOM.getNodeForLocation':
+            return dict(backendNodeId=1,frameId='frame')
+        if method == 'Runtime.callFunctionOn' and not writing:
+            return dict(result=dict(value=dict(x=10,y=10,rootX=10,rootY=10,width=100,height=100)))
         return dict(result=dict(value=self.result))
 
 
 def target(cdp, clock):
-    return dict(cdp=cdp, session='session', obj='object', field='cc-number', created=clock(), expires=clock()+30,
+    return dict(cdp=cdp, session='session', obj='object',input_node=1, field='cc-number', created=clock(), expires=clock()+30,
                 request=dict(top_url='https://example.test/pay', frame_url='https://example.test/pay', frame_id='frame'))
 
 
-@pytest.mark.parametrize('stage,expected', [('Page.getFrameTree', 'not-started'), ('Runtime.callFunctionOn', 'uncertain')])
+@pytest.mark.parametrize('stage,expected', [('Page.getFrameTree', 'not-started'),
+    ('DOM.getNodeForLocation','not-started'), ('Runtime.callFunctionOn', 'uncertain')])
 def test_transport_exceptions_never_disclose_and_do_not_claim_safe_retry(stage, expected):
     cards = BrowserCards(clock=lambda: 0)
     cdp = FakeCDP(fail_at=stage)
@@ -382,6 +388,29 @@ def test_transport_only_accepts_explicit_fill_receipt(result, delivery):
     cards = BrowserCards(clock=lambda: 0)
     cdp = FakeCDP(result)
     assert cards.fill(target(cdp, lambda: 0), '4111111111111111', 'cc-number', lambda: True)['delivery'] == delivery
+
+
+@pytest.mark.parametrize('covered_after_write',[False,True])
+def test_native_hit_mismatch_blocks_dispatch_or_reports_uncertainty(covered_after_write):
+    class Covered(FakeCDP):
+        def __init__(self):
+            super().__init__()
+            self.hits=0
+            self.writes=0
+        def call(self,method,params=None,session=None):
+            if method=='DOM.getNodeForLocation':
+                self.hits+=1
+                if not covered_after_write or self.hits>1:
+                    return dict(backendNodeId=99,frameId='frame')
+            if method=='Runtime.callFunctionOn' and 'this.fill(value' in params.get('functionDeclaration',''):
+                self.writes+=1
+            return super().call(method,params,session)
+    cards=BrowserCards(clock=lambda:0)
+    cdp=Covered()
+    result=cards.fill(target(cdp,lambda:0),'4111111111111111','cc-number',lambda:True)
+    assert result==failure(covered_after_write)
+    assert cdp.writes==int(covered_after_write) and cdp.closed
+    assert '4111111111111111' not in str(result)
 
 
 @pytest.mark.parametrize('changes', [dict(card_protocol=True), dict(field='password'), dict(start_deadline=float('nan')),

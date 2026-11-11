@@ -235,6 +235,8 @@ def test_real_transport_fills_only_pinned_field_and_reports_no_values(chrome, fi
     "number.parentElement.style.opacity='0'",
     "number.parentElement.style.filter='opacity(0)'",
     "number.parentElement.style.maskImage='linear-gradient(transparent,transparent)'",
+    "number.style.setProperty('-webkit-mask-box-image-source','linear-gradient(transparent,transparent)')",
+    "document.body.insertAdjacentHTML('beforeend','<div style=\"position:fixed;inset:0;background:white;z-index:2147483647;pointer-events:none\"></div>')",
     "number.remove()", "number.setAttribute('maxlength','2')",
     "number.insertAdjacentHTML('afterend','<form id=newForm></form>');newForm.append(number)",
     "number.insertAdjacentHTML('afterend','<input id=number autocomplete=cc-number>')",
@@ -382,6 +384,42 @@ def test_same_origin_frame_is_bound_and_hidden_parent_is_refused(chrome):
     assert evaluate(chrome, "document.querySelector('iframe').contentDocument.getElementById('number').value") == ''
 
 
+def test_pointer_transparent_cover_blocks_fresh_main_frame_pin(chrome):
+    evaluate(chrome,"document.body.insertAdjacentHTML('beforeend','<div style=\"position:fixed;inset:0;background:white;z-index:2147483647;pointer-events:none\"></div>')")
+    assert not pin(chrome)['ok']
+    assert evaluate(chrome,"number.value === ''")
+
+
+def test_native_input_hit_handles_scrolled_main_document(chrome):
+    evaluate(chrome,"document.body.style.minHeight='3000px';number.style.marginTop='450px';scrollTo(0,400)")
+    assert evaluate(chrome,'scrollY')==400
+    target=pin(chrome);assert target['ok']
+    assert fill(chrome,target)['ok']
+    assert evaluate(chrome,'number.value')==CARD['number']
+
+
+def test_native_input_hit_handles_scrolled_same_origin_frame_and_top(chrome):
+    framed=chrome.url.replace('/payment','/framed')
+    chrome.cdp.call('Page.navigate',dict(url=framed),chrome.session)
+    deadline=time.monotonic()+3
+    frame=None
+    while time.monotonic()<deadline:
+        tree=chrome.cdp.call('Page.getFrameTree',session=chrome.session)['frameTree']
+        if tree.get('childFrames') and tree['childFrames'][0]['frame']['url'].endswith('/frame'):
+            frame=tree['childFrames'][0]['frame']
+            if evaluate(chrome,"!!document.querySelector('iframe')?.contentDocument?.getElementById('number')"):break
+        time.sleep(.01)
+    assert frame
+    evaluate(chrome,"""document.body.style.minHeight='3000px';
+      const f=document.querySelector('iframe');f.style.height='250px';f.style.marginTop='400px';
+      f.contentDocument.getElementById('number').style.marginTop='300px';
+      f.contentWindow.scrollTo(0,250);scrollTo(0,300);""")
+    assert evaluate(chrome,'scrollY')==300
+    target=pin(chrome,top_url=framed,frame_url=frame['url'],frame_id=frame['id'])
+    assert target['ok'] and fill(chrome,target)['ok']
+    assert evaluate(chrome,"document.querySelector('iframe').contentDocument.getElementById('number').value")==CARD['number']
+
+
 def test_cross_origin_frame_is_explicitly_unsupported(chrome):
     assert not pin(chrome, frame_url=chrome.url.replace('127.0.0.1', 'localhost'))['ok']
 
@@ -424,7 +462,7 @@ def test_last_check_to_write_race_still_refuses_changed_destination(chrome, muta
     transport = chrome.broker.card_targets.pins[target['target']]['cdp']
     original = transport.call
     def race(method, params=None, session=None):
-        if method == 'Runtime.callFunctionOn':
+        if method == 'Runtime.callFunctionOn' and 'this.fill(value' in params.get('functionDeclaration',''):
             evaluate(chrome, mutation)
         return original(method, params, session)
     monkeypatch.setattr(transport, 'call', race)
@@ -452,7 +490,7 @@ def test_blocked_renderer_cannot_apply_a_delayed_fill_after_authorization_expiry
     transport = chrome.broker.card_targets.pins[target['target']]['cdp']
     original = transport.call
     def block_before_write(method, params=None, session=None):
-        if method == 'Runtime.callFunctionOn':
+        if method == 'Runtime.callFunctionOn' and 'this.fill(value' in params.get('functionDeclaration',''):
             # Bound the synthetic renderer stall to five seconds, beyond the
             # four-second authorization. Only this test browser is affected.
             evaluate(chrome, 'setTimeout(()=>{const end=performance.now()+5000;while(performance.now()<end){}},20)')

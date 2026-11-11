@@ -119,8 +119,10 @@ through Chrome DevTools Protocol. It never sends keyboard events, Tab or submit,
 and cannot direct input into the browser address bar through keyboard focus.
 The broker checks the exact HTTPS page/frame URLs, unique selector, matching
 `autocomplete` card token, element identity, editability, visibility and
-occlusion. It repeats input checks in the same JavaScript task as the native value
-setter. A focus change cannot select a different destination. Replacement,
+occlusion. It repeats input identity and local DOM checks in the same JavaScript
+task as the native value setter. Separate browser-native hit tests include
+pointer-transparent covers before and after dispatch and require the exact
+retained input/iframe owner at the point. A focus change cannot select a different destination. Replacement,
 navigation, expiry or unsupported markup refuses the fill. An interrupted
 delivery is reported as uncertain and must not be retried automatically.
 
@@ -170,7 +172,7 @@ Only production HTTPS `checkoutshopper-live.adyen.com` secured-field iframes
 attested by Chrome to the selected merchant tab are accepted. All intermediate
 merchant frames must be same-origin with the top page. The broker retains
 the input and iframe-owner elements in isolated worlds, refuses unsupported CSS
-transforms, motion paths, filters and masks, and checks exact URLs,
+transforms, motion paths, filters and masks (including Chromium mask-box images), and checks exact URLs,
 frame ancestry, identity and occlusion before and after dispatch, and preserves
 the single-use pin, deadline and receipt-only contract. Child input checks run
 in the write task; cross-process ancestor checks run separately. A changed or

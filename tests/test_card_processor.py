@@ -81,6 +81,7 @@ def test_merchant_ancestor_changes_refuse_before_secret_dispatch(chrome,mutation
     'rotate:180deg','translate:1px','scale:-1','perspective:100px',
     'filter:opacity(0)','backdrop-filter:blur(1px)',
     'mask-image:linear-gradient(transparent,transparent)','clip-path:inset(100%)',
+    '-webkit-mask-box-image-source:linear-gradient(transparent,transparent)',
     'clip:rect(0px,0px,0px,0px)','offset-path:path("M 0 0 L 100 100")'])
 def test_unsupported_owner_and_ancestor_effects_never_receive_card(chrome,owner,effect):
     request,session=prepare(chrome)
@@ -91,6 +92,60 @@ def test_unsupported_owner_and_ancestor_effects_never_receive_card(chrome,owner,
     assert child(chrome,session,"number.value === ''")
     assert not pin(chrome,**request)['ok']
     assert not chrome.broker.card_targets.pins and chrome.broker.typer.events==[]
+
+
+@pytest.mark.parametrize('location',['top','merchant','processor'])
+def test_pointer_transparent_opaque_covers_refuse_pin_and_fill(chrome,location):
+    request,session=prepare(chrome)
+    target=pin(chrome,**request);assert target['ok']
+    expression='''(()=>{
+      const d=DOCUMENT, cover=d.createElement('div');
+      cover.style.cssText='position:fixed;inset:0;background:magenta;z-index:2147483647;pointer-events:none';
+      d.body.append(cover);
+    })()'''
+    if location=='processor':
+        child(chrome,session,expression.replace('DOCUMENT','document'))
+    else:
+        evaluate(chrome,expression.replace('DOCUMENT','merchant.contentDocument' if location=='merchant' else 'document'))
+    result=fill(chrome,target)
+    assert not result['ok'] and result['delivery']=='not-started'
+    assert child(chrome,session,"number.value === ''")
+    assert not pin(chrome,**request)['ok']
+    assert not chrome.broker.card_targets.pins and chrome.broker.typer.events==[]
+
+
+@pytest.mark.parametrize('location',['number','document.body'])
+def test_mask_box_on_processor_input_or_ancestor_never_receives_card(chrome,location):
+    request,session=prepare(chrome)
+    target=pin(chrome,**request);assert target['ok']
+    child(chrome,session,location+".style.setProperty('-webkit-mask-box-image-source','linear-gradient(transparent,transparent)')")
+    result=fill(chrome,target)
+    assert not result['ok'] and result['delivery']=='not-started'
+    assert child(chrome,session,"number.value === ''")
+    assert not pin(chrome,**request)['ok']
+
+
+def test_pointer_transparent_cover_after_write_is_uncertain(chrome):
+    request,session=prepare(chrome)
+    child(chrome,session,"""number.addEventListener('input',()=>{
+      const cover=document.createElement('div');
+      cover.style.cssText='position:fixed;inset:0;background:magenta;z-index:2147483647;pointer-events:none';
+      document.body.append(cover);
+    })""")
+    target=pin(chrome,**request);assert target['ok']
+    result=fill(chrome,target)
+    assert not result['ok'] and result['delivery']=='uncertain'
+    assert child(chrome,session,'number.value')==CARD['number']
+    assert CARD['number'] not in str(result) and not fill(chrome,target)['ok']
+
+
+def test_native_owner_hit_uses_scrolled_top_document_coordinates(chrome):
+    request,session=prepare(chrome)
+    evaluate(chrome,"document.body.style.minHeight='3000px';merchant.style.marginTop='400px';scrollTo(0,300)")
+    assert evaluate(chrome,'scrollY')==300
+    target=pin(chrome,**request);assert target['ok']
+    assert fill(chrome,target)==dict(ok=True,filled='cc-number',card_delivery=DELIVERY)
+    assert child(chrome,session,'number.value')==CARD['number']
 
 
 def test_covered_rotated_processor_cannot_fool_axis_aligned_hit_test(chrome):

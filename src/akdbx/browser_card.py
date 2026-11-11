@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from .cards import FILL_FIELDS
 from . import card_processor
+from . import card_hit_test
 from .runtime import open_private_runtime_directory
 
 DELIVERY = 'cdp-card-element-v1'
@@ -192,9 +193,10 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
     if (!exposed(el, doc)) return false;
     // A processor cannot inspect its cross-origin parents. The retained
     // merchant-side guard and browser frame ancestry supply that check.
-    if (processor) return true;
     const rect = el.getBoundingClientRect();
     let x = rect.left + rect.width/2, y = rect.top + rect.height/2;
+    const point={x,y,width:innerWidth,height:innerHeight,rootX:x+scrollX,rootY:y+scrollY};
+    if (processor) return point;
     let view = window;
     for (let i = 0; view !== view.top; ++i) {
       const frame = view.frameElement, owner = view.parent.document;
@@ -205,15 +207,11 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
       if (owner.elementFromPoint(x,y) !== frame) return false;
       view = view.parent;
     }
-    return true;
+    return {...point,rootX:x+window.top.scrollX,rootY:y+window.top.scrollY};
   }
   if (!valid()) return null;
   const pinnedAt = performance.now();
-  return {geometry() {
-    if (!valid()) return null;
-    const r=el.getBoundingClientRect();
-    return {x:r.left+r.width/2,y:r.top+r.height/2,width:innerWidth,height:innerHeight};
-  },fill(value, maxAgeMs) {
+  return {node() { return el; },geometry() { return valid() || null; },fill(value, maxAgeMs) {
     if (performance.now() - pinnedAt >= Math.min(30000, maxAgeMs) || !valid()) return 'refused';
     if (input && el.maxLength >= 0 && value.length > el.maxLength) return 'refused';
     let actual = value;
@@ -330,9 +328,14 @@ class BrowserCards:
             obj = result.get('result', {})
             if 'exceptionDetails' in result or obj.get('subtype') == 'null' or not obj.get('objectId'):
                 raise CardTargetError()
+            input_node = card_hit_test.retained_node(cdp,session,obj['objectId'])
+            if card_hit_test.input_point(cdp,session,obj['objectId'],input_node,request['frame_id']) is None:
+                raise CardTargetError()
+            if self.clock() >= created + TTL:
+                raise CardTargetError()
             token = secrets.token_hex(32)
             self.pins[token] = dict(cdp=cdp, session=session, obj=obj['objectId'], field=request['field'],
-                                    request=dict(request), created=created, expires=created + TTL)
+                                    request=dict(request), created=created, expires=created + TTL,input_node=input_node)
             return dict(ok=True, target=token, expires_in=TTL, field=request['field'], card_delivery=DELIVERY)
         except BaseException:
             cdp.close()
@@ -355,6 +358,9 @@ class BrowserCards:
                     return failure()
             else:
                 self._frames(pin['cdp'], pin['session'], pin['request'])
+                if card_hit_test.input_point(pin['cdp'],pin['session'],pin['obj'],
+                        pin['input_node'],pin['request']['frame_id']) is None:
+                    return failure()
             if not ready() or pin['expires'] <= self.clock():
                 return failure()
             deadline = self.clock() + 4 if deadline is None else deadline
@@ -370,6 +376,9 @@ class BrowserCards:
                 return failure(True)
             if pin.get('processor') and not card_processor.check(
                     pin['cdp'], pin, pin['request'], secure_url, CardTargetError):
+                return failure(True)
+            if not pin.get('processor') and card_hit_test.input_point(pin['cdp'],pin['session'],pin['obj'],
+                    pin['input_node'],pin['request']['frame_id']) is None:
                 return failure(True)
             return dict(ok=True, filled=field, card_delivery=DELIVERY)
         except Exception:
