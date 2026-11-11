@@ -13,6 +13,7 @@ import time
 from urllib.parse import urlsplit
 
 from .cards import FILL_FIELDS
+from . import card_processor
 from .runtime import open_private_runtime_directory
 
 DELIVERY = 'cdp-card-element-v1'
@@ -148,7 +149,7 @@ class CDP:
 # All DOM methods run in a private isolated world. Page JavaScript cannot replace
 # its builtins or the native value setter. Capture the actual element, not a
 # selector to resolve later. Every check and the write run in one JS task.
-PIN_SCRIPT = r'''(selector, field, frameURL, topURL) => {
+PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
   const matches = document.querySelectorAll(selector);
   if (matches.length !== 1) return null;
   const el = matches[0], doc = document, form = el.form, parent = el.parentElement;
@@ -182,7 +183,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL) => {
     return owner.elementFromPoint(rect.left + rect.width/2, rect.top + rect.height/2) === node;
   }
   function valid() {
-    if (!isSecureContext || location.href !== frameURL || window.top.location.href !== topURL ||
+    if (!isSecureContext || location.href !== frameURL || (!processor && window.top.location.href !== topURL) ||
         !el.isConnected || el.ownerDocument !== doc || el.getRootNode() !== doc ||
         el.form !== form || el.parentElement !== parent ||
         el.type !== type || el.getAttribute('autocomplete') !== autocomplete ||
@@ -190,6 +191,9 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL) => {
         document.querySelectorAll(selector).length !== 1 || document.querySelector(selector) !== el ||
         document.visibilityState !== 'visible') return false;
     if (!exposed(el, doc)) return false;
+    // A processor cannot inspect its cross-origin parents. The retained
+    // merchant-side guard and browser frame ancestry supply that check.
+    if (processor) return true;
     const rect = el.getBoundingClientRect();
     let x = rect.left + rect.width/2, y = rect.top + rect.height/2;
     let view = window;
@@ -205,7 +209,11 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL) => {
     return true;
   }
   if (!valid()) return null;
-  return {fill(value, maxAgeMs) {
+  return {geometry() {
+    if (!valid()) return null;
+    const r=el.getBoundingClientRect();
+    return {x:r.left+r.width/2,y:r.top+r.height/2,width:innerWidth,height:innerHeight};
+  },fill(value, maxAgeMs) {
     if (performance.now() - pinnedAt >= Math.min(30000, maxAgeMs) || !valid()) return 'refused';
     if (input && el.maxLength >= 0 && value.length > el.maxLength) return 'refused';
     let actual = value;
@@ -219,7 +227,12 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL) => {
     setter.call(el, actual);
     el.dispatchEvent(new Event('input', {bubbles:true}));
     el.dispatchEvent(new Event('change', {bubbles:true}));
-    return getter.call(el) === actual ? 'filled' : 'uncertain';
+    const accepted=getter.call(el);
+    // Secured fields may format grouping spaces during their input handler.
+    // Accept only an equivalent number/expiry; other edits remain uncertain.
+    const equivalent=processor && ['cc-number','cc-exp'].includes(field) &&
+      accepted.replace(/\s/g,'') === actual.replace(/\s/g,'');
+    return accepted === actual || equivalent ? 'filled' : 'uncertain';
   }};
 }'''
 
@@ -231,7 +244,9 @@ class BrowserCards:
 
     def capabilities(self):
         return dict(cards_supported=True, card_protocol=1, card_delivery=DELIVERY,
-                    card_browser_configured=self.profile is not None)
+                    card_browser_configured=self.profile is not None,
+                    card_processor_frames_protocol=card_processor.PROTOCOL,
+                    card_processors=list(card_processor.PROCESSORS))
 
     def prune(self):
         for token, pin in list(self.pins.items()):
@@ -253,7 +268,7 @@ class BrowserCards:
     @staticmethod
     def _frames(cdp, session, request):
         tree = cdp.call('Page.getFrameTree', session=session)['frameTree']
-        if tree['frame']['url'] != request['top_url']:
+        if card_processor.document_url(tree['frame']) != request['top_url']:
             raise CardTargetError()
         pending = [tree]
         for _ in range(256):
@@ -262,7 +277,7 @@ class BrowserCards:
             node = pending.pop()
             frame = node['frame']
             if frame['id'] == request['frame_id']:
-                if frame['url'] != request['frame_url']:
+                if card_processor.document_url(frame) != request['frame_url']:
                     raise CardTargetError()
                 return
             pending.extend(node.get('childFrames', []))
@@ -270,12 +285,25 @@ class BrowserCards:
 
     def pin(self, request):
         allowed = {'action', 'card_protocol', 'page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field'}
+        processor = request.get('processor')
+        if 'processor' in request:
+            allowed |= {'processor', 'processor_protocol'}
         self.prune()
         if (set(request) != allowed or type(request.get('card_protocol')) is not int or request['card_protocol'] != 1
                 or self.profile is None or len(self.pins) >= MAX_PINS or request.get('field') not in FILL_FIELDS
                 or any(not isinstance(request.get(k), str) or not 0 < len(request[k]) <= 4096
                        for k in ('page_id', 'frame_id', 'selector'))
-                or secure_url(request['top_url']) != secure_url(request['frame_url'])):
+                or (processor is None and secure_url(request['top_url']) != secure_url(request['frame_url']))):
+            raise CardTargetError()
+        if processor is not None:
+            secure_url(request['top_url'])
+            secure_url(request['frame_url'])
+            if (processor != 'adyen' or type(request.get('processor_protocol')) is not int
+                    or request['processor_protocol'] != card_processor.PROTOCOL
+                    or not card_processor.adyen_url(request['frame_url'])
+                    or secure_url(request['top_url']) == secure_url(request['frame_url'])):
+                raise CardTargetError()
+        elif 'processor' in request:
             raise CardTargetError()
         cdp = self.connector(self.profile)
         try:
@@ -283,6 +311,12 @@ class BrowserCards:
             if info['type'] != 'page' or info['url'] != request['top_url']:
                 raise CardTargetError()
             session = cdp.call('Target.attachToTarget', dict(targetId=request['page_id'], flatten=True))['sessionId']
+            if processor is not None:
+                state = card_processor.pin(cdp, session, request, PIN_SCRIPT, secure_url, CardTargetError)
+                token = secrets.token_hex(32)
+                self.pins[token] = dict(cdp=cdp, **state, field=request['field'], processor=processor,
+                    request=dict(request), created=self.clock(), expires=self.clock() + TTL)
+                return dict(ok=True, target=token, expires_in=TTL, field=request['field'], card_delivery=DELIVERY)
             self._frames(cdp, session, request)
             context = cdp.call('Page.createIsolatedWorld', dict(frameId=request['frame_id'],
                                worldName='akdbx-card-v1'), session)['executionContextId']
@@ -313,7 +347,11 @@ class BrowserCards:
         try:
             if field != pin['field'] or not ready() or pin['expires'] <= self.clock():
                 return failure()
-            self._frames(pin['cdp'], pin['session'], pin['request'])
+            if pin.get('processor'):
+                if not card_processor.check(pin['cdp'], pin, pin['request'], secure_url, CardTargetError):
+                    return failure()
+            else:
+                self._frames(pin['cdp'], pin['session'], pin['request'])
             if not ready() or pin['expires'] <= self.clock():
                 return failure()
             deadline = self.clock() + 4 if deadline is None else deadline
@@ -326,6 +364,9 @@ class BrowserCards:
             if state == 'refused':
                 return failure()
             if state != 'filled':
+                return failure(True)
+            if pin.get('processor') and not card_processor.check(
+                    pin['cdp'], pin, pin['request'], secure_url, CardTargetError):
                 return failure(True)
             return dict(ok=True, filled=field, card_delivery=DELIVERY)
         except Exception:

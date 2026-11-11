@@ -53,7 +53,7 @@ jobs:
           AKDBX_TEST_FOREIGN_UID: '1'
         run: >-
           python -m pytest tests/test_cards.py tests/test_card_target.py
-          tests/test_card_chromium.py tests/test_broker.py tests/test_cli.py
+          tests/test_card_chromium.py tests/test_card_processor.py tests/test_broker.py tests/test_cli.py
           tests/test_writes.py tests/test_web_unlock.py tests/test_totp.py
           tests/test_sso.py tests/test_email_code.py tests/test_notifications.py
           tests/test_notifications_persistent.py

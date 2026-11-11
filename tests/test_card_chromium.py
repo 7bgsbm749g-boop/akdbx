@@ -98,6 +98,12 @@ def chrome(tmp_path, request):
             body = HTML
             if self.path == '/framed':
                 body = b'<!doctype html><iframe src="/frame" style="width:600px;height:600px"></iframe>'
+            elif self.path == '/processor':
+                body = b'<!doctype html><iframe id="merchant" src="/merchant-frame" style="width:650px;height:500px"></iframe>'
+            elif self.path == '/merchant-frame':
+                body = b'''<!doctype html><iframe id="processor"
+                  src="https://checkoutshopper-live.adyen.com/checkoutshopper/securedfields/live_test/6.3.0/securedFields.html"
+                  style="width:550px;height:300px"></iframe>'''
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
             self.send_header('Content-Length', str(len(body)))
@@ -126,6 +132,8 @@ def chrome(tmp_path, request):
         '--no-default-browser-check', '--disable-background-networking', '--disable-component-update',
         '--disable-sync', '--disable-extensions', '--disable-gpu', '--disable-dev-shm-usage',
         '--renderer-process-limit=2', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
+        '--site-per-process', '--no-proxy-server',
+        '--host-resolver-rules=MAP checkoutshopper-live.adyen.com 127.0.0.1:' + str(server.server_port),
         '--ignore-certificate-errors', '--window-size=1000,1000', '--ozone-platform=x11', url],
         env=environment, stdout=subprocess.DEVNULL, stderr=log, start_new_session=True, umask=0o077)
     cdp = None
@@ -374,6 +382,19 @@ def test_same_origin_frame_is_bound_and_hidden_parent_is_refused(chrome):
 
 def test_cross_origin_frame_is_explicitly_unsupported(chrome):
     assert not pin(chrome, frame_url=chrome.url.replace('127.0.0.1', 'localhost'))['ok']
+
+
+def test_hash_routed_main_frame_pin_keeps_exact_navigation_checks(chrome):
+    evaluate(chrome,"location.hash='/checkout'")
+    url=chrome.url+'#/checkout'
+    target=pin(chrome,top_url=url,frame_url=url)
+    assert target['ok'] and fill(chrome,target)['ok']
+    evaluate(chrome,"number.value=''")
+    target=pin(chrome,top_url=url,frame_url=url)
+    assert target['ok']
+    evaluate(chrome,"location.hash='/changed'")
+    assert not fill(chrome,target)['ok']
+    assert evaluate(chrome,"number.value === ''")
 
 
 def test_cli_rpc_real_browser_fill_is_receipt_only(chrome, tmp_path, capsys):

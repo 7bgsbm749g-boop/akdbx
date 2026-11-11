@@ -1,4 +1,4 @@
-# Card storage and field-bound delivery (0.13.0)
+# Card storage and field-bound delivery (0.14.0)
 
 Require CLI/broker card protocol 1: `cards_supported: true`, integer
 `card_protocol: 1`, `card_delivery: "cdp-card-element-v1"`. `card_browser_configured`
@@ -37,9 +37,10 @@ with the user instead of trying multiple cards. Login search excludes cards.
 Verify the actual merchant, full HTTPS checkout URL, intended frame URL and
 payment field through the browser's DOM tools. Get page/frame IDs and a unique
 CSS selector without reading any filled values. Do not infer these identifiers
-from an X11 window ID. Bring the actual field into view. Only main frames and
-same-origin iframes with matching `autocomplete="cc-…"` fields are supported;
-cross-origin processor frames, shadow DOM and unannotated fields must be refused.
+from an X11 window ID. Bring the actual field into view. Main frames and
+same-origin iframes with matching `autocomplete="cc-…"` fields use the default
+route. For Adyen secured-field iframes, use the explicit processor route below.
+Other cross-origin frames, shadow DOM and unannotated fields must be refused.
 
 ```bash
 akdbx pin-card-target --page-id PAGE_ID --frame-id FRAME_ID \
@@ -48,6 +49,37 @@ akdbx pin-card-target --page-id PAGE_ID --frame-id FRAME_ID \
   --selector '#card-number' --field cc-number
 akdbx fill-card SEARCH_HANDLE --target CARD_TARGET --field cc-number
 ```
+
+### Adyen processor frames
+
+Require broker 0.14.0 or newer, integer `card_processor_frames_protocol: 1`
+and `adyen` in `card_processors`. A new CLI refuses an older broker before
+sending the processor pin. Base card protocol and receipts remain compatible.
+Use `--processor adyen` only after independently verifying the merchant's
+checkout and the actual processor field. The broker accepts only HTTPS
+`checkoutshopper-live.adyen.com` production secured-field endpoints. It proves
+that Chrome's out-of-process iframe belongs to the selected merchant tab,
+through same-origin merchant ancestors. Missing browser ancestry metadata,
+other processor origins, transformed/hidden/covered frames and ambiguous
+ownership refuse. This option does not allow arbitrary cross-origin frames.
+Keep the full browser URL, including any `#/…` route; the broker joins CDP's
+separate URL-fragment metadata and verifies the complete URL.
+
+```bash
+akdbx pin-card-target --page-id MERCHANT_PAGE_ID --frame-id ADYEN_FRAME_ID \
+  --top-url EXACT_MERCHANT_HTTPS_URL --frame-url EXACT_ADYEN_HTTPS_URL \
+  --selector 'input[autocomplete="cc-number"]' --field cc-number --processor adyen
+akdbx fill-card SEARCH_HANDLE --target CARD_TARGET --field cc-number
+```
+
+The broker retains the actual input and the merchant's iframe owner in separate
+isolated worlds. It checks the processor input in the write's JavaScript task,
+and checks the exact merchant URLs, browser ancestry, retained iframe identity
+and hit testing before and after dispatch. Cross-process parent and child
+checks are separate operations; an interrupted or changed post-dispatch guard
+returns an uncertain receipt, never proof that nothing was written. Do not
+retry it automatically. No submit, keyboard, clipboard or agent-visible card
+value is used. Use a fresh search handle and pin for every field.
 
 Allowed field types: `cc-name`, `cc-number`, `cc-exp-month`, `cc-exp-year`,
 `cc-exp`, `cc-csc`. For `cc-exp`, explicitly select `--format MM/YY` or

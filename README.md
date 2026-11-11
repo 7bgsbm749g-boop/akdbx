@@ -94,7 +94,7 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
-### Payment cards (0.13.0)
+### Payment cards (0.14.0)
 
 Cards use ordinary KDBX entries with custom fields; no format extension is
 needed. `akdbx.card=v1` identifies a card. Cardholder name, number, expiry month,
@@ -119,7 +119,7 @@ through Chrome DevTools Protocol. It never sends keyboard events, Tab or submit,
 and cannot direct input into the browser address bar through keyboard focus.
 The broker checks the exact HTTPS page/frame URLs, unique selector, matching
 `autocomplete` card token, element identity, editability, visibility and
-occlusion. It repeats the checks in the same JavaScript task as the native value
+occlusion. It repeats input checks in the same JavaScript task as the native value
 setter. A focus change cannot select a different destination. Replacement,
 navigation, expiry or unsupported markup refuses the fill. An interrupted
 delivery is reported as uncertain and must not be retried automatically.
@@ -163,8 +163,20 @@ search handle and pin for each field. Supported types are `cc-name`, `cc-number`
 `cc-exp-month`, `cc-exp-year`, `cc-exp` and `cc-csc`. Combined expiry requires
 `--format MM/YY` or `MM/YYYY`; expiry year requires `--format YY` or `YYYY`.
 Month/year selects are supported when the value matches an unambiguous option.
-Main frames and same-origin iframes are supported. Cross-origin payment frames,
-shadow DOM, unannotated fields and native applications are refused in protocol 1.
+Main frames and same-origin iframes are supported. Version 0.14.0 adds the
+explicit `--processor adyen` pin option, gated by integer
+`card_processor_frames_protocol: 1` and `adyen` in `card_processors`.
+Only production HTTPS `checkoutshopper-live.adyen.com` secured-field iframes
+attested by Chrome to the selected merchant tab are accepted. All intermediate
+merchant frames must be same-origin with the top page. The broker retains
+the input and iframe-owner elements in isolated worlds, checks exact URLs,
+frame ancestry, identity and occlusion before and after dispatch, and preserves
+the single-use pin, deadline and receipt-only contract. Child input checks run
+in the write task; cross-process ancestor checks run separately. A changed or
+lost post-dispatch guard is uncertain and must not be retried automatically.
+Other cross-origin frames, shadow DOM, unannotated fields and native
+applications remain unsupported. See the skill's card guide for the exact
+processor pin command and independent merchant verification requirements.
 
 The success receipt contains only the field type and transport, never a card
 value. It confirms the element accepted the value at dispatch; it does not

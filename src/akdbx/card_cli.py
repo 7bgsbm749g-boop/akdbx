@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from .browser_card import DELIVERY, failure
 from .cards import FILL_FIELDS
 from .card_notifications import RESULTS
+from . import card_processor
 
 NOTIFICATIONS = {'subscribe-card-save', 'card-save-subscription-status', 'unsubscribe-card-save'}
 COMMANDS = {'create-card', 'update-card', 'search-cards', 'pin-card-target', 'fill-card'} | NOTIFICATIONS
@@ -41,6 +42,8 @@ def add_parsers(commands):
     for name in ('page-id', 'frame-id', 'top-url', 'frame-url', 'selector'):
         p.add_argument('--' + name, required=True)
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
+    p.add_argument('--processor', choices=card_processor.PROCESSORS,
+                   help='explicitly pin an attested Adyen secured-field iframe in this merchant tab')
     p = commands.add_parser('fill-card', help='fill only the pinned card field; never types keys or submits')
     p.add_argument('handle')
     p.add_argument('--target', required=True)
@@ -123,6 +126,14 @@ def run(args, request):
             payload['query'] = args.query
         elif args.command == 'pin-card-target':
             payload.update({k: getattr(args, k) for k in ('page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field')})
+            if args.processor is not None:
+                if (type(caps.get('card_processor_frames_protocol')) is not int
+                        or caps['card_processor_frames_protocol'] != card_processor.PROTOCOL
+                        or not isinstance(caps.get('card_processors'), list)
+                        or args.processor not in caps.get('card_processors', [])):
+                    print(json.dumps(dict(ok=False, error='broker lacks requested card processor frame protocol; pin request not sent')))
+                    return 1
+                payload.update(processor=args.processor, processor_protocol=card_processor.PROTOCOL)
         else:
             payload.update(handle=args.handle, target=args.target, field=args.field, start_deadline=time.monotonic() + 4)
             if args.format is not None:
