@@ -216,12 +216,15 @@ class CardManager:
             self.broker.vault = vault._akdbx_store.commit(vault, mutate, verify_candidate=verify)
             op.state = 'saved'
             self.broker.writes.invalidate_revision(op)
+            self.broker.writes.notify_card(op)
             return dict(ok=True, state='saved')
         except (WriteError, SaveError):
             op.state = 'failed'
             op.error = 'card save failed; vault update not confirmed'
+            self.broker.writes.notify_card(op)
             return dict(ok=False, error=op.error)
         except Exception:
             op.state = 'failed'
             op.error = 'card save failed; vault update not confirmed'
+            self.broker.writes.notify_card(op)
             return dict(ok=False, error=op.error)

@@ -27,6 +27,7 @@ from .totp import (MIN_VALIDITY, TotpError, capabilities as totp_capabilities,
 from .browser_password import BrowserPasswords, PasswordPin, DELIVERY as PASSWORD_DELIVERY
 from . import __version__
 from .notifications import UnlockNotifications, capabilities as notification_capabilities
+from .card_notifications import CardSaveNotifications, capabilities as card_notification_capabilities
 from .protocol import ProtocolError, receive_message, send_message
 from .cards import CardManager, is_card
 from .browser_card import BrowserCards
@@ -107,6 +108,16 @@ class Broker:
         self.merges = MergeManager(self)
         self.unlock_url: str | None = None
         self.unlock_notifications = UnlockNotifications(state_path=notification_state_path)
+        self.card_save_notifications = CardSaveNotifications(
+            expire_handler=self._expire_card_save, clock=clock,
+            state_path=(Path(str(notification_state_path) + '.card-saves')
+                        if notification_state_path is not None else None))
+
+    def _expire_card_save(self, handle):
+        with self._vault_lock:
+            op = self.writes.operations.get(handle)
+            state = op.state if op is not None and op.state != 'pending' else 'expired'
+            self.card_save_notifications.publish_save(handle, state)
 
     @property
     def locked(self) -> bool:
@@ -171,6 +182,17 @@ class Broker:
 
     def dispatch(self, request: dict, *, delivery_ready=None) -> dict:
         action = request.get("action")
+        if action == 'subscribe-card-save':
+            with self._vault_lock:
+                handle = request.get('write_handle')
+                op = self.writes.get(handle)
+                if op is None or op.kind != 'card':
+                    return dict(ok=False, error='unknown or expired card write')
+                state = self.writes.status(handle)['state']
+                return self.card_save_notifications.subscribe_save(request, state=state, expires=op.expires)
+        if action in {'card-save-subscription-status', 'unsubscribe-card-save'}:
+            return self.card_save_notifications.status(
+                request.get('subscription_id'), cancel=action == 'unsubscribe-card-save')
         if action == "subscribe-unlock":
             # Share unlock's lock so registration cannot miss a racing unlock.
             with self._state_lock:
@@ -212,7 +234,7 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if self.locked:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
@@ -511,6 +533,7 @@ def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
         socket_identity = (socket_info.st_dev, socket_info.st_ino)
         server.settimeout(0.2 if stop else None)
         admission = threading.BoundedSemaphore(MAX_RPC_WORKERS)
+        broker.card_save_notifications.resume()
 
         def run_connection(connection: socket.socket) -> None:
             try:
@@ -550,6 +573,7 @@ def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
             if server is not None:
                 server.close()
             broker.unlock_notifications.close()
+            broker.card_save_notifications.close()
             with workers_lock:
                 pending = list(workers)
             join_deadline = time.monotonic() + CONNECTION_TIMEOUT + 0.2

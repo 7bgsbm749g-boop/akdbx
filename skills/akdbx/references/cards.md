@@ -22,6 +22,12 @@ them. `write-status WRITE_HANDLE` confirms `state: saved`. `cancel-write`
 cancels a pending page. A save page expires after five minutes; a vault revision
 change invalidates it. A save receipt confirms vault persistence only.
 
+Before giving the user a private save page, register the event-driven
+[card-save notification](card-save-notifications.md) so the authorized task can
+resume without asking the user to report completion. Require the advertised
+card-save notification protocol; installing a CLI alone does not update a running
+broker. Do not create a polling schedule or give the subscription a waiting TTL.
+
 ## Choose a card and destination
 
 `search-cards QUERY` returns title, group, brand, last four digits and a

@@ -82,6 +82,8 @@ class Subscription:
     event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     state: str = "subscribed"
     attempts: int = 0
+    subject: str | None = None
+    result: str | None = None
     url_hash: bytes = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -89,6 +91,7 @@ class Subscription:
 
 
 class UnlockNotifications:
+    _label = 'unlock'
     def __init__(self, *, sender=post_event, clock=time.monotonic, state_path=None):
         self._sender = sender
         self._clock = clock
@@ -133,6 +136,7 @@ class UnlockNotifications:
                     raise ValueError('invalid notification state')
                 item = Subscription(validate_webhook_url(row['url']), None, event_id=event,
                                     attempts=attempts)
+                self._restore_item(row, item)
                 if attempts < MAX_ATTEMPTS:
                     self._items[key] = item
         except (KeyError, TypeError, json.JSONDecodeError):
@@ -140,12 +144,22 @@ class UnlockNotifications:
         finally:
             os.close(directory)
 
+    def _restore_item(self, row, item):
+        """Unlock waits become ready only after this broker accepts the vault."""
+
+    def _row(self, key, item):
+        return {'id': key, 'url': item.url, 'event_id': item.event_id, 'attempts': item.attempts}
+
+    def _payload(self, key, item):
+        return {"event": "akdbx.unlocked", "locked": False,
+                "subscription_id": key, "event_id": item.event_id}
+
     def _persist(self):
         if self._state_path is None or self._stop.is_set():
             return
         # Only waiting subscriptions need durable storage. Never persist vault
         # contents, unlock tokens or credentials. Callback URLs stay mode 0600.
-        rows = [{'id': key, 'url': item.url, 'event_id': item.event_id, 'attempts': item.attempts}
+        rows = [self._row(key, item)
                 for key, item in self._items.items() if item.expires_at is None and
                 item.state in {'subscribed', 'pending', 'sending'}]
         directory = self._directory()
@@ -177,7 +191,7 @@ class UnlockNotifications:
         return {"ok": True, "subscription_id": key, "state": item.state,
                 "attempts": item.attempts}
 
-    def subscribe(self, request: dict, *, unlocked: bool) -> dict:
+    def subscribe(self, request: dict, *, unlocked: bool, subject=None, result=None) -> dict:
         if type(request.get("notification_protocol")) is not int or request["notification_protocol"] != 1:
             return {"ok": False, "error": "unlock notification protocol 1 required"}
         try:
@@ -190,22 +204,23 @@ class UnlockNotifications:
         with self._lock:
             self._prune()
             if self._stop.is_set():
-                return {"ok": False, "error": "unlock notifications stopped"}
+                return {"ok": False, "error": f"{self._label} notifications stopped"}
             # A retry after a lost receipt reuses the existing subscription.
             url_hash = hashlib.sha256(url.encode()).digest()
             for key, item in self._items.items():
-                if item.url_hash == url_hash:
+                if item.url_hash == url_hash and item.subject == subject:
                     remaining = None if item.expires_at is None else max(0, int(item.expires_at - self._clock()))
                     return {**self._receipt(key, item), "expires_in": remaining}
             if len(self._items) >= MAX_SUBSCRIPTIONS:
                 terminal = next((key for key, item in self._items.items()
                                  if item.state in {'delivered', 'failed', 'cancelled', 'expired'}), None)
                 if terminal is None:
-                    return {"ok": False, "error": "unlock subscription limit reached"}
+                    return {"ok": False, "error": f"{self._label} subscription limit reached"}
                 del self._items[terminal]
             key = uuid.uuid4().hex
             item = Subscription(url, self._clock() + ttl if ttl else None,
-                                state="pending" if unlocked else "subscribed")
+                                state="pending" if unlocked else "subscribed",
+                                subject=subject, result=result)
             self._items[key] = item
             try:
                 self._persist()
@@ -215,12 +230,20 @@ class UnlockNotifications:
             self._start_worker()
             return {**self._receipt(key, item), "expires_in": ttl or None}
 
-    def publish(self) -> None:
+    def publish(self, *, subject=None, result=None) -> None:
         with self._lock:
             self._prune()
             for item in self._items.values():
-                if item.state == "subscribed":
+                if item.state == "subscribed" and item.subject == subject:
                     item.state = "pending"
+                    item.result = result
+            try:
+                self._persist()
+            except (OSError, RuntimeError, ValueError):
+                # A notification failure must never undo an accepted vault save.
+                for item in self._items.values():
+                    if item.state == 'pending':
+                        item.state, item.url = 'failed', ''
             self._start_worker()
 
     def status(self, key: object, *, cancel=False) -> dict:
@@ -228,7 +251,7 @@ class UnlockNotifications:
             self._prune()
             item = self._items.get(key) if isinstance(key, str) else None
             if item is None:
-                return {"ok": False, "error": "unknown or expired unlock subscription"}
+                return {"ok": False, "error": f"unknown or expired {self._label} subscription"}
             if cancel and item.state in {"subscribed", "pending", "sending"}:
                 item.state = "cancelled"
                 item.url = ""
@@ -273,8 +296,7 @@ class UnlockNotifications:
                         break
                     url = item.url
                 try:
-                    self._sender(url, {"event": "akdbx.unlocked", "locked": False,
-                                       "subscription_id": key, "event_id": item.event_id})
+                    self._sender(url, self._payload(key, item))
                 except Exception:
                     # Never log the callback URL, its token, or exception text.
                     if attempt + 1 < MAX_ATTEMPTS and not self._stop.wait(1 << attempt):

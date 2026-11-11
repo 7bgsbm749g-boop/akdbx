@@ -215,17 +215,25 @@ class WriteManager:
         store = getattr(self.broker.vault, '_akdbx_store', None)
         return bool(self.public_base and store and store.writable_path and not store.recovery_required)
 
+    def notify_card(self, op):
+        if op.kind == 'card' and op.state != 'pending':
+            for handle, candidate in self.operations.items():
+                if candidate is op:
+                    self.broker.card_save_notifications.publish_save(handle, op.state)
+                    break
+
     def invalidate_revision(self, current=None, *, all_pending=False):
         self.revision += 1
         for other in self.operations.values():
             if other is not current:
                 other.import_candidates = ()
                 other.import_nonce = None
-            if other is not current and other.state == 'pending' and (all_pending or other.password is not None):
+            if other is not current and other.state == 'pending' and (all_pending or other.password is not None or other.kind == 'card'):
                 other.state = 'failed'
                 other.error = 'stale write; search and start again'
                 other.password = None
                 other.fill_refs.clear()
+                self.notify_card(other)
         with self.broker._state_lock:
             self.broker._handles.clear()
 
@@ -233,6 +241,8 @@ class WriteManager:
         now = self.broker.clock()
         for handle, op in list(self.operations.items()):
             if op.expires <= now:
+                if op.kind == 'card' and op.state == 'pending':
+                    self.broker.card_save_notifications.publish_save(handle, 'expired')
                 op.password = None
                 op.import_candidates = ()
                 op.import_nonce = None
@@ -375,6 +385,7 @@ class WriteManager:
             op.fill_refs.clear()
             op.import_candidates = ()
             op.import_nonce = None
+        self.notify_card(op)
         return {'ok': True, 'state': op.state, **({'error': op.error} if op.error else {})}
 
     def submit(self, op, password, confirmation, confirmed):

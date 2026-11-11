@@ -3,18 +3,32 @@ import json
 import re
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from .browser_card import DELIVERY, failure
 from .cards import FILL_FIELDS
+from .card_notifications import RESULTS
 
-COMMANDS = {'create-card', 'update-card', 'search-cards', 'pin-card-target', 'fill-card'}
+NOTIFICATIONS = {'subscribe-card-save', 'card-save-subscription-status', 'unsubscribe-card-save'}
+COMMANDS = {'create-card', 'update-card', 'search-cards', 'pin-card-target', 'fill-card'} | NOTIFICATIONS
 ERRORS = {'vault locked', 'save outcome uncertain; restart and unlock', 'request failed',
           'card operation refused; check selection and destination', 'card operation failed',
           failure()['error'], failure(True)['error']}
+ERRORS |= {'unknown or expired card write', 'unknown or expired card-save subscription',
+           'card-save notification protocol 1 and exact write handle required',
+           'webhook must be an HTTPS URL without credentials or fragment',
+           'card-save notifications stopped', 'card-save subscription limit reached',
+           'notification could not be saved; subscription not registered'}
 
 
 def add_parsers(commands):
+    p = commands.add_parser('subscribe-card-save', help='resume through a one-shot HTTPS webhook after a private card save result')
+    p.add_argument('write_handle')
+    p.add_argument('--webhook-url-file', required=True, type=Path)
+    for name in ('card-save-subscription-status', 'unsubscribe-card-save'):
+        p = commands.add_parser(name, help='inspect/cancel a one-shot card-save subscription')
+        p.add_argument('subscription_id')
     for name in ('create-card', 'update-card'):
         p = commands.add_parser(name, help='prepare a private card save page')
         if name == 'update-card':
@@ -39,6 +53,17 @@ def valid_receipt(command, response, args):
         return (response.get('ok') is False and response.get('error') in ERRORS
                 and set(response) <= {'ok', 'error', 'unlock_url', 'delivery'}
                 and response.get('delivery', 'not-started') in {'not-started', 'uncertain'})
+    if command in NOTIFICATIONS:
+        keys = {'ok', 'subscription_id', 'state', 'attempts', 'result'}
+        if command == 'subscribe-card-save':
+            keys.add('expires_in')
+        return (set(response) == keys
+                and isinstance(response.get('subscription_id'), str)
+                and re.fullmatch('[a-f0-9]{32}', response['subscription_id'])
+                and response.get('state') in {'subscribed', 'pending', 'sending', 'delivered', 'failed', 'cancelled', 'expired'}
+                and type(response.get('attempts')) is int and 0 <= response['attempts'] <= 3
+                and (response.get('result') is None or response['result'] in RESULTS)
+                and response.get('expires_in') is None)
     if command in {'create-card', 'update-card'}:
         return (set(response) == {'ok', 'state', 'write_handle', 'private_url'} and response.get('state') == 'pending'
                 and isinstance(response.get('write_handle'), str) and re.fullmatch('[a-f0-9]{64}', response['write_handle'])
@@ -65,6 +90,25 @@ def valid_receipt(command, response, args):
 def run(args, request):
     try:
         caps = request({'action': 'ping'})
+        if args.command in NOTIFICATIONS:
+            if (caps.get('ok') is not True or caps.get('card_save_notifications_supported') is not True
+                    or type(caps.get('card_save_notifications_protocol')) is not int
+                    or caps['card_save_notifications_protocol'] != 1
+                    or caps.get('card_save_notifications_until_result') is not True):
+                print(json.dumps(dict(ok=False, error='broker lacks card-save notification protocol 1; subscription request not sent')))
+                return 1
+            payload = dict(action=args.command)
+            if args.command == 'subscribe-card-save':
+                from .cli import _read_webhook_url
+                payload.update(write_handle=args.write_handle, notification_protocol=1,
+                               webhook_url=_read_webhook_url(args.webhook_url_file))
+            else:
+                payload['subscription_id'] = args.subscription_id
+            response = request(payload)
+            if not valid_receipt(args.command, response, args):
+                raise ValueError
+            print(json.dumps(response, indent=2))
+            return 0 if response['ok'] else 1
         if (caps.get('ok') is not True or caps.get('cards_supported') is not True
                 or type(caps.get('card_protocol')) is not int or caps['card_protocol'] != 1
                 or caps.get('card_delivery') != DELIVERY):

@@ -57,6 +57,7 @@ jobs:
           tests/test_writes.py tests/test_web_unlock.py tests/test_totp.py
           tests/test_sso.py tests/test_email_code.py tests/test_notifications.py
           tests/test_notifications_persistent.py
+          tests/test_card_notifications.py
           -q --junitxml=${{ runner.temp }}/card-safety.xml
           --basetemp=${{ runner.temp }}/akdbx-tests
       - name: Require every card safety case to run

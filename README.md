@@ -173,6 +173,31 @@ the card values. A malicious page, compromised browser or process with the same
 OS-user privileges remains outside this boundary. Do not read filled card values
 back through browser tools or capture unmasked fields in screenshots.
 
+### Card-save notifications
+
+Private card forms can resume the same agent task through a one-shot HTTPS
+webhook, with the same bounded sender and private persistent storage used by
+unlock notifications. Register before sharing the form; no completion message
+or polling schedule is needed:
+
+```bash
+.venv/bin/akdbx subscribe-card-save WRITE_HANDLE --webhook-url-file /private/url-file
+.venv/bin/akdbx card-save-subscription-status SUBSCRIPTION_ID
+.venv/bin/akdbx unsubscribe-card-save SUBSCRIPTION_ID
+```
+
+Require `card_save_notifications_protocol: 1` and
+`card_save_notifications_until_result: true` from the running broker. Waits have
+no subscription TTL. The existing form deadline emits `expired`; cancellation,
+invalidation and persistence failure also emit terminal results. A validation
+typo leaves the form pending. Callbacks contain only `akdbx.card-save`, a result
+state and opaque event/subscription IDs. Card values, metadata, form tokens and
+write handles are excluded. Pending callbacks survive restart in the configured
+notification-state file plus `.card-saves`; an unfinished form reports
+`interrupted` because private form contents are never restored. See the
+[card-save notification workflow](skills/akdbx/references/card-save-notifications.md)
+for host registration, verification, duplicate handling and cleanup.
+
 ### Unlock notifications (0.11.0)
 
 Agents can subscribe to a one-shot unlock webhook and end their turn. In T3,
