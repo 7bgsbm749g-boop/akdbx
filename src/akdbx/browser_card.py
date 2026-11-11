@@ -150,6 +150,7 @@ class CDP:
 # its builtins or the native value setter. Capture the actual element, not a
 # selector to resolve later. Every check and the write run in one JS task.
 PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
+  __STYLE_GUARD__
   const matches = document.querySelectorAll(selector);
   if (matches.length !== 1) return null;
   const el = matches[0], doc = document, form = el.form, parent = el.parentElement;
@@ -166,14 +167,12 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
   const proto = input ? HTMLInputElement.prototype : HTMLSelectElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
   const getter = Object.getOwnPropertyDescriptor(proto, 'value').get;
-  const pinnedAt = performance.now();
   function shown(node, owner, forbidTransform=false) {
     let ancestor = node;
     for (let i = 0; ancestor; ++i, ancestor = ancestor.parentElement) {
       if (i >= 64) return false;
       const style = owner.defaultView.getComputedStyle(ancestor);
-      if (style.visibility !== 'visible' || style.display === 'none' || Number(style.opacity) === 0 ||
-          forbidTransform && style.transform !== 'none') return false;
+      if (!supportedStyle(style,forbidTransform)) return false;
     }
     return owner.visibilityState === 'visible' && !node.closest('[inert]');
   }
@@ -209,6 +208,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
     return true;
   }
   if (!valid()) return null;
+  const pinnedAt = performance.now();
   return {geometry() {
     if (!valid()) return null;
     const r=el.getBoundingClientRect();
@@ -234,7 +234,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
       accepted.replace(/\s/g,'') === actual.replace(/\s/g,'');
     return accepted === actual || equivalent ? 'filled' : 'uncertain';
   }};
-}'''
+}'''.replace('__STYLE_GUARD__', card_processor.STYLE_GUARD)
 
 
 class BrowserCards:
@@ -312,10 +312,12 @@ class BrowserCards:
                 raise CardTargetError()
             session = cdp.call('Target.attachToTarget', dict(targetId=request['page_id'], flatten=True))['sessionId']
             if processor is not None:
-                state = card_processor.pin(cdp, session, request, PIN_SCRIPT, secure_url, CardTargetError)
+                state = card_processor.pin(cdp, session, request, PIN_SCRIPT, secure_url, CardTargetError, self.clock)
+                if self.clock() >= state['created'] + TTL:
+                    raise CardTargetError()
                 token = secrets.token_hex(32)
                 self.pins[token] = dict(cdp=cdp, **state, field=request['field'], processor=processor,
-                    request=dict(request), created=self.clock(), expires=self.clock() + TTL)
+                    request=dict(request), expires=state['created'] + TTL)
                 return dict(ok=True, target=token, expires_in=TTL, field=request['field'], card_delivery=DELIVERY)
             self._frames(cdp, session, request)
             context = cdp.call('Page.createIsolatedWorld', dict(frameId=request['frame_id'],
@@ -324,12 +326,13 @@ class BrowserCards:
                          ('selector', 'field', 'frame_url', 'top_url')) + ')'
             result = cdp.call('Runtime.evaluate', dict(expression=expression, contextId=context,
                               silent=True, timeout=1000), session)
+            created = self.clock()
             obj = result.get('result', {})
             if 'exceptionDetails' in result or obj.get('subtype') == 'null' or not obj.get('objectId'):
                 raise CardTargetError()
             token = secrets.token_hex(32)
             self.pins[token] = dict(cdp=cdp, session=session, obj=obj['objectId'], field=request['field'],
-                                    request=dict(request), created=self.clock(), expires=self.clock() + TTL)
+                                    request=dict(request), created=created, expires=created + TTL)
             return dict(ok=True, target=token, expires_in=TTL, field=request['field'], card_delivery=DELIVERY)
         except BaseException:
             cdp.close()

@@ -60,8 +60,8 @@ checkout and the actual processor field. The broker accepts only HTTPS
 `checkoutshopper-live.adyen.com` production secured-field endpoints. It proves
 that Chrome's out-of-process iframe belongs to the selected merchant tab,
 through same-origin merchant ancestors. Missing browser ancestry metadata,
-other processor origins, transformed/hidden/covered frames and ambiguous
-ownership refuse. This option does not allow arbitrary cross-origin frames.
+other processor origins, transformed/hidden/covered frames, CSS filters/masks
+and ambiguous ownership refuse. This option does not allow arbitrary cross-origin frames.
 Keep the full browser URL, including any `#/…` route; the broker joins CDP's
 separate URL-fragment metadata and verifies the complete URL.
 
@@ -71,6 +71,11 @@ akdbx pin-card-target --page-id MERCHANT_PAGE_ID --frame-id ADYEN_FRAME_ID \
   --selector 'input[autocomplete="cc-number"]' --field cc-number --processor adyen
 akdbx fill-card SEARCH_HANDLE --target CARD_TARGET --field cc-number
 ```
+
+Pins have a maximum lifetime of 30 seconds; merchant verification uses part of
+that lifetime. The fill deadline starts with the later fill request, so slow
+verification does not consume its four-second dispatch budget. A pin that
+expires during verification is refused instead of issued. Fill promptly.
 
 The broker retains the actual input and the merchant's iframe owner in separate
 isolated worlds. It checks the processor input in the write's JavaScript task,

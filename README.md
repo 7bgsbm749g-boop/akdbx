@@ -158,7 +158,7 @@ akdbx pin-card-target --page-id PAGE_ID --frame-id FRAME_ID \
 akdbx fill-card CARD_HANDLE --target CARD_TARGET --field cc-number
 ```
 
-Pins last 30 seconds and are consumed on the first fill attempt. Use a fresh
+Pins have a maximum lifetime of 30 seconds and are consumed on the first fill attempt. Use a fresh
 search handle and pin for each field. Supported types are `cc-name`, `cc-number`,
 `cc-exp-month`, `cc-exp-year`, `cc-exp` and `cc-csc`. Combined expiry requires
 `--format MM/YY` or `MM/YYYY`; expiry year requires `--format YY` or `YYYY`.
@@ -169,13 +169,16 @@ explicit `--processor adyen` pin option, gated by integer
 Only production HTTPS `checkoutshopper-live.adyen.com` secured-field iframes
 attested by Chrome to the selected merchant tab are accepted. All intermediate
 merchant frames must be same-origin with the top page. The broker retains
-the input and iframe-owner elements in isolated worlds, checks exact URLs,
+the input and iframe-owner elements in isolated worlds, refuses unsupported CSS
+transforms, motion paths, filters and masks, and checks exact URLs,
 frame ancestry, identity and occlusion before and after dispatch, and preserves
 the single-use pin, deadline and receipt-only contract. Child input checks run
 in the write task; cross-process ancestor checks run separately. A changed or
 lost post-dispatch guard is uncertain and must not be retried automatically.
 Other cross-origin frames, shadow DOM, unannotated fields and native
-applications remain unsupported. See the skill's card guide for the exact
+applications remain unsupported. Merchant verification uses part of the pin's
+lifetime, while the four-second fill deadline starts with the fill request.
+An already expired pin is not issued. See the skill's card guide for the exact
 processor pin command and independent merchant verification requirements.
 
 The success receipt contains only the field type and transport, never a card

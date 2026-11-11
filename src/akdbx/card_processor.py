@@ -8,6 +8,21 @@ PROTOCOL = 1
 PROCESSORS = ('adyen',)
 
 
+# Shared by the merchant iframe guard and the input's isolated-world checks.
+# Rectangles and elementFromPoint cannot prove visual exposure through masks or
+# filters. Mapping child coordinates also excludes individual/3D transforms.
+STYLE_GUARD = r'''function supportedStyle(style, mapping=false) {
+  if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0 ||
+      style.getPropertyValue('content-visibility') === 'hidden') return false;
+  const visual=['filter','backdrop-filter','clip','clip-path','mask-image','-webkit-mask-image'];
+  const geometry=mapping ? ['transform','rotate','translate','scale','perspective','offset-path'] : [];
+  return [...visual,...geometry].every(k => {
+    const value=style.getPropertyValue(k).trim();
+    return value === '' || value === 'none' || k === 'clip' && value === 'auto';
+  });
+}'''
+
+
 def document_url(frame):
     """CDP Frame splits hash routes from the URL; TargetInfo does not."""
     url = frame['url']
@@ -39,6 +54,7 @@ def adyen_url(url):
 # Retain the owner element, parent, document and same-origin ancestor chain.
 # Only coordinates and booleans cross contexts; no card value enters this guard.
 GUARD = r'''function(frameURL, topURL) {
+  __STYLE_GUARD__
   const frame = this, doc = document, parent = frame.parentElement;
   if (!(frame instanceof HTMLIFrameElement) || frame.getRootNode() !== doc) return null;
   const childWindow = frame.contentWindow;
@@ -58,8 +74,7 @@ GUARD = r'''function(frameURL, topURL) {
     for (let e=node, i=0; e; e=e.parentElement, ++i) {
       if (i >= 64) return false;
       const s=owner.defaultView.getComputedStyle(e);
-      if (s.display === 'none' || s.visibility !== 'visible' || Number(s.opacity) === 0 ||
-          s.transform !== 'none' || e.hasAttribute('inert')) return false;
+      if (!supportedStyle(s,true) || e.hasAttribute('inert')) return false;
     }
     return owner.visibilityState === 'visible';
   }
@@ -90,7 +105,7 @@ GUARD = r'''function(frameURL, topURL) {
     }
     return false;
   }};
-}'''
+}'''.replace('__STYLE_GUARD__', STYLE_GUARD)
 
 
 def _object(result, error):
@@ -124,7 +139,7 @@ def route(cdp, top_session, request, secure_url, error):
     raise error()
 
 
-def pin(cdp, top_session, request, pin_script, secure_url, error):
+def pin(cdp, top_session, request, pin_script, secure_url, error, clock):
     proof = route(cdp, top_session, request, secure_url, error)
     session = cdp.call('Target.attachToTarget', {'targetId':request['frame_id'],'flatten':True})['sessionId']
     frame = cdp.call('Page.getFrameTree', session=session)['frameTree']['frame']
@@ -142,9 +157,14 @@ def pin(cdp, top_session, request, pin_script, secure_url, error):
         {'frameId':request['frame_id'],'worldName':'akdbx-card-processor-v1'},session)['executionContextId']
     expression='('+pin_script+')('+','.join(json.dumps(request[k]) for k in
         ('selector','field','frame_url','top_url'))+',true)'
-    obj = _object(cdp.call('Runtime.evaluate',{'expression':expression,'contextId':context,
-        'silent':True,'timeout':1000},session),error)
-    state={'session':session,'obj':obj,'top_session':top_session,'guard':guard,'proof':proof}
+    result = cdp.call('Runtime.evaluate',{'expression':expression,'contextId':context,
+        'silent':True,'timeout':1000},session)
+    # The browser's pin clock starts just before the reply. This upper bound
+    # maps its age conservatively and excludes later merchant verification.
+    created = clock()
+    obj = _object(result,error)
+    state={'session':session,'obj':obj,'top_session':top_session,'guard':guard,
+           'proof':proof,'created':created}
     if not check(cdp,state,request,secure_url,error):
         raise error()
     return state

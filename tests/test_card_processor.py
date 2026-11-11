@@ -75,6 +75,83 @@ def test_merchant_ancestor_changes_refuse_before_secret_dispatch(chrome,mutation
     assert CARD['number'] not in str(result)
 
 
+@pytest.mark.parametrize('owner',[
+    "merchant.contentDocument.getElementById('processor')",'merchant','document.body'])
+@pytest.mark.parametrize('effect',[
+    'rotate:180deg','translate:1px','scale:-1','perspective:100px',
+    'filter:opacity(0)','backdrop-filter:blur(1px)',
+    'mask-image:linear-gradient(transparent,transparent)','clip-path:inset(100%)',
+    'clip:rect(0px,0px,0px,0px)','offset-path:path("M 0 0 L 100 100")'])
+def test_unsupported_owner_and_ancestor_effects_never_receive_card(chrome,owner,effect):
+    request,session=prepare(chrome)
+    target=pin(chrome,**request);assert target['ok']
+    evaluate(chrome,'('+owner+').style.cssText += '+json.dumps(';'+effect))
+    result=fill(chrome,target)
+    assert not result['ok'] and result['delivery']=='not-started'
+    assert child(chrome,session,"number.value === ''")
+    assert not pin(chrome,**request)['ok']
+    assert not chrome.broker.card_targets.pins and chrome.broker.typer.events==[]
+
+
+def test_covered_rotated_processor_cannot_fool_axis_aligned_hit_test(chrome):
+    request,session=prepare(chrome)
+    target=pin(chrome,**request);assert target['ok']
+    point=child(chrome,session,"(()=>{const r=number.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,w:r.width,h:r.height};})()")
+    geometry=evaluate(chrome,'''(()=>{
+      const d=merchant.contentDocument, f=d.getElementById('processor');
+      f.style.rotate='180deg';
+      const r=f.getBoundingClientRect(), p=POINT;
+      const actual={x:r.right-(f.clientLeft+p.x)*r.width/f.offsetWidth,
+                    y:r.bottom-(f.clientTop+p.y)*r.height/f.offsetHeight};
+      const guard={x:r.left+(f.clientLeft+p.x)*r.width/f.offsetWidth,
+                   y:r.top+(f.clientTop+p.y)*r.height/f.offsetHeight};
+      const cover=d.createElement('div');
+      cover.style.cssText=`position:fixed;left:${actual.x-p.w/2-2}px;top:${actual.y-p.h/2-2}px;width:${p.w+4}px;height:${p.h+4}px;background:white;z-index:9999`;
+      d.body.append(cover);
+      return {actualCovered:d.elementFromPoint(actual.x,actual.y)===cover,
+              wrongPointHitsFrame:d.elementFromPoint(guard.x,guard.y)===f};
+    })()'''.replace('POINT',json.dumps(point)))
+    assert geometry==dict(actualCovered=True,wrongPointHitsFrame=True)
+    result=fill(chrome,target)
+    assert not result['ok'] and result['delivery']=='not-started'
+    assert child(chrome,session,"number.value === ''")
+
+
+def test_slow_verification_does_not_consume_fresh_fill_deadline(chrome,monkeypatch):
+    from akdbx import card_processor
+    request,session=prepare(chrome)
+    original=card_processor.check
+    checks=0
+    def slow_first_check(*args,**kwargs):
+        nonlocal checks
+        checks+=1
+        if checks==1:time.sleep(4.2)
+        return original(*args,**kwargs)
+    monkeypatch.setattr(card_processor,'check',slow_first_check)
+    target=pin(chrome,**request);assert target['ok']
+    start=time.monotonic()
+    result=fill(chrome,target)
+    assert time.monotonic()-start<4
+    assert result==dict(ok=True,filled='cc-number',card_delivery=DELIVERY)
+    assert child(chrome,session,'number.value')==CARD['number']
+    assert not fill(chrome,target)['ok']
+
+
+def test_verification_cannot_issue_an_already_expired_pin(chrome,monkeypatch):
+    from akdbx import card_processor
+    request,session=prepare(chrome)
+    now=[0]
+    chrome.broker.card_targets.clock=lambda:now[0]
+    original=card_processor.check
+    def expired_check(*args,**kwargs):
+        now[0]=31
+        return original(*args,**kwargs)
+    monkeypatch.setattr(card_processor,'check',expired_check)
+    assert not pin(chrome,**request)['ok']
+    assert not chrome.broker.card_targets.pins
+    assert child(chrome,session,"number.value === ''")
+
+
 @pytest.mark.parametrize('mutation',[
     "number.outerHTML='<input id=number autocomplete=cc-number>'", "number.disabled=true",
     "number.autocomplete='street-address'", "number.style.display='none'",

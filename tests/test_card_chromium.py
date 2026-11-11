@@ -233,6 +233,8 @@ def test_real_transport_fills_only_pinned_field_and_reports_no_values(chrome, fi
     "number.setAttribute('autocomplete','street-address')", "number.type='email'",
     "number.disabled=true", "number.readOnly=true", "number.style.display='none'",
     "number.parentElement.style.opacity='0'",
+    "number.parentElement.style.filter='opacity(0)'",
+    "number.parentElement.style.maskImage='linear-gradient(transparent,transparent)'",
     "number.remove()", "number.setAttribute('maxlength','2')",
     "number.insertAdjacentHTML('afterend','<form id=newForm></form>');newForm.append(number)",
     "number.insertAdjacentHTML('afterend','<input id=number autocomplete=cc-number>')",
