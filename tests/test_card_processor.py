@@ -125,6 +125,48 @@ def test_mask_box_on_processor_input_or_ancestor_never_receives_card(chrome,loca
     assert not pin(chrome,**request)['ok']
 
 
+def apply_hidden_blend(chrome, session, location):
+    expression='''(()=>{
+      const e=ELEMENT;
+      e.parentElement.style.background='black';
+      e.style.mixBlendMode='multiply';
+      return e.ownerDocument.defaultView.getComputedStyle(e).mixBlendMode;
+    })()'''
+    if location in ('number','document.body'):
+        result=child(chrome,session,expression.replace('ELEMENT',location))
+    else:
+        result=evaluate(chrome,expression.replace('ELEMENT',location))
+    assert result=='multiply'
+
+
+@pytest.mark.parametrize('location',[
+    'number','document.body',"merchant.contentDocument.getElementById('processor')",
+    'merchant','merchant.parentElement'])
+@pytest.mark.parametrize('after_dispatch',[False,True])
+def test_blended_processor_inputs_owners_and_ancestors_never_report_success(chrome,monkeypatch,location,after_dispatch):
+    request,session=prepare(chrome)
+    target=pin(chrome,**request);assert target['ok']
+    if after_dispatch:
+        transport=chrome.broker.card_targets.pins[target['target']]['cdp']
+        original=transport.call
+        def change_after_dispatch(method,params=None,session=None):
+            result=original(method,params,session)
+            if method=='Runtime.callFunctionOn' and 'this.fill(value' in params.get('functionDeclaration',''):
+                apply_hidden_blend(chrome,child_session,location)
+            return result
+        child_session=session
+        monkeypatch.setattr(transport,'call',change_after_dispatch)
+    else:
+        apply_hidden_blend(chrome,session,location)
+        assert not pin(chrome,**request)['ok']
+    result=fill(chrome,target)
+    assert not result['ok'] and result['delivery']==('uncertain' if after_dispatch else 'not-started')
+    assert child(chrome,session,'number.value')==(CARD['number'] if after_dispatch else '')
+    assert CARD['number'] not in str(result) and chrome.broker.typer.events==[]
+    assert not fill(chrome,target)['ok']
+    assert not chrome.broker.card_targets.pins
+
+
 def test_pointer_transparent_cover_after_write_is_uncertain(chrome):
     request,session=prepare(chrome)
     child(chrome,session,"""number.addEventListener('input',()=>{

@@ -356,6 +356,25 @@ def test_receipt_is_uncertain_when_page_rejects_value_and_never_echoes_it(chrome
     assert evaluate(chrome, "number.value === '' && address.value === ''")
 
 
+@pytest.mark.parametrize('location',['number','document.body'])
+@pytest.mark.parametrize('after_dispatch',[False,True])
+def test_blended_same_origin_input_or_ancestor_refuses_pin_fill_and_success(chrome,location,after_dispatch):
+    mutation='''const e=ELEMENT;
+      e.parentElement.style.background='black';e.style.mixBlendMode='multiply';'''.replace('ELEMENT',location)
+    if after_dispatch:
+        evaluate(chrome,"number.addEventListener('input',()=>{"+mutation+"})")
+    target=pin(chrome);assert target['ok']
+    if not after_dispatch:
+        evaluate(chrome,mutation)
+        assert not pin(chrome)['ok']
+    result=fill(chrome,target)
+    assert not result['ok'] and result['delivery']==('uncertain' if after_dispatch else 'not-started')
+    assert evaluate(chrome,'number.value')==(CARD['number'] if after_dispatch else '')
+    assert CARD['number'] not in str(result) and chrome.broker.typer.events==[]
+    assert not fill(chrome,target)['ok']
+    assert not chrome.broker.card_targets.pins
+
+
 def test_same_origin_frame_is_bound_and_hidden_parent_is_refused(chrome):
     framed = chrome.url.replace('/payment', '/framed')
     chrome.cdp.call('Page.navigate', dict(url=framed), chrome.session)

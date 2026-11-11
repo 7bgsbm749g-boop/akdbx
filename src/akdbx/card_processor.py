@@ -12,10 +12,12 @@ PROCESSORS = ('adyen',)
 
 # Shared by the merchant iframe guard and the input's isolated-world checks.
 # Rectangles and elementFromPoint cannot prove visual exposure through masks or
-# filters. Mapping child coordinates also excludes individual/3D transforms.
+# filters or blending. Mapping child coordinates also excludes individual/3D transforms.
 STYLE_GUARD = r'''function supportedStyle(style, mapping=false) {
   if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0 ||
       style.getPropertyValue('content-visibility') === 'hidden') return false;
+  const blend = style.getPropertyValue('mix-blend-mode').trim();
+  if (blend !== '' && blend !== 'normal') return false;
   const visual=['filter','backdrop-filter','clip','clip-path','mask-image','-webkit-mask-image',
                 '-webkit-mask-box-image-source','mask-border-source'];
   const geometry=mapping ? ['transform','rotate','translate','scale','perspective','offset-path'] : [];
