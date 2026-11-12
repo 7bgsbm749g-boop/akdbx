@@ -156,7 +156,7 @@ class CDP:
 
 # Both scripts run in a fresh isolated world. Retain the actual elements, native
 # setter/getters and document, never resolve a replacement by selector on fill.
-CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose) {
+CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, allowAutocompleteOff) {
   if (!isSecureContext || location.href !== url || !document.hasFocus() || document.visibilityState !== 'visible') throw 0;
   const query = s => { const a = document.querySelectorAll(s); if (a.length !== 1) throw 0; return a[0]; };
   const password = mode === 'username' ? null : query(selector);
@@ -176,6 +176,7 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose) 
     if (secret && passwordPurpose) {
       if (attribute.call(e, 'autocomplete') !== originalPasswordAutocomplete) return false;
       if (tokens.length === 0 || tokens.length === 1 && tokens[0] === 'on') return true;
+      if (allowAutocompleteOff && tokens.length === 1 && tokens[0] === 'off') return true;
     }
     if (tokens[0]?.startsWith('section-')) tokens.shift();
     if (['shipping','billing'].includes(tokens[0])) tokens.shift();
@@ -282,12 +283,14 @@ class BrowserPasswords:
         """Reserve capacity atomically and capture the DOM target outside locks."""
         self.prune()
         required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode'}
-        optional = {'password_purpose'} if 'password_purpose' in request else set()
+        optional = set(request) & {'password_purpose', 'allow_autocomplete_off'}
         if (set(request) != required | optional | ({'username_selector'} if request.get('mode') == 'login' else set())
                 or type(request.get('password_protocol')) is not int or request['password_protocol'] != PROTOCOL
                 or request.get('mode') not in {'username', 'password', 'login'}
-                or (optional and (request['mode'] != 'password' or not isinstance(request['password_purpose'], str)
-                                  or request['password_purpose'] not in {'current-password', 'new-password'}))):
+                or ('password_purpose' in request and (request['mode'] != 'password' or not isinstance(request['password_purpose'], str)
+                                  or request['password_purpose'] not in {'current-password', 'new-password'}))
+                or ('allow_autocomplete_off' in request and (request['allow_autocomplete_off'] is not True
+                        or request['mode'] != 'password' or 'password_purpose' not in request))):
             raise TargetError()
         for key in required - {'action', 'password_protocol'} | ({'username_selector'} if request['mode'] == 'login' else set()):
             if not isinstance(request[key], str) or not 0 < len(request[key]) <= 4096:
@@ -316,7 +319,7 @@ class BrowserPasswords:
             if frame['id'] != request['frame_id'] or frame_url(frame) != request['top_url']:
                 raise TargetError()  # Child frames and shadow DOM are deliberately unsupported.
             world = connection.call('Page.createIsolatedWorld', {'frameId': frame['id'], 'worldName': 'akdbx-password-v1'}, session)['executionContextId']
-            args = [request['selector'], request.get('username_selector'), request['mode'], request['top_url'], request.get('password_purpose')]
+            args = [request['selector'], request.get('username_selector'), request['mode'], request['top_url'], request.get('password_purpose'), request.get('allow_autocomplete_off', False)]
             result = connection.call('Runtime.evaluate', {'expression': CAPTURE + '(' + ','.join(json.dumps(v) for v in args) + ')', 'contextId': world}, session)
             if 'exceptionDetails' in result or result['result'].get('type') != 'object' or 'objectId' not in result['result']:
                 raise TargetError()

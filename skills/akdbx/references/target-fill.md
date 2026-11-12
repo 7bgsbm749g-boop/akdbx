@@ -104,13 +104,32 @@ Fill any username separately; this option is refused in username and login modes
 
 The option accepts only missing/empty hints or the single token `on`, or a valid
 semantic token list whose password purpose matches the declaration. It never
-overrides `off`, unknown/malformed/duplicate hints, conflicting purposes,
+overrides `off` on its own, unknown/malformed/duplicate hints, conflicting purposes,
 non-password inputs, hidden fields, ambiguous selectors or focus changes.
 The raw password hint must remain unchanged between capture and fill. All
 normal origin, retained-node, navigation, focus, deadline and single-use checks
 remain in force, and delivery still uses the broker's DOM setters. Do not add
 or rewrite site attributes. Check the capability before sending this option;
 an older broker must be upgraded through its owning deployment workflow.
+
+### Explicitly verified password fields with autocomplete off
+
+Some account forms use `autocomplete="off"` even on standard password inputs.
+Require broker 0.14.1 or newer and integer
+`password_autocomplete_off_protocol: 1`. After independently verifying the
+account, exact secret-free HTTPS main-frame URL, password field purpose,
+unique selector and current focus, add `--allow-autocomplete-off` to a
+password-only pin with `--password-purpose current-password` or `new-password`.
+The CLI refuses an older broker before requesting the pin. The new option is
+not valid in username/login modes or without an explicit password purpose.
+
+This accepts only the single `off` token in addition to the hints already
+supported by explicit purpose. It does not override malformed/duplicate hints,
+a conflicting password purpose, field type, visibility, node identity, focus,
+navigation, expiry or single-use checks. Never rewrite page attributes to
+make a field eligible. Any raw hint change, including changing it and restoring
+it, invalidates the retained pin. Use fresh pins for password and confirmation,
+and verify non-secret site acceptance before committing a generated password.
 
 Each generated password and confirmation reference needs a fresh password-mode
 DOM pin for its actual input, then `fill-generated --target-url VERIFIED_URL
