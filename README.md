@@ -184,7 +184,15 @@ frame ancestry, identity and occlusion before and after dispatch, and preserves
 the single-use pin, deadline and receipt-only contract. Child input checks run
 in the write task; cross-process ancestor checks run separately. A changed or
 lost post-dispatch guard is uncertain and must not be retried automatically.
-Other cross-origin frames, shadow DOM, unannotated fields and native
+Version 0.14.2 also supports explicit `--processor computop` when `computop`
+is advertised in `card_processors`. Only `https://www.computop-paygate.com/payssl.aspx`
+with no query/fragment and its four exact hosted card id/name pairs are accepted.
+Those fields use `autocomplete=off`; this does not allow off on default or Adyen
+routes. Computop expiry requires MM/YY. Every existing processor ancestry,
+retained-node, visibility, native hit-test and receipt guard remains. POST-loaded
+blank frames additionally require the retained unique merchant POST form, exact
+processor action and matching target name.
+Other cross-origin frames, shadow DOM, unrecognised fields and native
 applications remain unsupported. Merchant verification uses part of the pin's
 lifetime, while the four-second fill deadline starts with the fill request.
 An already expired pin is not issued. See the skill's card guide for the exact
