@@ -58,7 +58,6 @@ def test_computop_fills_only_the_attested_field(chrome, field, selector, formatt
     "_KKnr.removeAttribute('autocomplete')", "_KKnr.readOnly=true",
     "_KKnr.disabled=true", "_KKnr.style.filter='opacity(0)'",
     "_KKnr.insertAdjacentHTML('afterend','<input id=_KKnr name=_KKnr autocomplete=off>')",
-    "_KKnr.replaceWith(_KKnr.cloneNode())",
     "const n=_KKnr; document.body.append(n)",
 ])
 @pytest.mark.parametrize('after_pin', [False, True])
@@ -74,6 +73,26 @@ def test_changed_or_unrecognised_computop_field_is_not_filled(chrome, mutation, 
     else:
         assert not pin(chrome, 'cc-number', '#_KKnr', **request)['ok']
     assert child(chrome, session, "Array.from(document.querySelectorAll('input')).every(e=>e.value==='')")
+
+
+@pytest.mark.parametrize('after_pin', [False, True])
+def test_computop_replacement_requires_a_fresh_pin(chrome, after_pin):
+    request, session = prepare(chrome)
+    target = pin(chrome, 'cc-number', '#_KKnr', **request) if after_pin else None
+    if target:
+        assert target['ok']
+    child(chrome, session, "window.originalNumber=_KKnr;_KKnr.replaceWith(_KKnr.cloneNode())")
+    if after_pin:
+        result = fill(chrome, target)
+        assert not result['ok'] and result['delivery'] == 'not-started'
+        assert child(chrome, session, '_KKnr.value') == ''
+    else:
+        # A fresh pin captures the current legitimate input, not its history.
+        target = pin(chrome, 'cc-number', '#_KKnr', **request)
+        assert target['ok']
+        assert fill(chrome, target) == dict(ok=True, filled='cc-number', card_delivery=DELIVERY)
+        assert child(chrome, session, '_KKnr.value') == CARD['number']
+    assert child(chrome, session, 'originalNumber.value') == ''
 
 
 @pytest.mark.parametrize('location', ['top', 'merchant', 'processor'])
