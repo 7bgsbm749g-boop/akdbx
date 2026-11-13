@@ -1,4 +1,4 @@
-"""Explicit Adyen OOPIF pins; no card values, keyboard or clipboard here."""
+"""Explicit production processor OOPIF pins; no card values or keyboard here."""
 import json
 import re
 from urllib.parse import urlsplit
@@ -7,7 +7,8 @@ from . import card_hit_test
 
 
 PROTOCOL = 1
-PROCESSORS = ('adyen',)
+PROCESSORS = ('adyen', 'computop')
+COMPUTOP_FIELDS = ('cc-name', 'cc-number', 'cc-exp', 'cc-csc')
 
 
 # Shared by the merchant iframe guard and the input's isolated-world checks.
@@ -55,15 +56,43 @@ def adyen_url(url):
                 parsed.path)))
 
 
+def computop_url(url):
+    """Only Computop's production hosted card page, with no URL parameters."""
+    parsed = urlsplit(url)
+    return (parsed.scheme == 'https' and parsed.hostname == 'www.computop-paygate.com'
+            and parsed.port in (None, 443) and parsed.username is None and parsed.password is None
+            and parsed.path == '/payssl.aspx' and not parsed.query and not parsed.fragment)
+
+
+def supported_request(processor, url, field):
+    if processor == 'adyen':
+        return adyen_url(url)
+    return processor == 'computop' and field in COMPUTOP_FIELDS and computop_url(url)
+
+
 # Executed on the actual iframe element in its merchant parent's isolated world.
 # Retain the owner element, parent, document and same-origin ancestor chain.
 # Only coordinates and booleans cross contexts; no card value enters this guard.
-GUARD = r'''function(frameURL, topURL) {
+GUARD = r'''function(frameURL, topURL, processor) {
   __STYLE_GUARD__
   const frame = this, doc = document, parent = frame.parentElement;
   if (!(frame instanceof HTMLIFrameElement) || frame.getRootNode() !== doc) return null;
   const childWindow = frame.contentWindow;
+  const source = frame.src;
   const attributes = ['src','srcdoc','sandbox','name'].map(k => frame.getAttribute(k));
+  // Hosted Computop pages are POSTed into a named, initially blank iframe.
+  // The browser ancestry/URL proof still attests the loaded document. Also
+  // retain the unique merchant POST form rather than trusting a blank src.
+  function postForms() {
+    if (!frame.name || doc.forms.length > 64) return [];
+    return Array.from(doc.forms).filter(f => f.method === 'post' &&
+      f.target === frame.name && f.action === frameURL);
+  }
+  const posted = processor === 'computop' && (source === '' || source === 'about:blank');
+  const forms = posted ? postForms() : [];
+  if (posted ? forms.length !== 1 : source !== frameURL) return null;
+  const post = forms[0], postParent = post?.parentElement;
+  const postAttributes = post ? ['method','target','action'].map(k=>post.getAttribute(k)) : null;
   const ancestors = [];
   let view = window;
   for (let i=0;; ++i) {
@@ -87,11 +116,15 @@ GUARD = r'''function(frameURL, topURL) {
     if (!point || window.top.location.href !== topURL || !frame.isConnected ||
         frame.ownerDocument !== doc || frame.getRootNode() !== doc ||
         frame.parentElement !== parent || frame.contentWindow !== childWindow ||
-        frame.src !== frameURL || frame.hasAttribute('srcdoc') ||
+        frame.src !== source || frame.hasAttribute('srcdoc') ||
         attributes.some((v,i) => frame.getAttribute(['src','srcdoc','sandbox','name'][i]) !== v) ||
         frame.clientWidth !== point.width || frame.clientHeight !== point.height ||
         !Number.isFinite(point.x) || !Number.isFinite(point.y) ||
         point.x < 0 || point.y < 0 || point.x >= point.width || point.y >= point.height) return false;
+    if (posted && (!post.isConnected || post.ownerDocument !== doc ||
+        post.getRootNode() !== doc || post.parentElement !== postParent ||
+        postAttributes.some((v,i)=>post.getAttribute(['method','target','action'][i]) !== v) ||
+        postForms().length !== 1 || postForms()[0] !== post)) return false;
     for (const a of ancestors) {
       if (a.view.document !== a.doc || a.doc.documentElement !== a.root ||
           a.view.location.href !== a.url || a.view.frameElement !== a.owner) return false;
@@ -156,12 +189,13 @@ def pin(cdp, top_session, request, pin_script, secure_url, error, clock):
     owner = cdp.call('DOM.getFrameOwner',{'frameId':request['frame_id']},top_session)['backendNodeId']
     owner_obj = cdp.call('DOM.resolveNode',{'backendNodeId':owner,'executionContextId':parent_context},top_session)['object']['objectId']
     guard = _object(cdp.call('Runtime.callFunctionOn', {'objectId':owner_obj,
-        'functionDeclaration':GUARD, 'arguments':[{'value':request['frame_url']},{'value':request['top_url']}],
+        'functionDeclaration':GUARD, 'arguments':[{'value':request['frame_url']},{'value':request['top_url']},
+                                              {'value':request['processor']}],
         'silent':True},top_session),error)
     context = cdp.call('Page.createIsolatedWorld',
         {'frameId':request['frame_id'],'worldName':'akdbx-card-processor-v1'},session)['executionContextId']
     expression='('+pin_script+')('+','.join(json.dumps(request[k]) for k in
-        ('selector','field','frame_url','top_url'))+',true)'
+        ('selector','field','frame_url','top_url'))+','+json.dumps(request['processor'])+')'
     result = cdp.call('Runtime.evaluate',{'expression':expression,'contextId':context,
         'silent':True,'timeout':1000},session)
     # The browser's pin clock starts just before the reply. This upper bound
