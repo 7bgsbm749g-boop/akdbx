@@ -69,6 +69,13 @@ password purpose; exact page, origin, retained input, focus and expiry checks
 remain mandatory. It never edits site attributes or enables keyboard passwords.
 See [the field-purpose contract](skills/akdbx/references/target-fill.md#password-inputs-without-semantic-autofill-hints).
 
+Broker 0.14.1 adds integer `password_autocomplete_off_protocol: 1`. A verified
+password-only input with `autocomplete="off"` additionally requires explicit
+`--allow-autocomplete-off` together with `--password-purpose`. Neither default
+pins nor purpose declarations alone accept `off`. Unknown or conflicting hints
+still refuse; the page's attributes are retained unchanged and all normal DOM
+target and focus checks apply to saved and generated passwords.
+
 There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; it emits a deprecation warning. All fill commands now require `--target`. Remove it from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
 
 ### Unlock remotely over Tailscale

@@ -238,6 +238,8 @@ def parser() -> argparse.ArgumentParser:
     password_pin.add_argument('--username-selector', help='required in login mode; no Tab traversal')
     password_pin.add_argument('--password-purpose', choices=('current-password', 'new-password'),
                               help='explicitly verified purpose for password-only fields with absent or on autocomplete')
+    password_pin.add_argument('--allow-autocomplete-off', action='store_true',
+                              help='allow a verified off password field; requires --password-purpose and broker capability')
     for name in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password', 'setup-totp'):
         help_text = {
             'create-sso-entry': 'save a Google/GitHub SSO identity (no password form)',
@@ -346,12 +348,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.password_purpose is not None and args.mode != 'password':
             print('--password-purpose requires --mode password', file=sys.stderr)
             return 2
+        if args.allow_autocomplete_off and (args.mode != 'password' or args.password_purpose is None):
+            print('--allow-autocomplete-off requires --mode password and --password-purpose', file=sys.stderr)
+            return 2
         payload.update(password_protocol=1, page_id=args.page_id, frame_id=args.frame_id, top_url=args.top_url,
                        selector=args.selector, mode=args.mode)
         if args.username_selector is not None:
             payload['username_selector'] = args.username_selector
         if args.password_purpose is not None:
             payload['password_purpose'] = args.password_purpose
+        if args.allow_autocomplete_off:
+            payload['allow_autocomplete_off'] = True
     elif args.command == 'pin-target':
         payload.update(pid=args.pid, window=args.window, target_protocol=1)
     elif args.command == "search":
@@ -443,6 +450,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == 'pin-password-target' and args.password_purpose is not None:
                 if type(capabilities.get('password_purpose_protocol')) is not int or capabilities['password_purpose_protocol'] != 1:
                     print(json.dumps({'ok': False, 'error': 'broker lacks explicit password purpose protocol 1; target request not sent'}))
+                    return 1
+            if args.command == 'pin-password-target' and args.allow_autocomplete_off:
+                if type(capabilities.get('password_autocomplete_off_protocol')) is not int or capabilities['password_autocomplete_off_protocol'] != 1:
+                    print(json.dumps({'ok': False, 'error': 'broker lacks explicit autocomplete off protocol 1; target request not sent'}))
                     return 1
             if args.command != 'pin-password-target' and (capabilities.get('ok') is not True or capabilities.get('target_fill_required') is not True
                     or type(capabilities.get('target_fill_protocol')) is not int
