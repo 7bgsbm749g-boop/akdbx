@@ -14,7 +14,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
 from .broker import Broker, open_vault_with_password
-from .portal import field, render
+from .portal import content_security_policy, field, render
 from .runtime import (
     acquire_lifecycle_lock,
     prepare_private_runtime_directory,
@@ -306,7 +306,7 @@ def handler_for(state: UnlockState):
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'" + ("; script-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'" if import_page else ""))
+            self.send_header("Content-Security-Policy", content_security_policy(import_page=import_page))
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             self.end_headers()
@@ -338,16 +338,16 @@ def handler_for(state: UnlockState):
                             ('month', 'Expiry month (MM)', 'text', 2, 'required'),
                             ('year', 'Expiry year (YYYY)', 'text', 4, 'required'),
                             ('csc', 'Security code (optional)', 'password', 4, '')))
-                        body = f'<dl>{destination}</dl><form method="post" action="{action}" autocomplete="off">{fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this card and destination</label><button>Save card to KeePass</button></form>'
+                        body = f'<dl>{destination}</dl><form method="post" action="{action}" autocomplete="off">{fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this card and destination</label><button>Save card to AKDBX</button></form>'
                     elif kind == 'totp':
                         replacement = '<p>This replaces the saved authenticator key.</p>' if op.replace else ''
                         setup = field('Setup key or otpauth TOTP URI', 'setup', maxlength=4096)
-                        body = f'<dl>{destination}</dl><p>Import the setup key or otpauth URI for this account. This saves an authenticator in KeePass; it does not change the website. Keep a separate recovery method.</p>{replacement}<form method="post" action="{action}" autocomplete="off">{setup}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this account and authenticator key</label><button>Save authenticator</button></form>'
+                        body = f'<dl>{destination}</dl><p>Import the setup key or otpauth URI for this account. This saves an authenticator in AKDBX; it does not change the website. Keep a separate recovery method.</p>{replacement}<form method="post" action="{action}" autocomplete="off">{setup}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this account and authenticator key</label><button>Save authenticator</button></form>'
                         body += '<p><a href="/totp/import?token=' + html.escape(op.token, quote=True) + '">Import QR images / Google export, or review a browser capture</a></p>'
                     else:
                         password_fields = field('Chosen password', 'password', autocomplete='new-password') + field('Repeat password', 'confirmation', autocomplete='new-password')
-                        body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes KeePass only.</p><form method="post" action="{action}" autocomplete="off">{password_fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label><button>Save to KeePass</button></form>'
-                    self._send(HTTPStatus.OK, _page('Save KeePass card' if kind == 'card' else 'Confirm KeePass authenticator' if kind == 'totp' else 'Confirm KeePass password', body))
+                        body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes AKDBX only.</p><form method="post" action="{action}" autocomplete="off">{password_fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label><button>Save to AKDBX</button></form>'
+                    self._send(HTTPStatus.OK, _page('Save AKDBX card' if kind == 'card' else 'Confirm AKDBX authenticator' if kind == 'totp' else 'Confirm AKDBX password', body))
                     return True
             # Read outside the vault lock so a stalled user cannot block fills.
             try:
@@ -380,8 +380,8 @@ def handler_for(state: UnlockState):
                 else:
                     result = state.broker.writes.submit(op, values.get('password', [''])[0], values.get('confirmation', [''])[0], values.get('confirmed') == ['yes'])
             # No submitted fields, parser exceptions or secrets enter the page.
-            body = ('<p>Card saved to KeePass. You may close this page.</p>' if kind == 'card' else '<p>Authenticator saved to KeePass. You may close this page.</p>' if kind == 'totp' else '<p>Password saved to KeePass. You may close this page.</p>') if result['ok'] else '<p>' + html.escape(result['error']) + '</p>'
-            self._send(HTTPStatus.OK if result['ok'] else HTTPStatus.CONFLICT, _page('KeePass save result', body))
+            body = ('<p>Card saved to AKDBX. You may close this page.</p>' if kind == 'card' else '<p>Authenticator saved to AKDBX. You may close this page.</p>' if kind == 'totp' else '<p>Password saved to AKDBX. You may close this page.</p>') if result['ok'] else '<p>' + html.escape(result['error']) + '</p>'
+            self._send(HTTPStatus.OK if result['ok'] else HTTPStatus.CONFLICT, _page('AKDBX save result', body))
             return True
 
         def do_GET(self) -> None:
@@ -391,13 +391,22 @@ def handler_for(state: UnlockState):
                 self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
                 return
             if not state.broker.locked:
-                self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The KeePass broker is ready. You may close this page.</p>"))
+                self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
                 return
+            self._send(HTTPStatus.OK, self._unlock_page())
+
+        def _unlock_page(self, error: str = "") -> bytes:
             action = "?token=" + html.escape(state.token, quote=True)
             login = html.escape(self.headers.get("Tailscale-User-Login", ""))
             password_field = field('Master password', 'password', autocomplete='current-password', autofocus=True)
-            body = f'<p>Unlocking for <strong>{login}</strong>.</p><form method="post" action="{action}" autocomplete="off">{password_field}<button type="submit">Unlock vault</button></form>'
-            self._send(HTTPStatus.OK, _page("Unlock KeePass", body))
+            message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
+            body = (f'{message}<p>Unlocking for <strong>{login}</strong>.</p>'
+                    f'<form data-unlock-form method="post" action="{action}" autocomplete="off">{password_field}'
+                    '<button type="submit" class="unlock-submit">'
+                    '<span class="button-label">Unlock AKDBX</span>'
+                    '<span class="unlock-progress" role="progressbar" aria-label="Unlocking AKDBX" hidden></span></button>'
+                    '</form><p id="unlock-status" class="unlock-status" role="status" aria-live="polite"></p>')
+            return _page("Unlock AKDBX", body)
 
         def do_POST(self) -> None:
             if self._write_request():
@@ -408,7 +417,7 @@ def handler_for(state: UnlockState):
                 self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
                 return
             if not state.broker.locked:
-                self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The KeePass broker is ready. You may close this page.</p>"))
+                self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -426,7 +435,7 @@ def handler_for(state: UnlockState):
                 return
             attempt = state.reserve_attempt(identity)
             if attempt is None:
-                self._send(HTTPStatus.TOO_MANY_REQUESTS, _page("Try later", "<p>Too many failed attempts. Wait one minute.</p>"))
+                self._send(HTTPStatus.TOO_MANY_REQUESTS, self._unlock_page("Too many failed attempts. Wait one minute before trying again."))
                 return
 
             try:
@@ -440,7 +449,7 @@ def handler_for(state: UnlockState):
                         return
                     status = state.attempt_status(attempt, submitted_token)
                     if status == "unlocked":
-                        self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The KeePass broker is ready. You may close this page.</p>"))
+                        self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
                         return
                     if status == "invalid":
                         self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
@@ -456,13 +465,13 @@ def handler_for(state: UnlockState):
                     except Exception:
                         password = ""
                         state.record_failure(attempt)
-                        self._send(HTTPStatus.UNAUTHORIZED, _page("Unlock failed", '<p class="error">The database could not be unlocked.</p><p>Return to the agent-provided link and try again.</p>'))
+                        self._send(HTTPStatus.UNAUTHORIZED, self._unlock_page("AKDBX could not unlock the database. Check your master password and try again."))
                         return
 
                     password = ""
                     state.broker.unlock(vault)
                     state.record_success(attempt)  # invalidate the submitted URL
-                    self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The KeePass broker is ready. You may close this page.</p>"))
+                    self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
             finally:
                 state.cancel_attempt(attempt)
 

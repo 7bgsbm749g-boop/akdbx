@@ -2,18 +2,35 @@
 
 The unlock and private save/import portals share the black frosted glass design
 from agentic-handoff: a translucent black sheet, soft white lighting, a fine grain,
-white field borders and glass buttons. The document keeps its akdbx identity;
+white field borders and glass buttons. The document keeps its AKDBX identity;
 each form keeps its destination details, warnings and confirmation controls.
 
 The shared renderer covers unlock, password save, card save, authenticator setup,
 QR import, import review and result/error pages. Labels are associated with their
 inputs. Form names, types, limits, autocomplete hints and submission routes are
 preserved. The existing response security headers remain in effect. The design
-uses inline CSS/SVG and system fonts, with no new scripts or remote assets.
+uses inline CSS/SVG and system fonts, with no remote assets. A hash-authorized
+presentation script controls password visibility and unlock feedback; it
+never inspects input values; standard form encoding is used only for the unlock POST. Normal pages allow only this exact script. Import pages
+also retain their existing same-origin QR scripts.
 
 Motion follows the original design: an 800 ms sheet entrance, staggered fields,
 slow ambient lighting and a subtle button glint. These effects run only with
 `prefers-reduced-motion: no-preference`.
+
+Password fields have a keyboard-accessible eye button with a stable accessible
+name and a pressed state that means visible. Values start hidden, and are hidden
+again on submission and history restoration. The manual import field stays
+unnamed so it cannot be added to the native import payload.
+
+A valid unlock submission immediately depresses the glass button and displays an
+indeterminate bar clipped inside its unchanged dimensions. Duplicate submissions
+are blocked while the same-origin POST is pending. The status is announced outside the
+busy form; no percentage or inferred success is shown. Reduced motion keeps a
+static bar. The real server response replaces the form: a failed password or rate
+limit returns a fresh, empty retry form, and success shows the AKDBX ready message.
+A network failure clears the form, restores enabled controls, and visibly reports
+that the unlock result is not confirmed. It does not retry or claim an unlock.
 
 ## Before and after
 
@@ -52,4 +69,11 @@ The existing regression tests can be run with:
 python -m pytest -q tests/test_web_unlock.py tests/test_writes.py \
   tests/test_cards.py tests/test_totp.py tests/test_import_totp.py \
   tests/test_upload_contract.py
+```
+
+The portal interaction regression checks use only new synthetic fixtures and an
+isolated browser profile/X server:
+
+```sh
+python -m pytest -q tests/test_portal.py tests/test_portal_browser.py
 ```

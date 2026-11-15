@@ -8,6 +8,7 @@ from http import HTTPStatus
 from importlib.resources import files
 from urllib.parse import parse_qs, urlsplit
 
+from .portal import field
 from .totp import https_origin
 
 MAX_IMPORT_BODY = 64 * 1024
@@ -66,7 +67,7 @@ def handle_import(handler, state):
                         '<form method="post" action="/totp/import' + suffix + '" autocomplete="off">'
                         '<label>QR images <input id="images" type="file" accept="image/png,image/jpeg,image/webp" multiple></label>'
                         '<label>Or take a QR photo <input id="camera" type="file" accept="image/*" capture="environment"></label>'
-                        '<label>Or setup key / URI <input id="manual" type="password" maxlength="8192" autocomplete="off"></label>'
+                        + field('Or setup key / URI', 'manual', maxlength=8192, required=False, submitted=False) +
                         '<input id="payloads" name="payloads" type="hidden"><p id="message" role="status"></p>'
                         '<button id="decode" type="button">Read QR images</button><button>Review accounts</button></form>'
                         '<script src="/totp/assets/jsQR.js' + suffix + '"></script>'
@@ -114,7 +115,7 @@ def handle_import(handler, state):
                     raise ValueError
                 result = state.broker.writes.confirm_totp_import(op, int(values['choice'][0]), values['nonce'][0], values['confirmed'] == ['yes'])
                 send(HTTPStatus.OK if result['ok'] else HTTPStatus.CONFLICT,
-                     '<p>Authenticator saved to KeePass. Website acceptance is not confirmed by this save.</p>'
+                     '<p>Authenticator saved to AKDBX. Website acceptance is not confirmed by this save.</p>'
                      if result['ok'] else '<p>Import not saved. Check status before starting again.</p>')
             else:
                 raise ValueError

@@ -64,7 +64,7 @@ if (typeof document !== "undefined") {
       });
       capture.result.payloads = [];
       if (!receipt || Object.keys(receipt).sort().join(",") !== "ok,state" || receipt.ok !== true || receipt.state !== "awaiting-private-confirmation") throw new Error();
-      status.textContent = "Captured privately. Open the original akdbx link, choose Import / review, and confirm the account before saving.";
+      status.textContent = "Captured privately. Open the original AKDBX link, choose Import / review, and confirm the account before saving.";
     } catch {
       status.textContent = "Capture not confirmed. Check the native host, matching HTTPS site, private request, and one readable setup QR. No automatic retry.";
     } finally {
