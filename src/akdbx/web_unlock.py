@@ -14,6 +14,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
 from .broker import Broker, open_vault_with_password
+from .portal import field, render
 from .runtime import (
     acquire_lifecycle_lock,
     prepare_private_runtime_directory,
@@ -280,13 +281,7 @@ class UnlockState:
 
 
 def _page(title: str, body: str) -> bytes:
-    title = f"akdbx: {title}"
-    return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<meta name="referrer" content="no-referrer"><title>{html.escape(title)}</title>
-<style>body{{font:16px system-ui;max-width:28rem;margin:12vh auto;padding:1rem;background:#111;color:#eee}}
-input,button{{box-sizing:border-box;width:100%;padding:.8rem;margin:.5rem 0;font:inherit}} .error{{color:#ff9b9b}}</style></head>
-<body><h1>{html.escape(title)}</h1>{body}</body></html>""".encode("utf-8")
+    return render(title, body)
 
 
 def handler_for(state: UnlockState):
@@ -337,7 +332,7 @@ def handler_for(state: UnlockState):
                     destination = ''.join(f'<dt>{html.escape(key)}</dt><dd>{html.escape(value)}</dd>' for key, value in op.values.items())
                     action = route + '?token=' + html.escape(op.token, quote=True)
                     if kind == 'card':
-                        fields = ''.join(f'<label>{label}<input name="{key}" type="{typ}" maxlength="{limit}" {required} autocomplete="off"></label>' for key, label, typ, limit, required in (
+                        fields = ''.join(field(label, key, kind=typ, maxlength=limit, required=bool(required)) for key, label, typ, limit, required in (
                             ('name', 'Cardholder name', 'text', 128, 'required'),
                             ('number', 'Card number', 'password', 32, 'required'),
                             ('month', 'Expiry month (MM)', 'text', 2, 'required'),
@@ -346,10 +341,12 @@ def handler_for(state: UnlockState):
                         body = f'<dl>{destination}</dl><form method="post" action="{action}" autocomplete="off">{fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this card and destination</label><button>Save card to KeePass</button></form>'
                     elif kind == 'totp':
                         replacement = '<p>This replaces the saved authenticator key.</p>' if op.replace else ''
-                        body = f'<dl>{destination}</dl><p>Import the setup key or otpauth URI for this account. This saves an authenticator in KeePass; it does not change the website. Keep a separate recovery method.</p>{replacement}<form method="post" action="{action}" autocomplete="off"><label>Setup key or otpauth TOTP URI</label><input name="setup" type="password" required maxlength="4096" autocomplete="off"><label><input type="checkbox" name="confirmed" value="yes" required>I confirm this account and authenticator key</label><button>Save authenticator</button></form>'
+                        setup = field('Setup key or otpauth TOTP URI', 'setup', maxlength=4096)
+                        body = f'<dl>{destination}</dl><p>Import the setup key or otpauth URI for this account. This saves an authenticator in KeePass; it does not change the website. Keep a separate recovery method.</p>{replacement}<form method="post" action="{action}" autocomplete="off">{setup}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this account and authenticator key</label><button>Save authenticator</button></form>'
                         body += '<p><a href="/totp/import?token=' + html.escape(op.token, quote=True) + '">Import QR images / Google export, or review a browser capture</a></p>'
                     else:
-                        body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes KeePass only.</p><form method="post" action="{action}" autocomplete="off"><label>Chosen password</label><input name="password" type="password" required autocomplete="new-password"><label>Repeat password</label><input name="confirmation" type="password" required autocomplete="new-password"><label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label><button>Save to KeePass</button></form>'
+                        password_fields = field('Chosen password', 'password', autocomplete='new-password') + field('Repeat password', 'confirmation', autocomplete='new-password')
+                        body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes KeePass only.</p><form method="post" action="{action}" autocomplete="off">{password_fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label><button>Save to KeePass</button></form>'
                     self._send(HTTPStatus.OK, _page('Save KeePass card' if kind == 'card' else 'Confirm KeePass authenticator' if kind == 'totp' else 'Confirm KeePass password', body))
                     return True
             # Read outside the vault lock so a stalled user cannot block fills.
@@ -398,7 +395,8 @@ def handler_for(state: UnlockState):
                 return
             action = "?token=" + html.escape(state.token, quote=True)
             login = html.escape(self.headers.get("Tailscale-User-Login", ""))
-            body = f'<p>Unlocking for <strong>{login}</strong>.</p><form method="post" action="{action}" autocomplete="off"><label>Master password</label><input name="password" type="password" required autofocus autocomplete="current-password"><button type="submit">Unlock vault</button></form>'
+            password_field = field('Master password', 'password', autocomplete='current-password', autofocus=True)
+            body = f'<p>Unlocking for <strong>{login}</strong>.</p><form method="post" action="{action}" autocomplete="off">{password_field}<button type="submit">Unlock vault</button></form>'
             self._send(HTTPStatus.OK, _page("Unlock KeePass", body))
 
         def do_POST(self) -> None:

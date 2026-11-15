@@ -133,8 +133,7 @@ def _review(send, op, token):
     options = ''.join('<label><input type="radio" name="choice" value="' + str(i) + '" required>'
                       + html.escape(c.issuer + ' — ' + c.label) + '</label>' for i, c in enumerate(op.import_candidates))
     warning = '<p>This explicitly replaces the saved key in this vault entry.</p>' if op.replace else ''
-    send(HTTPStatus.OK, '<style>label{display:block;overflow-wrap:anywhere}input[type=radio],input[type=checkbox]{width:auto}dd{overflow-wrap:anywhere}</style>'
-         + '<dl>' + destination + '</dl><p>Source: ' + html.escape(op.import_source) + '</p>' + warning
+    send(HTTPStatus.OK, '<dl>' + destination + '</dl><p>Source: ' + html.escape(op.import_source) + '</p>' + warning
          + '<p>Choose exactly one account for this destination. Labels are supplied by the import and do not prove account ownership. '
          'Other imported accounts will be discarded. Your phone setup is not changed.</p>'
          + '<form method="post" action="/totp/review?token=' + html.escape(token, quote=True) + '">' + options
