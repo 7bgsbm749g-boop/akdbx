@@ -144,6 +144,8 @@ def test_unlock_visibility_pending_failure_and_success(synthetic_chromium, porta
         'expression': """(async () => {
           const bar=document.querySelector('.unlock-progress');
           const first=getComputedStyle(bar,'::before').transform;
+          // The eased bar barely moves in its first frames; sample well apart.
+          await new Promise(resolve => setTimeout(resolve, 300));
           await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
           return {first,last:getComputedStyle(bar,'::before').transform};
         })()""", 'awaitPromise': True, 'returnByValue': True}, session)
