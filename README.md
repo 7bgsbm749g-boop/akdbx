@@ -14,6 +14,11 @@ security and Tailscale instructions below do not describe the Windows transport.
 
 Source and issue tracker: [7bgsbm749g-boop/akdbx](https://github.com/7bgsbm749g-boop/akdbx).
 
+Releases are published on [GitHub Releases](https://github.com/7bgsbm749g-boop/akdbx/releases).
+Each version is one release for Linux and Windows: the same wheel, with
+`SHA256SUMS` and a build-provenance attestation. See
+[Releasing akdbx](docs/releasing.md) to cut a release or upgrade a broker.
+
 ## akdbx rebrand (0.9.2)
 
 The project, Python distribution, Python package and agent skill are named

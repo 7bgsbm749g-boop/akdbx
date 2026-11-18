@@ -1,6 +1,8 @@
 name: Tests
 
 on:
+  # The Release workflow reuses this exact suite as a gate.
+  workflow_call:
   push:
     branches: [main, master]
   pull_request:
