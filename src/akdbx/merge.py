@@ -7,11 +7,13 @@ import io
 import json
 import os
 import re
-import resource
 import stat
 import time
 import subprocess
 from pathlib import Path
+
+if os.name != 'nt':
+    import resource
 
 from .persistence import SaveError, VaultStore, open_encrypted
 from . import admission, selection, versions
@@ -27,6 +29,8 @@ class MergeError(Exception):
 
 def engine_version():
     """Fail closed outside the tested engine release series; never use PATH."""
+    if os.name == 'nt':
+        return None
     try:
         info = ENGINE.stat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
@@ -190,6 +194,11 @@ class MergeManager:
         self._version = None
 
     def capabilities(self):
+        if os.name == 'nt':
+            return {'merge_available': False, 'admission_supported': False,
+                    'merge_refresh_target_supported': False,
+                    'merge_preserve_conflicts_supported': False,
+                    'merge_engine': None, 'merge_protocol': 1}
         if not self._engine_checked:
             self._version = engine_version()
             self._engine_checked = True
@@ -243,6 +252,8 @@ class MergeManager:
         os.fsync(directory)
 
     def status(self, operation_id):
+        if os.name == 'nt':
+            raise MergeError('merge and snapshot admission are unavailable on Windows')
         operation_id = self._id(operation_id)
         store = self._store()
         directory = store._directory()
@@ -273,6 +284,8 @@ class MergeManager:
             os.close(directory)
 
     def begin(self, request):
+        if os.name == 'nt':
+            raise MergeError('merge and snapshot admission are unavailable on Windows')
         started = time.monotonic()
         admitting = request.get('action') == 'admit'
         if admitting and (request.get('policy') != admission.POLICY or request.get('verification') != admission.VERIFICATION):

@@ -31,6 +31,9 @@ def test_send_boundary_excludes_oversized_messages_and_precedes_delivery():
 def test_send_boundary_marks_transport_failure_as_possibly_sent():
     left, right = socket.socketpair()
     right.close()
+    # Windows socketpair uses TCP: the first send after a peer close can still
+    # succeed. A closed local transport gives a deterministic send failure.
+    left.close()
     sent = []
     try:
         with unittest.TestCase().assertRaises(OSError):

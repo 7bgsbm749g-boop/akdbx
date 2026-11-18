@@ -20,6 +20,7 @@ from pykeepass import PyKeePass, create_database
 from akdbx import cli
 from akdbx.broker import Broker, open_vault_with_password
 from akdbx.persistence import VaultStore
+from akdbx.merge import engine_version
 from akdbx.web_unlock import start_unlock_server
 from akdbx.writes import metadata
 from test_broker import target_request, RecordingTyper, running_broker
@@ -387,6 +388,8 @@ def test_repeated_password_updates_advance_history_clocks(deployed, monkeypatch,
 
 @pytest.mark.parametrize('action', ['update-password', 'generate-password'])
 @pytest.mark.parametrize('preserve', [False, True])
+@pytest.mark.skipif(engine_version() is None,
+                    reason='native merge integration requires trusted KeePassXC CLI >=2.7.10,<2.8')
 def test_password_update_survives_merge_with_older_branch(deployed, tmp_path, action, preserve):
     broker, _, path, socket = deployed
     source_path = tmp_path / 'older-branch.kdbx'

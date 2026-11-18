@@ -1,0 +1,39 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[test]'
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      # Native merge/benchmark tests need the separately provisioned, pinned
+      # KeePassXC engine. This job covers shared core and both delivery contracts.
+      - run: python -m pytest -q tests/test_protocol.py tests/test_cli.py tests/test_broker.py tests/test_writes.py tests/test_web_unlock.py tests/test_totp.py tests/test_target.py tests/test_target_guards.py tests/test_generated_native_clock.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_windows_native.py --basetemp="${{ runner.temp }}/akdbx-tests"
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e '.[test]'
+      - run: python -m akdbx.cli --version
+      - run: python -m pytest -q tests/test_protocol.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_windows_native.py --basetemp="$env:LOCALAPPDATA/akdbx-tests"

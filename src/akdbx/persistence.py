@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 import base64
-import fcntl
 import hashlib
 import io
 import json
@@ -15,6 +14,9 @@ import time
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+
+if os.name != 'nt':
+    import fcntl
 
 
 class SaveError(Exception):
