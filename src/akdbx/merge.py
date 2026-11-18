@@ -7,11 +7,13 @@ import io
 import json
 import os
 import re
-import resource
 import stat
 import time
 import subprocess
 from pathlib import Path
+
+if os.name != 'nt':
+    import resource
 
 from .persistence import SaveError, VaultStore, open_encrypted
 from . import admission, selection, versions
@@ -27,6 +29,8 @@ class MergeError(Exception):
 
 def engine_version():
     """Fail closed outside the tested engine release series; never use PATH."""
+    if os.name == 'nt':
+        return None
     try:
         info = ENGINE.stat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
@@ -51,8 +55,8 @@ def _open(encrypted, vault):
     return open_encrypted(encrypted, vault.password, keyfile)
 
 
-def _entry_signature(entry):
-    return versions.entry_signature(entry)
+def _entry_signature(entry, binaries=None):
+    return versions.entry_signature(entry, binaries)
 
 
 def _check_ambiguity(*vaults, preserve=False):
@@ -63,11 +67,19 @@ def _check_ambiguity(*vaults, preserve=False):
     records = {}
     for vault in vaults:
         versions.archives(vault)
+        if preserve:
+            # Capture reads these clocks before semantic verification. Preserve
+            # the fixed refusal category without building unused signatures.
+            for entry in versions.active_entries(vault):
+                for item in [entry, *entry.history]:
+                    selection.modification_time(item)
+            continue
+        binaries = vault.binaries
         for entry in versions.active_entries(vault):
             for item in [entry, *entry.history]:
                 key = (item.uuid, selection.modification_time(item))
-                signature = _entry_signature(item)
-                if not preserve and key in records and records[key] != signature:
+                signature = _entry_signature(item, binaries)
+                if key in records and records[key] != signature:
                     raise MergeError('conflicting same-second records; merge refused; originals retained')
                 records[key] = signature
 
@@ -125,17 +137,19 @@ def synchronize_deletions(candidate, *originals):
 
 def verify_history(candidate, *originals, allow_deletions=True):
     """Refuse engine history pruning instead of silently losing old values."""
-    retained = {e.uuid: {(selection.modification_time(h), _entry_signature(h)) for h in [e, *e.history]} for e in candidate.entries}
+    binaries = candidate.binaries
+    retained = {e.uuid: {(selection.modification_time(h), _entry_signature(h, binaries)) for h in [e, *e.history]} for e in candidate.entries}
     deletions = {r.findtext('UUID'): selection.decode_time(r.findtext('DeletionTime'), candidate.version)
                  for r in candidate.tree.findall('./Root/DeletedObjects/DeletedObject')}
     for vault in originals:
+        binaries = vault.binaries
         for entry in vault.entries:
             if entry.uuid not in retained:
                 deleted = deletions.get(entry._element.findtext('UUID'))
                 if allow_deletions and deleted is not None and selection.modification_time(entry) <= deleted:
                     continue
                 raise MergeError('merge would discard an entry without a valid deletion; target not replaced')
-            if any((selection.modification_time(h), _entry_signature(h)) not in retained[entry.uuid] for h in [entry, *entry.history]):
+            if any((selection.modification_time(h), _entry_signature(h, binaries)) not in retained[entry.uuid] for h in [entry, *entry.history]):
                 raise MergeError('merge would discard entry history or fields; target not replaced')
 
 
@@ -180,11 +194,16 @@ class MergeManager:
         self._version = None
 
     def capabilities(self):
+        if os.name == 'nt':
+            return {'merge_available': False, 'admission_supported': False,
+                    'merge_refresh_target_supported': False,
+                    'merge_preserve_conflicts_supported': False,
+                    'merge_engine': None, 'merge_protocol': 1}
         if not self._engine_checked:
             self._version = engine_version()
             self._engine_checked = True
         store = getattr(self.broker.vault, '_akdbx_store', None)
-        return {'merge_available': bool(self._version and store and store.writable_path and not store.recovery_required),
+        return {'merge_available': bool(self._version and store and store.merge_writable_path and not store.recovery_required),
                 'merge_engine': ('keepassxc-cli ' + self._version) if self._version else None,
                 'merge_same_credentials_only': True, 'merge_protocol': 1,
                 'merge_refresh_target_supported': True,
@@ -221,7 +240,7 @@ class MergeManager:
 
     @staticmethod
     def _bundle_name(store, operation_id):
-        return '.' + store.path.name + '.akdbx-merge-' + operation_id
+        return store._write_name('merge', operation_id)
 
     @staticmethod
     def _receipt(directory, value):
@@ -233,6 +252,8 @@ class MergeManager:
         os.fsync(directory)
 
     def status(self, operation_id):
+        if os.name == 'nt':
+            raise MergeError('merge and snapshot admission are unavailable on Windows')
         operation_id = self._id(operation_id)
         store = self._store()
         directory = store._directory()
@@ -251,17 +272,7 @@ class MergeManager:
                     root = Path(os.readlink('/proc/self/fd/' + str(external)))
                 finally:
                     os.close(external)
-            info = os.fstat(bundle_fd)
-            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
-                raise MergeError('unsafe merge receipt directory')
-            fd = os.open('receipt.json', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=bundle_fd)
-            with os.fdopen(fd, 'rb') as stream:
-                info = os.fstat(stream.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600:
-                    raise MergeError('unsafe merge receipt')
-                value = json.loads(stream.read(16384))
-            if value['operation_id'] != operation_id:
-                raise MergeError('invalid merge receipt')
+            value = store.read_merge_receipt(bundle_fd, operation_id)
             if value['state'] in {'preparing', 'prepared'}:
                 value.update(ok=False, state='uncertain', error='merge interrupted or active; do not retry; inspect retained encrypted files')
             return {**value, 'receipt_path': str(root / name / 'receipt.json')}
@@ -273,6 +284,8 @@ class MergeManager:
             os.close(directory)
 
     def begin(self, request):
+        if os.name == 'nt':
+            raise MergeError('merge and snapshot admission are unavailable on Windows')
         started = time.monotonic()
         admitting = request.get('action') == 'admit'
         if admitting and (request.get('policy') != admission.POLICY or request.get('verification') != admission.VERIFICATION):
@@ -325,6 +338,7 @@ class MergeManager:
         try:
             directory = store._directory()
             with store.advisory_lock(directory):
+                store._check_merge_names(directory)
                 name = self._bundle_name(store, operation_id)
                 # Refresh is reconciliation, never an override for an unresolved
                 # operation. Check prior intents before creating this intent.
@@ -332,6 +346,7 @@ class MergeManager:
                 if store.recovery_required:
                     raise MergeError('incomplete merge receipt; recovery required; refresh refused')
                 snapshot_directory = store.snapshot_directory(directory, request['snapshot_directory']) if admitting else os.dup(directory)
+                store._check_merge_names(snapshot_directory, replacement=False)
                 # The bound external root participates in recovery before any intent.
                 store._check_merge_recovery(directory)
                 if store.recovery_required:
@@ -565,7 +580,8 @@ class MergeManager:
                 try:
                     self._receipt(bundle_fd, receipt)
                 except Exception:
-                    pass
+                    store.recovery_required = True
+                    receipt.update(state='uncertain', error='merge receipt could not be finalized; recovery required')
                 if not candidate_ready:
                     try:
                         os.unlink('candidate.kdbx', dir_fd=bundle_fd)

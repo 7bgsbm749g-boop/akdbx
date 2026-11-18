@@ -63,7 +63,7 @@ def test_locked_broker_returns_only_unlock_url_and_types_nothing(action):
     assert SECRET not in json.dumps(response)
     assert broker.dispatch({"action": "ping"}) == {
         "ok": True, "locked": True, "unlock_url": broker.unlock_url,
-        "version": "0.14.1", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen"], "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities(),
+        "version": "0.15.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop"], "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities(),
     }
     assert typer.events == []
 
@@ -108,6 +108,33 @@ def test_tailscale_identity_and_one_time_web_unlock(tmp_path):
 
         status, _, _ = call(socket_path, "GET", path)
         assert status == 404  # original URL is invalidated after success
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize('encoding', ['%FF', '%C3'])
+def test_unlock_rejects_lossy_percent_utf8_before_opening(tmp_path, encoding):
+    attempts = []
+    valid = 'synthetic-\ufffd-tail'
+
+    def opener(database, password, keyfile):
+        attempts.append(password)
+        assert password == valid
+        return Vault([Entry()])
+
+    broker = Broker(None, RecordingTyper())
+    socket_path = tmp_path / 'private' / 'unlock.sock'
+    server, url = start_unlock_server(broker, tmp_path / 'vault.kdbx', None, socket_path,
+                                      'https://node.example:9443', opener=opener)
+    parts = urlsplit(url)
+    route = parts.path + '?' + parts.query
+    try:
+        status, _, page = call(socket_path, 'POST', route, 'password=synthetic-' + encoding + '-tail')
+        assert status == 401 and b'synthetic-' not in page
+        assert broker.locked and not attempts
+        assert call(socket_path, 'POST', route, urlencode(dict(password=valid)))[0] == 200
+        assert attempts == [valid] and not broker.locked
     finally:
         server.shutdown()
         server.server_close()

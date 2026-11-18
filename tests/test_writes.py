@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import importlib
 import json
 import os
 import shutil
@@ -19,6 +20,7 @@ from pykeepass import PyKeePass, create_database
 from akdbx import cli
 from akdbx.broker import Broker, open_vault_with_password
 from akdbx.persistence import VaultStore
+from akdbx.merge import engine_version
 from akdbx.web_unlock import start_unlock_server
 from akdbx.writes import metadata
 from test_broker import target_request, RecordingTyper, running_broker
@@ -373,6 +375,8 @@ def test_repeated_password_updates_advance_history_clocks(deployed, monkeypatch,
 
 @pytest.mark.parametrize('action', ['update-password', 'generate-password'])
 @pytest.mark.parametrize('preserve', [False, True])
+@pytest.mark.skipif(engine_version() is None,
+                    reason='native merge integration requires trusted KeePassXC CLI >=2.7.10,<2.8')
 def test_password_update_survives_merge_with_older_branch(deployed, tmp_path, action, preserve):
     broker, _, path, socket = deployed
     source_path = tmp_path / 'older-branch.kdbx'
@@ -418,6 +422,61 @@ def test_future_entry_clock_refuses_password_update(deployed, future_in):
     assert path.read_bytes() == before and not typer.events
 
 
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('future_in', ['active', 'history', 'rollback'])
+def test_future_clock_blocks_generated_preparation_and_delivery(template, tmp_path, namespace, future_in):
+    module = importlib.import_module(namespace + '.broker')
+    path = tmp_path / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    vault = reopened(path)
+    entry = vault.find_entries(title='Synthetic site', first=True)
+    now = entry.mtime.timestamp()
+    if future_in != 'rollback':
+        entry.mtime += timedelta(days=365)
+        if future_in == 'history':
+            entry.save_history()
+            entry.mtime -= timedelta(days=366)
+        vault.save()
+    broker = module.Broker(module.open_vault_with_password(path, MASTER), RecordingTyper())
+    broker.writes.public_base = 'https://node.example:9443'
+    broker.wall_clock = lambda: now
+    before = path.read_bytes()
+    try:
+        prepared = begin(broker, 'generate-password')
+        if future_in == 'rollback':
+            assert prepared['ok'], prepared  # Same-second preparation must not wait for a newer second.
+            broker.wall_clock = lambda: now - 1
+            result = broker.dispatch(dict(action='fill-generated',
+                handle=prepared['fill_handles']['password'], target_url='https://example.test/reset',
+                **target_request(broker)))
+        else:
+            result = prepared
+            assert not broker.writes.operations
+        assert not result['ok'] and 'future-dated' in result['error'], result
+        assert not broker.typer.events and path.read_bytes() == before
+        assert not list(path.parent.glob('.*.akdbx-backup-*'))
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('bad,other', [('%FF', '%FE'), ('%C3', '%C2')])
+def test_private_form_rejects_lossy_percent_utf8_without_consuming_write(deployed, bad, other):
+    broker, typer, path, socket = deployed
+    prepared = begin(broker)
+    parts = urlsplit(prepared['private_url'])
+    route = parts.path + '?' + parts.query
+    before = path.read_bytes()
+    body = f'password=synthetic-{bad}-tail&confirmation=synthetic-{other}-tail&confirmed=yes'
+    status, _, page = call(socket, 'POST', route, body)
+    assert status == 400 and b'synthetic-' not in page
+    assert broker.writes.get(prepared['write_handle']).state == 'pending'
+    assert path.read_bytes() == before and not typer.events
+    assert not list(path.parent.glob('.*.akdbx-backup-*'))
+    valid = 'synthetic-\ufffd-tail'
+    assert private_post(socket, prepared, password=valid, confirmation=valid)[0] == 200
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == valid
+
+
 @pytest.mark.parametrize('clock', ['frozen', 'backward', 'invalid'])
 def test_nonadvancing_clock_refuses_password_update(deployed, monkeypatch, clock):
     import akdbx.writes as writes
@@ -432,6 +491,141 @@ def test_nonadvancing_clock_refuses_password_update(deployed, monkeypatch, clock
     code, _, page = private_post(socket, begin(broker))
     assert code == 409 and CHOSEN.encode() not in page
     assert path.read_bytes() == before and not typer.events
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('latest_in', ['active', 'history'])
+@pytest.mark.parametrize('hook', ['caller', 'backend'])
+@pytest.mark.parametrize('change', ['rollback', 'invalid', 'stable'])
+def test_generated_delivery_rechecks_clock_after_preflight(template, tmp_path, namespace, latest_in, hook, change):
+    """A ready callback must refuse a changed clock before the first key is sent."""
+    module = importlib.import_module(namespace + '.broker')
+    path = tmp_path / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    vault = reopened(path)
+    entry = vault.find_entries(title='Synthetic site', first=True)
+    latest = entry.mtime
+    if latest_in == 'history':
+        entry.save_history()
+        entry.mtime = latest - timedelta(days=1)
+        vault.save()
+    wall = [latest.timestamp() + 1]
+
+    def change_clock():
+        if change != 'stable':
+            wall[0] = latest.timestamp() - 1 if change == 'rollback' else float('nan')
+
+    class StepTyper(RecordingTyper):
+        def deliver(self, identity, steps, ready, *, guard=None):
+            if hook == 'backend':
+                change_clock()
+            return super().deliver(identity, steps, ready, guard=guard)
+
+    def caller_ready():
+        if hook == 'caller':
+            change_clock()
+        return True
+
+    broker = module.Broker(module.open_vault_with_password(path, MASTER), StepTyper(), wall_clock=lambda: wall[0])
+    broker.writes.public_base = 'https://node.example:9443'
+    before = path.read_bytes()
+    try:
+        assert broker.dispatch(dict(action='ping'))['writes_available'] is True
+        prepared = begin(broker, 'generate-password')
+        assert prepared['ok'], prepared
+        results = []
+        for reference in prepared['fill_handles'].values():
+            wall[0] = latest.timestamp() + 1
+            results.append(broker.dispatch(dict(action='fill-generated', handle=reference,
+                target_url='https://example.test/reset', start_deadline=broker.clock() + module.FILL_START_TIMEOUT,
+                **target_request(broker, 'password')), delivery_ready=caller_ready))
+        if change != 'stable':
+            assert all(not result['ok'] for result in results), results
+            reason = 'future-dated' if change == 'rollback' else 'write clock'
+            assert all(reason in result['error'] for result in results), results
+            assert len(broker.typer.events) == 0
+            assert path.read_bytes() == before
+            assert reopened(path).find_entries(title='Synthetic site', first=True).password == OLD
+            assert not commit(broker, prepared)['ok']
+            assert not list(path.parent.glob('.*.akdbx-backup-*'))
+            assert not list(path.parent.glob('.*.akdbx-write-*'))
+        else:
+            assert all(result['ok'] for result in results), results
+            assert len(broker.typer.events) == 2
+            assert commit(broker, prepared)['ok']
+            current = reopened(path).find_entries(title='Synthetic site', first=True)
+            assert current.password == broker.typer.events[0][1] and current.mtime > latest
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+@pytest.mark.parametrize('caller', ['disconnected', 'exception'])
+def test_generated_delivery_keeps_caller_refusal_and_error_privacy(template, tmp_path, namespace, caller):
+    module = importlib.import_module(namespace + '.broker')
+    path = tmp_path / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    broker = module.Broker(module.open_vault_with_password(path, MASTER), RecordingTyper())
+    broker.writes.public_base = 'https://node.example:9443'
+    latest = broker.vault.find_entries(title='Synthetic site', first=True).mtime.timestamp()
+    wall = [latest + 1]
+    broker.wall_clock = lambda: wall[0]
+    before = path.read_bytes()
+
+    def caller_ready():
+        wall[0] = float('nan')
+        if caller == 'exception':
+            raise ValueError('synthetic-private-callback-text')
+        return False
+
+    try:
+        prepared = begin(broker, 'generate-password')
+        assert prepared['ok'], prepared
+        result = broker.dispatch(dict(action='fill-generated', handle=prepared['fill_handles']['password'],
+            target_url='https://example.test/reset', start_deadline=broker.clock() + module.FILL_START_TIMEOUT,
+            **target_request(broker)), delivery_ready=caller_ready)
+        assert not result['ok'] and len(broker.typer.events) == 0
+        assert 'synthetic-private-callback-text' not in json.dumps(result)
+        if caller == 'disconnected':
+            assert 'caller disconnected' in result['error']
+        assert path.read_bytes() == before
+    finally:
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
+def test_generated_clock_guard_preserves_backend_uncertainty(template, tmp_path, namespace):
+    module = importlib.import_module(namespace + '.broker')
+    target = importlib.import_module(namespace + '.target')
+    path = tmp_path / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    latest = reopened(path).find_entries(title='Synthetic site', first=True).mtime.timestamp()
+    wall = [latest + 1]
+    refused = []
+
+    class UncertainTyper(RecordingTyper):
+        def deliver(self, identity, steps, ready, *, guard=None):
+            wall[0] = latest - 1
+            try:
+                ready()
+            except Exception:
+                refused.append(True)
+            raise target.DeliveryError(True)
+
+    broker = module.Broker(module.open_vault_with_password(path, MASTER), UncertainTyper(), wall_clock=lambda: wall[0])
+    broker.writes.public_base = 'https://node.example:9443'
+    before = path.read_bytes()
+    try:
+        prepared = begin(broker, 'generate-password')
+        assert prepared['ok'], prepared
+        result = broker.dispatch(dict(action='fill-generated', handle=prepared['fill_handles']['password'],
+            target_url='https://example.test/reset', **target_request(broker, 'password')))
+        assert refused == [True]
+        assert not result['ok'] and result['delivery'] == 'uncertain'
+        assert 'do not retry automatically' in result['error']
+        assert path.read_bytes() == before
+    finally:
+        broker.unlock_notifications.close()
 
 
 def test_two_independent_brokers_serialized_against_same_file(tmp_path, template):
@@ -472,7 +666,7 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog, 
         return json.loads(captured.out)
     with running_broker(socket.with_name('cli.sock'), broker):
         status = command('status')
-        assert status['version'] == '0.14.1' and status['writes_available']
+        assert status['version'] == '0.15.0' and status['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]
         args = [arg for field in ('title', 'username', 'url', 'group') for arg in ('--' + field, selected[field])]
         generated = command('generate-password', selected['handle'], *args, '--length', '28', '--symbols', '')
@@ -490,6 +684,32 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog, 
     generated_secret = typer.events[0][1]
     assert generated_secret not in caplog.text
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == generated_secret
+
+
+def test_commit_returns_saved_receipt_after_a_slow_save(deployed, capsys, monkeypatch):
+    """A durable reset commit can exceed the metadata RPC budget without a retry."""
+    broker, typer, path, web_socket = deployed
+    prepared = begin(broker, 'generate-password')
+    assert prepared['ok'] and all(result['ok'] for result in fills(broker, prepared))
+    store = broker.vault._akdbx_store
+    real_commit = store.commit
+    calls = []
+
+    def delayed_commit(*args, **kwargs):
+        calls.append(True)
+        time.sleep(5.2)
+        return real_commit(*args, **kwargs)
+
+    monkeypatch.setattr(store, 'commit', delayed_commit)
+    rpc_socket = web_socket.with_name('slow-commit.sock')
+    prefix = ['--socket', str(rpc_socket), '--unlock-origin', 'https://node.example:9443']
+    with running_broker(rpc_socket, broker):
+        assert cli.main([*prefix, 'commit-password', '--site-accepted',
+                         '--', prepared['write_handle']]) == 0
+        captured = capsys.readouterr()
+        assert not captured.err and json.loads(captured.out)['state'] == 'saved'
+    assert len(calls) == 1
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == typer.events[0][1]
 
 
 def test_actual_installed_executable_against_running_synthetic_broker(deployed, capsys, monkeypatch):
@@ -512,7 +732,7 @@ def test_actual_installed_executable_against_running_synthetic_broker(deployed, 
         assert all(secret not in result.stdout for secret in (MASTER, OLD, CHOSEN))
         return json.loads(result.stdout)
     version = subprocess.run([str(executable), '--version'], text=True, capture_output=True, check=True)
-    assert version.stdout.strip() == '0.14.1'
+    assert version.stdout.strip() == '0.15.0'
     with running_broker(socket.with_name('installed-cli.sock'), broker):
         assert command('status')['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]
@@ -544,6 +764,88 @@ def test_unsafe_write_ancestry_preserves_read_only_unlock(tmp_path, template):
     selected = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]
     assert broker.dispatch({'action': 'fill', **target_request(broker, 'password'), 'handle': selected['handle'], 'mode': 'password'})['ok']
     assert not begin(broker)['ok']
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason='requires real directory permission denial')
+def test_peer_prepared_merge_receipt_blocks_generated_reset_before_any_fill(deployed):
+    """Another broker's interrupted merge is found before a site password changes."""
+    broker, typer, path, _ = deployed
+    assert broker.dispatch({'action': 'ping'})['writes_available'] is True
+    operation = 'd' * 32
+    bundle = path.parent / ('.' + path.name + '.akdbx-merge-' + operation)
+    bundle.mkdir(mode=0o700)
+    fd = os.open(bundle / 'receipt.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        json.dump({'operation_id': operation, 'state': 'prepared'}, stream)
+    prepared = begin(broker, 'generate-password')
+    assert prepared['ok'] is False and 'fill_handles' not in prepared
+    status = broker.dispatch({'action': 'ping'})
+    assert status['writes_available'] is False and status['recovery_required'] is True
+    assert not typer.events
+
+
+def test_live_peer_save_makes_writes_busy_without_latching_recovery(deployed):
+    import fcntl
+    broker, typer, path, _ = deployed
+    fd = os.open(path.parent / ('.' + path.name + '.akdbx.lock'), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        status = broker.dispatch({'action': 'ping'})
+        assert status['writes_available'] is False and status['recovery_required'] is False
+        assert begin(broker, 'generate-password')['ok'] is False
+    finally:
+        os.close(fd)
+    status = broker.dispatch({'action': 'ping'})
+    assert status['writes_available'] is True and status['recovery_required'] is False
+    assert begin(broker, 'generate-password')['ok'] is True
+
+
+def test_read_only_target_directory_disables_resets_but_preserves_fill(tmp_path, template):
+    """Readiness must reject a stable denial before exposing a generated reset."""
+    directory = tmp_path / 'read-only'
+    directory.mkdir(mode=0o700)
+    path = directory / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    path.chmod(0o600)
+    before = path.read_bytes()
+    directory.chmod(0o500)
+    try:
+        assert not os.access(directory, os.W_OK)
+        broker = Broker(open_vault_with_password(path, MASTER), RecordingTyper())
+        broker.writes.public_base = 'https://node.example:9443'
+        status = broker.dispatch({'action': 'ping'})
+        assert status['locked'] is False and status['recovery_required'] is False
+        assert status['writes_available'] is False and status['merge_available'] is False
+        generated = begin(broker, 'generate-password')
+        created = broker.dispatch({'action': 'generate-entry', 'metadata': {
+            'title': 'Synthetic new entry', 'username': 'new-user',
+            'url': 'https://example.test/login', 'group': 'Web',
+        }})
+        for result in (generated, created):
+            assert result['ok'] is False and 'fill_handles' not in result
+        assert not broker.writes.operations
+        selected = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]
+        assert broker.dispatch({'action': 'fill', **target_request(broker, 'password'),
+                                'handle': selected['handle'], 'mode': 'password'})['ok']
+        assert broker.typer.events == [('type', OLD)]
+        assert path.read_bytes() == before and list(directory.iterdir()) == [path]
+    finally:
+        directory.chmod(0o700)
+
+
+def test_read_only_vault_file_can_be_atomically_replaced(tmp_path, template):
+    directory = tmp_path / 'writable'
+    directory.mkdir(mode=0o700)
+    path = directory / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    path.chmod(0o400)
+    broker = Broker(open_vault_with_password(path, MASTER), RecordingTyper())
+    broker.writes.public_base = 'https://node.example:9443'
+    assert broker.dispatch({'action': 'ping'})['writes_available'] is True
+    prepared = begin(broker, 'generate-password')
+    assert prepared['ok'] and all(result['ok'] for result in fills(broker, prepared))
+    assert commit(broker, prepared)['state'] == 'saved'
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == broker.typer.events[0][1]
 
 
 def test_generated_deadline_disconnect_and_typing_failure_prevent_commit(deployed, monkeypatch):
@@ -680,13 +982,18 @@ def test_legacy_broker_capability_and_secret_free_timeout_reports(monkeypatch, c
     for field in ('writes_available', 'recovery_required', 'locked'):
         with pytest.raises(cli.ProtocolError):
             cli._validate_response({'ok': True, field: 'false'}, 'https://node.example:9443')
-    monkeypatch.setattr(cli, 'request', lambda *a, **kw: (_ for _ in ()).throw(TimeoutError()))
+    def timed_out(*args, **kwargs):
+        if kwargs.get('before_send') is not None:
+            kwargs['before_send']()
+        raise TimeoutError
+
+    monkeypatch.setattr(cli, 'request', timed_out)
     assert cli.main(['commit-password', 'synthetic-opaque-reference', '--site-accepted']) == 2
     output = capsys.readouterr()
     assert output.out == '' and 'uncertain' in output.err and 'write-status' in output.err
     assert cli.main(['fill-generated', 'synthetic-opaque-reference', '--target-url', 'https://example.test', '--target', 'synthetic-pin']) == 2
     output = capsys.readouterr()
-    assert output.out == '' and 'do not retry automatically' in output.err
+    assert output.out == '' and 'request not sent' in output.err and 'not started' in output.err
 
 
 def test_changed_keyfile_never_rekeys_vault(tmp_path):

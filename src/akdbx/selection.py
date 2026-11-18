@@ -97,10 +97,17 @@ def _fields(entry):
             for key, (value, node) in values.items()}
 
 
-def _attachments(entry):
+def _attachments(entry, pools=None):
     values = _pairs(entry._element, 'Binary', ('Ref',))
     try:
-        return {key: entry._kp.binaries[int(node.get('Ref'))] for key, (_, node) in values.items()}
+        if not values:
+            return {}
+        if pools is None:
+            pools = {}
+        identity = id(entry._kp)
+        if identity not in pools:
+            pools[identity] = entry._kp.binaries
+        return {key: pools[identity][int(node.get('Ref'))] for key, (_, node) in values.items()}
     except Exception:
         raise SelectionError(['unsupported_structure']) from None
 
@@ -157,11 +164,12 @@ def _tags(text):
     def space(character):
         return character in '\t\n\v\f\r' or unicodedata.category(character) in {'Zs', 'Zl', 'Zp'}
     def trim(value):
-        while value and space(value[0]):
-            value = value[1:]
-        while value and space(value[-1]):
-            value = value[:-1]
-        return value
+        start, stop = 0, len(value)
+        while start < stop and space(value[start]):
+            start += 1
+        while stop > start and space(value[stop - 1]):
+            stop -= 1
+        return value[start:stop]
     return ';'.join(sorted({trim(part) for part in re.split('[,;\t]', text) if part},
                            key=lambda item: item.encode('utf-16be')))
 
@@ -258,6 +266,7 @@ def verify(vault, originals):
     deleted = {r.findtext('UUID'): decode_time(r.findtext('DeletionTime'), vault.version)
                for r in vault.tree.findall('./Root/DeletedObjects/DeletedObject')}
     protection = originals[0].tree.find('./Meta/MemoryProtection')
+    pools = {}
     for identity, selected in expected.items():
         entry, chosen = selected.entry, actual.get(identity)
         categories = set()
@@ -282,7 +291,7 @@ def verify(vault, originals):
                 policy = protection.findtext('Protect' + key, 'False') if protection is not None and key in STANDARD else 'False'
                 if before and not after or not before and after and not _boolean(policy):
                     categories.add('field_protection')
-            if _attachments(chosen) != _attachments(entry):
+            if _attachments(chosen, pools) != _attachments(entry, pools):
                 categories.add('attachments')
             if _times(chosen) != _times(entry):
                 categories.add('times_metadata')

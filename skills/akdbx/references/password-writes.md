@@ -6,7 +6,7 @@ explicit selectors, supported controls, and race checks before this workflow.
 # Create passwords and passwordless identity records
 
 Password workflows in this guide require CLI and broker version **0.12.0 or newer**
-and the DOM delivery capabilities below. The current release is **0.12.0**.
+and the DOM delivery capabilities below. The current release is **0.15.0**.
 All password fills require [DOM password protocol 1](target-fill.md).
 Native email-code creation requires **0.9.1** and its separate passwordless
 protocol below. Passwordless SSO creation requires CLI and broker **0.8.1 or
@@ -24,6 +24,8 @@ Before password fills, also require integer `password_fill_protocol: 1`,
 `password_fill_delivery: "chromium-password-dom-v1"`, and
 `password_browser_configured: true` from the running broker. Version alone does
 not establish these capabilities.
+After coordinated activation, verify that broker `version` matches the verified
+deployed CLI version instead of requiring an older literal version.
 An old running broker may omit these fields even though the fresh CLI has new
 commands. Never try a real reset with an incompatible broker. Updating the
 editable installation or skill does not activate the running Python process.
@@ -77,6 +79,8 @@ require a scoped implementation change or private user entry, never an export.
 
 The response contains `write_handle`, `state: "pending"`, and `fill_handles`
 with separate `password` and `confirmation` references. It contains no secret.
+Put command options before `--` and the returned handle after it, as below.
+This also accepts opaque handles from older running brokers that start with `-`.
 The generated secret has a five-minute authorization; broker expiry cleanup
 discards it even when no further request arrives. Generation does not change KeePass or type anything.
 
@@ -161,6 +165,12 @@ before expiry. The page changes KeePass only, so coordinate it after the site
 has accepted the user's privately chosen password.
 
 Creation requires an existing unambiguous group; it does not create groups.
+Every non-root ancestor in the destination path must have a nonempty name.
+Search display paths can omit unnamed ancestors. Before using one for creation,
+verify that every actual non-root ancestor has a nonempty name in the vault app.
+A collapsed path such as `Web` can select a different, fully named `Web` group
+when both exist. Select a verified fully named group, or ask the user to name
+the destination's unnamed ancestors in their vault app before retrying.
 The user confirms the proposed destination on the private page. A matching
 account (case-insensitive username) on the same site origin anywhere in the
 vault is conservatively rejected as a duplicate, even if title/group/path

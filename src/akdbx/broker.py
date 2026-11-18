@@ -234,7 +234,7 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if self.locked:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
@@ -469,7 +469,10 @@ class Broker:
 
 
 def open_vault_with_password(database: Path, password: str, keyfile: Path | None = None):
-    from .persistence import VaultStore
+    if os.name == 'nt':
+        from .windows_store import WindowsVaultStore as VaultStore
+    else:
+        from .persistence import VaultStore
     return VaultStore(database).open(password, keyfile)
 
 
@@ -504,6 +507,8 @@ def _serve_connection(connection: socket.socket, broker: Broker) -> None:
 def _connection_is_alive(connection: socket.socket) -> bool:
     """Check that a one-request RPC has neither EOF nor trailing input pending."""
     try:
+        if os.name == 'nt':
+            return connection.is_alive()
         readable, _, _ = select.select([connection], [], [], 0)
         # After receive_message consumed the one permitted request, readability
         # means either EOF or unexpected trailing protocol bytes. Neither state
@@ -514,6 +519,9 @@ def _connection_is_alive(connection: socket.socket) -> bool:
 
 
 def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
+    if os.name == 'nt':
+        from .windows_rpc import serve as windows_serve
+        return windows_serve(socket_path, broker, stop)
     socket_path = Path(os.path.abspath(os.fspath(socket_path)))
     runtime_path, runtime_fd = prepare_private_runtime_directory(socket_path.parent)
     socket_path = runtime_path / socket_path.name

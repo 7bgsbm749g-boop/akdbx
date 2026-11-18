@@ -98,6 +98,19 @@ def chrome(tmp_path, request):
             body = HTML
             if self.path == '/framed':
                 body = b'<!doctype html><iframe src="/frame" style="width:600px;height:600px"></iframe>'
+            elif self.path == '/computop':
+                body = b'<!doctype html><iframe id=merchant src=/computop-merchant style="width:650px;height:500px"></iframe>'
+            elif self.path == '/computop-merchant':
+                body = b'''<!doctype html><iframe id=processor name=PGForm style="width:550px;height:350px"></iframe>
+                  <form id=processorPost method=post target=PGForm action="https://www.computop-paygate.com/payssl.aspx"></form>
+                  <script>processorPost.submit()</script>'''
+            elif self.path == '/payssl.aspx':
+                body = b'''<!doctype html><style>input{display:block;width:230px;height:25px;margin:5px}</style>
+                  <form><input id=creditCardHolder name=creditCardHolder autocomplete=off maxlength=40>
+                  <input id=_KKnr name=_KKnr autocomplete=off maxlength=30>
+                  <input id=expiry_date name=expiry_date autocomplete=off>
+                  <input id=cccvc name=cccvc autocomplete=off maxlength=4>
+                  <input id=unrelated autocomplete=off></form>'''
             elif self.path == '/processor':
                 body = b'<!doctype html><iframe id="merchant" src="/merchant-frame" style="width:650px;height:500px"></iframe>'
             elif self.path == '/merchant-frame':
@@ -109,6 +122,11 @@ def chrome(tmp_path, request):
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+        def do_POST(self):
+            # The synthetic form has no secrets or fields. A POST-navigation
+            # keeps the iframe owner's src empty, matching hosted checkout.
+            assert self.path == '/payssl.aspx'
+            self.do_GET()
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.load_cert_chain(cert, key)
     class TLSServer(ThreadingHTTPServer):
@@ -133,7 +151,8 @@ def chrome(tmp_path, request):
         '--disable-sync', '--disable-extensions', '--disable-gpu', '--disable-dev-shm-usage',
         '--renderer-process-limit=2', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
         '--site-per-process', '--no-proxy-server',
-        '--host-resolver-rules=MAP checkoutshopper-live.adyen.com 127.0.0.1:' + str(server.server_port),
+        '--host-resolver-rules=MAP checkoutshopper-live.adyen.com 127.0.0.1:' + str(server.server_port) +
+        ',MAP www.computop-paygate.com 127.0.0.1:' + str(server.server_port),
         '--ignore-certificate-errors', '--window-size=1000,1000', '--ozone-platform=x11', url],
         env=environment, stdout=subprocess.DEVNULL, stderr=log, start_new_session=True, umask=0o077)
     cdp = None
@@ -183,6 +202,11 @@ def chrome(tmp_path, request):
         server.shutdown()
         server.server_close()
         worker.join(timeout=3)
+        # Each function owns a fresh profile. Keep its bounded Chrome log for
+        # CI evidence, not hundreds of stopped-browser caches across the suite.
+        # Never remove a profile while its exact owned process is still alive.
+        if process.poll() is not None:
+            shutil.rmtree(profile)
 
 
 def evaluate(chrome, expression):

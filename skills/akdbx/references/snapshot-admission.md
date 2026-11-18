@@ -7,7 +7,7 @@ and capsule-v1 identities, payloads and retention semantics remain unchanged.
 0.8.0 adds separately requested [group profiles](group-selection.md). The
 original `group-semantic-v1` contract below remains unchanged. New CLI requires
 protocol 2 and the exact profile/result certification, including for its old
-strict default. Require 0.8.0 for this CLI; old receipt recovery is unchanged.
+strict default. Require 0.8.0 or newer for this CLI; old receipt recovery is unchanged.
 Read the new profile document before changing an adapter's request.
 
 ## Contract and commands
@@ -47,7 +47,7 @@ fails closed. No snapshot pruning, rebind, reset or downgrade command is added.
 but does not replace the vault, refresh the broker or invalidate handles. It is
 not a reservation against later races.
 
-For current CLI require CLI/broker 0.8.0 and the protocol-2 detection in
+For current CLI require CLI/broker 0.8.0 or newer and the protocol-2 detection in
 [group profiles](group-selection.md), unlocked, no recovery block, `merge_available:true`, and
 all exact capabilities before dispatch:
 

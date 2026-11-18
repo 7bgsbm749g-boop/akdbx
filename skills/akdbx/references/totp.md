@@ -72,7 +72,7 @@ QR/setup key with GUI/browser tools, or extract a vault field. Do not observe
 the page while the user enters a key. No secret is returned or shown after
 submission. This initial private import is separate from later automatic fills.
 
-Check `write-status WRITE_HANDLE` for `state: saved`. `cancel-write` cancels an
+Check `write-status -- WRITE_HANDLE` for `state: saved`. `cancel-write -- WRITE_HANDLE` cancels an
 unused request. The private link expires after five minutes and is invalid
 after a save attempt, cancellation, restart or conflicting vault change.
 Input validation errors permit correcting the same private form without

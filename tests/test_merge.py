@@ -81,6 +81,26 @@ def receipt_files(result):
     return Path(result['receipt_path']).parent
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason='requires real directory permission denial')
+def test_merge_source_directory_can_be_read_only(pair, tmp_path):
+    broker, target, source = pair
+    directory = tmp_path / 'read-only-source'
+    directory.mkdir(mode=0o700)
+    incoming = directory / source.name
+    shutil.copyfile(source, incoming)
+    incoming.chmod(0o400)
+    expected_target, expected_source = target.read_bytes(), incoming.read_bytes()
+    directory.chmod(0o500)
+    try:
+        assert not os.access(directory, os.W_OK)
+        result = merge((broker, target, incoming), check=True)
+        assert result['ok'] and result['state'] == 'checked', result
+        assert target.read_bytes() == expected_target and incoming.read_bytes() == expected_source
+        assert list(directory.iterdir()) == [incoming]
+    finally:
+        directory.chmod(0o700)
+
+
 def test_diverged_round_trip_preview_repeated_refresh_and_receipt(pair, capsys, caplog):
     broker, target, source = pair
     original, incoming = target.read_bytes(), source.read_bytes()
@@ -422,7 +442,7 @@ def test_real_cli_locked_private_unlock_merge_and_restart_status(pair, tmp_path)
             code, headers, body = call(web_socket, 'POST', path, urlencode({'password': MASTER}), timeout=10)
             assert code == 200 and headers['Cache-Control'] == 'no-store'
             ready = command('status')
-            assert ready['version'] == '0.14.1' and ready['merge_available']
+            assert ready['version'] == '0.15.0' and ready['merge_available']
             result = command('merge', str(source), '--operation-id', operation_id)
             assert result['state'] == 'saved'
             assert command('merge-status', operation_id)['state'] == 'saved'
