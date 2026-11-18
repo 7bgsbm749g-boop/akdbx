@@ -1,4 +1,4 @@
-# Card storage and field-bound delivery (0.14.0)
+# Card storage and field-bound delivery (0.14.2)
 
 Require CLI/broker card protocol 1: `cards_supported: true`, integer
 `card_protocol: 1`, `card_delivery: "cdp-card-element-v1"`. `card_browser_configured`
@@ -39,7 +39,7 @@ payment field through the browser's DOM tools. Get page/frame IDs and a unique
 CSS selector without reading any filled values. Do not infer these identifiers
 from an X11 window ID. Bring the actual field into view. Main frames and
 same-origin iframes with matching `autocomplete="cc-…"` fields use the default
-route. For Adyen secured-field iframes, use the explicit processor route below.
+route. For Adyen secured-field or Computop hosted iframes, use the explicit processor routes below.
 Other cross-origin frames, shadow DOM and unannotated fields must be refused.
 
 ```bash
@@ -71,6 +71,29 @@ akdbx pin-card-target --page-id MERCHANT_PAGE_ID --frame-id ADYEN_FRAME_ID \
   --selector 'input[autocomplete="cc-number"]' --field cc-number --processor adyen
 akdbx fill-card SEARCH_HANDLE --target CARD_TARGET --field cc-number
 ```
+
+### Computop hosted card forms
+
+Require broker 0.14.2 or newer, integer `card_processor_frames_protocol: 1`,
+and `computop` in `card_processors`. After verifying the actual merchant and
+payment purpose, use `--processor computop` only for the production HTTPS
+`www.computop-paygate.com/payssl.aspx` OOPIF, with no query or fragment.
+The normal same-origin merchant ancestor, retained owner/input, visibility,
+native hit-test, deadline and single-use guards apply before and after dispatch.
+For a POST-loaded blank iframe, the broker also retains the unique merchant
+POST form with the exact processor action and matching iframe target name.
+Changes to that form or its action/method/target refuse delivery.
+
+This page uses `autocomplete=off`. Only these exact input id AND name pairs
+are supported, each visible editable type=text in a form: `creditCardHolder`
+for cc-name, `_KKnr` for cc-number, `expiry_date` for cc-exp, and `cccvc` for
+cc-csc. Other fields and off hints on other routes still refuse. Do not edit
+attributes. Use a unique selector and fresh search handle/pin for each field,
+with the exact observed page/frame IDs and complete URLs. Verify the visible
+expiry label is MM/YY, then use `--format MM/YY`; four-digit years refuse.
+No card value is returned, typed as keys, or placed on the clipboard. Submit
+through the merchant's normal controls only within the user's authorization,
+and verify the actual merchant acceptance, never just the fill receipt.
 
 Pins have a maximum lifetime of 30 seconds; merchant verification uses part of
 that lifetime. The fill deadline starts with the later fill request, so slow

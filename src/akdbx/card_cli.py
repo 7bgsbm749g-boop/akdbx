@@ -43,7 +43,7 @@ def add_parsers(commands):
         p.add_argument('--' + name, required=True)
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
     p.add_argument('--processor', choices=card_processor.PROCESSORS,
-                   help='explicitly pin an attested Adyen secured-field iframe in this merchant tab')
+                   help='explicitly pin an attested supported production card processor iframe')
     p = commands.add_parser('fill-card', help='fill only the pinned card field; never types keys or submits')
     p.add_argument('handle')
     p.add_argument('--target', required=True)
