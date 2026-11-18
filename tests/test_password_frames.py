@@ -468,3 +468,23 @@ def test_pin_binds_credential_origin_checks_to_the_frame_url(lab):
         assert retained.url.startswith(origin + '/') and retained.top_url == top
     finally:
         broker.passwords.close()
+
+
+def test_failed_pin_releases_owner_tracking(lab, monkeypatch):
+    top, origin = 'https://login.example.com/nested', 'https://auth.example.com'
+    fid = navigate(lab, top, origin)
+    broker, _ = broker_for(lab, origin + '/form')
+    released = []
+    original = password_frames.release_guards
+    def record(cdp, guards):
+        released.append(len(guards))
+        return original(cdp, guards)
+    monkeypatch.setattr(password_frames, 'release_guards', record)
+    try:
+        focus(lab, fid)
+        # Both owner guards exist before the missing selector refuses.
+        assert broker.dispatch({**request(lab, top, fid, origin), 'selector': '#missing'}) == failure()
+        assert released == [2]
+        assert broker.dispatch(request(lab, top, fid, origin))['ok']
+    finally:
+        broker.passwords.close()

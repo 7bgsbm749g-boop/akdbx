@@ -325,7 +325,7 @@ class BrowserPasswords:
     def _capture(self, request):
         """Do browser I/O outside the vault/map locks, then publish one pin."""
         connection = CDP(self.profile)
-        pin = None
+        pin, retained = None, []
         try:
             page = connection.call('Target.getTargetInfo', {'targetId': request['page_id']})['targetInfo']
             if page['type'] != 'page' or page['url'] != request['top_url']:
@@ -340,7 +340,7 @@ class BrowserPasswords:
             else:
                 route = password_frames.resolve(connection, session, request['page_id'], request['top_url'],
                                                 request['frame_id'], origin)
-                guards = tuple(password_frames.owner_guards(connection, route['path']))
+                guards = tuple(password_frames.owner_guards(connection, route['path'], guards=retained))
                 frame = route['path'][-1]['frame']
                 url, field_session = frame_url(frame), route['field_session']
             world = connection.call('Page.createIsolatedWorld', {'frameId': frame['id'], 'worldName': 'akdbx-password-v1'}, field_session)['executionContextId']
@@ -363,6 +363,8 @@ class BrowserPasswords:
             if pin is not None:
                 pin.close()
             else:
+                # Remove owner-tracking listeners from a failed child-frame pin.
+                password_frames.release_guards(connection, retained)
                 connection.close()
             raise TargetError() from None
 

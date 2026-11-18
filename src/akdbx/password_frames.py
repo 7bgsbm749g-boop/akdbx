@@ -220,9 +220,13 @@ GUARD_CHECK = 'function() { return this.check(); }'
 GUARD_DISPOSE = 'function() { this.dispose(); }'
 
 
-def owner_guards(cdp, path, track=True):
-    """Retain one owner guard per child hop, in its parent document."""
-    guards = []
+def owner_guards(cdp, path, track=True, guards=None):
+    """Retain one owner guard per child hop, in its parent document.
+
+    Guards are appended to `guards` as soon as they exist, so a caller can
+    release tracking listeners after a later failure.
+    """
+    guards = [] if guards is None else guards
     for parent, child in zip(path, path[1:]):
         session = parent['session']
         owner = cdp.call('DOM.getFrameOwner', {'frameId': child['frame']['id']}, session)['backendNodeId']
