@@ -185,7 +185,10 @@ def request(
     if payload.get('action') in {'merge', 'admit'}:
         timeout = 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
     else:
-        timeout = 240 if payload.get('action') in (*IDENTITY_CREATES, 'commit-password') else 15 if payload.get('action') == 'pin-card-target' else 5
+        # Frame routes resolve bounded out-of-process iframe targets first.
+        slow = payload.get('action') == 'pin-card-target' or payload.get('action') == 'list-password-frames' or (
+            payload.get('action') == 'pin-password-target' and 'frame_origin' in payload)
+        timeout = 240 if payload.get('action') in (*IDENTITY_CREATES, 'commit-password') else 15 if slow else 5
     client.settimeout(timeout)
     try:
         client.connect(anchored_socket_path(runtime_fd, socket_path.name))
@@ -271,15 +274,20 @@ def parser() -> argparse.ArgumentParser:
     pin = commands.add_parser('pin-target', help='pin an independently verified local foreground PID/window and current input-focus window for 30 seconds')
     pin.add_argument('--pid', type=int, required=True)
     pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID or Windows top-level HWND, decimal or 0x hex')
-    password_pin = commands.add_parser('pin-password-target', help='pin an exact HTTPS main-frame password field; no keyboard fallback')
+    password_pin = commands.add_parser('pin-password-target', help='pin an exact HTTPS main-frame or same-site child-frame password field; no keyboard fallback')
     for flag in ('page-id', 'frame-id', 'top-url', 'selector'):
         password_pin.add_argument('--' + flag, required=True)
+    password_pin.add_argument('--frame-origin', help='exact HTTPS origin of the child frame named by --frame-id (from list-password-frames); '
+                              'the saved credential must match this origin; requires broker password_frame_protocol 1')
     password_pin.add_argument('--mode', choices=('password', 'username', 'login'), default='password')
     password_pin.add_argument('--username-selector', help='required in login mode; no Tab traversal')
     password_pin.add_argument('--password-purpose', choices=('current-password', 'new-password'),
                               help='explicitly verified purpose for password-only fields with absent or on autocomplete')
     password_pin.add_argument('--allow-autocomplete-off', action='store_true',
                               help='allow a verified off password field; requires --password-purpose and broker capability')
+    frames = commands.add_parser('list-password-frames', help='read-only: list frame ids, origins and visible field counts of one exact HTTPS page')
+    frames.add_argument('--top-url', required=True, help='exact verified top-level page URL')
+    frames.add_argument('--page-id', help='page target id; required only when several tabs show the same exact URL')
     for name in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password', 'setup-totp'):
         help_text = {
             'create-sso-entry': 'save a Google/GitHub SSO identity (no password form)',
@@ -341,6 +349,29 @@ def parser() -> argparse.ArgumentParser:
     merge_status = commands.add_parser('merge-status', help='read a durable merge receipt, including after restart')
     merge_status.add_argument('operation_id')
     return result
+
+
+def _valid_frame_list(response):
+    """Accept only the fixed, value-free frame listing shape."""
+    def text(value, limit=128):
+        return isinstance(value, str) and 0 < len(value) <= limit
+    frames = response.get('frames')
+    if (set(response) != {'ok', 'page_id', 'main_frame_id', 'frame_policy', 'frames', 'truncated'}
+            or not text(response['page_id']) or not text(response['main_frame_id'])
+            or response['frame_policy'] != 'same-site-chain-v1' or type(response['truncated']) is not bool
+            or not isinstance(frames, list) or len(frames) > 64):
+        return False
+    keys = {'frame_id', 'parent_frame_id', 'depth', 'origin', 'out_of_process', 'eligible', 'visible_fields'}
+    for frame in frames:
+        fields = frame.get('visible_fields') if isinstance(frame, dict) else None
+        if (not isinstance(frame, dict) or set(frame) != keys or not text(frame['frame_id'])
+                or not (frame['parent_frame_id'] is None or text(frame['parent_frame_id']))
+                or type(frame['depth']) is not int or not 0 <= frame['depth'] <= 64 or not text(frame['origin'], 512)
+                or type(frame['out_of_process']) is not bool or type(frame['eligible']) is not bool
+                or not (fields is None or isinstance(fields, dict) and set(fields) == {'password', 'text'}
+                        and all(type(v) is int and 0 <= v <= 512 for v in fields.values()))):
+            return False
+    return True
 
 
 WINDOWS_PASSWORD_REFUSAL = ('Windows fills only usernames (fill --mode username) and TOTP codes (fill-totp); '
@@ -441,6 +472,12 @@ def main(argv: list[str] | None = None) -> int:
             payload['password_purpose'] = args.password_purpose
         if args.allow_autocomplete_off:
             payload['allow_autocomplete_off'] = True
+        if args.frame_origin is not None:
+            payload.update(frame_protocol=1, frame_origin=args.frame_origin)
+    elif args.command == 'list-password-frames':
+        payload.update(password_protocol=1, frame_protocol=1, top_url=args.top_url)
+        if args.page_id is not None:
+            payload['page_id'] = args.page_id
     elif args.command == 'pin-target':
         payload.update(pid=args.pid, window=args.window, target_protocol=1)
     elif args.command == "search":
@@ -530,6 +567,13 @@ def main(argv: list[str] | None = None) -> int:
             if (capabilities.get('ok') is not True or type(capabilities.get('generated_entry_protocol')) is not int
                     or capabilities.get('generated_entry_protocol') != 1):
                 print(json.dumps({'ok': False, 'error': 'broker lacks generated entry protocol 1; generation not sent'}))
+                return 1
+        if args.command == 'list-password-frames' or args.command == 'pin-password-target' and args.frame_origin is not None:
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True or type(capabilities.get('password_frame_protocol')) is not int
+                    or capabilities['password_frame_protocol'] != 1 or capabilities.get('password_frame_policy') != 'same-site-chain-v1'):
+                print(json.dumps({'ok': False, 'error': 'broker lacks password frame protocol 1; require broker 0.16.0 or newer; frame request not sent'}))
                 return 1
         if args.command in {'pin-password-target', 'pin-target', 'fill', 'fill-generated', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
@@ -651,6 +695,9 @@ def main(argv: list[str] | None = None) -> int:
                 or not response['write_handle'] or urlsplit(response.get('private_url', '')).path != '/totp'):
             print('TOTP setup outcome unconfirmed: receipt rejected; inspect status before any retry', file=sys.stderr)
             return 2
+    if args.command == 'list-password-frames' and response.get('ok') and not _valid_frame_list(response):
+        print('frame list rejected: unexpected broker response', file=sys.stderr)
+        return 2
     if args.command == 'pin-password-target' and response.get('ok'):
         token = response.get('target')
         if (set(response) != {'ok', 'target', 'expires_in', 'target_delivery'} or not isinstance(token, str)

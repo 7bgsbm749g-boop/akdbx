@@ -53,6 +53,7 @@ limitation and refuse the fill.
    `password_browser_configured: true`.
 2. Verify the selected account, exact HTTPS page URL, page ID, main-frame ID,
    and intended field with supported browser tools. Do not read a filled value.
+   For a form inside an iframe, use the [child-frame route](#child-frames-iframes).
 3. For password mode, focus the intended password field, then pin it immediately:
 
    ```sh
@@ -92,10 +93,118 @@ hide duplicate tokens.
 Delivery does not rewrite attributes; never alter a page to bypass refusal.
 
 For a username-only DOM fill, use `--mode username` and select the username
-input. It also requires the `username` field token. Child frames, shadow DOM,
+input. It also requires the `username` field token. Without the explicit
+child-frame route below, child frames refuse. Shadow DOM,
 non-HTTPS pages, custom controls, hidden/disabled/read-only/inert fields,
 ambiguous selectors, and profiles without the configured CDP interface refuse.
 Do not weaken checks to work around refusal.
+
+## Child frames (iframes)
+
+Some sign-in forms are inside an iframe, for example an identity provider's
+widget or a `secure.` subdomain. Broker 0.16.0 and newer advertise integer
+`password_frame_protocol: 1` and `password_frame_policy: "same-site-chain-v1"`.
+Check both in `status`. The CLI refuses an older broker before it sends a
+frame request. Password, login and username modes, saved and generated
+passwords, `--password-purpose` and `--allow-autocomplete-off` work the same
+way in a child frame.
+
+### Get the page and frame IDs from the broker
+
+Browser automation tools do not show CDP IDs. Do not read raw CDP. Ask the
+broker for a read-only list of the tab's frames:
+
+```sh
+akdbx list-password-frames --top-url VERIFIED_EXACT_HTTPS_URL [--page-id PAGE_ID]
+```
+
+`--top-url` is the exact top-level URL that you verified in the address bar.
+Without `--page-id`, exactly one open tab must have this exact URL; otherwise
+the command refuses. You can then get the page ID from Chrome's read-only
+`/json/list` as before, and give it with `--page-id`. The result contains:
+
+- `page_id` and `main_frame_id`;
+- `frames`: for each frame, `frame_id`, `parent_frame_id`, `depth`, `origin`,
+  `out_of_process`, `eligible` and `visible_fields` (counts of visible password
+  and text/email inputs; never values);
+- `frame_policy` and `truncated`.
+
+The list never contains frame URLs, paths, queries, page-controlled names or
+field values. It does not read the vault, so it works while the vault is
+locked. `eligible: true` means only that the frame chain passes the policy
+below; it does not prove that the frame is the intended form. Select the frame
+whose `origin` matches the saved credential and which has the expected visible
+fields. If two eligible frames have that origin and fields, stop: the target is
+ambiguous.
+
+### Pin and fill
+
+Focus the intended input inside the frame, then pin it at once:
+
+```sh
+akdbx pin-password-target --page-id PAGE_ID --frame-id CHILD_FRAME_ID   --frame-origin https://secure.example.com   --top-url VERIFIED_EXACT_HTTPS_URL --selector '#password' --mode password
+akdbx fill --mode password --target TARGET -- FRESH_ENTRY_HANDLE
+```
+
+`--frame-origin` is the exact serialized origin from the list:
+lowercase `https://host`, with `:port` only for a port other than 443, and no
+path or slash. `--top-url` stays the exact top-level page URL, not the frame
+URL. The selector applies inside the child frame's document. A main-frame pin
+must not use `--frame-origin`; a child frame without `--frame-origin` refuses.
+
+### How the broker verifies the route
+
+The broker reads the tab's frame tree itself, including out-of-process iframe
+targets, and requires all of these at pin time and again at fill time:
+
+1. The page target and top frame have the exact `--top-url`.
+2. The frame ID exists and is attached below that page, at most 8 levels deep.
+3. Each document in the chain, from the top page to the field frame, is an
+   HTTPS secure context with a non-opaque origin that matches its URL.
+4. All documents in the chain have the same registrable domain, as Chrome
+   computes it with the public suffix list (`domainAndRegistry`). If the hosts
+   have no registrable domain (for example IP addresses), every document must
+   have the same exact origin.
+5. The field frame's origin equals `--frame-origin`.
+6. Each frame owner is a connected, visible `<iframe>` in its parent document.
+   It must not be in a shadow root, use `srcdoc`, or have a `sandbox` attribute
+   without both `allow-scripts` and `allow-same-origin`. The broker keeps each
+   owner element and refuses if it moves, hides, is removed, or changes its
+   `src`, `srcdoc`, `sandbox`, `allow`, `name` or `credentialless` attribute.
+   A change refuses also when the old state is restored later. The list marks
+   a frame `eligible` only when its owners pass these same checks.
+7. The exact frame URLs, frame IDs, parent IDs and hosting targets stay the
+   same. Navigation of the page or of any frame in the chain refuses, also when
+   the URL is restored later.
+
+At fill time, the saved or generated credential's origin must equal the field
+frame's origin. A match with only the top page or only the site is not
+sufficient. All main-frame field checks then apply inside the frame: retained
+node, exact frame URL and origin, focus and focus history, visibility,
+autocomplete rules, 30-second expiry, single use, native setters and no keys.
+
+### Phishing cases
+
+- A legitimate page that embeds a frame from another site (an ad or a
+  hostile frame): rule 4 refuses the route, and rule 5 plus the credential
+  origin check refuse a frame of another origin.
+- A hostile top page that embeds the legitimate login frame: rule 4 refuses,
+  because the top page has a different registrable domain. The password
+  never goes to a frame that a cross-site page controls.
+- A hostile frame between a legitimate top page and the login frame: rule 4
+  refuses.
+- A sandboxed frame without scripts, or with an opaque origin: rules 3 and 6
+  refuse.
+
+A same-site page can still embed or cover a same-site frame. Same-site pages
+are inside the trust boundary of the site's own credential. The owner check
+compares visibility and attributes before the fill call; the owner is in
+another document and maybe another process, so a change in that short time is
+not proven. The value can reach only the retained input in the verified frame.
+
+The private exact-URL limit also applies to `--top-url`. The broker keeps the
+frame's exact URL internally; the caller does not give it, and the broker does
+not show it.
 
 ### Password inputs without semantic autofill hints
 

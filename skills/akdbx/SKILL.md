@@ -203,6 +203,19 @@ For a username-only DOM page, focus the username input and use
 `pin-password-target` with the same page/frame/exact-URL arguments and
 `--mode username --selector USERNAME_SELECTOR`.
 
+If the form is inside an iframe (for example a `secure.` subdomain or an
+identity-provider widget), require `password_frame_protocol: 1` and
+`password_frame_policy: "same-site-chain-v1"` in `status`. Run the read-only
+`list-password-frames --top-url EXACT_HTTPS_URL` to get `page_id`, the
+frame's `frame_id` and its exact `origin`; it shows no URLs or values and needs
+no raw CDP. Focus the field in that frame, then add `--frame-id CHILD_FRAME_ID
+--frame-origin FRAME_ORIGIN` to `pin-password-target`; keep `--top-url` as the
+exact top-level URL. The saved credential's origin must equal the frame origin.
+The broker refuses cross-site frame chains (a hostile top page around a real
+login frame, or a hostile frame in a real page), sandboxed frames without
+scripts, and frames that navigate, move or hide after the pin. See
+[child frames](references/target-fill.md#child-frames-iframes).
+
 Choose the mode based on the observed form:
 
 | Mode | Where to focus | Broker action |
