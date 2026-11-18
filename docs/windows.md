@@ -153,10 +153,15 @@ power-loss safety on every storage device.
 
 ## Validation before production use
 
-Run the native automated checks on the prepared Windows machine:
+Run the native automated checks on the prepared Windows machine. Use a fresh,
+short test path directly under `LOCALAPPDATA`. The broker checks permissions on
+every parent directory, and some Windows installations allow other accounts to
+modify the default `TEMP` directory. Pytest owns the directory passed to
+`--basetemp` and clears it before starting.
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests/test_protocol.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_windows_native.py
+$testRoot = Join-Path $env:LOCALAPPDATA ('akdbx-test-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+.\.venv\Scripts\python.exe -m pytest -q tests/test_protocol.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_windows_native.py --basetemp "$testRoot"
 ```
 
 Then use only synthetic credentials for these desktop checks:

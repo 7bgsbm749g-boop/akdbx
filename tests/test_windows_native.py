@@ -8,7 +8,9 @@ from pathlib import Path
 import sys
 import socket
 import ssl
+import subprocess
 import threading
+import time
 import uuid
 from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
@@ -120,6 +122,30 @@ def test_private_file_roundtrip_and_public_acl_refusal(private_dir):
         security.read_private(path)
 
 
+def test_private_file_refused_under_unsafe_parent(private_dir):
+    child = private_dir / 'child'
+    win32file.CreateDirectory(str(child), security.private_attributes())
+    path = child / 'synthetic-private'
+    security.write_new(path, b'synthetic bytes')
+    flags = (win32security.DACL_SECURITY_INFORMATION
+             | win32security.PROTECTED_DACL_SECURITY_INFORMATION)
+    descriptor = win32security.GetNamedSecurityInfo(
+        str(private_dir), win32security.SE_FILE_OBJECT, win32security.DACL_SECURITY_INFORMATION)
+    original_acl = descriptor.GetSecurityDescriptorDacl()
+    public_acl = descriptor.GetSecurityDescriptorDacl()
+    everyone = win32security.CreateWellKnownSid(win32security.WinWorldSid)
+    public_acl.AddAccessAllowedAce(win32security.ACL_REVISION, ntsecuritycon.FILE_DELETE_CHILD, everyone)
+    win32security.SetNamedSecurityInfo(str(private_dir), win32security.SE_FILE_OBJECT,
+                                     flags, None, None, public_acl, None)
+    try:
+        with pytest.raises(PermissionError, match='grants unsafe access'):
+            security.read_private(path)
+    finally:
+        win32security.SetNamedSecurityInfo(str(private_dir), win32security.SE_FILE_OBJECT,
+                                         flags, None, None, original_acl, None)
+    assert security.read_private(path)[0] == b'synthetic bytes'
+
+
 def test_native_encrypted_save_reopens_and_preserves_unrelated_data(synthetic_vault):
     vault = open_vault_with_password(synthetic_vault, 'synthetic master')
     store = vault._akdbx_store
@@ -200,7 +226,8 @@ def test_windows_explicitly_refuses_linux_merge_and_admission():
         assert 'unavailable on Windows' in broker.dispatch({'action': action})['error']
 
 
-def test_native_https_unlock_password_totp_and_identity_saves(synthetic_vault, certificates):
+@pytest.fixture
+def native_https_config(synthetic_vault, certificates):
     certificate, key = synthetic_vault.parent / 'cert.pem', synthetic_vault.parent / 'key.pem'
     security.write_new(certificate, certificates[0].read_bytes())
     security.write_new(key, certificates[1].read_bytes())
@@ -208,9 +235,8 @@ def test_native_https_unlock_password_totp_and_identity_saves(synthetic_vault, c
         reservation.bind(('127.0.0.1', 0))
         port = reservation.getsockname()[1]
     origin = f'https://127.0.0.1:{port}'
-    broker = Broker(None, object())
-    server, unlock_url = start_windows_unlock_server(broker, synthetic_vault, None, origin, certificate, key)
     context = ssl.create_default_context(cafile=str(certificate))
+
     def submit(url, values):
         connection = HTTPSConnection('127.0.0.1', port, context=context, timeout=10)
         parsed = urlsplit(url)
@@ -221,6 +247,47 @@ def test_native_https_unlock_password_totp_and_identity_saves(synthetic_vault, c
             return response.status, response.read()
         finally:
             connection.close()
+
+    return origin, certificate, key, submit
+
+
+def test_windows_cli_serves_and_searches_synthetic_vault(synthetic_vault, native_https_config):
+    origin, certificate, key, submit = native_https_config
+    pipe = rpc.PREFIX + 'akdbx-test-' + uuid.uuid4().hex
+    command = [sys.executable, '-m', 'akdbx.cli', '--socket', pipe, '--unlock-origin', origin]
+    with subprocess.Popen(
+        [*command, 'serve', str(synthetic_vault), '--tls-cert', str(certificate), '--tls-key', str(key)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ) as server:
+        try:
+            deadline = time.monotonic() + 10
+            while True:
+                status = subprocess.run([*command, 'status'], capture_output=True, text=True, timeout=10)
+                if status.returncode == 0:
+                    break
+                assert server.poll() is None, 'Windows CLI broker exited during startup'
+                assert time.monotonic() < deadline, 'Windows CLI broker did not become ready'
+                time.sleep(0.05)
+            locked = json.loads(status.stdout)
+            assert locked['locked'] and locked['target_fill_delivery'] == 'win32-char-v1'
+            assert submit(locked['unlock_url'], {'password': 'synthetic master'})[0] == 200
+
+            search = subprocess.run([*command, 'search', 'example.test'],
+                                    capture_output=True, text=True, timeout=10)
+            assert search.returncode == 0
+            result = json.loads(search.stdout)
+            assert [entry['username'] for entry in result['entries']] == ['synthetic-user']
+            assert 'synthetic password' not in search.stdout
+        finally:
+            server.terminate()
+            server.wait(timeout=5)
+
+
+def test_native_https_unlock_password_totp_and_identity_saves(synthetic_vault, native_https_config):
+    origin, certificate, key, submit = native_https_config
+    broker = Broker(None, object())
+    server, unlock_url = start_windows_unlock_server(broker, synthetic_vault, None, origin, certificate, key)
+
     def prepare(action):
         selected = broker.dispatch({'action': 'search', 'query': 'Synthetic'})['entries'][0]
         return broker.dispatch({'action': action, 'handle': selected['handle'],
