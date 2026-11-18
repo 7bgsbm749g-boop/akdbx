@@ -171,8 +171,10 @@ def check_chain(path, top_url, frame_origin):
 
 # Runs on the actual iframe element in its parent's isolated world. Retain the
 # owner, parent, document and attributes. No credential crosses this context.
-OWNER_GUARD = r'''function() {
-  const frame = this, doc = document, parent = frame.parentElement;
+# With `track`, any parent navigation, owner attribute change or owner removal
+# after capture taints the guard permanently, even if the state is restored.
+OWNER_GUARD = r'''function(track) {
+  const frame = this, doc = document, parent = frame.parentElement, url = location.href;
   const attribute = Element.prototype.getAttribute, has = Element.prototype.hasAttribute;
   if (!(frame instanceof HTMLIFrameElement) || !frame.isConnected || frame.ownerDocument !== doc || frame.getRootNode() !== doc) return null;
   if (has.call(frame, 'srcdoc')) return null;
@@ -183,20 +185,42 @@ OWNER_GUARD = r'''function() {
     if (!tokens.includes('allow-scripts') || !tokens.includes('allow-same-origin')) return null;
   }
   const child = frame.contentWindow;
+  let tainted = false, dispose = () => {};
   const check = () => {
-    if (!frame.isConnected || frame.ownerDocument !== doc || frame.getRootNode() !== doc || frame.parentElement !== parent ||
+    if (tainted || location.href !== url || !frame.isConnected || frame.ownerDocument !== doc || frame.getRootNode() !== doc || frame.parentElement !== parent ||
         !child || frame.contentWindow !== child || names.some((n, i) => attribute.call(frame, n) !== values[i]) ||
         doc.visibilityState !== 'visible' || frame.closest('[inert]')) return false;
     const r = frame.getBoundingClientRect(), s = getComputedStyle(frame);
     return frame.checkVisibility({checkOpacity: true, checkVisibilityCSS: true}) && r.width > 0 && r.height > 0 &&
       r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none';
   };
-  return check() ? {check} : null;
+  if (!check()) return null;
+  if (track) {
+    if (!window.navigation) return null;
+    const dirty = () => { tainted = true; };
+    window.navigation.addEventListener('navigate', dirty);
+    doc.addEventListener('visibilitychange', dirty, true);
+    const observer = new MutationObserver(records => {
+      for (const r of records) {
+        if (r.type === 'attributes' && r.target === frame) dirty();
+        if (r.type === 'childList' && [...r.removedNodes].some(n => n === frame || n.contains(frame))) dirty();
+      }
+    });
+    observer.observe(frame, {attributes: true, attributeFilter: names});
+    observer.observe(doc, {childList: true, subtree: true});
+    dispose = () => {
+      window.navigation.removeEventListener('navigate', dirty);
+      doc.removeEventListener('visibilitychange', dirty, true);
+      observer.disconnect();
+    };
+  }
+  return {check, dispose: () => dispose()};
 }'''
 GUARD_CHECK = 'function() { return this.check(); }'
+GUARD_DISPOSE = 'function() { this.dispose(); }'
 
 
-def owner_guards(cdp, path):
+def owner_guards(cdp, path, track=True):
     """Retain one owner guard per child hop, in its parent document."""
     guards = []
     for parent, child in zip(path, path[1:]):
@@ -205,12 +229,22 @@ def owner_guards(cdp, path):
         context = cdp.call('Page.createIsolatedWorld', {'frameId': parent['frame']['id'],
                            'worldName': 'akdbx-password-owner-v1'}, session)['executionContextId']
         node = cdp.call('DOM.resolveNode', {'backendNodeId': owner, 'executionContextId': context}, session)['object']['objectId']
-        result = cdp.call('Runtime.callFunctionOn', {'objectId': node, 'functionDeclaration': OWNER_GUARD, 'silent': True}, session)
+        result = cdp.call('Runtime.callFunctionOn', {'objectId': node, 'functionDeclaration': OWNER_GUARD,
+                          'arguments': [{'value': track}], 'silent': True}, session)
         obj = result.get('result', {})
         if 'exceptionDetails' in result or obj.get('type') != 'object' or obj.get('subtype') == 'null' or not obj.get('objectId'):
             raise TargetError()
         guards.append((session, obj['objectId']))
     return guards
+
+
+def release_guards(cdp, guards):
+    for session, obj in guards:
+        try:
+            cdp.call('Runtime.callFunctionOn', {'objectId': obj, 'functionDeclaration': GUARD_DISPOSE, 'silent': True},
+                     session, timeout=0.2)
+        except Exception:
+            pass
 
 
 def guards_hold(cdp, guards):
@@ -287,7 +321,8 @@ def listing(cdp, top_session, page_id, top_url):
         else:
             try:
                 check_chain(path, top_url, origin)
-            except TargetError:
+                owner_guards(cdp, path, track=False)  # Same owner rules as a pin.
+            except Exception:
                 eligible = False
         fields = None
         if eligible:

@@ -171,6 +171,8 @@ targets, and requires all of these at pin time and again at fill time:
    without both `allow-scripts` and `allow-same-origin`. The broker keeps each
    owner element and refuses if it moves, hides, is removed, or changes its
    `src`, `srcdoc`, `sandbox`, `allow`, `name` or `credentialless` attribute.
+   A change refuses also when the old state is restored later. The list marks
+   a frame `eligible` only when its owners pass these same checks.
 7. The exact frame URLs, frame IDs, parent IDs and hosting targets stay the
    same. Navigation of the page or of any frame in the chain refuses, also when
    the URL is restored later.

@@ -254,6 +254,7 @@ class PasswordPin:
 
     def close(self):
         try:
+            password_frames.release_guards(self.connection, self.guards)
             self.connection.call('Runtime.callFunctionOn', {'objectId': self.object_id,
                                  'functionDeclaration': 'function() { this.dispose(); }'}, self.session, timeout=0.2)
             self.connection.call('Runtime.releaseObject', {'objectId': self.object_id}, self.session, timeout=0.2)

@@ -317,8 +317,8 @@ def test_phishing_and_sandboxed_routes_refuse_at_pin(lab, top, origin, saved):
     try:
         listed = broker.dispatch(dict(action='list-password-frames', password_protocol=1, frame_protocol=1, top_url=top))
         assert listed['ok']
-        if 'sandbox' not in top:
-            assert not next(f for f in listed['frames'] if f['frame_id'] == fid)['eligible']
+        # Listing applies the same chain and owner rules as a pin.
+        assert not next(f for f in listed['frames'] if f['frame_id'] == fid)['eligible']
         if 'no-scripts' not in top:
             focus(lab, fid)
         assert broker.dispatch(request(lab, top, fid, origin)) == failure()
@@ -376,6 +376,11 @@ CHANGES = {
     'owner-removed': ('top', 'f.remove()'),
     'owner-moved': ('top', 'document.body.append(f)'),
     'top-navigated': ('top', "history.pushState(null, '', location.pathname + '?next')"),
+    # Restoring the original state must not resurrect a tainted pin.
+    'top-navigated-restored': ('top', "const u = location.href; history.pushState(null, '', '/elsewhere'); history.replaceState(null, '', u)"),
+    'owner-name-restored': ('top', "f.setAttribute('name', 'other'); f.removeAttribute('name')"),
+    'owner-sandbox-restored': ('top', "f.setAttribute('sandbox', ''); f.removeAttribute('sandbox')"),
+    'owner-hidden-restored': ('top', "const e = f; e.remove(); document.body.prepend(e)"),
     'field-replaced': ('frame', "password.outerHTML = '<input id=password type=password autocomplete=current-password>'"),
 }
 
