@@ -2,7 +2,8 @@
 
 CDP is a privileged local interface. The operator selects the profile at broker
 startup, never through RPC. Hostile pages/OS and other local debugging clients
-are outside this boundary. Unsupported frames/controls fail closed.
+are outside this boundary. Unsupported frames/controls fail closed. Child frames
+need the explicit same-site route proof in `password_frames`.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from urllib.parse import urlsplit
 
 from .target import TargetError, DeliveryError
 from .totp import https_origin
+from . import password_frames
 
 DELIVERY = 'chromium-password-dom-v1'
 PROTOCOL = 1
@@ -156,8 +158,10 @@ class CDP:
 
 # Both scripts run in a fresh isolated world. Retain the actual elements, native
 # setter/getters and document, never resolve a replacement by selector on fill.
-CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, allowAutocompleteOff) {
-  if (!isSecureContext || location.href !== url || !document.hasFocus() || document.visibilityState !== 'visible') throw 0;
+CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, allowAutocompleteOff, frameOrigin) {
+  // A child frame must keep its exact non-opaque origin (sandboxing makes it "null").
+  const sameOrigin = () => frameOrigin === null || (location.origin === frameOrigin && self.origin === frameOrigin);
+  if (!isSecureContext || location.href !== url || !sameOrigin() || !document.hasFocus() || document.visibilityState !== 'visible') throw 0;
   const query = s => { const a = document.querySelectorAll(s); if (a.length !== 1) throw 0; return a[0]; };
   const password = mode === 'username' ? null : query(selector);
   const username = mode === 'password' ? null : query(mode === 'username' ? selector : usernameSelector);
@@ -211,7 +215,7 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
     observer.disconnect();
   };
   const originalFocus = document.activeElement;
-  const check = () => performance.now() - created < 30000 && !tainted && isSecureContext && location.href === url && document.hasFocus() && document.visibilityState === 'visible' && document.activeElement === originalFocus &&
+  const check = () => performance.now() - created < 30000 && !tainted && isSecureContext && location.href === url && sameOrigin() && document.hasFocus() && document.visibilityState === 'visible' && document.activeElement === originalFocus &&
     (!password || valid(password, true) && query(selector) === password) &&
     (!username || valid(username, false) && query(mode === 'username' ? selector : usernameSelector) === username) &&
     (!password || !username || password !== username && password.form === username.form);
@@ -242,6 +246,11 @@ class PasswordPin:
     frame_id: str
     url: str
     mode: str
+    # Child-frame pins only: the exact top URL, verified route and owner guards.
+    top_url: str | None = None
+    frame_origin: str | None = None
+    route: dict | None = None
+    guards: tuple = ()
 
     def close(self):
         try:
@@ -283,15 +292,21 @@ class BrowserPasswords:
         """Reserve capacity atomically and capture the DOM target outside locks."""
         self.prune()
         required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode'}
-        optional = set(request) & {'password_purpose', 'allow_autocomplete_off'}
+        optional = set(request) & {'password_purpose', 'allow_autocomplete_off', 'frame_protocol', 'frame_origin'}
         if (set(request) != required | optional | ({'username_selector'} if request.get('mode') == 'login' else set())
                 or type(request.get('password_protocol')) is not int or request['password_protocol'] != PROTOCOL
                 or request.get('mode') not in {'username', 'password', 'login'}
                 or ('password_purpose' in request and (request['mode'] != 'password' or not isinstance(request['password_purpose'], str)
                                   or request['password_purpose'] not in {'current-password', 'new-password'}))
                 or ('allow_autocomplete_off' in request and (request['allow_autocomplete_off'] is not True
-                        or request['mode'] != 'password' or 'password_purpose' not in request))):
+                        or request['mode'] != 'password' or 'password_purpose' not in request))
+                # Child-frame routing is explicit: both fields or neither.
+                or ('frame_protocol' in request) != ('frame_origin' in request)
+                or ('frame_protocol' in request and (type(request['frame_protocol']) is not int
+                        or request['frame_protocol'] != password_frames.PROTOCOL))):
             raise TargetError()
+        if 'frame_origin' in request:
+            password_frames.canonical_origin(request['frame_origin'])
         for key in required - {'action', 'password_protocol'} | ({'username_selector'} if request['mode'] == 'login' else set()):
             if not isinstance(request[key], str) or not 0 < len(request[key]) <= 4096:
                 raise TargetError()
@@ -315,15 +330,28 @@ class BrowserPasswords:
             if page['type'] != 'page' or page['url'] != request['top_url']:
                 raise TargetError()
             session = connection.call('Target.attachToTarget', {'targetId': request['page_id'], 'flatten': True})['sessionId']
-            frame = connection.call('Page.getFrameTree', session=session)['frameTree']['frame']
-            if frame['id'] != request['frame_id'] or frame_url(frame) != request['top_url']:
-                raise TargetError()  # Child frames and shadow DOM are deliberately unsupported.
-            world = connection.call('Page.createIsolatedWorld', {'frameId': frame['id'], 'worldName': 'akdbx-password-v1'}, session)['executionContextId']
-            args = [request['selector'], request.get('username_selector'), request['mode'], request['top_url'], request.get('password_purpose'), request.get('allow_autocomplete_off', False)]
-            result = connection.call('Runtime.evaluate', {'expression': CAPTURE + '(' + ','.join(json.dumps(v) for v in args) + ')', 'contextId': world}, session)
+            route, guards, origin = None, (), request.get('frame_origin')
+            if origin is None:
+                frame = connection.call('Page.getFrameTree', session=session)['frameTree']['frame']
+                if frame['id'] != request['frame_id'] or frame_url(frame) != request['top_url']:
+                    raise TargetError()  # Child frames need the explicit frame route below.
+                url, field_session = request['top_url'], session
+            else:
+                route = password_frames.resolve(connection, session, request['page_id'], request['top_url'],
+                                                request['frame_id'], origin)
+                guards = tuple(password_frames.owner_guards(connection, route['path']))
+                frame = route['path'][-1]['frame']
+                url, field_session = frame_url(frame), route['field_session']
+            world = connection.call('Page.createIsolatedWorld', {'frameId': frame['id'], 'worldName': 'akdbx-password-v1'}, field_session)['executionContextId']
+            args = [request['selector'], request.get('username_selector'), request['mode'], url, request.get('password_purpose'),
+                    request.get('allow_autocomplete_off', False), origin]
+            result = connection.call('Runtime.evaluate', {'expression': CAPTURE + '(' + ','.join(json.dumps(v) for v in args) + ')', 'contextId': world}, field_session)
             if 'exceptionDetails' in result or result['result'].get('type') != 'object' or 'objectId' not in result['result']:
                 raise TargetError()
-            pin = PasswordPin(connection, session, result['result']['objectId'], page['targetId'], frame['id'], request['top_url'], request['mode'])
+            pin = PasswordPin(connection, field_session, result['result']['objectId'], page['targetId'], frame['id'], url, request['mode'],
+                              request['top_url'] if route else None, origin, route, guards)
+            if route is not None and not password_frames.verify(connection, route, request['top_url'], origin, guards):
+                raise TargetError()
             token = secrets.token_hex(32)
             with self._lock:
                 if self._closed:
@@ -336,6 +364,48 @@ class BrowserPasswords:
             else:
                 connection.close()
             raise TargetError() from None
+
+    def frames(self, request):
+        """Read-only frame discovery for one exact top-level page; no pin or value.
+
+        The page id is optional: without it exactly one page target must have
+        the exact top URL. Only origins, ids and visible field counts return.
+        """
+        allowed = {'action', 'password_protocol', 'frame_protocol', 'top_url'}
+        if (set(request) - {'page_id'} != allowed or type(request.get('password_protocol')) is not int
+                or request['password_protocol'] != PROTOCOL or type(request.get('frame_protocol')) is not int
+                or request['frame_protocol'] != password_frames.PROTOCOL or not isinstance(request.get('top_url'), str)
+                or not 0 < len(request['top_url']) <= 4096
+                or 'page_id' in request and (not isinstance(request['page_id'], str) or not 0 < len(request['page_id']) <= 128)):
+            raise TargetError()
+        https_origin(request['top_url'])
+        with self._lock:
+            if self._closed or len(self.pins) + self._creating >= MAX_PINS:
+                raise TargetError()
+            self._creating += 1
+        try:
+            connection = CDP(self.profile)
+            try:
+                if 'page_id' in request:
+                    page = connection.call('Target.getTargetInfo', {'targetId': request['page_id']})['targetInfo']
+                    if page['type'] != 'page' or page['url'] != request['top_url']:
+                        raise TargetError()
+                    page_id = page['targetId']
+                else:
+                    pages = [t for t in connection.call('Target.getTargets')['targetInfos']
+                             if t.get('type') == 'page' and t.get('url') == request['top_url']]
+                    if len(pages) != 1:
+                        raise TargetError()  # Missing or ambiguous: pass --page-id.
+                    page_id = pages[0]['targetId']
+                session = connection.call('Target.attachToTarget', {'targetId': page_id, 'flatten': True})['sessionId']
+                return password_frames.listing(connection, session, page_id, request['top_url'])
+            finally:
+                connection.close()
+        except Exception:
+            raise TargetError() from None
+        finally:
+            with self._lock:
+                self._creating -= 1
 
     def consume(self, token):
         """Atomically take one token; never sweep other pins during a fill."""
@@ -354,9 +424,13 @@ class BrowserPasswords:
             if mode != pin.mode or https_origin(site_url) != https_origin(pin.url):
                 raise TargetError()
             page = pin.connection.call('Target.getTargetInfo', {'targetId': pin.page_id})['targetInfo']
-            frame = pin.connection.call('Page.getFrameTree', session=pin.session)['frameTree']['frame']
-            if page['url'] != pin.url or frame_url(frame) != pin.url or frame['id'] != pin.frame_id or not ready():
-                raise TargetError()
+            if pin.route is None:
+                frame = pin.connection.call('Page.getFrameTree', session=pin.session)['frameTree']['frame']
+                if page['url'] != pin.url or frame_url(frame) != pin.url or frame['id'] != pin.frame_id or not ready():
+                    raise TargetError()
+            elif (page['url'] != pin.top_url or not ready()
+                    or not password_frames.verify(pin.connection, pin.route, pin.top_url, pin.frame_origin, pin.guards)):
+                raise TargetError()  # Any frame, owner or parent change refuses.
             # Sample renderer time without secrets. Using this older sample
             # plus the remaining host budget gives a conservative renderer
             # deadline, even if the subsequent fill command sits in its queue.

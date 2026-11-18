@@ -25,6 +25,7 @@ from .versions import active_entries
 from .totp import (MIN_VALIDITY, TotpError, capabilities as totp_capabilities,
                    configured as totp_configured, read_configuration, code_at, https_origin)
 from .browser_password import BrowserPasswords, PasswordPin, DELIVERY as PASSWORD_DELIVERY
+from .password_frames import PROTOCOL as PASSWORD_FRAME_PROTOCOL, POLICY as PASSWORD_FRAME_POLICY
 from . import __version__
 from .notifications import UnlockNotifications, capabilities as notification_capabilities
 from .card_notifications import CardSaveNotifications, capabilities as card_notification_capabilities
@@ -234,7 +235,13 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+        if action == 'list-password-frames':
+            # Read-only browser discovery: no vault access, credential or pin.
+            try:
+                return self.passwords.frames(request)
+            except Exception:
+                return {'ok': False, 'error': 'frame list unavailable: page missing, ambiguous, changed or unsupported'}
         if self.locked:
             return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
