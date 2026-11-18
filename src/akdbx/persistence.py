@@ -140,7 +140,13 @@ class VaultStore:
                     os.close(fd)
 
     def check_write_inputs(self):
-        """Revalidate changed key metadata before an ordinary write is prepared."""
+        """Revalidate key metadata and interrupted merges before a write is prepared.
+
+        A peer broker's prepared merge receipt leaves this broker's vault
+        metadata unchanged. Scan recovery under the shared disk lock here, so
+        a generated reset is never authorized only to be refused at commit
+        after the site has accepted the new password.
+        """
         if self.keyfile_path is not None:
             keyfile = self._open_keyfile()
             try:
@@ -149,7 +155,28 @@ class VaultStore:
                 os.close(keyfile)
             if changed:
                 self._check_keyfile()
-        return self.writable_path
+        if self.recovery_required or not self.writable_path:
+            return False
+        directory = self._directory()
+        try:
+            lock = self._open_write_lock(directory, create=True)
+            try:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    # A live save or merge holds the lock: temporarily unavailable,
+                    # not failed recovery. Its own receipt decides the outcome.
+                    return False
+                try:
+                    self._check_merge_recovery(directory)
+                except Exception:
+                    self.recovery_required = True
+                    return False
+            finally:
+                os.close(lock)
+        finally:
+            os.close(directory)
+        return not self.recovery_required and self.writable_path
 
     def _write_name(self, kind, token):
         return '.' + self.path.name + '.akdbx-' + kind + '-' + token

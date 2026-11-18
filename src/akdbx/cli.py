@@ -343,14 +343,20 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+WINDOWS_PASSWORD_REFUSAL = ('Windows fills only usernames (fill --mode username) and TOTP codes (fill-totp); '
+                            'password, login and generated-password fills are Linux-only; nothing was sent')
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run one CLI command and return its process exit status."""
     args = parser().parse_args(argv)
     if os.name == 'nt' and args.broker_uid is not None:
         print('--broker-uid applies only to Linux; Windows requires the same user/session', file=sys.stderr)
         return 2
-    if os.name == 'nt' and args.command == 'fill' and args.mode == 'login':
-        print('Windows requires separate --mode username and --mode password fills with fresh handles and pins', file=sys.stderr)
+    if os.name == 'nt' and (args.command == 'fill-generated' or args.command == 'fill' and args.mode != 'username'):
+        # Only verified Chromium DOM pins may receive passwords, and a browser's
+        # address bar shares its page's HWND. Refuse before contacting the broker.
+        print(WINDOWS_PASSWORD_REFUSAL, file=sys.stderr)
         return 2
     if args.socket is None:
         try:

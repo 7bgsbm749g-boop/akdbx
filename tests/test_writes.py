@@ -767,6 +767,39 @@ def test_unsafe_write_ancestry_preserves_read_only_unlock(tmp_path, template):
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason='requires real directory permission denial')
+def test_peer_prepared_merge_receipt_blocks_generated_reset_before_any_fill(deployed):
+    """Another broker's interrupted merge is found before a site password changes."""
+    broker, typer, path, _ = deployed
+    assert broker.dispatch({'action': 'ping'})['writes_available'] is True
+    operation = 'd' * 32
+    bundle = path.parent / ('.' + path.name + '.akdbx-merge-' + operation)
+    bundle.mkdir(mode=0o700)
+    fd = os.open(bundle / 'receipt.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        json.dump({'operation_id': operation, 'state': 'prepared'}, stream)
+    prepared = begin(broker, 'generate-password')
+    assert prepared['ok'] is False and 'fill_handles' not in prepared
+    status = broker.dispatch({'action': 'ping'})
+    assert status['writes_available'] is False and status['recovery_required'] is True
+    assert not typer.events
+
+
+def test_live_peer_save_makes_writes_busy_without_latching_recovery(deployed):
+    import fcntl
+    broker, typer, path, _ = deployed
+    fd = os.open(path.parent / ('.' + path.name + '.akdbx.lock'), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        status = broker.dispatch({'action': 'ping'})
+        assert status['writes_available'] is False and status['recovery_required'] is False
+        assert begin(broker, 'generate-password')['ok'] is False
+    finally:
+        os.close(fd)
+    status = broker.dispatch({'action': 'ping'})
+    assert status['writes_available'] is True and status['recovery_required'] is False
+    assert begin(broker, 'generate-password')['ok'] is True
+
+
 def test_read_only_target_directory_disables_resets_but_preserves_fill(tmp_path, template):
     """Readiness must reject a stable denial before exposing a generated reset."""
     directory = tmp_path / 'read-only'

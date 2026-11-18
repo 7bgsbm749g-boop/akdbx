@@ -567,7 +567,7 @@ class Harness:
                        f'code={code}')
         # Combined login fill is refused by the Windows CLI before sending.
         code, _, error = self.cli('fill', self.select('Desktop ASCII')['handle'], '--mode', 'login', '--target', '0' * 64)
-        self.check('3', 'combined login fill is refused on Windows', code == 2 and 'separate' in error)
+        self.check('3', 'combined login fill is refused on Windows', code == 2 and 'only usernames' in error)
         # Hung target window: pinned, then its GUI thread stops pumping messages.
         a.send('clear')
         if self._front(a, 0):

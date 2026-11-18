@@ -32,10 +32,25 @@ def fold_name(name):
     return ''.join(upper if len(upper := char.upper()) == 1 else char for char in name)
 
 
+def long_name(path):
+    """Spell an existing path with its on-disk long names.
+
+    NTFS opens a file through its 8.3 short name too, but lock and recovery
+    artifact names derive from the vault filename. GetLongPathName expands
+    short components without resolving junctions or symlinks, so the reparse
+    point checks still see the caller's path components.
+    """
+    try:
+        import win32api
+        return Path(win32api.GetLongPathName(str(path)))
+    except Exception:  # A missing vault fails later, at its checked open.
+        return path
+
+
 class WindowsVaultStore:
     def __init__(self, database):
         # Do not resolve junctions/symlinks before validating them.
-        self.path = Path(os.path.abspath(Path(database).expanduser()))
+        self.path = long_name(Path(os.path.abspath(Path(database).expanduser())))
         self.expected = None
         self.verified_encrypted = None
         self.verified_capsules = None

@@ -217,6 +217,25 @@ def test_recovery_artifacts_match_a_differently_cased_vault_path(synthetic_vault
     assert not Broker(reopened, object()).dispatch({'action': 'search'})['ok']
 
 
+def test_short_name_alias_finds_long_name_recovery(private_dir, synthetic_vault, monkeypatch):
+    import win32api
+    long_path = private_dir / 'synthetic-long-vault-name.kdbx'
+    os.rename(synthetic_vault, long_path)
+    short_path = Path(win32api.GetShortPathName(str(long_path)))
+    if short_path.name.lower() == long_path.name.lower():
+        pytest.skip('8.3 short names are disabled on this volume')
+    vault = open_vault_with_password(long_path, 'synthetic master')
+    store = vault._akdbx_store
+    def fail(_source, _destination):
+        raise OSError('synthetic replace failure')
+    monkeypatch.setattr(store, '_replace', fail)
+    with pytest.raises(SaveError, match='uncertain'):
+        store.commit(vault, lambda candidate: setattr(candidate.entries[0], 'password', 'synthetic short update'))
+    reopened = open_vault_with_password(short_path, 'synthetic master')
+    assert reopened._akdbx_store.path.name == long_path.name
+    assert reopened._akdbx_store.recovery_required
+
+
 def test_name_folding_matches_ntfs_single_unit_uppercase():
     from akdbx.windows_store import fold_name
     assert fold_name('.Vault.kdbx.akdbx-commit-ab.json') == '.VAULT.KDBX.AKDBX-COMMIT-AB.JSON'
@@ -529,3 +548,17 @@ def test_malformed_receipt_unlocks_into_blocked_recovery(synthetic_vault, data):
     assert status['locked'] is False and status['recovery_required'] is True
     assert status['writes_available'] is False
     assert broker.dispatch({'action': 'search'})['ok'] is False
+
+
+@pytest.mark.parametrize('argv', [['fill', 'synthetic', '--mode', 'password', '--target', 'synthetic'],
+                                  ['fill', 'synthetic', '--mode', 'login', '--target', 'synthetic'],
+                                  ['fill', 'synthetic', '--target', 'synthetic'],
+                                  ['fill-generated', 'synthetic', '--target-url', 'https://example.test/reset',
+                                   '--target', 'synthetic']])
+def test_windows_cli_refuses_password_fills_without_contacting_broker(monkeypatch, capsys, argv):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail('a password fill reached broker RPC on Windows')
+    monkeypatch.setattr(cli, 'request', forbidden)
+    assert cli.main(argv) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and captured.err.strip() == cli.WINDOWS_PASSWORD_REFUSAL
