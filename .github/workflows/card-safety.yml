@@ -1,6 +1,8 @@
 name: Card safety
 
 on:
+  # The Release workflow reuses this exact suite as a gate.
+  workflow_call:
   push:
     branches: [main]
   pull_request:

@@ -1,0 +1,68 @@
+# Releasing akdbx
+
+Each version has one GitHub release for every platform. akdbx is pure Python,
+so one `py3-none-any` wheel installs on Linux and Windows. Environment markers
+in `pyproject.toml` select `python-xlib` or `pywin32`. Do not make separate
+Linux and Windows releases: the CLI and broker check each other's version and
+capabilities, and one version must mean the same code everywhere. If a frozen
+Windows executable is added later, attach it to the same release.
+
+`main` is the release line. `master` must stay equal to `main`; do not merge
+pull requests into it separately.
+
+## Cut a release
+
+1. On a branch from `main`, set the new version in `pyproject.toml` and
+   `src/akdbx/__init__.py`. Update the version that tests expect:
+
+   ```sh
+   git grep -l 'OLD_VERSION' -- tests
+   ```
+
+   Add a short entry for user-visible changes where the README or skill
+   references describe versioned capabilities.
+2. Merge the pull request into `main` after all checks pass. Fast-forward
+   `master` to the same commit.
+3. Tag the merge commit and push only the tag:
+
+   ```sh
+   git switch main && git pull --ff-only
+   git tag -a v1.2.3 -m "akdbx 1.2.3"
+   git push origin v1.2.3
+   ```
+
+The `Release` workflow then:
+
+- refuses a tag that is not `vX.Y.Z`, that does not match both version
+  strings, or whose commit is not on `main`;
+- reruns the `Tests` (Linux and Windows), `Card safety`, `Password field
+  safety` and `Private authenticator import` workflows on the tagged commit;
+- builds one sdist and one universal wheel, writes `SHA256SUMS`, and installs
+  the wheel into clean Linux and Windows environments;
+- records a GitHub build-provenance attestation for both files;
+- publishes the release with the platform table from
+  `.github/release-notes.md` and generated change notes.
+
+If any step fails, nothing is published. Fix the problem with a new version;
+do not move or reuse a published tag.
+
+## Install or upgrade a broker from a release
+
+Download the assets from the release and verify them before use:
+
+```sh
+gh release download v1.2.3 --repo 7bgsbm749g-boop/akdbx
+sha256sum --check SHA256SUMS
+gh attestation verify akdbx-1.2.3-py3-none-any.whl --repo 7bgsbm749g-boop/akdbx
+```
+
+Install the wheel, or unpack the sdist into a new immutable release directory
+if the host's private deployment notes use source copies. Check that every
+runtime dependency in the release's `pyproject.toml` is present before
+switching. Keep the previous release directory for rollback.
+
+Restarting a broker locks its vault. Use the host's existing restart procedure
+and browser-control lease, confirm that exactly one broker runs the new
+version, and give the user the broker's private unlock link. Record the
+deployment in the host's private evidence store. Host names, paths, vaults and
+service names belong in private deployment notes, not in this repository.

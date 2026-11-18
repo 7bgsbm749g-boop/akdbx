@@ -1,5 +1,7 @@
 name: Private authenticator import
 on:
+  # The Release workflow reuses this exact suite as a gate.
+  workflow_call:
   pull_request:
   push:
     branches: [main]
