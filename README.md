@@ -5,10 +5,11 @@
 Linux/X11 is the established backend. An **experimental native Windows backend**
 adds local named pipes, Windows access checks, directed Unicode window messages,
 encrypted saves, and a local HTTPS unlock page. It requires separate username and
-password fills; native merge and snapshot admission remain Linux-only. Real
-Windows desktop/browser acceptance is still pending. See [Windows setup and
-validation](docs/windows.md) before using it, and use synthetic vaults until those
-checks pass. The Linux-specific security and Tailscale instructions below do not
+password fills; native merge and snapshot admission remain Linux-only. A native
+Win32 edit control, Chrome and Edge passed the Windows 11 desktop acceptance check;
+second-user, elevated-target and held-key checks are still pending. See [Windows
+setup and validation](docs/windows.md) before using it, and use synthetic vaults
+until those checks pass. The Linux-specific security and Tailscale instructions below do not
 describe the Windows transport.
 
 Source and issue tracker: [7bgsbm749g-boop/akdbx](https://github.com/7bgsbm749g-boop/akdbx).

@@ -3,8 +3,9 @@
 Use the installed Windows executable, typically
 `CHECKOUT\.venv\Scripts\akdbx.exe`, in the broker's Windows desktop session. Keep
 the existing signed-in app when it satisfies the task. This backend is
-experimental: use synthetic vaults until the requested real-app validation is
-complete. The repository's `docs/windows.md` contains setup and the validation
+experimental: desktop checks passed for a native Win32 edit control, Chrome and
+Edge, but use synthetic vaults until the second-user and elevated-target checks
+are complete. The repository's `docs/windows.md` contains setup and the validation
 checklist; this reference covers operation of an already configured broker.
 
 - Use the independently configured `AKDBX_UNLOCK_ORIGIN` (normally

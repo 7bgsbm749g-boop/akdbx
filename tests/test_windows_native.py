@@ -241,6 +241,20 @@ def test_readonly_target_and_hard_links_disable_writes(synthetic_vault):
         security.read_private(synthetic_vault)
 
 
+def test_vault_through_directory_junction_is_refused(synthetic_vault, tmp_path):
+    import _winapi
+    junction = tmp_path / 'junction'
+    _winapi.CreateJunction(str(synthetic_vault.parent), str(junction))
+    try:
+        with pytest.raises(PermissionError, match='unlinked'):
+            security.read_private(junction / synthetic_vault.name)
+        with pytest.raises((PermissionError, OSError, SaveError)):
+            open_vault_with_password(junction / synthetic_vault.name, 'synthetic master')
+    finally:
+        os.rmdir(junction)
+    assert security.read_private(synthetic_vault)[0]
+
+
 def test_alternate_data_streams_are_refused(synthetic_vault):
     with pytest.raises(PermissionError):
         security.read_private(str(synthetic_vault) + ':stream')

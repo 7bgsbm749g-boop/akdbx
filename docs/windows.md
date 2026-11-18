@@ -4,10 +4,11 @@ Use native 64-bit Python 3.11 or newer on Windows 10/11 with an interactive
 desktop. WSL does not supply the native Windows backend. Install the same project;
 `pywin32` is installed on Windows and `python-xlib` is installed only on Linux.
 
-This implementation is awaiting tests in real Windows applications. Hosted
-Windows CI tests the native pipe, file access checks, encrypted saves and recovery;
-it does not prove that a browser accepts directed window messages. Use a synthetic
-vault with invented credentials until the desktop checklist below passes.
+Hosted Windows CI tests the native pipe, file access checks, encrypted saves and
+recovery; it does not prove that an application accepts directed window messages.
+The desktop acceptance check below passed with a native Win32 edit control,
+Chrome and Edge on Windows 11. Second-user, elevated-target and held-key checks
+are still pending, so use a synthetic vault with invented credentials.
 
 ## Supported operations and limits
 
@@ -164,20 +165,44 @@ $testRoot = Join-Path $env:LOCALAPPDATA ('akdbx-test-' + [guid]::NewGuid().ToStr
 .\.venv\Scripts\python.exe -m pytest -q tests/test_protocol.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_windows_native.py --basetemp "$testRoot"
 ```
 
-Then use only synthetic credentials for these desktop checks:
+Then run the desktop acceptance check from an interactive, unlocked desktop. It
+uses only synthetic credentials and the installed `akdbx.exe`. It asks for OK
+first, then takes the foreground for about three minutes; do not type or click
+while it runs. It fills a native Win32 window, then Chrome and Edge in temporary
+profiles. Fixtures report only SHA-256 digests, and the JSON report contains no
+credential values. It removes its private test directories when it finishes.
 
-1. Unlock, search and separately fill a native Unicode edit control, then a local
-   browser login fixture. Check ASCII, non-ASCII, punctuation and TOTP acceptance.
-2. Switch to another app or field before/during dispatch. Check refusal or an
-   uncertain result, with no characters sent to the new foreground app.
-3. Check expired/reused pins, wrong PID/HWND, held keys, disconnected clients,
-   hung windows and elevated/unsupported targets. No automatic retry is allowed.
-4. Exercise private imports and generated-password saves through the HTTPS page.
-   Reopen the synthetic KDBX independently and check unrelated fields/history.
-5. Test with a second standard Windows user: the pipe and private files must be
-   inaccessible. Check junctions, unsafe DACLs, external edits, concurrent writers
-   and interrupted-save recovery. Native CI does not replace this second-user test.
-6. Confirm no secrets in console output, RPC receipts, logs or unencrypted files.
+```powershell
+.\.venv\Scripts\python.exe tests\windows_desktop_check.py --report evidence\windows-desktop.json
+```
+
+Recorded result (2026-11-18, Windows 11 Home build 26200, Python 3.11.9, akdbx
+0.11.0, Chrome 157.0.8103.80, Edge 157.0.4341.60): 47 of 47 checks passed.
+
+| Checklist item | Covered by the desktop check | Result |
+| --- | --- | --- |
+| 1. Fills | Username/password into a Win32 `EDIT` (ASCII, punctuation, non-ASCII, emoji surrogate pairs), Chrome and Edge DOM fields; TOTP into all three | Pass |
+| 2. Focus changes | Foreground switch to another app after pinning; focus moved to another field | Refused before any character |
+| 3. Pins and targets | Background, wrong-PID and child-HWND pins; reused and expired pins; reused search handle; hung window; target exit; combined login fill | Refused; hung target reported `uncertain` and received no characters |
+| 4. Saves | Generated password filled into password and confirmation fields and committed; private HTTPS password import; independent reopen checks history and unrelated entries | Pass |
+| 6. Secrecy | CLI output, broker log, receipts and lock file scanned for every synthetic secret | No secret found |
+
+A TOTP fill near the end of a code period is refused with `retry_after` and
+sends nothing. The check honours that response once, with a new search handle and
+pin.
+
+These checks need a person or a second account, and they remain pending. Use only
+synthetic credentials:
+
+1. Hold a key or mouse button during dispatch. Check refusal or an uncertain
+   result, with no automatic retry.
+2. Pin an elevated window or a UAC prompt. Check refusal before any character.
+3. Test with a second standard Windows user (checklist item 5): the pipe and
+   private files must be inaccessible. Native CI covers unsafe DACLs, junction and
+   alternate-stream refusal, external edits, concurrent writers and interrupted-save
+   recovery for one user; it does not replace this second-user test.
+4. Fill each additional application you plan to use, and check its nonsecret
+   outcome. Applications can ignore synthetic window messages.
 
 Record the Windows version, Python version and application versions with results.
 An automated CI pass does not complete this checklist.

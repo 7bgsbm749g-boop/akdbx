@@ -10,8 +10,9 @@ Use this skill for the user's authorized login task. The broker exposes login me
 On native Windows, first read [Windows operation](references/windows.md). Its
 loopback HTTPS, named-pipe transport, HWND pins and separate field fills replace
 the Linux/X11/Tailscale-specific instructions below. Windows support is
-experimental and needs real desktop validation; do not treat a CI pass as proof
-that an application accepts fills. Merge and snapshot admission are Linux-only.
+experimental. Desktop checks passed for a native Win32 edit control, Chrome and
+Edge; other applications can ignore directed window messages, so check each
+application's nonsecret outcome after a fill. Merge and snapshot admission are Linux-only.
 
 ## Session delegation
 
