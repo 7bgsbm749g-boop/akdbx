@@ -185,15 +185,20 @@ credential values. It removes its private test directories when it finishes.
 ```
 
 Recorded result (2026-11-18, Windows 11 Home build 26200, Python 3.11.9, akdbx
-0.11.0, Chrome 157.0.8103.80, Edge 157.0.4341.60): 47 of 47 checks passed.
+0.15.0, Chrome 157.0.8103.80, Edge 157.0.4341.60): 46 of 46 checks passed.
 
 | Checklist item | Covered by the desktop check | Result |
 | --- | --- | --- |
-| 1. Fills | Username/password into a Win32 `EDIT` (ASCII, punctuation, non-ASCII, emoji surrogate pairs), Chrome and Edge DOM fields; TOTP into all three | Pass |
+| 1. Fills | Usernames into a Win32 `EDIT` (ASCII, punctuation, non-ASCII), Chrome and Edge DOM fields; TOTP into all three | Pass |
+| 1. Password refusal | Password fills to the same HWND pins, including emoji and punctuation values | Refused before any character; fields stayed empty |
 | 2. Focus changes | Foreground switch to another app after pinning; focus moved to another field | Refused before any character |
 | 3. Pins and targets | Background, wrong-PID and child-HWND pins; reused and expired pins; reused search handle; hung window; target exit; combined login fill | Refused; hung target reported `uncertain` and received no characters |
-| 4. Saves | Generated password filled into password and confirmation fields and committed; private HTTPS password import; independent reopen checks history and unrelated entries | Pass |
+| 4. Saves | Private HTTPS password import with an independent reopen; generated password staged, its fills refused, commit refused and cancelled | Import saved with history and unrelated entries preserved; vault unchanged by the generated flow |
 | 6. Secrecy | CLI output, broker log, receipts and lock file scanned for every synthetic secret | No secret found |
+
+The 0.11.0 backend also delivered passwords to these targets (47 of 47 checks).
+0.15.0 deliberately refuses them, because a browser's address bar shares its
+page's HWND.
 
 A TOTP fill near the end of a code period is refused with `retry_after` and
 sends nothing. The check honours that response once, with a new search handle and
