@@ -116,7 +116,9 @@ jobs:
           python -m venv clean
           if [ -x clean/bin/python ]; then py=clean/bin/python; else py=clean/Scripts/python; fi
           "$py" -m pip install "dist/akdbx-${VERSION}-py3-none-any.whl"
-          test "$("$py" -m akdbx.cli --version)" = "$VERSION"
+          # Windows prints CRLF; command substitution strips only the LF.
+          installed=$("$py" -m akdbx.cli --version | tr -d '\r')
+          test "$installed" = "$VERSION"
           # The platform dependency comes from the same wheel's markers.
           if [ "$RUNNER_OS" = Windows ]; then "$py" -c "import win32api, akdbx.windows_rpc"; else "$py" -c "import Xlib, akdbx.target"; fi
 
