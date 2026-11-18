@@ -196,6 +196,34 @@ def test_uncertain_save_survives_restart_and_blocks_use(synthetic_vault, monkeyp
     assert persisted.entries[0].password == ('synthetic uncertain update' if after_replace else 'synthetic password')
 
 
+@pytest.mark.parametrize('artifact', ['commit', 'merge', 'admission'])
+def test_recovery_artifacts_match_a_differently_cased_vault_path(synthetic_vault, monkeypatch, artifact):
+    if artifact == 'commit':
+        vault = open_vault_with_password(synthetic_vault, 'synthetic master')
+        store = vault._akdbx_store
+        def fail(_source, _destination):
+            raise OSError('synthetic replace failure')
+        monkeypatch.setattr(store, '_replace', fail)
+        with pytest.raises(SaveError, match='uncertain'):
+            store.commit(vault, lambda candidate: setattr(candidate.entries[0], 'password', 'synthetic case update'))
+    else:
+        name = '.' + synthetic_vault.name + ('.akdbx-merge-' + 'c' * 32 if artifact == 'merge'
+                                             else '.akdbx-admission.json')
+        security.write_new(synthetic_vault.parent / name, b'{}')
+    # NTFS opens the same vault through any spelling of its filename.
+    differently_cased = synthetic_vault.with_name(synthetic_vault.name.upper())
+    reopened = open_vault_with_password(differently_cased, 'synthetic master')
+    assert reopened._akdbx_store.recovery_required
+    assert not Broker(reopened, object()).dispatch({'action': 'search'})['ok']
+
+
+def test_name_folding_matches_ntfs_single_unit_uppercase():
+    from akdbx.windows_store import fold_name
+    assert fold_name('.Vault.kdbx.akdbx-commit-ab.json') == '.VAULT.KDBX.AKDBX-COMMIT-AB.JSON'
+    assert fold_name('Écrin.kdbx') == fold_name('écrin.KDBX')
+    assert fold_name('straße') == 'STRAßE'
+
+
 def test_readonly_target_and_hard_links_disable_writes(synthetic_vault):
     vault = open_vault_with_password(synthetic_vault, 'synthetic master')
     store = vault._akdbx_store

@@ -23,6 +23,15 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def fold_name(name):
+    """Match Win32 filenames by simple per-character uppercase, as NTFS does.
+
+    Full case mappings that change length (such as German sharp s) are left
+    unchanged, because the NTFS upcase table maps one UTF-16 unit to one unit.
+    """
+    return ''.join(upper if len(upper := char.upper()) == 1 else char for char in name)
+
+
 class WindowsVaultStore:
     def __init__(self, database):
         # Do not resolve junctions/symlinks before validating them.
@@ -121,17 +130,20 @@ class WindowsVaultStore:
 
     def _check_recovery(self):
         """Bound recovery artifact reads without counting unrelated files."""
-        prefix = '.' + self.path.name + '.akdbx-'
+        # Windows filenames are case-insensitive: Vault.kdbx and vault.kdbx open
+        # the same file, so their recovery artifacts must match either spelling.
+        prefix = fold_name('.' + self.path.name + '.akdbx-')
         matched = 0
         with os.scandir(self.path.parent) as entries:
             for entry in entries:
-                if not entry.name.startswith(prefix):
+                name = fold_name(entry.name)
+                if not name.startswith(prefix):
                     continue
                 matched += 1
                 if matched > 10000:
                     raise SaveError('Windows recovery directory exceeds the scan budget')
                 path = self.path.parent / entry.name
-                if path.name.startswith(prefix + 'commit-') and path.name.endswith('.json'):
+                if name.startswith(prefix + 'COMMIT-') and name.endswith('.JSON'):
                     try:
                         data, _ = security.read_private(path, limit=16384)
                         receipt = json.loads(data)
@@ -144,12 +156,12 @@ class WindowsVaultStore:
                                    or any(c not in '0123456789abcdef' for c in receipt[key])
                                    for key in ('previous_sha256', 'candidate_sha256'))):
                         self.recovery_required = True
-                elif path.name.startswith(prefix + 'merge-'):
+                elif name.startswith(prefix + 'MERGE-'):
                     # Never hide a transaction made by the Linux backend.
                     self.recovery_required = True
         # An admission binding means recovery may live elsewhere. Windows does
         # not implement this protocol and must not silently ignore its locator.
-        if (self.path.parent / (prefix + 'admission.json')).exists():
+        if (self.path.parent / ('.' + self.path.name + '.akdbx-admission.json')).exists():
             self.recovery_required = True
 
     def open(self, password, keyfile=None):
