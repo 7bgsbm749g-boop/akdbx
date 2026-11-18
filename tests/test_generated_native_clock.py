@@ -1,4 +1,10 @@
-"""Generated-password clock checks on owned isolated X11 windows only."""
+"""Generated passwords never reach owned isolated X11 windows, whatever the clock.
+
+Before 0.15.0 this suite proved that a changed write clock stopped native key
+delivery. Generated passwords now go only to verified Chromium DOM pins, whose
+final setter boundary rechecks the same write clock through ``ready()``. The
+native route must refuse before any key event, so no clock state can matter.
+"""
 import importlib
 import os
 import shutil
@@ -12,12 +18,11 @@ from test_writes import MASTER, OLD, begin, commit, reopened, template
 
 @pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
 @pytest.mark.parametrize('latest_in', ['active', 'history'])
-@pytest.mark.parametrize('hook', ['prepare', 'final-check'])
 @pytest.mark.parametrize('change', ['rollback', 'invalid', 'stable'])
-def test_generated_clock_at_native_delivery_boundary(
-    template, tmp_path, isolated_x11, namespace, latest_in, hook, change,
+def test_generated_password_never_reaches_native_x11_delivery(
+    template, tmp_path, isolated_x11, namespace, latest_in, change,
 ):
-    """A late clock refusal emits no real key; a stable clock still saves."""
+    """No real key is emitted and nothing can be committed for an X11 pin."""
     module = importlib.import_module(namespace + '.broker')
     target = importlib.import_module(namespace + '.target')
     lab = isolated_x11
@@ -31,35 +36,15 @@ def test_generated_clock_at_native_delivery_boundary(
         entry.mtime = latest - timedelta(days=1)
         vault.save()
     wall = [latest.timestamp() + 1]
-    hooks = []
+    prepared_sessions = []
 
-    def change_clock():
-        hooks.append(hook)
-        if change != 'stable':
-            wall[0] = latest.timestamp() - 1 if change == 'rollback' else float('nan')
-
-    class LateClockSession(target.X11Session):
-        def __init__(self, pid, window):
-            self.prepared = False
-            self.prepared_checks = 0
-            super().__init__(pid, window)
-
+    class RecordingSession(target.X11Session):
         def prepare(self, steps):
-            codes = super().prepare(steps)
-            self.prepared = True
-            if hook == 'prepare':
-                change_clock()
-            return codes
-
-        def check(self):
-            super().check()
-            if self.prepared:
-                self.prepared_checks += 1
-                if hook == 'final-check' and self.prepared_checks == 2:
-                    change_clock()
+            prepared_sessions.append(True)
+            return super().prepare(steps)
 
     broker = module.Broker(module.open_vault_with_password(path, MASTER),
-                           target.X11Typer(LateClockSession), wall_clock=lambda: wall[0])
+                           target.X11Typer(RecordingSession), wall_clock=lambda: wall[0])
     broker.writes.public_base = 'https://node.example:9443'
     before = path.read_bytes()
     try:
@@ -69,35 +54,20 @@ def test_generated_clock_at_native_delivery_boundary(
         results, delivered = [], []
         for reference in prepared['fill_handles'].values():
             wall[0] = latest.timestamp() + 1
+            if change != 'stable':
+                wall[0] = latest.timestamp() - 1 if change == 'rollback' else float('nan')
             pin = broker.dispatch(dict(action='pin-target', pid=os.getpid(),
                 window=lab.windows[0].id, target_protocol=1))
             assert pin['ok'], pin
             results.append(broker.dispatch(dict(action='fill-generated', handle=reference,
                 target_url='https://example.test/reset', target=pin['target'], target_protocol=1)))
             delivered.append(key_events(lab))
-        assert hooks == [hook, hook]
-        if change != 'stable':
-            assert all(not result['ok'] for result in results), {
-                'results': results, 'native_event_counts': [len(events) for events in delivered],
-            }
-            reason = 'future-dated' if change == 'rollback' else 'write clock'
-            assert all(reason in result['error'] for result in results), results
-            assert delivered == [[], []]
-            assert path.read_bytes() == before
-            assert reopened(path).find_entries(title='Synthetic site', first=True).password == OLD
-            assert not commit(broker, prepared)['ok']
-            assert not list(tmp_path.glob('.*.akdbx-backup-*'))
-        else:
-            assert all(result['ok'] for result in results), results
-            decoded = []
-            for events in delivered:
-                assert events and {event[0] for event in events} == {lab.windows[0].id}
-                codes = [lab.display.keycode_to_keysym(code, 1 if state & lab.X.ShiftMask else 0)
-                         for _, kind, code, state in events if kind == lab.X.KeyPress]
-                decoded.append(''.join(chr(code) for code in codes))
-            assert decoded[0] == decoded[1] and decoded[0] != OLD
-            assert commit(broker, prepared)['state'] == 'saved'
-            saved = reopened(path).find_entries(title='Synthetic site', first=True)
-            assert saved.password == decoded[0] and saved.mtime > latest
+        assert all(not result['ok'] for result in results), results
+        assert all(result.get('delivery', 'not-started') == 'not-started' for result in results), results
+        assert delivered == [[], []] and not prepared_sessions
+        assert not commit(broker, prepared)['ok']
+        assert path.read_bytes() == before
+        assert reopened(path).find_entries(title='Synthetic site', first=True).password == OLD
+        assert not list(tmp_path.glob('.*.akdbx-backup-*'))
     finally:
         broker.unlock_notifications.close()

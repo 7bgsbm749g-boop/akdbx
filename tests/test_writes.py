@@ -538,7 +538,7 @@ def test_generated_delivery_rechecks_clock_after_preflight(template, tmp_path, n
             wall[0] = latest.timestamp() + 1
             results.append(broker.dispatch(dict(action='fill-generated', handle=reference,
                 target_url='https://example.test/reset', start_deadline=broker.clock() + module.FILL_START_TIMEOUT,
-                **target_request(broker)), delivery_ready=caller_ready))
+                **target_request(broker, 'password')), delivery_ready=caller_ready))
         if change != 'stable':
             assert all(not result['ok'] for result in results), results
             reason = 'future-dated' if change == 'rollback' else 'write clock'
@@ -619,7 +619,7 @@ def test_generated_clock_guard_preserves_backend_uncertainty(template, tmp_path,
         prepared = begin(broker, 'generate-password')
         assert prepared['ok'], prepared
         result = broker.dispatch(dict(action='fill-generated', handle=prepared['fill_handles']['password'],
-            target_url='https://example.test/reset', **target_request(broker)))
+            target_url='https://example.test/reset', **target_request(broker, 'password')))
         assert refused == [True]
         assert not result['ok'] and result['delivery'] == 'uncertain'
         assert 'do not retry automatically' in result['error']
@@ -792,7 +792,7 @@ def test_read_only_target_directory_disables_resets_but_preserves_fill(tmp_path,
             assert result['ok'] is False and 'fill_handles' not in result
         assert not broker.writes.operations
         selected = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]
-        assert broker.dispatch({'action': 'fill', **target_request(broker),
+        assert broker.dispatch({'action': 'fill', **target_request(broker, 'password'),
                                 'handle': selected['handle'], 'mode': 'password'})['ok']
         assert broker.typer.events == [('type', OLD)]
         assert path.read_bytes() == before and list(directory.iterdir()) == [path]

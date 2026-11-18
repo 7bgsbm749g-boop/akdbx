@@ -72,7 +72,7 @@ def test_eof_after_completed_fill_requires_uncertainty_without_retry(tmp_path, c
     typer = RecordingTyper()
     broker = Broker(SimpleNamespace(entries=[Entry()]), typer)
     handle = broker.dispatch({'action': 'search'})['entries'][0]['handle']
-    pin = target_request(broker)['target']
+    pin = target_request(broker, 'password')['target']
     endpoint = tmp_path / 'private' / 'broker.sock'
     endpoint.parent.mkdir(mode=0o700)
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
