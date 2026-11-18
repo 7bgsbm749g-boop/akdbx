@@ -4,7 +4,7 @@ import json
 import socket
 import struct
 import time
-from typing import Any
+from typing import Any, Callable
 
 MAX_MESSAGE = 64 * 1024
 
@@ -13,10 +13,13 @@ class ProtocolError(Exception):
     pass
 
 
-def send_message(sock: socket.socket, value: dict[str, Any]) -> None:
+def send_message(sock: socket.socket, value: dict[str, Any], *, before_send: Callable[[], None] | None = None) -> None:
+    """Signal a possible send only after serialization and size validation."""
     data = json.dumps(value, separators=(",", ":")).encode("utf-8")
     if len(data) > MAX_MESSAGE:
         raise ProtocolError("message too large")
+    if before_send is not None:
+        before_send()
     sock.sendall(struct.pack("!I", len(data)) + data)
 
 

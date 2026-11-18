@@ -30,6 +30,9 @@ IDENTITY_CREATES = ('create-sso-entry', 'create-passwordless-entry')
 
 
 def default_socket() -> Path:
+    if os.name == 'nt':
+        from .windows_rpc import default_pipe
+        return default_pipe()
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     base = Path(runtime) / "akdbx" if runtime else Path(f"/tmp/akdbx-{os.getuid()}")
     canonical = base / "akdbx.sock"
@@ -54,6 +57,8 @@ def _validate_socket_path(socket_path: Path, broker_uid: int) -> tuple[Path, int
             socket_path.parent, owner_uid=broker_uid,
         )
     except RuntimeError as exc:
+        if isinstance(exc.__cause__, FileNotFoundError):
+            raise FileNotFoundError from exc
         raise PermissionError(str(exc)) from exc
     try:
         socket_info = os.stat(
@@ -164,21 +169,30 @@ def request(
     *,
     broker_uid: int | None = None,
     expected_unlock_origin: str = DEFAULT_UNLOCK_ORIGIN,
+    before_send=None,
 ) -> dict:
+    if os.name == 'nt':
+        from .windows_rpc import connect
+        if broker_uid is not None:
+            raise ValueError('--broker-uid is a Linux option; Windows requires the same user/session')
+        with connect(socket_path) as client:
+            client.settimeout(240 if payload.get('action') in (*IDENTITY_CREATES, 'commit-password') else 5)
+            send_message(client, payload, before_send=before_send)
+            return _validate_response(receive_message(client), expected_unlock_origin)
     broker_uid = os.getuid() if broker_uid is None else broker_uid
     socket_path, runtime_fd = _validate_socket_path(socket_path, broker_uid)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     if payload.get('action') in {'merge', 'admit'}:
         timeout = 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
     else:
-        timeout = 240 if payload.get('action') in IDENTITY_CREATES else 15 if payload.get('action') == 'pin-card-target' else 5
+        timeout = 240 if payload.get('action') in (*IDENTITY_CREATES, 'commit-password') else 15 if payload.get('action') == 'pin-card-target' else 5
     client.settimeout(timeout)
     try:
         client.connect(anchored_socket_path(runtime_fd, socket_path.name))
         _, peer_uid, _ = _peer_credentials(client)
         if peer_uid != broker_uid:
             raise PermissionError("broker peer UID does not match the configured broker UID")
-        send_message(client, payload)
+        send_message(client, payload, before_send=before_send)
         return _validate_response(receive_message(client), expected_unlock_origin)
     finally:
         client.close()
@@ -187,6 +201,13 @@ def request(
 
 def _read_webhook_url(path: Path) -> str:
     """Read a private callback without placing its bearer token in argv/output."""
+    if os.name == 'nt':
+        from .windows_security import read_private
+        try:
+            data, _ = read_private(path, limit=4096)
+            return validate_webhook_url(data.decode('utf-8').strip())
+        except Exception:
+            raise ValueError('could not read the private Windows webhook URL file') from None
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "r", encoding="utf-8") as source:
         info = os.fstat(source.fileno())
@@ -196,17 +217,34 @@ def _read_webhook_url(path: Path) -> str:
         return validate_webhook_url(source.read(4097).strip())
 
 
+def _mutation_not_sent(command, error):
+    """Describe pre-send failures using only local, fixed text."""
+    if isinstance(error, PermissionError):
+        reason = 'broker socket or peer identity check failed'
+    elif isinstance(error, (ProtocolError, ValueError)):
+        reason = 'broker capability or response validation failed'
+    elif isinstance(error, RuntimeError):
+        reason = 'broker peer verification unavailable'
+    else:
+        reason = 'broker connection or capability check failed'
+    prefix = 'save' if command == 'commit-password' else 'autofill'
+    message = f'{prefix} not started: {reason}; request not sent'
+    if command == 'commit-password':
+        message += '; check write-status before any retry; do not reset the site again'
+    return message
+
+
 def parser() -> argparse.ArgumentParser:
     """Build command parsers for broker, vault, and target operations."""
     result = argparse.ArgumentParser(prog="akdbx", description="Secret-withholding AKDBX autofill broker")
     result.add_argument("--version", action="version", version=__version__)
-    result.add_argument("--socket", type=Path, default=default_socket())
+    result.add_argument("--socket", type=Path)
     result.add_argument(
-        "--broker-uid", type=int, default=int(os.environ.get("AKDBX_BROKER_UID", os.getuid())),
+        "--broker-uid", type=int, default=(None if os.name == 'nt' else os.environ.get("AKDBX_BROKER_UID", os.getuid())),
         help="expected operating-system UID of the broker",
     )
     result.add_argument(
-        "--unlock-origin", default=os.environ.get("AKDBX_UNLOCK_ORIGIN", DEFAULT_UNLOCK_ORIGIN),
+        "--unlock-origin", default=os.environ.get("AKDBX_UNLOCK_ORIGIN", 'https://localhost:9443' if os.name == 'nt' else DEFAULT_UNLOCK_ORIGIN),
         help="deployment HTTPS origin for private pages (or AKDBX_UNLOCK_ORIGIN); default is a non-routable example",
     )
     commands = result.add_subparsers(dest="command", required=True)
@@ -223,6 +261,8 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--unlock-socket", type=Path, help=argparse.SUPPRESS)
     start.add_argument("--unlock-url", help=argparse.SUPPRESS)
     start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket")
+    start.add_argument('--tls-cert', type=Path, help='Windows: trusted PEM certificate for the local HTTPS unlock page')
+    start.add_argument('--tls-key', type=Path, help='Windows: private PEM certificate key with a restrictive DACL')
     search = commands.add_parser("search", help="return matching non-secret login metadata")
     search.add_argument("query", nargs="?", default="")
     fill = commands.add_parser("fill", help="autofill using a handle returned by search")
@@ -230,7 +270,7 @@ def parser() -> argparse.ArgumentParser:
     fill.add_argument("--mode", choices=("login", "username", "password"), default="login")
     pin = commands.add_parser('pin-target', help='pin an independently verified local foreground PID/window and current input-focus window for 30 seconds')
     pin.add_argument('--pid', type=int, required=True)
-    pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID, decimal or 0x hex')
+    pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID or Windows top-level HWND, decimal or 0x hex')
     password_pin = commands.add_parser('pin-password-target', help='pin an exact HTTPS main-frame password field; no keyboard fallback')
     for flag in ('page-id', 'frame-id', 'top-url', 'selector'):
         password_pin.add_argument('--' + flag, required=True)
@@ -306,22 +346,58 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run one CLI command and return its process exit status."""
     args = parser().parse_args(argv)
+    if os.name == 'nt' and args.broker_uid is not None:
+        print('--broker-uid applies only to Linux; Windows requires the same user/session', file=sys.stderr)
+        return 2
+    if os.name == 'nt' and args.command == 'fill' and args.mode == 'login':
+        print('Windows requires separate --mode username and --mode password fills with fresh handles and pins', file=sys.stderr)
+        return 2
+    if args.socket is None:
+        try:
+            args.socket = default_socket()
+        except OSError:
+            print('could not locate default broker socket; use --socket', file=sys.stderr)
+            return 2
     if args.command == "serve":
         database = args.database.expanduser()
         keyfile = args.keyfile.expanduser() if args.keyfile else None
         if args.yes_on_fill:
             print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
-        broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
-                        password_browser_profile=args.password_browser_profile,
-                        notification_state_path=args.notification_state or args.socket.with_name(args.socket.name + '.unlock-notifications.json'))
+        if os.name == 'nt':
+            import pywintypes
+            from .windows_target import WindowsTyper
+            from .windows_unlock import start_windows_unlock_server
+            # Browser CDP routes verify their peer with Linux kernel metadata,
+            # and durable notification state uses POSIX descriptor checks.
+            if (args.card_browser_profile is not None or args.password_browser_profile is not None
+                    or args.notification_state is not None):
+                print('--card-browser-profile, --password-browser-profile and --notification-state are Linux options',
+                      file=sys.stderr)
+                return 2
+            broker = Broker(None, WindowsTyper())
+            try:
+                unlock_server, unlock_url = start_windows_unlock_server(
+                    broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key)
+            except (OSError, ValueError, pywintypes.error):
+                broker.unlock_notifications.close()
+                print('could not start Windows HTTPS unlock; check origin, TLS files, permissions and port', file=sys.stderr)
+                return 2
+        else:
+            if args.tls_cert is not None or args.tls_key is not None:
+                print('--tls-cert and --tls-key are Windows options; Linux uses Tailscale Serve', file=sys.stderr)
+                return 2
+            broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
+                            password_browser_profile=args.password_browser_profile,
+                            notification_state_path=args.notification_state or args.socket.with_name(args.socket.name + '.unlock-notifications.json'))
         unlock_name = ("agentic-kdbx-unlock.sock"
                        if args.socket.name == "agentic-kdbx.sock"
                        else "akdbx-unlock.sock")
         unlock_socket = args.unlock_socket or args.socket.with_name(unlock_name)
-        unlock_server, unlock_url = start_unlock_server(
-            broker, database, keyfile, unlock_socket, args.unlock_url or args.unlock_origin,
-        )
-        print(f"Vault locked. Open over Tailscale: {unlock_url}", file=sys.stderr)
+        if os.name != 'nt':
+            unlock_server, unlock_url = start_unlock_server(
+                broker, database, keyfile, unlock_socket, args.unlock_url or args.unlock_origin,
+            )
+        print(f"Vault locked. Open the private HTTPS page: {unlock_url}", file=sys.stderr)
         print(f"Broker ready at {args.socket}; Ctrl-C locks it.", file=sys.stderr)
         try:
             serve(args.socket, broker)
@@ -409,6 +485,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {'fill', 'fill-generated', 'fill-totp'}:
         payload.update(target=args.target, target_protocol=1)
     identity_kind = 'SSO' if args.command == 'create-sso-entry' else 'passwordless'
+    track_send = args.command in {'fill', 'fill-generated', 'fill-totp', 'commit-password'}
+    send_started = False
+
+    def mark_send():
+        nonlocal send_started
+        send_started = True
+
     try:
         if args.command == 'subscribe-unlock':
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
@@ -422,8 +505,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.ttl == 0 and capabilities.get('unlock_notifications_until_unlock') is not True:
                 print(json.dumps({'ok': False, 'error': 'broker lacks an until-unlock subscription; subscription not sent'}))
                 return 1
-            payload.update(webhook_url=_read_webhook_url(args.webhook_url_file),
-                           ttl=args.ttl, notification_protocol=1)
+            try:
+                webhook_url = _read_webhook_url(args.webhook_url_file)
+            except (OSError, ValueError):
+                print('could not read private webhook URL file; subscription not sent', file=sys.stderr)
+                return 2
+            payload.update(webhook_url=webhook_url, ttl=args.ttl, notification_protocol=1)
         if args.command in {'setup-totp', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -507,20 +594,29 @@ def main(argv: list[str] | None = None) -> int:
         response = request(
             args.socket, payload, broker_uid=args.broker_uid,
             expected_unlock_origin=args.unlock_origin,
+            **({'before_send': mark_send} if track_send else {}),
         )
     except (FileNotFoundError, ConnectionRefusedError):
         print("broker is not running", file=sys.stderr)
         return 2
     except (PermissionError, ProtocolError, RuntimeError, ValueError) as exc:
-        if args.command in {'merge', 'admit'}:
+        if track_send and not send_started:
+            print(_mutation_not_sent(args.command, exc), file=sys.stderr)
+        elif args.command in {'merge', 'admit'}:
             print('merge outcome unconfirmed: broker response rejected; use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
         elif args.command in IDENTITY_CREATES:
             print(f'{identity_kind} save outcome unconfirmed: broker response rejected; check status and search before any retry', file=sys.stderr)
+        elif args.command in {'fill', 'fill-generated', 'fill-totp'}:
+            print('autofill outcome unconfirmed: broker response rejected; do not retry automatically', file=sys.stderr)
+        elif args.command == 'commit-password':
+            print('save outcome unconfirmed: broker response rejected; check write-status before any retry; do not reset the site again', file=sys.stderr)
         else:
             print(f"refusing untrusted broker response: {exc}", file=sys.stderr)
         return 2
-    except (TimeoutError, OSError):
-        if args.command in {"fill", "fill-generated", "fill-totp"}:
+    except (TimeoutError, OSError) as exc:
+        if track_send and not send_started:
+            print(_mutation_not_sent(args.command, exc), file=sys.stderr)
+        elif args.command in {"fill", "fill-generated", "fill-totp"}:
             print(
                 "autofill outcome uncertain: connection lost after request; do not retry automatically",
                 file=sys.stderr,

@@ -25,6 +25,11 @@ unverifiable ownership and redirects refuse. Protect this privileged CDP
 interface and profile from other local users. Configuration is not proof of
 protection against malicious processes running as the broker user.
 
+For a reset, each `fill-generated --target-url VERIFIED_URL --target TOKEN -- REF`
+needs its own fresh pin after independently focusing that field. A failed or
+partial generated fill does not count toward the two successful fills needed
+for `commit-password --site-accepted`. Do not commit until the site accepts it.
+
 Do not restart a live broker, alter its browser/profile, or deploy this source
 repair without the owning workflow's authorization. Existing processes retain
 their old code until an authorized update and restart.

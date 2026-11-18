@@ -2,6 +2,16 @@
 
 `akdbx` is a local KeePass (`.kdbx`) autofill broker designed for AI agents. Agents may search login metadata and choose an opaque, short-lived handle. They never receive the password: the broker sends it to a retained Chromium DOM password input and returns only a success receipt.
 
+An **experimental native Windows backend** adds local named pipes, Windows access
+checks, directed Unicode window messages for username and TOTP fills, encrypted
+saves and a local HTTPS unlock page. Windows refuses password, login and
+generated-password fills: only the Linux Chromium DOM route may receive a
+password, because a browser's address bar shares its page's window identity.
+Merge, snapshot admission and card delivery also remain Linux-only. See
+[Windows setup and validation](docs/windows.md) before using it, and use
+synthetic vaults until its remaining manual checks pass. The Linux-specific
+security and Tailscale instructions below do not describe the Windows transport.
+
 Source and issue tracker: [7bgsbm749g-boop/akdbx](https://github.com/7bgsbm749g-boop/akdbx).
 
 ## akdbx rebrand (0.9.2)
@@ -76,7 +86,7 @@ pins nor purpose declarations alone accept `off`. Unknown or conflicting hints
 still refuse; the page's attributes are retained unchanged and all normal DOM
 target and focus checks apply to saved and generated passwords.
 
-There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; it emits a deprecation warning. All fill commands now require `--target`. Remove it from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
+There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; it emits a deprecation warning. All fill commands now require `--target`. Omit `--yes-on-fill` from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
 
 ### Unlock remotely over Tailscale
 
@@ -292,7 +302,7 @@ key or otpauth URI there and confirms the displayed account. Never put keys,
 URIs or generated codes in CLI arguments, environment variables, chat, logs,
 screenshots or notes. The page uses the existing Tailscale private-write
 transport; it accepts no secrets through agent RPC. Check
-`write-status WRITE_HANDLE` for `state: saved`. A cancelled, expired or stale request cannot
+`write-status -- WRITE_HANDLE` for `state: saved`. A cancelled, expired or stale request cannot
 save; an existing OTP field requires explicit `setup-totp ... --replace`.
 Private imports save to KeePass only: they do not enable or change site 2FA.
 This version attaches authenticators to existing entries, including managed
@@ -343,7 +353,7 @@ akdbx merge /absolute/path/to/other.kdbx --refresh-target --preserve-conflicts
 akdbx merge-status OPERATION_ID
 ```
 
-Require broker 0.8.0, `merge_protocol: 1`, `merge_available: true` and no recovery
+Require broker 0.8.0 or newer, `merge_protocol: 1`, `merge_available: true` and no recovery
 block. The broker privately reuses its held password and key file. Locked
 operation returns the existing private HTTPS unlock link and a clear command
 continuation. Different source credentials are not supported in this release.
@@ -466,6 +476,9 @@ Password fills also require integer `password_fill_protocol: 1`,
 - `commit-password --site-accepted -- WRITE_HANDLE`
 - `write-status -- WRITE_HANDLE`
 - `cancel-write -- WRITE_HANDLE`
+
+Put options before `--` and the returned handle after it. This also accepts
+opaque handles from older running brokers that start with `-`.
 
 Update/generation requires all exact search metadata and consumes the fresh
 search handle. Creation checks the destination group and rejects duplicate

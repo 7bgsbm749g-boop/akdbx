@@ -13,6 +13,13 @@ does not apply to card entries.
 
 Use this skill for the user's authorized login task. The broker exposes login metadata and delivers passwords to verified, retained Chromium DOM inputs. Username/TOTP routes can use pinned X11 targets. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
 
+On native Windows, first read [Windows operation](references/windows.md). Its
+loopback HTTPS, named-pipe transport, HWND pins and separate field fills replace
+the Linux/X11/Tailscale-specific instructions below. Windows support is
+experimental and delivers only usernames and TOTP codes; it refuses password,
+login and generated-password fills. Check each application's nonsecret outcome
+after a fill. Merge, snapshot admission and cards are Linux-only.
+
 ## Session delegation
 
 When sign-in is needed, check the current model and available delegation through the current orchestration tools. If the current model is GPT-6.1 Terra (`gpt-6.1-terra`), perform the sign-in directly. Otherwise, if GPT-6.1 Terra and delegation are available, delegate only the sign-in to a GPT-6.1 Terra subagent. Give it this skill, the destination and account context needed to sign in, including known account emails, possible sign-in providers and prior attempts, and instructions to verify the authenticated state and report the result or blocker. Do not delegate the user's wider task or ask the subagent to continue it after sign-in. The parent agent retains the wider task and resumes it after the sign-in result. If GPT-6.1 Terra or delegation is unavailable, perform the sign-in directly using the current model. This delegation requirement does not apply to other tasks that use this skill.
@@ -324,8 +331,8 @@ protocol 1; do not ask the user to choose a password merely because the entry
 is new. For a chosen-password save, use the private broker page. For an
 agent-driven reset or setup, generate inside the broker, fill password and confirmation
 through their separate single-use references into independently verified focused
-fields with a fresh target pin for each, verify site acceptance, and only then `commit-password WRITE_HANDLE
---site-accepted`. Passwords never enter tool responses. Keep pending handles and
+fields with a fresh target pin for each, verify site acceptance, and only then
+`commit-password --site-accepted -- WRITE_HANDLE`. Passwords never enter tool responses. Keep pending handles and
 private URLs inside the private task workflow and out of notes/reports.
 
 A rejected or cancelled site reset must never update KeePass. Cancel the staged

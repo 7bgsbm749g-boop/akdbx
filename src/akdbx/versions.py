@@ -165,14 +165,16 @@ def _canonical(node, binaries, version, *, times):
         visit = None
 
 
-def entry_signature(entry):
+def entry_signature(entry, binaries=None):
     node = copy.deepcopy(entry._element)
     timeinfo = node.find('Times')
     if timeinfo is not None:
         for child in list(timeinfo):
             if child.tag in {'LastAccessTime', 'UsageCount'}:
                 timeinfo.remove(child)
-    return _json(_canonical(node, entry._kp.binaries, entry._kp.version, times=True))
+    if binaries is None:
+        binaries = entry._kp.binaries
+    return _json(_canonical(node, binaries, entry._kp.version, times=True))
 
 
 def _marker(group):
@@ -292,9 +294,21 @@ def collect(vaults, *, capture):
     return ledger
 
 
+def _append_capsule_binary(vault, data):
+    """Append protected KDBX4 bytes without materializing the pool for its index."""
+    if vault.version < (4, 0):
+        return vault.add_binary(data, protected=True)
+    from construct import Container
+    binaries = vault.payload.inner_header.binary
+    reference = len(binaries)
+    binaries.append(Container(type='binary', data=b'\x01' + data))
+    return reference
+
+
 def ensure(vault, ledger):
     """Restore opaque capsules lost/normalized by a native stage from inputs."""
     from lxml import etree
+    from pykeepass.entry import Entry
     groups = [g for g in vault.groups if is_archive_group(g)]
     if not ledger:
         archives(vault)
@@ -338,12 +352,16 @@ def ensure(vault, ledger):
                     and entry.get_custom_property(CHECKSUM) == hashlib.sha256(data).hexdigest()):
                 continue
             vault.delete_entry(entry)
-        entry = vault.add_entry(group, 'Preserved original record', '', '', notes='Managed encrypted recovery record; do not edit.', force_creation=True)
+        # UUID collisions are checked above; managed labels may repeat. The
+        # generic add_entry still searches every duplicate with force_creation.
+        entry = Entry(title='Preserved original record', username='', password='',
+                      notes='Managed encrypted recovery record; do not edit.', kp=vault)
+        group.append(entry)
         entry.uuid = alias
         entry.set_custom_property(CHECKSUM, hashlib.sha256(data).hexdigest(), protect=True)
         for field in ('ctime', 'mtime', 'atime'):
             setattr(entry, field, EPOCH)
-        entry.add_attachment(vault.add_binary(data, protected=True), FILENAME)
+        entry.add_attachment(_append_capsule_binary(vault, data), FILENAME)
         changed = True
     verify(vault, ledger)
     return changed

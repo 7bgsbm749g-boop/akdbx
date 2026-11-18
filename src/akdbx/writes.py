@@ -12,6 +12,8 @@ from time import monotonic, sleep
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 
+import idna
+
 from .persistence import SaveError
 from .versions import active_entries, is_archive_group
 from .totp import TotpError, configured as totp_configured, https_origin, parse_setup
@@ -28,28 +30,39 @@ class WriteError(ValueError):
     """Only fixed, non-secret messages may cross RPC."""
 
 
+def _entry_write_clock(entry, wall_clock, *, latest=None):
+    """Refuse known future versions without waiting; reuse history during a save wait."""
+    try:
+        if latest is None:
+            latest = max([entry.mtime, *(version.mtime for version in entry.history)]).replace(microsecond=0)
+    except (ValueError, TypeError, OverflowError):
+        raise WriteError('entry timestamps could not be verified; entry not saved') from None
+    try:
+        timestamp = wall_clock()
+        if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+            raise ValueError
+        now = datetime.fromtimestamp(timestamp, timezone.utc).replace(microsecond=0)
+        future = latest > now
+    except (ValueError, TypeError, OverflowError):
+        raise WriteError('invalid write clock; entry not saved') from None
+    if future:
+        raise WriteError('entry or history is future-dated; synchronize the clock before updating the entry')
+    return latest, now
+
+
 def _entry_changed_at(entry, wall_clock):
     """Use a real, strictly newer KDBX second without inventing future dates."""
-    latest = max([entry.mtime, *(version.mtime for version in entry.history)]).replace(microsecond=0)
+    latest, now = _entry_write_clock(entry, wall_clock)
     deadline = monotonic() + 1.25
-    while True:
-        timestamp = wall_clock()
-        try:
-            if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
-                raise ValueError
-            now = datetime.fromtimestamp(timestamp, timezone.utc).replace(microsecond=0)
-        except (ValueError, TypeError, OverflowError):
-            raise WriteError('invalid write clock; entry not saved') from None
-        if latest > now:
-            raise WriteError('entry or history is future-dated; synchronize the clock before updating the entry')
-        if latest < now:
-            return now
+    while latest == now:
         # Ordinary same-second saves can wait for a real clock boundary. A
         # frozen/backward clock must refuse instead of creating a merge tie or
         # letting remote edits lose to an artificially future-dated version.
         if monotonic() >= deadline:
             raise WriteError('clock did not advance beyond the entry timestamp; retry the update later')
         sleep(0.05)
+        _, now = _entry_write_clock(entry, wall_clock, latest=latest)
+    return now
 
 
 def _generated_origin(url):
@@ -124,6 +137,19 @@ def metadata(entry):
     return dict(title=entry.title or '', username=entry.username or '', url=entry.url or '', group='/'.join(entry.path[:-1]))
 
 
+def _site_label(label):
+    """Check joiners in Unicode and A-label forms without excluding emoji or underscores."""
+    try:
+        contextual = label[4:].encode('ascii').decode('punycode') if label.startswith('xn--') else label
+        valid = all(c not in '\u200c\u200d' or idna.valid_contextj(contextual, i)
+                    for i, c in enumerate(contextual))
+    except ValueError:
+        raise WriteError('invalid site URL') from None
+    if not valid:
+        raise WriteError('invalid site URL')
+    return label.encode('ascii') if label.isascii() else b'xn--' + label.encode('punycode')
+
+
 def site_origin(url):
     parsed = urlsplit(url)
     if (
@@ -137,17 +163,32 @@ def site_origin(url):
     try:
         host = ipaddress.ip_address(host).compressed
     except ValueError:
-        host = host.encode('idna').decode('ascii').lower()
+        # Keep IDNA2008 deviations distinct while preserving accepted ASCII
+        # labels (including local underscores) and Unicode compatibility maps.
+        mapped = idna.uts46_remap(host, std3_rules=False, transitional=False)
+        labels = [_site_label(label) for label in mapped.split('.')]
+        checked = labels[:-1] if labels[-1] == b'' else labels
+        if not checked or any(not label or len(label) > 63 for label in checked):
+            raise WriteError('invalid site URL')
+        host = b'.'.join(labels).decode('ascii').lower()
     return parsed.scheme, host, port
 
 
 def validate_metadata(values):
-    if set(values) != {'title', 'username', 'url', 'group'} or any(
-        not isinstance(v, str) or len(v.encode('utf-8')) > 4096
-        or any(ord(c) < 32 or ord(c) == 127 for c in v)
-        for v in values.values()
-    ):
-        raise WriteError('invalid destination metadata')
+    from lxml import etree
+    try:
+        if set(values) != {'title', 'username', 'url', 'group'} or any(
+            not isinstance(v, str) or len(v.encode('utf-8')) > 4096
+            or any(ord(c) < 32 or ord(c) == 127 for c in v)
+            for v in values.values()
+        ):
+            raise ValueError
+        if any(unicodedata.category(c) == 'Cc' for c in values['username']):
+            raise ValueError
+        for value in values.values():
+            etree.Element('Value').text = value
+    except (ValueError, TypeError):
+        raise WriteError('invalid destination metadata') from None
     if not values['title'].strip() or not values['username'].strip():
         raise WriteError('title, account and a site URL are required')
     site_origin(values['url'])
@@ -156,12 +197,20 @@ def validate_metadata(values):
 def group_for(vault, path):
     groups = []
     for group in vault.groups:
-        if '/'.join(group.path) != path:
-            continue
+        parts = []
         ancestor = group
-        while ancestor is not None and not is_archive_group(ancestor):
+        while ancestor is not None:
+            if is_archive_group(ancestor):
+                break
+            if not ancestor.is_root_group:
+                name = ancestor.name
+                # The dependency's path drops unnamed ancestors. Do not let a
+                # child of an unnamed group alias a different named path.
+                if not isinstance(name, str) or not name:
+                    break
+                parts.append(name)
             ancestor = getattr(ancestor, 'parentgroup', None)
-        if ancestor is None:
+        if ancestor is None and '/'.join(reversed(parts)) == path:
             groups.append(group)
     if len(groups) != 1:
         raise WriteError('destination group is missing or ambiguous')
@@ -182,6 +231,15 @@ def duplicate(vault, values):
             # is still required for selecting that entry for an update.
             continue
     return False
+
+
+def _append_entry(vault, group, values, password, *, notes=None):
+    """Append broker-validated metadata without the dependency's label/XPath preflight."""
+    from pykeepass.entry import Entry
+    entry = Entry(title=values['title'], username=values['username'], password=password,
+                  url=values['url'], notes=notes, kp=vault)
+    group.append(entry)
+    return entry
 
 
 @dataclass
@@ -211,9 +269,25 @@ class WriteManager:
         self.revision = 0
         self.public_base = None
 
-    def available(self):
+    def available(self, *, refresh_inputs=False):
+        """Refresh changed key contents for discovery, keeping delivery checks metadata-only."""
         store = getattr(self.broker.vault, '_akdbx_store', None)
-        return bool(self.public_base and store and store.writable_path and not store.recovery_required)
+        if not (self.public_base and store and not store.recovery_required):
+            return False
+        try:
+            return bool(store.check_write_inputs() if refresh_inputs else store.writable_path)
+        except (OSError, SaveError):
+            return False
+
+    def _require_available(self):
+        store = getattr(self.broker.vault, '_akdbx_store', None)
+        try:
+            ready = bool(self.public_base and store and not store.recovery_required
+                         and store.check_write_inputs())
+        except (OSError, SaveError):
+            ready = False
+        if not ready:
+            raise WriteError('private writes unavailable; check activation, vault/key changes and path safety')
 
     def notify_card(self, op):
         if op.kind == 'card' and op.state != 'pending':
@@ -275,8 +349,7 @@ class WriteManager:
             raise WriteError(f'{kind} auth_method must be ' + ' or '.join(methods))
         values = request.get('metadata')
         validate_identity_metadata(values, kind)
-        if not self.available():
-            raise WriteError('private writes unavailable; check activation and vault path safety')
+        self._require_available()
         vault = self.broker.vault
         group_for(vault, values['group'])
         if duplicate(vault, values):
@@ -287,8 +360,8 @@ class WriteManager:
             if duplicate(candidate, values):
                 raise WriteError('duplicate site/account; select an existing entry')
             label = {'google': 'Google SSO', 'github': 'GitHub SSO', 'email_code': 'Email code'}[method]
-            entry = candidate.add_entry(group, values['title'], values['username'], '', url=values['url'],
-                                        notes=f'Sign-in method: {label}. No separate site password.')
+            entry = _append_entry(candidate, group, values, '',
+                                  notes=f'Sign-in method: {label}. No separate site password.')
             entry.set_custom_property(marker, 'v1')
             entry.set_custom_property(AUTH_METHOD, method)
 
@@ -318,8 +391,7 @@ class WriteManager:
                 raise WriteError('card record requires card save')
             if not is_totp and passwordless_identity(entry):
                 raise WriteError('passwordless record has no separate password; use its sign-in method')
-        if not self.available():
-            raise WriteError('private writes unavailable; check activation and vault path safety')
+        self._require_available()
         values = request.get('metadata')
         if not isinstance(values, dict):
             raise WriteError('invalid destination metadata')
@@ -327,6 +399,8 @@ class WriteManager:
         if entry is not None:
             if metadata(entry) != values or sum(metadata(e) == values for e in active_entries(self.broker.vault)) != 1 or not any(e.uuid == entry.uuid for e in active_entries(self.broker.vault)):
                 raise WriteError('entry metadata mismatch; search again')
+            if request['action'] == 'generate-password':
+                _entry_write_clock(entry, self.broker.wall_clock)
             if is_totp:
                 https_origin(values['url'])
                 if totp_configured(entry) and not request.get('replace', False):
@@ -337,7 +411,7 @@ class WriteManager:
                 raise WriteError('duplicate site/account; select an existing entry')
         self._prune()
         if len(self.operations) >= MAX_WRITES:
-            raise WriteError('too many pending writes; cancel or wait')
+            raise WriteError('too many recent write requests; wait for earlier requests to expire, then start again')
         # These references are CLI positionals. URL-safe randomness can begin
         # with '-' and be parsed as an option; hex keeps all 256 random bits.
         handle = secrets.token_hex(32)
@@ -418,7 +492,7 @@ class WriteManager:
                 else:
                     if duplicate(candidate, op.values):
                         raise WriteError('duplicate site/account; select an existing entry')
-                    candidate.add_entry(group_for(candidate, op.values['group']), op.values['title'], op.values['username'], password, url=op.values['url'])
+                    _append_entry(candidate, group_for(candidate, op.values['group']), op.values, password)
             self.broker.vault = vault._akdbx_store.commit(vault, mutate)
             self.invalidate_revision(op)
             op.state = 'saved'
@@ -534,6 +608,31 @@ class WriteManager:
         op, mode = found
         if op.state != 'pending' or op.password is None or op.revision != self.revision:
             raise WriteError('stale generated password; start again')
+        self._require_available()
+        preflight_error = None
+        entry, latest = None, None
+        if op.uuid is not None:
+            entries = [entry for entry in active_entries(self.broker.vault) if entry.uuid == op.uuid]
+            if len(entries) != 1 or metadata(entries[0]) != op.values:
+                raise WriteError('entry changed; search again')
+            entry = entries[0]
+            latest, _ = _entry_write_clock(entry, self.broker.wall_clock)
+
+        def checked_ready():
+            nonlocal preflight_error
+            if delivery_ready is not None and not delivery_ready():
+                return False
+            try:
+                # Only metadata and the cached entry time are checked at the
+                # keyboard boundary; changed key contents are read beforehand.
+                if not self.available():
+                    raise WriteError('private writes unavailable; check activation, vault/key changes and path safety')
+                if entry is not None:
+                    _entry_write_clock(entry, self.broker.wall_clock, latest=latest)
+            except WriteError as exc:
+                preflight_error = str(exc)
+                raise
+            return True
         if set(request) - {'action', 'handle', 'target_url', 'start_deadline', 'target', 'target_protocol'}:
             raise WriteError('autofill not started: unsupported target request')
         target = request.get('target_url')
@@ -544,7 +643,10 @@ class WriteManager:
         # Reuse the existing keyboard preflight/deadline/dispatch boundary.
         proxy = SimpleNamespace(uuid=secrets.token_hex(16), password=op.password, username='', url=op.values['url'])
         handle = self.broker._new_handle(proxy)
-        response = self.broker._dispatch({'action': 'fill', 'handle': handle, 'mode': 'password', 'start_deadline': request.get('start_deadline'), 'target': request.get('target'), 'target_protocol': request.get('target_protocol')}, delivery_ready=delivery_ready)
+        response = self.broker._dispatch({'action': 'fill', 'handle': handle, 'mode': 'password', 'start_deadline': request.get('start_deadline'), 'target': request.get('target'), 'target_protocol': request.get('target_protocol')}, delivery_ready=checked_ready)
+        if preflight_error is not None and response.get('delivery') != 'uncertain':
+            # Forward only our fixed preflight reason, never a backend exception.
+            raise WriteError(preflight_error) from None
         if response.get('ok'):
             op.filled.add(mode)
         return response

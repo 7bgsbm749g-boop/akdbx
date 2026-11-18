@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import copy
-import fcntl
+import base64
 import hashlib
 import io
 import json
@@ -15,17 +15,44 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
+if os.name != 'nt':
+    import fcntl
+
 
 class SaveError(Exception):
     pass
 
 
-_OPEN_LOCK = threading.RLock()
+WRITE_TOKEN_BYTES = 12
+
+
+def _file_identity(info):
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+# Both shipped import names swap handlers on the same dependency logger.
+if __name__ == 'akdbx.persistence':
+    _OPEN_LOCK = threading.RLock()
+else:
+    from akdbx.persistence import _OPEN_LOCK
 
 
 def open_encrypted(encrypted, password, keyfile=None):
     """Contain dependency diagnostics and reject silently unreadable fields."""
     from pykeepass import PyKeePass
+    from pykeepass.kdbx_parsing.common import UnprotectedStream
+
+    def strict_decode(adapter, tree, context, path):
+        """Reject protected text that lxml cannot retain byte-for-byte."""
+        cipher = adapter.get_cipher(adapter.protected_stream_key(context))
+        for node in tree.xpath(adapter.protected_xpath):
+            if node.text is not None:
+                try:
+                    node.text = cipher.decrypt(base64.b64decode(node.text)).decode('utf-8')
+                except ValueError:
+                    raise SaveError('protected record fields could not be verified; merge refused') from None
+        return tree
+
     class Diagnostic(logging.Handler):
         failed = False
 
@@ -38,16 +65,21 @@ def open_encrypted(encrypted, password, keyfile=None):
     with _OPEN_LOCK:
         logger = logging.getLogger('pykeepass.kdbx_parsing.common')
         previous = logger.handlers, logger.propagate, logger.disabled, logger.level
+        previous_decoder = UnprotectedStream._decode
         diagnostic = Diagnostic()
         logger.handlers, logger.propagate, logger.disabled = [diagnostic], False, False
         logger.setLevel(logging.ERROR)
         try:
+            # PyKeePass otherwise strips XML-forbidden protected characters.
+            # The shared import lock also serializes this temporary decoder.
+            UnprotectedStream._decode = strict_decode
             vault = PyKeePass(io.BytesIO(encrypted), password=password, keyfile=keyfile)
             if diagnostic.failed or any(node.get('Protected') not in {'True', 'False'}
                                         for node in vault.tree.xpath('//Value[@Protected]')):
                 raise SaveError('protected record fields could not be verified; merge refused')
             return vault
         finally:
+            UnprotectedStream._decode = previous_decoder
             logger.handlers, logger.propagate, logger.disabled, level = previous
             logger.setLevel(level)
             diagnostic.close()
@@ -61,9 +93,80 @@ class VaultStore:
         self.verified_encrypted = None
         self.verified_capsules = None
         self.recovery_required = False
-        self.writable_path = False
         self.keyfile_path = None
         self.keyfile_digest = None
+        self.keyfile_expected = None
+
+    @property
+    def writable_path(self):
+        return self._writable_path()
+
+    @property
+    def merge_writable_path(self):
+        return self._writable_path(merging=True)
+
+    def _writable_path(self, *, merging=False):
+        """Check metadata and bound storage without vault/key reads, receipt scans or locking."""
+        if self.expected is None:
+            return False
+        directory = target = lock = keyfile = external = None
+        try:
+            directory = self._directory()
+            self._check_write_names(directory)
+            if merging:
+                self._check_merge_names(directory)
+            target = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=directory)
+            target_info = self._file_info(target)
+            # Reconciliation must remain available for an externally edited target.
+            if not merging and _file_identity(target_info) != self.expected[:5]:
+                return False
+            if not os.access('.', os.W_OK | os.X_OK, dir_fd=directory, effective_ids=True):
+                return False
+            if self.keyfile_path is not None:
+                keyfile = self._open_keyfile()
+                if not merging and _file_identity(os.fstat(keyfile)) != self.keyfile_expected:
+                    return False
+            lock = self._open_write_lock(directory, create=False)
+            external = self.snapshot_directory(directory)
+            if merging and external is not None:
+                self._check_merge_names(external, replacement=False)
+            return True
+        except (OSError, SaveError):
+            return False
+        finally:
+            for fd in (external, lock, keyfile, target, directory):
+                if fd is not None:
+                    os.close(fd)
+
+    def check_write_inputs(self):
+        """Revalidate changed key metadata before an ordinary write is prepared."""
+        if self.keyfile_path is not None:
+            keyfile = self._open_keyfile()
+            try:
+                changed = _file_identity(os.fstat(keyfile)) != self.keyfile_expected
+            finally:
+                os.close(keyfile)
+            if changed:
+                self._check_keyfile()
+        return self.writable_path
+
+    def _write_name(self, kind, token):
+        return '.' + self.path.name + '.akdbx-' + kind + '-' + token
+
+    def _check_write_names(self, directory):
+        """Check required ordinary-save components against the anchored directory limit."""
+        maximum = os.fpathconf(directory, 'PC_NAME_MAX')
+        if maximum >= 0 and any(len(os.fsencode(self._write_name(kind, '0' * (2 * WRITE_TOKEN_BYTES)))) > maximum
+                                for kind in ('backup', 'write')):
+            raise SaveError('vault filename is too long for required write artifacts')
+
+    def _check_merge_names(self, directory, *, replacement=True):
+        """Check the longest merge component in its anchored destination."""
+        name = self._write_name('merge', '0' * 32) + ('.replace' if replacement else '')
+        maximum = os.fpathconf(directory, 'PC_NAME_MAX')
+        if maximum >= 0 and len(os.fsencode(name)) > maximum:
+            raise SaveError('vault filename is too long for required merge artifacts')
 
     def _directory(self, *, writing=True):
         # Anchor each component rather than racing lstat against a full-path open.
@@ -86,19 +189,22 @@ class VaultStore:
             if current is not None:
                 os.close(current)
 
+    def _file_info(self, fd, *, writing=True):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or (writing and (info.st_uid != os.getuid() or info.st_nlink != 1)):
+            raise SaveError('unsafe vault file')
+        return info
+
     def _read(self, directory, *, writing=True):
         fd = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
         try:
-            before = os.fstat(fd)
-            if not stat.S_ISREG(before.st_mode) or (writing and (before.st_uid != os.getuid() or before.st_nlink != 1)):
-                raise SaveError("unsafe vault file")
+            before = self._file_info(fd, writing=writing)
             with os.fdopen(os.dup(fd), "rb") as stream:
                 data = stream.read()
             after = os.fstat(fd)
-            identity = lambda s: (s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns)
-            if identity(before) != identity(after):
+            if _file_identity(before) != _file_identity(after):
                 raise SaveError("vault changed on disk; restart and unlock")
-            return data, (*identity(after), hashlib.sha256(data).digest())
+            return data, (*_file_identity(after), hashlib.sha256(data).digest())
         finally:
             os.close(fd)
 
@@ -109,7 +215,7 @@ class VaultStore:
             key_material = None
             if keyfile is not None:
                 self.keyfile_path = Path(keyfile).expanduser().resolve(strict=True)
-                key_bytes = self.keyfile_path.read_bytes()
+                key_bytes = self._read_keyfile()
                 self.keyfile_digest = hashlib.sha256(key_bytes).digest()
                 key_material = io.BytesIO(key_bytes)
             vault = open_encrypted(encrypted, password, key_material)
@@ -120,24 +226,52 @@ class VaultStore:
                 raise SaveError("vault changed on disk; restart and unlock")
             self.expected = snapshot
             self.verified_encrypted = encrypted
-            try:
-                write_directory = self._directory()
-                try:
-                    self._read(write_directory)
-                    self.writable_path = True
-                finally:
-                    os.close(write_directory)
-            except (OSError, SaveError):
-                pass
             vault._akdbx_store = self
             self._check_merge_recovery(directory)
             return vault
         finally:
             os.close(directory)
 
+    def _open_keyfile(self):
+        """Refuse nonregular key artifacts without waiting for a FIFO or following a replaced leaf."""
+        fd = os.open(self.keyfile_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise SaveError('key file must be a regular file')
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def _read_keyfile(self, *, verify=False):
+        """Read initial material, or verify its pinned length/digest with bounded memory."""
+        with os.fdopen(self._open_keyfile(), 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            if verify:
+                if self.keyfile_expected is None or before.st_size != self.keyfile_expected[2]:
+                    raise SaveError("key file changed on disk; restart and unlock")
+                digest = hashlib.sha256()
+                remaining = before.st_size
+                while remaining:
+                    chunk = stream.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        raise SaveError("key file changed on disk; restart and unlock")
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                if stream.read(1) or digest.digest() != self.keyfile_digest:
+                    raise SaveError("key file changed on disk; restart and unlock")
+                data = None
+            else:
+                data = stream.read()
+            after = os.fstat(stream.fileno())
+            if _file_identity(before) != _file_identity(after):
+                raise SaveError("key file changed on disk; restart and unlock")
+            self.keyfile_expected = _file_identity(after)
+            return data
+
     def _check_keyfile(self):
-        if self.keyfile_path is not None and hashlib.sha256(self.keyfile_path.read_bytes()).digest() != self.keyfile_digest:
-            raise SaveError("key file changed on disk; restart and unlock")
+        if self.keyfile_path is not None:
+            self._read_keyfile(verify=True)
 
     def _check_merge_recovery(self, directory):
         """An interrupted native merge must stay blocked across broker restarts."""
@@ -200,6 +334,31 @@ class VaultStore:
             if external is not None:
                 os.close(external)
 
+    @staticmethod
+    def read_merge_receipt(bundle, operation_id):
+        """Read a bounded receipt only from its private, correctly identified bundle."""
+        info = os.fstat(bundle)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise SaveError('unsafe merge receipt directory')
+        fd = os.open('receipt.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                     dir_fd=bundle)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 16384):
+                raise SaveError('unsafe merge receipt')
+            try:
+                data = stream.read(16385)
+                if len(data) > 16384:
+                    raise ValueError
+                receipt = json.loads(data)
+                if (len(operation_id) != 32 or any(c not in '0123456789abcdef' for c in operation_id)
+                        or not isinstance(receipt, dict) or receipt.get('operation_id') != operation_id):
+                    raise ValueError
+            except (ValueError, TypeError):
+                raise SaveError('invalid merge receipt') from None
+        return receipt
+
     def _scan_merge_recovery(self, directory):
         prefix = '.' + self.path.name + '.akdbx-merge-'
         for name in os.listdir(directory):
@@ -208,12 +367,7 @@ class VaultStore:
             bundle = None
             try:
                 bundle = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
-                fd = os.open('receipt.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=bundle)
-                with os.fdopen(fd, 'rb') as stream:
-                    info = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(info.st_mode) or info.st_size > 16384:
-                        raise ValueError
-                    receipt = json.loads(stream.read(16384))
+                receipt = self.read_merge_receipt(bundle, name[len(prefix):])
                 if receipt.get('state') not in {'saved', 'unchanged', 'checked', 'failed'}:
                     self.recovery_required = True
             except Exception:
@@ -222,14 +376,30 @@ class VaultStore:
                 if bundle is not None:
                     os.close(bundle)
 
-    @contextmanager
-    def advisory_lock(self, directory):
-        """The same nonblocking disk lock for password writes and merges."""
-        fd = os.open('.' + self.path.name + '.akdbx.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+    def _open_write_lock(self, directory, *, create):
+        """Open the same safe lock inode for readiness, saves and merges."""
+        flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+        try:
+            fd = os.open('.' + self.path.name + '.akdbx.lock',
+                         flags | (os.O_CREAT if create else 0), 0o600, dir_fd=directory)
+        except FileNotFoundError:
+            if not create:
+                return None
+            raise
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
                 raise SaveError('unsafe vault write lock')
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    @contextmanager
+    def advisory_lock(self, directory):
+        """The same nonblocking disk lock for password writes and merges."""
+        fd = self._open_write_lock(directory, create=True)
+        try:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -258,10 +428,8 @@ class VaultStore:
         replaced = False
         replacement_attempted = False
         try:
-            lock = os.open('.' + self.path.name + '.akdbx.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-            info = os.fstat(lock)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
-                raise SaveError("unsafe vault write lock")
+            self._check_write_names(directory)
+            lock = self._open_write_lock(directory, create=True)
             deadline = time.monotonic() + 4.0
             while True:
                 try:
@@ -271,6 +439,13 @@ class VaultStore:
                     if time.monotonic() >= deadline:
                         raise SaveError("vault write busy; update not saved") from None
                     time.sleep(0.02)
+            try:
+                self._check_merge_recovery(directory)
+            except Exception:
+                self.recovery_required = True
+                raise SaveError('merge recovery state could not be verified; recovery required') from None
+            if self.recovery_required:
+                raise SaveError('incomplete merge receipt; recovery required; update not saved')
             self._check_keyfile()
             previous, snapshot = self._read(directory)
             if snapshot != self.expected:
@@ -287,10 +462,10 @@ class VaultStore:
                 verify_candidate(verified)
             verified._akdbx_store = self
             # Every file below contains only an encrypted KDBX, never a password.
-            backup = '.' + self.path.name + '.akdbx-backup-' + secrets.token_hex(12)
+            backup = self._write_name('backup', secrets.token_hex(WRITE_TOKEN_BYTES))
             self._write_file(directory, backup, previous)
             os.fsync(directory)
-            staging = '.' + self.path.name + '.akdbx-write-' + secrets.token_hex(12)
+            staging = self._write_name('write', secrets.token_hex(WRITE_TOKEN_BYTES))
             self._write_file(directory, staging, encrypted)
             if self._read(directory)[1] != snapshot:
                 raise SaveError("vault changed on disk; restart and unlock")

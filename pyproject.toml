@@ -4,12 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "akdbx"
-version = "0.14.1"
+version = "0.15.0"
 description = "A secret-withholding KeePass autofill broker for local agents"
 requires-python = ">=3.11"
 dependencies = [
+  "idna>=3.7,<4",
   "pykeepass==4.2.0",
-  "python-xlib>=0.33,<1",
+  "python-xlib>=0.33,<1; sys_platform == 'linux'",
+  "pywin32>=308,<312; sys_platform == 'win32'",
   "websocket-client>=1.8,<2",
 ]
 
@@ -32,4 +34,4 @@ akdbx = ["import_assets/*", "browser_extension/*"]
 testpaths = ["tests"]
 
 [project.optional-dependencies]
-test = ["pytest>=8,<10"]
+test = ["pytest>=8,<10", "cryptography>=43,<47"]
