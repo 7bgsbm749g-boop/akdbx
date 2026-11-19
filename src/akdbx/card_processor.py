@@ -18,8 +18,9 @@ STRIPE_FIELDS = {
 
 # Shared by the merchant iframe guard and the input's isolated-world checks.
 # Rectangles and elementFromPoint cannot prove visual exposure through masks or
-# filters or blending. Mapping child coordinates also excludes individual/3D transforms.
-STYLE_GUARD = r'''function supportedStyle(style, mapping=false) {
+# filters or blending. Stripe dialogs can translate the frame without changing
+# its axes. The offset is already included in getBoundingClientRect().
+STYLE_GUARD = r'''function supportedStyle(style, mapping=false, allowTranslation=false) {
   if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0 ||
       style.getPropertyValue('content-visibility') === 'hidden') return false;
   const blend = style.getPropertyValue('mix-blend-mode').trim();
@@ -29,6 +30,14 @@ STYLE_GUARD = r'''function supportedStyle(style, mapping=false) {
   const geometry=mapping ? ['transform','rotate','translate','scale','perspective','offset-path'] : [];
   return [...visual,...geometry].every(k => {
     const value=style.getPropertyValue(k).trim();
+    if (allowTranslation && k === 'transform' && value.startsWith('matrix(')) {
+      const m = new DOMMatrixReadOnly(value);
+      return m.is2D && m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1 &&
+        Number.isFinite(m.e) && Number.isFinite(m.f);
+    }
+    if (allowTranslation && k === 'translate' && value !== '' && value !== 'none') {
+      return /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:px|%)(?: -?(?:\d+(?:\.\d+)?|\.\d+)(?:px|%))?$/.test(value);
+    }
     return value === '' || value === 'none' || k === 'clip' && value === 'auto';
   });
 }'''
@@ -128,7 +137,7 @@ GUARD = r'''function(frameURL, topURL, processor) {
     for (let e=node, i=0; e; e=e.parentElement, ++i) {
       if (i >= 64) return false;
       const s=owner.defaultView.getComputedStyle(e);
-      if (!supportedStyle(s,true) || e.hasAttribute('inert')) return false;
+      if (!supportedStyle(s, true, processor === 'stripe') || e.hasAttribute('inert')) return false;
     }
     return owner.visibilityState === 'visible';
   }
