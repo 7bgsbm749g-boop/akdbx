@@ -2,14 +2,15 @@
 import json
 import logging
 import os
-import pwd
-import grp
 import secrets
 import socket
 import stat
 import sys
 
 import pytest
+
+pwd = pytest.importorskip('pwd')  # Linux-only: skip before anything else needs it.
+grp = pytest.importorskip('grp')
 from pykeepass import PyKeePass
 
 from akdbx import cli, sink_helper
@@ -72,7 +73,8 @@ def test_write_appends_missing_key_and_creates_missing_file(tmp_path):
     path.write_text('PORT=1')
     assert write_sink(definition, VALUE) is True
     assert path.read_text() == f'PORT=1\nAPP_CLIENT_SECRET={VALUE}\n'
-    for compound in (b'APP_CLIENT_SECRET=old PORT=8080\n', b'APP_CLIENT_SECRET=old # note\n'):
+    for compound in (b'APP_CLIENT_SECRET=old PORT=8080\n', b'APP_CLIENT_SECRET=old # note\n',
+                     b': <<EOF\nAPP_CLIENT_SECRET=old\nEOF\n', b'echo hi\nA=1\n'):
         with pytest.raises(SinkError):  # A shell would set or keep more than the key.
             render(compound, 'APP_CLIENT_SECRET', 'y')
     assert render(b'  APP_CLIENT_SECRET=old  \n', 'APP_CLIENT_SECRET', 'y') == b'  APP_CLIENT_SECRET=y\n'
@@ -187,7 +189,7 @@ def test_writable_ancestor_directory_refuses(tmp_path):
 def test_root_helper_never_restarts_as_root(tmp_path, monkeypatch):
     definition, _ = sink(tmp_path, restart=dict(user='root', argv=['/bin/true']))
     monkeypatch.setattr(sink_helper.os, 'geteuid', lambda: 0)
-    monkeypatch.setattr(sink_helper.subprocess, 'run', lambda argv, **kw: pytest.fail('ran ' + repr(argv)))
+    monkeypatch.setattr(sink_helper.subprocess, 'Popen', lambda argv, **kw: pytest.fail('ran ' + repr(argv)))
     with pytest.raises(SinkError):
         sink_helper.restart(definition)
     with pytest.raises(SinkError):  # Refused before the value is written.
@@ -198,16 +200,16 @@ def test_root_helper_never_restarts_as_root(tmp_path, monkeypatch):
     with pytest.raises(SinkError):  # A UID 0 alias is root too.
         sink_helper.restart(dict(definition, restart=dict(definition['restart'], user='toor')))
     ran = []
-    monkeypatch.setattr(sink_helper.subprocess, 'run', lambda argv, **kw: ran.append(argv) or
-                        type('R', (), {'returncode': 0})())
+    done = type('P', (), {'pid': 0, 'wait': lambda self, timeout=None: 0})()
+    monkeypatch.setattr(sink_helper.subprocess, 'Popen', lambda argv, **kw: ran.append(argv) or done)
     assert sink_helper.restart(dict(definition, restart=dict(definition['restart'], user=None))) is True
     assert ran == [[sink_helper.RUNUSER, '-u', USER, '--', '/usr/bin/env', '-i', 'PATH=' + sink_helper.SAFE_PATH,
                     '/bin/true']]  # Defaults to the sink owner; env applies only after the switch.
     ran.clear()
     loader = dict(definition, restart=dict(definition['restart'], user=None, env={'LD_PRELOAD': '/tmp/x.so'}))
     environments = []
-    monkeypatch.setattr(sink_helper.subprocess, 'run', lambda argv, **kw: ran.append(argv) or environments.append(kw['env'])
-                        or type('R', (), {'returncode': 0})())
+    monkeypatch.setattr(sink_helper.subprocess, 'Popen', lambda argv, **kw: ran.append(argv) or environments.append(kw['env'])
+                        or done)
     assert sink_helper.restart(loader) is True
     assert environments == [{'PATH': sink_helper.SAFE_PATH}] and ran[0][-2:] == ['LD_PRELOAD=/tmp/x.so', '/bin/true']
 
@@ -219,6 +221,30 @@ def test_restart_runs_while_the_sink_lock_is_held(tmp_path):
                      'try:\n    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError:\n    sys.exit(0)\nsys.exit(1)\n')
     definition, path = sink(tmp_path, restart=dict(argv=[sys.executable, '-I', str(probe), str(tmp_path / 'svc')]))
     assert sink_helper.deliver(definition, VALUE) == dict(restarted=True)  # The probe found the lock taken.
+
+
+def test_restart_timeout_stops_the_whole_process_group(tmp_path, monkeypatch):
+    marker = tmp_path / 'late'
+    monkeypatch.setattr(sink_helper, 'RESTART_TIMEOUT', 1)
+    definition, _ = sink(tmp_path, restart=dict(argv=['/bin/sh', '-c', '(sleep 3; touch "$M") & wait'], env=dict(M=str(marker))))
+    assert sink_helper.deliver(definition, VALUE) == dict(restarted=False)
+    import time
+    time.sleep(3.5)
+    assert not marker.exists()  # The background child was stopped too.
+
+
+def test_busy_sink_refuses_after_a_bounded_wait(tmp_path, monkeypatch):
+    import fcntl
+    definition, path = sink(tmp_path)
+    monkeypatch.setattr(sink_helper, 'LOCK_TIMEOUT', 0.2)
+    holder = os.open(tmp_path / 'svc', os.O_RDONLY)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        with pytest.raises(SinkError):
+            write_sink(definition, VALUE)
+    finally:
+        os.close(holder)
+    assert not path.exists()
 
 
 def test_restart_command_runs_with_fixed_argv_and_environment(tmp_path):

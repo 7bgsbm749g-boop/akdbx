@@ -41,6 +41,7 @@ MAX_REQUEST = 16 * 1024
 MAX_SINKS = 32
 MAX_VALUE = 4096
 RESTART_TIMEOUT = 60
+LOCK_TIMEOUT = 15
 RUNUSER = '/usr/sbin/runuser'
 SAFE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
@@ -194,9 +195,12 @@ def render(existing, key, value):
     found = [index for index, line in enumerate(lines) if pattern.match(line)]
     if len(found) > 1:
         raise SinkError('sink file sets the key more than once; not changed')
-    if found and re.search(r'\S[ \t]+\S', lines[found[0]].strip('\n').lstrip()):
-        # `KEY=old OTHER=1` sets two variables in a shell: do not drop one.
-        raise SinkError('sink file line for the key has more than one word; not changed')
+    # Only blank lines, comments and single `NAME=word` assignments: anything
+    # else (commands, here-documents, `KEY=a OTHER=b`) could make a line that
+    # looks like the key mean something else.
+    plain = re.compile(r'[ \t]*(?:#.*|(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*=[^ \t\n]*[ \t]*)?\n?')
+    if not all(plain.fullmatch(item) for item in lines):
+        raise SinkError('sink file has lines other than comments and single NAME=value assignments; not changed')
     line = key + '=' + value + '\n'
     if found and re.match(r'[ \t]*export[ \t]', lines[found[0]]):
         # systemd does not read `export KEY=`, while shells need it kept; the
@@ -269,7 +273,18 @@ def write_sink(sink, value, after=None):
         # One writer at a time per directory, across helper processes and the
         # broker, for the whole read-modify-replace.
         import fcntl
-        fcntl.flock(directory, fcntl.LOCK_EX)
+        import time
+        # Wait briefly for another delivery, so that lock wait, write and
+        # restart still finish within the broker's reply budget.
+        deadline = time.monotonic() + LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise SinkError('sink busy with another delivery; nothing written') from None
+                time.sleep(0.05)
         try:
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         except FileNotFoundError:
@@ -361,12 +376,22 @@ def restart(sink, argv=None):
     if argv is None:
         return None
     try:
-        result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                env={'PATH': SAFE_PATH, **({} if os.geteuid() == 0 else sink['restart']['env'])}, cwd='/',
-                                timeout=RESTART_TIMEOUT, close_fds=True)
-    except (OSError, subprocess.SubprocessError):
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   env={'PATH': SAFE_PATH, **({} if os.geteuid() == 0 else sink['restart']['env'])},
+                                   cwd='/', close_fds=True, start_new_session=True)
+    except OSError:
         return False
-    return result.returncode == 0
+    try:
+        return process.wait(timeout=RESTART_TIMEOUT) == 0
+    except subprocess.TimeoutExpired:
+        # Stop the whole restart process group before the sink lock is released.
+        import signal
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+        return False
 
 
 def deliver(sink, value):
