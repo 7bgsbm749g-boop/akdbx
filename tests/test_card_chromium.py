@@ -13,6 +13,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -79,6 +80,12 @@ def card_browser_binary():
     return binary
 
 
+STRIPE_CARD_FRAME = (
+    'https://js.stripe.com/v3/elements-inner-accessory-target-'
+    '0123456789abcdef0123456789abcdef.html#merchant=synthetic'
+)
+
+
 @pytest.fixture
 def chrome(tmp_path, request):
     binary = card_browser_binary()
@@ -117,6 +124,20 @@ def chrome(tmp_path, request):
                 body = b'''<!doctype html><iframe id="processor"
                   src="https://checkoutshopper-live.adyen.com/checkoutshopper/securedfields/live_test/6.3.0/securedFields.html"
                   style="width:550px;height:300px"></iframe>'''
+            elif self.path == '/stripe':
+                body = (f'<!doctype html><iframe src="{STRIPE_CARD_FRAME}" '
+                        'style="width:550px;height:300px"></iframe>').encode()
+            elif self.path == urlsplit(STRIPE_CARD_FRAME).path:
+                body = b'''<!doctype html><style>input{display:block;margin:10px}</style>
+                  <input id=payment-numberInput name=number autocomplete=cc-number>
+                  <input id=payment-expiryInput name=expiry autocomplete=cc-exp placeholder="MM / YY">
+                  <input id=payment-cvcInput name=cvc autocomplete=cc-csc>
+                  <input id=other-number name=other autocomplete=cc-number>
+                  <script>
+                  document.querySelector('#payment-expiryInput').addEventListener('input', e => {
+                      e.target.value = e.target.value.replace('/', ' / ');
+                  });
+                  </script>'''
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
             self.send_header('Content-Length', str(len(body)))
@@ -152,7 +173,8 @@ def chrome(tmp_path, request):
         '--renderer-process-limit=2', '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
         '--site-per-process', '--no-proxy-server',
         '--host-resolver-rules=MAP checkoutshopper-live.adyen.com 127.0.0.1:' + str(server.server_port) +
-        ',MAP www.computop-paygate.com 127.0.0.1:' + str(server.server_port),
+        ',MAP www.computop-paygate.com 127.0.0.1:' + str(server.server_port) +
+        ',MAP js.stripe.com 127.0.0.1:' + str(server.server_port),
         '--ignore-certificate-errors', '--window-size=1000,1000', '--ozone-platform=x11', url],
         env=environment, stdout=subprocess.DEVNULL, stderr=log, start_new_session=True, umask=0o077)
     cdp = None

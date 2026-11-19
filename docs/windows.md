@@ -62,8 +62,8 @@ host for authenticator capture stays Linux-only; see
   the same desktop session. Run normally, without elevation. Secure desktop/UAC
   prompts and apps at a higher integrity level are not supported. Services
   without an interactive desktop cannot fill applications.
-- Card processor iframes (Adyen, Computop) use the same code as Linux, where CI
-  tests them. On Windows only main-frame card fields have been tested.
+- Card processor iframes (Adyen, Computop, Stripe) use the same code as Linux,
+  where CI tests them. On Windows only main-frame card fields have been tested.
 
 ## Install and prepare private files
 

@@ -22,6 +22,12 @@ capability and check each application's nonsecret outcome after a fill.
 
 ## Session delegation
 
+When the user's standing authorization covers akdbx PRs, merges and patch
+releases, start a separate agent for each unsupported site, field type,
+processor or workflow you find. Give it the task to implement support, file
+a PR, full-send it and release a patch. Do this even if the current task can
+continue another way. Wait for the release only if the current task needs it.
+
 When sign-in is needed, check the current model and available delegation through the current orchestration tools. If the current model is GPT-6.1 Terra (`gpt-6.1-terra`), perform the sign-in directly. Otherwise, if GPT-6.1 Terra and delegation are available, delegate only the sign-in to a GPT-6.1 Terra subagent. Give it this skill, the destination and account context needed to sign in, including known account emails, possible sign-in providers and prior attempts, and instructions to verify the authenticated state and report the result or blocker. Do not delegate the user's wider task or ask the subagent to continue it after sign-in. The parent agent retains the wider task and resumes it after the sign-in result. If GPT-6.1 Terra or delegation is unavailable, perform the sign-in directly using the current model. This delegation requirement does not apply to other tasks that use this skill.
 
 ## Where the tool lives
