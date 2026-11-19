@@ -11,6 +11,8 @@ import pytest
 
 pwd = pytest.importorskip('pwd')  # Linux-only: skip before anything else needs it.
 grp = pytest.importorskip('grp')
+# The ownership, trust and helper rules depend on an ordinary broker account.
+pytestmark = pytest.mark.skipif(os.getuid() == 0, reason='run as an ordinary user; the helper never accepts UID 0 as a broker')
 from pykeepass import PyKeePass
 
 from akdbx import cli, sink_helper
@@ -259,7 +261,6 @@ def test_restart_command_runs_with_fixed_argv_and_environment(tmp_path):
     assert sink_helper.deliver(plain, VALUE) == dict(restarted=None)
 
 
-@pytest.mark.skipif(os.getuid() == 0, reason='the helper never accepts UID 0 as a broker; run as an ordinary user')
 def test_root_helper_protocol_checks_peer_sink_and_field(tmp_path):
     directory = tmp_path / 'svc'
     directory.mkdir(mode=0o700)

@@ -237,6 +237,16 @@ def test_element_changes_after_pin_refuse_capture(env, change):
     assert stored(env) == (None, None)
 
 
+def test_attribute_and_functional_selectors_refuse_so_pins_are_no_oracle(env):
+    fid = open_page(env)
+    point(env, fid, '#tok')
+    # A true and a false predicate on the secret both refuse: success says nothing.
+    for selector in [f'input[value^="{VALUE[:6]}"]', 'input[value^="nope"]', '#tok:not([value^="x"])',
+                     'body:has(#tok[value^="S"]) #tok', '#twin ~ #tok', '#tok,#twin']:
+        assert pin(env, fid, selector) == failure(), selector
+    assert pin(env, fid, 'body input#tok:nth-of-type(1)')['ok']
+
+
 def test_wrong_top_url_and_page_refuse(env):
     fid = open_page(env)
     point(env, fid, '#secret')

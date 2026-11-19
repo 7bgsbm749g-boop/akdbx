@@ -50,6 +50,9 @@ The pin is single use and expires after 30 seconds. It refuses unless:
 - the page has the exact HTTPS top URL, page ID and frame ID (a same-site child
   frame needs `--frame-origin` as described in the target-fill guide; a
   cross-site frame chain refuses);
+- the selector uses only tag names, `#id`, `.class`, `:nth-of-type(n)` or
+  `:nth-child(n)`, joined by spaces or `>` (attribute selectors and other
+  pseudo-classes refuse, so a pin result cannot test the secret's value);
 - the selector matches exactly one visible element in the viewport (not
   `visibility: hidden`, `opacity: 0`, `display: none`, `inert` or zero size);
 - the page has focus and the element itself is focused;
