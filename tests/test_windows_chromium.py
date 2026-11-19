@@ -410,7 +410,9 @@ def test_card_save_through_private_page_then_dom_fill(lab, synthetic_vault, nati
             time.sleep(.02)
         assert [(url, payload['event'], payload['state']) for url, payload in delivered] == [
             ('https://hooks.example.test/synthetic-token', 'akdbx.card-save', 'saved')]
-        assert not any(value in json.dumps(delivered) for value in CARD.values())
+        # A fixed shape with random identifiers only: no card or entry data.
+        assert set(delivered[0][1]) == {'event', 'state', 'subscription_id', 'event_id'}
+        assert CARD['number'] not in json.dumps(delivered) and CARD['name'] not in json.dumps(delivered)
         persisted = PyKeePass(str(synthetic_vault), password='synthetic master')
         saved = next(entry for entry in persisted.entries if entry.title == 'Synthetic Visa')
         assert saved.get_custom_property(FIELDS['number']) == CARD['number']
@@ -418,7 +420,9 @@ def test_card_save_through_private_page_then_dom_fill(lab, synthetic_vault, nati
                    for name in FIELDS.values())
         found = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries']
         assert [(item['title'], item['brand'], item['last_four']) for item in found] == [('Synthetic Visa', 'visa', '1111')]
-        assert CARD['number'] not in json.dumps(found) and CARD['csc'] not in json.dumps(staged)
+        # Only the long values can be compared: a random handle can hold a short digit run.
+        assert CARD['number'] not in json.dumps([found, staged]) and CARD['name'] not in json.dumps([found, staged])
+        assert set(staged) == {'ok', 'state', 'write_handle', 'private_url'}
 
         def card_pin(selector, field):
             return dict(action='pin-card-target', card_protocol=1, page_id=lab.page_id, frame_id=lab.main_frame,

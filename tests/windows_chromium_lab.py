@@ -185,14 +185,20 @@ def chromium_lab(directory, certificate, key, *, pages=None):
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log)
     observer = None
     try:
-        port_file = profile / 'DevToolsActivePort'
-        deadline = time.monotonic() + 30
-        while not port_file.exists():
+        # The browser creates its port file before it writes the complete
+        # header, and holds it open while it writes. Existence is not
+        # readiness: wait with the production validator, unweakened, and retry
+        # only this startup phase of the owned synthetic browser. The published
+        # port can also precede a responsive WebSocket server.
+        from akdbx.browser_password import endpoint
+        deadline = time.monotonic() + 60
+        while observer is None:
             assert process.poll() is None, 'synthetic Chromium exited during startup'
             assert time.monotonic() < deadline, 'synthetic Chromium did not open its debugging endpoint'
-            time.sleep(.05)
-        port, path = port_file.read_text().split('\n')[:2]
-        observer = Observer(f'ws://127.0.0.1:{port}{path}')
+            try:
+                observer = Observer(endpoint(profile))
+            except Exception:
+                time.sleep(.05)
         session = page_id = None
         while time.monotonic() < deadline:
             pages_found = [t for t in observer.call('Target.getTargets')['targetInfos'] if t['type'] == 'page']
