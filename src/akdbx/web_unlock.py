@@ -14,6 +14,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
 from .broker import Broker, open_vault_with_password
+from .identities import FIELDS as IDENTITY_FIELDS, FIELD_LIMIT as IDENTITY_FIELD_LIMIT
 from .portal import content_security_policy, field, render
 from .runtime import (
     acquire_lifecycle_lock,
@@ -95,6 +96,7 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
             try:
                 manager._prune()
                 manager.broker.card_targets.prune()
+                manager.broker.identity_targets.prune()
             finally:
                 manager.broker._vault_lock.release()
 
@@ -186,6 +188,7 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
         if manager is not None:
             with manager.broker._vault_lock:
                 manager.broker.card_targets.close()
+                manager.broker.identity_targets.close()
                 manager.public_base = None
                 for op in manager.operations.values():
                     op.password = None
@@ -334,9 +337,9 @@ def handler_for(state: UnlockState):
             if handle_import(self, state):
                 return True
             route = urlsplit(self.path).path
-            if route not in {'/write', '/totp', '/card'}:
+            kind = {'/write': 'password', '/totp': 'totp', '/card': 'card', '/identity': 'identity'}.get(route)
+            if kind is None:
                 return False
-            kind = 'totp' if route == '/totp' else 'card' if route == '/card' else 'password'
             if not self._identity_ok():
                 self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Invalid password request.</p>'))
                 return True
@@ -356,6 +359,10 @@ def handler_for(state: UnlockState):
                             ('year', 'Expiry year (YYYY)', 'text', 4, 'required'),
                             ('csc', 'Security code (optional)', 'password', 4, '')))
                         body = f'<dl>{destination}</dl><form method="post" action="{action}" autocomplete="off">{fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this card and destination</label><button>Save card to AKDBX</button></form>'
+                    elif kind == 'identity':
+                        fields = ''.join(field(label, key, kind='text', maxlength=IDENTITY_FIELD_LIMIT, required=False)
+                                         for key, label in IDENTITY_FIELDS.items())
+                        body = f'<dl>{destination}</dl><p>Enter only the details you want to save.</p><form method="post" action="{action}" autocomplete="off">{fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this identity and destination</label><button>Save identity to AKDBX</button></form>'
                     elif kind == 'totp':
                         replacement = '<p>This replaces the saved authenticator key.</p>' if op.replace else ''
                         setup = field('Setup key or otpauth TOTP URI', 'setup', maxlength=4096)
@@ -364,12 +371,16 @@ def handler_for(state: UnlockState):
                     else:
                         password_fields = field('Chosen password', 'password', autocomplete='new-password') + field('Repeat password', 'confirmation', autocomplete='new-password')
                         body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes AKDBX only.</p><form method="post" action="{action}" autocomplete="off">{password_fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label><button>Save to AKDBX</button></form>'
-                    self._send(HTTPStatus.OK, _page('Save AKDBX card' if kind == 'card' else 'Confirm AKDBX authenticator' if kind == 'totp' else 'Confirm AKDBX password', body))
+                    title = {'card': 'Save AKDBX card', 'identity': 'Save AKDBX identity',
+                             'totp': 'Confirm AKDBX authenticator', 'password': 'Confirm AKDBX password'}[kind]
+                    self._send(HTTPStatus.OK, _page(title, body))
                     return True
             # Read outside the vault lock so a stalled user cannot block fills.
             try:
                 length = int(self.headers.get('Content-Length', '0'))
-                if self.headers.get('Content-Type', '').split(';')[0] != 'application/x-www-form-urlencoded' or not 0 < length <= MAX_BODY:
+                # Each Unicode code point can use four percent-encoded UTF-8 bytes.
+                limit = 48 * 1024 if kind == 'identity' else MAX_BODY
+                if self.headers.get('Content-Type', '').split(';')[0] != 'application/x-www-form-urlencoded' or not 0 < length <= limit:
                     raise ValueError
                 raw = self.rfile.read(length)
                 if len(raw) != length or self._expired():
@@ -380,6 +391,8 @@ def handler_for(state: UnlockState):
                 if kind == 'totp' and set(values) - {'setup', 'confirmed'}:
                     raise ValueError
                 if kind == 'card' and set(values) != {'name', 'number', 'month', 'year', 'csc', 'confirmed'}:
+                    raise ValueError
+                if kind == 'identity' and set(values) != IDENTITY_FIELDS.keys() | {'confirmed'}:
                     raise ValueError
             except Exception:
                 self._send(HTTPStatus.BAD_REQUEST, _page('Invalid request', '<p>Request rejected.</p>'))
@@ -392,12 +405,17 @@ def handler_for(state: UnlockState):
                     return True
                 if kind == 'card':
                     result = state.broker.cards.submit(op, {k: values[k][0] for k in ('name', 'number', 'month', 'year', 'csc')}, values.get('confirmed') == ['yes'])
+                elif kind == 'identity':
+                    result = state.broker.identities.submit(op, {key: values[key][0] for key in IDENTITY_FIELDS},
+                                                            values['confirmed'] == ['yes'])
                 elif kind == 'totp':
                     result = state.broker.writes.submit_totp(op, values.get('setup', [''])[0], values.get('confirmed') == ['yes'])
                 else:
                     result = state.broker.writes.submit(op, values.get('password', [''])[0], values.get('confirmation', [''])[0], values.get('confirmed') == ['yes'])
             # No submitted fields, parser exceptions or secrets enter the page.
-            body = ('<p>Card saved to AKDBX. You may close this page.</p>' if kind == 'card' else '<p>Authenticator saved to AKDBX. You may close this page.</p>' if kind == 'totp' else '<p>Password saved to AKDBX. You may close this page.</p>') if result['ok'] else '<p>' + html.escape(result['error']) + '</p>'
+            subject = {'card': 'Card', 'identity': 'Identity', 'totp': 'Authenticator', 'password': 'Password'}[kind]
+            body = (f'<p>{subject} saved to AKDBX. You may close this page.</p>' if result['ok']
+                    else '<p>' + html.escape(result['error']) + '</p>')
             self._send(HTTPStatus.OK if result['ok'] else HTTPStatus.CONFLICT, _page('AKDBX save result', body))
             return True
 

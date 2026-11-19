@@ -397,7 +397,7 @@ class WriteManager:
             if other is not current:
                 other.import_candidates = ()
                 other.import_nonce = None
-            if other is not current and other.state == 'pending' and (all_pending or other.password is not None or other.kind == 'card'):
+            if other is not current and other.state == 'pending' and (all_pending or other.password is not None or other.kind in {'card', 'identity'}):
                 other.state = 'failed'
                 other.error = 'stale write; search and start again'
                 other.password = None
@@ -482,6 +482,9 @@ class WriteManager:
         except ValueError:
             raise WriteError('unknown or expired handle; search again') from None
         from .cards import is_card
+        from .identities import is_identity
+        if is_identity(entry):
+            raise WriteError('identity record has no site URLs')
         if is_card(entry):
             raise WriteError('card record has no site URLs')
         self._require_available()
@@ -565,6 +568,9 @@ class WriteManager:
             except ValueError:
                 raise WriteError('unknown or expired handle; search again') from None
             from .cards import is_card
+            from .identities import is_identity
+            if is_identity(entry):
+                raise WriteError('identity record cannot be used for login writes')
             if is_card(entry):
                 raise WriteError('card record requires card save')
             if not is_totp and passwordless_identity(entry):
