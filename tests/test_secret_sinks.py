@@ -547,3 +547,16 @@ def test_installed_helper_is_standalone(tmp_path):
     import subprocess
     result = subprocess.run([sys.executable, '-I', str(copy)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 2 and 'must run as root' in result.stderr
+
+
+def test_read_selector_grammar_is_linear_and_strict():
+    import time
+    from akdbx.browser_password import MAX_READ_SELECTOR, READ_SELECTOR
+    for good in ['#secret', 'code.f4', 'div.Box > code.f4', 'main div:nth-of-type(2) > code', '*', '.a.b#c']:
+        assert READ_SELECTOR.fullmatch(good), good
+    for bad in ['input[value^="a"]', '#a:has(b)', 'a:not(.x)', '#a,#b', '#a ~ b', '#a + b', '', ' #a', 'a >', 'a > > b']:
+        assert not READ_SELECTOR.fullmatch(bad), bad
+    started = time.monotonic()
+    for hostile in ['a' + ' ' * MAX_READ_SELECTOR + '!', 'a' + ' >' * 250 + '!', ('a ' * 250) + '[']:
+        assert not READ_SELECTOR.fullmatch(hostile[:MAX_READ_SELECTOR + 2])
+    assert time.monotonic() - started < 0.5

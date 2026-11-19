@@ -32,8 +32,12 @@ CAPTURE_PROTOCOL = 1
 # compounds joined by descendant or child combinators. Attribute selectors
 # and other pseudo-classes could test the secret (for example
 # input[value^="a"]) and turn pin success into an oracle.
-_COMPOUND = r'(?:[A-Za-z][A-Za-z0-9-]*|\*)?(?:[#.][A-Za-z_-][A-Za-z0-9_-]*|:nth-(?:of-type|child)\([1-9][0-9]{0,3}\))*'
-READ_SELECTOR = re.compile(r'(?=\S)' + _COMPOUND + r'(?:[ ]*>[ ]*' + _COMPOUND + r'|[ ]+' + _COMPOUND + r')*')
+# Every compound is non-empty and starts with a non-space character, so the
+# combinators cannot overlap and matching stays linear (no backtracking blow-up).
+_SUFFIX = r'(?:[#.][A-Za-z_-][A-Za-z0-9_-]*|:nth-(?:of-type|child)\([1-9][0-9]{0,3}\))'
+_COMPOUND = r'(?:(?:[A-Za-z][A-Za-z0-9-]*|\*)' + _SUFFIX + r'*|' + _SUFFIX + r'+)'
+READ_SELECTOR = re.compile(_COMPOUND + r'(?:(?:[ ]*>[ ]*|[ ]+)' + _COMPOUND + r')*')
+MAX_READ_SELECTOR = 512
 TTL = 30
 MAX_PINS = 16
 MAX_MESSAGE = 256 * 1024
@@ -445,7 +449,7 @@ class BrowserPasswords:
             if not isinstance(request[key], str) or not 0 < len(request[key]) <= 4096:
                 raise TargetError()
         https_origin(request['top_url'])
-        if reading and not READ_SELECTOR.fullmatch(request['selector']):
+        if reading and (len(request['selector']) > MAX_READ_SELECTOR or not READ_SELECTOR.fullmatch(request['selector'])):
             raise TargetError()  # No attribute or functional selectors: pin success must not test the secret.
         with self._lock:
             if self._closed or len(self.pins) + self._creating >= MAX_PINS:
