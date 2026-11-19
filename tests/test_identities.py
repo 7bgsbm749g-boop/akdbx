@@ -129,19 +129,53 @@ def test_cli_refuses_an_old_broker_and_withholds_unexpected_fields(monkeypatch, 
     assert 'response withheld' in output.err
 
 
-def test_search_group_filter_runs_before_label_limit(tmp_path, capsys):
-    class Identity(Entry):
-        def get_custom_property(self, key):
-            return 'v1' if key == MARKER else None
+class SyntheticIdentity(Entry):
+    def get_custom_property(self, key):
+        return 'v1' if key == MARKER else None
 
-    entries = [Identity(uuid=str(i), title=LABEL, path=(f'Group {i}', LABEL)) for i in range(21)]
+
+def test_search_filters_run_before_label_limit(tmp_path, capsys):
+    entries = [SyntheticIdentity(uuid=str(i), title=LABEL, path=(f'Group {i}', LABEL)) for i in range(21)]
+    entries += [SyntheticIdentity(uuid=f'partial-{i}', title=f'Home {i}', path=('Web', f'Home {i}'))
+                for i in range(20)]
+    entries += [SyntheticIdentity(uuid='exact', title='Home', path=('Web', 'Home'))]
     broker = Broker(Vault(entries), RecordingTyper())
     assert len(search(broker)['entries']) == 20
     rpc = tmp_path / 'private' / 'identity-rpc.sock'
     with running_broker(rpc, broker):
         assert cli.main(['--socket', str(rpc), 'search-identities', LABEL, '--group', 'Group 20']) == 0
+        grouped = json.loads(capsys.readouterr().out)['entries']
+        assert cli.main(['--socket', str(rpc), 'search-identities', 'HOME', '--exact', '--group', 'Web']) == 0
+        exact = json.loads(capsys.readouterr().out)['entries']
+    assert len(grouped) == 1 and grouped[0]['group'] == 'Group 20'
+    assert len(exact) == 1 and exact[0]['title'] == 'Home'
+
+
+def test_search_returns_labels_that_fit_the_wire_budget(tmp_path, capsys):
+    entries = [SyntheticIdentity(uuid=str(i), title=LABEL, path=(str(i) + 'X' * 4000, LABEL))
+               for i in range(20)]
+    broker = Broker(Vault(entries), RecordingTyper())
+    rpc = tmp_path / 'private' / 'identity-rpc.sock'
+    with running_broker(rpc, broker):
+        assert cli.main(['--socket', str(rpc), 'search-identities', LABEL]) == 0
     found = json.loads(capsys.readouterr().out)['entries']
-    assert len(found) == 1 and found[0]['group'] == 'Group 20'
+    assert 0 < len(found) < 20
+    assert found[0]['group'] == entries[0].path[0]
+
+
+def test_cli_withholds_contradictory_fill_receipt(monkeypatch, capsys):
+    from akdbx.browser_card import failure
+
+    def contradictory(_, payload, **kwargs):
+        if payload['action'] == 'ping':
+            return dict(ok=True, locked=False, identity_protocol=1, identity_browser_configured=True,
+                        identity_delivery='cdp-identity-element-v1')
+        return failure(True, kind='identity') | {'delivery': 'not-started'}
+
+    monkeypatch.setattr(cli, 'request', contradictory)
+    assert cli.main(['fill-identity', '--field', 'tel', '--target', 'a' * 64, '--', 'b' * 64]) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and 'response withheld' in captured.err
 
 
 @pytest.mark.parametrize('url', [

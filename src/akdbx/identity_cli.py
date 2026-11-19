@@ -10,8 +10,9 @@ from .browser_identity import DELIVERY
 from .identities import COMMANDS, FAILED, FILL_FIELDS, REFUSED
 
 PIN_ARGS = ('page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field')
-ERRORS = {'vault locked', 'save outcome uncertain; restart and unlock', 'request failed',
-          REFUSED, FAILED, failure(kind='identity')['error'], failure(True, kind='identity')['error']}
+ERRORS = {'vault locked', 'save outcome uncertain; restart and unlock', 'request failed', REFUSED, FAILED}
+TARGET_REFUSED = failure(kind='identity')
+TARGET_UNCERTAIN = failure(True, kind='identity')
 
 
 def add_parsers(commands):
@@ -21,6 +22,7 @@ def add_parsers(commands):
     p = commands.add_parser('search-identities', help='find identities by non-secret label')
     p.add_argument('query')
     p.add_argument('--group', help='limit matches to this exact group path')
+    p.add_argument('--exact', action='store_true', help='match the entire label, ignoring case')
     p = commands.add_parser('pin-identity-target', help='pin one focused HTTPS identity field')
     for key in PIN_ARGS[:-1]:
         p.add_argument('--' + key.replace('_', '-'), required=True)
@@ -37,9 +39,15 @@ def _token(value):
 
 def valid_receipt(args, response):
     if response.get('ok') is not True:
-        return (response.get('ok') is False and response.get('error') in ERRORS
-                and set(response) <= {'ok', 'error', 'unlock_url', 'delivery'}
-                and response.get('delivery', 'not-started') in {'not-started', 'uncertain'})
+        if response.get('ok') is not False:
+            return False
+        if args.command in {'pin-identity-target', 'fill-identity'} and response == TARGET_REFUSED:
+            return True
+        if args.command == 'fill-identity' and response == TARGET_UNCERTAIN:
+            return True
+        error = response.get('error')
+        allowed = {'ok', 'error', 'unlock_url'} if error == 'vault locked' else {'ok', 'error'}
+        return error in ERRORS and set(response) <= allowed
     if args.command == 'create-identity':
         if set(response) != {'ok', 'state', 'write_handle', 'private_url'}:
             return False
@@ -79,6 +87,8 @@ def run(args, request):
             payload['query'] = args.query
             if args.group is not None:
                 payload['group'] = args.group
+            if args.exact:
+                payload['exact'] = True
         elif args.command == 'pin-identity-target':
             payload.update({key: getattr(args, key) for key in PIN_ARGS})
         else:

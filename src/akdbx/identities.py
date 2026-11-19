@@ -7,6 +7,7 @@ import secrets
 import unicodedata
 
 from .persistence import SaveError
+from .protocol import MAX_MESSAGE
 from .versions import active_entries
 from .writes import MAX_WRITES, Write, WriteError, group_for
 
@@ -120,25 +121,36 @@ class IdentityManager:
     def search(self, request):
         query = request.get('query', '')
         group_filter = request.get('group')
-        if (set(request) - {'action', 'identity_protocol', 'query', 'group'} or not _text(query, 500)
+        exact = request.get('exact', False)
+        if (set(request) - {'action', 'identity_protocol', 'query', 'group', 'exact'}
+                or type(exact) is not bool or not _text(query, 4096 if exact else 500)
                 or 'group' in request and (not _text(group_filter, 4096) or len(group_filter.encode()) > 4096)):
             raise WriteError()
         query = query.casefold()
         matches = []
+        remaining = MAX_MESSAGE - len(b'{"ok":true,"entries":[]}')
         for entry in active_entries(self.broker.vault):
             if not is_identity(entry) or entry.get_custom_property(MARKER) != 'v1':
                 continue
             title, group = entry.title or '', '/'.join(entry.path[:-1])
             if group_filter is not None and group != group_filter:
                 continue
-            if query not in title.casefold() or any(len(v.encode()) > 4096 for v in (title, group)):
+            label = title.casefold()
+            matched = label == query if exact else query in label
+            if not matched or any(len(v.encode()) > 4096 for v in (title, group)):
                 continue
-            matches.append((dict(title=title, group=group), entry))
+            item = dict(title=title, group=group)
+            # Reserve the exact serialized size before minting a handle.
+            size = len(json.dumps(dict(item, handle='0' * 64), separators=(',', ':')))
+            if matches:
+                size += 1  # Separator between records.
+            if size > remaining:
+                continue
+            matches.append(dict(item, handle=self.broker._new_handle(entry)))
+            remaining -= size
             if len(matches) == 20:
                 break
-        if len(json.dumps([item for item, _ in matches]).encode()) > 45000:
-            raise WriteError()
-        return dict(ok=True, entries=[dict(item, handle=self.broker._new_handle(entry)) for item, entry in matches])
+        return dict(ok=True, entries=matches)
 
     def begin(self, request):
         values = request.get('metadata')
