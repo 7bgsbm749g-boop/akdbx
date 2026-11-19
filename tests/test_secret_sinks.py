@@ -72,6 +72,10 @@ def test_write_appends_missing_key_and_creates_missing_file(tmp_path):
     path.write_text('PORT=1')
     assert write_sink(definition, VALUE) is True
     assert path.read_text() == f'PORT=1\nAPP_CLIENT_SECRET={VALUE}\n'
+    for compound in (b'APP_CLIENT_SECRET=old PORT=8080\n', b'APP_CLIENT_SECRET=old # note\n'):
+        with pytest.raises(SinkError):  # A shell would set or keep more than the key.
+            render(compound, 'APP_CLIENT_SECRET', 'y')
+    assert render(b'  APP_CLIENT_SECRET=old  \n', 'APP_CLIENT_SECRET', 'y') == b'  APP_CLIENT_SECRET=y\n'
     with pytest.raises(SinkError):  # systemd would ignore an exported assignment.
         render(b'export APP_CLIENT_SECRET=x\n', 'APP_CLIENT_SECRET', 'y')
     # U+2028 is not a line break for env-file consumers: no false assignment inside OTHER.
@@ -206,6 +210,15 @@ def test_root_helper_never_restarts_as_root(tmp_path, monkeypatch):
                         or type('R', (), {'returncode': 0})())
     assert sink_helper.restart(loader) is True
     assert environments == [{'PATH': sink_helper.SAFE_PATH}] and ran[0][-2:] == ['LD_PRELOAD=/tmp/x.so', '/bin/true']
+
+
+def test_restart_runs_while_the_sink_lock_is_held(tmp_path):
+    import fcntl
+    probe = tmp_path / 'probe.py'
+    probe.write_text('import fcntl, os, sys\nfd = os.open(sys.argv[1], os.O_RDONLY)\n'
+                     'try:\n    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError:\n    sys.exit(0)\nsys.exit(1)\n')
+    definition, path = sink(tmp_path, restart=dict(argv=[sys.executable, '-I', str(probe), str(tmp_path / 'svc')]))
+    assert sink_helper.deliver(definition, VALUE) == dict(restarted=True)  # The probe found the lock taken.
 
 
 def test_restart_command_runs_with_fixed_argv_and_environment(tmp_path):

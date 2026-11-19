@@ -194,6 +194,9 @@ def render(existing, key, value):
     found = [index for index, line in enumerate(lines) if pattern.match(line)]
     if len(found) > 1:
         raise SinkError('sink file sets the key more than once; not changed')
+    if found and re.search(r'\S[ \t]+\S', lines[found[0]].strip('\n').lstrip()):
+        # `KEY=old OTHER=1` sets two variables in a shell: do not drop one.
+        raise SinkError('sink file line for the key has more than one word; not changed')
     line = key + '=' + value + '\n'
     if found and re.match(r'[ \t]*export[ \t]', lines[found[0]]):
         # systemd does not read `export KEY=`, while shells need it kept; the
@@ -250,8 +253,12 @@ def _identity(info):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
 
 
-def write_sink(sink, value):
-    """Atomically set the sink's key; return whether the file content changed."""
+def write_sink(sink, value, after=None):
+    """Atomically set the sink's key; return whether the file content changed.
+
+    `after` runs while the sink lock is still held, so a restart sees this
+    delivery's value and not a concurrent one.
+    """
     validate_value(value)
     uid, gid = _account_ids(sink)
     if os.geteuid() != 0 and uid != os.geteuid():
@@ -303,6 +310,8 @@ def write_sink(sink, value):
             os.replace(staging, name, src_dir_fd=directory, dst_dir_fd=directory)
             staging = None
             os.fsync(directory)
+        if after is not None:
+            after()
         return changed
     except OSError:
         raise SinkError('sink write failed; check the sink file') from None
@@ -364,8 +373,9 @@ def deliver(sink, value):
     # The receipt never says whether the value was already present: that would
     # let a caller of the helper test a guessed value.
     argv = restart_plan(sink)
-    write_sink(sink, value)
-    return dict(restarted=restart(sink, argv))
+    result = {}
+    write_sink(sink, value, after=lambda: result.update(restarted=restart(sink, argv)))
+    return dict(restarted=result['restarted'])
 
 
 def _peer_uid(connection):

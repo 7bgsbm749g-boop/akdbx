@@ -273,13 +273,30 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
     const r = element.getBoundingClientRect(), s = getComputedStyle(element);
     return element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 &&
       r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none' && s.opacity !== '0' &&
-      hit(r);
+      shown(r);
   };
-  // The element's centre must hit-test to it: clipping, covers and
-  // pointer-transparent tricks then refuse rather than read unseen text.
-  const hit = r => {
-    const found = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  // The text itself must be on screen and hit-test to the element at its
+  // start, centre and end, in an opaque colour: clipping, covers, indents
+  // and pointer-transparent tricks then refuse rather than read unseen text.
+  // A Range is measured only; the document selection is never changed.
+  const hit = (x, y) => {
+    const found = document.elementFromPoint(x, y);
     return found === element || !isInput && element.contains(found);
+  };
+  const opaque = value => !/^(?:transparent|rgba\([^)]*,\s*0(?:\.0*)?\))$/.test(value.trim());
+  const shown = r => {
+    const s = getComputedStyle(element);
+    if (!opaque(s.color) || !opaque(s.webkitTextFillColor || s.color) || parseFloat(s.fontSize) < 4) return false;
+    let rects = [r];
+    if (!isInput) {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      rects = [...range.getClientRects()];
+    }
+    return rects.length > 0 && rects.every(t => t.width > 0 && t.height > 0 && t.left >= 0 && t.top >= 0 &&
+      t.right <= innerWidth && t.bottom <= innerHeight && t.left >= r.left - 1 && t.right <= r.right + 1 &&
+      t.top >= r.top - 1 && t.bottom <= r.bottom + 1 &&
+      [t.left + 1, t.left + t.width / 2, t.right - 1].every(x => hit(x, t.top + t.height / 2)));
   };
   // Focus only, with no active selection anywhere: on X11 a selection is
   // published to PRIMARY.

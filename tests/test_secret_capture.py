@@ -40,7 +40,11 @@ SECRET_PAGE = STYLE + f'''<p>Copy it now. You will not see it again.</p>
 <code id=wrapper><span style="opacity:0">{VALUE}</span></code>
 <input id=writable value="{VALUE}">
 <div style="position:relative"><code id=covered>{VALUE}</code><div style="position:absolute;inset:0;background:#fff"></div></div>
-<code id=clipped style="clip-path:inset(50%)">{VALUE}</code>'''
+<code id=clipped style="clip-path:inset(50%)">{VALUE}</code>
+<code id=indented style="overflow:hidden;text-indent:-9999px">{VALUE}</code>
+<code id=halfclip style="clip-path:inset(0 0 0 60%)">{VALUE}</code>
+<code id=clear style="color:transparent">{VALUE}</code>
+<code id=tiny style="font-size:0.5px">{VALUE}</code>'''
 frames_lab.PAGES.update({
     '/secret': SECRET_PAGE,
     '/secret-inner': SECRET_PAGE,
@@ -189,7 +193,7 @@ def test_capture_into_existing_entry_requires_exact_metadata_origin_and_replace(
 
 
 @pytest.mark.parametrize('selector', ['#multi', '#spaced', '#empty', '#invisible', '#transparent', '#wrapper', '#writable',
-                                      '#covered', '#clipped',
+                                      '#covered', '#clipped', '#indented', '#halfclip', '#clear', '#tiny',
                                       '.dup', '#pw', '#missing'])
 def test_unsafe_elements_refuse_at_pin(env, selector):
     fid = open_page(env)

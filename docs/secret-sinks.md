@@ -112,10 +112,11 @@ ProtectHome=read-only
 `ProtectSystem=full` makes `/usr`, `/boot`, `/efi` and `/etc` read-only, and
 `ProtectHome=read-only` does the same for `/home`, `/root` and `/run/user`, for
 the helper. `PrivateTmp=yes` also gives the helper its own `/tmp` and `/var/tmp`, so a sink
-there is not the host file. Use a service directory such as `/var/lib/NAME`,
-which needs no change. For a
-sink in one of those trees, add `ReadWritePaths=` with only that sink's
-directory in a drop-in for `akdbx-secret-sink@.service`.
+there is never the host file, and `ReadWritePaths=` does not change that. Move
+such a sink to a service directory such as `/var/lib/NAME`, which needs no
+change. For a
+sink in one of the read-only trees above, add `ReadWritePaths=` with only that
+sink's directory in a drop-in for `akdbx-secret-sink@.service`.
 
 Then `sudo systemctl daemon-reload && sudo systemctl enable --now
 akdbx-secret-sink.socket`. Any process of the broker group can ask the helper

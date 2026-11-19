@@ -70,7 +70,8 @@ def captured_fields(entry):
             return []
         raw = getter(CAPTURED_FIELDS)
         names = raw.split(',') if isinstance(raw, str) else []
-        return sorted({name for name in names if valid_field(name) and getter(name) is not None})
+        return sorted({name for name in names if valid_field(name) and getter(name) is not None
+                       and entry.is_custom_property_protected(name)})
     except Exception:
         return []
 
