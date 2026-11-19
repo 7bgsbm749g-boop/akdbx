@@ -1,5 +1,9 @@
 # Password field delivery
 
+For contact and address fields, use [identity workflows](identities.md).
+Identity pins use the same-origin card DOM transport with focused identity
+fields and a separate pin and fill command.
+
 Saved and generated passwords require `chromium-password-dom-v1`. A browser
 window pin cannot identify an address bar, DOM field, tab, or origin. The broker
 therefore refuses password and login fills through `pin-target`, including old

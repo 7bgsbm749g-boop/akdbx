@@ -121,6 +121,17 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
+### Identity and address records (0.18.2)
+
+`create-identity --title LABEL --group EXISTING_GROUP` returns a private HTTPS
+save page for contact and postal details. The personal fields are protected
+custom strings on a standard KDBX entry. `search-identities LABEL` returns
+only labels, group paths and single-use handles. Login search excludes these
+records. `pin-identity-target` and `fill-identity` deliver one field to a
+verified and focused Chromium DOM element without using keys or submitting
+the form. See [identity workflows](skills/akdbx/references/identities.md) for
+supported fields, target discovery and example commands.
+
 ### Payment cards (0.14.0)
 
 Cards use ordinary KDBX entries with custom fields; no format extension is

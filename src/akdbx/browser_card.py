@@ -26,10 +26,10 @@ class CardTargetError(Exception):
     pass
 
 
-def failure(started=False):
+def failure(started=False, *, kind='card'):
     return dict(ok=False, delivery='uncertain' if started else 'not-started',
-                error='card fill outcome uncertain; do not retry automatically' if started else
-                'card fill not started: target unavailable, changed or unsupported; pin again')
+                error=f'{kind} fill outcome uncertain; do not retry automatically' if started else
+                f'{kind} fill not started: target unavailable, changed or unsupported; pin again')
 
 
 def secure_url(value):
@@ -164,18 +164,22 @@ class CDP:
 # All DOM methods run in a private isolated world. Page JavaScript cannot replace
 # its builtins or the native value setter. Capture the actual element, not a
 # selector to resolve later. Every check and the write run in one JS task.
-PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
+PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=false) => {
   __STYLE_GUARD__
   const matches = document.querySelectorAll(selector);
   if (matches.length !== 1) return null;
   const el = matches[0], doc = document, form = el.form, parent = el.parentElement;
   const input = el instanceof HTMLInputElement;
   const select = el instanceof HTMLSelectElement;
-  if (!input && !select) return null;
+  const textarea = identity && field === 'street-address' && el instanceof HTMLTextAreaElement;
+  if (!input && !select && !textarea) return null;
   if (select && el.multiple) return null;
-  if (select && !['cc-exp-month', 'cc-exp-year'].includes(field)) return null;
+  if (select && !(identity ? ['country', 'country-name', 'address-level1'] :
+                               ['cc-exp-month', 'cc-exp-year']).includes(field)) return null;
   const type = el.type, autocomplete = el.getAttribute('autocomplete');
-  const tokens = (autocomplete || '').trim().toLowerCase().split(/\s+/);
+  const tokens = identity ?
+    (autocomplete || '').replace(/[A-Z]/g, c => c.toLowerCase()).match(/[^\t\n\f\r ]+/g) || [] :
+    (autocomplete || '').trim().toLowerCase().split(/\s+/);
   // Computop's hosted form has no cc-* annotations. This explicit processor
   // route accepts only its known id/name pairs, never arbitrary off fields.
   const computop = processor === 'computop';
@@ -197,14 +201,25 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
       el.id === expectedId && el.getAttribute('name') === expectedName &&
       document.querySelectorAll('[id="'+expectedId+'"]').length === 1;
   }
-  if (computop ? !knownComputopField() :
+  // Identity fields follow the ordered HTML autocomplete token grammar.
+  const prefix = tokens.slice(0, -1);
+  if (identity) {
+    if (prefix[0]?.startsWith('section-')) prefix.shift();
+    if (['shipping','billing'].includes(prefix[0])) prefix.shift();
+    if (['tel','email'].includes(field) && ['home','work','mobile','fax','pager'].includes(prefix[0])) prefix.shift();
+    if (prefix.length || tokens[tokens.length - 1] !== field) return null;
+    if (input && !(type === 'text' || type === 'email' && field === 'email' ||
+                   type === 'tel' && field === 'tel')) return null;
+  } else if (computop ? !knownComputopField() :
       tokens[tokens.length - 1] !== field ||
       tokens.slice(0,-1).some(t => t !== 'billing' && !/^section-[a-z0-9_-]+$/.test(t))) return null;
   if (stripe && !knownStripeField()) return null;
-  if (input && !['text','tel','password'].includes(type)) return null;
-  const proto = input ? HTMLInputElement.prototype : HTMLSelectElement.prototype;
+  if (!identity && input && !['text','tel','password'].includes(type)) return null;
+  const proto = input ? HTMLInputElement.prototype :
+    textarea ? HTMLTextAreaElement.prototype : HTMLSelectElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
   const getter = Object.getOwnPropertyDescriptor(proto, 'value').get;
+  const selectIndex = identity && select && Object.getOwnPropertyDescriptor(proto, 'selectedIndex');
   function shown(node, owner, forbidTransform=false) {
     let ancestor = node;
     for (let i = 0; ancestor; ++i, ancestor = ancestor.parentElement) {
@@ -229,6 +244,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
         el.disabled || el.matches(':disabled') || el.readOnly || el.hidden || el.closest('[inert]') ||
         document.querySelectorAll(selector).length !== 1 || document.querySelector(selector) !== el ||
         document.visibilityState !== 'visible') return false;
+    if (identity && (!doc.hasFocus() || doc.activeElement !== el || (select && el.multiple))) return false;
     if (!exposed(el, doc)) return false;
     // A processor cannot inspect its cross-origin parents. The retained
     // merchant-side guard and browser frame ancestry supply that check.
@@ -253,16 +269,23 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
   return {node() { return el; },geometry() { return valid() || null; },fill(value, maxAgeMs) {
     if (performance.now() - pinnedAt >= Math.min(30000, maxAgeMs) || !valid()) return 'refused';
     if ((computop || stripe) && field === 'cc-exp' && !/^[0-9]{2}\/[0-9]{2}$/.test(value)) return 'refused';
-    if (input && el.maxLength >= 0 && value.length > el.maxLength) return 'refused';
-    let actual = value;
+    if (identity && input && value.includes('\n')) return 'refused';
+    if ((input || textarea) && el.maxLength >= 0 && value.length > el.maxLength) return 'refused';
+    let actual = value, option;
     if (select) {
       const options = Array.from(el.options).filter(o => !o.disabled && !o.parentElement.disabled &&
         (o.value === value || field === 'cc-exp-month' && /^[0-9]{1,2}$/.test(o.value) && Number(o.value) === Number(value)));
       if (options.length !== 1) return 'refused';
-      actual = options[0].value;
+      option = options[0];
+      actual = option.value;
     }
     if (performance.now() - pinnedAt >= Math.min(30000, maxAgeMs)) return 'refused';
+    if (selectIndex) {
+      selectIndex.set.call(el, option.index);
+      return selectIndex.get.call(el) === option.index ? 'filled' : 'uncertain';
+    }
     setter.call(el, actual);
+    if (identity) return getter.call(el) === actual ? 'filled' : 'uncertain';
     el.dispatchEvent(new Event('input', {bubbles:true}));
     el.dispatchEvent(new Event('change', {bubbles:true}));
     const accepted=getter.call(el);
@@ -277,6 +300,16 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
 
 
 class BrowserCards:
+    kind = 'card'
+    delivery = DELIVERY
+    fields = FILL_FIELDS
+
+    def _failure(self, started=False):
+        return failure(started, kind=self.kind)
+
+    def _receipt(self):
+        return {f'{self.kind}_delivery': self.delivery}
+
     def __init__(self, profile=None, *, clock=time.monotonic, connector=CDP):
         self.profile, self.clock, self.connector = profile, clock, connector
         self.pins = {}
@@ -323,13 +356,14 @@ class BrowserCards:
         raise CardTargetError()
 
     def pin(self, request):
-        allowed = {'action', 'card_protocol', 'page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field'}
+        protocol = f'{self.kind}_protocol'
+        allowed = {'action', protocol, 'page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field'}
         processor = request.get('processor')
-        if 'processor' in request:
+        if self.kind == 'card' and 'processor' in request:
             allowed |= {'processor', 'processor_protocol'}
         self.prune()
-        if (set(request) != allowed or type(request.get('card_protocol')) is not int or request['card_protocol'] != 1
-                or self.profile is None or len(self.pins) >= MAX_PINS or request.get('field') not in FILL_FIELDS
+        if (set(request) != allowed or type(request.get(protocol)) is not int or request[protocol] != 1
+                or self.profile is None or len(self.pins) >= MAX_PINS or request.get('field') not in self.fields
                 or any(not isinstance(request.get(k), str) or not 0 < len(request[k]) <= 4096
                        for k in ('page_id', 'frame_id', 'selector'))
                 or (processor is None and secure_url(request['top_url']) != secure_url(request['frame_url']))):
@@ -357,12 +391,14 @@ class BrowserCards:
                 token = secrets.token_hex(32)
                 self.pins[token] = dict(cdp=cdp, **state, field=request['field'], processor=processor,
                     request=dict(request), expires=state['created'] + TTL)
-                return dict(ok=True, target=token, expires_in=TTL, field=request['field'], card_delivery=DELIVERY)
+                return dict(ok=True, target=token, expires_in=TTL, field=request['field'], **self._receipt())
             self._frames(cdp, session, request)
             context = cdp.call('Page.createIsolatedWorld', dict(frameId=request['frame_id'],
-                               worldName='akdbx-card-v1'), session)['executionContextId']
-            expression = '(' + PIN_SCRIPT + ')(' + ','.join(json.dumps(request[k]) for k in
-                         ('selector', 'field', 'frame_url', 'top_url')) + ')'
+                               worldName=f'akdbx-{self.kind}-v1'), session)['executionContextId']
+            arguments = [request[k] for k in ('selector', 'field', 'frame_url', 'top_url')]
+            if self.kind == 'identity':
+                arguments.extend((False, True))
+            expression = '(' + PIN_SCRIPT + ')(' + ','.join(map(json.dumps, arguments)) + ')'
             result = cdp.call('Runtime.evaluate', dict(expression=expression, contextId=context,
                               silent=True, timeout=1000), session)
             created = self.clock()
@@ -377,7 +413,7 @@ class BrowserCards:
             token = secrets.token_hex(32)
             self.pins[token] = dict(cdp=cdp, session=session, obj=obj['objectId'], field=request['field'],
                                     request=dict(request), created=created, expires=created + TTL,input_node=input_node)
-            return dict(ok=True, target=token, expires_in=TTL, field=request['field'], card_delivery=DELIVERY)
+            return dict(ok=True, target=token, expires_in=TTL, field=request['field'], **self._receipt())
         except BaseException:
             cdp.close()
             raise
@@ -393,17 +429,17 @@ class BrowserCards:
         started = False
         try:
             if field != pin['field'] or not ready() or pin['expires'] <= self.clock():
-                return failure()
+                return self._failure()
             if pin.get('processor'):
                 if not card_processor.check(pin['cdp'], pin, pin['request'], secure_url, CardTargetError):
-                    return failure()
+                    return self._failure()
             else:
                 self._frames(pin['cdp'], pin['session'], pin['request'])
                 if card_hit_test.input_point(pin['cdp'],pin['session'],pin['obj'],
                         pin['input_node'],pin['request']['frame_id']) is None:
-                    return failure()
+                    return self._failure()
             if not ready() or pin['expires'] <= self.clock():
-                return failure()
+                return self._failure()
             deadline = self.clock() + 4 if deadline is None else deadline
             max_age_ms = max(0, min(30000, (deadline - pin['created']) * 1000))
             started = True  # An unanswered RPC may already have changed the field.
@@ -412,17 +448,17 @@ class BrowserCards:
                 arguments=[dict(value=value), dict(value=max_age_ms)], returnByValue=True, silent=True), pin['session'])
             state = result.get('result', {}).get('value') if 'exceptionDetails' not in result else None
             if state == 'refused':
-                return failure()
+                return self._failure()
             if state != 'filled':
-                return failure(True)
+                return self._failure(True)
             if pin.get('processor') and not card_processor.check(
                     pin['cdp'], pin, pin['request'], secure_url, CardTargetError):
-                return failure(True)
+                return self._failure(True)
             if not pin.get('processor') and card_hit_test.input_point(pin['cdp'],pin['session'],pin['obj'],
                     pin['input_node'],pin['request']['frame_id']) is None:
-                return failure(True)
-            return dict(ok=True, filled=field, card_delivery=DELIVERY)
+                return self._failure(True)
+            return dict(ok=True, filled=field, **self._receipt())
         except Exception:
-            return failure(started)
+            return self._failure(started)
         finally:
             self._close(pin)

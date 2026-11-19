@@ -23,6 +23,7 @@ from akdbx.cards import FIELDS, MARKER
 from test_broker import Entry, Vault, RecordingTyper, running_broker
 from akdbx import cli
 from test_cards import CARD
+from test_writes import deployed, template
 from test_target import isolated_x11
 
 HTML = b'''<!doctype html><title>Synthetic card destination test</title>
@@ -565,3 +566,87 @@ def test_blocked_renderer_cannot_apply_a_delayed_fill_after_authorization_expiry
     assert fill(chrome, target) == failure(True)
     time.sleep(3.2)  # allow the explicitly bounded renderer stall to end
     assert evaluate(chrome, "number.value === '' && address.value === ''")
+
+
+def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deployed, tmp_path, capsys):
+    from test_identities import IDENTITY, LABEL, post
+    from test_writes import reopened
+
+    broker, _, path, web = deployed
+    broker.identity_targets.profile = chrome.profile
+    rpc = tmp_path / 'private' / 'identity-rpc.sock'
+
+    def command(*args, code=0):
+        assert cli.main(['--socket', str(rpc), '--unlock-origin', 'https://node.example:9443', *args]) == code
+        captured = capsys.readouterr()
+        for value in (v for v in IDENTITY.values() if len(v) > 2):
+            assert value not in captured.out + captured.err
+        return json.loads(captured.out)
+
+    def target(field, selector, code=0, url=None):
+        return command('pin-identity-target', '--page-id', chrome.page, '--frame-id', chrome.frame,
+                       '--top-url', url or chrome.url, '--frame-url', url or chrome.url, '--selector', selector,
+                       '--field', field, code=code)
+
+    with running_broker(rpc, broker):
+        pending = command('create-identity', '--title', LABEL, '--group', 'Web')
+        assert post(web, pending)[0] == 200
+        broker.vault = reopened(path)
+        # The lab fails if a fill triggers a handler that would submit the form.
+        evaluate(chrome, '''document.body.insertAdjacentHTML("beforeend", '<form id="identity-checkout"></form>');
+          const checkout = document.getElementById("identity-checkout");
+          window.submitAttempts = 0;
+          window.identityKeyEvents = 0;
+          for (const event of ["keydown", "keypress", "keyup"]) {
+            document.addEventListener(event, () => { window.identityKeyEvents++; }, true);
+          }
+          checkout.addEventListener("submit", e => { e.preventDefault(); window.submitAttempts++; });
+          for (const event of ["input", "change"]) checkout.addEventListener(event, () => checkout.requestSubmit());''')
+        tags = {
+            'name': '<input autocomplete="name">',
+            'address-line1': '<input autocomplete="SECTION-livraison-é SHIPPING address-line1">',
+            'address-line2': '<input autocomplete="shipping address-line2">',
+            'street-address': '<textarea autocomplete="street-address"></textarea>',
+            'address-level2': '<input autocomplete="address-level2">',
+            'postal-code': '<input autocomplete="postal-code">',
+            'country': '<select autocomplete="country"><option value=""></option><option value="NZ" disabled>Unavailable</option><option value="NZ">New Zealand</option></select>',
+            'tel': '<input type="tel" autocomplete="shipping mobile tel">',
+            'email': '<input type="email" autocomplete="email" multiple>',
+        }
+        for field, tag in tags.items():
+            selector = '#identity-' + field
+            element = f'<div id="identity-{field}">{tag}</div>'
+            evaluate(chrome, f'document.getElementById("identity-checkout").insertAdjacentHTML("beforeend", {json.dumps(element)})')
+            selector += ' > *'
+            get = f'document.querySelector({json.dumps(selector)})'
+            evaluate(chrome, f'{get}.focus()')
+            pin = target(field, selector)
+            handle = command('search-identities', LABEL)['entries'][0]['handle']
+            result = command('fill-identity', '--field', field, '--target', pin['target'], '--', handle)
+            assert result == dict(ok=True, filled=field, identity_delivery='cdp-identity-element-v1')
+            expected = IDENTITY.get(field, IDENTITY['address-line1'] + '\n' + IDENTITY['address-line2'])
+            assert evaluate(chrome, f'{get}.value === {json.dumps(expected)} && document.activeElement === {get}')
+            if field == 'country':
+                assert evaluate(chrome, f'{get}.selectedIndex === 2')
+            evaluate(chrome, f'{get}.parentElement.remove()')
+
+        evaluate(chrome, "document.body.insertAdjacentHTML('beforeend','<input id=phone autocomplete=tel>'); phone.focus()")
+        assert target('email', '#phone', code=1)['delivery'] == 'not-started'
+        evaluate(chrome, "phone.autocomplete = 'worK email'")
+        assert target('email', '#phone', code=1)['delivery'] == 'not-started'
+        evaluate(chrome, "phone.autocomplete = 'tel'")
+        assert target('tel', '#phone', code=1, url=chrome.url.replace('https:', 'http:'))['delivery'] == 'not-started'
+        pin = target('tel', '#phone')
+        evaluate(chrome, 'password.focus()')
+        handle = command('search-identities', LABEL)['entries'][0]['handle']
+        assert command('fill-identity', '--field', 'tel', '--target', pin['target'], '--', handle,
+                       code=1)['delivery'] == 'not-started'
+        evaluate(chrome, 'phone.focus()')
+        fresh_pin = target('tel', '#phone')
+        assert command('fill-identity', '--field', 'tel', '--target', fresh_pin['target'], '--', handle,
+                       code=1)['delivery'] == 'not-started'
+        fresh_handle = command('search-identities', LABEL)['entries'][0]['handle']
+        assert command('fill-identity', '--field', 'tel', '--target', pin['target'], '--', fresh_handle,
+                       code=1)['delivery'] == 'not-started'
+        assert evaluate(chrome, "phone.value === '' && password.value === '' && submitAttempts === 0 && identityKeyEvents === 0")
+    assert broker.typer.events == []
