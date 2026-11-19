@@ -292,7 +292,7 @@ def parser() -> argparse.ArgumentParser:
     password_pin.add_argument('--frame-origin', help='exact HTTPS origin of the child frame named by --frame-id (from list-password-frames); '
                               'the saved credential must match this origin; requires broker password_frame_protocol 1')
     password_pin.add_argument('--mode', choices=('password', 'username', 'login', 'read'), default='password',
-                              help='read pins a focused or selected element that shows a secret, for capture-secret')
+                              help='read pins a focused element that shows a secret, for capture-secret; never select its text')
     password_pin.add_argument('--username-selector', help='required in login mode; no Tab traversal')
     password_pin.add_argument('--password-purpose', choices=('current-password', 'new-password'),
                               help='explicitly verified purpose for password-only fields with absent or on autocomplete')

@@ -34,7 +34,9 @@ with `tabindex`. For an element that cannot take focus, a structural script may
 set `element.tabIndex = -1` and call `element.focus()`, returning nothing. Do not
 select, double-click or drag over the text: on X11, Chromium publishes any
 selected text (also a scripted selection) to the PRIMARY selection, where other
-programs can read it. Pins accept focus only. Then pin it, like a password
+programs can read it. Pins accept focus only and refuse while any text is selected, also inside the
+focused input; focus by script rather than with Tab, which can select an input's
+text. Then pin it, like a password
 field, with the new read mode:
 
 ```bash

@@ -109,6 +109,12 @@ ProtectSystem=full
 ProtectHome=read-only
 ```
 
+`ProtectSystem=full` makes `/usr`, `/boot`, `/efi` and `/etc` read-only, and
+`ProtectHome=read-only` does the same for `/home`, `/root` and `/run/user`, for
+the helper. Sinks elsewhere (for example under `/var/lib`) need no change. For a
+sink in one of those trees, add `ReadWritePaths=` with only that sink's
+directory in a drop-in for `akdbx-secret-sink@.service`.
+
 Then `sudo systemctl daemon-reload && sudo systemctl enable --now
 akdbx-secret-sink.socket`. Any process of the broker group can ask the helper
 to write a value into a configured sink. It cannot read a value back, choose

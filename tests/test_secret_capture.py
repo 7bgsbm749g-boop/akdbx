@@ -38,7 +38,9 @@ SECRET_PAGE = STYLE + f'''<p>Copy it now. You will not see it again.</p>
 <code id=transparent style="opacity:0">{VALUE}</code>
 <code id=twin class=dup>{VALUE}</code><code class=dup>{OTHER}</code>
 <code id=wrapper><span style="opacity:0">{VALUE}</span></code>
-<input id=writable value="{VALUE}">'''
+<input id=writable value="{VALUE}">
+<div style="position:relative"><code id=covered>{VALUE}</code><div style="position:absolute;inset:0;background:#fff"></div></div>
+<code id=clipped style="clip-path:inset(50%)">{VALUE}</code>'''
 frames_lab.PAGES.update({
     '/secret': SECRET_PAGE,
     '/secret-inner': SECRET_PAGE,
@@ -187,6 +189,7 @@ def test_capture_into_existing_entry_requires_exact_metadata_origin_and_replace(
 
 
 @pytest.mark.parametrize('selector', ['#multi', '#spaced', '#empty', '#invisible', '#transparent', '#wrapper', '#writable',
+                                      '#covered', '#clipped',
                                       '.dup', '#pw', '#missing'])
 def test_unsafe_elements_refuse_at_pin(env, selector):
     fid = open_page(env)
@@ -202,6 +205,12 @@ def test_pin_requires_focus_on_the_element_and_refuses_text_selection(env):
     frame_eval(env, fid, 'document.activeElement.blur()')
     point(env, fid, '#secret', 'select')  # A selection publishes PRIMARY on X11: never accepted.
     assert pin(env, fid, '#secret') == failure()
+    point(env, fid, '#secret')  # Focused, but text is still selected elsewhere in the document.
+    frame_eval(env, fid, "getSelection().selectAllChildren(document.getElementById('twin'))")
+    assert pin(env, fid, '#secret') == failure()
+    point(env, fid, '#tok')  # A focused input with its own text selected.
+    frame_eval(env, fid, "document.getElementById('tok').select()")
+    assert pin(env, fid, '#tok') == failure()
 
 
 @pytest.mark.parametrize('change', [
@@ -209,6 +218,7 @@ def test_pin_requires_focus_on_the_element_and_refuses_text_selection(env):
     "document.getElementById('secret').setAttribute('data-x', '1')",
     "document.getElementById('secret').remove()",
     "document.getElementById('tok').focus()",
+    "document.getElementById('secret').firstChild.appendData(' ')",  # Whitespace-only change.
     "history.pushState(null, '', '/secret?moved')",
 ])
 def test_element_changes_after_pin_refuse_capture(env, change):
@@ -271,3 +281,15 @@ def test_cli_read_pin_and_capture_wire_flow(env, monkeypatch, capsys):
     out = capsys.readouterr()
     assert json.loads(out.out)['state'] == 'saved' and clean(out.out, out.err)
     assert stored(env) == (VALUE, True)
+
+
+def test_programmatic_whitespace_change_of_input_value_refuses(env):
+    fid = open_page(env)
+    point(env, fid, '#tok')
+    pinned = pin(env, fid, '#tok')
+    assert pinned['ok']
+    # Setting .value fires no input event and no mutation; the raw comparison catches it.
+    frame_eval(env, fid, "document.getElementById('tok').value = ' ' + document.getElementById('tok').value")
+    result = capture(env, pinned['target'])
+    assert result['ok'] is False and clean(result)
+    assert stored(env) == (None, None)

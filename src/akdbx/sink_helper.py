@@ -178,7 +178,9 @@ def render(existing, key, value):
     # parsers, so a file that has any of them is refused, not parsed.
     if any(c in text for c in '\0\r"\'\\'):
         raise SinkError('sink file has quotes, backslashes or unsupported characters; not changed')
-    lines = text.splitlines(keepends=True)
+    # Split on LF only: other Unicode separators are part of a line for the
+    # consumers of these files.
+    lines = re.findall(r'[^\n]*\n|[^\n]+$', text)
     pattern = re.compile(r'[ \t]*(?:export[ \t]+)?' + re.escape(key) + r'[ \t]*=')
     found = [index for index, line in enumerate(lines) if pattern.match(line)]
     if len(found) > 1:
@@ -317,7 +319,10 @@ def restart_plan(sink):
             raise SinkError('restart user does not exist') from None
         if uid == 0:
             raise SinkError('root-helper restart commands cannot run as root')
-        return [RUNUSER, '-u', user, '--', *argv]
+        # The privileged launcher gets only a fixed PATH; the configured
+        # variables apply after runuser has switched to the restart account.
+        variables = ['PATH=' + SAFE_PATH, *(key + '=' + value for key, value in spec['env'].items())]
+        return [RUNUSER, '-u', user, '--', '/usr/bin/env', '-i', *variables, *argv]
     if user is not None:
         try:
             uid = pwd.getpwnam(user).pw_uid
@@ -335,7 +340,8 @@ def restart(sink, argv=None):
         return None
     try:
         result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                env={'PATH': SAFE_PATH, **sink['restart']['env']}, cwd='/', timeout=RESTART_TIMEOUT, close_fds=True)
+                                env={'PATH': SAFE_PATH, **({} if os.geteuid() == 0 else sink['restart']['env'])}, cwd='/',
+                                timeout=RESTART_TIMEOUT, close_fds=True)
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0

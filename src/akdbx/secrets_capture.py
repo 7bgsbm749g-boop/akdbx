@@ -81,6 +81,13 @@ def captured_fields(entry):
         return []
 
 
+def _protected_marker(entry):
+    try:
+        return bool(entry.is_custom_property_protected(CAPTURED_FIELDS))
+    except Exception:
+        return True
+
+
 def _protected_value(entry, field):
     try:
         if field not in captured_fields(entry) or not entry.is_custom_property_protected(field):
@@ -152,6 +159,8 @@ class SecretCaptures:
                         exists = True
                     if exists and request.get('replace') is not True:
                         raise WriteError('entry already has this field; pass --replace to replace it')
+                    if _protected_marker(entry):
+                        raise WriteError('entry has a protected akdbx.captured-fields value; not changed')
                     _entry_write_clock(entry, broker.wall_clock)
                 broker.writes._require_available()
                 vault = broker.vault
@@ -205,6 +214,8 @@ class SecretCaptures:
                 target.set_custom_property(SECRET_RECORD, 'v1')
             else:
                 target = selected(candidate)
+                if _protected_marker(target):
+                    raise WriteError('entry has a protected akdbx.captured-fields value; not changed')
                 changed_at = _entry_changed_at(target, broker.wall_clock)
                 target.save_history()
                 target.mtime = changed_at

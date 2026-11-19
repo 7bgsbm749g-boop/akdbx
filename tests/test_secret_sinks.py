@@ -69,6 +69,9 @@ def test_write_appends_missing_key_and_creates_missing_file(tmp_path):
     assert write_sink(definition, VALUE) is True
     assert path.read_text() == f'PORT=1\nAPP_CLIENT_SECRET={VALUE}\n'
     assert render(b'export APP_CLIENT_SECRET=x\n', 'APP_CLIENT_SECRET', 'y') == b'export APP_CLIENT_SECRET=y\n'
+    # U+2028 is not a line break for env-file consumers: no false assignment inside OTHER.
+    assert render('OTHER=a\u2028APP_CLIENT_SECRET=x\n'.encode(), 'APP_CLIENT_SECRET', 'y') == \
+        'OTHER=a\u2028APP_CLIENT_SECRET=x\nAPP_CLIENT_SECRET=y\n'.encode()
     assert render(b'APP_CLIENT_SECRET_OLD=x\n', 'APP_CLIENT_SECRET', 'y') == b'APP_CLIENT_SECRET_OLD=x\nAPP_CLIENT_SECRET=y\n'
 
 
@@ -188,7 +191,15 @@ def test_root_helper_never_restarts_as_root(tmp_path, monkeypatch):
     monkeypatch.setattr(sink_helper.subprocess, 'run', lambda argv, **kw: ran.append(argv) or
                         type('R', (), {'returncode': 0})())
     assert sink_helper.restart(dict(definition, restart=dict(definition['restart'], user=None))) is True
-    assert ran == [[sink_helper.RUNUSER, '-u', USER, '--', '/bin/true']]  # Defaults to the sink owner.
+    assert ran == [[sink_helper.RUNUSER, '-u', USER, '--', '/usr/bin/env', '-i', 'PATH=' + sink_helper.SAFE_PATH,
+                    '/bin/true']]  # Defaults to the sink owner; env applies only after the switch.
+    ran.clear()
+    loader = dict(definition, restart=dict(definition['restart'], user=None, env={'LD_PRELOAD': '/tmp/x.so'}))
+    environments = []
+    monkeypatch.setattr(sink_helper.subprocess, 'run', lambda argv, **kw: ran.append(argv) or environments.append(kw['env'])
+                        or type('R', (), {'returncode': 0})())
+    assert sink_helper.restart(loader) is True
+    assert environments == [{'PATH': sink_helper.SAFE_PATH}] and ran[0][-2:] == ['LD_PRELOAD=/tmp/x.so', '/bin/true']
 
 
 def test_restart_command_runs_with_fixed_argv_and_environment(tmp_path):
@@ -316,6 +327,20 @@ def test_protected_or_phantom_marker_names_are_not_listed(deployed):
     broker.vault = broker.vault._akdbx_store.commit(broker.vault, mutate)
     found = json.dumps(broker.dispatch(dict(action='search', query='')))
     assert 'hiddenvalue' not in found and 'missingfield' not in found and 'captured_fields' not in found
+
+
+def test_capture_refuses_a_protected_marker_without_changing_it(deployed, monkeypatch):
+    broker, _, path, _ = deployed
+    broker.vault = broker.vault._akdbx_store.commit(broker.vault, lambda c: c.find_entries(
+        title='Synthetic site', first=True).set_custom_property(CAPTURED_FIELDS, 'keepme', protect=True))
+    before = path.read_bytes()
+    selected = broker.dispatch(dict(action='search', query='Synthetic site'))['entries'][0]
+    monkeypatch.setattr(broker.passwords, 'consume', lambda token: FakeReadPin())
+    monkeypatch.setattr(broker.passwords, 'read', lambda *a: pytest.fail('read before refusal'))
+    result = broker.dispatch(dict(action='capture-secret', capture_protocol=1, target='t' * 64, field='client_secret',
+                                  handle=selected['handle'],
+                                  metadata={k: selected[k] for k in ('title', 'username', 'url', 'group')}))
+    assert result['ok'] is False and 'protected' in result['error'] and path.read_bytes() == before
 
 
 def test_unprotected_or_uncaptured_fields_are_not_deliverable(deployed, tmp_path, monkeypatch):

@@ -272,10 +272,26 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
     if (!element.isConnected || element.ownerDocument !== document || element.closest('[inert]')) return false;
     const r = element.getBoundingClientRect(), s = getComputedStyle(element);
     return element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 &&
-      r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none' && s.opacity !== '0';
+      r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none' && s.opacity !== '0' &&
+      hit(r);
   };
-  const pointed = () => document.activeElement === element;
-  const initial = clean(text());
+  // The element's centre must hit-test to it: clipping, covers and
+  // pointer-transparent tricks then refuse rather than read unseen text.
+  const hit = r => {
+    const found = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return found === element || !isInput && element.contains(found);
+  };
+  // Focus only, with no active selection anywhere: on X11 a selection is
+  // published to PRIMARY.
+  const selectionStart = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'selectionStart').get;
+  const selectionEnd = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'selectionEnd').get;
+  const pointed = () => {
+    const selection = getSelection();
+    return document.activeElement === element && (!selection || selection.isCollapsed) &&
+      (!isInput || selectionStart.call(element) === selectionEnd.call(element));
+  };
+  const raw = text();
+  const initial = clean(raw);
   let tainted = false;
   const dirty = () => { tainted = true; };
   if (!window.navigation || initial === null) throw 0;
@@ -302,7 +318,7 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
   const originalFocus = document.activeElement;
   const check = () => performance.now() - created < 30000 && !tainted && isSecureContext && location.href === url && sameOrigin() &&
     document.hasFocus() && document.visibilityState === 'visible' && document.activeElement === originalFocus &&
-    visible() && leaf() && query(selector) === element && pointed() && clean(text()) === initial;
+    visible() && leaf() && query(selector) === element && pointed() && text() === raw;
   if (!check()) { dispose(); throw 0; }
   return {mode: 'read', check, dispose, value: () => clean(text())};
 })'''
