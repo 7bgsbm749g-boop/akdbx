@@ -17,9 +17,9 @@ from .protocol import MAX_MESSAGE
 COMMAND = 'save-secret'
 PROTOCOL = 1
 FIELD = 'password'
-# Keys and tokens are small. 32 KiB of input always fits the 64 KiB request
-# frame for ASCII text; very large non-ASCII text can still exceed it after
-# JSON escaping and is refused before anything is sent.
+# Keys and tokens are small. JSON escaping (quotes, backslashes, non-ASCII)
+# can still make the encoded request with its metadata larger than the
+# 64 KiB frame; that is checked and refused before anything is sent.
 MAX_BYTES = 32 * 1024
 METADATA = ('title', 'username', 'url', 'group')
 INPUT_REFUSED = 'secret refused: {}; request not sent'
