@@ -46,6 +46,14 @@ SAFE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
 SINK_NAME = re.compile(r'[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?')
 FIELD_NAME = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,63}')
+RESERVED_FIELDS = frozenset({'title', 'username', 'password', 'url', 'notes', 'otp'})
+RESERVED_PREFIXES = ('akdbx', 'kp2a_url', 'totp')
+
+
+def valid_field(name):
+    """A custom field name capture may write: not a standard, OTP, KP2A or akdbx field."""
+    return (isinstance(name, str) and FIELD_NAME.fullmatch(name) is not None
+            and name.casefold() not in RESERVED_FIELDS and not name.casefold().startswith(RESERVED_PREFIXES))
 ENV_KEY = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}')
 # Values are written unquoted. Allow only characters that systemd
 # EnvironmentFile, POSIX shells and common dotenv parsers all read literally.
@@ -70,7 +78,8 @@ def _restart(value):
     if not isinstance(value, dict) or set(value) - {'user', 'argv', 'env'} or 'argv' not in value:
         raise SinkError('invalid sink restart')
     argv, user, env = value['argv'], value.get('user'), value.get('env', {})
-    if (not isinstance(argv, list) or not 0 < len(argv) <= 32 or not _absolute(argv[0])
+    # No `=` in the executable: /usr/bin/env would read it as an assignment.
+    if (not isinstance(argv, list) or not 0 < len(argv) <= 32 or not _absolute(argv[0]) or '=' in argv[0]
             or not all(isinstance(a, str) and 0 < len(a) <= 1024 and '\0' not in a for a in argv)
             or user is not None and (not isinstance(user, str) or not ACCOUNT.fullmatch(user))
             or not isinstance(env, dict) or len(env) > 16
@@ -88,7 +97,7 @@ def validate_sink(name, value):
     if not isinstance(value, dict) or not required <= set(value) or set(value) - required - {'restart'}:
         raise SinkError('invalid sink definition')
     mode = value['mode']
-    if (value['writer'] not in WRITERS or not isinstance(value['field'], str) or not FIELD_NAME.fullmatch(value['field'])
+    if (value['writer'] not in WRITERS or not valid_field(value['field'])
             or not isinstance(value['entry_origin'], str) or not ORIGIN.fullmatch(value['entry_origin'])
             or not _absolute(value['path']) or not isinstance(value['key'], str) or not ENV_KEY.fullmatch(value['key'])
             or not all(isinstance(value[k], str) and ACCOUNT.fullmatch(value[k]) for k in ('owner', 'group'))
@@ -186,10 +195,12 @@ def render(existing, key, value):
     if len(found) > 1:
         raise SinkError('sink file sets the key more than once; not changed')
     line = key + '=' + value + '\n'
+    if found and re.match(r'[ \t]*export[ \t]', lines[found[0]]):
+        # systemd does not read `export KEY=`, while shells need it kept; the
+        # consumer is unknown, so refuse instead of reporting a false success.
+        raise SinkError('sink file exports the key; use a plain KEY= line; not changed')
     if found:
-        # Keep an existing `export` so a shell still passes the key on.
-        prefix = re.match(r'[ \t]*(?:export[ \t]+)?', lines[found[0]]).group(0)
-        lines[found[0]] = prefix + line
+        lines[found[0]] = re.match(r'[ \t]*', lines[found[0]]).group(0) + line
     else:
         if lines and not lines[-1].endswith('\n'):
             lines[-1] += '\n'
@@ -263,6 +274,8 @@ def write_sink(sink, value):
                 info = os.fstat(fd)
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != uid or info.st_size > MAX_FILE:
                     raise SinkError('sink file is not a single-link regular file of the sink owner')
+                if info.st_mode & 0o022:
+                    raise SinkError('sink file is writable by group or others; not trusted')
                 existing, before = os.read(fd, MAX_FILE + 1), _identity(info)
                 attributes = info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)
             finally:

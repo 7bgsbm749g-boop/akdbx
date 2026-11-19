@@ -17,7 +17,7 @@ import struct
 import unicodedata
 
 from .persistence import SaveError
-from .sink_helper import FIELD_NAME, MAX_VALUE, PROTOCOL as SINK_PROTOCOL, SinkError, load_config
+from .sink_helper import MAX_VALUE, valid_field, PROTOCOL as SINK_PROTOCOL, SinkError, load_config
 from .sink_helper import deliver as deliver_direct, sink_digest
 from .totp import TotpError, https_origin
 from .versions import active_entries
@@ -28,7 +28,6 @@ CAPTURE_PROTOCOL = 1
 CAPTURE_DELIVERY = 'chromium-dom-read-v1'
 SECRET_RECORD = 'akdbx.secret-record'
 CAPTURED_FIELDS = 'akdbx.captured-fields'
-RESERVED = {'title', 'username', 'password', 'url', 'notes', 'otp'}
 REFUSED = 'secret capture refused: target missing, expired, changed, hidden, empty, multi-line or not on the entry origin; nothing saved'
 HELPER_TIMEOUT = 90
 
@@ -53,11 +52,6 @@ def valid_value(value):
     """One visible line: no whitespace, control, format or separator characters."""
     return (isinstance(value, str) and 0 < len(value) <= MAX_VALUE
             and not any(c.isspace() or unicodedata.category(c)[0] in 'CZ' for c in value))
-
-
-def valid_field(name):
-    return (isinstance(name, str) and FIELD_NAME.fullmatch(name) is not None and name.casefold() not in RESERVED
-            and not name.casefold().startswith(('akdbx', 'kp2a_url', 'totp')))
 
 
 def is_secret_record(entry):

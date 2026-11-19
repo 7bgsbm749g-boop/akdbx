@@ -219,6 +219,7 @@ def test_pin_requires_focus_on_the_element_and_refuses_text_selection(env):
     "document.getElementById('secret').remove()",
     "document.getElementById('tok').focus()",
     "document.getElementById('secret').firstChild.appendData(' ')",  # Whitespace-only change.
+    "document.body.contentEditable = 'true'",  # An ancestor makes the element editable.
     "history.pushState(null, '', '/secret?moved')",
 ])
 def test_element_changes_after_pin_refuse_capture(env, change):

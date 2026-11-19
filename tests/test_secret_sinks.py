@@ -50,13 +50,17 @@ def sink(tmp_path, **changes):
 def test_write_keeps_other_lines_replaces_key_and_is_atomic(tmp_path):
     definition, path = sink(tmp_path)
     path.write_text('PORT=8080\n# comment\nAPP_CLIENT_SECRET=old\nGITHUB_CLIENT_ID=abc')
-    path.chmod(0o644)
+    path.chmod(0o640)
     assert write_sink(definition, VALUE) is True
     assert path.read_text() == f'PORT=8080\n# comment\nAPP_CLIENT_SECRET={VALUE}\nGITHUB_CLIENT_ID=abc'
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert write_sink(definition, VALUE) is False  # Unchanged content is not rewritten.
-    path.chmod(0o644)
+    path.chmod(0o640)
     assert write_sink(definition, VALUE) is True  # A wrong mode is repaired even for the same value.
+    path.chmod(0o660)
+    with pytest.raises(SinkError):  # Others may have changed the other lines: not trusted.
+        write_sink(definition, VALUE)
+    path.chmod(0o600)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert sorted(p.name for p in path.parent.iterdir()) == ['app.env']  # No temporary file left.
 
@@ -68,7 +72,8 @@ def test_write_appends_missing_key_and_creates_missing_file(tmp_path):
     path.write_text('PORT=1')
     assert write_sink(definition, VALUE) is True
     assert path.read_text() == f'PORT=1\nAPP_CLIENT_SECRET={VALUE}\n'
-    assert render(b'export APP_CLIENT_SECRET=x\n', 'APP_CLIENT_SECRET', 'y') == b'export APP_CLIENT_SECRET=y\n'
+    with pytest.raises(SinkError):  # systemd would ignore an exported assignment.
+        render(b'export APP_CLIENT_SECRET=x\n', 'APP_CLIENT_SECRET', 'y')
     # U+2028 is not a line break for env-file consumers: no false assignment inside OTHER.
     assert render('OTHER=a\u2028APP_CLIENT_SECRET=x\n'.encode(), 'APP_CLIENT_SECRET', 'y') == \
         'OTHER=a\u2028APP_CLIENT_SECRET=x\nAPP_CLIENT_SECRET=y\n'.encode()
@@ -123,7 +128,8 @@ def test_values_that_need_quoting_refuse(tmp_path, value):
     ('../evil', {}), ('UPPER', {}), ('ok', dict(path='relative/app.env')), ('ok', dict(path='/tmp/../etc/passwd')),
     ('ok', dict(path='/tmp/x/')), ('ok', dict(key='BAD KEY')), ('ok', dict(mode='0666')), ('ok', dict(mode='4600')),
     ('ok', dict(mode='0400')), ('ok', dict(writer='sudo')), ('ok', dict(entry_origin='http://login.example.com')),
-    ('ok', dict(field='Password')), ('ok', dict(restart=dict(argv=['systemctl', 'restart', 'x']))),
+    ('ok', dict(field='Password')), ('ok', dict(field='password')), ('ok', dict(field='akdbx_x')),
+    ('ok', dict(restart=dict(argv=['systemctl', 'restart', 'x']))), ('ok', dict(restart=dict(argv=['/opt/a=b/restart']))),
     ('ok', dict(restart=dict(argv=['/bin/true'], env={'PATH': '/tmp'}))), ('ok', dict(extra=1)),
 ])
 def test_invalid_sink_definitions_refuse(tmp_path, name, change):

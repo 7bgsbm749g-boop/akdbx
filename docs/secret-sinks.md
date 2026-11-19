@@ -43,8 +43,8 @@ that no other account can change. Restart the broker after a change.
 | `writer` | `direct`: the broker writes a file that its own account owns. `root-helper`: the root helper writes a file of another account. |
 | `field` | The only captured field this sink accepts; `deliver-secret --field` must match. |
 | `entry_origin` | The entry's main URL origin, or one of its additional URLs, must be exactly this HTTPS origin. |
-| `path` | Absolute, normalized file path. No component may be a symlink. Every directory on the path must belong to root or the owner and must not be writable by other accounts (a root-owned sticky ancestor such as `/tmp` is allowed). An existing file must be a single-link regular file of the owner. A missing file is created. |
-| `key` | Environment variable name. The file must set it at most once (`KEY=` or `export KEY=`); it is replaced, or appended if absent. All other lines stay unchanged. A file that contains any quote (`"` or `'`) or backslash, even in a comment, is refused rather than parsed. |
+| `path` | Absolute, normalized file path. No component may be a symlink. Every directory on the path must belong to root or the owner and must not be writable by other accounts (a root-owned sticky ancestor such as `/tmp` is allowed). An existing file must be a single-link regular file of the owner that group and others cannot write. A missing file is created. |
+| `key` | Environment variable name. The file must set it at most once, as a plain `KEY=` line (an `export KEY=` line refuses, because systemd does not read it); it is replaced, or appended if absent. All other lines stay unchanged. A file that contains any quote (`"` or `'`) or backslash, even in a comment, is refused rather than parsed. |
 | `owner`, `group`, `mode` | Applied to the file on every delivery, also when the value is already present. The mode must include `0600` and must not be group- or other-writable. |
 | `restart` | Optional. An absolute `argv` (no shell), an optional `user` to run it as, and optional extra environment (not `PATH`). It runs after each delivery with a fixed `PATH`, no input and discarded output, and is stopped after 60 seconds. The root helper runs it as `user`, or as the sink owner by default, and never as root. |
 
@@ -111,7 +111,9 @@ ProtectHome=read-only
 
 `ProtectSystem=full` makes `/usr`, `/boot`, `/efi` and `/etc` read-only, and
 `ProtectHome=read-only` does the same for `/home`, `/root` and `/run/user`, for
-the helper. Sinks elsewhere (for example under `/var/lib`) need no change. For a
+the helper. `PrivateTmp=yes` also gives the helper its own `/tmp` and `/var/tmp`, so a sink
+there is not the host file. Use a service directory such as `/var/lib/NAME`,
+which needs no change. For a
 sink in one of those trees, add `ReadWritePaths=` with only that sink's
 directory in a drop-in for `akdbx-secret-sink@.service`.
 

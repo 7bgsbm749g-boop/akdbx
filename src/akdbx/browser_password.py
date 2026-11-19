@@ -258,7 +258,7 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
   const isInput = element instanceof HTMLInputElement;
   // A read-only text input, or a leaf element that holds only text: the
   // element's own visibility check then covers every character that is read.
-  const leaf = () => isInput ? inputReadOnly.call(element) : element.childElementCount === 0;
+  const leaf = () => !element.isContentEditable && (isInput ? inputReadOnly.call(element) : element.childElementCount === 0);
   if (!(element instanceof HTMLElement) || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ||
       isInput && inputType.call(element) !== 'text' || element.isContentEditable || !leaf()) throw 0;
   const text = () => isInput ? inputValue.call(element) : innerText.call(element);
