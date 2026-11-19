@@ -476,7 +476,7 @@ metadata refuses.
 (`\n` or `\r\n`) is removed, because `cat` of a one-line key file prints one.
 The rest is stored exactly, including leading or trailing spaces, in the
 entry's protected KeePass **Password** field. A file without a final newline
-is stored unchanged. Input must be nonempty UTF-8 text of at most 64 KiB with
+is stored unchanged. Input must be nonempty UTF-8 text of at most 32 KiB with
 no control characters, so a second line, a NUL byte, a byte order mark or a
 binary file refuses. Encode binary data (for example as base64) first; KeePass
 attachments are not supported by this command.
@@ -506,9 +506,13 @@ withholds any receipt with an unexpected shape or one that repeats the value.
 - If `sudo` needs a password, give it through the host's private secret
   delivery (for example `sudo -S -p '' cat FILE < PASSWORD_FILE | akdbx ...`).
   Never type it into the pipe.
-- A pre-send refusal (`request not sent`, `secret not read`) changed nothing.
-  For `outcome uncertain` or `unconfirmed`, run `status` and a fresh narrow
-  search before any retry; do not save again automatically.
-- Verify with `search`: the entry metadata confirms the save. Never read the
-  value back to compare it.
+- A pre-send refusal (`request not sent`, `secret not read`, `secret refused`)
+  changed nothing. For `outcome uncertain` or `unconfirmed`, run `status` and
+  a fresh narrow search before any retry; do not loop.
+- Only a `saved` receipt confirms the stored value. After a lost create
+  receipt, a search hit for the new entry confirms the create; with no hit,
+  run the create once more. `search` metadata is the same whether a
+  replacement succeeded or failed, so a lost replacement receipt leaves the
+  outcome unknown: run the replacement once more with a fresh handle (same
+  value, so a repeat is harmless) or report it. Never read the value back.
 

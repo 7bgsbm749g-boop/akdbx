@@ -492,11 +492,11 @@ class WriteManager:
             raise WriteError('secret save accepts only destination metadata, one secret and protocol 1')
         secret = request.get('secret')
         try:
-            if not isinstance(secret, str) or not secret:
+            if not isinstance(secret, str) or not secret or secret.startswith('\ufeff'):
                 raise ValueError
             self.broker._validate_credential_text(secret)
         except Exception:
-            raise WriteError('secret must be nonempty UTF-8 text of at most 64 KiB without control characters') from None
+            raise WriteError('secret must be nonempty UTF-8 text of at most 64 KiB without control characters or a byte order mark') from None
         values = request.get('metadata')
         if not isinstance(values, dict):
             raise WriteError('invalid destination metadata')

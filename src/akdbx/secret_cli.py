@@ -12,12 +12,17 @@ import stat
 import sys
 import unicodedata
 
+from .protocol import MAX_MESSAGE
+
 COMMAND = 'save-secret'
 PROTOCOL = 1
 FIELD = 'password'
-MAX_BYTES = 64 * 1024
+# Keys and tokens are small. 32 KiB of input always fits the 64 KiB request
+# frame for ASCII text; very large non-ASCII text can still exceed it after
+# JSON escaping and is refused before anything is sent.
+MAX_BYTES = 32 * 1024
 METADATA = ('title', 'username', 'url', 'group')
-INPUT_REFUSED = ('secret not read: {}; request not sent')
+INPUT_REFUSED = 'secret refused: {}; request not sent'
 
 
 class InputError(ValueError):
@@ -42,7 +47,7 @@ def add_parser(commands):
 
 def _decode(data: bytes) -> str:
     if len(data) > MAX_BYTES + 2:
-        raise InputError('input is larger than 64 KiB')
+        raise InputError('input is larger than 32 KiB')
     if data.endswith(b'\r\n'):
         data = data[:-2]
     elif data.endswith(b'\n'):
@@ -50,7 +55,7 @@ def _decode(data: bytes) -> str:
     if not data:
         raise InputError('input is empty')
     if len(data) > MAX_BYTES:
-        raise InputError('input is larger than 64 KiB')
+        raise InputError('input is larger than 32 KiB')
     try:
         text = data.decode('utf-8')
     except UnicodeDecodeError:
@@ -86,7 +91,7 @@ def _read_file(path: str) -> bytes:
         if not stat.S_ISREG(info.st_mode):
             raise InputError('path is not a regular file')
         if info.st_size > MAX_BYTES + 2:
-            raise InputError('input is larger than 64 KiB')
+            raise InputError('input is larger than 32 KiB')
         chunks, size = [], 0
         while size <= MAX_BYTES + 2:
             chunk = os.read(fd, MAX_BYTES + 3 - size)
@@ -155,6 +160,10 @@ def run(args, request) -> int:
     payload = {'action': COMMAND, 'secret_save_protocol': PROTOCOL, 'metadata': metadata, 'secret': secret}
     if args.handle is not None:
         payload['handle'] = args.handle
+    if len(json.dumps(payload, separators=(',', ':')).encode('utf-8')) > MAX_MESSAGE:
+        payload = secret = None
+        print(INPUT_REFUSED.format('secret and metadata exceed the 64 KiB request limit after encoding'), file=sys.stderr)
+        return 2
     started = False
 
     def mark_send():

@@ -91,7 +91,7 @@ def test_update_requires_exact_metadata(deployed):
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize('secret', ['', 'two\nlines', 'tab\tinside', 'x' * (64 * 1024 + 1), 7, None])
+@pytest.mark.parametrize('secret', ['', '\ufeffkey', 'two\nlines', 'tab\tinside', 'x' * (64 * 1024 + 1), 7, None])
 def test_broker_refuses_unsafe_secret_without_echo(deployed, secret):
     broker, _, path, _ = deployed
     before = path.read_bytes()
@@ -157,7 +157,7 @@ def test_cli_decoding_strips_exactly_one_line_ending(data, expected):
 @pytest.mark.parametrize('data,reason', [
     (b'', 'empty'), (b'\n', 'empty'), (SECRET.encode() + b'\n\n', 'more than one line'),
     (b'a\nb\n', 'more than one line'), (b'\xff\xfe', 'not UTF-8'), ('﻿key'.encode(), 'byte order mark'),
-    (b'x' * (64 * 1024 + 3), 'larger'),
+    (b'x' * (32 * 1024 + 1), 'larger'),
 ])
 def test_cli_decoding_refusals_are_fixed_text(data, reason):
     with pytest.raises(secret_cli.InputError) as error:
@@ -335,3 +335,21 @@ def test_save_secret_holds_the_vault_lock(monkeypatch):
     monkeypatch.setattr(broker.writes, 'save_secret', probe)
     broker.dispatch({'action': 'save-secret'})
     assert observed == [False]
+
+
+def test_cli_size_limit_boundary_over_socket(deployed, monkeypatch, capsys):
+    broker, _, path, socket = deployed
+    sock = socket.with_name('cli.sock')
+    largest = 'k' * (32 * 1024)
+    with running_broker(sock, broker):
+        code, out, err = cli_run(monkeypatch, capsys, sock, '--stdin', stdin=largest.encode() + b'\n')
+        assert code == 0 and json.loads(out)['saved'] == 'created'
+        assert len(err) == 0
+        before = path.read_bytes()
+        code, out, err = cli_run(monkeypatch, capsys, sock, '--stdin', stdin=b'k' * (32 * 1024 + 1))
+        assert code == 2 and 'larger than 32 KiB' in err and not out
+        # Large non-ASCII text that JSON escaping expands is refused before sending.
+        code, out, err = cli_run(monkeypatch, capsys, sock, '--stdin', stdin=('\U0001f511' * 8000).encode())
+        assert code == 2 and 'request limit' in err and not out
+        assert path.read_bytes() == before
+    assert reopened(path).find_entries(title=VALUES['title'], first=True).password == largest

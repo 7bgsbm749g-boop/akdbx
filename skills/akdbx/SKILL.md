@@ -425,7 +425,7 @@ reads any input, and refuses without sending. `--file PATH` reads a regular
 file the CLI user can open. Pass a fresh search handle after `--` (with the
 entry's four exact metadata fields) to replace an existing entry's password
 instead of creating one. Exactly one trailing line ending is removed; the rest
-is stored exactly in the protected Password field. The receipt has only
+is stored exactly in the protected Password field (input up to 32 KiB). The receipt has only
 `state`, `saved` (`created` or `updated`) and the metadata. Never print, copy,
 encode or store the file anywhere else, and never put it in an argument or a
 variable. Read [the secret-save workflow](references/password-writes.md#save-an-existing-secret-from-a-file-or-stdin-0190)
