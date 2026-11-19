@@ -81,10 +81,15 @@ def test_private_save_reopens_protected_and_stays_out_of_login_and_logs(deployed
     refused = broker.dispatch(dict(action='fill', mode='username', handle=found['handle'],
                                    **x11_target_request(broker)))
     assert not refused['ok'] and typer.events == []
-    for action in ('setup-totp', 'update-password', 'generate-password', 'add-url'):
+    login_metadata = dict(title=LABEL, group='Web', username='synthetic-account', url='https://example.test')
+    for action in ('setup-totp', 'update-password', 'generate-password'):
         handle = search(broker)['entries'][0]['handle']
-        payload = dict(additional_urls_protocol=1, url='https://example.test') if action == 'add-url' else {}
-        assert not broker.dispatch(dict(action=action, handle=handle, **payload))['ok']
+        assert broker.dispatch(dict(action=action, handle=handle, metadata=login_metadata)) == {
+            'ok': False, 'error': 'identity record cannot be used for login writes'}
+    handle = search(broker)['entries'][0]['handle']
+    assert broker.dispatch(dict(action='add-url', handle=handle, additional_urls_protocol=1,
+                                url='https://example.test')) == {
+        'ok': False, 'error': 'identity record has no site URLs'}
     response = broker.dispatch(dict(action='write-status', write_handle=pending['write_handle']))
     assert response == dict(ok=True, state='saved')
     captured = capsys.readouterr()

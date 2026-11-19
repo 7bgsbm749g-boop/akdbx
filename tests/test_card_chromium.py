@@ -604,7 +604,7 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
           for (const event of ["input", "change"]) checkout.addEventListener(event, () => checkout.requestSubmit());''')
         tags = {
             'name': '<input autocomplete="name">',
-            'address-line1': '<input autocomplete="section-test shipping address-line1">',
+            'address-line1': '<input autocomplete="SECTION-livraison-é SHIPPING address-line1">',
             'address-line2': '<input autocomplete="shipping address-line2">',
             'street-address': '<textarea autocomplete="street-address"></textarea>',
             'address-level2': '<input autocomplete="address-level2">',

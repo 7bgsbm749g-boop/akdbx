@@ -177,8 +177,8 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
   if (select && !(identity ? ['country', 'country-name', 'address-level1'] :
                                ['cc-exp-month', 'cc-exp-year']).includes(field)) return null;
   const type = el.type, autocomplete = el.getAttribute('autocomplete');
-  if (identity && /[^\x00-\x7f]/.test(autocomplete || '')) return null;
-  const tokens = identity ? (autocomplete || '').toLowerCase().match(/[^\t\n\f\r ]+/g) || [] :
+  const tokens = identity ?
+    (autocomplete || '').replace(/[A-Z]/g, c => c.toLowerCase()).match(/[^\t\n\f\r ]+/g) || [] :
     (autocomplete || '').trim().toLowerCase().split(/\s+/);
   // Computop's hosted form has no cc-* annotations. This explicit processor
   // route accepts only its known id/name pairs, never arbitrary off fields.
@@ -204,7 +204,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
   // Identity fields follow the ordered HTML autocomplete token grammar.
   const prefix = tokens.slice(0, -1);
   if (identity) {
-    if (/^section-[a-z0-9_-]+$/.test(prefix[0])) prefix.shift();
+    if (prefix[0]?.startsWith('section-')) prefix.shift();
     if (['shipping','billing'].includes(prefix[0])) prefix.shift();
     if (['tel','email'].includes(field) && ['home','work','mobile','fax','pager'].includes(prefix[0])) prefix.shift();
     if (prefix.length || tokens[tokens.length - 1] !== field) return null;
