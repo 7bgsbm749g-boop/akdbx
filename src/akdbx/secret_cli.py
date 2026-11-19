@@ -62,7 +62,7 @@ def _decode(data: bytes) -> str:
         raise InputError('input is not UTF-8 text; binary files are not supported') from None
     if text.startswith('﻿'):
         raise InputError('input starts with a byte order mark')
-    if any(unicodedata.category(c) == 'Cc' for c in text):
+    if any(unicodedata.category(c) in {'Cc', 'Zl', 'Zp'} for c in text):
         raise InputError('input has control characters or more than one line')
     return text
 
@@ -83,6 +83,11 @@ def _read_stdin() -> bytes:
 def _read_file(path: str) -> bytes:
     flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0)
     try:
+        # Windows has no O_NOFOLLOW: refuse a link (or reparse point) by name,
+        # then require the opened file to be that same file.
+        named = os.lstat(path)
+        if stat.S_ISLNK(named.st_mode) or getattr(named, 'st_reparse_tag', 0):
+            raise OSError
         fd = os.open(path, flags)
     except OSError:
         raise InputError('file could not be opened (missing, unreadable or a symbolic link)') from None
@@ -90,6 +95,8 @@ def _read_file(path: str) -> bytes:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise InputError('path is not a regular file')
+        if (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino):
+            raise InputError('file changed while it was opened')
         if info.st_size > MAX_BYTES + 2:
             raise InputError('input is larger than 32 KiB')
         chunks, size = [], 0

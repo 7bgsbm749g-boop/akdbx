@@ -91,7 +91,7 @@ def test_update_requires_exact_metadata(deployed):
     assert path.read_bytes() == before
 
 
-@pytest.mark.parametrize('secret', ['', '\ufeffkey', 'two\nlines', 'tab\tinside', 'x' * (64 * 1024 + 1), 7, None])
+@pytest.mark.parametrize('secret', ['', '\ufeffkey', 'line\u2028sep', 'two\nlines', 'tab\tinside', 'x' * (64 * 1024 + 1), 7, None])
 def test_broker_refuses_unsafe_secret_without_echo(deployed, secret):
     broker, _, path, _ = deployed
     before = path.read_bytes()
@@ -156,7 +156,8 @@ def test_cli_decoding_strips_exactly_one_line_ending(data, expected):
 
 @pytest.mark.parametrize('data,reason', [
     (b'', 'empty'), (b'\n', 'empty'), (SECRET.encode() + b'\n\n', 'more than one line'),
-    (b'a\nb\n', 'more than one line'), (b'\xff\xfe', 'not UTF-8'), ('﻿key'.encode(), 'byte order mark'),
+    (b'a\nb\n', 'more than one line'), ('a\u2028b'.encode(), 'more than one line'),
+    ('a\u2029b'.encode(), 'more than one line'), (b'\xff\xfe', 'not UTF-8'), ('\ufeffkey'.encode(), 'byte order mark'),
     (b'x' * (32 * 1024 + 1), 'larger'),
 ])
 def test_cli_decoding_refusals_are_fixed_text(data, reason):
@@ -353,3 +354,16 @@ def test_cli_size_limit_boundary_over_socket(deployed, monkeypatch, capsys):
         assert code == 2 and 'request limit' in err and not out
         assert path.read_bytes() == before
     assert reopened(path).find_entries(title=VALUES['title'], first=True).password == largest
+
+
+def test_file_read_refuses_a_swapped_file(tmp_path, monkeypatch):
+    """Without O_NOFOLLOW (Windows), the opened file must be the named, non-link file."""
+    key = tmp_path / 'token.key'
+    key.write_bytes(SECRET.encode())
+    other = tmp_path / 'other.key'
+    other.write_bytes(b'other')
+    real_lstat = os.lstat
+    monkeypatch.setattr(secret_cli.os, 'lstat', lambda path: real_lstat(other))
+    with pytest.raises(secret_cli.InputError) as error:
+        secret_cli._read_file(str(key))
+    assert 'changed' in str(error.value) and SECRET not in str(error.value)

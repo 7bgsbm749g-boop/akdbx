@@ -479,8 +479,8 @@ entry's protected KeePass **Password** field. A file without a final newline
 is stored unchanged. The encoded request, including metadata, must also fit
 the 64 KiB broker frame; the CLI refuses an oversized one before sending.
 Input must be nonempty UTF-8 text of at most 32 KiB with
-no control characters, so a second line, a NUL byte, a byte order mark or a
-binary file refuses. Encode binary data (for example as base64) first; KeePass
+no control characters, so a second line, a Unicode line or paragraph
+separator, a NUL byte, a byte order mark or a binary file refuses. Encode binary data (for example as base64) first; KeePass
 attachments are not supported by this command.
 
 **Metadata.** Title, account and a site URL (`http` or `https`) are required,
@@ -505,15 +505,18 @@ withholds any receipt with an unexpected shape or one that repeats the value.
   file, or pass it as an argument. Only the `| akdbx save-secret --stdin`
   pipe, or `--file`, may touch it. Do not run the command with shell tracing
   (`set -x`) or redirect its stdin from anywhere but the pipe.
-- If `sudo` needs a password, give it through the host's private secret
+- Use `sudo -n cat FILE` when sudo needs no password, so a sudo failure
+  gives empty input, which is refused. If `sudo` needs a password, give it through the host's private secret
   delivery (for example `sudo -S -p '' cat FILE < PASSWORD_FILE | akdbx ...`).
   Never type it into the pipe.
 - A pre-send refusal (`request not sent`, `secret not read`, `secret refused`)
   changed nothing. For `outcome uncertain` or `unconfirmed`, run `status` and
   a fresh narrow search before any retry; do not loop.
-- Only a `saved` receipt confirms the stored value. After a lost create
-  receipt, a search hit for the new entry confirms the create; with no hit,
-  run the create once more. `search` metadata is the same whether a
+- Only a `saved` receipt confirms the stored value. Search for the account
+  before a create. A create refuses when that account already exists on the
+  site, so after a lost create receipt a new search hit that was absent
+  before confirms the create; with no hit, run the create once more. If you
+  did not search first, report the outcome as unconfirmed. `search` metadata is the same whether a
   replacement succeeded or failed, so a lost replacement receipt leaves the
   outcome unknown. Report it. Run another replacement only when the user
   deliberately authorizes it after reviewing the entry: each successful save
