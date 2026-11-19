@@ -201,3 +201,23 @@ def test_cli_withholds_invalid_private_save_link(url, tmp_path, capsys, monkeypa
     captured = capsys.readouterr()
     assert code == 2 and not captured.out
     assert url not in captured.err and 'response withheld' in captured.err
+
+
+@pytest.mark.parametrize('title,group,exact', [
+    (LABEL, 'Other group', True),
+    (LABEL.upper(), 'Web', True),
+    ('Unrelated', 'Web', False),
+])
+def test_cli_withholds_search_entries_outside_requested_filters(title, group, exact, monkeypatch, capsys):
+    def mismatch(_, payload, **kwargs):
+        if payload['action'] == 'ping':
+            return dict(ok=True, identity_protocol=1, identity_delivery='cdp-identity-element-v1')
+        return dict(ok=True, entries=[dict(title=title, group=group, handle='a' * 64)])
+
+    monkeypatch.setattr(cli, 'request', mismatch)
+    args = ['search-identities', LABEL, '--group', 'Web']
+    if exact:
+        args += ['--exact']
+    assert cli.main(args) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and 'response withheld' in captured.err

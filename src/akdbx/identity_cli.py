@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from .browser_card import TTL, failure
 from .browser_identity import DELIVERY
-from .identities import COMMANDS, FAILED, FILL_FIELDS, REFUSED
+from .identities import COMMANDS, FAILED, FILL_FIELDS, REFUSED, label_matches
 
 PIN_ARGS = ('page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field')
 ERRORS = {'vault locked', 'save outcome uncertain; restart and unlock', 'request failed', REFUSED, FAILED}
@@ -66,6 +66,8 @@ def valid_receipt(args, response):
     return all(isinstance(entry, dict) and set(entry) == {'handle', 'title', 'group'}
                and _token(entry['handle']) and all(isinstance(entry[k], str) and len(entry[k].encode()) <= 4096
                                                  for k in ('title', 'group'))
+               and (args.group is None or entry['group'] == args.group)
+               and label_matches(entry['title'], args.query, args.exact)
                for entry in response['entries'])
 
 

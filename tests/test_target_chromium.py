@@ -112,9 +112,12 @@ def synthetic_chromium(isolated_x11, tmp_path):
     cdp = PipeCDP(agent_write, agent_read, process)
     try:
         session = None
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            pages = [t for t in cdp.call('Target.getTargets')['targetInfos'] if t['type'] == 'page']
+        # Cold Chromium startup on the CI runner can outlast a normal
+        # CDP call, especially while the TLS server and Xvfb start.
+        deadline = time.monotonic() + 60
+        while (remaining := deadline - time.monotonic()) > 0:
+            pages = [t for t in cdp.call('Target.getTargets', timeout=remaining)['targetInfos']
+                     if t['type'] == 'page']
             if pages:
                 session = cdp.call('Target.attachToTarget', dict(targetId=pages[0]['targetId'], flatten=True))['sessionId']
                 if cdp.evaluate("document.readyState === 'complete' && !!document.getElementById('password')", session):
