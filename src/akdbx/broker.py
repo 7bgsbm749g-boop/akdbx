@@ -36,6 +36,7 @@ from .cards import CardManager, is_card
 from .browser_card import BrowserCards
 from .browser_identity import BrowserIdentities
 from .identities import COMMANDS as IDENTITY_COMMANDS, IdentityManager, is_identity
+from .secrets_capture import SecretCaptures, captured_fields, is_secret_record
 from .runtime import (
     acquire_lifecycle_lock,
     anchored_socket_path,
@@ -94,6 +95,7 @@ class Broker:
         card_browser_profile: Path | None = None,
         notification_state_path=None,
         password_browser_profile=None,
+        secret_sinks_path=None,
     ) -> None:
         self.vault = vault
         self.typer = typer
@@ -113,6 +115,7 @@ class Broker:
         self.identity_targets = BrowserIdentities(password_browser_profile or card_browser_profile, clock=clock)
         self.identities = IdentityManager(self)
         self.merges = create_merge_manager(self)
+        self.secrets = SecretCaptures(self, secret_sinks_path)
         self.unlock_url: str | None = None
         self.unlock_notifications = UnlockNotifications(state_path=notification_state_path)
         self.card_save_notifications = CardSaveNotifications(
@@ -221,10 +224,10 @@ class Broker:
                 return {'ok': False, 'error': 'merge operation failed'}
             finally:
                 self._vault_lock.release()
-        if action in {'fill', 'fill-generated', 'fill-totp', 'fill-card', 'fill-identity'} and delivery_ready is None and 'start_deadline' not in request:
+        if action in {'fill', 'fill-generated', 'fill-totp', 'fill-card', 'fill-identity', 'capture-secret'} and delivery_ready is None and 'start_deadline' not in request:
             request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
         # Search and write operations observe a consistent vault/revision.
-        if action in {"pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated", "add-url", "remove-url", "save-secret", "create-card", "update-card", "search-cards", "pin-card-target", "fill-card"} | IDENTITY_COMMANDS:
+        if action in {"pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated", "add-url", "remove-url", "save-secret", "capture-secret", "create-card", "update-card", "search-cards", "pin-card-target", "fill-card"} | IDENTITY_COMMANDS:
             with self._vault_lock:
                 return self._dispatch(request, delivery_ready=delivery_ready)
         return self._dispatch(request, delivery_ready=delivery_ready)
@@ -241,7 +244,7 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -262,6 +265,16 @@ class Broker:
                 return self.targets.pin(request)
             except Exception:
                 return target_failure()
+        if action == 'capture-secret':
+            try:
+                return self.secrets.capture(request, delivery_ready)
+            except Exception:
+                return {'ok': False, 'error': 'secret capture failed; vault update not confirmed'}
+        if action == 'deliver-secret':
+            try:
+                return self.secrets.deliver(request)
+            except Exception:
+                return {'ok': False, 'error': 'secret delivery failed; check the sink before any retry'}
         if action in {'create-card', 'update-card', 'search-cards', 'pin-card-target', 'fill-card'}:
             return self.cards.dispatch(request, delivery_ready)
         if action in IDENTITY_COMMANDS:
@@ -353,6 +366,11 @@ class Broker:
                         candidate.update(identity)
                     if totp_configured(entry):
                         candidate['totp_configured'] = True
+                    if is_secret_record(entry):
+                        candidate['secret_record'] = True
+                    fields = captured_fields(entry)
+                    if fields:
+                        candidate['captured_fields'] = fields
                     projected = {
                         "ok": True,
                         "entries": [*(item for item, _entry in matches), candidate],
@@ -428,6 +446,8 @@ class Broker:
                         return {'ok': False, 'error': 'card record requires card fill; no keys sent'}
                     if mode not in {'username', 'totp'} and passwordless_identity(entry):
                         return {'ok': False, 'error': 'passwordless record has no separate password; no keys sent'}
+                    if mode not in {'username', 'totp'} and is_secret_record(entry):
+                        return {'ok': False, 'error': 'captured secret record has no site password; no keys sent'}
 
                     # A keyboard backend cannot authorize browser password delivery.
                     # Refuse before reading the password, irrespective of its methods.

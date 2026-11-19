@@ -27,6 +27,7 @@ from . import password_frames
 
 DELIVERY = 'chromium-password-dom-v1'
 PROTOCOL = 1
+CAPTURE_PROTOCOL = 1
 TTL = 30
 MAX_PINS = 16
 MAX_MESSAGE = 256 * 1024
@@ -237,6 +238,80 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
   if (!check() || originalFocus !== (username || password)) { dispose(); throw 0; }
   return {password, username, setter, check, mode, url, dispose};
 })'''
+# Read pins (`mode: "read"`) retain one element that shows a secret. The caller
+# must focus it. Text selection is not accepted: on X11, Chromium publishes any
+# selected text to the PRIMARY selection, outside the broker. Pin and read both require the exact
+# URL/origin, page focus, visibility, a unique selector match and one
+# unchanged single-line value. Any mutation of the element, navigation, blur,
+# focus change or value change taints the pin. The value stays in the
+# renderer until the broker's own read call; the pin receipt never holds it.
+READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
+  const sameOrigin = () => frameOrigin === null || (location.origin === frameOrigin && self.origin === frameOrigin);
+  if (!isSecureContext || location.href !== url || !sameOrigin() || !document.hasFocus() || document.visibilityState !== 'visible') throw 0;
+  const query = s => { const a = document.querySelectorAll(s); if (a.length !== 1) throw 0; return a[0]; };
+  const element = query(selector);
+  const created = performance.now();
+  const inputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').get;
+  const inputType = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'type').get;
+  const inputReadOnly = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'readOnly').get;
+  const innerText = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'innerText').get;
+  const isInput = element instanceof HTMLInputElement;
+  // A read-only text input, or a leaf element that holds only text: the
+  // element's own visibility check then covers every character that is read.
+  const leaf = () => isInput ? inputReadOnly.call(element) : element.childElementCount === 0;
+  if (!(element instanceof HTMLElement) || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ||
+      isInput && inputType.call(element) !== 'text' || element.isContentEditable || !leaf()) throw 0;
+  const text = () => isInput ? inputValue.call(element) : innerText.call(element);
+  const clean = raw => {
+    if (typeof raw !== 'string') return null;
+    const value = raw.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '');
+    if (!value || value.length > 4096 || /[\s\p{C}\p{Z}]/u.test(value)) return null;
+    return value;
+  };
+  const visible = () => {
+    if (!element.isConnected || element.ownerDocument !== document || element.closest('[inert]')) return false;
+    const r = element.getBoundingClientRect(), s = getComputedStyle(element);
+    return element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 &&
+      r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none' && s.opacity !== '0';
+  };
+  const pointed = () => document.activeElement === element;
+  const initial = clean(text());
+  let tainted = false;
+  const dirty = () => { tainted = true; };
+  if (!window.navigation || initial === null) throw 0;
+  window.navigation.addEventListener('navigate', dirty);
+  window.addEventListener('blur', dirty, true);
+  document.addEventListener('visibilitychange', dirty, true);
+  document.addEventListener('focusin', dirty, true);
+  element.addEventListener('input', dirty, true);
+  const observer = new MutationObserver(records => {
+    for (const r of records) {
+      if (r.target === element || element.contains(r.target)) dirty();
+      if (r.type === 'childList' && [...r.removedNodes].some(n => n === element || n.contains(element))) dirty();
+    }
+  });
+  observer.observe(document, {childList:true, subtree:true, characterData:true, attributes:true});
+  const dispose = () => {
+    window.navigation.removeEventListener('navigate', dirty);
+    window.removeEventListener('blur', dirty, true);
+    document.removeEventListener('visibilitychange', dirty, true);
+    document.removeEventListener('focusin', dirty, true);
+    element.removeEventListener('input', dirty, true);
+    observer.disconnect();
+  };
+  const originalFocus = document.activeElement;
+  const check = () => performance.now() - created < 30000 && !tainted && isSecureContext && location.href === url && sameOrigin() &&
+    document.hasFocus() && document.visibilityState === 'visible' && document.activeElement === originalFocus &&
+    visible() && leaf() && query(selector) === element && pointed() && clean(text()) === initial;
+  if (!check()) { dispose(); throw 0; }
+  return {mode: 'read', check, dispose, value: () => clean(text())};
+})'''
+READ = r'''function(deadline) {
+  if (this.mode !== 'read' || !this.check() || performance.now() >= deadline) return null;
+  const value = this.value();
+  this.dispose();
+  return value;
+}'''
 FILL = r'''function(mode, username, password, deadline) {
   if (mode !== this.mode || !this.check() || performance.now() >= deadline) return false;
   // Native setters do not dispatch page handlers. No key, Tab, focus change,
@@ -308,10 +383,14 @@ class BrowserPasswords:
         """Reserve capacity atomically and capture the DOM target outside locks."""
         self.prune()
         required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode'}
-        optional = set(request) & {'password_purpose', 'allow_autocomplete_off', 'frame_protocol', 'frame_origin'}
+        optional = set(request) & {'password_purpose', 'allow_autocomplete_off', 'frame_protocol', 'frame_origin', 'capture_protocol'}
+        reading = request.get('mode') == 'read'
         if (set(request) != required | optional | ({'username_selector'} if request.get('mode') == 'login' else set())
                 or type(request.get('password_protocol')) is not int or request['password_protocol'] != PROTOCOL
-                or request.get('mode') not in {'username', 'password', 'login'}
+                or request.get('mode') not in {'username', 'password', 'login', 'read'}
+                # Read pins need the explicit capture protocol; fill pins never carry it.
+                or reading != ('capture_protocol' in request)
+                or reading and (type(request['capture_protocol']) is not int or request['capture_protocol'] != CAPTURE_PROTOCOL)
                 or ('password_purpose' in request and (request['mode'] != 'password' or not isinstance(request['password_purpose'], str)
                                   or request['password_purpose'] not in {'current-password', 'new-password'}))
                 or ('allow_autocomplete_off' in request and (request['allow_autocomplete_off'] is not True
@@ -359,9 +438,13 @@ class BrowserPasswords:
                 frame = route['path'][-1]['frame']
                 url, field_session = frame_url(frame), route['field_session']
             world = connection.call('Page.createIsolatedWorld', {'frameId': frame['id'], 'worldName': 'akdbx-password-v1'}, field_session)['executionContextId']
-            args = [request['selector'], request.get('username_selector'), request['mode'], url, request.get('password_purpose'),
-                    request.get('allow_autocomplete_off', False), origin]
-            result = connection.call('Runtime.evaluate', {'expression': CAPTURE + '(' + ','.join(json.dumps(v) for v in args) + ')', 'contextId': world}, field_session)
+            if request['mode'] == 'read':
+                script, args = READ_CAPTURE, [request['selector'], url, origin]
+            else:
+                script = CAPTURE
+                args = [request['selector'], request.get('username_selector'), request['mode'], url, request.get('password_purpose'),
+                        request.get('allow_autocomplete_off', False), origin]
+            result = connection.call('Runtime.evaluate', {'expression': script + '(' + ','.join(json.dumps(v) for v in args) + ')', 'contextId': world}, field_session)
             if 'exceptionDetails' in result or result['result'].get('type') != 'object' or 'objectId' not in result['result']:
                 raise TargetError()
             pin = PasswordPin(connection, field_session, result['result']['objectId'], page['targetId'], frame['id'], url, request['mode'],
@@ -436,34 +519,54 @@ class BrowserPasswords:
             raise TargetError()
         return found[1]
 
+    def _recheck(self, pin, site_origins, ready, start_deadline):
+        """Re-verify page, frame route and origin; return a renderer-clock deadline."""
+        # The field document's origin must exactly equal the main URL's
+        # origin or one KP2A_URL* origin; no suffix, site or port widening.
+        if https_origin(pin.url) not in site_origins:
+            raise TargetError()
+        page = pin.connection.call('Target.getTargetInfo', {'targetId': pin.page_id})['targetInfo']
+        if pin.route is None:
+            frame = pin.connection.call('Page.getFrameTree', session=pin.session)['frameTree']['frame']
+            if page['url'] != pin.url or frame_url(frame) != pin.url or frame['id'] != pin.frame_id or not ready():
+                raise TargetError()
+        elif (page['url'] != pin.top_url or not ready()
+                or not password_frames.verify(pin.connection, pin.route, pin.top_url, pin.frame_origin, pin.guards)):
+            raise TargetError()  # Any frame, owner or parent change refuses.
+        # Sample renderer time without secrets. Using this older sample
+        # plus the remaining host budget gives a conservative renderer
+        # deadline, even if the subsequent call sits in its queue.
+        sample = pin.connection.call('Runtime.callFunctionOn', {
+            'objectId': pin.object_id, 'functionDeclaration': 'function() { return performance.now(); }',
+            'returnByValue': True,
+        }, pin.session)
+        timestamp = sample['result']['value']
+        remaining = min(start_deadline - self.clock(), TTL)
+        if type(timestamp) not in {int, float} or remaining <= 0 or not ready():
+            raise TargetError()
+        return timestamp + remaining * 1000
+
+    def read(self, pin, site_origins, ready, start_deadline):
+        """Return the pinned element's checked value; the caller never returns it over RPC."""
+        if pin.mode != 'read':
+            raise TargetError()
+        renderer_deadline = self._recheck(pin, site_origins, ready, start_deadline)
+        result = pin.connection.call('Runtime.callFunctionOn', {
+            'objectId': pin.object_id, 'functionDeclaration': READ,
+            'arguments': [{'value': renderer_deadline}], 'returnByValue': True,
+        }, pin.session)
+        value = result.get('result', {}).get('value') if 'exceptionDetails' not in result else None
+        if not isinstance(value, str):
+            raise TargetError()
+        return value
+
     def deliver(self, pin, mode, username, password, site_origins, ready, start_deadline):
         """site_origins: the credential's exact (scheme, host, port) origins."""
         started = False
         try:
-            # The field document's origin must exactly equal the main URL's
-            # origin or one KP2A_URL* origin; no suffix, site or port widening.
-            if mode != pin.mode or https_origin(pin.url) not in site_origins:
+            if mode != pin.mode or pin.mode == 'read':
                 raise TargetError()
-            page = pin.connection.call('Target.getTargetInfo', {'targetId': pin.page_id})['targetInfo']
-            if pin.route is None:
-                frame = pin.connection.call('Page.getFrameTree', session=pin.session)['frameTree']['frame']
-                if page['url'] != pin.url or frame_url(frame) != pin.url or frame['id'] != pin.frame_id or not ready():
-                    raise TargetError()
-            elif (page['url'] != pin.top_url or not ready()
-                    or not password_frames.verify(pin.connection, pin.route, pin.top_url, pin.frame_origin, pin.guards)):
-                raise TargetError()  # Any frame, owner or parent change refuses.
-            # Sample renderer time without secrets. Using this older sample
-            # plus the remaining host budget gives a conservative renderer
-            # deadline, even if the subsequent fill command sits in its queue.
-            sample = pin.connection.call('Runtime.callFunctionOn', {
-                'objectId': pin.object_id, 'functionDeclaration': 'function() { return performance.now(); }',
-                'returnByValue': True,
-            }, pin.session)
-            timestamp = sample['result']['value']
-            remaining = min(start_deadline - self.clock(), TTL)
-            if type(timestamp) not in {int, float} or remaining <= 0 or not ready():
-                raise TargetError()
-            renderer_deadline = timestamp + remaining * 1000
+            renderer_deadline = self._recheck(pin, site_origins, ready, start_deadline)
             started = True
             result = pin.connection.call('Runtime.callFunctionOn', {
                 'objectId': pin.object_id, 'functionDeclaration': FILL,

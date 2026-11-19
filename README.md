@@ -123,6 +123,24 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
+### Shown-once secrets and service sinks (0.20.0)
+
+`pin-password-target --mode read` pins one focused element that
+shows a secret, with the same exact HTTPS URL, page, frame and same-site frame
+checks as password fills. `capture-secret` makes the broker read that element
+itself over its CDP connection and save it as a protected custom field of a
+new or explicitly selected entry, through the verified encrypted save. The
+pin refuses hidden, duplicated, editable, empty, spaced or multi-line targets,
+and capture refuses if the element, focus, frame or URL changed. Pins accept
+focus only, because X11 Chromium publishes selected text to PRIMARY.
+`deliver-secret --sink NAME` writes such a field only to an operator-defined
+`KEY=VALUE` file sink (`serve --secret-sinks PATH`), atomically and with an
+optional fixed restart command. Files of another account go through a
+root-owned, socket-activated helper with its own root-owned allowlist; see
+[docs/secret-sinks.md](docs/secret-sinks.md). Status advertises
+`secret_capture_protocol: 1`, `secret_sink_protocol: 1` and `secret_sinks`.
+Responses are receipts only.
+
 ### Identity and address records (0.18.2)
 
 `create-identity --title LABEL --group EXISTING_GROUP` returns a private HTTPS
