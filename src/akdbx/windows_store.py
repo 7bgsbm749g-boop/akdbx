@@ -17,10 +17,38 @@ from .persistence import SaveError, open_encrypted
 from . import windows_security as security
 
 MOVEFILE_WRITE_THROUGH = 0x8
+ADMISSION_POLICY = 'snapshot-admission-v1'
+FINAL_MERGE_STATES = frozenset({'saved', 'unchanged', 'checked', 'failed'})
 
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def file_identity(info):
+    """Volume and file index: one value for every name of the same file."""
+    return info[4], info[8], info[9]
+
+
+def read_merge_receipt(bundle, operation_id):
+    """Read a bounded receipt only from its private, correctly identified bundle."""
+    try:
+        with security.checked_handle(bundle, directory=True):
+            data, _ = security.read_private(Path(bundle) / 'receipt.json', limit=16384)
+    except pywintypes.error as exc:
+        if exc.winerror in {2, 3}:
+            raise FileNotFoundError from None
+        raise SaveError('unsafe merge receipt') from None
+    except (PermissionError, ValueError):
+        raise SaveError('unsafe merge receipt') from None
+    try:
+        receipt = json.loads(data)
+        if (len(operation_id) != 32 or any(c not in '0123456789abcdef' for c in operation_id)
+                or not isinstance(receipt, dict) or receipt.get('operation_id') != operation_id):
+            raise ValueError
+    except (ValueError, TypeError):
+        raise SaveError('invalid merge receipt') from None
+    return receipt
 
 
 def fold_name(name):
@@ -58,9 +86,20 @@ class WindowsVaultStore:
         self.keyfile_path = None
         self.keyfile_digest = None
 
+    def _write_name(self, kind, token):
+        return '.' + self.path.name + '.akdbx-' + kind + '-' + token
+
     @property
     def writable_path(self):
         """Metadata-only readiness; safe to use at the keyboard boundary."""
+        return self._writable_path()
+
+    @property
+    def merge_writable_path(self):
+        """Readiness for a merge, which may reconcile an externally edited target."""
+        return self._writable_path(merging=True)
+
+    def _writable_path(self, *, merging=False):
         if self.expected is None or self.recovery_required:
             return False
         try:
@@ -72,13 +111,16 @@ class WindowsVaultStore:
                     pass
                 with security.checked_handle(self.path) as handle:
                     info = win32file.GetFileInformationByHandle(handle)
-                    if info[0] & win32con.FILE_ATTRIBUTE_READONLY or (*info[:2], *info[3:]) != self.expected[:-1]:
+                    if info[0] & win32con.FILE_ATTRIBUTE_READONLY or (
+                            not merging and (*info[:2], *info[3:]) != self.expected[:-1]):
                         return False
                 # Every required artifact must fit both NTFS component and the
                 # supported Win32 path budget before a site password is changed.
                 longest = '.' + self.path.name + '.akdbx-commit-' + '0' * 32 + '.json'
                 if (len(longest.encode('utf-16-le')) // 2 > 255
                         or len(str(self.path.parent / longest).encode('utf-16-le')) // 2 >= 260):
+                    return False
+                if merging and not self.merge_names_fit(self.path.parent):
                     return False
                 lock_path = self.path.parent / ('.' + self.path.name + '.akdbx.lock')
                 try:
@@ -91,11 +133,24 @@ class WindowsVaultStore:
                 if self.keyfile_path is not None:
                     with security.checked_handle(self.keyfile_path) as handle:
                         info = win32file.GetFileInformationByHandle(handle)
-                        if (*info[:2], *info[3:]) != self.keyfile_expected:
+                        if not merging and (*info[:2], *info[3:]) != self.keyfile_expected:
                             return False
+                if merging:
+                    external = self.snapshot_directory()
+                    if external is not None and not self.merge_names_fit(external, replacement=False):
+                        return False
             return True
-        except (OSError, SaveError, pywintypes.error):
+        except (OSError, SaveError, pywintypes.error, ValueError):
             return False
+
+    def merge_names_fit(self, directory, *, replacement=True):
+        """Check the longest merge artifact against the NTFS and Win32 budgets."""
+        bundle = self._write_name('merge', '0' * 32)
+        names = [str(Path(directory) / bundle / 'candidate-final.kdbx')]
+        if replacement:
+            names.append(str(Path(directory) / (bundle + '.replace')))
+        return (len((bundle + '.replace').encode('utf-16-le')) // 2 <= 255
+                and all(len(name.encode('utf-16-le')) // 2 < 260 for name in names))
 
     def check_write_inputs(self):
         """Scan recovery only while holding the same disk lock as a save."""
@@ -129,6 +184,10 @@ class WindowsVaultStore:
             finally:
                 win32file.UnlockFileEx(lock, 1, 0, overlapped)
 
+    def check_current(self, snapshot):
+        if self._read()[1] != snapshot:
+            raise SaveError('vault changed on disk; restart and unlock')
+
     def _read(self):
         encrypted, identity = security.read_private(self.path)
         # Last-access time may change during a read. All other metadata and the
@@ -144,12 +203,73 @@ class WindowsVaultStore:
             self.keyfile_expected = (*info[:2], *info[3:])
 
     def _check_recovery(self):
+        """Scan the vault folder and any bound admission snapshot folder."""
+        self._scan_recovery(self.path.parent)
+        try:
+            external = self.snapshot_directory()
+        except Exception:
+            # An unreadable or foreign locator can hide an interrupted
+            # transaction. Block use; never treat it as a wrong password.
+            self.recovery_required = True
+            return
+        if external is not None:
+            try:
+                self._scan_recovery(external)
+            except SaveError:
+                raise
+            except Exception:
+                self.recovery_required = True
+
+    def snapshot_directory(self, requested=None):
+        """Persistently bind admission recovery to one private external folder.
+
+        The small nonsecret locator stays beside the target, so omitting a CLI
+        option after restart cannot hide an interrupted external transaction.
+        No encrypted originals are placed beside the canonical vault.
+        """
+        marker = self.path.parent / ('.' + self.path.name + '.akdbx-admission.json')
+        bound = None
+        try:
+            raw = security.read_private_optional(marker, limit=4096)
+        except Exception:
+            raise SaveError('unsafe admission snapshot locator; recovery required') from None
+        if raw is not None:
+            try:
+                value = json.loads(raw)
+                bound = value['snapshot_directory']
+                if value['policy'] != ADMISSION_POLICY or not isinstance(bound, str):
+                    raise ValueError
+            except Exception:
+                raise SaveError('invalid admission snapshot locator; recovery required') from None
+        if requested is None and bound is None:
+            return None
+        if requested is not None and (not isinstance(requested, str) or bound is not None and requested != bound):
+            raise SaveError('admission snapshot directory differs from durable binding; refused')
+        text = bound if bound is not None else requested
+        path = Path(text)
+        if (not path.is_absolute() or not path.drive or path.drive.startswith('\\\\') or str(path) != text
+                # Windows path comparison ignores case, as the filesystem does.
+                or '..' in path.parts or path == self.path.parent or self.path.parent in path.parents):
+            raise SaveError('admission snapshots require an absolute external directory')
+        # The same ancestry checks as vault writes; the folder itself is private.
+        try:
+            with security.trusted_directory(path.parent):
+                with security.checked_handle(path, directory=True):
+                    pass
+        except (OSError, pywintypes.error):
+            raise SaveError('admission snapshot directory must be private to this user') from None
+        if bound is None:
+            security.write_new(marker, json.dumps({'snapshot_directory': str(path),
+                                                   'policy': ADMISSION_POLICY}).encode())
+        return path
+
+    def _scan_recovery(self, directory):
         """Bound recovery artifact reads without counting unrelated files."""
         # Windows filenames are case-insensitive: Vault.kdbx and vault.kdbx open
         # the same file, so their recovery artifacts must match either spelling.
         prefix = fold_name('.' + self.path.name + '.akdbx-')
         matched = 0
-        with os.scandir(self.path.parent) as entries:
+        with os.scandir(directory) as entries:
             for entry in entries:
                 name = fold_name(entry.name)
                 if not name.startswith(prefix):
@@ -157,7 +277,7 @@ class WindowsVaultStore:
                 matched += 1
                 if matched > 10000:
                     raise SaveError('Windows recovery directory exceeds the scan budget')
-                path = self.path.parent / entry.name
+                path = Path(directory) / entry.name
                 if name.startswith(prefix + 'COMMIT-') and name.endswith('.JSON'):
                     try:
                         data, _ = security.read_private(path, limit=16384)
@@ -172,12 +292,16 @@ class WindowsVaultStore:
                                    for key in ('previous_sha256', 'candidate_sha256'))):
                         self.recovery_required = True
                 elif name.startswith(prefix + 'MERGE-'):
-                    # Never hide a transaction made by the Linux backend.
-                    self.recovery_required = True
-        # An admission binding means recovery may live elsewhere. Windows does
-        # not implement this protocol and must not silently ignore its locator.
-        if (self.path.parent / ('.' + self.path.name + '.akdbx-admission.json')).exists():
-            self.recovery_required = True
+                    if name.endswith('.REPLACE'):
+                        continue  # A staged encrypted copy; its bundle decides.
+                    # An interrupted merge stays blocked across restarts. A
+                    # bundle this backend cannot verify blocks use too.
+                    try:
+                        receipt = read_merge_receipt(path, entry.name[len(prefix) + len('merge-'):].lower())
+                        if receipt.get('state') not in FINAL_MERGE_STATES:
+                            self.recovery_required = True
+                    except Exception:
+                        self.recovery_required = True
 
     def open(self, password, keyfile=None):
         with security.trusted_directory(self.path.parent):

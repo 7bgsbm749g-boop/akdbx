@@ -2,6 +2,8 @@
 
 Linux, on the broker's machine only. Build/install commands are explicit; merely
 importing this module does not touch Chrome, its profile, or the running broker.
+Windows refuses the commands: its private page has no peer-authenticated local
+channel for a helper process, and the HTTPS import page covers the same need.
 """
 from __future__ import annotations
 
@@ -165,6 +167,12 @@ def install_host(args):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if os.name == 'nt' and argv and not argv[0].startswith('chrome-extension://'):
+        # The capture channel is a Unix socket that proves the peer's user.
+        # The Windows private page has no such channel for a helper process.
+        print('The browser native host is Linux-only. On Windows use the private HTTPS import page of setup-totp.',
+              file=sys.stderr)
+        return 1
     if not argv or argv[0].startswith('chrome-extension://'):
         try:
             config = load_config(config_path())

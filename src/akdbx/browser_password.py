@@ -3,7 +3,8 @@
 CDP is a privileged local interface. The operator selects the profile at broker
 startup, never through RPC. Hostile pages/OS and other local debugging clients
 are outside this boundary. Unsupported frames/controls fail closed. Child frames
-need the explicit same-site route proof in `password_frames`.
+need the explicit same-site route proof in `password_frames`. Linux and Windows
+share the DOM contract; only the profile and peer checks are per platform.
 """
 from __future__ import annotations
 
@@ -45,6 +46,12 @@ def frame_url(frame):
 def endpoint(profile):
     if profile is None:
         raise TargetError()
+    if os.name == 'nt':
+        from . import windows_browser
+        try:
+            return windows_browser.endpoint(profile)
+        except Exception:
+            raise TargetError() from None
     path = Path(os.path.abspath(os.fspath(profile)))
     # Do not follow a substituted profile or ancestor symlink.
     for item in [*reversed(path.parents), path]:
@@ -79,7 +86,15 @@ def verify_peer(connection):
     connect. The reciprocal ESTABLISHED tuple identifies this actual peer. Keep
     this socket for the WebSocket handshake; never reconnect or follow redirects.
     Missing, ambiguous, oversized or slow tables refuse before sending data.
+    Windows proves the same fact with the kernel's TCP owner table and the
+    owning process's user and desktop session.
     """
+    if os.name == 'nt':
+        from . import windows_browser
+        try:
+            return windows_browser.verify_peer(connection)
+        except Exception:
+            raise TargetError() from None
     local, remote = connection.getsockname(), connection.getpeername()
     if connection.family != socket.AF_INET or local[0] != '127.0.0.1' or remote[0] != '127.0.0.1':
         raise TargetError()

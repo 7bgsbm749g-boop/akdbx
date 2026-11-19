@@ -19,7 +19,7 @@ from typing import Callable, Protocol
 
 from .target import TargetPins, TargetError, DeliveryError, DELIVERY, capabilities as target_capabilities, failure as target_failure
 from .writes import WriteManager, WriteError, sso_capabilities, passwordless_capabilities, passwordless_identity
-from .merge import MergeManager, MergeError
+from .merge import MergeError, create_manager as create_merge_manager
 from .persistence import SaveError
 from .versions import active_entries
 from .totp import (MIN_VALIDITY, TotpError, capabilities as totp_capabilities,
@@ -106,7 +106,7 @@ class Broker:
         self.writes = WriteManager(self)
         self.cards = CardManager(self)
         self.card_targets = BrowserCards(card_browser_profile, clock=clock)
-        self.merges = MergeManager(self)
+        self.merges = create_merge_manager(self)
         self.unlock_url: str | None = None
         self.unlock_notifications = UnlockNotifications(state_path=notification_state_path)
         self.card_save_notifications = CardSaveNotifications(

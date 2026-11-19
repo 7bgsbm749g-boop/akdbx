@@ -17,6 +17,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 
 MAX_SUBSCRIPTIONS = 64
+_MISSING = object()
 DELIVERY_TIMEOUT = 4
 MAX_ATTEMPTS = 3
 MAX_DELIVERY_INPUT = 16 * 1024
@@ -108,24 +109,56 @@ class UnlockNotifications:
             raise ValueError('invalid notification state path')
         return prepare_private_runtime_directory(self._state_path.parent)[1]
 
-    def _restore(self):
-        if self._state_path is None:
-            return
+    def _windows_state(self, *, create):
+        """Verify the private state folder; create it only to save a subscription.
+
+        An existing folder is never re-permissioned. A broker without
+        subscriptions leaves no folder or file behind.
+        """
+        from . import windows_security
+        if not self._state_path.is_absolute() or self._state_path.name in {'', '.', '..'}:
+            raise ValueError('invalid notification state path')
+        if not create and not self._state_path.parent.exists():
+            return None
+        windows_security.ensure_private_directory(self._state_path.parent)
+        return windows_security
+
+    def _load(self):
+        """Return the saved rows, or _MISSING when no state file exists."""
+        if os.name == 'nt':
+            try:
+                state = self._windows_state(create=False)
+                raw = None if state is None else state.read_private_optional(self._state_path, limit=512 * 1024)
+            except ValueError:
+                raise
+            except Exception:
+                raise ValueError('invalid notification state') from None
+            return _MISSING if raw is None else json.loads(raw)
         directory = self._directory()
         try:
             try:
                 fd = os.open(self._state_path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                              dir_fd=directory)
             except FileNotFoundError:
-                return
+                return _MISSING
             try:
                 info = os.fstat(fd)
                 if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                         or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 512 * 1024):
                     raise ValueError('invalid notification state')
-                data = json.loads(os.read(fd, 512 * 1024 + 1))
+                return json.loads(os.read(fd, 512 * 1024 + 1))
             finally:
                 os.close(fd)
+        finally:
+            os.close(directory)
+
+    def _restore(self):
+        if self._state_path is None:
+            return
+        try:
+            data = self._load()
+            if data is _MISSING:
+                return
             if not isinstance(data, list) or len(data) > MAX_SUBSCRIPTIONS:
                 raise ValueError('invalid notification state')
             for row in data:
@@ -141,8 +174,6 @@ class UnlockNotifications:
                     self._items[key] = item
         except (KeyError, TypeError, json.JSONDecodeError):
             raise ValueError('invalid notification state') from None
-        finally:
-            os.close(directory)
 
     def _restore_item(self, row, item):
         """Unlock waits become ready only after this broker accepts the vault."""
@@ -162,6 +193,18 @@ class UnlockNotifications:
         rows = [self._row(key, item)
                 for key, item in self._items.items() if item.expires_at is None and
                 item.state in {'subscribed', 'pending', 'sending'}]
+        if os.name == 'nt':
+            # The callback URLs stay in a file that only this user and SYSTEM
+            # can open. A failure keeps the previous complete state file.
+            try:
+                if not rows and not self._state_path.exists():
+                    return  # Nothing was ever saved: write nothing.
+                self._windows_state(create=True).replace_private(self._state_path, json.dumps(rows).encode())
+            except OSError:
+                raise
+            except Exception:
+                raise OSError('notification state could not be saved') from None
+            return
         directory = self._directory()
         name = '.unlock-notifications-' + uuid.uuid4().hex
         try:

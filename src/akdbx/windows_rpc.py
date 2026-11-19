@@ -171,6 +171,8 @@ def serve(path, broker, stop=None):
             slots.release()
 
     try:
+        # Restored card-save results go out only when the endpoint is ready.
+        broker.card_save_notifications.resume()
         while stop is None or not stop.is_set():
             event = win32event.CreateEvent(None, True, False, None)
             overlapped = pywintypes.OVERLAPPED()
@@ -224,6 +226,7 @@ def serve(path, broker, stop=None):
     finally:
         pending.Close()
         broker.unlock_notifications.close()
+        broker.card_save_notifications.close()
         with lock:
             active = list(workers)
         deadline = time.monotonic() + CONNECTION_TIMEOUT + 0.2

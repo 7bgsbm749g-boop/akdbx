@@ -565,9 +565,11 @@ class Harness:
             code, body, _ = self.cli('fill', handle, '--mode', 'username', '--target', pin['target'])
             self.check('3', 'a pin expires after 30 seconds', code != 0 and a.report()[0]['sha256'] == empty,
                        f'code={code}')
-        # Combined login fill is refused by the Windows CLI before sending.
-        code, _, error = self.cli('fill', self.select('Desktop ASCII')['handle'], '--mode', 'login', '--target', '0' * 64)
-        self.check('3', 'combined login fill is refused on Windows', code == 2 and 'only usernames' in error)
+        # This broker has no password browser profile. The CLI checks that
+        # capability and refuses a login fill before it sends the request.
+        code, body, error = self.cli('fill', self.select('Desktop ASCII')['handle'], '--mode', 'login', '--target', '0' * 64)
+        self.check('3', 'login fill without a password browser profile is refused before dispatch',
+                   code == 1 and 'no password browser profile' in (body or {}).get('error', ''), error)
         # Hung target window: pinned, then its GUI thread stops pumping messages.
         a.send('clear')
         if self._front(a, 0):

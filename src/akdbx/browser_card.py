@@ -45,6 +45,12 @@ def secure_url(value):
 def browser_endpoint(profile):
     # Reuse the broker's anchored, owned, private-directory policy. The profile
     # is local deployment configuration, never supplied by a fill RPC.
+    if os.name == 'nt':
+        from . import windows_browser
+        try:
+            return windows_browser.endpoint(profile)
+        except Exception:
+            raise CardTargetError() from None
     _, directory = open_private_runtime_directory(Path(profile))
     try:
         fd = os.open('DevToolsActivePort', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -69,7 +75,15 @@ def verify_peer(connection):
     A pre-connect listener check races port reuse. Match the reciprocal
     ESTABLISHED tuple instead, before sending any WebSocket bytes, and keep
     this exact connection. Missing, ambiguous or oversized kernel data refuses.
+    Windows proves the same fact with the kernel's TCP owner table and the
+    owning process's user and desktop session.
     """
+    if os.name == 'nt':
+        from . import windows_browser
+        try:
+            return windows_browser.verify_peer(connection)
+        except Exception:
+            raise CardTargetError() from None
     local, remote = connection.getsockname(), connection.getpeername()
     if (connection.family != socket.AF_INET or local[0] != '127.0.0.1'
             or remote[0] != '127.0.0.1'):
