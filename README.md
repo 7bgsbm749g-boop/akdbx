@@ -121,7 +121,7 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
-### Identity and address records (0.18.1)
+### Identity and address records (0.18.2)
 
 `create-identity --title LABEL --group EXISTING_GROUP` returns a private HTTPS
 save page for contact and postal details. The personal fields are protected

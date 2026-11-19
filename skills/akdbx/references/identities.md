@@ -1,4 +1,4 @@
-# Save and fill identity details (0.18.1)
+# Save and fill identity details (0.18.2)
 
 Require `identity_protocol: 1` and `identity_delivery: "cdp-identity-element-v1"`
 from `akdbx status`. Delivery also requires `identity_browser_configured: true`.
