@@ -27,6 +27,7 @@ from . import card_cli
 # Reserved example domain: deployment addresses belong in local configuration.
 DEFAULT_UNLOCK_ORIGIN = "https://unlock.example.invalid:9443"
 IDENTITY_CREATES = ('create-sso-entry', 'create-passwordless-entry')
+URL_CHANGES = ('add-url', 'remove-url')
 
 
 def default_socket() -> Path:
@@ -171,7 +172,7 @@ def _request_timeout(payload: dict) -> int:
     # Frame routes resolve bounded out-of-process iframe targets first.
     slow = action == 'pin-card-target' or action == 'list-password-frames' or (
         action == 'pin-password-target' and 'frame_origin' in payload)
-    return 240 if action in (*IDENTITY_CREATES, 'commit-password') else 15 if slow else 5
+    return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password') else 15 if slow else 5
 
 
 def request(
@@ -194,6 +195,14 @@ def request(
     broker_uid = os.getuid() if broker_uid is None else broker_uid
     socket_path, runtime_fd = _validate_socket_path(socket_path, broker_uid)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    if payload.get('action') in {'merge', 'admit'}:
+        timeout = 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
+    else:
+        # Frame routes resolve bounded out-of-process iframe targets first.
+        slow = payload.get('action') == 'pin-card-target' or payload.get('action') == 'list-password-frames' or (
+            payload.get('action') == 'pin-password-target' and 'frame_origin' in payload)
+        timeout = 240 if payload.get('action') in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password') else 15 if slow else 5
+                return 1
     client.settimeout(timeout)
     try:
         client.connect(anchored_socket_path(runtime_fd, socket_path.name))
@@ -315,6 +324,13 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument('--symbols', default='!@#$%*-_+=?', help='allowed ASCII punctuation; empty for letters and digits')
         if name == 'setup-totp':
             command.add_argument('--replace', action='store_true', help='explicitly permit replacing this entry\'s existing authenticator')
+    for name in URL_CHANGES:
+        help_text = ('metadata-only: let a selected entry fill on one more exact HTTPS origin (KeePassXC Additional URL); '
+                     'the origin must be on the same site (registrable domain) as the saved URL'
+                     if name == 'add-url' else 'metadata-only: remove one additional exact HTTPS origin from a selected entry')
+        command = commands.add_parser(name, help=help_text, description=help_text)
+        command.add_argument('--url', required=True, help='exact HTTPS origin, for example https://login.example.com/')
+        command.add_argument('handle', help='fresh selected-entry handle from search')
     for name in ('write-status', 'cancel-write', 'commit-password'):
         command = commands.add_parser(name, help='check/cancel a staged write' if name != 'commit-password' else 'save staged password after verified website acceptance')
         command.add_argument('write_handle')
@@ -533,6 +549,8 @@ def main(argv: list[str] | None = None) -> int:
             payload['auth_method'] = args.auth_method
         if args.command == 'setup-totp':
             payload['replace'] = args.replace
+    elif args.command in URL_CHANGES:
+        payload.update(handle=args.handle, url=args.url, additional_urls_protocol=1)
     elif args.command in {'write-status', 'cancel-write', 'commit-password'}:
         payload['write_handle'] = args.write_handle
         if args.command == 'commit-password':
@@ -637,6 +655,14 @@ def main(argv: list[str] | None = None) -> int:
                 minimum = '0.8.1' if args.command == 'create-sso-entry' else '0.9.1'
                 print(json.dumps({'ok': False, 'error': f'broker lacks {identity_kind} identity protocol 1 for the requested method; require broker {minimum} or newer; {identity_kind} creation not sent'}))
                 return 1
+        if args.command in URL_CHANGES:
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True or type(capabilities.get('additional_urls_protocol')) is not int
+                    or capabilities['additional_urls_protocol'] != 1
+                    or capabilities.get('additional_urls_policy') != 'kp2a-exact-origin-v1'):
+                print(json.dumps({'ok': False, 'error': 'broker lacks additional URL protocol 1; require broker 0.18.0 or newer; change not sent'}))
+                return 1
         if os.name == 'nt' and args.command in {'merge', 'admit'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -685,6 +711,8 @@ def main(argv: list[str] | None = None) -> int:
             print(_mutation_not_sent(args.command, exc), file=sys.stderr)
         elif args.command in {'merge', 'admit'}:
             print('merge outcome unconfirmed: broker response rejected; use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
+        elif args.command in URL_CHANGES:
+            print('additional URL save outcome unconfirmed: broker response rejected; search before any retry', file=sys.stderr)
         elif args.command in IDENTITY_CREATES:
             print(f'{identity_kind} save outcome unconfirmed: broker response rejected; check status and search before any retry', file=sys.stderr)
         elif args.command in {'fill', 'fill-generated', 'fill-totp'}:
@@ -704,6 +732,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == 'commit-password':
             print('save outcome uncertain: check write-status before any retry; do not reset the site again', file=sys.stderr)
+        elif args.command in URL_CHANGES:
+            print('additional URL save outcome uncertain: search to check the entry before any retry', file=sys.stderr)
         elif args.command in IDENTITY_CREATES:
             print(f'{identity_kind} save outcome uncertain: check status and search before any retry; do not create another record automatically', file=sys.stderr)
         elif args.command in {'merge', 'admit'}:
@@ -755,6 +785,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {'merge', 'admit'} and response.get('error') == 'vault locked':
         response['continuation'] = 'Open unlock_url privately, then repeat the same command, policy and operation ID.'
         response['operation_id'] = payload['operation_id']
+    if args.command in URL_CHANGES and response.get('ok') and (
+            set(response) != {'ok', 'state', 'metadata', 'additional_urls', 'changed', 'url'}
+            or response.get('state') != 'saved'
+            or response.get('changed') != ('added' if args.command == 'add-url' else 'removed')
+            or response.get('url') != args.url.rstrip('/') + '/'
+            or not isinstance(response.get('additional_urls'), list)
+            or not all(isinstance(url, str) for url in response['additional_urls'])
+            or (response['url'].rstrip('/') in response['additional_urls']) != (args.command == 'add-url')):
+        print('additional URL save outcome unconfirmed: receipt rejected; search before any retry', file=sys.stderr)
+        return 2
     if args.command in IDENTITY_CREATES and response.get('ok') and (
             response.get('state') != 'saved' or response.get('passwordless') is not True
             or response.get('auth_method') != args.auth_method or response.get('metadata') != payload['metadata']):

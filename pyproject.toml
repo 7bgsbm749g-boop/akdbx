@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "akdbx"
-version = "0.17.0"
+version = "0.18.0"
 description = "A secret-withholding KeePass autofill broker for local agents"
 requires-python = ">=3.11"
 dependencies = [
@@ -28,7 +28,7 @@ Issues = "https://github.com/7bgsbm749g-boop/akdbx/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-akdbx = ["import_assets/*", "browser_extension/*"]
+akdbx = ["import_assets/*", "browser_extension/*", "public_suffix_assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

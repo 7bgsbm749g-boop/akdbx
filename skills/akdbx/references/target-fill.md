@@ -206,6 +206,38 @@ The private exact-URL limit also applies to `--top-url`. The broker keeps the
 frame's exact URL internally; the caller does not give it, and the broker does
 not show it.
 
+### Additional exact origins (0.18.0)
+
+The field frame's origin must equal the saved credential's main URL origin or
+one of its KeePassXC/KeePass2Android additional URLs (custom string fields
+`KP2A_URL`, `KP2A_URL_1`, `KP2A_URL_2`, …). Broker 0.18.0 advertises integer
+`additional_urls_protocol: 1` and `additional_urls_policy:
+"kp2a-exact-origin-v1"`. Search returns the valid ones as `additional_urls`.
+Each value counts only as its exact `(https, host, port)` origin; http values,
+wildcards, unparsable text and credentials in a URL grant nothing. The same
+rule applies to main-frame pins and to `fill-totp --target-url`. Generated
+passwords still use only the staged main URL.
+
+If the main URL is `https://example.com/` and the login iframe is
+`https://secure.example.com`, the fill refuses until the user authorizes
+adding that origin:
+
+```bash
+akdbx add-url --url https://secure.example.com/ -- FRESH_HANDLE
+```
+
+`add-url` and `remove-url` are metadata-only writes (see
+[password writes](password-writes.md#additional-urls-0180)). They accept only
+an exact HTTPS origin on the saved URL's site (same registrable domain).
+
+Why exact origin is still required: browsers isolate documents by origin, not
+by site. Another host or port on the same site can be a separately operated
+service, a user-content host or a compromised legacy app. Matching a site or a
+suffix would give the password to every such document. An explicit list keeps
+each extra origin a deliberate, reviewable decision. Listing an origin does
+not relax the frame rules: a cross-site frame chain still refuses, even when
+the user has listed a cross-site origin in KeePassXC.
+
 ### Password inputs without semantic autofill hints
 
 Some login forms omit `autocomplete` or set it to `on`. The default still

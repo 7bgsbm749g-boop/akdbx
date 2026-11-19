@@ -18,7 +18,8 @@ from threading import Event
 from typing import Callable, Protocol
 
 from .target import TargetPins, TargetError, DeliveryError, DELIVERY, capabilities as target_capabilities, failure as target_failure
-from .writes import WriteManager, WriteError, sso_capabilities, passwordless_capabilities, passwordless_identity
+from .writes import (WriteManager, WriteError, sso_capabilities, passwordless_capabilities, passwordless_identity,
+                     additional_origins, additional_urls, additional_urls_capabilities, allowed_origins)
 from .merge import MergeError, create_manager as create_merge_manager
 from .persistence import SaveError
 from .versions import active_entries
@@ -218,7 +219,7 @@ class Broker:
         if action in {'fill', 'fill-generated', 'fill-totp', 'fill-card'} and delivery_ready is None and 'start_deadline' not in request:
             request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
         # Search and write operations observe a consistent vault/revision.
-        if action in {"pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated", "create-card", "update-card", "search-cards", "pin-card-target", "fill-card"}:
+        if action in {"pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated", "add-url", "remove-url", "create-card", "update-card", "search-cards", "pin-card-target", "fill-card"}:
             with self._vault_lock:
                 return self._dispatch(request, delivery_ready=delivery_ready)
         return self._dispatch(request, delivery_ready=delivery_ready)
@@ -235,7 +236,7 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -260,6 +261,13 @@ class Broker:
             return self.cards.dispatch(request, delivery_ready)
         if action in {'merge', 'admit'}:
             return self.merges.begin(request)
+        if action in {'add-url', 'remove-url'}:
+            try:
+                return self.writes.change_additional_url(request)
+            except (WriteError, SaveError) as exc:
+                return {'ok': False, 'error': str(exc)}
+            except Exception:
+                return {'ok': False, 'error': 'additional URL save failed; vault update not confirmed'}
         if action in {'create-sso-entry', 'create-passwordless-entry'}:
             try:
                 return (self.writes.create_sso(request) if action == 'create-sso-entry'
@@ -306,7 +314,8 @@ class Broker:
                         ):
                             continue
                         group = "/".join(path[:-1]) if path else ""
-                        metadata = (title, username, url, group)
+                        extra = additional_urls(entry)
+                        metadata = (title, username, url, group, *extra)
                         is_match = not needle or any(needle in value.casefold() for value in metadata)
                     except Exception:
                         # A malformed/inaccessible entry must not disable
@@ -323,6 +332,8 @@ class Broker:
                         "url": url,
                         "group": group,
                     }
+                    if extra:
+                        candidate["additional_urls"] = extra
                     identity = passwordless_identity(entry)
                     if identity:
                         candidate.update(identity)
@@ -412,7 +423,9 @@ class Broker:
                     # may take time, so neither is itself the delivery boundary.
                     code_valid = lambda: True
                     if mode == 'totp':
-                        if https_origin(request.get('target_url')) != https_origin(entry.url):
+                        # Main URL or an exact KP2A_URL* origin; nothing broader.
+                        target_origin = https_origin(request.get('target_url'))
+                        if target_origin not in additional_origins(entry) and target_origin != https_origin(entry.url):
                             return {'ok': False, 'error': 'autofill not started: TOTP target site mismatch'}
                         configuration = read_configuration(entry)
                         now = self.wall_clock()
@@ -448,7 +461,7 @@ class Broker:
                         if mode == 'totp':
                             raise DeliveryError(False)
                         self.passwords.deliver(target, mode, username if mode != 'password' else '',
-                                               password if mode != 'username' else '', entry.url, ready, start_deadline)
+                                               password if mode != 'username' else '', allowed_origins(entry), ready, start_deadline)
                     elif mode == 'totp':
                         self.typer.deliver(target, steps, ready, guard=code_valid)
                         if not code_valid():

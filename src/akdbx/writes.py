@@ -99,6 +99,101 @@ def passwordless_identity(entry):
     return dict(passwordless=True, auth_method=method if method in SSO_AUTH_METHODS + PASSWORDLESS_AUTH_METHODS else 'unknown')
 
 
+ADDITIONAL_URLS_PROTOCOL = 1
+ADDITIONAL_URLS_POLICY = 'kp2a-exact-origin-v1'
+ADDITIONAL_URL_KEY = re.compile(r'KP2A_URL(?:_[1-9][0-9]{0,3})?')
+MAX_ADDITIONAL_URLS = 32
+
+
+def additional_urls_capabilities():
+    return dict(additional_urls_protocol=ADDITIONAL_URLS_PROTOCOL, additional_urls_policy=ADDITIONAL_URLS_POLICY)
+
+
+def _serialize_origin(origin):
+    _, host, port = origin
+    return 'https://' + (f'[{host}]' if ':' in host else host) + ('' if port == 443 else f':{port}')
+
+
+def _additional_fields(entry):
+    """Return [(key, value)] of KeePassXC/KP2A additional URL strings, in key order."""
+    element = getattr(entry, '_element', None)
+    if element is None:
+        return []
+    fields = []
+    for string_element in element.findall('./String'):
+        key = string_element.findtext('Key')
+        if isinstance(key, str) and ADDITIONAL_URL_KEY.fullmatch(key):
+            fields.append((key, string_element.findtext('Value') or ''))
+    fields.sort(key=lambda item: -1 if item[0] == 'KP2A_URL' else int(item[0][9:]))
+    return fields
+
+
+def _optional_origin(url):
+    try:
+        origin = https_origin(url)
+    except Exception:
+        return None
+    # KeePassXC-Browser reads '*' as a wildcard; never treat it as a literal host.
+    return None if '*' in origin[1] else origin
+
+
+def additional_origins(entry):
+    """Exact HTTPS origins from KP2A_URL* fields; invalid, http or wildcard values grant nothing."""
+    origins = []
+    for _, value in _additional_fields(entry)[:MAX_ADDITIONAL_URLS]:
+        origin = _optional_origin(value)
+        if origin is not None and origin not in origins:
+            origins.append(origin)
+    return origins
+
+
+def additional_urls(entry):
+    """Non-secret search metadata: canonical additional origins."""
+    return [_serialize_origin(origin) for origin in additional_origins(entry)]
+
+
+def allowed_origins(entry):
+    """The exact HTTPS origins a credential may be delivered to: main URL plus KP2A_URL*."""
+    main = _optional_origin(getattr(entry, 'url', None) or '')
+    return {*([main] if main is not None else []), *additional_origins(entry)}
+
+
+def _additional_origin_input(value):
+    """Accept only an exact HTTPS origin, optionally with one trailing '/'."""
+    from .password_frames import canonical_origin
+    if not isinstance(value, str) or not 0 < len(value) <= 512:
+        raise WriteError('additional URL must be an exact HTTPS origin such as https://login.example.com/')
+    try:
+        serialized = canonical_origin(value[:-1] if value.endswith('/') else value)
+        if '*' in serialized:
+            raise ValueError
+    except Exception:
+        raise WriteError('additional URL must be an exact HTTPS origin such as https://login.example.com/') from None
+    return serialized, https_origin(serialized)
+
+
+def _same_owner_host(main, new):
+    """Agent-added origins stay on the saved URL's site (same registrable domain).
+
+    The registrable domain comes from the vendored Public Suffix List,
+    including private suffixes such as github.io, so another user's subdomain
+    is never the same site. A saved host that is itself a public suffix, or an
+    IP literal, permits only its own exact host. Other origins must be added
+    by the user in KeePassXC.
+    """
+    from .public_suffix import registrable_domain
+    main_host, new_host = main[1], new[1]
+    if main_host == new_host:
+        return True
+    site = registrable_domain(main_host)
+    try:
+        ipaddress.ip_address(main_host)
+        site = None
+    except ValueError:
+        pass
+    return site is not None and registrable_domain(new_host) == site
+
+
 def validate_identity_metadata(values, kind):
     try:
         if not isinstance(values, dict) or any(
@@ -373,6 +468,89 @@ class WriteManager:
             raise WriteError('save failed; vault update not confirmed') from None
         self.invalidate_revision()
         return dict(ok=True, state='saved', metadata=dict(values), auth_method=method, passwordless=True)
+
+    def change_additional_url(self, request):
+        """Metadata-only add/remove of one KP2A_URL* origin; never reads or changes the password."""
+        adding = request.get('action') == 'add-url'
+        if (set(request) != {'action', 'handle', 'url', 'additional_urls_protocol'}
+                or type(request.get('additional_urls_protocol')) is not int
+                or request['additional_urls_protocol'] != ADDITIONAL_URLS_PROTOCOL):
+            raise WriteError('additional URL changes accept only a fresh handle and one HTTPS origin')
+        serialized, origin = _additional_origin_input(request.get('url'))
+        try:
+            entry = self.broker._resolve(request.get('handle'))
+        except ValueError:
+            raise WriteError('unknown or expired handle; search again') from None
+        from .cards import is_card
+        if is_card(entry):
+            raise WriteError('card record has no site URLs')
+        self._require_available()
+        vault = self.broker.vault
+        uuid, values = entry.uuid, metadata(entry)
+        if sum(e.uuid == uuid for e in active_entries(vault)) != 1:
+            raise WriteError('entry metadata mismatch; search again')
+
+        def check(selected):
+            main = _optional_origin(selected.url or '')
+            if main is None:
+                raise WriteError('entry needs an HTTPS site URL before additional URLs can be changed')
+            present = [key for key, value in _additional_fields(selected) if _optional_origin(value) == origin]
+            if adding:
+                if origin == main or present:
+                    raise WriteError('duplicate URL; origin already allowed for this entry')
+                if not _same_owner_host(main, origin):
+                    raise WriteError('additional URL must be on the same site as the saved URL; '
+                                     'add other origins in KeePassXC')
+                if len(_additional_fields(selected)) >= MAX_ADDITIONAL_URLS:
+                    raise WriteError('too many additional URLs on this entry')
+            elif not present:
+                raise WriteError('additional URL not found on this entry')
+            return present
+
+        check(entry)
+        _entry_write_clock(entry, self.broker.wall_clock)
+
+        def selected(candidate):
+            entries = [e for e in active_entries(candidate) if e.uuid == uuid]
+            if len(entries) != 1 or metadata(entries[0]) != values:
+                raise WriteError('entry changed; search again')
+            return entries[0]
+
+        password = entry.password
+
+        def mutate(candidate):
+            target = selected(candidate)
+            present = check(target)
+            changed_at = _entry_changed_at(target, self.broker.wall_clock)
+            target.save_history()
+            if adding:
+                used = {key for key, _ in _additional_fields(target)}
+                key = next(k for k in ('KP2A_URL', *(f'KP2A_URL_{n}' for n in range(1, MAX_ADDITIONAL_URLS + 1)))
+                           if k not in used)
+                target.set_custom_property(key, serialized + '/')
+            else:
+                for key in present:
+                    target.delete_custom_property(key)
+            target.mtime = changed_at
+
+        def verify_saved(candidate):
+            target = selected(candidate)
+            if (target.password != password
+                    or (origin in additional_origins(target)) != adding):
+                raise WriteError('additional URL save verification failed; vault update not confirmed')
+
+        try:
+            self.broker.vault = vault._akdbx_store.commit(vault, mutate, verify_candidate=verify_saved)
+        except (SaveError, WriteError):
+            raise
+        except Exception:
+            raise WriteError('save failed; vault update not confirmed') from None
+        finally:
+            password = None
+        self.invalidate_revision()
+        saved = selected(self.broker.vault)
+        return dict(ok=True, state='saved', metadata=values, additional_urls=additional_urls(saved),
+                    changed='added' if adding else 'removed', url=serialized + '/')
 
     def begin(self, request):
         entry = None

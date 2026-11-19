@@ -488,3 +488,104 @@ def test_failed_pin_releases_owner_tracking(lab, monkeypatch):
         assert broker.dispatch(request(lab, top, fid, origin))['ok']
     finally:
         broker.passwords.close()
+
+
+# --- KeePassXC/KP2A additional URLs -------------------------------------------------------
+
+def broker_with_additional(env, main, *additional):
+    from lxml import etree
+    element = etree.Element('Entry')
+    for index, url in enumerate(additional):
+        string = etree.SubElement(element, 'String')
+        etree.SubElement(string, 'Key').text = 'KP2A_URL' + (f'_{index}' if index else '')
+        etree.SubElement(string, 'Value').text = url
+    entry = Entry(username=USERNAME, password=SECRET, url=main)
+    entry._element = element
+    return Broker(Vault([entry]), X11Typer(), password_browser_profile=env.profile)
+
+
+def main_frame_request(env, url, frame_id, mode='password'):
+    value = dict(action='pin-password-target', password_protocol=1, page_id=env.page, frame_id=frame_id, top_url=url,
+                 selector='#username' if mode == 'username' else '#password', mode=mode)
+    if mode == 'login':
+        value['username_selector'] = '#username'
+    return value
+
+
+@pytest.mark.parametrize('top,origin', [
+    ('https://login.example.com/oopif', 'https://auth.example.com'),
+    ('https://login.example.com/inproc', 'https://sso.example.com'),
+    ('https://login.example.com/nested', 'https://auth.example.com'),
+])
+@pytest.mark.parametrize('mode', ['password', 'login'])
+def test_child_frame_fill_on_additional_origin(lab, top, origin, mode, monkeypatch):
+    fid = navigate(lab, top, origin)
+    broker = broker_with_additional(lab, 'https://login.example.com/', origin + '/')
+    monkeypatch.setattr(broker.typer, 'deliver', lambda *a, **k: pytest.fail('keyboard fallback attempted'))
+    try:
+        focus(lab, fid, 'password' if mode == 'password' else 'username')
+        pin = broker.dispatch(request(lab, top, fid, origin, mode))
+        assert pin['ok'], pin
+        assert fill(broker, pin, mode) == dict(ok=True, filled=mode, target_delivery=DELIVERY)
+        assert values(lab, fid) == [USERNAME if mode == 'login' else '', SECRET]
+        assert top_eval(lab, "Array.from(document.querySelectorAll('input')).every(e => !e.value)")
+    finally:
+        broker.passwords.close()
+
+
+@pytest.mark.parametrize('url,origin', [
+    ('https://login.example.com/form', 'https://login.example.com'),  # main origin
+    ('https://auth.example.com/form', 'https://auth.example.com'),    # additional origin
+])
+def test_main_frame_fill_on_main_or_additional_origin(lab, url, origin):
+    fid = navigate(lab, url, origin)
+    broker = broker_with_additional(lab, 'https://login.example.com/', 'https://auth.example.com/')
+    try:
+        focus(lab, fid)
+        pin = broker.dispatch(main_frame_request(lab, url, fid))
+        assert pin['ok'], pin
+        assert fill(broker, pin) == dict(ok=True, filled='password', target_delivery=DELIVERY)
+        assert values(lab, fid) == ['', SECRET]
+    finally:
+        broker.passwords.close()
+
+
+@pytest.mark.parametrize('route', ['child', 'main'])
+def test_unlisted_origin_refuses_without_any_value(lab, route):
+    # The credential lists login + auth; the field is on sso (same site, not listed).
+    if route == 'child':
+        top, origin = 'https://login.example.com/inproc', 'https://sso.example.com'
+        fid = navigate(lab, top, origin)
+        pin_request = request(lab, top, fid, origin)
+    else:
+        top = 'https://sso.example.com/form'
+        fid = navigate(lab, top, 'https://sso.example.com')
+        pin_request = main_frame_request(lab, top, fid)
+    broker = broker_with_additional(lab, 'https://login.example.com/', 'https://auth.example.com/')
+    try:
+        focus(lab, fid)
+        pin = broker.dispatch(pin_request)
+        assert pin['ok'], pin  # The pin binds the frame; the credential check refuses at fill.
+        assert fill(broker, pin) == failure()
+        assert values(lab, fid) == ['', ''] and not secret_anywhere(lab)
+    finally:
+        broker.passwords.close()
+
+
+@pytest.mark.parametrize('top,origin,additional', [
+    # Even a user-listed cross-site origin cannot fill inside a cross-site frame chain.
+    ('https://login.example.com/hostile-child', 'https://evil.example.net', 'https://evil.example.net/'),
+    # A hostile top page embedding a listed login frame refuses.
+    ('https://evil.example.net/hostile-top', 'https://auth.example.com', 'https://auth.example.com/'),
+    # A hostile middle frame between the saved top and a listed login frame refuses.
+    ('https://login.example.com/hostile-middle', 'https://auth.example.com', 'https://auth.example.com/'),
+])
+def test_additional_origins_keep_phishing_chain_refusals(lab, top, origin, additional):
+    fid = navigate(lab, top, origin)
+    broker = broker_with_additional(lab, 'https://login.example.com/', additional)
+    try:
+        focus(lab, fid)
+        assert broker.dispatch(request(lab, top, fid, origin)) == failure()
+        assert values(lab, fid) == ['', ''] and not secret_anywhere(lab)
+    finally:
+        broker.passwords.close()

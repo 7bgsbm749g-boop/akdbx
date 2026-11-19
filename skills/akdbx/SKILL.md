@@ -102,7 +102,7 @@ link is invalidated after success.
 /absolute/path/to/akdbx/.venv/bin/akdbx search 'example.com'
 ```
 
-Search is case-insensitive substring matching across title, username, URL, and group. It returns up to 20 entries, with no pagination or exact-domain enforcement. Narrow a broad query; an empty query lists up to 20 entries and should not be the default.
+Search is case-insensitive substring matching across title, username, URL, additional URLs, and group. It returns up to 20 entries, with no pagination or exact-domain enforcement. Narrow a broad query; an empty query lists up to 20 entries and should not be the default.
 
 Example response (all values are illustrative):
 
@@ -155,6 +155,12 @@ These are not Google/GitHub SSO accounts. Do not save the one-time code or
 invent a site password. The same password/login fill and password-write refusals
 apply; username-only fill still requires a fresh target pin. Incomplete managed
 passwordless markers also refuse password use.
+
+An entry with KeePassXC "Additional URLs" (custom `KP2A_URL`, `KP2A_URL_1`, …
+fields) also returns `"additional_urls": ["https://secure.example.com"]`: the
+exact HTTPS origins, besides the main URL's origin, where this credential may
+fill. Broker 0.18.0 advertises integer `additional_urls_protocol: 1` and
+`additional_urls_policy: "kp2a-exact-origin-v1"`.
 
 A handle expires five minutes after search and is consumed on its first fill attempt, including invalid mode or typing failure. Obtain a fresh handle for every separate fill, and obtain it near the time of use.
 
@@ -210,7 +216,8 @@ identity-provider widget), require `password_frame_protocol: 1` and
 frame's `frame_id` and its exact `origin`; it shows no URLs or values and needs
 no raw CDP. Focus the field in that frame, then add `--frame-id CHILD_FRAME_ID
 --frame-origin FRAME_ORIGIN` to `pin-password-target`; keep `--top-url` as the
-exact top-level URL. The saved credential's origin must equal the frame origin.
+exact top-level URL. The frame origin must exactly equal the saved credential's
+main URL origin or one of its `additional_urls`.
 The broker refuses cross-site frame chains (a hostile top page around a real
 login frame, or a hostile frame in a real page), sandboxed frames without
 scripts, and frames that navigate, move or hide after the pin. See
@@ -352,6 +359,38 @@ A rejected or cancelled site reset must never update KeePass. Cancel the staged
 write; failures, conflicts, expiry and restart must be reported and reconciled
 as described in the reference. A `saved` receipt confirms durable vault update;
 a fill receipt confirms guarded dispatch only.
+
+### Additional exact origins (0.18.0)
+
+When a verified sign-in field is on a different exact origin than the entry's
+main URL (for example the main URL is `https://example.com/` but the password
+iframe is `https://secure.example.com`), the fill is refused. Do not edit the
+main URL or create a duplicate entry. With the user's authorization for that
+specific change, add the field origin as an additional URL:
+
+```bash
+akdbx add-url --url https://secure.example.com/ -- FRESH_HANDLE
+akdbx remove-url --url https://secure.example.com/ -- FRESH_HANDLE
+```
+
+Require `additional_urls_protocol: 1` in `status`; the CLI refuses older
+brokers before sending. The value must be an exact HTTPS origin (lowercase,
+no path other than one `/`, no query, fragment, credentials or default port).
+`add-url` refuses http, wildcards, duplicates of the main or an existing
+origin, and any host that is not on the saved URL's site: the same registrable
+domain under the vendored Public Suffix List, which includes private suffixes
+such as `github.io`. A saved public-suffix or IP host permits only itself.
+Other origins can be added only by the user in KeePassXC. The write is metadata-only: it never reads out, changes or
+returns the password, needs no private page, and uses the same verified
+encrypted save (backup, atomic replace, history version, handle invalidation)
+as the other writes. Its receipt lists `additional_urls`; search again to
+confirm. Removal only narrows where the credential can fill.
+
+Exact origin is still required: an additional URL is one more exact
+`(https, host, port)` origin, never a site or suffix match. Every other DOM
+check (exact top URL, same-site frame chain, retained field and owners, focus,
+expiry, single use, autocomplete and purpose rules, no keyboard) is unchanged,
+so a hostile page or frame around a listed origin still refuses.
 
 ## Recovery and reporting
 

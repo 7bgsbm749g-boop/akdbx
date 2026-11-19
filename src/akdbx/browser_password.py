@@ -436,10 +436,13 @@ class BrowserPasswords:
             raise TargetError()
         return found[1]
 
-    def deliver(self, pin, mode, username, password, site_url, ready, start_deadline):
+    def deliver(self, pin, mode, username, password, site_origins, ready, start_deadline):
+        """site_origins: the credential's exact (scheme, host, port) origins."""
         started = False
         try:
-            if mode != pin.mode or https_origin(site_url) != https_origin(pin.url):
+            # The field document's origin must exactly equal the main URL's
+            # origin or one KP2A_URL* origin; no suffix, site or port widening.
+            if mode != pin.mode or https_origin(pin.url) not in site_origins:
                 raise TargetError()
             page = pin.connection.call('Target.getTargetInfo', {'targetId': pin.page_id})['targetInfo']
             if pin.route is None:

@@ -6,8 +6,8 @@ explicit selectors, supported controls, and race checks before this workflow.
 # Create passwords and passwordless identity records
 
 Password workflows in this guide require CLI and broker version **0.12.0 or newer**
-and the DOM delivery capabilities below. The current release is **0.17.0**;
-it adds this workflow on native Windows.
+and the DOM delivery capabilities below. The current release is **0.18.0**; 0.17.0
+added this workflow on native Windows.
 All password fills require [DOM password protocol 1](target-fill.md).
 Native email-code creation requires **0.9.1** and its separate passwordless
 protocol below. Passwordless SSO creation requires CLI and broker **0.8.1 or
@@ -316,6 +316,61 @@ unlock service is needed. Recheck CLI version, broker version and all SSO/write
 capabilities before saving. This patch preserves the 0.8.0 snapshot admission
 and recovery contract; it does not activate or approve the admission prototype.
 The isolated repair thread must not perform live activation or real vault work.
+
+## Additional URLs (0.18.0)
+
+`add-url` and `remove-url` change one KeePassXC "Additional URL" (custom
+string field `KP2A_URL`, `KP2A_URL_1`, …) of an existing entry, selected by a
+fresh search handle. Require integer `additional_urls_protocol: 1` and
+`additional_urls_policy: "kp2a-exact-origin-v1"` in `status`; the CLI refuses
+an older broker before it sends.
+
+```bash
+akdbx search 'example.com'
+akdbx add-url --url https://secure.example.com/ -- HANDLE_FROM_SEARCH
+akdbx search 'example.com'   # confirm additional_urls
+akdbx remove-url --url https://secure.example.com/ -- FRESH_HANDLE
+```
+
+Rules:
+
+- The value is an exact HTTPS origin in browser form: lowercase host, no
+  default `:443`, no path other than one trailing `/`, and no query, fragment
+  or credentials. It is saved as `https://host[:port]/`.
+- `add-url` refuses http, wildcards, junk, the main URL's origin, an origin
+  that is already listed, more than 32 additional URLs, and any host that is
+  not on the saved URL's site. Site means the registrable domain under the
+  vendored Public Suffix List (`src/akdbx/public_suffix_assets`, version in
+  its `VENDOR.txt`), the rule Chrome uses for the frame chain. So
+  `www.example.com` permits `secure.example.com`, but `www.github.io` does
+  not permit `attacker.github.io`, because `github.io` is a private suffix.
+  A saved host that is itself a public suffix, or an IP address, permits only
+  its own host (other ports). Only the user can add other origins, in
+  KeePassXC. A stale list can miss a new private suffix; update it with each
+  release.
+- `remove-url` removes every field with that exact origin and refuses when
+  none exists.
+- Card records refuse. Passwordless records may list additional origins for
+  username and TOTP fills.
+
+The write is metadata-only. It never returns or changes the password, and the
+save verifies that the password is unchanged. Like the passwordless creates,
+it needs no private page or extra user confirmation; run it only for a change
+the user has authorized. It uses the same verified encrypted persistence as
+every other write: the vault lock, on-disk change detection, an encrypted
+backup of the previous file, atomic replacement, reopen-and-verify, a new
+history version with a strictly newer modification time (so KeePassXC sync and
+akdbx merge select it), and invalidation of all outstanding handles. A
+successful receipt is:
+
+```json
+{"ok": true, "state": "saved", "changed": "added", "url": "https://secure.example.com/",
+ "additional_urls": ["https://secure.example.com"],
+ "metadata": {"title": "…", "username": "…", "url": "https://example.com/", "group": "…"}}
+```
+
+If the CLI reports an unconfirmed or uncertain outcome, search again before
+any retry; a duplicate addition refuses harmlessly.
 
 ## Cancellation and recovery
 
