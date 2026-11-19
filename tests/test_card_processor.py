@@ -79,6 +79,43 @@ def test_stripe_refuses_changed_field_binding(chrome):
     assert child(chrome, session, f'document.querySelector({json.dumps(selector)}).value === ""')
 
 
+def test_stripe_translated_merchant_keeps_native_hit_tests(chrome):
+    selector = '#payment-numberInput'
+    request, session = prepare(chrome, selector, merchant_path='/stripe',
+                               endpoint=STRIPE_CARD_FRAME, processor='stripe')
+    evaluate(chrome, """document.body.style.translate = '12px 15px';
+        document.querySelector('iframe').style.transform = 'translate(13px, 11px)'""")
+    center = child(chrome, session, """(() => {
+        const box = document.querySelector('#payment-numberInput').getBoundingClientRect();
+        return {x: box.left + box.width / 2, y: box.top + box.height / 2};
+    })()""")
+    for unsafe_style in (
+        "f.style.transform = 'rotate(10deg)'",
+        "f.style.translate = '0px 0px 10px'",
+        """const point = POINT, box = f.getBoundingClientRect();
+        const x = box.left + f.clientLeft + point.x;
+        const y = box.top + f.clientTop + point.y;
+        const cover = document.createElement('div');
+        cover.id = 'cover';
+        cover.style.cssText = 'position:fixed;z-index:3;pointer-events:none;width:8px;height:8px;background:white';
+        cover.style.left = (x - 4) + 'px';
+        cover.style.top = (y - 4) + 'px';
+        document.documentElement.append(cover);
+        """.replace('POINT', json.dumps(center)),
+    ):
+        target = pin(chrome, 'cc-number', selector, **request)
+        assert target['ok']
+        evaluate(chrome, "{ const f=document.querySelector('iframe'); " + unsafe_style + " }")
+        assert fill(chrome, target)['delivery'] == 'not-started'
+        assert child(chrome, session, f'document.querySelector({json.dumps(selector)}).value === ""')
+        evaluate(chrome, """document.querySelector('iframe').style.cssText =
+            'width:550px;height:300px;transform:translate(13px, 11px)';
+            document.getElementById('cover')?.remove()""")
+    target = pin(chrome, 'cc-number', selector, **request)
+    assert target['ok']
+    assert fill(chrome, target) == dict(ok=True, filled='cc-number', card_delivery=DELIVERY)
+
+
 @pytest.mark.parametrize('url', [
     STRIPE_CARD_FRAME.replace('https:', 'http:'),
     STRIPE_CARD_FRAME.replace('js.stripe.com', 'js.stripe.com.evil.test'),

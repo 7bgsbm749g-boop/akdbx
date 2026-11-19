@@ -116,6 +116,9 @@ Only the inputs with these exact IDs, names and autocomplete tokens are supporte
 | `payment-expiryInput` | `expiry` | `cc-exp` |
 | `payment-cvcInput` | `cvc` | `cc-csc` |
 
+Cloudflare dialogs that translate the iframe in two dimensions require 0.18.3
+or newer. The broker checks the translated position and rejects covered inputs.
+
 Use `--format MM/YY` for the expiry field. Pin the exact iframe and one unique
 input for each fill, using a fresh card search handle each time.
 
