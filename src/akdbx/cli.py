@@ -195,14 +195,6 @@ def request(
     broker_uid = os.getuid() if broker_uid is None else broker_uid
     socket_path, runtime_fd = _validate_socket_path(socket_path, broker_uid)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    if payload.get('action') in {'merge', 'admit'}:
-        timeout = 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
-    else:
-        # Frame routes resolve bounded out-of-process iframe targets first.
-        slow = payload.get('action') == 'pin-card-target' or payload.get('action') == 'list-password-frames' or (
-            payload.get('action') == 'pin-password-target' and 'frame_origin' in payload)
-        timeout = 240 if payload.get('action') in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password') else 15 if slow else 5
-                return 1
     client.settimeout(timeout)
     try:
         client.connect(anchored_socket_path(runtime_fd, socket_path.name))
