@@ -138,17 +138,24 @@ def test_search_filters_run_before_label_limit(tmp_path, capsys):
     entries = [SyntheticIdentity(uuid=str(i), title=LABEL, path=(f'Group {i}', LABEL)) for i in range(21)]
     entries += [SyntheticIdentity(uuid=f'partial-{i}', title=f'Home {i}', path=('Web', f'Home {i}'))
                 for i in range(20)]
-    entries += [SyntheticIdentity(uuid='exact', title='Home', path=('Web', 'Home'))]
+    for mask in range(1, 22):
+        variant = ''.join(c.upper() if mask & (1 << i) else c for i, c in enumerate('homebase'))
+        entries.append(SyntheticIdentity(uuid=f'variant-{mask}', title=variant, path=('Web', variant)))
+    entries += [SyntheticIdentity(uuid='exact', title='Home', path=('Web', 'Home')),
+                SyntheticIdentity(uuid='exact-case', title='homebase', path=('Web', 'homebase'))]
     broker = Broker(Vault(entries), RecordingTyper())
     assert len(search(broker)['entries']) == 20
     rpc = tmp_path / 'private' / 'identity-rpc.sock'
     with running_broker(rpc, broker):
         assert cli.main(['--socket', str(rpc), 'search-identities', LABEL, '--group', 'Group 20']) == 0
         grouped = json.loads(capsys.readouterr().out)['entries']
-        assert cli.main(['--socket', str(rpc), 'search-identities', 'HOME', '--exact', '--group', 'Web']) == 0
+        assert cli.main(['--socket', str(rpc), 'search-identities', 'Home', '--exact', '--group', 'Web']) == 0
         exact = json.loads(capsys.readouterr().out)['entries']
+        assert cli.main(['--socket', str(rpc), 'search-identities', 'homebase', '--exact', '--group', 'Web']) == 0
+        exact_case = json.loads(capsys.readouterr().out)['entries']
     assert len(grouped) == 1 and grouped[0]['group'] == 'Group 20'
     assert len(exact) == 1 and exact[0]['title'] == 'Home'
+    assert len(exact_case) == 1 and exact_case[0]['title'] == 'homebase'
 
 
 def test_search_returns_labels_that_fit_the_wire_budget(tmp_path, capsys):

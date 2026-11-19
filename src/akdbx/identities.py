@@ -126,7 +126,8 @@ class IdentityManager:
                 or type(exact) is not bool or not _text(query, 4096 if exact else 500)
                 or 'group' in request and (not _text(group_filter, 4096) or len(group_filter.encode()) > 4096)):
             raise WriteError()
-        query = query.casefold()
+        if not exact:
+            query = query.casefold()
         matches = []
         remaining = MAX_MESSAGE - len(b'{"ok":true,"entries":[]}')
         for entry in active_entries(self.broker.vault):
@@ -135,8 +136,7 @@ class IdentityManager:
             title, group = entry.title or '', '/'.join(entry.path[:-1])
             if group_filter is not None and group != group_filter:
                 continue
-            label = title.casefold()
-            matched = label == query if exact else query in label
+            matched = title == query if exact else query in title.casefold()
             if not matched or any(len(v.encode()) > 4096 for v in (title, group)):
                 continue
             item = dict(title=title, group=group)

@@ -22,7 +22,7 @@ def add_parsers(commands):
     p = commands.add_parser('search-identities', help='find identities by non-secret label')
     p.add_argument('query')
     p.add_argument('--group', help='limit matches to this exact group path')
-    p.add_argument('--exact', action='store_true', help='match the entire label, ignoring case')
+    p.add_argument('--exact', action='store_true', help='match the entire label, including case')
     p = commands.add_parser('pin-identity-target', help='pin one focused HTTPS identity field')
     for key in PIN_ARGS[:-1]:
         p.add_argument('--' + key.replace('_', '-'), required=True)
