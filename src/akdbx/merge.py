@@ -11,6 +11,7 @@ import stat
 import time
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 if os.name != 'nt':
     import resource
@@ -27,10 +28,21 @@ class MergeError(Exception):
     """Fixed, nonsecret messages only."""
 
 
+def supported_version(text):
+    """The tested engine release series: 2.7.10 or newer, below 2.8."""
+    return text if re.fullmatch(r'2\.7\.\d+', text) and int(text.split('.')[2]) >= 10 else None
+
+
+def create_manager(broker):
+    """One transaction contract; the file and engine primitives are per platform."""
+    if os.name == 'nt':
+        from .windows_merge import WindowsMergeManager
+        return WindowsMergeManager(broker)
+    return MergeManager(broker)
+
+
 def engine_version():
     """Fail closed outside the tested engine release series; never use PATH."""
-    if os.name == 'nt':
-        return None
     try:
         info = ENGINE.stat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
@@ -38,9 +50,7 @@ def engine_version():
         result = subprocess.run([str(ENGINE), '--version'], stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 timeout=5, check=True, env={'LANG': 'C.UTF-8'})
-        version = result.stdout.decode('ascii').strip()
-        if re.fullmatch(r'2\.7\.\d+', version) and int(version.split('.')[2]) >= 10:
-            return version
+        return supported_version(result.stdout.decode('ascii').strip())
     except Exception:
         pass
     return None
@@ -193,14 +203,12 @@ class MergeManager:
         self._engine_checked = False
         self._version = None
 
+    def _engine_version(self):
+        return engine_version()
+
     def capabilities(self):
-        if os.name == 'nt':
-            return {'merge_available': False, 'admission_supported': False,
-                    'merge_refresh_target_supported': False,
-                    'merge_preserve_conflicts_supported': False,
-                    'merge_engine': None, 'merge_protocol': 1}
         if not self._engine_checked:
-            self._version = engine_version()
+            self._version = self._engine_version()
             self._engine_checked = True
         store = getattr(self.broker.vault, '_akdbx_store', None)
         return {'merge_available': bool(self._version and store and store.merge_writable_path and not store.recovery_required),
@@ -252,8 +260,6 @@ class MergeManager:
         os.fsync(directory)
 
     def status(self, operation_id):
-        if os.name == 'nt':
-            raise MergeError('merge and snapshot admission are unavailable on Windows')
         operation_id = self._id(operation_id)
         store = self._store()
         directory = store._directory()
@@ -283,10 +289,8 @@ class MergeManager:
                 os.close(bundle_fd)
             os.close(directory)
 
-    def begin(self, request):
-        if os.name == 'nt':
-            raise MergeError('merge and snapshot admission are unavailable on Windows')
-        started = time.monotonic()
+    def _plan(self, request):
+        """Validate one request and build its first receipt; no file is touched."""
         admitting = request.get('action') == 'admit'
         if admitting and (request.get('policy') != admission.POLICY or request.get('verification') != admission.VERIFICATION):
             raise MergeError('unsupported admission policy or verifier; operation not started')
@@ -317,9 +321,6 @@ class MergeManager:
         source_path = request.get('source')
         if not isinstance(source_path, str) or not Path(source_path).is_absolute() or '\x00' in source_path:
             raise MergeError('merge source must be an absolute file path')
-        store = self._store()
-        source = VaultStore(Path(source_path), strict_path=True)
-        directory = source_directory = bundle_fd = snapshot_directory = None
         receipt = {'ok': False, 'operation_id': operation_id, 'state': 'preparing',
                    'check': request.get('check', False), 'refresh_target': refresh_target,
                    'preserve_conflicts': preserve, 'preservation_policy': versions.POLICY if preserve else None,
@@ -331,6 +332,18 @@ class MergeManager:
                            group_tag_verification=('raw-v1' if group_verifier == admission.GROUP_VERIFICATION else 'keepassium-2.5.171-sequence-v1'),
                            group_selection=('keepassxc-2.7.10-selection-v1' if group_verifier == admission.NATIVE_GROUP_VERIFICATION else 'strict-v1'),
                            exact_bytes=True, engine=None, refresh_target=True)
+        return SimpleNamespace(admitting=admitting, group_verifier=group_verifier, operation_id=operation_id,
+                               refresh_target=refresh_target, preserve=preserve, source_path=source_path,
+                               receipt=receipt)
+
+    def begin(self, request):
+        started = time.monotonic()
+        plan = self._plan(request)
+        admitting, group_verifier, operation_id = plan.admitting, plan.group_verifier, plan.operation_id
+        refresh_target, preserve, source_path, receipt = plan.refresh_target, plan.preserve, plan.source_path, plan.receipt
+        store = self._store()
+        source = VaultStore(Path(source_path), strict_path=True)
+        directory = source_directory = bundle_fd = snapshot_directory = None
         replaced = False
         adopted = False
         replacement_attempted = False

@@ -1,5 +1,6 @@
 """Strict, receipt-only CLI for card operations; no secret arguments."""
 import json
+import os
 import re
 import sys
 import time
@@ -12,6 +13,8 @@ from .card_notifications import RESULTS
 from . import card_processor
 
 NOTIFICATIONS = {'subscribe-card-save', 'card-save-subscription-status', 'unsubscribe-card-save'}
+CARD_BROWSER_REFUSAL = ('broker has no card browser profile (card_browser_configured is false); '
+                        'the operator starts it with --card-browser-profile; card request not sent')
 COMMANDS = {'create-card', 'update-card', 'search-cards', 'pin-card-target', 'fill-card'} | NOTIFICATIONS
 ERRORS = {'vault locked', 'save outcome uncertain; restart and unlock', 'request failed',
           'card operation refused; check selection and destination', 'card operation failed',
@@ -116,6 +119,11 @@ def run(args, request):
                 or type(caps.get('card_protocol')) is not int or caps['card_protocol'] != 1
                 or caps.get('card_delivery') != DELIVERY):
             print(json.dumps(dict(ok=False, error='broker lacks card protocol 1; card request not sent')))
+            return 1
+        if (os.name == 'nt' and args.command in {'pin-card-target', 'fill-card'}
+                and caps.get('card_browser_configured') is False):
+            # Windows only: refuse before dispatch what this broker cannot deliver.
+            print(json.dumps(dict(ok=False, error=CARD_BROWSER_REFUSAL)))
             return 1
         payload = dict(action=args.command, card_protocol=1)
         if args.command in {'create-card', 'update-card'}:

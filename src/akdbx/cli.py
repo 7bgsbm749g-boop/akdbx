@@ -163,6 +163,17 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
     return response
 
 
+def _request_timeout(payload: dict) -> int:
+    """One response budget for both transports; the broker bounds its own work."""
+    action = payload.get('action')
+    if action in {'merge', 'admit'}:
+        return 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
+    # Frame routes resolve bounded out-of-process iframe targets first.
+    slow = action == 'pin-card-target' or action == 'list-password-frames' or (
+        action == 'pin-password-target' and 'frame_origin' in payload)
+    return 240 if action in (*IDENTITY_CREATES, 'commit-password') else 15 if slow else 5
+
+
 def request(
     socket_path: Path,
     payload: dict,
@@ -171,24 +182,18 @@ def request(
     expected_unlock_origin: str = DEFAULT_UNLOCK_ORIGIN,
     before_send=None,
 ) -> dict:
+    timeout = _request_timeout(payload)
     if os.name == 'nt':
         from .windows_rpc import connect
         if broker_uid is not None:
             raise ValueError('--broker-uid is a Linux option; Windows requires the same user/session')
         with connect(socket_path) as client:
-            client.settimeout(240 if payload.get('action') in (*IDENTITY_CREATES, 'commit-password') else 5)
+            client.settimeout(timeout)
             send_message(client, payload, before_send=before_send)
             return _validate_response(receive_message(client), expected_unlock_origin)
     broker_uid = os.getuid() if broker_uid is None else broker_uid
     socket_path, runtime_fd = _validate_socket_path(socket_path, broker_uid)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    if payload.get('action') in {'merge', 'admit'}:
-        timeout = 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
-    else:
-        # Frame routes resolve bounded out-of-process iframe targets first.
-        slow = payload.get('action') == 'pin-card-target' or payload.get('action') == 'list-password-frames' or (
-            payload.get('action') == 'pin-password-target' and 'frame_origin' in payload)
-        timeout = 240 if payload.get('action') in (*IDENTITY_CREATES, 'commit-password') else 15 if slow else 5
     client.settimeout(timeout)
     try:
         client.connect(anchored_socket_path(runtime_fd, socket_path.name))
@@ -374,8 +379,25 @@ def _valid_frame_list(response):
     return True
 
 
-WINDOWS_PASSWORD_REFUSAL = ('Windows fills only usernames (fill --mode username) and TOTP codes (fill-totp); '
-                            'password, login and generated-password fills are Linux-only; nothing was sent')
+# Windows only: `status` there must name exactly what the running broker can
+# deliver, and the CLI refuses the rest before it sends a request. The Linux
+# CLI keeps its established behaviour, where the broker itself refuses.
+PASSWORD_BROWSER_REFUSAL = ('broker has no password browser profile (password_browser_configured is false); '
+                            'the operator starts it with --password-browser-profile; target request not sent')
+MERGE_UNAVAILABLE_REFUSAL = ('merge unavailable (merge_available is false); require a safe writable vault and '
+                             'KeePassXC CLI >=2.7.10,<2.8 installed for all users; merge not sent')
+
+
+def default_notification_state(socket_path: Path) -> Path:
+    """Durable until-unlock subscriptions live beside the broker endpoint.
+
+    A Windows named pipe has no directory, so its state file goes to a private
+    per-user folder that the broker creates or verifies at startup.
+    """
+    name = socket_path.name + '.unlock-notifications.json'
+    if os.name == 'nt':
+        return Path(os.environ['LOCALAPPDATA']) / 'akdbx' / name
+    return socket_path.with_name(name)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -383,11 +405,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if os.name == 'nt' and args.broker_uid is not None:
         print('--broker-uid applies only to Linux; Windows requires the same user/session', file=sys.stderr)
-        return 2
-    if os.name == 'nt' and (args.command == 'fill-generated' or args.command == 'fill' and args.mode != 'username'):
-        # Only verified Chromium DOM pins may receive passwords, and a browser's
-        # address bar shares its page's HWND. Refuse before contacting the broker.
-        print(WINDOWS_PASSWORD_REFUSAL, file=sys.stderr)
         return 2
     if args.socket is None:
         try:
@@ -404,19 +421,22 @@ def main(argv: list[str] | None = None) -> int:
             import pywintypes
             from .windows_target import WindowsTyper
             from .windows_unlock import start_windows_unlock_server
-            # Browser CDP routes verify their peer with Linux kernel metadata,
-            # and durable notification state uses POSIX descriptor checks.
-            if (args.card_browser_profile is not None or args.password_browser_profile is not None
-                    or args.notification_state is not None):
-                print('--card-browser-profile, --password-browser-profile and --notification-state are Linux options',
-                      file=sys.stderr)
+            try:
+                state = (args.notification_state.expanduser() if args.notification_state is not None
+                         else default_notification_state(args.socket))
+                broker = Broker(None, WindowsTyper(), card_browser_profile=args.card_browser_profile,
+                                password_browser_profile=args.password_browser_profile,
+                                notification_state_path=state)
+            except (OSError, ValueError, KeyError, RuntimeError, pywintypes.error):
+                print('could not open the private notification state; use --notification-state with a file in a '
+                      'folder that only this user, SYSTEM and administrators can access', file=sys.stderr)
                 return 2
-            broker = Broker(None, WindowsTyper())
             try:
                 unlock_server, unlock_url = start_windows_unlock_server(
                     broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key)
             except (OSError, ValueError, pywintypes.error):
                 broker.unlock_notifications.close()
+                broker.card_save_notifications.close()
                 print('could not start Windows HTTPS unlock; check origin, TLS files, permissions and port', file=sys.stderr)
                 return 2
         else:
@@ -425,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
                             password_browser_profile=args.password_browser_profile,
-                            notification_state_path=args.notification_state or args.socket.with_name(args.socket.name + '.unlock-notifications.json'))
+                            notification_state_path=args.notification_state or default_notification_state(args.socket))
         unlock_name = ("agentic-kdbx-unlock.sock"
                        if args.socket.name == "agentic-kdbx.sock"
                        else "akdbx-unlock.sock")
@@ -584,6 +604,9 @@ def main(argv: list[str] | None = None) -> int:
                         or capabilities.get('password_fill_delivery') != PASSWORD_DELIVERY):
                     print(json.dumps({'ok': False, 'error': 'broker lacks DOM password delivery; target request not sent'}))
                     return 1
+                if os.name == 'nt' and capabilities.get('password_browser_configured') is False:
+                    print(json.dumps({'ok': False, 'error': PASSWORD_BROWSER_REFUSAL}))
+                    return 1
             if args.command == 'pin-password-target' and args.password_purpose is not None:
                 if type(capabilities.get('password_purpose_protocol')) is not int or capabilities['password_purpose_protocol'] != 1:
                     print(json.dumps({'ok': False, 'error': 'broker lacks explicit password purpose protocol 1; target request not sent'}))
@@ -613,6 +636,14 @@ def main(argv: list[str] | None = None) -> int:
                     or args.auth_method not in methods):
                 minimum = '0.8.1' if args.command == 'create-sso-entry' else '0.9.1'
                 print(json.dumps({'ok': False, 'error': f'broker lacks {identity_kind} identity protocol 1 for the requested method; require broker {minimum} or newer; {identity_kind} creation not sent'}))
+                return 1
+        if os.name == 'nt' and args.command in {'merge', 'admit'}:
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            # A locked broker still gets the request: its answer carries the
+            # private unlock link and the repeat-command continuation.
+            if capabilities.get('locked') is False and capabilities.get('merge_available') is False:
+                print(json.dumps({'ok': False, 'error': MERGE_UNAVAILABLE_REFUSAL}))
                 return 1
         if args.command == 'admit':
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,

@@ -28,7 +28,7 @@ jobs:
       - run: python -m pytest -q tests/test_protocol.py tests/test_cli.py tests/test_broker.py tests/test_writes.py tests/test_web_unlock.py tests/test_totp.py tests/test_target.py tests/test_target_guards.py tests/test_password_frames_policy.py tests/test_generated_native_clock.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_windows_native.py --basetemp="${{ runner.temp }}/akdbx-tests"
   windows:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -38,4 +38,43 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install -e '.[test]'
       - run: python -m akdbx.cli --version
-      - run: python -m pytest -q tests/test_protocol.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_windows_native.py --basetemp="$env:LOCALAPPDATA/akdbx-tests"
+      - name: Install the pinned native merge engine for all users
+        shell: pwsh
+        run: |
+          # The broker runs only a machine-installed, system-owned engine. The
+          # runner is elevated, so this is the same location a user install has.
+          $zip = Join-Path $env:RUNNER_TEMP 'KeePassXC.zip'
+          curl.exe --fail --location --max-time 180 --max-filesize 67108864 --output $zip `
+            https://github.com/keepassxreboot/keepassxc/releases/download/2.7.10/KeePassXC-2.7.10-Win64.zip
+          $expected = '1769e49bec7a5681e047808876623d525a3741b58959c253e5963476d4cba217'
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'KeePassXC archive checksum mismatch' }
+          $unpacked = Join-Path $env:RUNNER_TEMP 'keepassxc'
+          Expand-Archive -Path $zip -DestinationPath $unpacked
+          $target = Join-Path $env:ProgramFiles 'KeePassXC'
+          if (Test-Path $target) { throw 'KeePassXC is already installed on this runner' }
+          Move-Item (Join-Path $unpacked 'KeePassXC-2.7.10-Win64') $target
+          # Files moved from the runner's temp folder keep its permissions:
+          # take the Program Files defaults instead, owned by Administrators.
+          icacls $target /setowner '*S-1-5-32-544' /T /C /Q | Out-Null
+          icacls $target /reset /T /C /Q | Out-Null
+          $version = & (Join-Path $target 'keepassxc-cli.exe') --version
+          if ($version -ne '2.7.10') { throw "unexpected engine version $version" }
+          python -c "from akdbx import windows_merge; assert windows_merge.engine_version() == '2.7.10', 'the installed engine did not pass the production trust check'"
+      - name: Native pipe, saves, DOM route in real Chromium, merge and admission
+        env:
+          AKDBX_REQUIRE_WINDOWS_CHROMIUM: '1'
+          AKDBX_REQUIRE_WINDOWS_ENGINE: '1'
+        run: python -m pytest -q -rs tests/test_protocol.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_windows_native.py tests/test_windows_browser.py tests/test_windows_chromium.py tests/test_windows_merge.py --basetemp="$env:LOCALAPPDATA/akdbx-tests" --junitxml="$env:RUNNER_TEMP/akdbx-windows.xml"
+      - name: Require every Windows case to run
+        shell: pwsh
+        run: |
+          [xml]$report = Get-Content (Join-Path $env:RUNNER_TEMP 'akdbx-windows.xml')
+          $suite = $report.testsuites.testsuite
+          if ([int]$suite.tests -lt 200) { throw "only $($suite.tests) Windows cases ran" }
+          if ([int]$suite.skipped -ne 0) { throw "$($suite.skipped) Windows cases were skipped" }
+          "All $($suite.tests) Windows cases ran without skips."
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-results
+          path: ${{ runner.temp }}/akdbx-windows.xml

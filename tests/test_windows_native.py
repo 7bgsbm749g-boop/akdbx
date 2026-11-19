@@ -279,12 +279,85 @@ def test_alternate_data_streams_are_refused(synthetic_vault):
         security.read_private(str(synthetic_vault) + ':stream')
 
 
-def test_windows_explicitly_refuses_linux_merge_and_admission():
-    broker = Broker(type('Vault', (), {'entries': []})(), object())
+def test_merge_without_a_trusted_engine_is_unavailable_and_refuses(synthetic_vault, monkeypatch):
+    from akdbx import windows_merge
+    monkeypatch.setattr(windows_merge, 'engine_version', lambda: None)
+    broker = Broker(open_vault_with_password(synthetic_vault, 'synthetic master'), object())
     status = broker.dispatch({'action': 'ping'})
-    assert status['merge_available'] is False and status['admission_supported'] is False
-    for action in ('merge', 'admit', 'merge-status'):
-        assert 'unavailable on Windows' in broker.dispatch({'action': action})['error']
+    assert status['merge_available'] is False and status['merge_engine'] is None
+    before = synthetic_vault.read_bytes()
+    for action in ('merge', 'admit'):
+        result = broker.dispatch({'action': action, 'source': str(synthetic_vault), 'operation_id': 'a' * 32,
+                                  'policy': 'snapshot-admission-v1', 'verification': 'native-containment-v1',
+                                  'snapshot_directory': str(synthetic_vault.parent)})
+        assert not result['ok'] and 'merge unavailable' in result['error'], result
+    assert 'receipt not found' in broker.dispatch({'action': 'merge-status', 'operation_id': 'a' * 32})['error']
+    assert synthetic_vault.read_bytes() == before
+    assert sorted(p.name for p in synthetic_vault.parent.iterdir() if 'akdbx-merge' in p.name) == []
+
+
+def test_user_owned_engine_is_not_trusted(private_dir):
+    """A program that this account can replace is never run as the merge engine."""
+    from akdbx import windows_merge
+    engine = private_dir / 'keepassxc-cli.exe'
+    security.write_new(engine, b'MZ synthetic')
+    with pytest.raises(PermissionError):
+        with windows_merge.trusted_engine(engine):
+            pytest.fail('a user-owned engine was accepted')
+    # The installed engine, when present, is the only candidate; never PATH.
+    assert windows_merge.engine_path().name == 'keepassxc-cli.exe'
+    assert 'KeePassXC' in windows_merge.engine_path().parts
+
+
+def test_until_unlock_subscriptions_survive_a_broker_restart(private_dir):
+    from akdbx.notifications import UnlockNotifications
+    state = private_dir / 'state' / 'unlock-notifications.json'
+    sent = []
+    first = UnlockNotifications(state_path=state, sender=lambda url, payload: sent.append((url, payload)))
+    receipt = first.subscribe({'notification_protocol': 1, 'webhook_url': 'https://hooks.example.test/synthetic-token'},
+                              unlocked=False)
+    assert receipt['ok'] and receipt['state'] == 'subscribed' and receipt['expires_in'] is None
+    # The folder was created for this user and SYSTEM only.
+    with security.checked_handle(state.parent, directory=True):
+        pass
+    assert json.loads(security.read_private(state)[0])[0]['id'] == receipt['subscription_id']
+    first._stop.set()  # A stopped broker: its waiting subscription stays on disk.
+    restarted = UnlockNotifications(state_path=state, sender=lambda url, payload: sent.append((url, payload)))
+    assert restarted.status(receipt['subscription_id'])['state'] == 'subscribed'
+    restarted.publish()
+    deadline = time.monotonic() + 5
+    while not sent and time.monotonic() < deadline:
+        time.sleep(.02)
+    assert [(url, payload['event'], payload['subscription_id']) for url, payload in sent] == [
+        ('https://hooks.example.test/synthetic-token', 'akdbx.unlocked', receipt['subscription_id'])]
+    deadline = time.monotonic() + 5
+    while restarted.status(receipt['subscription_id'])['state'] != 'delivered' and time.monotonic() < deadline:
+        time.sleep(.02)
+    restarted.close()
+    assert json.loads(security.read_private(state)[0]) == []
+
+
+@pytest.mark.parametrize('damage', ['public-folder', 'public-file', 'malformed', 'oversized', 'relative'])
+def test_untrusted_notification_state_is_refused_without_repair(private_dir, damage):
+    from akdbx.notifications import UnlockNotifications
+    folder = private_dir / 'state'
+    win32file.CreateDirectory(str(folder), security.private_attributes(directory=True))
+    state = folder / 'unlock-notifications.json'
+    row = {'id': 'a' * 32, 'url': 'https://hooks.example.test/synthetic-token', 'event_id': 'b' * 32, 'attempts': 0}
+    security.write_new(state, b'x' * (512 * 1024 + 1) if damage == 'oversized'
+                       else b'{"synthetic":' if damage == 'malformed' else json.dumps([row]).encode())
+    public = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor('D:P(A;;FA;;;WD)', 1)
+    if damage in {'public-folder', 'public-file'}:
+        win32security.SetFileSecurity(str(folder if damage == 'public-folder' else state),
+                                      win32security.DACL_SECURITY_INFORMATION, public)
+    path = Path('relative-state.json') if damage == 'relative' else state
+    with pytest.raises((ValueError, PermissionError)):
+        UnlockNotifications(state_path=path)
+    # A refused folder or file keeps its permissions: the broker never repairs it.
+    if damage in {'public-folder', 'public-file'}:
+        target = folder if damage == 'public-folder' else state
+        dacl = win32security.GetFileSecurity(str(target), win32security.DACL_SECURITY_INFORMATION).GetSecurityDescriptorDacl()
+        assert win32security.ConvertSidToStringSid(dacl.GetAce(0)[2]) == 'S-1-1-0'
 
 
 @pytest.fixture
@@ -550,15 +623,102 @@ def test_malformed_receipt_unlocks_into_blocked_recovery(synthetic_vault, data):
     assert broker.dispatch({'action': 'search'})['ok'] is False
 
 
-@pytest.mark.parametrize('argv', [['fill', 'synthetic', '--mode', 'password', '--target', 'synthetic'],
-                                  ['fill', 'synthetic', '--mode', 'login', '--target', 'synthetic'],
-                                  ['fill', 'synthetic', '--target', 'synthetic'],
-                                  ['fill-generated', 'synthetic', '--target-url', 'https://example.test/reset',
-                                   '--target', 'synthetic']])
-def test_windows_cli_refuses_password_fills_without_contacting_broker(monkeypatch, capsys, argv):
-    def forbidden(*_args, **_kwargs):
-        pytest.fail('a password fill reached broker RPC on Windows')
-    monkeypatch.setattr(cli, 'request', forbidden)
-    assert cli.main(argv) == 2
+PASSWORD_COMMANDS = [['fill', 'synthetic', '--mode', 'password', '--target', 'synthetic'],
+                     ['fill', 'synthetic', '--mode', 'login', '--target', 'synthetic'],
+                     ['fill', 'synthetic', '--target', 'synthetic'],
+                     ['fill-generated', 'synthetic', '--target-url', 'https://example.test/reset',
+                      '--target', 'synthetic'],
+                     ['pin-password-target', '--page-id', 'synthetic', '--frame-id', 'synthetic',
+                      '--top-url', 'https://example.test/login', '--selector', '#password']]
+
+
+def status_of(broker, **changes):
+    return {**broker.dispatch({'action': 'ping'}), **changes}
+
+
+@pytest.mark.parametrize('argv', PASSWORD_COMMANDS)
+@pytest.mark.parametrize('missing', ['profile', 'delivery'])
+def test_windows_cli_refuses_password_requests_the_broker_cannot_deliver(monkeypatch, capsys, argv, missing):
+    """Only the capability check reaches the broker; the credential request is never sent."""
+    capabilities = status_of(Broker(type('Vault', (), {'entries': []})(), object()))
+    assert capabilities['password_browser_configured'] is False
+    if missing == 'delivery':
+        capabilities = {**capabilities, 'password_browser_configured': True, 'password_fill_delivery': 'win32-char-v1'}
+    sent = []
+    def request(_socket, payload, **_options):
+        sent.append(payload['action'])
+        return capabilities
+    monkeypatch.setattr(cli, 'request', request)
+    assert cli.main(argv) == 1
     captured = capsys.readouterr()
-    assert not captured.out and captured.err.strip() == cli.WINDOWS_PASSWORD_REFUSAL
+    assert sent == ['ping'] and not captured.err
+    expected = cli.PASSWORD_BROWSER_REFUSAL if missing == 'profile' else 'broker lacks DOM password delivery; target request not sent'
+    assert json.loads(captured.out) == {'ok': False, 'error': expected}
+
+
+@pytest.mark.parametrize('argv', [['pin-card-target', '--page-id', 'synthetic', '--frame-id', 'synthetic',
+                                   '--top-url', 'https://example.test/pay', '--frame-url', 'https://example.test/pay',
+                                   '--selector', '#number', '--field', 'cc-number'],
+                                  ['fill-card', 'synthetic', '--target', 'synthetic', '--field', 'cc-number'],
+                                  ['merge', 'synthetic.kdbx'],
+                                  ['admit', 'synthetic.kdbx', '--policy', 'snapshot-admission-v1',
+                                   '--snapshot-dir', 'synthetic']])
+def test_windows_cli_refuses_card_and_merge_requests_the_broker_cannot_deliver(monkeypatch, capsys, argv):
+    capabilities = status_of(Broker(type('Vault', (), {'entries': []})(), object()))
+    assert capabilities['card_browser_configured'] is False and capabilities['merge_available'] is False
+    sent = []
+    def request(_socket, payload, **_options):
+        sent.append(payload['action'])
+        return capabilities
+    monkeypatch.setattr(cli, 'request', request)
+    assert cli.main(argv) == 1
+    captured = capsys.readouterr()
+    assert set(sent) == {'ping'}
+    expected = cli.MERGE_UNAVAILABLE_REFUSAL if argv[0] in {'merge', 'admit'} else cli.card_cli.CARD_BROWSER_REFUSAL
+    assert json.loads(captured.out) == {'ok': False, 'error': expected}
+
+
+def test_windows_cli_sends_a_merge_to_a_locked_broker_for_its_unlock_link(monkeypatch, capsys):
+    sent = []
+    def request(_socket, payload, **_options):
+        sent.append(payload['action'])
+        if payload['action'] == 'ping':
+            return {'ok': True, 'locked': True, 'merge_available': False}
+        return {'ok': False, 'error': 'vault locked', 'unlock_url': 'https://localhost:9443/?token=synthetic'}
+    monkeypatch.setattr(cli, 'request', request)
+    assert cli.main(['merge', 'synthetic.kdbx']) == 1
+    answer = json.loads(capsys.readouterr().out)
+    assert sent == ['ping', 'merge'] and answer['error'] == 'vault locked' and 'continuation' in answer
+
+
+def test_windows_status_advertises_the_dom_route_only_with_a_profile(private_dir):
+    from akdbx.browser_password import DELIVERY
+    idle = status_of(Broker(type('Vault', (), {'entries': []})(), object()))
+    ready = status_of(Broker(type('Vault', (), {'entries': []})(), object(), password_browser_profile=private_dir,
+                             card_browser_profile=private_dir))
+    for status in (idle, ready):
+        assert status['target_fill_delivery'] == 'win32-char-v1' and status['target_fill_modes'] == ['username']
+        assert status['password_fill_protocol'] == 1 and status['password_fill_delivery'] == DELIVERY
+        assert status['unlock_notifications_until_unlock'] is True and status['generated_entry_protocol'] == 1
+    assert (idle['password_browser_configured'], idle['card_browser_configured']) == (False, False)
+    assert (ready['password_browser_configured'], ready['card_browser_configured']) == (True, True)
+
+
+def test_windows_serve_accepts_browser_profiles_and_private_state(synthetic_vault, native_https_config, monkeypatch):
+    origin, certificate, key, _submit = native_https_config
+    served = []
+    def serve(socket_path, broker, stop=None):
+        served.append(broker)
+    monkeypatch.setattr(cli, 'serve', serve)
+    state = synthetic_vault.parent / 'run' / 'unlock-notifications.json'
+    assert cli.main(['--socket', rpc.PREFIX + 'akdbx-test-' + uuid.uuid4().hex, '--unlock-origin', origin,
+                     'serve', str(synthetic_vault), '--tls-cert', str(certificate), '--tls-key', str(key),
+                     '--password-browser-profile', str(synthetic_vault.parent),
+                     '--card-browser-profile', str(synthetic_vault.parent),
+                     '--notification-state', str(state)]) == 0
+    broker = served[0]
+    assert broker.passwords.profile == synthetic_vault.parent and broker.card_targets.profile == synthetic_vault.parent
+    # A broker without subscriptions writes no state and creates no folder.
+    assert broker.unlock_notifications._state_path == state and not state.parent.exists()
+    assert str(cli.default_notification_state(Path(rpc.PREFIX + 'akdbx-synthetic'))).endswith(
+        r'\akdbx\akdbx-synthetic.unlock-notifications.json')
