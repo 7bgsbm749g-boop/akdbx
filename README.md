@@ -212,6 +212,9 @@ routes. Computop expiry requires MM/YY. Every existing processor ancestry,
 retained-node, visibility, native hit-test and receipt guard remains. POST-loaded
 blank frames additionally require the retained unique merchant POST form, exact
 processor action and matching target name.
+Version 0.18.1 supports `--processor stripe` for the Stripe Payment Element
+iframe used by Cloudflare. It accepts only the Stripe card-entry endpoint and
+its exact card number, combined expiry (MM/YY) and security code inputs.
 Other cross-origin frames, shadow DOM, unrecognised fields and native
 applications remain unsupported. Merchant verification uses part of the pin's
 lifetime, while the four-second fill deadline starts with the fill request.

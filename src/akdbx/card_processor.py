@@ -7,8 +7,13 @@ from . import card_hit_test
 
 
 PROTOCOL = 1
-PROCESSORS = ('adyen', 'computop')
+PROCESSORS = ('adyen', 'computop', 'stripe')
 COMPUTOP_FIELDS = ('cc-name', 'cc-number', 'cc-exp', 'cc-csc')
+STRIPE_FIELDS = {
+    'cc-number': ('payment-numberInput', 'number'),
+    'cc-exp': ('payment-expiryInput', 'expiry'),
+    'cc-csc': ('payment-cvcInput', 'cvc'),
+}
 
 
 # Shared by the merchant iframe guard and the input's isolated-world checks.
@@ -64,9 +69,20 @@ def computop_url(url):
             and parsed.path == '/payssl.aspx' and not parsed.query and not parsed.fragment)
 
 
+def stripe_url(url):
+    """Only the Stripe Payment Element card-entry endpoint used by Cloudflare."""
+    parsed = urlsplit(url)
+    return (parsed.scheme == 'https' and parsed.hostname == 'js.stripe.com'
+            and parsed.port in (None, 443) and parsed.username is None and parsed.password is None
+            and '?' not in url.partition('#')[0] and bool(re.fullmatch(
+                r'/v3/elements-inner-accessory-target-[0-9a-f]{32}\.html', parsed.path)))
+
+
 def supported_request(processor, url, field):
     if processor == 'adyen':
         return adyen_url(url)
+    if processor == 'stripe':
+        return field in STRIPE_FIELDS and stripe_url(url)
     return processor == 'computop' and field in COMPUTOP_FIELDS and computop_url(url)
 
 

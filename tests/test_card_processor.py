@@ -1,4 +1,4 @@
-"""Real out-of-process Adyen-shaped frames, using public synthetic card data."""
+"""Real processor frames, using public synthetic card data."""
 import json
 import time
 
@@ -6,8 +6,8 @@ import pytest
 
 from akdbx import cli
 from akdbx.browser_card import BrowserCards, CardTargetError, DELIVERY
-from akdbx.card_processor import adyen_url, document_url
-from test_card_chromium import chrome, evaluate, pin, fill
+from akdbx.card_processor import adyen_url, document_url, supported_request
+from test_card_chromium import STRIPE_CARD_FRAME, chrome, evaluate, pin, fill
 from test_cards import CARD
 from test_target import isolated_x11
 
@@ -15,21 +15,21 @@ from test_target import isolated_x11
 URL='https://checkoutshopper-live.adyen.com/checkoutshopper/securedfields/live_test/6.3.0/securedFields.html'
 
 
-def prepare(chrome, selector='#number'):
-    url=chrome.url.replace('/payment','/processor')+'#card-checkout'
+def prepare(chrome, selector='#number', *, merchant_path='/processor', endpoint=URL, processor='adyen'):
+    url=chrome.url.replace('/payment', merchant_path)+'#card-checkout'
     chrome.cdp.call('Page.navigate',{'url':url},chrome.session)
     deadline=time.monotonic()+8
     while time.monotonic()<deadline:
         frames=[t for t in chrome.cdp.call('Target.getTargets')['targetInfos']
-                if t['type']=='iframe' and t['url']==URL and t.get('parentId')==chrome.page]
+                if t['type']=='iframe' and t['url']==endpoint and t.get('parentId')==chrome.page]
         if len(frames)==1:
             frame=frames[0]
             session=chrome.cdp.call('Target.attachToTarget',{'targetId':frame['targetId'],'flatten':True})['sessionId']
             ready=chrome.cdp.call('Runtime.evaluate',{'expression':'!!document.querySelector('+json.dumps(selector)+')','returnByValue':True},session)
             if ready.get('result',{}).get('value'):
                 chrome.cdp.call('Runtime.evaluate',{'expression':'document.querySelector('+json.dumps(selector)+').scrollIntoView({block:"center"})'},session)
-                return dict(top_url=url,frame_url=URL,frame_id=frame['targetId'],
-                    processor='adyen',processor_protocol=1),session
+                return dict(top_url=url,frame_url=endpoint,frame_id=frame['targetId'],
+                    processor=processor,processor_protocol=1),session
         time.sleep(.05)
     pytest.fail('isolated processor frame did not load')
 
@@ -38,6 +38,64 @@ def child(chrome, session, expression):
     result=chrome.cdp.call('Runtime.evaluate',{'expression':expression,'returnByValue':True},session)
     assert 'exceptionDetails' not in result
     return result['result'].get('value')
+
+
+def test_stripe_fills_three_exact_fields_and_handles_spaced_expiry(chrome):
+    request, session = prepare(chrome, '#payment-numberInput', merchant_path='/stripe',
+                               endpoint=STRIPE_CARD_FRAME, processor='stripe')
+
+    assert not pin(chrome, 'cc-number', '#other-number', **request)['ok']
+    child(chrome, session, "document.querySelector('#payment-numberInput').autocomplete = 'billing cc-number'")
+    assert not pin(chrome, 'cc-number', '#payment-numberInput', **request)['ok']
+    child(chrome, session, "document.querySelector('#payment-numberInput').autocomplete = 'cc-number'")
+    expiry = pin(chrome, 'cc-exp', '#payment-expiryInput', **request)
+    assert expiry['ok']
+    assert fill(chrome, expiry, 'cc-exp', format='MM/YYYY')['delivery'] == 'not-started'
+
+    for field, selector, expected, options in (
+        ('cc-number', '#payment-numberInput', CARD['number'], {}),
+        ('cc-exp', '#payment-expiryInput', '09 / 31', {'format': 'MM/YY'}),
+        ('cc-csc', '#payment-cvcInput', CARD['csc'], {}),
+    ):
+        target = pin(chrome, field, selector, **request)
+        assert target['ok']
+        assert fill(chrome, target, field, **options) == {
+            'ok': True, 'filled': field, 'card_delivery': DELIVERY,
+        }
+        assert child(chrome, session, f'document.querySelector({json.dumps(selector)}).value') == expected
+        assert not fill(chrome, target, field, **options)['ok']
+    assert child(chrome, session, "document.querySelector('#other-number').value === ''")
+    assert not chrome.broker.typer.events
+
+
+def test_stripe_refuses_changed_field_binding(chrome):
+    selector = '#payment-numberInput'
+    request, session = prepare(chrome, selector, merchant_path='/stripe',
+                               endpoint=STRIPE_CARD_FRAME, processor='stripe')
+    target = pin(chrome, 'cc-number', selector, **request)
+    assert target['ok']
+    child(chrome, session, f'document.querySelector({json.dumps(selector)}).name = "other"')
+    assert fill(chrome, target)['delivery'] == 'not-started'
+    assert child(chrome, session, f'document.querySelector({json.dumps(selector)}).value === ""')
+
+
+@pytest.mark.parametrize('url', [
+    STRIPE_CARD_FRAME.replace('https:', 'http:'),
+    STRIPE_CARD_FRAME.replace('js.stripe.com', 'js.stripe.com.evil.test'),
+    STRIPE_CARD_FRAME.replace('js.stripe.com', 'js.stripe.com:444'),
+    STRIPE_CARD_FRAME.replace('js.stripe.com', 'user@js.stripe.com'),
+    STRIPE_CARD_FRAME.replace('accessory-target', 'loader-ui'),
+    STRIPE_CARD_FRAME.replace('0123456789abcdef0123456789abcdef', 'not-a-hash'),
+    STRIPE_CARD_FRAME.replace('.html#', '.html?unexpected=1#'),
+    STRIPE_CARD_FRAME.replace('.html#', '.html?#'),
+])
+def test_stripe_accepts_only_the_production_card_endpoint(url):
+    assert not supported_request('stripe', url, 'cc-number')
+
+
+def test_stripe_does_not_support_other_card_fields():
+    assert supported_request('stripe', STRIPE_CARD_FRAME, 'cc-number')
+    assert not supported_request('stripe', STRIPE_CARD_FRAME, 'cc-name')
 
 
 @pytest.mark.parametrize('field,selector,formatting,key',[

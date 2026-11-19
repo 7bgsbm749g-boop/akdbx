@@ -39,7 +39,8 @@ payment field through the browser's DOM tools. Get page/frame IDs and a unique
 CSS selector without reading any filled values. Do not infer these identifiers
 from an X11 window ID. Bring the actual field into view. Main frames and
 same-origin iframes with matching `autocomplete="cc-…"` fields use the default
-route. For Adyen secured-field or Computop hosted iframes, use the explicit processor routes below.
+route. For Adyen, Computop or Stripe card iframes, use the explicit processor
+routes below.
 Other cross-origin frames, shadow DOM and unannotated fields must be refused.
 
 ```bash
@@ -99,6 +100,26 @@ Pins have a maximum lifetime of 30 seconds; merchant verification uses part of
 that lifetime. The fill deadline starts with the later fill request, so slow
 verification does not consume its four-second dispatch budget. A pin that
 expires during verification is refused instead of issued. Fill promptly.
+
+### Stripe Payment Element
+
+Require broker 0.18.1 or newer, integer `card_processor_frames_protocol: 1`
+and `stripe` in `card_processors`. Use `--processor stripe` after verifying
+the merchant and payment form. This route accepts the HTTPS
+`js.stripe.com/v3/elements-inner-accessory-target-<hash>.html` iframe used by
+Cloudflare. Keep the complete observed frame URL, including its fragment.
+Only the inputs with these exact IDs, names and autocomplete tokens are supported:
+
+| Input ID | Name | Field |
+| --- | --- | --- |
+| `payment-numberInput` | `number` | `cc-number` |
+| `payment-expiryInput` | `expiry` | `cc-exp` |
+| `payment-cvcInput` | `cvc` | `cc-csc` |
+
+Use `--format MM/YY` for the expiry field. Pin the exact iframe and one unique
+input for each fill, using a fresh card search handle each time.
+
+### Processor frame checks
 
 The broker retains the actual input and the merchant's iframe owner in separate
 isolated worlds. It checks the processor input in the write's JavaScript task,

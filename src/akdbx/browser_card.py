@@ -179,8 +179,10 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
   // Computop's hosted form has no cc-* annotations. This explicit processor
   // route accepts only its known id/name pairs, never arbitrary off fields.
   const computop = processor === 'computop';
+  const stripe = processor === 'stripe';
   const ids = {'cc-name':'creditCardHolder','cc-number':'_KKnr',
                'cc-exp':'expiry_date','cc-csc':'cccvc'};
+  const stripeFields = __STRIPE_FIELDS__;
   const id = el.id, name = el.getAttribute('name');
   function knownComputopField() {
     return input && type === 'text' && form !== null && autocomplete === 'off' &&
@@ -188,9 +190,17 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
       el.id === id && el.getAttribute('name') === name &&
       document.querySelectorAll('[id="'+ids[field]+'"]').length === 1;
   }
+  function knownStripeField() {
+    if (!Object.hasOwn(stripeFields, field)) return false;
+    const [expectedId, expectedName] = stripeFields[field];
+    return input && type === 'text' && autocomplete === field &&
+      el.id === expectedId && el.getAttribute('name') === expectedName &&
+      document.querySelectorAll('[id="'+expectedId+'"]').length === 1;
+  }
   if (computop ? !knownComputopField() :
       tokens[tokens.length - 1] !== field ||
       tokens.slice(0,-1).some(t => t !== 'billing' && !/^section-[a-z0-9_-]+$/.test(t))) return null;
+  if (stripe && !knownStripeField()) return null;
   if (input && !['text','tel','password'].includes(type)) return null;
   const proto = input ? HTMLInputElement.prototype : HTMLSelectElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
@@ -215,6 +225,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
         el.form !== form || el.parentElement !== parent ||
         el.type !== type || el.getAttribute('autocomplete') !== autocomplete ||
         (computop && !knownComputopField()) ||
+        (stripe && !knownStripeField()) ||
         el.disabled || el.matches(':disabled') || el.readOnly || el.hidden || el.closest('[inert]') ||
         document.querySelectorAll(selector).length !== 1 || document.querySelector(selector) !== el ||
         document.visibilityState !== 'visible') return false;
@@ -241,7 +252,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
   const pinnedAt = performance.now();
   return {node() { return el; },geometry() { return valid() || null; },fill(value, maxAgeMs) {
     if (performance.now() - pinnedAt >= Math.min(30000, maxAgeMs) || !valid()) return 'refused';
-    if (computop && field === 'cc-exp' && !/^[0-9]{2}\/[0-9]{2}$/.test(value)) return 'refused';
+    if ((computop || stripe) && field === 'cc-exp' && !/^[0-9]{2}\/[0-9]{2}$/.test(value)) return 'refused';
     if (input && el.maxLength >= 0 && value.length > el.maxLength) return 'refused';
     let actual = value;
     if (select) {
@@ -261,7 +272,8 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false) => {
       accepted.replace(/\s/g,'') === actual.replace(/\s/g,'');
     return accepted === actual || equivalent ? 'filled' : 'uncertain';
   }};
-}'''.replace('__STYLE_GUARD__', card_processor.STYLE_GUARD)
+}'''.replace('__STYLE_GUARD__', card_processor.STYLE_GUARD).replace(
+    '__STRIPE_FIELDS__', json.dumps(card_processor.STRIPE_FIELDS))
 
 
 class BrowserCards:
