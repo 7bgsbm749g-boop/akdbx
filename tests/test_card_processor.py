@@ -83,6 +83,8 @@ def test_stripe_refuses_changed_field_binding(chrome):
     STRIPE_CARD_FRAME.replace('https:', 'http:'),
     STRIPE_CARD_FRAME.replace('js.stripe.com', 'js.stripe.com.evil.test'),
     STRIPE_CARD_FRAME.replace('js.stripe.com', 'js.stripe.com:444'),
+    STRIPE_CARD_FRAME.replace('js.stripe.com', 'js.stripe.com:bad'),
+    STRIPE_CARD_FRAME.replace('js.stripe.com', 'js.stripe.com:65536'),
     STRIPE_CARD_FRAME.replace('js.stripe.com', 'user@js.stripe.com'),
     STRIPE_CARD_FRAME.replace('accessory-target', 'loader-ui'),
     STRIPE_CARD_FRAME.replace('0123456789abcdef0123456789abcdef', 'not-a-hash'),

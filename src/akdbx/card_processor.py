@@ -71,9 +71,13 @@ def computop_url(url):
 
 def stripe_url(url):
     """Only the Stripe Payment Element card-entry endpoint used by Cloudflare."""
-    parsed = urlsplit(url)
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return False
     return (parsed.scheme == 'https' and parsed.hostname == 'js.stripe.com'
-            and parsed.port in (None, 443) and parsed.username is None and parsed.password is None
+            and port in (None, 443) and parsed.username is None and parsed.password is None
             and '?' not in url.partition('#')[0] and bool(re.fullmatch(
                 r'/v3/elements-inner-accessory-target-[0-9a-f]{32}\.html', parsed.path)))
 
