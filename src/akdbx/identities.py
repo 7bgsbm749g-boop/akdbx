@@ -127,8 +127,6 @@ class IdentityManager:
                 or 'group' in request and (not _text(group_filter, 4096) or len(group_filter.encode()) > 4096)):
             raise WriteError()
         matches = {}
-        ambiguous = set()
-        remaining = MAX_MESSAGE - len(b'{"ok":true,"entries":[]}')
         for entry in active_entries(self.broker.vault):
             if not is_identity(entry) or entry.get_custom_property(MARKER) != 'v1':
                 continue
@@ -138,26 +136,25 @@ class IdentityManager:
             if not label_matches(title, query, exact) or any(len(v.encode()) > 4096 for v in (title, group)):
                 continue
             key = (title, group)
-            if key in matches:
-                ambiguous.add(key)
-                continue
-            if len(matches) == 20:
+            matches[key] = None if key in matches else entry
+        # Exclude collisions before counting results or minting handles.
+        entries = []
+        remaining = MAX_MESSAGE - len(b'{"ok":true,"entries":[]}')
+        for (title, group), entry in matches.items():
+            if entry is None:
                 continue
             item = dict(title=title, group=group)
             # Reserve the exact serialized size before minting a handle.
             size = len(json.dumps(dict(item, handle='0' * 64), separators=(',', ':')))
-            if matches:
+            if entries:
                 size += 1  # Separator between records.
             if size > remaining:
                 continue
-            matches[key] = entry
+            entries.append(dict(item, handle=self.broker._new_handle(entry)))
             remaining -= size
-        # A vault editor can create labels and paths the save route refuses.
-        # Scan for collisions even after the result cap before issuing handles.
-        return dict(ok=True, entries=[
-            dict(title=title, group=group, handle=self.broker._new_handle(entry))
-            for (title, group), entry in matches.items() if (title, group) not in ambiguous
-        ])
+            if len(entries) == 20:
+                break
+        return dict(ok=True, entries=entries)
 
     def begin(self, request):
         values = request.get('metadata')

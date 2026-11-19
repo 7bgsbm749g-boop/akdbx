@@ -236,3 +236,29 @@ def test_literal_slash_and_nested_group_collision_issues_no_handles():
     assert not broker._handles
     result = search(broker)
     assert [entry['group'] for entry in result['entries']] == ['Personal']
+
+
+def test_ambiguous_labels_do_not_consume_result_slots():
+    entries = [SyntheticIdentity(uuid=f'{i}-{suffix}', title=f'Home {i}', path=('Ambiguous', f'Home {i}'))
+               for i in range(20) for suffix in ('a', 'b')]
+    entries.append(SyntheticIdentity(uuid='unique', title='Home', path=('Personal', 'Home')))
+    broker = Broker(Vault(entries), RecordingTyper())
+    result = search(broker, 'Home')
+    assert [entry['group'] for entry in result['entries']] == ['Personal']
+    assert len(broker._handles) == 1
+
+
+@pytest.mark.parametrize('second', [
+    dict(title=LABEL, group='Web', handle='b' * 64),
+    dict(title=LABEL, group='Other', handle='a' * 64),
+])
+def test_cli_withholds_ambiguous_search_receipts(second, monkeypatch, capsys):
+    def ambiguous(_, payload, **kwargs):
+        if payload['action'] == 'ping':
+            return dict(ok=True, identity_protocol=1, identity_delivery='cdp-identity-element-v1')
+        return dict(ok=True, entries=[dict(title=LABEL, group='Web', handle='a' * 64), second])
+
+    monkeypatch.setattr(cli, 'request', ambiguous)
+    assert cli.main(['search-identities', LABEL]) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and 'response withheld' in captured.err

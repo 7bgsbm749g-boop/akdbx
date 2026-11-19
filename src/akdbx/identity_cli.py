@@ -63,12 +63,21 @@ def valid_receipt(args, response):
         return response == dict(ok=True, filled=args.field, identity_delivery=DELIVERY)
     if set(response) != {'ok', 'entries'} or not isinstance(response['entries'], list) or len(response['entries']) > 20:
         return False
-    return all(isinstance(entry, dict) and set(entry) == {'handle', 'title', 'group'}
-               and _token(entry['handle']) and all(isinstance(entry[k], str) and len(entry[k].encode()) <= 4096
-                                                 for k in ('title', 'group'))
-               and (args.group is None or entry['group'] == args.group)
-               and label_matches(entry['title'], args.query, args.exact)
-               for entry in response['entries'])
+    labels = set()
+    handles = set()
+    for entry in response['entries']:
+        if (not isinstance(entry, dict) or set(entry) != {'handle', 'title', 'group'}
+                or not _token(entry['handle'])
+                or any(not isinstance(entry[k], str) or len(entry[k].encode()) > 4096 for k in ('title', 'group'))):
+            return False
+        label = (entry['title'], entry['group'])
+        if (label in labels or entry['handle'] in handles
+                or args.group is not None and entry['group'] != args.group
+                or not label_matches(entry['title'], args.query, args.exact)):
+            return False
+        labels.add(label)
+        handles.add(entry['handle'])
+    return True
 
 
 def run(args, request):
