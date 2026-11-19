@@ -6,7 +6,7 @@ explicit selectors, supported controls, and race checks before this workflow.
 # Create passwords and passwordless identity records
 
 Password workflows in this guide require CLI and broker version **0.12.0 or newer**
-and the DOM delivery capabilities below. The current release is **0.18.0**; 0.17.0
+and the DOM delivery capabilities below. The current release is **0.19.0**; 0.17.0
 added this workflow on native Windows.
 All password fills require [DOM password protocol 1](target-fill.md).
 Native email-code creation requires **0.9.1** and its separate passwordless
@@ -159,7 +159,9 @@ trusted HTTPS origin. Share the exact link privately with the user. The user
 reviews destination metadata, enters/repeats the chosen password, and checks
 the destination confirmation box on that page. Do not navigate, observe,
 automate or submit the real secret form yourself. There are no password CLI
-arguments, environment variables, files or clipboard operations. Failed
+arguments, environment variables or clipboard operations. To store a value that
+already exists in a file, use [`save-secret`](#save-an-existing-secret-from-a-file-or-stdin-0190)
+instead of this page; never read the file to type it here. Failed
 validation returns a generic message without echoing fields. A save attempt
 consumes the link even if persistence fails; validation failures may be retried
 before expiry. The page changes KeePass only, so coordinate it after the site
@@ -429,3 +431,84 @@ provide a universal compare-and-swap against an uncooperative writer racing
 the final check. Arrange exclusive vault editing during writes. No filesystem
 can make a website reset and a local KDBX save one transaction; the explicit
 acceptance boundary and non-secret failure states make that gap visible.
+
+## Save an existing secret from a file or stdin (0.19.0)
+
+Use `save-secret` when the authorized secret already exists on the machine,
+for example a service encryption key in a root- or service-owned file. The
+value goes from the file straight into the broker. It never passes through
+agent output, the terminal, argv, the clipboard, a browser or a screen.
+
+Require integer `secret_save_protocol: 1` and `secret_save_field: "password"`
+in `status`, plus `locked: false`, `writes_available: true` and
+`recovery_required: false`. The CLI checks all of these with a `status`
+request **before it reads any input**, and refuses an older broker, a locked
+vault (the refusal includes the private `unlock_url`) or unavailable writes
+without sending. Updating the CLI does not activate the running broker.
+
+Create a new entry from a file that only `sudo` can read:
+
+```bash
+sudo cat /path/to/secret.key | akdbx save-secret --stdin \
+  --title 'VERIFIED_TITLE' --username 'VERIFIED_ACCOUNT' \
+  --url 'https://service.example.test/' --group 'EXISTING_GROUP'
+```
+
+Or read a file the CLI user can open: `akdbx save-secret --file /path/to/secret.key ...`.
+`--file` opens one regular file and refuses symbolic links, directories,
+FIFOs and devices. Exactly one of `--stdin` and `--file` is required.
+`--stdin` refuses an interactive terminal, so nobody types the value.
+
+To replace the password of an existing entry, search, check the four exact
+metadata fields, and pass the fresh handle after `--`:
+
+```bash
+sudo cat /path/to/secret.key | akdbx save-secret --stdin \
+  --title 'SELECTED_TITLE' --username 'SELECTED_ACCOUNT' \
+  --url 'SELECTED_URL' --group 'SELECTED_GROUP' -- SEARCH_HANDLE
+```
+
+The old password stays in the entry history. Like other updates, the handle
+is single use, passwordless, card and identity records refuse, and changed
+metadata refuses.
+
+**Stored value.** The input is read as bytes. Exactly one trailing line ending
+(`\n` or `\r\n`) is removed, because `cat` of a one-line key file prints one.
+The rest is stored exactly, including leading or trailing spaces, in the
+entry's protected KeePass **Password** field. A file without a final newline
+is stored unchanged. Input must be nonempty UTF-8 text of at most 64 KiB with
+no control characters, so a second line, a NUL byte, a byte order mark or a
+binary file refuses. Encode binary data (for example as base64) first; KeePass
+attachments are not supported by this command.
+
+**Metadata.** Title, account and a site URL (`http` or `https`) are required,
+and the group must already exist, as for `create-entry`. For a service key,
+use the service's own site URL and the account name the service uses for the
+key (for example the system account). A new entry refuses when any active
+entry has the same account (case-insensitive) on the same site origin; use
+the update form with a selected handle instead.
+
+**Receipt.** Success prints only
+`{"ok": true, "state": "saved", "saved": "created" | "updated", "metadata": {...}}`
+after the same verified encrypted save as other writes: vault lock, on-disk
+change detection, encrypted backup, atomic replace, reopen and exact
+comparison of the saved value and its protection flag. The save invalidates
+earlier search handles and pending writes. Errors are fixed text; the CLI
+withholds any receipt with an unexpected shape or one that repeats the value.
+
+**Agent rules.**
+
+- Never `cat`, `head`, `less`, `base64`, `xxd`, `echo`, `tee`, `printf` or
+  otherwise print the file. Never copy it, put it in a variable or a temporary
+  file, or pass it as an argument. Only the `| akdbx save-secret --stdin`
+  pipe, or `--file`, may touch it. Do not run the command with shell tracing
+  (`set -x`) or redirect its stdin from anywhere but the pipe.
+- If `sudo` needs a password, give it through the host's private secret
+  delivery (for example `sudo -S -p '' cat FILE < PASSWORD_FILE | akdbx ...`).
+  Never type it into the pipe.
+- A pre-send refusal (`request not sent`, `secret not read`) changed nothing.
+  For `outcome uncertain` or `unconfirmed`, run `status` and a fresh narrow
+  search before any retry; do not save again automatically.
+- Verify with `search`: the entry metadata confirms the save. Never read the
+  value back to compare it.
+

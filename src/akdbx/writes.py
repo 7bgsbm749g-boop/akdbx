@@ -77,6 +77,15 @@ def sso_capabilities():
                 sso_auth_methods=list(SSO_AUTH_METHODS))
 
 
+SECRET_SAVE_PROTOCOL = 1
+SECRET_SAVE_FIELD = 'password'
+
+
+def secret_save_capabilities():
+    """Operator secrets piped to the CLI are saved to the protected Password field."""
+    return dict(secret_save_protocol=SECRET_SAVE_PROTOCOL, secret_save_field=SECRET_SAVE_FIELD)
+
+
 def passwordless_capabilities():
     return dict(passwordless_identity_supported=True, passwordless_identity_protocol=1,
                 passwordless_auth_methods=list(PASSWORDLESS_AUTH_METHODS))
@@ -468,6 +477,99 @@ class WriteManager:
             raise WriteError('save failed; vault update not confirmed') from None
         self.invalidate_revision()
         return dict(ok=True, state='saved', metadata=dict(values), auth_method=method, passwordless=True)
+
+    def save_secret(self, request):
+        """Save an operator-supplied secret into a new or selected entry's Password field.
+
+        The secret arrives only over the private broker socket. It is never
+        returned, logged or placed in an error message: every message below
+        is fixed text.
+        """
+        updating = 'handle' in request
+        if (set(request) - {'handle'} != {'action', 'metadata', 'secret', 'secret_save_protocol'}
+                or type(request.get('secret_save_protocol')) is not int
+                or request['secret_save_protocol'] != SECRET_SAVE_PROTOCOL):
+            raise WriteError('secret save accepts only destination metadata, one secret and protocol 1')
+        secret = request.get('secret')
+        try:
+            if not isinstance(secret, str) or not secret:
+                raise ValueError
+            self.broker._validate_credential_text(secret)
+        except Exception:
+            raise WriteError('secret must be nonempty UTF-8 text of at most 64 KiB without control characters') from None
+        values = request.get('metadata')
+        if not isinstance(values, dict):
+            raise WriteError('invalid destination metadata')
+        validate_metadata(values)
+        entry = None
+        if updating:
+            try:
+                entry = self.broker._resolve(request.get('handle'))
+            except ValueError:
+                raise WriteError('unknown or expired handle; search again') from None
+            from .cards import is_card
+            from .identities import is_identity
+            if is_identity(entry):
+                raise WriteError('identity record cannot be used for login writes')
+            if is_card(entry):
+                raise WriteError('card record requires card save')
+            if passwordless_identity(entry):
+                raise WriteError('passwordless record has no separate password; use its sign-in method')
+        self._require_available()
+        vault = self.broker.vault
+        if entry is not None:
+            if (metadata(entry) != values
+                    or sum(metadata(e) == values for e in active_entries(vault)) != 1
+                    or not any(e.uuid == entry.uuid for e in active_entries(vault))):
+                raise WriteError('entry metadata mismatch; search again')
+            _entry_write_clock(entry, self.broker.wall_clock)
+            uuid = entry.uuid
+        else:
+            group_for(vault, values['group'])
+            if duplicate(vault, values):
+                raise WriteError('duplicate site/account; select an existing entry')
+            uuid = None
+
+        def selected(candidate):
+            if uuid is not None:
+                entries = [e for e in active_entries(candidate) if e.uuid == uuid]
+            else:
+                entries = [e for e in active_entries(candidate) if metadata(e) == values]
+            if len(entries) != 1 or metadata(entries[0]) != values:
+                raise WriteError('entry changed; search again')
+            return entries[0]
+
+        def mutate(candidate):
+            if uuid is not None:
+                target = selected(candidate)
+                if passwordless_identity(target):
+                    raise WriteError('passwordless record has no separate password; use its sign-in method')
+                changed_at = _entry_changed_at(target, self.broker.wall_clock)
+                target.save_history()
+                target.password = secret
+                target.mtime = changed_at
+            else:
+                if duplicate(candidate, values):
+                    raise WriteError('duplicate site/account; select an existing entry')
+                target = _append_entry(candidate, group_for(candidate, values['group']), values, secret)
+            target._element.find('./String[Key="Password"]/Value').set('Protected', 'True')
+
+        def verify_saved(candidate):
+            target = selected(candidate)
+            value = target._element.find('./String[Key="Password"]/Value')
+            if target.password != secret or value is None or value.get('Protected') != 'True':
+                raise WriteError('secret save verification failed; vault update not confirmed')
+
+        try:
+            self.broker.vault = vault._akdbx_store.commit(vault, mutate, verify_candidate=verify_saved)
+        except (SaveError, WriteError):
+            raise
+        except Exception:
+            raise WriteError('save failed; vault update not confirmed') from None
+        finally:
+            secret = None
+        self.invalidate_revision()
+        return dict(ok=True, state='saved', saved='updated' if updating else 'created', metadata=dict(values))
 
     def change_additional_url(self, request):
         """Metadata-only add/remove of one KP2A_URL* origin; never reads or changes the password."""

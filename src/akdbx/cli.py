@@ -21,7 +21,7 @@ from .runtime import anchored_socket_path, open_private_runtime_directory
 from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
 from .notifications import validate_webhook_url
-from . import card_cli, identity_cli
+from . import card_cli, identity_cli, secret_cli
 
 
 # Reserved example domain: deployment addresses belong in local configuration.
@@ -172,7 +172,7 @@ def _request_timeout(payload: dict) -> int:
     # Frame routes resolve bounded out-of-process iframe targets first.
     slow = action in {'pin-card-target', 'pin-identity-target', 'list-password-frames'} or (
         action == 'pin-password-target' and 'frame_origin' in payload)
-    return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password') else 15 if slow else 5
+    return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password', secret_cli.COMMAND) else 15 if slow else 5
 
 
 def request(
@@ -259,6 +259,7 @@ def parser() -> argparse.ArgumentParser:
     commands = result.add_subparsers(dest="command", required=True)
     card_cli.add_parsers(commands)
     identity_cli.add_parsers(commands)
+    secret_cli.add_parser(commands)
     start = commands.add_parser("serve", help="unlock a KDBX and run the local broker")
     start.add_argument("database", type=Path)
     start.add_argument('--card-browser-profile', type=Path, default=os.environ.get('AKDBX_CARD_BROWSER_PROFILE'),
@@ -480,6 +481,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in identity_cli.COMMANDS:
         return identity_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                             expected_unlock_origin=args.unlock_origin))
+    if args.command == secret_cli.COMMAND:
+        return secret_cli.run(args, lambda payload, **kwargs: request(
+            args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))
     payload = {"action": "ping" if args.command == "status" else args.command}
     if args.command in {'unlock-subscription-status', 'unsubscribe-unlock'}:
         payload['subscription_id'] = args.subscription_id
