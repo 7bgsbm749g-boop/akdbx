@@ -632,6 +632,9 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
 
         evaluate(chrome, "document.body.insertAdjacentHTML('beforeend','<input id=phone autocomplete=tel>'); phone.focus()")
         assert target('email', '#phone', code=1)['delivery'] == 'not-started'
+        evaluate(chrome, "phone.autocomplete = 'worK email'")
+        assert target('email', '#phone', code=1)['delivery'] == 'not-started'
+        evaluate(chrome, "phone.autocomplete = 'tel'")
         assert target('tel', '#phone', code=1, url=chrome.url.replace('https:', 'http:'))['delivery'] == 'not-started'
         pin = target('tel', '#phone')
         evaluate(chrome, 'password.focus()')

@@ -177,6 +177,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
   if (select && !(identity ? ['country', 'country-name', 'address-level1'] :
                                ['cc-exp-month', 'cc-exp-year']).includes(field)) return null;
   const type = el.type, autocomplete = el.getAttribute('autocomplete');
+  if (identity && /[^\x00-\x7f]/.test(autocomplete || '')) return null;
   const tokens = identity ? (autocomplete || '').toLowerCase().match(/[^\t\n\f\r ]+/g) || [] :
     (autocomplete || '').trim().toLowerCase().split(/\s+/);
   // Computop's hosted form has no cc-* annotations. This explicit processor
