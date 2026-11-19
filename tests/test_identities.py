@@ -221,3 +221,18 @@ def test_cli_withholds_search_entries_outside_requested_filters(title, group, ex
     assert cli.main(args) == 2
     captured = capsys.readouterr()
     assert not captured.out and 'response withheld' in captured.err
+
+
+def test_literal_slash_and_nested_group_collision_issues_no_handles():
+    entries = [
+        SyntheticIdentity(uuid='literal', title=LABEL, path=('Work/Travel', LABEL)),
+        SyntheticIdentity(uuid='nested', title=LABEL, path=('Work', 'Travel', LABEL)),
+        SyntheticIdentity(uuid='clear', title=LABEL, path=('Personal', LABEL)),
+    ]
+    broker = Broker(Vault(entries), RecordingTyper())
+    result = broker.dispatch(dict(action='search-identities', identity_protocol=1,
+                                  query=LABEL, exact=True, group='Work/Travel'))
+    assert result == dict(ok=True, entries=[])
+    assert not broker._handles
+    result = search(broker)
+    assert [entry['group'] for entry in result['entries']] == ['Personal']

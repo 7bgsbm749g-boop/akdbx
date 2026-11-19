@@ -52,7 +52,8 @@ akdbx fill-identity --field postal-code --target TARGET_FROM_PIN -- HANDLE_FROM_
 Search returns the title, group path and handle for up to 20 case-insensitive
 label matches, subject to the response size limit. Use `--exact` for the full
 case-sensitive label and `--group EXACT_GROUP_PATH` for the group. These filters run before
-the limits. Select the exact label and group. Search does not
+the limits. Select the exact label and group. If more than one entry has the
+same label and group path, the broker omits those entries. Search does not
 inspect address, phone, name or email values. A pin lasts 30 seconds. A search handle
 lasts up to five minutes. Each is consumed on the first fill attempt.
 

@@ -596,6 +596,10 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
         evaluate(chrome, '''document.body.insertAdjacentHTML("beforeend", '<form id="identity-checkout"></form>');
           const checkout = document.getElementById("identity-checkout");
           window.submitAttempts = 0;
+          window.identityKeyEvents = 0;
+          for (const event of ["keydown", "keypress", "keyup"]) {
+            document.addEventListener(event, () => { window.identityKeyEvents++; }, true);
+          }
           checkout.addEventListener("submit", e => { e.preventDefault(); window.submitAttempts++; });
           for (const event of ["input", "change"]) checkout.addEventListener(event, () => checkout.requestSubmit());''')
         tags = {
@@ -637,5 +641,5 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
         evaluate(chrome, 'phone.focus()')
         assert command('fill-identity', '--field', 'tel', '--target', pin['target'], '--', handle,
                        code=1)['delivery'] == 'not-started'
-        assert evaluate(chrome, "phone.value === '' && password.value === '' && submitAttempts === 0")
+        assert evaluate(chrome, "phone.value === '' && password.value === '' && submitAttempts === 0 && identityKeyEvents === 0")
     assert broker.typer.events == []
