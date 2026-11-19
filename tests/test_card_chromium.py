@@ -642,7 +642,11 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
         assert command('fill-identity', '--field', 'tel', '--target', pin['target'], '--', handle,
                        code=1)['delivery'] == 'not-started'
         evaluate(chrome, 'phone.focus()')
-        assert command('fill-identity', '--field', 'tel', '--target', pin['target'], '--', handle,
+        fresh_pin = target('tel', '#phone')
+        assert command('fill-identity', '--field', 'tel', '--target', fresh_pin['target'], '--', handle,
+                       code=1)['delivery'] == 'not-started'
+        fresh_handle = command('search-identities', LABEL)['entries'][0]['handle']
+        assert command('fill-identity', '--field', 'tel', '--target', pin['target'], '--', fresh_handle,
                        code=1)['delivery'] == 'not-started'
         assert evaluate(chrome, "phone.value === '' && password.value === '' && submitAttempts === 0 && identityKeyEvents === 0")
     assert broker.typer.events == []

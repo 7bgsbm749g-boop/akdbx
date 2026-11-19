@@ -80,7 +80,8 @@ def test_private_save_reopens_protected_and_stays_out_of_login_and_logs(deployed
     assert broker.dispatch(dict(action='search', query=LABEL))['entries'] == []
     refused = broker.dispatch(dict(action='fill', mode='username', handle=found['handle'],
                                    **x11_target_request(broker)))
-    assert not refused['ok'] and typer.events == []
+    assert refused == {'ok': False, 'error': 'identity record requires identity fill; no keys sent'}
+    assert typer.events == []
     login_metadata = dict(title=LABEL, group='Web', username='synthetic-account', url='https://example.test')
     for action in ('setup-totp', 'update-password', 'generate-password'):
         handle = search(broker)['entries'][0]['handle']
