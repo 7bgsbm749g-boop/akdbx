@@ -12,7 +12,8 @@ out-of-process iframes from their own targets), and accepts it only when:
   without a registrable domain, such as IP literals, must share one exact
   origin;
 * the field frame's security origin is exactly the caller's `frame_origin`;
-  the saved credential's origin must later equal this same frame origin;
+  the saved credential's main URL origin or one of its exact KP2A_URL*
+  additional origins must later equal this same frame origin;
 * each frame owner is a connected, visible `<iframe>` in its parent document
   (not in a shadow root, no `srcdoc`, and a `sandbox` attribute only when it
   keeps both `allow-scripts` and `allow-same-origin`).

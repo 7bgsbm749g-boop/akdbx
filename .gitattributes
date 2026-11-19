@@ -1,2 +1,3 @@
 src/akdbx/import_assets/jsQR.js linguist-vendored
 src/akdbx/import_assets/jsQR.LICENSE linguist-vendored -whitespace
+src/akdbx/public_suffix_assets/public_suffix_list.dat linguist-vendored -whitespace -text

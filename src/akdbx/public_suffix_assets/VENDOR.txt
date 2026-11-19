@@ -1,0 +1,6 @@
+Public Suffix List, MPL-2.0 (license notice at the top of the file).
+Source: https://publicsuffix.org/list/public_suffix_list.dat
+VERSION: 2026-11-17_16-14-34_UTC
+COMMIT: 09c1b150f33c6145a73afcf7db0fb872fc54b4d1
+SHA256: 809adae1a2cb1621b70165c11e0d14412d3f104f40a4ebed9a99e23c54f78d71
+Vendored unmodified; read offline only by add-url's same-site check.
