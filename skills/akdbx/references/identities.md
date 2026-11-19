@@ -50,8 +50,9 @@ akdbx fill-identity --field postal-code --target TARGET_FROM_PIN -- HANDLE_FROM_
 ```
 
 Search returns the title, group path and handle for up to 20 case-insensitive
-label matches. Select the exact label and group. Search does not inspect
-address, phone, name or email values. A pin lasts 30 seconds. A search handle
+label matches. Use `search-identities LABEL --group EXACT_GROUP_PATH` to narrow
+matches before the limit. Select the exact label and group. Search does not
+inspect address, phone, name or email values. A pin lasts 30 seconds. A search handle
 lasts up to five minutes. Each is consumed on the first fill attempt.
 
 Use the matching HTML autocomplete field token:

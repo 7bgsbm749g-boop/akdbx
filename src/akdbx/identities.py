@@ -119,7 +119,9 @@ class IdentityManager:
 
     def search(self, request):
         query = request.get('query', '')
-        if set(request) - {'action', 'identity_protocol', 'query'} or not _text(query, 500):
+        group_filter = request.get('group')
+        if (set(request) - {'action', 'identity_protocol', 'query', 'group'} or not _text(query, 500)
+                or 'group' in request and (not _text(group_filter, 4096) or len(group_filter.encode()) > 4096)):
             raise WriteError()
         query = query.casefold()
         matches = []
@@ -127,6 +129,8 @@ class IdentityManager:
             if not is_identity(entry) or entry.get_custom_property(MARKER) != 'v1':
                 continue
             title, group = entry.title or '', '/'.join(entry.path[:-1])
+            if group_filter is not None and group != group_filter:
+                continue
             if query not in title.casefold() or any(len(v.encode()) > 4096 for v in (title, group)):
                 continue
             matches.append((dict(title=title, group=group), entry))

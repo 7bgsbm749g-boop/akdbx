@@ -2,9 +2,12 @@
 import json
 from urllib.parse import urlencode, urlsplit
 
+import pytest
+
 from akdbx import cli
+from akdbx.broker import Broker
 from akdbx.identities import FIELDS, MARKER, property_key
-from test_broker import x11_target_request
+from test_broker import Entry, RecordingTyper, Vault, running_broker, x11_target_request
 from test_web_unlock import call
 from test_writes import deployed, reopened, template
 
@@ -124,3 +127,36 @@ def test_cli_refuses_an_old_broker_and_withholds_unexpected_fields(monkeypatch, 
     output = capsys.readouterr()
     assert not output.out and IDENTITY['email'] not in output.err
     assert 'response withheld' in output.err
+
+
+def test_search_group_filter_runs_before_label_limit(tmp_path, capsys):
+    class Identity(Entry):
+        def get_custom_property(self, key):
+            return 'v1' if key == MARKER else None
+
+    entries = [Identity(uuid=str(i), title=LABEL, path=(f'Group {i}', LABEL)) for i in range(21)]
+    broker = Broker(Vault(entries), RecordingTyper())
+    assert len(search(broker)['entries']) == 20
+    rpc = tmp_path / 'private' / 'identity-rpc.sock'
+    with running_broker(rpc, broker):
+        assert cli.main(['--socket', str(rpc), 'search-identities', LABEL, '--group', 'Group 20']) == 0
+    found = json.loads(capsys.readouterr().out)['entries']
+    assert len(found) == 1 and found[0]['group'] == 'Group 20'
+
+
+@pytest.mark.parametrize('url', [
+    'https://node.example:9443/identity',
+    'https://node.example:9443/identity?token=malformed',
+    'https://wrong.example:9443/identity?token=' + 'a' * 43,
+])
+def test_cli_withholds_invalid_private_save_link(url, tmp_path, capsys, monkeypatch):
+    broker = Broker(Vault([]), RecordingTyper())
+    monkeypatch.setattr(broker.identities, 'begin', lambda _: dict(
+        ok=True, state='pending', write_handle='a' * 64, private_url=url))
+    rpc = tmp_path / 'private' / 'identity-rpc.sock'
+    with running_broker(rpc, broker):
+        code = cli.main(['--socket', str(rpc), '--unlock-origin', 'https://node.example:9443',
+                         'create-identity', '--title', LABEL, '--group', 'Web'])
+    captured = capsys.readouterr()
+    assert code == 2 and not captured.out
+    assert url not in captured.err and 'response withheld' in captured.err

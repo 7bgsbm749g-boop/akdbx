@@ -20,6 +20,7 @@ def add_parsers(commands):
     p.add_argument('--group', required=True, help='existing group path')
     p = commands.add_parser('search-identities', help='find identities by non-secret label')
     p.add_argument('query')
+    p.add_argument('--group', help='limit matches to this exact group path')
     p = commands.add_parser('pin-identity-target', help='pin one focused HTTPS identity field')
     for key in PIN_ARGS[:-1]:
         p.add_argument('--' + key.replace('_', '-'), required=True)
@@ -40,9 +41,11 @@ def valid_receipt(args, response):
                 and set(response) <= {'ok', 'error', 'unlock_url', 'delivery'}
                 and response.get('delivery', 'not-started') in {'not-started', 'uncertain'})
     if args.command == 'create-identity':
-        return (set(response) == {'ok', 'state', 'write_handle', 'private_url'}
-                and response['state'] == 'pending' and _token(response['write_handle'])
-                and urlsplit(response['private_url']).path == '/identity')
+        if set(response) != {'ok', 'state', 'write_handle', 'private_url'}:
+            return False
+        url = urlsplit(response['private_url'])
+        return (response['state'] == 'pending' and _token(response['write_handle'])
+                and url.path == '/identity' and re.fullmatch(r'token=[A-Za-z0-9_-]{43}', url.query) is not None)
     if args.command == 'pin-identity-target':
         return (set(response) == {'ok', 'field', 'target', 'expires_in', 'identity_delivery'}
                 and response['field'] == args.field and _token(response['target'])
@@ -74,6 +77,8 @@ def run(args, request):
             payload['metadata'] = dict(title=args.title, group=args.group)
         elif args.command == 'search-identities':
             payload['query'] = args.query
+            if args.group is not None:
+                payload['group'] = args.group
         elif args.command == 'pin-identity-target':
             payload.update({key: getattr(args, key) for key in PIN_ARGS})
         else:
