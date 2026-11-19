@@ -106,7 +106,8 @@ class SecretCaptures:
                        else dict(sinks={}, helper_socket=None, broker_uids=set()))
         # One delivery per sink at a time, from reading the field to the end of
         # the restart, so an older value cannot overtake a newer delivery.
-        self._sink_locks = {name: threading.Lock() for name in self.config['sinks']}
+        # Keyed by destination path, so two sink names for one file share it.
+        self._sink_locks = {sink['path']: threading.Lock() for sink in self.config['sinks'].values()}
 
     def capabilities(self):
         return capabilities(self.config['sinks'])
@@ -252,7 +253,7 @@ class SecretCaptures:
             return dict(ok=False, error='invalid secret delivery request; nothing written')
         name = request.get('sink')
         sink = self.config['sinks'].get(name) if isinstance(name, str) else None
-        lock = self._sink_locks.setdefault(name, threading.Lock()) if sink is not None else None
+        lock = self._sink_locks.setdefault(sink['path'], threading.Lock()) if sink is not None else None
         if lock is not None and not lock.acquire(timeout=SINK_WAIT):
             with broker._vault_lock:
                 try:

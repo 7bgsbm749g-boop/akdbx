@@ -259,6 +259,7 @@ def test_restart_command_runs_with_fixed_argv_and_environment(tmp_path):
     assert sink_helper.deliver(plain, VALUE) == dict(restarted=None)
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason='the helper never accepts UID 0 as a broker; run as an ordinary user')
 def test_root_helper_protocol_checks_peer_sink_and_field(tmp_path):
     directory = tmp_path / 'svc'
     directory.mkdir(mode=0o700)
@@ -348,7 +349,7 @@ def test_deliveries_to_one_sink_are_serialized_from_read_to_write(deployed, tmp_
     assert fake_capture(broker, monkeypatch)['ok']
     import akdbx.secrets_capture as capture
     monkeypatch.setattr(capture, 'SINK_WAIT', 0.2)
-    lock = broker.secrets._sink_locks['app-env']
+    lock = broker.secrets._sink_locks[str(tmp_path / 'svc' / 'app.env')]
     selected = handle(broker)
     with lock:  # Another delivery is between its read and its write.
         result = deliver(broker, selected)
