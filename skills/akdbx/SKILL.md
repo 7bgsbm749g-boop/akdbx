@@ -14,11 +14,11 @@ does not apply to card entries.
 Use this skill for the user's authorized login task. The broker exposes login metadata and delivers passwords to verified, retained Chromium DOM inputs. Username/TOTP routes can use pinned X11 targets. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
 
 On native Windows, first read [Windows operation](references/windows.md). Its
-loopback HTTPS, named-pipe transport, HWND pins and separate field fills replace
-the Linux/X11/Tailscale-specific instructions below. Windows support is
-experimental and delivers only usernames and TOTP codes; it refuses password,
-login and generated-password fills. Check each application's nonsecret outcome
-after a fill. Merge, snapshot admission and cards are Linux-only.
+loopback HTTPS page, named-pipe transport and HWND pins replace the
+Linux/X11/Tailscale-specific instructions below. From 0.17.0 every workflow in
+this skill works on Windows: DOM password, login and generated-password fills,
+password writes, cards, merge and snapshot admission. Check `status` for each
+capability and check each application's nonsecret outcome after a fill.
 
 ## Session delegation
 
@@ -32,7 +32,7 @@ Locate the installed CLI in private deployment configuration. Use its absolute p
 /absolute/path/to/akdbx/.venv/bin/akdbx status
 ```
 
-The maintained skill source is the repository's `skills/akdbx` directory. A local installation can link to that directory from the agent's skills directory. It can be explicitly invoked as `$akdbx`. Keep real hostnames, account paths and desktop settings in private deployment configuration, not in tracked skill files.
+The maintained skill source is the repository's `skills/akdbx` directory. A local installation can link to that directory from the agent's skills directory (on Windows, a directory junction needs no elevation). It can be explicitly invoked as `$akdbx`. Keep real hostnames, account paths and desktop settings in private deployment configuration, not in tracked skill files.
 
 If the broker is absent, the CLI is missing, the socket differs, or desktop/Tailscale setup needs attention, read [VPS setup and recovery](references/vps-setup.md). Do not start another broker merely because one query failed. The real database path must come from the user's configuration or request; the repository's test KDBX files are not the user's vault.
 

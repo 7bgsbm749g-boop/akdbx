@@ -2,15 +2,16 @@
 
 `akdbx` is a local KeePass (`.kdbx`) autofill broker designed for AI agents. Agents may search login metadata and choose an opaque, short-lived handle. They never receive the password: the broker sends it to a retained Chromium DOM password input and returns only a success receipt.
 
-An **experimental native Windows backend** adds local named pipes, Windows access
-checks, directed Unicode window messages for username and TOTP fills, encrypted
-saves and a local HTTPS unlock page. Windows refuses password, login and
-generated-password fills: only the Linux Chromium DOM route may receive a
-password, because a browser's address bar shares its page's window identity.
-Merge, snapshot admission and card delivery also remain Linux-only. See
-[Windows setup and validation](docs/windows.md) before using it, and use
-synthetic vaults until its remaining manual checks pass. The Linux-specific
-security and Tailscale instructions below do not describe the Windows transport.
+The **native Windows backend** has the same feature set from 0.17.0: password,
+login and generated-password fills through the same Chromium DOM route,
+password writes, cards, merge and snapshot admission. It uses local named
+pipes, Windows access checks, a loopback HTTPS page, and directed Unicode
+window messages for username and TOTP fills in native applications. A window
+pin never receives a password, because a browser's address bar shares its
+page's window identity. See [Windows setup and validation](docs/windows.md)
+for its browser and engine requirements, its limits and the checks that are
+still pending. The Linux-specific security and Tailscale instructions below do
+not describe the Windows transport.
 
 Source and issue tracker: [7bgsbm749g-boop/akdbx](https://github.com/7bgsbm749g-boop/akdbx).
 

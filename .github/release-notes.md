@@ -3,7 +3,7 @@ akdbx {{VERSION}} is one release for every platform. Install the same wheel on L
 | Platform | Status | Fills | Not available |
 | --- | --- | --- | --- |
 | Linux (X11 + Chromium) | Established | Passwords and logins to verified Chromium DOM inputs; usernames and TOTP to pinned X11 windows; cards | — |
-| Windows 10/11 | Experimental | Usernames and TOTP to pinned windows; password imports and saves through the private HTTPS page | Password, login and generated-password fills; merge, snapshot admission, cards |
+| Windows 10/11 | Same feature set from 0.17.0 | Passwords and logins to verified Chromium DOM inputs; usernames and TOTP to pinned windows; cards | Unlock from another device; the browser native host for authenticator capture |
 
 Verify a download before installing it:
 
@@ -12,4 +12,6 @@ sha256sum --check SHA256SUMS
 gh attestation verify akdbx-{{VERSION}}-py3-none-any.whl --repo 7bgsbm749g-boop/akdbx
 ```
 
-Restarting a broker on a new version locks its vault until the private unlock page is used. See `docs/releasing.md` for upgrade steps and `docs/windows.md` for Windows limits.
+Merge and snapshot admission need KeePassXC CLI 2.7.10 or newer, below 2.8, on both platforms; on Windows it must be installed for all users.
+
+Restarting a broker on a new version locks its vault until the private unlock page is used. See `docs/releasing.md` for upgrade steps and `docs/windows.md` for Windows setup, limits and pending checks.
