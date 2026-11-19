@@ -341,6 +341,22 @@ def test_capture_save_then_deliver_writes_only_the_configured_sink(deployed, tmp
     assert VALUE not in json.dumps([saved, status, receipt]) + out.out + out.err + caplog.text
 
 
+def test_deliveries_to_one_sink_are_serialized_from_read_to_write(deployed, tmp_path, monkeypatch):
+    import threading
+    broker, _, _, _ = deployed
+    configured(broker, tmp_path)
+    assert fake_capture(broker, monkeypatch)['ok']
+    import akdbx.secrets_capture as capture
+    monkeypatch.setattr(capture, 'SINK_WAIT', 0.2)
+    lock = broker.secrets._sink_locks['app-env']
+    selected = handle(broker)
+    with lock:  # Another delivery is between its read and its write.
+        result = deliver(broker, selected)
+    assert result == dict(ok=False, error='sink busy with another delivery; nothing written')
+    assert deliver(broker, selected)['error'] == 'unknown or expired handle; search again'
+    assert deliver(broker, handle(broker))['ok'] and not lock.locked()
+
+
 def test_deliver_refusals_write_nothing_and_consume_the_handle(deployed, tmp_path, monkeypatch):
     broker, _, _, _ = deployed
     target = configured(broker, tmp_path)

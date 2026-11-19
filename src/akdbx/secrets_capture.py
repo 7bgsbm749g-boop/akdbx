@@ -14,6 +14,7 @@ import os
 import socket
 import stat
 import struct
+import threading
 import unicodedata
 
 from .persistence import SaveError
@@ -30,6 +31,7 @@ SECRET_RECORD = 'akdbx.secret-record'
 CAPTURED_FIELDS = 'akdbx.captured-fields'
 REFUSED = 'secret capture refused: target missing, expired, changed, hidden, empty, multi-line or not on the entry origin; nothing saved'
 HELPER_TIMEOUT = 90
+SINK_WAIT = 30
 
 
 def _helper_errors():
@@ -102,6 +104,9 @@ class SecretCaptures:
             raise SinkError('secret sinks are available only on Linux in this release')
         self.config = (load_config(os.fspath(sinks_path), {0, os.getuid()}) if sinks_path is not None
                        else dict(sinks={}, helper_socket=None, broker_uids=set()))
+        # One delivery per sink at a time, from reading the field to the end of
+        # the restart, so an older value cannot overtake a newer delivery.
+        self._sink_locks = {name: threading.Lock() for name in self.config['sinks']}
 
     def capabilities(self):
         return capabilities(self.config['sinks'])
@@ -247,6 +252,22 @@ class SecretCaptures:
             return dict(ok=False, error='invalid secret delivery request; nothing written')
         name = request.get('sink')
         sink = self.config['sinks'].get(name) if isinstance(name, str) else None
+        lock = self._sink_locks.setdefault(name, threading.Lock()) if sink is not None else None
+        if lock is not None and not lock.acquire(timeout=SINK_WAIT):
+            with broker._vault_lock:
+                try:
+                    broker._resolve(request.get('handle'))  # One use, even on refusal.
+                except ValueError:
+                    pass
+            return dict(ok=False, error='sink busy with another delivery; nothing written')
+        try:
+            return self._deliver(request, sink)
+        finally:
+            if lock is not None:
+                lock.release()
+
+    def _deliver(self, request, sink):
+        broker = self.broker
         with broker._vault_lock:
             try:
                 entry = broker._resolve(request.get('handle'))  # One use, even on refusal.
