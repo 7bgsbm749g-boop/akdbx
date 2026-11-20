@@ -1,6 +1,6 @@
 ---
 name: akdbx
-description: Use the local KeePass broker to save and fill logins, identities, payment cards and TOTP codes without returning secrets to the agent, or merge encrypted KDBX databases. Use for authorized login, card autofill, address autofill, account save, vault merge, or private Tailscale unlock.
+description: Use the local KeePass broker to save and fill logins, identities, payment cards and TOTP codes without returning secrets to the agent, capture a secret a website shows once and deliver it to a configured service file, or merge encrypted KDBX databases. Use for authorized login, card autofill, address autofill, account save, shown-once secret capture, vault merge, or private Tailscale unlock.
 ---
 
 # KeePass login and autofill
@@ -18,6 +18,15 @@ Card delivery uses a verified DOM element and has no keyboard fallback. Never
 use login/password fills, clipboard operations or generic typing for card values.
 Card filling does not authorize submitting a purchase. The login workflow below
 does not apply to card entries.
+
+For a secret that a website shows once (an OAuth client secret or API key)
+and that must go into a service configuration, read [secret capture and
+delivery](references/secret-capture.md). Use `pin-password-target --mode
+read`, `capture-secret` and `deliver-secret --sink NAME`. The broker reads the
+element itself and writes only to sinks configured at broker start. After the
+site shows the secret, never screenshot, snapshot, read, copy or record that
+page, and never select its text (focus the element instead); choose the
+selector from structure only.
 
 Use this skill for the user's authorized login task. The broker exposes login metadata and delivers passwords to verified, retained Chromium DOM inputs. Username/TOTP routes can use pinned X11 targets. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
 

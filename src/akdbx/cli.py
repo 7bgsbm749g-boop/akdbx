@@ -21,7 +21,8 @@ from .runtime import anchored_socket_path, open_private_runtime_directory
 from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
 from .notifications import validate_webhook_url
-from . import card_cli, identity_cli, secret_cli
+from . import capture_cli, card_cli, identity_cli, secret_cli
+from .sink_helper import SinkError
 
 
 # Reserved example domain: deployment addresses belong in local configuration.
@@ -172,7 +173,7 @@ def _request_timeout(payload: dict) -> int:
     # Frame routes resolve bounded out-of-process iframe targets first.
     slow = action in {'pin-card-target', 'pin-identity-target', 'list-password-frames'} or (
         action == 'pin-password-target' and 'frame_origin' in payload)
-    return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password', secret_cli.COMMAND) else 15 if slow else 5
+    return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password', secret_cli.COMMAND, *capture_cli.COMMANDS) else 15 if slow else 5
 
 
 def request(
@@ -260,6 +261,7 @@ def parser() -> argparse.ArgumentParser:
     card_cli.add_parsers(commands)
     identity_cli.add_parsers(commands)
     secret_cli.add_parser(commands)
+    capture_cli.add_parsers(commands)
     start = commands.add_parser("serve", help="unlock a KDBX and run the local broker")
     start.add_argument("database", type=Path)
     start.add_argument('--card-browser-profile', type=Path, default=os.environ.get('AKDBX_CARD_BROWSER_PROFILE'),
@@ -272,6 +274,8 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--unlock-socket", type=Path, help=argparse.SUPPRESS)
     start.add_argument("--unlock-url", help=argparse.SUPPRESS)
     start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket")
+    start.add_argument('--secret-sinks', type=Path, default=os.environ.get('AKDBX_SECRET_SINKS'),
+                       help='operator sink configuration for deliver-secret (root- or broker-owned, not group/other writable)')
     start.add_argument('--tls-cert', type=Path, help='Windows: trusted PEM certificate for the local HTTPS unlock page')
     start.add_argument('--tls-key', type=Path, help='Windows: private PEM certificate key with a restrictive DACL')
     search = commands.add_parser("search", help="return matching non-secret login metadata")
@@ -287,7 +291,8 @@ def parser() -> argparse.ArgumentParser:
         password_pin.add_argument('--' + flag, required=True)
     password_pin.add_argument('--frame-origin', help='exact HTTPS origin of the child frame named by --frame-id (from list-password-frames); '
                               'the saved credential must match this origin; requires broker password_frame_protocol 1')
-    password_pin.add_argument('--mode', choices=('password', 'username', 'login'), default='password')
+    password_pin.add_argument('--mode', choices=('password', 'username', 'login', 'read'), default='password',
+                              help='read pins a focused element that shows a secret, for capture-secret; never select its text')
     password_pin.add_argument('--username-selector', help='required in login mode; no Tab traversal')
     password_pin.add_argument('--password-purpose', choices=('current-password', 'new-password'),
                               help='explicitly verified purpose for password-only fields with absent or on autocomplete')
@@ -436,7 +441,10 @@ def main(argv: list[str] | None = None) -> int:
                          else default_notification_state(args.socket))
                 broker = Broker(None, WindowsTyper(), card_browser_profile=args.card_browser_profile,
                                 password_browser_profile=args.password_browser_profile,
-                                notification_state_path=state)
+                                notification_state_path=state, secret_sinks_path=args.secret_sinks)
+            except SinkError as exc:
+                print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
+                return 2
             except (OSError, ValueError, KeyError, RuntimeError, pywintypes.error):
                 print('could not open the private notification state; use --notification-state with a file in a '
                       'folder that only this user, SYSTEM and administrators can access', file=sys.stderr)
@@ -453,9 +461,14 @@ def main(argv: list[str] | None = None) -> int:
             if args.tls_cert is not None or args.tls_key is not None:
                 print('--tls-cert and --tls-key are Windows options; Linux uses Tailscale Serve', file=sys.stderr)
                 return 2
-            broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
-                            password_browser_profile=args.password_browser_profile,
-                            notification_state_path=args.notification_state or default_notification_state(args.socket))
+            try:
+                broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
+                                password_browser_profile=args.password_browser_profile,
+                                notification_state_path=args.notification_state or default_notification_state(args.socket),
+                                secret_sinks_path=args.secret_sinks)
+            except SinkError as exc:
+                print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
+                return 2
         unlock_name = ("agentic-kdbx-unlock.sock"
                        if args.socket.name == "agentic-kdbx.sock"
                        else "akdbx-unlock.sock")
@@ -484,6 +497,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == secret_cli.COMMAND:
         return secret_cli.run(args, lambda payload, **kwargs: request(
             args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))
+    if args.command in capture_cli.COMMANDS:
+        return capture_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
+                                                          expected_unlock_origin=args.unlock_origin))
     payload = {"action": "ping" if args.command == "status" else args.command}
     if args.command in {'unlock-subscription-status', 'unsubscribe-unlock'}:
         payload['subscription_id'] = args.subscription_id
@@ -502,6 +518,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         payload.update(password_protocol=1, page_id=args.page_id, frame_id=args.frame_id, top_url=args.top_url,
                        selector=args.selector, mode=args.mode)
+        if args.mode == 'read':
+            payload['capture_protocol'] = 1
         if args.username_selector is not None:
             payload['username_selector'] = args.username_selector
         if args.password_purpose is not None:
@@ -628,6 +646,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == 'pin-password-target' and args.password_purpose is not None:
                 if type(capabilities.get('password_purpose_protocol')) is not int or capabilities['password_purpose_protocol'] != 1:
                     print(json.dumps({'ok': False, 'error': 'broker lacks explicit password purpose protocol 1; target request not sent'}))
+                    return 1
+            if args.command == 'pin-password-target' and args.mode == 'read':
+                if (type(capabilities.get('secret_capture_protocol')) is not int or capabilities['secret_capture_protocol'] != 1
+                        or capabilities.get('secret_capture_delivery') != 'chromium-dom-read-v1'):
+                    print(json.dumps({'ok': False, 'error': 'broker lacks secret capture protocol 1; require broker 0.20.0 or newer; target request not sent'}))
                     return 1
             if args.command == 'pin-password-target' and args.allow_autocomplete_off:
                 if type(capabilities.get('password_autocomplete_off_protocol')) is not int or capabilities['password_autocomplete_off_protocol'] != 1:
