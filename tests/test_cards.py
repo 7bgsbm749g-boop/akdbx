@@ -300,7 +300,8 @@ def test_save_page_prefills_title_and_offers_existing_groups(deployed):
     assert code == 200
     text = body.decode()
     assert 'name="title"' in text and 'value="Synthetic &quot;Visa&quot; &lt;one&gt;"' in text
-    assert '<select id="group" name="group" required' in text
+    # Not required: the empty top-level value would block the browser's submit.
+    assert '<select id="group" name="group" aria-describedby="group-hint">' in text
     assert '<option value="">Top level (no folder)</option><option value="Web" selected>Web</option>' in text
     assert 'The KeePass folder this card is saved in.' in text
     assert 'data-card-form' in text and 'class="portal-submit"' in text and 'role="progressbar"' in text

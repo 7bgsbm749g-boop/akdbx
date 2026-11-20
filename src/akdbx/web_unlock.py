@@ -333,7 +333,9 @@ def _card_form(op, action: str, groups: list) -> str:
     choices = ''.join(f'<option value="{html.escape(path, quote=True)}"{" selected" if path == current else ""}>'
                       f'{html.escape(_group_label(path))}</option>' for path in options)
     hint = 'The KeePass folder this card is saved in.' + (' An updated card stays in its folder.' if update else '')
-    control = 'disabled' if update else 'name="group" required'
+    # Not `required`: the top level has value "" and is the first option, which
+    # HTML treats as a placeholder and would block the save. The broker checks it.
+    control = 'disabled' if update else 'name="group"'
     group = (f'<div class="field"><label for="group">Group</label>'
              f'<select id="group" {control} aria-describedby="group-hint">{choices}</select>'
              f'<p class="field-hint" id="group-hint">{hint}</p></div>')

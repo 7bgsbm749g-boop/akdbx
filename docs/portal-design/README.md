@@ -21,7 +21,7 @@ also retain their existing same-origin QR scripts.
 The card save page reuses the unlock button component (`.portal-submit` with
 `.portal-progress`): it is disabled with an indeterminate bar while saving, then
 shows `Saved`, or a dashed error state (`Page expired`, `Vault changed`,
-`Cancelled`, `Not saved`). A broker refusal of the form, such as a duplicate
+`Cancelled`, `Not confirmed`). A broker refusal of the form, such as a duplicate
 title, returns the button to `Save card to AKDBX` with the message below it.
 Each server result carries `data-card-result`, so the page shows the real
 broker state; a lost response reports that the result is not confirmed.

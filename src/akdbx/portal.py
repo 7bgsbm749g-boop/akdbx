@@ -211,7 +211,7 @@ SCRIPT = r""""use strict";
   const BRAND_NAMES = {visa: "Visa", mastercard: "Mastercard", amex: "American Express", other: "another brand"};
   // Final button state for each card save result from the broker.
   const CARD_RESULTS = {saved: ["Saved", "is-done"], expired: ["Page expired", "is-error"],
-    stale: ["Vault changed", "is-error"], cancelled: ["Cancelled", "is-error"], failed: ["Not saved", "is-error"]};
+    stale: ["Vault changed", "is-error"], cancelled: ["Cancelled", "is-error"], failed: ["Not confirmed", "is-error"]};
   function concealPasswords() {
     document.querySelectorAll("[data-password-toggle]").forEach(button => {
       const input = document.getElementById(button.getAttribute("aria-controls"));
@@ -291,6 +291,9 @@ SCRIPT = r""""use strict";
       form.elements.namedItem(first).focus();
       return;
     }
+    // Keep the destination that is sent, even if the user edits it while saving.
+    const chosen = ["title", "group"].map(name => form.elements.namedItem(name)).filter(Boolean)
+      .map(control => [control, control.value]);
     setBusy(form, true);
     setStatus(status, "Saving the card. Please wait.", "");
     let result = "", message = "";
@@ -313,9 +316,7 @@ SCRIPT = r""""use strict";
       return;
     }
     // A final result: clear the card values and stop further submissions.
-    // The non-secret title and group keep what the user chose.
-    const chosen = ["title", "group"].map(name => form.elements.namedItem(name)).filter(Boolean)
-      .map(control => [control, control.value]);
+    // The non-secret title and group keep what was sent.
     form.reset();
     chosen.forEach(([control, text]) => { control.value = text; });
     showCardErrors(form, {}, false);

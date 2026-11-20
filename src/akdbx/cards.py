@@ -349,4 +349,7 @@ class CardManager:
 
 EXPIRED = 'This card page has expired or is no longer valid. Ask for a new card page.'
 STALE = 'The vault changed after this page opened, so the card was not saved. Ask for a new card page.'
-FAILED = 'The card was not saved: the vault changed or could not be updated. Ask for a new card page.'
+# The store may have replaced the vault before confirmation failed: never claim
+# the card was not written.
+FAILED = ('The card save could not be confirmed. Ask for a new card page, and check the '
+          'saved cards before you save this card again.')

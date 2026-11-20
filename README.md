@@ -179,7 +179,7 @@ detected Visa, Mastercard or American Express brand), the expiry (month 01 to
 detected brand and an error under each wrong field. The broker repeats the
 same checks, so a request that bypasses the page is refused; a refused form
 stays open for correction. The save button shows a busy state, then `Saved`,
-or `Page expired`, `Vault changed`, `Cancelled` or `Not saved`. A saved
+or `Page expired`, `Vault changed`, `Cancelled` or `Not confirmed`. A saved
 `write-status` includes the final non-secret `title` and `group`.
 
 `search-cards QUERY` returns only title, group, brand, last four digits and a
