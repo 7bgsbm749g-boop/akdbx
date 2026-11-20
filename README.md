@@ -145,8 +145,11 @@ akdbx extension install --browser helium   # or chrome, edge; Windows and Linux
 akdbx extension build --output /path/to/akdbx-extension   # then Load unpacked
 ```
 
-The extension pairs with the broker once per browser session: the popup shows
-a code, and the broker's private page asks for the master password. Origin
+The extension pairs its ECDH public key with the broker once per browser
+session: the popup shows a code computed from that key, and the broker's
+private page shows the same code and asks for the master password. Every value
+is sealed with AES-256-GCM to the extension, so the native host relays only
+ciphertext. This adds `cryptography` as a runtime dependency. Origin
 and frame identity come from the browser, never from page content; cards go
 only to merchant frames or to the supported processor frames below them. On
 Linux the host manifest goes in `~/.config/net.imput.helium`,

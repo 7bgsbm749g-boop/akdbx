@@ -30,7 +30,32 @@ CARD = dict(name='Synthetic Holder', number='4111111111111111', month='09', year
 TOP = 'https://shop.example.com/checkout'
 LOGIN = 'https://www.example.com/login'
 STRIPE = 'https://js.stripe.com/v3/elements-inner-accessory-target-' + 'a' * 32 + '.html'
-KEY = 'k' * 43
+
+
+def new_key():
+    """A synthetic extension ECDH key pair: private key and raw public point."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    private = ec.generate_private_key(ec.SECP256R1())
+    return private, private.public_key().public_bytes(serialization.Encoding.X962,
+                                                      serialization.PublicFormat.UncompressedPoint)
+
+
+def unseal(private, raw, broker_raw, sealed, context):
+    """Decrypt a sealed value the way background.js does."""
+    import base64
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    shared = private.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), broker_raw))
+    key = HKDF(hashes.SHA256(), 32, salt=bytes(32), info=route.HKDF_INFO + raw + broker_raw).derive(shared)
+    decode = lambda text: base64.urlsafe_b64decode(text + '=' * (-len(text) % 4))
+    return json.loads(AESGCM(key).decrypt(decode(sealed['iv']), decode(sealed['data']), context.encode()))
+
+
+EXTENSION_PRIVATE, EXTENSION_PUBLIC = new_key()
+KEY = route.b64url(EXTENSION_PUBLIC)
 
 
 class CardEntry(Entry):
@@ -90,8 +115,10 @@ class FakeExtension:
             if payload['pin_id'] not in self.pins or self.chain(payload['tab_id'], payload['document_id']) != payload['chain']:
                 return dict(state='refused')
             self.pins.pop(payload['pin_id'])
+            values = unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, self.channel.broker_public_key, payload['sealed'],
+                            'fill:' + payload['pin_id'])
             if self.fill_state == 'filled':
-                self.filled.append(dict(payload['values']))
+                self.filled.append(values)
             return dict(state=self.fill_state)
         if op == 'release':
             self.pins.pop(payload['pin_id'], None)
@@ -100,9 +127,10 @@ class FakeExtension:
 
 
 class FakeChannel(route.Channel):
-    def __init__(self, hub, extension, digest=b'd' * 32, browser='helium'):
-        super().__init__(hub, None, browser, digest)
+    def __init__(self, hub, extension, browser='helium'):
+        super().__init__(hub, None, browser, EXTENSION_PUBLIC)
         self.extension = extension
+        extension.channel = self
 
     def send(self, message):
         pass
@@ -394,7 +422,16 @@ def test_popup_match_returns_metadata_only_and_release_is_bound_to_the_document(
     assert popup(broker, channel, 'release', handle=handle, roles=['password'], formats={}, **facts())['ok'] is False
     handle = popup(broker, channel, 'match', kind='login', **facts())['entries'][0]['handle']
     released = popup(broker, channel, 'release', handle=handle, roles=['username', 'password'], formats={}, **facts())
-    assert released == dict(ok=True, values=dict(username=USERNAME, password=PASSWORD))
+    assert set(released) == {'ok', 'sealed'} and PASSWORD not in json.dumps(released)
+    assert unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'],
+                  'release:' + handle) == dict(username=USERNAME, password=PASSWORD)
+    # A ciphertext answers only its own selection: another context fails.
+    with pytest.raises(Exception):
+        unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'], 'release:other')
+    # A process without the extension's private key cannot read it.
+    stranger, stranger_public = new_key()
+    with pytest.raises(Exception):
+        unseal(stranger, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'], 'release:' + handle)
 
 
 def test_popup_refuses_cross_site_login_frames_and_foreign_card_frames():
@@ -408,9 +445,12 @@ def test_popup_refuses_cross_site_login_frames_and_foreign_card_frames():
     match = popup(broker, channel, 'match', kind='card', **facts('S', top=TOP, chain=chain))
     assert match['ok'] and set(match['entries'][0]) == {'title', 'brand', 'last_four', 'handle'}
     assert CARD['number'] not in json.dumps(match)
-    released = popup(broker, channel, 'release', handle=match['entries'][0]['handle'], roles=['cc-number', 'cc-exp'],
+    handle = match['entries'][0]['handle']
+    released = popup(broker, channel, 'release', handle=handle, roles=['cc-number', 'cc-exp'],
                      formats={'cc-exp': 'MM/YY'}, **facts('S', top=TOP, chain=chain))
-    assert released == dict(ok=True, values={'cc-number': CARD['number'], 'cc-exp': '09/31'})
+    assert CARD['number'] not in json.dumps(released)
+    assert unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'],
+                  'release:' + handle) == {'cc-number': CARD['number'], 'cc-exp': '09/31'}
 
 
 def test_popup_on_locked_broker_reports_locked_and_releases_nothing():
@@ -448,12 +488,13 @@ def pair_of_sockets(monkeypatch):
 
 
 @pytest.mark.parametrize('request_fields', [
-    dict(extension_id='a' * 32), dict(pairing_key='short'), dict(extension_protocol=2), dict(browser='other'),
+    dict(extension_id='a' * 32), dict(public_key='short'), dict(public_key='A' * 87), dict(extension_protocol=2),
+    dict(browser='other'),
     dict(extra=True)])
 def test_attach_refuses_other_extensions_keys_and_protocols(pair_of_sockets, request_fields):
     broker_side, host_side = pair_of_sockets
     request = dict(action='extension-attach', extension_protocol=1, extension_id=route.EXTENSION_ID,
-                   browser='helium', pairing_key=KEY)
+                   browser='helium', public_key=KEY)
     request.update(request_fields)
     broker = make_broker()
     broker.extension.attach(broker_side, request)
@@ -465,12 +506,14 @@ def test_attach_serves_calls_and_popup_requests_over_one_connection(pair_of_sock
     broker_side, host_side = pair_of_sockets
     broker = make_broker()
     request = dict(action='extension-attach', extension_protocol=1, extension_id=route.EXTENSION_ID,
-                   browser='edge', pairing_key=KEY)
+                   browser='edge', public_key=KEY)
     worker = threading.Thread(target=broker.extension.attach, args=(broker_side, request), daemon=True)
     worker.start()
     attached = receive_message(host_side)
     assert attached['type'] == 'attached' and attached['paired'] is False and attached['pairing']['code']
-    broker.extension.approved.append(hashlib.sha256(KEY.encode()).digest())
+    assert attached['broker_public_key'] and attached['pairing']['code'] == route.pairing_code(
+        hashlib.sha256(EXTENSION_PUBLIC).digest())
+    broker.extension.approved.append(hashlib.sha256(EXTENSION_PUBLIC).digest())
     channel = broker.extension._paired_channel()[0]
     result = {}
     caller = threading.Thread(target=lambda: result.update(channel.call('frames', 5, top_url=LOGIN, tab_id=None)))
@@ -512,12 +555,12 @@ def test_native_frames_round_trip_and_cap_outgoing_size():
 
 def test_host_refuses_other_callers_and_bad_hello_without_connecting():
     connected = []
-    hello = frame(dict(type='hello', protocol=1, pairing_key=KEY))
+    hello = frame(dict(type='hello', protocol=1, public_key=KEY))
     out = io.BytesIO()
     assert extension_host.relay(io.BytesIO(hello), out, 'chrome-extension://' + 'a' * 32 + '/', 'helium',
                                 lambda: connected.append(1)) == 1
-    for bad in (dict(type='hello', protocol=1, pairing_key='x'), dict(type='reply', id=1), dict(type='hello', protocol=2,
-                                                                                              pairing_key=KEY)):
+    for bad in (dict(type='hello', protocol=1, public_key='x'), dict(type='reply', id=1), dict(type='hello', protocol=2,
+                                                                                              public_key=KEY)):
         assert extension_host.relay(io.BytesIO(frame(bad)), out, route.EXTENSION_ORIGIN, 'helium',
                                     lambda: connected.append(1)) == 1
     assert connected == [] and out.getvalue() == b''
@@ -525,14 +568,14 @@ def test_host_refuses_other_callers_and_bad_hello_without_connecting():
 
 def test_host_relays_only_known_message_types(pair_of_sockets):
     broker_side, host_side = pair_of_sockets
-    messages = frame(dict(type='hello', protocol=1, pairing_key=KEY)) + frame(dict(type='reply', id=1, result={})) \
+    messages = frame(dict(type='hello', protocol=1, public_key=KEY)) + frame(dict(type='reply', id=1, result={})) \
         + frame(dict(type='unexpected'))
     out = io.BytesIO()
     status = extension_host.relay(io.BytesIO(messages), out, route.EXTENSION_ORIGIN, 'chrome', lambda: host_side)
     assert status == 0
     attach_request = receive_message(broker_side)
     assert attach_request == dict(action='extension-attach', extension_protocol=1, extension_id=route.EXTENSION_ID,
-                                  browser='chrome', pairing_key=KEY)
+                                  browser='chrome', public_key=KEY)
     assert receive_message(broker_side) == dict(type='reply', id=1, result={})
     # The unknown type ended the session instead of reaching the broker.
     broker_side.settimeout(1)
@@ -544,7 +587,7 @@ def test_host_reports_an_unreachable_broker_and_exits():
 
     def unavailable():
         raise FileNotFoundError()
-    hello = frame(dict(type='hello', protocol=1, pairing_key=KEY))
+    hello = frame(dict(type='hello', protocol=1, public_key=KEY))
     assert extension_host.relay(io.BytesIO(hello), out, route.EXTENSION_ORIGIN, 'helium', unavailable) == 0
     assert extension_host.read_frame(io.BytesIO(out.getvalue())) == dict(type='state', connected=False,
                                                                          error='broker unavailable')
@@ -736,3 +779,23 @@ def test_install_and_uninstall_touch_only_their_own_files(tmp_path, monkeypatch)
                     winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
                 except OSError:
                     pass
+
+
+def test_abandoned_pins_expire_instead_of_blocking_new_pins():
+    now = [10.0]
+    broker = make_broker(now=now)
+    channel, extension = attach(broker, {3: [Document('TOP', LOGIN)]})
+    for _ in range(route.MAX_PINS + 2):
+        assert pin_password(broker, channel, 3, 'TOP', LOGIN)['ok']
+        now[0] += route.TTL  # Never filled: each pin expires before the next.
+    assert len(broker.extension.pins) == 1 and len(extension.pins) == 1  # Released in the browser too.
+    broker.card_targets.prune()
+    assert not broker.extension.pins
+
+
+def test_target_settings_reach_the_cdp_manager():
+    broker = make_broker()
+    broker.card_targets.clock = clock = lambda: 5.0
+    broker.identity_targets.profile = 'synthetic-profile'
+    assert broker.card_targets.cdp.clock is clock and broker.identity_targets.cdp.profile == 'synthetic-profile'
+    assert broker.card_targets.kind == 'card'

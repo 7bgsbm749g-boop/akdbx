@@ -3,8 +3,9 @@
 The browser starts this host for the fixed extension ID only. The host connects
 to the running broker's private endpoint (Unix socket or named pipe) with the
 CLI's peer checks, then relays bounded JSON messages in both directions. It
-keeps no state, writes no files and logs nothing. A value passes through it
-only after the broker has paired the extension's key (see ``extension_route``).
+keeps no state, writes no files and logs nothing. Values pass through it only
+sealed to the paired extension's key (see ``extension_route``), so the host
+never sees one in plain text.
 
 Install commands write a small launcher and a host manifest in this user's
 own folders and register the manifest for one browser:
@@ -31,7 +32,7 @@ import sys
 import threading
 from importlib.resources import files
 
-from .extension_route import BROWSERS, EXTENSION_ID, EXTENSION_ORIGIN, HOST_NAME, PAIRING_KEY, PROTOCOL
+from .extension_route import BROWSERS, EXTENSION_ID, EXTENSION_ORIGIN, HOST_NAME, PUBLIC_KEY, PROTOCOL
 from .protocol import MAX_MESSAGE, ProtocolError, receive_message, send_message
 
 MAX_FRAME = MAX_MESSAGE
@@ -126,9 +127,9 @@ def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
         hello = read_frame(incoming)
     except FrameError:
         return 1
-    if (hello is None or set(hello) != {'type', 'protocol', 'pairing_key'} or hello['type'] != 'hello'
+    if (hello is None or set(hello) != {'type', 'protocol', 'public_key'} or hello['type'] != 'hello'
             or type(hello['protocol']) is not int or hello['protocol'] != PROTOCOL
-            or not isinstance(hello['pairing_key'], str) or not PAIRING_KEY.fullmatch(hello['pairing_key'])):
+            or not isinstance(hello['public_key'], str) or not PUBLIC_KEY.fullmatch(hello['public_key'])):
         return 1
     out_lock = threading.Lock()
     try:
@@ -141,7 +142,7 @@ def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
     closed = threading.Event()
     try:
         send_message(connection, dict(action='extension-attach', extension_protocol=PROTOCOL,
-                                      extension_id=EXTENSION_ID, browser=browser, pairing_key=hello['pairing_key']))
+                                      extension_id=EXTENSION_ID, browser=browser, public_key=hello['public_key']))
     except Exception:
         connection.close()
         return 0

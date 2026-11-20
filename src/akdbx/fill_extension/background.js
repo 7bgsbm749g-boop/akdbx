@@ -2,9 +2,10 @@
  *
  * It keeps one native-messaging port to the akdbx host, answers the broker's
  * frame, pin and fill requests with facts from the browser itself (tabs,
- * webNavigation, injection results), and serves the popup. Values from the
- * broker go only to the retained element in the exact document; they are never
- * stored, logged or put on the clipboard.
+ * webNavigation, injection results), and serves the popup. Values arrive
+ * sealed (AES-GCM) to this extension's ECDH key, so the host relays only
+ * ciphertext. After decryption they go only to the retained element in the
+ * exact document; they are never stored, logged or put on the clipboard.
  */
 "use strict";
 const HOST = "org.akdbx.extension";
@@ -15,6 +16,7 @@ let port = null;
 let state = {connected: false};
 let sequence = 0;
 let reconnects = 0;
+let sealKey = null;   // Promise of the AES-GCM key agreed with the broker for the current port.
 const waiting = new Map();
 const sessions = new Map();
 const processorGuards = new Map();
@@ -22,23 +24,94 @@ const processorGuards = new Map();
 // Only extension pages may read session storage; content scripts may not.
 chrome.storage.session.setAccessLevel?.({accessLevel: "TRUSTED_CONTEXTS"});
 
-function randomText(bytes) {
-  const data = crypto.getRandomValues(new Uint8Array(bytes));
-  return btoa(String.fromCharCode(...data)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const encoder = new TextEncoder();
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function base64url(data) {
+  return btoa(String.fromCharCode(...new Uint8Array(data))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-async function pairingKey() {
-  // Memory-only for this browser session: a restart needs a new pairing.
-  const stored = await chrome.storage.session.get("pairingKey");
-  if (typeof stored.pairingKey === "string" && /^[A-Za-z0-9_-]{43}$/.test(stored.pairingKey)) return stored.pairingKey;
-  const pairingKey = randomText(32);
-  await chrome.storage.session.set({pairingKey});
-  return pairingKey;
+function unbase64url(text) {
+  const plain = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(plain, c => c.charCodeAt(0));
+}
+
+function randomText(bytes) {
+  return base64url(crypto.getRandomValues(new Uint8Array(bytes)));
+}
+
+function concat(...parts) {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+let keysPromise = null;
+
+function pairingKeys() {
+  // One shared promise: concurrent callers must never create two key pairs.
+  if (!keysPromise) keysPromise = loadPairingKeys().catch(error => {
+    keysPromise = null;
+    throw error;
+  });
+  return keysPromise;
+}
+
+async function loadPairingKeys() {
+  // An ECDH P-256 key pair, in memory only for this browser session: a
+  // restart needs a new pairing. Only the public key ever leaves the worker.
+  const stored = (await chrome.storage.session.get("pairing")).pairing;
+  if (stored && stored.jwk && typeof stored.publicKey === "string") {
+    const privateKey = await crypto.subtle.importKey("jwk", stored.jwk, {name: "ECDH", namedCurve: "P-256"}, false,
+      ["deriveBits"]);
+    return {privateKey, publicKey: stored.publicKey};
+  }
+  const pair = await crypto.subtle.generateKey({name: "ECDH", namedCurve: "P-256"}, true, ["deriveBits"]);
+  const publicKey = base64url(await crypto.subtle.exportKey("raw", pair.publicKey));
+  const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+  await chrome.storage.session.set({pairing: {jwk, publicKey}});
+  return {privateKey: pair.privateKey, publicKey};
+}
+
+async function localCode(publicKey) {
+  // The same code the broker's pairing page shows for the key it received.
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", unbase64url(publicKey)));
+  const mac = new Uint8Array(await crypto.subtle.digest("SHA-256",
+    concat(encoder.encode("akdbx-pairing-code\0"), digest)));
+  const letters = Array.from(mac.slice(0, 8), b => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
+  return letters.slice(0, 4) + "-" + letters.slice(4);
+}
+
+async function agreeKey(brokerPublicKey) {
+  const keys = await pairingKeys();
+  const brokerRaw = unbase64url(brokerPublicKey);
+  const broker = await crypto.subtle.importKey("raw", brokerRaw, {name: "ECDH", namedCurve: "P-256"}, false, []);
+  const shared = await crypto.subtle.deriveBits({name: "ECDH", public: broker}, keys.privateKey, 256);
+  const base = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32),
+    info: concat(encoder.encode("akdbx-extension-v1"), unbase64url(keys.publicKey), brokerRaw)},
+  base, {name: "AES-GCM", length: 256}, false, ["decrypt"]);
+}
+
+async function unseal(sealed, context) {
+  // A value sealed for another pin, selection or key fails authentication.
+  const key = sealKey && await sealKey;
+  if (!key || !sealed || typeof sealed.iv !== "string" || typeof sealed.data !== "string") throw new Error();
+  const plain = await crypto.subtle.decrypt({name: "AES-GCM", iv: unbase64url(sealed.iv),
+    additionalData: encoder.encode(context)}, key, unbase64url(sealed.data));
+  const values = JSON.parse(new TextDecoder().decode(plain));
+  new Uint8Array(plain).fill(0);
+  if (!values || typeof values !== "object") throw new Error();
+  return values;
 }
 
 async function connect() {
   if (port) return;
-  const key = await pairingKey();
+  const key = (await pairingKeys()).publicKey;
   if (port) return;
   let current;
   try {
@@ -53,12 +126,13 @@ async function connect() {
     void chrome.runtime.lastError;
     if (port !== current) return;
     port = null;
+    sealKey = null;
     state = {connected: false};
     for (const resolve of waiting.values()) resolve(null);
     waiting.clear();
     scheduleReconnect();
   });
-  current.postMessage({type: "hello", protocol: PROTOCOL, pairing_key: key});
+  current.postMessage({type: "hello", protocol: PROTOCOL, public_key: key});
 }
 
 function scheduleReconnect() {
@@ -91,6 +165,9 @@ function onHost(current, message) {
     }
     reconnects = 0;
     chrome.alarms.clear("akdbx-reconnect");
+    if (message.type === "attached" && typeof message.broker_public_key === "string") {
+      if (port === current) sealKey = agreeKey(message.broker_public_key).catch(() => null);
+    }
     state = {connected: true, paired: message.paired === true, locked: message.locked === true,
       pairing: message.pairing || null, unlock_url: message.unlock_url || null};
   } else if (message.type === "call") {
@@ -181,8 +258,11 @@ async function frames(message) {
           visible = null;
         }
       }
+      // Only origins matter below the top document; this also bounds the reply.
+      const url = frame.frameId === 0 ? frame.url
+        : frame.url.startsWith("https://") ? new URL(frame.url).origin + "/" : frame.url.split(":")[0] + ":";
       listed.push({document_id: frame.documentId, parent_document_id: frame.frameId === 0 ? null : (frame.parentDocumentId || null),
-        url: frame.url, visible_fields: visible || null});
+        url, visible_fields: visible || null});
     }
     result.push({tab_id: tab.id, frames: listed});
   }
@@ -234,8 +314,14 @@ async function pin(message) {
 }
 
 async function fill(message) {
-  const values = message.values || {};
+  let values = {};
   try {
+    try {
+      values = await unseal(message.sealed, "fill:" + message.pin_id);
+    } catch {
+      await release(message);
+      return {state: "refused"};
+    }
     const tab = await chrome.tabs.get(message.tab_id);
     const chain = await chainFor(message.tab_id, message.document_id);
     if (!tab || tab.url !== message.top_url || !chain || !sameChain(chain, message.chain)) {
@@ -250,8 +336,8 @@ async function fill(message) {
     let result;
     try {
       result = await run(message.tab_id, message.document_id,
-        (id, kind, value, maxAge, remaining) => globalThis.__akdbxContent.fill(id, kind, value, maxAge, remaining),
-        [message.pin_id, message.kind, values, message.max_age_ms, message.remaining_ms]);
+        (id, kind, value, maxAge) => globalThis.__akdbxContent.fill(id, kind, value, maxAge),
+        [message.pin_id, message.kind, values, message.max_age_ms]);
     } catch {
       return {state: "uncertain"};
     }
@@ -285,7 +371,8 @@ async function popupState() {
     state = {connected: true, paired: fresh.paired === true, locked: fresh.locked === true,
       pairing: fresh.pairing || null, unlock_url: fresh.unlock_url || null};
   }
-  return {ok: true, ...state};
+  // The popup shows the code of this browser's own key, never one from the host.
+  return {ok: true, ...state, code: await localCode((await pairingKeys()).publicKey)};
 }
 
 async function popupProbe(message) {
@@ -322,10 +409,15 @@ async function popupFill(message) {
   }
   const released = await brokerRequest("release", {handle: session.handles[message.index], tab_id: session.tabId,
     document_id: session.documentId, top_url: session.topUrl, chain, roles: session.roles, formats: session.formats});
-  if (!released || released.ok !== true || typeof released.values !== "object") {
+  if (!released || released.ok !== true) {
     return {ok: false, error: (released && released.error) || "akdbx refused this fill"};
   }
-  const values = released.values;
+  let values;
+  try {
+    values = await unseal(released.sealed, "release:" + session.handles[message.index]);
+  } catch {
+    return {ok: false, error: "akdbx answer could not be verified; nothing filled"};
+  }
   try {
     const result = await run(session.tabId, session.documentId, (id, v) => globalThis.__akdbxContent.probeFill(id, v),
       [session.probe, values]);
@@ -347,4 +439,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 });
 
 connect();
-if (typeof module !== "undefined") module.exports = {fromPopup, chainFor, sameChain, onHost, state: () => state};
+if (typeof module !== "undefined") {
+  module.exports = {fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys,
+    setSealKey: key => { sealKey = Promise.resolve(key); }, state: () => state};
+}

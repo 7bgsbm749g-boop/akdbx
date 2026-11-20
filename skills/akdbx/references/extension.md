@@ -39,12 +39,14 @@ route carry `"extension-dom-v1"` in the same keys.
 
 ## Pairing
 
-The extension keeps a random pairing key in browser session memory only. The
-broker keeps only a digest of it, for its own lifetime. A browser restart or a
-broker restart needs a new pairing. Pairing is the user's step:
+The extension keeps an ECDH P-256 key pair in browser session memory only and
+sends only the public key. The broker keeps only a digest of that public key,
+for its own lifetime. A browser restart or a broker restart needs a new
+pairing. Pairing is the user's step:
 
 1. The user clicks the akdbx extension button. The popup shows a code such as
-   `ABCD-EFGH` and an **Open the pairing page** button.
+   `ABCD-EFGH`, computed from its own public key, and an **Open the pairing
+   page** button.
 2. The private page (`/extension/pair?token=...` on the unlock origin) shows
    the same code and asks for the master password. When the broker is locked,
    the same entry also unlocks it.
@@ -106,8 +108,12 @@ disabled and detached fields never receive a value.
 - The host is launched by the browser for the fixed extension ID only. It
   connects to the broker's private socket or named pipe with the CLI's peer
   checks, relays bounded messages (64 KiB) and stores nothing.
-- A host or process that imitates the extension has no approved pairing key, so
-  it receives no value.
+- Every value is sealed with AES-256-GCM under a key that the broker's
+  per-connection ECDH key and the extension's private key agree, and bound to
+  the pin or popup selection it answers. The host, or a process that replaces
+  the host registration, relays only ciphertext and never receives a value.
+  If someone replaces the host while the user pairs, the page shows a
+  different code from the popup's; the user then does not approve.
 - Values exist only in the broker, the relay, extension memory and the field.
   There is no clipboard, no extension storage and no logging. The content
   script runs in the extension's isolated world; it uses the CDP route's own

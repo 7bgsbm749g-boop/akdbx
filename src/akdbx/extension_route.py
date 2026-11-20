@@ -21,13 +21,17 @@ Security model:
 * The native host is a same-user process launched by the browser for the fixed
   extension ID. It connects to the broker's private socket or named pipe with
   the CLI's peer checks and relays bounded JSON messages; it keeps nothing.
-* A channel can receive values only after **pairing**. The extension keeps a
-  random pairing key in ``chrome.storage.session`` (memory only) and presents
-  it when the host attaches. The broker stores a SHA-256 digest of that key
+* A channel can receive values only after **pairing**. The extension keeps an
+  ECDH P-256 key pair in ``chrome.storage.session`` (memory only) and sends
+  only its public key. The broker stores a SHA-256 digest of that public key
   for its own lifetime only. The user approves a new key on the broker's
-  private HTTPS page by entering the master password and checking the code
-  that the extension popup shows. A process that only imitates the extension
-  has no approved key, so it never receives a value.
+  private HTTPS page by entering the master password and checking that the
+  page shows the code the popup computes from its own key.
+* Every value is **sealed** with AES-256-GCM under a key that the broker's
+  per-connection ECDH key and the extension's private key agree, and bound to
+  the pin or selection it answers. The native host and any process that
+  replaces it relay only ciphertext; without the extension's private key it
+  never receives a value.
 * Origin and frame identity come from the browser (``tabs``, ``webNavigation``
   and injection results), never from page content. The broker applies the
   same frame policies as the CDP route: logins need the exact credential
@@ -40,8 +44,9 @@ Security model:
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dataclass_field
+import base64
 import hashlib
-import hmac
+import json
 import os
 import re
 import secrets
@@ -75,7 +80,9 @@ MAX_FRAMES = 64
 MAX_TABS = 4
 MAX_ENTRIES = 20
 MAX_POPUP_REQUESTS = 4
-PAIRING_KEY = re.compile(r'[A-Za-z0-9_-]{43}')
+PUBLIC_KEY = re.compile(r'[A-Za-z0-9_-]{87}')  # base64url, 65-byte uncompressed P-256 point
+HKDF_INFO = b'akdbx-extension-v1'
+CODE_PREFIX = b'akdbx-pairing-code\0'
 CHANNEL_ID = re.compile(r'[0-9a-f]{8}')
 PAGE_ID = re.compile(r'([0-9a-f]{8})\.([0-9]{1,10})')
 DOCUMENT_ID = re.compile(r'[0-9A-Za-z]{1,64}')
@@ -174,6 +181,32 @@ def _facts(message):
     return tab_id, document_id, top_url, [dict(hop) for hop in chain]
 
 
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
+
+
+def public_key_bytes(value):
+    """Decode and validate the extension's uncompressed P-256 public key."""
+    from cryptography.hazmat.primitives.asymmetric import ec
+    if not isinstance(value, str) or not PUBLIC_KEY.fullmatch(value):
+        raise ExtensionError()
+    raw = base64.urlsafe_b64decode(value + '=')
+    try:
+        ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), raw)
+    except ValueError:
+        raise ExtensionError() from None
+    if len(raw) != 65 or raw[0] != 4:
+        raise ExtensionError()
+    return raw
+
+
+def pairing_code(digest):
+    """The code both the popup and the pairing page compute from the key digest."""
+    mac = hashlib.sha256(CODE_PREFIX + digest).digest()
+    letters = ''.join(CODE_ALPHABET[b % len(CODE_ALPHABET)] for b in mac[:8])
+    return letters[:4] + '-' + letters[4:]
+
+
 def _wait_readable(connection, timeout):
     """True when a message byte (or EOF) is ready; never consumes data."""
     if os.name == 'nt':
@@ -197,8 +230,18 @@ def _wait_readable(connection, timeout):
 class Channel:
     """One attached native host, bound to one browser profile's extension."""
 
-    def __init__(self, hub, connection, browser, digest):
-        self.hub, self.connection, self.browser, self.digest = hub, connection, browser, digest
+    def __init__(self, hub, connection, browser, public_key):
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+        self.hub, self.connection, self.browser = hub, connection, browser
+        self.digest = hashlib.sha256(public_key).digest()
+        own = ec.generate_private_key(ec.SECP256R1())
+        self.broker_public_key = own.public_key().public_bytes(serialization.Encoding.X962,
+                                                               serialization.PublicFormat.UncompressedPoint)
+        shared = own.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), public_key))
+        self._seal_key = HKDF(hashes.SHA256(), 32, salt=bytes(32),
+                              info=HKDF_INFO + public_key + self.broker_public_key).derive(shared)
         self.id = secrets.token_hex(4)
         self.send_lock = threading.Lock()
         self.pending = {}
@@ -206,6 +249,14 @@ class Channel:
         self.counter = 0
         self.closed = threading.Event()
         self.requests = threading.BoundedSemaphore(MAX_POPUP_REQUESTS)
+
+    def seal(self, values, context):
+        """Encrypt values for the paired extension only, bound to one pin or selection."""
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        nonce = secrets.token_bytes(12)
+        data = json.dumps(values, separators=(',', ':')).encode('utf-8')
+        sealed = AESGCM(self._seal_key).encrypt(nonce, data, context.encode('utf-8'))
+        return dict(iv=b64url(nonce), data=b64url(sealed))
 
     def send(self, message):
         with self.send_lock:
@@ -311,7 +362,6 @@ class ExtensionHub:
         self.broker = broker
         self.default_route = default_route
         self.clock = broker.clock
-        self._key = secrets.token_bytes(32)
         self._lock = threading.Lock()
         self.channels = {}
         self.approved = []
@@ -336,11 +386,6 @@ class ExtensionHub:
             state['extension_pairing'] = pairing
         return state
 
-    def _code(self, digest):
-        mac = hmac.new(self._key, b'akdbx-pairing-code\0' + digest, hashlib.sha256).digest()
-        letters = ''.join(CODE_ALPHABET[b % len(CODE_ALPHABET)] for b in mac[:8])
-        return letters[:4] + '-' + letters[4:]
-
     def _pairing_info(self, digest):
         """Pending pairing for a digest: code and private approval link."""
         now = self.clock()
@@ -355,7 +400,7 @@ class ExtensionHub:
                 token = secrets.token_urlsafe(32)
                 self.pairings[token] = (digest, now + PAIRING_TTL)
         base = getattr(self.broker.writes, 'public_base', None)
-        info = dict(code=self._code(digest))
+        info = dict(code=pairing_code(digest))
         if isinstance(base, str) and base.startswith('https://'):
             info['url'] = base.rstrip('/') + '/extension/pair?token=' + token
         return info
@@ -364,7 +409,8 @@ class ExtensionHub:
         with self._lock:
             paired = channel.digest in self.approved
         locked = self.broker.locked
-        message = dict(type=kind, channel=channel.id, paired=paired, locked=locked, protocol=PROTOCOL)
+        message = dict(type=kind, channel=channel.id, paired=paired, locked=locked, protocol=PROTOCOL,
+                       broker_public_key=b64url(channel.broker_public_key))
         if not paired:
             message['pairing'] = self._pairing_info(channel.digest)
         if locked and self.broker.unlock_url:
@@ -391,7 +437,7 @@ class ExtensionHub:
             if found is None or found[1] <= self.clock():
                 return None
             digest = found[0]
-        return self._code(digest)
+        return pairing_code(digest)
 
     def approve(self, token):
         """Mark one pending key as paired, after the page verified the master password."""
@@ -416,14 +462,16 @@ class ExtensionHub:
     # ----- attached host connection ---------------------------------------
     def attach(self, connection, request):
         """Serve one long-lived host connection until it closes."""
-        if (set(request) != {'action', 'extension_protocol', 'extension_id', 'browser', 'pairing_key'}
-                or type(request.get('extension_protocol')) is not int or request['extension_protocol'] != PROTOCOL
-                or request.get('extension_id') != EXTENSION_ID or request.get('browser') not in BROWSERS
-                or not isinstance(request.get('pairing_key'), str) or not PAIRING_KEY.fullmatch(request['pairing_key'])):
+        try:
+            if (set(request) != {'action', 'extension_protocol', 'extension_id', 'browser', 'public_key'}
+                    or type(request.get('extension_protocol')) is not int or request['extension_protocol'] != PROTOCOL
+                    or request.get('extension_id') != EXTENSION_ID or request.get('browser') not in BROWSERS):
+                raise ExtensionError()
+            public_key = public_key_bytes(request['public_key'])
+        except ExtensionError:
             send_message(connection, dict(type='error', error='extension attach refused'))
             return
-        digest = hashlib.sha256(request['pairing_key'].encode('ascii')).digest()
-        channel = Channel(self, connection, request['browser'], digest)
+        channel = Channel(self, connection, request['browser'], public_key)
         with self._lock:
             if self._closed or len(self.channels) >= MAX_CHANNELS:
                 channel = None
@@ -659,7 +707,9 @@ class ExtensionHub:
             if not isinstance(value, str) or len(value) > 4096 or any(
                     unicodedata.category(c) == 'Cc' and c != '\n' for c in value):
                 raise ExtensionError()
-        return dict(ok=True, values=values)
+        sealed = channel.seal(values, 'release:' + handle)
+        values.clear()
+        return dict(ok=True, sealed=sealed)
 
     # ----- agent route: discovery ----------------------------------------
     def _channels_for(self, request):
@@ -743,6 +793,7 @@ class ExtensionHub:
     # ----- agent route: pins and delivery ---------------------------------
     def _pin(self, kind, request, spec, frame_url=None):
         """Ask the browser to retain one element; return the browser facts and pin id."""
+        self.prune()
         channels, tab_id = self._channels_for(request)
         if tab_id is None or len(channels) != 1 or not isinstance(request.get('frame_id'), str) \
                 or not DOCUMENT_ID.fullmatch(request['frame_id']) or not _text(request.get('top_url')):
@@ -893,9 +944,10 @@ class ExtensionHub:
             return 'refused'
         max_age_ms = max(0, min(TTL * 1000, (deadline - pin.created) * 1000))
         try:
+            sealed = pin.channel.seal(values, 'fill:' + pin.pin_id)
             result = pin.channel.call('fill', remaining + 0.5, tab_id=pin.tab_id, document_id=pin.document_id,
                                       pin_id=pin.pin_id, top_url=pin.top_url, chain=pin.chain, kind=pin.kind,
-                                      values=values, max_age_ms=max_age_ms, remaining_ms=remaining * 1000)
+                                      sealed=sealed, max_age_ms=max_age_ms)
         except ExtensionError:
             return 'uncertain'
         state = result.get('state')
@@ -938,6 +990,17 @@ class RoutedTargets:
 
     def __getattr__(self, name):
         return getattr(self.cdp, name)
+
+    def __setattr__(self, name, value):
+        # Settings such as `profile` or `clock` belong to the CDP manager.
+        if name in {'cdp', 'hub', 'kind'}:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self.cdp, name, value)
+
+    def prune(self):
+        self.hub.prune()
+        self.cdp.prune()
 
     def capabilities(self):
         return self.cdp.capabilities()

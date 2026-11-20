@@ -33,8 +33,9 @@ async function main() {
   if (!state.paired) {
     const link = state.pairing && privateLink(state.pairing.url, "/extension/pair");
     status.textContent = "This browser is not paired with akdbx yet.";
-    if (link && /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(state.pairing.code)) {
-      document.getElementById("code").textContent = state.pairing.code;
+    // The code comes from this browser's own key, never from the host.
+    if (link && /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(state.code)) {
+      document.getElementById("code").textContent = state.code;
       document.getElementById("pairing").hidden = false;
       document.getElementById("pair").onclick = () => chrome.tabs.create({url: link});
     }

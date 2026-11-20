@@ -41,6 +41,9 @@
 
   // ----- agent route: retained pins --------------------------------------
   function pin(kind, spec, frameURL, topURL) {
+    for (const [id, item] of pins) {
+      if (performance.now() - item.created >= PIN_MS) release(id);
+    }
     if (pins.size >= MAX_PINS) return null;
     let state;
     try {
@@ -78,7 +81,7 @@
     }
   }
 
-  function fill(id, kind, values, maxAgeMs, remainingMs) {
+  function fill(id, kind, values, maxAgeMs) {
     const item = pins.get(id);
     pins.delete(id);
     if (!item || item.kind !== kind || performance.now() - item.created >= PIN_MS) {
@@ -94,7 +97,7 @@
           valid = false;
         }
         if (!valid) return "refused";
-        const deadline = performance.now() + Math.max(0, Math.min(remainingMs, PIN_MS));
+        const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
         return PASSWORD_FILL.call(item.state, values.mode, values.username, values.password, deadline) ? "filled" : "refused";
       }
       const state = item.state.fill(values.value, maxAgeMs);
@@ -168,11 +171,11 @@
       const hit = Object.entries(COMPUTOP_IDS).find(([, id]) => el.id === id && el.getAttribute("name") === id);
       return hit && input ? {kind: "card", role: hit[0]} : null;
     }
-    if (input && type === "password") return {kind: "login", role: "password"};
     if (CARD_TOKENS.includes(last) && (input && ["text", "tel", "password"].includes(type) ||
         type === "select" && ["cc-exp-month", "cc-exp-year"].includes(last))) {
       return {kind: "card", role: last};
     }
+    if (input && type === "password") return {kind: "login", role: "password"};
     if (processor) return null;
     if (input && ["text", "email"].includes(type) && last === "username") return {kind: "login", role: "username"};
     if (IDENTITY_TOKENS.includes(last) && (input && ["text", "email", "tel"].includes(type) ||
@@ -226,27 +229,33 @@
           : (item.el.maxLength === 2 ? "YY" : "YYYY");
       }
     }
+    for (const item of fields) item.identity = identity(item.el);
     const id = randomId();
     remember(probes, MAX_PROBES, id, {fields, focused: focus.el, created: performance.now()});
     return {id, t: focus.t, kind: first.kind, roles: fields.map(item => item.role), formats};
   }
 
-  function setValue(el, value, fieldRole) {
+  // What a retained field was when the user opened the popup.
+  function identity(el) {
+    return JSON.stringify([el.tagName, el instanceof HTMLInputElement ? el.type : "", el.getAttribute("autocomplete"),
+      el.id, el.getAttribute("name"), el.form ? Array.from(document.forms).indexOf(el.form) : -1, el.parentElement === null]);
+  }
+
+  // Plan one assignment without touching the field; null refuses.
+  function plan(el, value, fieldRole) {
     if (el instanceof HTMLSelectElement) {
       const options = Array.from(el.options).filter(o => !o.disabled && (o.value === value ||
         fieldRole === "cc-exp-month" && /^[0-9]{1,2}$/.test(o.value) && Number(o.value) === Number(value) ||
         fieldRole.startsWith("country") && o.textContent.trim().toLowerCase() === value.toLowerCase()));
-      if (options.length !== 1) return false;
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "selectedIndex").set.call(el, options[0].index);
-    } else {
-      if (el instanceof HTMLInputElement && value.includes("\n")) return false;
-      if (el.maxLength >= 0 && value.length > el.maxLength) return false;
-      const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
-      Object.getOwnPropertyDescriptor(proto, "value").set.call(el, value);
+      if (options.length !== 1) return null;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "selectedIndex").set;
+      return () => setter.call(el, options[0].index);
     }
-    el.dispatchEvent(new Event("input", {bubbles: true}));
-    el.dispatchEvent(new Event("change", {bubbles: true}));
-    return true;
+    if (el instanceof HTMLInputElement && value.includes("\n")) return null;
+    if (el.maxLength >= 0 && value.length > el.maxLength) return null;
+    const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+    return () => setter.call(el, value);
   }
 
   function probeFill(id, values) {
@@ -255,12 +264,15 @@
     if (!item || performance.now() - item.created >= PROBE_MS || document.activeElement !== item.focused ||
         !shown(item.focused) || typeof values !== "object" || values === null) return "refused";
     const targets = item.fields.filter(field => typeof values[field.role] === "string");
-    // A field that became hidden, disabled or detached never receives a value.
-    if (!targets.length || targets.some(field => !shown(field.el))) return "refused";
-    let filled = 0;
+    // A field that became hidden, disabled, detached or different never
+    // receives a value. Every check and assignment runs before any page event.
+    if (!targets.length || targets.some(field => !shown(field.el) || identity(field.el) !== field.identity)) return "refused";
+    const steps = targets.map(field => plan(field.el, values[field.role], field.role));
+    if (steps.some(step => step === null)) return "refused";
+    steps.forEach(step => step());
     for (const field of targets) {
-      if (!setValue(field.el, values[field.role], field.role)) return filled ? "uncertain" : "refused";
-      filled += 1;
+      field.el.dispatchEvent(new Event("input", {bubbles: true}));
+      field.el.dispatchEvent(new Event("change", {bubbles: true}));
     }
     return "filled";
   }

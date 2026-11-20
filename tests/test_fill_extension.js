@@ -26,7 +26,8 @@ function loadBackground() {
     webNavigation: {getAllFrames: async () => []},
     scripting: {executeScript: async () => []},
   };
-  const sandbox = {chrome, crypto: globalThis.crypto, btoa, setTimeout, clearTimeout, URL, module: {exports: {}}};
+  const sandbox = {chrome, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, TextEncoder,
+    TextDecoder, Uint8Array, module: {exports: {}}};
   vm.runInNewContext(fs.readFileSync(path.join(root, "background.js"), "utf8"), sandbox);
   return {exports: sandbox.module.exports, listeners, posted};
 }
@@ -59,12 +60,19 @@ test("service worker accepts popup requests only from its own popup page", async
   assert.equal(answered, false);
 });
 
-test("service worker sends the pairing key only in its first hello", async () => {
-  const {posted} = loadBackground();
-  await new Promise(resolve => setTimeout(resolve, 0));
+test("service worker sends only its public key, and refuses unsealed or foreign values", async () => {
+  const {exports, posted} = loadBackground();
+  for (let i = 0; i < 50 && !posted.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(posted.length, 1);
-  assert.equal(posted[0].type, "hello");
-  assert.match(posted[0].pairing_key, /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(Object.keys(posted[0]).sort(), ["protocol", "public_key", "type"]);
+  assert.match(posted[0].public_key, /^[A-Za-z0-9_-]{87}$/);
+  assert.match(await exports.localCode(posted[0].public_key), /^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+  // No agreed key yet: nothing can be unsealed.
+  await assert.rejects(exports.unseal({iv: "AAAAAAAAAAAAAAAA", data: "AAAA"}, "fill:x"));
+  // A key agreed with another party fails AES-GCM authentication.
+  const other = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
+  exports.setSealKey(other);
+  await assert.rejects(exports.unseal({iv: "AAAAAAAAAAAAAAAA", data: "AAAAAAAAAAAAAAAAAAAAAAAA"}, "fill:x"));
 });
 
 test("frame chains compare exactly", () => {

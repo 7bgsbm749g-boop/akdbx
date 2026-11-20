@@ -47,6 +47,8 @@ async function digest(id) {
 }
 </script>'''
 PAGES = {
+    '/masked': '''<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number">
+<input id="csc" type="password" autocomplete="cc-csc"></form>''' + DIGEST,
     '/hidden': '''<!doctype html><meta charset="utf-8"><form><input id="username" autocomplete="username">
 <input id="password" type="password" autocomplete="current-password" style="opacity:0"></form>''' + DIGEST,
     '/checkout': f'''<!doctype html><meta charset="utf-8"><h1>Merchant</h1>
@@ -157,6 +159,13 @@ def harness(private_dir, certificates, monkeypatch):
                 time.sleep(.1)
             [channel] = broker.extension.channels.values()
             assert channel.browser == kind
+            # The popup shows a code computed from its own key; it must equal
+            # the code the broker's pairing page shows for the key it received.
+            workers = [t for t in lab.observer.call('Target.getTargets')['targetInfos']
+                       if t['type'] == 'service_worker' and t['url'].startswith(route.EXTENSION_ORIGIN)]
+            worker = lab.observer.call('Target.attachToTarget', dict(targetId=workers[0]['targetId'], flatten=True))
+            state = lab.observer.evaluate('popupState()', worker['sessionId'], await_promise=True)
+            assert state['paired'] is False and state['code'] == route.pairing_code(channel.digest)
             # Pair through the hub; the private page itself has its own tests.
             token = next(t for t, (digest, _) in broker.extension.pairings.items() if digest == channel.digest)
             assert broker.extension.approve(token)
@@ -296,3 +305,29 @@ def test_user_click_route_reports_a_locked_broker(harness):
         assert found['ok'] is False and found['error'] == 'vault locked'
     finally:
         broker.vault = vault
+
+
+def test_user_click_route_fills_a_masked_security_code_as_a_card(harness):
+    lab = harness.lab
+    lab.navigate('/masked')
+    harness.focus('csc')
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+    assert found['ok'] and found['kind'] == 'card', found
+    assert set(found['entries'][0]) == {'index', 'title', 'brand', 'last_four'}
+    result = harness.worker_call(f'popupFill({{session: {json.dumps(found["session"])}, index: 0}})')
+    assert result == {'ok': True}
+    assert lab.digest('csc') == sha(CARD['csc']) and lab.digest('number') == sha(CARD['number'])
+
+
+def test_user_click_route_refuses_a_field_changed_after_the_probe(harness):
+    lab = harness.lab
+    lab.navigate('/login')
+    harness.focus('username')
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+    assert found['ok'], found
+    lab.evaluate("document.getElementById('password').type = 'text'")
+    result = harness.worker_call(f'popupFill({{session: {json.dumps(found["session"])}, index: 0}})')
+    assert result['ok'] is False
+    assert lab.digest('username') == EMPTY and lab.digest('password') == EMPTY
