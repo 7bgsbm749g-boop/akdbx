@@ -328,7 +328,10 @@ def handler_for(state: UnlockState):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Security-Policy", content_security_policy(import_page=import_page))
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
+            # same-origin, not no-referrer: under no-referrer, Chromium sends
+            # Origin: null on a form POST, which the Origin checks refuse.
+            # Cross-origin requests still get no referrer, so the token stays here.
+            self.send_header("Referrer-Policy", "same-origin")
             self.end_headers()
             self.wfile.write(body)
 

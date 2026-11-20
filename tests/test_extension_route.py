@@ -835,3 +835,15 @@ def test_sealed_match_list_stays_within_the_transport_limit():
     assert len(framed) <= MAX_MESSAGE
     entries = popup(broker, channel, 'match', kind='login', **facts())['entries']
     assert 0 < len(entries) < 20 and len(broker.extension.selections) == 2 * len(entries)
+
+
+def test_expired_pairing_link_explains_how_to_get_a_new_one():
+    from akdbx.extension_web import handle_pairing
+    from akdbx.portal import render
+    from akdbx.web_unlock import UnlockState
+    broker = make_broker()
+    page = PageHandler('/extension/pair?token=expired')
+    assert handle_pairing(page, UnlockState(broker, None, None))
+    status, body = page.sent[0]
+    assert status == 404 and 'Open the pairing page' in body and 'ten minutes' in body
+    assert b'<meta name="referrer" content="same-origin">' in render('x', '')

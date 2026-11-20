@@ -359,3 +359,57 @@ def test_user_click_route_reports_a_page_that_replaces_a_filled_field(harness):
     assert found['ok'] and found['kind'] == 'card', found
     result = harness.worker_call(f'popupFill({{session: {json.dumps(found["session"])}, index: 0}})')
     assert result['ok'] is False and 'incomplete' in result['error']
+
+
+@pytest.fixture
+def pairing_page(harness, certificates):
+    """The broker's real Windows loopback HTTPS handler, for a browser form submit."""
+    import ssl
+    from akdbx.web_unlock import UnlockState, handler_for
+    from akdbx.windows_unlock import WindowsHTTPServer
+    broker = harness.broker
+    state = UnlockState(broker, None, None, lambda *_: pytest.fail('the broker is already unlocked'))
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(*certificates)
+    server = WindowsHTTPServer(('127.0.0.1', 0), handler_for(state), context, '')
+    server.local_origin = f'https://127.0.0.1:{server.server_port}'
+    server.write_manager = broker.writes
+    previous = broker.writes.public_base
+    broker.writes.public_base = server.local_origin
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.local_origin
+    finally:
+        broker.writes.public_base = previous
+        server.shutdown()
+        server.server_close()
+        thread.join(3)
+
+
+def test_pairing_page_form_submit_pairs_the_extension_in_a_real_browser(harness, pairing_page):
+    """Regression: the page's referrer policy made the browser send Origin: null on POST."""
+    lab, broker = harness.lab, harness.broker
+    master = 'Synthetic master Ω 42'
+    broker.vault.password = master
+    broker.extension.approved.clear()
+    [channel] = broker.extension.channels.values()
+    url = broker.extension._pairing_info(channel.digest)['url']
+    assert url.startswith(pairing_page + '/extension/pair?token=')
+    lab.observer.call('Page.navigate', {'url': url}, lab.session)
+    lab.wait("document.readyState === 'complete' && !!document.querySelector('form')")
+    assert lab.evaluate('document.body.innerText').count(route.pairing_code(channel.digest)) == 1
+    lab.evaluate(f"""document.getElementById('password').value = {json.dumps(master)};
+        document.querySelector('input[name=confirmed]').checked = true;
+        document.querySelector('form button:not([type=button])').click();""")
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            if lab.evaluate("document.readyState === 'complete' && !document.querySelector('form')"):
+                break
+        except AssertionError:
+            pass  # The page is navigating.
+        time.sleep(.1)
+    text = lab.evaluate('document.body.innerText')
+    assert 'paired with akdbx' in text, text
+    assert broker.extension.approved == [channel.digest]
