@@ -42,8 +42,8 @@ by appending `.card-saves`; keep that location outside `/run` for reboot surviva
 
 The payload contains only `event: "akdbx.card-save"`, a result `state`,
 `subscription_id` and `event_id`. Results are `saved`, `failed`, `cancelled`,
-`expired`, or `interrupted`. A validation typo keeps the form pending and sends
-no terminal event. Vault revision invalidation and failed persistence never
+`expired`, or `interrupted`. A validation typo, a duplicate title or a missing
+group keeps the form pending and sends no terminal event. Vault revision invalidation and failed persistence never
 report success. A restart preserves queued results and reports interruption for
 a form that was still pending, since private form contents are not persisted.
 The crash gap between vault commit and notification persistence may therefore

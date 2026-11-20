@@ -17,7 +17,7 @@ card values in tool arguments, chat, files or screenshots.
 
 The page prefills the title and group. The user can change the title. On a new
 card, the user can choose another existing group (the KeePass folder the entry
-is saved in) from a list; the page does not create groups. An update keeps the
+is saved in; the page calls it the vault folder) from a list; the page does not create groups. An update keeps the
 card's group. The page and the broker check the card number (Luhn checksum and
 length for the detected brand), the expiry (01 to 12, not in the past) and the
 security-code length; the broker refuses a bad form even if the page is

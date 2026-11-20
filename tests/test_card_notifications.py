@@ -127,7 +127,7 @@ def test_failed_persistence_and_unrelated_write_cannot_report_saved(deployed, ev
     assert post(socket, first)[0] == 200
     assert terminal(manager, one['subscription_id'])['result'] == 'saved'
     assert terminal(manager, two['subscription_id'])['result'] == 'failed'
-    prepared = begin(broker)
+    prepared = begin(broker, metadata=dict(title='Synthetic failure card', group='Web'))
     receipt = broker.dispatch(request(prepared['write_handle'], URL + '-failure'))
     def fail(*args, **kwargs):
         raise OSError('synthetic failure')
