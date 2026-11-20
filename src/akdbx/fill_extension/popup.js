@@ -11,7 +11,7 @@ function userGesture(event, activation) {
 function privateLink(value, path, trusted = globalThis.AKDBX_TRUSTED_ORIGIN) {
   try {
     const url = new URL(value);
-    return typeof trusted === "string" && url.origin === trusted && url.protocol === "https:" &&
+    return typeof trusted === "string" && url.origin === new URL(trusted).origin && url.protocol === "https:" &&
       url.pathname === path && !url.username && !url.password ? url.href : null;
   } catch {
     return null;

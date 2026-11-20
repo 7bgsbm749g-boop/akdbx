@@ -344,9 +344,10 @@ def _content_script():
 def trusted_origin(value):
     """The independently configured HTTPS origin of the broker's private pages."""
     from .cli import _validate_unlock_url
+    from .extension_route import _origin
     origin = value.rstrip('/') if isinstance(value, str) else ''
     _validate_unlock_url(origin + '/?token=configuration-check', origin)
-    return origin
+    return _origin(origin + '/')  # The browser serialization: no default port.
 
 
 def build(destination, *, host_name=HOST_NAME, unlock_origin=None):

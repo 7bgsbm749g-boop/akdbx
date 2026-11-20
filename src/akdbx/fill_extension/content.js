@@ -299,7 +299,8 @@
     }
     // A page handler may change a later field; never report that as filled.
     // The comparison stays in this isolated world and returns only a state.
-    const kept = targets.every((field, i) => accepted(field, values[field.role], steps[i].expected));
+    const kept = targets.every((field, i) => field.el.isConnected && identity(field.el) === field.identity &&
+      field.el.form === field.form && accepted(field, values[field.role], steps[i].expected));
     return kept ? "filled" : "uncertain";
   }
 

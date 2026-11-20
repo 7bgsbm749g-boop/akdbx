@@ -330,6 +330,7 @@ class ExtensionPin:
     created: float
     expires: float
     processor: str | None = None
+    spec: dict | None = None
     closed: bool = dataclass_field(default=False)
 
     def __getitem__(self, key):
@@ -638,7 +639,9 @@ class ExtensionHub:
                 self.selections[handle] = Selection(entry, channel.id, tab_id, document_id, kind, chain,
                                                     now + MATCH_TTL)
                 result.append(dict(item, handle=handle))
-        return dict(ok=True, kind=kind, entries=result)
+        # Seal the list so a relay cannot pair a shown label with another handle.
+        facts = dict(tab_id=tab_id, document_id=document_id, chain=chain, kind=kind)
+        return dict(ok=True, sealed=channel.seal(dict(values=dict(entries=result), facts=facts), 'match'))
 
     def _release(self, channel, message):
         """Return the values for one selected entry, bound to the matched document."""
@@ -711,7 +714,8 @@ class ExtensionHub:
                     unicodedata.category(c) == 'Cc' and c != '\n' for c in value):
                 raise ExtensionError()
         # The extension fills only if these broker-authorized facts equal its own.
-        facts = dict(tab_id=tab_id, document_id=document_id, chain=chain, kind=selection.kind, roles=roles)
+        facts = dict(tab_id=tab_id, document_id=document_id, chain=chain, kind=selection.kind, roles=roles,
+                     formats=formats)
         sealed = channel.seal(dict(values=values, facts=facts), 'release:' + handle)
         values.clear()
         return dict(ok=True, sealed=sealed)
@@ -877,7 +881,7 @@ class ExtensionHub:
             channel.notify('release', tab_id=tab_id, document_id=request['frame_id'], pin_id=pin_id, chain=chain)
             raise
         pin = ExtensionPin(self, channel, tab_id, request['frame_id'], pin_id, 'password', mode, request['top_url'],
-                           chain[-1]['url'], chain, created, created + TTL)
+                           chain[-1]['url'], chain, created, created + TTL, spec=spec)
         token = self._publish(pin)
         return dict(ok=True, target=token, expires_in=TTL, target_delivery=DELIVERY)
 
@@ -920,7 +924,7 @@ class ExtensionHub:
             channel.notify('release', tab_id=tab_id, document_id=request['frame_id'], pin_id=pin_id, chain=chain)
             raise ExtensionError()
         pin = ExtensionPin(self, channel, tab_id, request['frame_id'], pin_id, kind, request['field'],
-                           request['top_url'], chain[-1]['url'], chain, created, created + TTL, processor)
+                           request['top_url'], chain[-1]['url'], chain, created, created + TTL, processor, spec=spec)
         token = self._publish(pin)
         return dict(ok=True, target=token, expires_in=TTL, field=request['field'], **{kind + '_delivery': DELIVERY})
 
@@ -949,8 +953,9 @@ class ExtensionHub:
             return 'refused'
         max_age_ms = max(0, min(TTL * 1000, (deadline - pin.created) * 1000))
         try:
+            # The pinned field spec and the deadline are authorized here, not by the relay.
             facts = dict(tab_id=pin.tab_id, document_id=pin.document_id, chain=pin.chain, kind=pin.kind,
-                         pin_id=pin.pin_id)
+                         pin_id=pin.pin_id, spec=pin.spec, max_age_ms=max_age_ms)
             sealed = pin.channel.seal(dict(values=values, facts=facts), 'fill:' + pin.pin_id)
             result = pin.channel.call('fill', remaining + 0.5, tab_id=pin.tab_id, document_id=pin.document_id,
                                       pin_id=pin.pin_id, top_url=pin.top_url, chain=pin.chain, kind=pin.kind,

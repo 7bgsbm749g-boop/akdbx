@@ -114,13 +114,14 @@ class FakeExtension:
         if op == 'fill':
             if payload['pin_id'] not in self.pins or self.chain(payload['tab_id'], payload['document_id']) != payload['chain']:
                 return dict(state='refused')
-            self.pins.pop(payload['pin_id'])
+            stored = self.pins.pop(payload['pin_id'])
             sealed = unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, self.channel.broker_public_key, payload['sealed'],
                             'fill:' + payload['pin_id'])
             facts = sealed['facts']
             # The broker sealed exactly the facts of the pin it authorized.
             assert facts == dict(tab_id=payload['tab_id'], document_id=payload['document_id'], chain=payload['chain'],
-                                 kind=payload['kind'], pin_id=payload['pin_id'])
+                                 kind=payload['kind'], pin_id=payload['pin_id'], spec=stored['spec'],
+                                 max_age_ms=payload['max_age_ms'])
             values = sealed['values']
             if self.fill_state == 'filled':
                 self.filled.append(values)
@@ -405,7 +406,14 @@ def test_identity_goes_only_to_frames_of_the_top_origin():
 
 # ----- user-click popup route ------------------------------------------------
 def popup(broker, channel, op, **payload):
-    return broker.extension.popup(channel, dict(type='request', id='p1', op=op, **payload))
+    result = broker.extension.popup(channel, dict(type='request', id='p1', op=op, **payload))
+    if op == 'match' and result.get('ok'):
+        # The match list is sealed with the facts it answers, like values.
+        assert set(result) == {'ok', 'sealed'}
+        opened = unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, result['sealed'], 'match')
+        assert opened['facts'] == {k: payload[k] for k in ('tab_id', 'document_id', 'chain', 'kind')}
+        return dict(ok=True, kind=payload['kind'], entries=opened['values']['entries'])
+    return result
 
 
 def facts(document='TOP', top=LOGIN, chain=None, tab=3):
@@ -432,7 +440,7 @@ def test_popup_match_returns_metadata_only_and_release_is_bound_to_the_document(
                   'release:' + handle) == dict(values=dict(username=USERNAME, password=PASSWORD),
                                                facts=dict(tab_id=3, document_id='TOP', kind='login',
                                                           chain=[dict(document_id='TOP', url=LOGIN)],
-                                                          roles=['username', 'password']))
+                                                          roles=['username', 'password'], formats={}))
     # A ciphertext answers only its own selection: another context fails.
     with pytest.raises(Exception):
         unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'], 'release:other')
@@ -810,3 +818,8 @@ def test_target_settings_reach_the_cdp_manager():
     broker.identity_targets.profile = 'synthetic-profile'
     assert broker.card_targets.cdp.clock is clock and broker.identity_targets.cdp.profile == 'synthetic-profile'
     assert broker.card_targets.kind == 'card'
+
+
+def test_build_stores_the_browser_serialization_of_the_trusted_origin(tmp_path):
+    built = extension_host.build(tmp_path / 'ext', unlock_origin='https://localhost:443')
+    assert 'AKDBX_TRUSTED_ORIGIN = "https://localhost";' in (built / 'config.js').read_text()

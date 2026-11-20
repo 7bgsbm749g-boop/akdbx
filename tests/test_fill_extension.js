@@ -107,3 +107,37 @@ test("frame chains compare exactly", () => {
   assert.equal(exports.sameChain(a, [{document_id: "A", url: "https://example.com/"}]), true);
   assert.equal(exports.sameChain(a, [{document_id: "B", url: "https://example.com/"}]), false);
 });
+
+test("agent fill refuses a pin whose field spec differs from the sealed one", async () => {
+  const {exports, chrome} = loadBackground();
+  const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
+  exports.setSealKey(key);
+  const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
+  chrome.tabs.get = async () => ({id: 7, url: chain[0].url});
+  chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
+  const scripts = [];
+  chrome.scripting.executeScript = async details => {
+    scripts.push(details);
+    return [{result: details.files ? undefined : "q".repeat(32)}];
+  };
+  // The relay asked the browser to pin the name field...
+  const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card",
+    spec: {selector: "#name", field: "cc-name", processor: null}});
+  assert.equal(pinned.ok, true);
+  // ...but the broker authorized and sealed a number fill for "#number".
+  const facts = {tab_id: 7, document_id: "DOC", chain, kind: "card", pin_id: pinned.pin_id, max_age_ms: 1000,
+    spec: {selector: "#number", field: "cc-number", processor: null}};
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({name: "AES-GCM", iv, additionalData: new TextEncoder().encode("fill:" + pinned.pin_id)},
+    key, new TextEncoder().encode(JSON.stringify({values: {value: "4111111111111111"}, facts})));
+  const b64 = bytes => Buffer.from(bytes).toString("base64url");
+  const count = scripts.length;
+  const result = await exports.fill({pin_id: pinned.pin_id, sealed: {iv: b64(iv), data: b64(data)}});
+  assert.equal(result.state, "refused");
+  assert.ok(scripts.slice(count).every(s => !String(s.func).includes("__akdbxContent.fill(")));
+});
+
+test("popup compares origins as the browser serializes them", () => {
+  assert.equal(privateLink("https://localhost/extension/pair?token=x", "/extension/pair", "https://localhost:443"),
+    "https://localhost/extension/pair?token=x");
+});
