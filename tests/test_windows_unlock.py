@@ -117,3 +117,12 @@ def test_remote_or_unprotected_origin_refused(value):
 
 def test_loopback_https_origin_normalized():
     assert local_origin('https://localhost:9443/') == ('https://localhost:9443', 9443)
+
+
+def test_private_pages_use_a_referrer_policy_that_keeps_the_post_origin(local_server):
+    # Under no-referrer, Chromium sends Origin: null on a form POST and the
+    # Origin checks refuse it; same-origin keeps the real origin there.
+    _, _, _, call = local_server
+    status, headers, body = call()
+    assert status == 200 and headers['Referrer-Policy'] == 'same-origin'
+    assert b'<meta name="referrer" content="same-origin">' in body
