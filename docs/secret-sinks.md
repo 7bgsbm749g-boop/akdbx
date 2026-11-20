@@ -51,7 +51,12 @@ that no other account can change. Restart the broker after a change.
 Values are written unquoted, so delivery refuses any value outside
 `A-Z a-z 0-9 . _ + / = : @ % , ^ -` (no `~`, which shells expand). Each write uses a temporary file in the
 same directory, `fsync`, `rename` and a directory `fsync`, and refuses if the
-file changed during the write.
+file changed during the write. Deliveries take an advisory lock on the sink
+directory and wait at most 15 seconds for it; another account that can read the
+directory can hold that lock and make deliveries refuse, so keep sink
+directories private to their owner. Other editors of the file do not take this
+lock: a save that lands in the instant between the final check and the rename
+can still be replaced, so do not edit a sink file while delivering to it.
 
 ## Root helper for files of another account
 
