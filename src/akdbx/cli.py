@@ -79,13 +79,15 @@ def default_socket() -> Path:
     # /tmp fallback. A new broker still defaults to the /tmp path.
     system_runtime = _private_system_runtime()
     if system_runtime is not None:
-        try:
-            found = _first_present(_socket_candidates(system_runtime))
-        except OSError:
-            # Unexpected entries here must not break the old /tmp default.
-            found = None
-        if found is not None:
-            return found
+        # This location is a guess, so take only an actual socket and skip
+        # unexpected entries instead of letting them hide a broker or the
+        # old /tmp default.
+        for candidate in _socket_candidates(system_runtime):
+            try:
+                if stat.S_ISSOCK(candidate.lstat().st_mode):
+                    return candidate
+            except OSError:
+                continue
     base = Path(f"/tmp/akdbx-{os.getuid()}")
     canonical = base / "akdbx.sock"
     return _first_present((canonical, base / "agentic-kdbx.sock")) or canonical

@@ -646,6 +646,20 @@ def test_default_socket_falls_back_when_system_runtime_entry_is_not_a_directory(
     assert cli.default_socket() == _tmp_fallback()
 
 
+@pytest.mark.parametrize("blocker", ["file-at-socket", "file-at-directory"])
+def test_system_runtime_non_socket_does_not_hide_legacy_broker(monkeypatch, tmp_path, blocker):
+    runtime = _fake_system_runtime(monkeypatch, tmp_path)
+    if blocker == "file-at-socket":
+        (runtime / "akdbx").mkdir(mode=0o700)
+        (runtime / "akdbx" / "akdbx.sock").touch()
+    else:
+        (runtime / "akdbx").touch()
+    legacy = runtime / "agentic-kdbx" / "agentic-kdbx.sock"
+    legacy.parent.mkdir(mode=0o700)
+    _bind_socket(legacy)
+    assert cli.default_socket() == legacy
+
+
 @pytest.mark.parametrize("unsafe", ["group-writable", "symlink"])
 def test_default_socket_ignores_untrusted_system_runtime(monkeypatch, tmp_path, unsafe):
     if unsafe == "group-writable":
