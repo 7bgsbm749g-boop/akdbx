@@ -9,7 +9,7 @@ Read this when ordinary broker calls cannot proceed or when the user asks to con
 /absolute/path/to/akdbx/.venv/bin/akdbx status
 ```
 
-The CLI chooses `${XDG_RUNTIME_DIR}/akdbx/akdbx.sock` when `XDG_RUNTIME_DIR` is set, otherwise `/tmp/akdbx-UID/akdbx.sock`. For a runtime-based deployment, the unlock backend is `${XDG_RUNTIME_DIR}/akdbx/akdbx-unlock.sock`. If the caller and broker have different environments, pass the broker's known socket explicitly. `--socket` is a global option and must precede the subcommand:
+The CLI chooses `${XDG_RUNTIME_DIR}/akdbx/akdbx.sock` when `XDG_RUNTIME_DIR` is set. Without it (for example in a non-interactive `ssh host 'akdbx status'`), CLI 0.20.1 and newer first use an existing broker socket (canonical name, then legacy name) under the login runtime directory `/run/user/UID`, but only when that directory is owned by the current user and is not group- or world-writable; otherwise the CLI uses `/tmp/akdbx-UID/akdbx.sock`. A broker started without `XDG_RUNTIME_DIR` still creates its socket under `/tmp/akdbx-UID`. An explicit `--socket` always wins, and the usual socket ownership, mode and peer checks apply to every choice. For a runtime-based deployment, the unlock backend is `${XDG_RUNTIME_DIR}/akdbx/akdbx-unlock.sock`. If the caller and broker have different environments, pass the broker's known socket explicitly. `--socket` is a global option and must precede the subcommand:
 
 ```bash
 /absolute/path/to/akdbx/.venv/bin/akdbx --socket ${XDG_RUNTIME_DIR}/akdbx/akdbx.sock status

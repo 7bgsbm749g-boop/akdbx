@@ -274,7 +274,7 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
             code, _, page = call(servers[0].server_address, "POST", path, urlencode({"password": MASTER}), timeout=30)
             assert code == 200
             assert MASTER.encode() not in page and SECRET.encode() not in page
-            assert command("status") == {"ok": True, "locked": False, "version": "0.20.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
+            assert command("status") == {"ok": True, "locked": False, "version": "0.20.1", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
             search = command("search", "example")
             assert typer.events == []  # Unlock/search must not trigger a fill.
             handle = search["entries"][0]["handle"]
@@ -575,6 +575,80 @@ def test_rebrand_prefers_canonical_broker_when_both_exist(monkeypatch, tmp_path)
     with running_broker(legacy, Broker(SimpleNamespace(entries=[]), RecordingTyper())):
         with running_broker(canonical, Broker(SimpleNamespace(entries=[]), RecordingTyper())):
             assert cli.default_socket() == canonical
+
+
+def _fake_system_runtime(monkeypatch, tmp_path, mode=0o700):
+    """Point the logind root at a fake /run/user and drop XDG_RUNTIME_DIR."""
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    root = tmp_path / "run-user"
+    root.mkdir(mode=0o755)
+    runtime = root / str(os.getuid())
+    runtime.mkdir(mode=0o700)
+    runtime.chmod(mode)
+    monkeypatch.setattr(cli, "SYSTEM_RUNTIME_ROOT", root)
+    return runtime
+
+
+def _tmp_fallback() -> Path:
+    base = Path(f"/tmp/akdbx-{os.getuid()}")
+    if base.exists():
+        pytest.skip("a real /tmp broker directory exists on this host")
+    return base / "akdbx.sock"
+
+
+@pytest.mark.parametrize("names", [("akdbx", "akdbx.sock"), ("agentic-kdbx", "agentic-kdbx.sock")])
+def test_default_socket_without_xdg_finds_broker_in_system_runtime(monkeypatch, tmp_path, capsys, names):
+    runtime = _fake_system_runtime(monkeypatch, tmp_path)
+    endpoint = runtime / names[0] / names[1]
+    with running_broker(endpoint, Broker(SimpleNamespace(entries=[]), RecordingTyper())):
+        assert cli.default_socket() == endpoint
+        assert cli.main(["status"]) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_set_xdg_runtime_takes_precedence_over_system_runtime(monkeypatch, tmp_path):
+    runtime = _fake_system_runtime(monkeypatch, tmp_path)
+    xdg = tmp_path / "xdg"
+    xdg.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg))
+    with running_broker(runtime / "akdbx" / "akdbx.sock", Broker(SimpleNamespace(entries=[]), RecordingTyper())):
+        assert cli.default_socket() == xdg / "akdbx" / "akdbx.sock"
+
+
+def test_explicit_socket_takes_precedence_over_system_runtime(monkeypatch, tmp_path, capsys):
+    runtime = _fake_system_runtime(monkeypatch, tmp_path)
+    missing = tmp_path / "explicit" / "akdbx.sock"
+    (tmp_path / "explicit").mkdir(mode=0o700)
+    with running_broker(runtime / "akdbx" / "akdbx.sock", Broker(SimpleNamespace(entries=[]), RecordingTyper())):
+        assert cli.main(["--socket", str(missing), "status"]) != 0
+    captured = capsys.readouterr()
+    assert not captured.out and "broker is not running" in captured.err
+
+
+def test_default_socket_without_xdg_or_system_broker_uses_tmp(monkeypatch, tmp_path):
+    _fake_system_runtime(monkeypatch, tmp_path)
+    assert cli.default_socket() == _tmp_fallback()
+    monkeypatch.setattr(cli, "SYSTEM_RUNTIME_ROOT", tmp_path / "absent")
+    assert cli.default_socket() == _tmp_fallback()
+
+
+@pytest.mark.parametrize("unsafe", ["group-writable", "symlink"])
+def test_default_socket_ignores_untrusted_system_runtime(monkeypatch, tmp_path, unsafe):
+    if unsafe == "group-writable":
+        runtime = _fake_system_runtime(monkeypatch, tmp_path, mode=0o770)
+        endpoint = runtime / "akdbx" / "akdbx.sock"
+        endpoint.parent.mkdir(mode=0o700)
+        endpoint.touch()
+    else:
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        root = tmp_path / "run-user"
+        root.mkdir()
+        real = tmp_path / "real"
+        (real / "akdbx").mkdir(parents=True)
+        (real / "akdbx" / "akdbx.sock").touch()
+        (root / str(os.getuid())).symlink_to(real, target_is_directory=True)
+        monkeypatch.setattr(cli, "SYSTEM_RUNTIME_ROOT", root)
+    assert cli.default_socket() == _tmp_fallback()
 
 
 def test_rebrand_fallback_does_not_bypass_symlink_checks(monkeypatch, tmp_path, capsys):
