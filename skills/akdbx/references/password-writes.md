@@ -6,7 +6,7 @@ explicit selectors, supported controls, and race checks before this workflow.
 # Create passwords and passwordless identity records
 
 Password workflows in this guide require CLI and broker version **0.12.0 or newer**
-and the DOM delivery capabilities below. The current release is **0.20.0**; 0.17.0
+and the DOM delivery capabilities below. The current release is **0.20.1**; 0.17.0
 added this workflow on native Windows.
 All password fills require [DOM password protocol 1](target-fill.md).
 Native email-code creation requires **0.9.1** and its separate passwordless

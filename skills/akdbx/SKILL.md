@@ -483,7 +483,7 @@ per-step confirmation is required. Keep receipts and encrypted originals.
 
 | Observed result | Next step |
 | --- | --- |
-| `broker is not running` (exit 2) | Check socket/environment and startup instructions in the setup reference. |
+| `broker is not running` (exit 2) | Check socket/environment and startup instructions in the setup reference. CLI 0.20.1+ finds a broker under `/run/user/UID` without `XDG_RUNTIME_DIR`; an older CLI over non-interactive SSH needs `XDG_RUNTIME_DIR` or `--socket`. Do not restart the broker to fix this. |
 | `vault locked` (exit 1 from search/fill) | Share its unlock URL, register a one-shot unlock notification, and resume on that event. |
 | `entries: []` | Search the known account identifiers and inspect the service's supported provider or email-code routes before reporting a missing-login blocker. |
 | `unknown or expired handle; search again` | Search again; never fabricate or reuse a handle. |

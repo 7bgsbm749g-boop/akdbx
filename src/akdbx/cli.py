@@ -31,24 +31,66 @@ IDENTITY_CREATES = ('create-sso-entry', 'create-passwordless-entry')
 URL_CHANGES = ('add-url', 'remove-url')
 
 
-def default_socket() -> Path:
-    if os.name == 'nt':
-        from .windows_rpc import default_pipe
-        return default_pipe()
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    base = Path(runtime) / "akdbx" if runtime else Path(f"/tmp/akdbx-{os.getuid()}")
-    canonical = base / "akdbx.sock"
-    legacy_base = Path(runtime) / "agentic-kdbx" if runtime else base
-    legacy = legacy_base / "agentic-kdbx.sock"
+# Where systemd-logind puts per-user runtime directories. A non-interactive
+# SSH command often has no XDG_RUNTIME_DIR even though the user's broker runs
+# under this directory.
+SYSTEM_RUNTIME_ROOT = Path("/run/user")
+
+
+def _socket_candidates(runtime: Path) -> tuple[Path, Path]:
+    return runtime / "akdbx" / "akdbx.sock", runtime / "agentic-kdbx" / "agentic-kdbx.sock"
+
+
+def _first_present(candidates) -> Path | None:
     # Keep existing unlocked brokers usable during an upgrade. All normal
     # ownership, symlink and peer checks still apply when connecting.
-    for candidate in (canonical, legacy):
+    for candidate in candidates:
         try:
             candidate.lstat()
         except FileNotFoundError:
             continue
         return candidate
-    return canonical
+    return None
+
+
+def _private_system_runtime() -> Path | None:
+    """Return /run/user/<uid> only when it is this user's own private directory."""
+    runtime = SYSTEM_RUNTIME_ROOT / str(os.getuid())
+    try:
+        info = runtime.lstat()
+    except OSError:
+        return None
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o022):
+        return None
+    return runtime
+
+
+def default_socket() -> Path:
+    if os.name == 'nt':
+        from .windows_rpc import default_pipe
+        return default_pipe()
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime:
+        canonical, legacy = _socket_candidates(Path(runtime))
+        return _first_present((canonical, legacy)) or canonical
+    # Without XDG_RUNTIME_DIR (for example `ssh host akdbx status`), use a
+    # broker that already listens in the logind runtime directory before the
+    # /tmp fallback. A new broker still defaults to the /tmp path.
+    system_runtime = _private_system_runtime()
+    if system_runtime is not None:
+        # This location is a guess, so take only an actual socket and skip
+        # unexpected entries instead of letting them hide a broker or the
+        # old /tmp default.
+        for candidate in _socket_candidates(system_runtime):
+            try:
+                if stat.S_ISSOCK(candidate.lstat().st_mode):
+                    return candidate
+            except OSError:
+                continue
+    base = Path(f"/tmp/akdbx-{os.getuid()}")
+    canonical = base / "akdbx.sock"
+    return _first_present((canonical, base / "agentic-kdbx.sock")) or canonical
 
 
 def _validate_socket_path(socket_path: Path, broker_uid: int) -> tuple[Path, int]:

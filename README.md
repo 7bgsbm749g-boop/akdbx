@@ -27,7 +27,9 @@ The project, Python distribution, Python package and agent skill are named
 `$akdbx`. The old `agentic_kdbx` import remains a compatibility alias.
 
 New brokers use `akdbx/akdbx.sock` under `XDG_RUNTIME_DIR`, or
-`/tmp/akdbx-UID/akdbx.sock` without it. When the new socket is absent, the CLI
+`/tmp/akdbx-UID/akdbx.sock` without it. Without `XDG_RUNTIME_DIR` (for example
+over non-interactive SSH), the CLI first uses an existing broker socket under
+the user's own private `/run/user/UID` directory. When the new socket is absent, the CLI
 can connect to an existing `agentic-kdbx.sock` using the same path, ownership
 and peer checks. This lets an unlocked broker finish its session without a
 restart. Explicit `--socket` remains supported. Existing encrypted vaults,
