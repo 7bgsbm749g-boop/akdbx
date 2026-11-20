@@ -79,7 +79,11 @@ def default_socket() -> Path:
     # /tmp fallback. A new broker still defaults to the /tmp path.
     system_runtime = _private_system_runtime()
     if system_runtime is not None:
-        found = _first_present(_socket_candidates(system_runtime))
+        try:
+            found = _first_present(_socket_candidates(system_runtime))
+        except OSError:
+            # Unexpected entries here must not break the old /tmp default.
+            found = None
         if found is not None:
             return found
     base = Path(f"/tmp/akdbx-{os.getuid()}")

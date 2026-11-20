@@ -632,20 +632,35 @@ def test_default_socket_without_xdg_or_system_broker_uses_tmp(monkeypatch, tmp_p
     assert cli.default_socket() == _tmp_fallback()
 
 
+def _bind_socket(path):
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(path))
+    listener.close()
+    path.chmod(0o600)
+
+
+def test_default_socket_falls_back_when_system_runtime_entry_is_not_a_directory(monkeypatch, tmp_path):
+    runtime = _fake_system_runtime(monkeypatch, tmp_path)
+    (runtime / "akdbx").touch()
+    (runtime / "agentic-kdbx").touch()
+    assert cli.default_socket() == _tmp_fallback()
+
+
 @pytest.mark.parametrize("unsafe", ["group-writable", "symlink"])
 def test_default_socket_ignores_untrusted_system_runtime(monkeypatch, tmp_path, unsafe):
     if unsafe == "group-writable":
         runtime = _fake_system_runtime(monkeypatch, tmp_path, mode=0o770)
         endpoint = runtime / "akdbx" / "akdbx.sock"
         endpoint.parent.mkdir(mode=0o700)
-        endpoint.touch()
+        _bind_socket(endpoint)
     else:
         monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
         root = tmp_path / "run-user"
         root.mkdir()
         real = tmp_path / "real"
-        (real / "akdbx").mkdir(parents=True)
-        (real / "akdbx" / "akdbx.sock").touch()
+        (real / "akdbx").mkdir(parents=True, mode=0o700)
+        real.chmod(0o700)
+        _bind_socket(real / "akdbx" / "akdbx.sock")
         (root / str(os.getuid())).symlink_to(real, target_is_directory=True)
         monkeypatch.setattr(cli, "SYSTEM_RUNTIME_ROOT", root)
     assert cli.default_socket() == _tmp_fallback()
