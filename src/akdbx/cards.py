@@ -35,10 +35,107 @@ def validate(values):
             or not re.fullmatch(r'20[0-9]{2}', values['year'])
             or values['csc'] and not re.fullmatch(r'[0-9]{3,4}', values['csc'])):
         raise WriteError('invalid card fields; require name, number, two-digit month and four-digit year')
-    digits = [int(c) for c in result['number']]
-    if sum(d if i % 2 == 0 else (2*d // 10 + 2*d % 10) for i, d in enumerate(reversed(digits))) % 10:
+    if not luhn(result['number']):
         raise WriteError('invalid card number checksum')
     return result
+
+
+def luhn(number):
+    digits = [int(c) for c in number]
+    return not sum(d if i % 2 == 0 else (2*d // 10 + 2*d % 10) for i, d in enumerate(reversed(digits))) % 10
+
+
+def brand(number):
+    """Brand from the leading digits of an ASCII digit string."""
+    if number[:2] in {'34', '37'}:
+        return 'amex'
+    if number[:1] == '4':
+        return 'visa'
+    if len(number) >= 2 and 51 <= int(number[:2]) <= 55 or len(number) >= 4 and 2221 <= int(number[:4]) <= 2720:
+        return 'mastercard'
+    return 'other'
+
+
+# The private card page repeats these exact rules and messages in
+# portal.CARD_CHECK; tests/test_card_validation.py keeps the two in step.
+# Messages never include a submitted value.
+LENGTHS = {'visa': (13, 16, 19), 'mastercard': (16,), 'amex': (15,), 'other': tuple(range(12, 20))}
+CSC_LENGTHS = {'visa': (3,), 'mastercard': (3,), 'amex': (4,), 'other': (3, 4)}
+MESSAGES = dict(
+    unsupported='Card details contain unsupported characters or are too long.',
+    name='Enter the cardholder name.',
+    number_empty='Enter the card number.',
+    number_digits='Card number can contain only digits, spaces and hyphens.',
+    number_visa='A Visa card number has 13, 16 or 19 digits.',
+    number_mastercard='A Mastercard number has 16 digits.',
+    number_amex='An American Express card number has 15 digits.',
+    number_other='A card number has 12 to 19 digits.',
+    number_checksum='This card number is not valid. Check the digits.',
+    month='Enter the expiry month as two digits, 01 to 12.',
+    year='Enter the expiry year as four digits, for example 2031.',
+    expiry='This card has expired. Check the expiry month and year.',
+    csc_visa='A Visa security code has 3 digits.',
+    csc_mastercard='A Mastercard security code has 3 digits.',
+    csc_amex='An American Express security code has 4 digits.',
+    csc_other='A security code has 3 or 4 digits.',
+)
+
+
+def problems(values, today):
+    """Return (brand or None, {field: message}) for a card being saved now."""
+    errors = {}
+    number = values['number'].replace(' ', '').replace('-', '')
+    kind = brand(number) if re.fullmatch('[0-9]+', number) else None
+    if any(unicodedata.category(c).startswith('C') for v in values.values() for c in v):
+        errors['name'] = MESSAGES['unsupported']
+    elif not values['name'].strip():
+        errors['name'] = MESSAGES['name']
+    if not number:
+        errors['number'] = MESSAGES['number_empty']
+    elif kind is None:
+        errors['number'] = MESSAGES['number_digits']
+    elif len(number) not in LENGTHS[kind]:
+        errors['number'] = MESSAGES['number_' + kind]
+    elif not luhn(number):
+        errors['number'] = MESSAGES['number_checksum']
+    month = re.fullmatch('0[1-9]|1[0-2]', values['month'])
+    year = re.fullmatch('20[0-9]{2}', values['year'])
+    if not month:
+        errors['month'] = MESSAGES['month']
+    if not year:
+        errors['year'] = MESSAGES['year']
+    if month and year and (int(values['year']), int(values['month'])) < tuple(today):
+        errors['month'] = MESSAGES['expiry']
+    csc = values['csc']
+    if csc and not (re.fullmatch('[0-9]+', csc) and len(csc) in CSC_LENGTHS[kind or 'other']):
+        errors['csc'] = MESSAGES['csc_' + (kind or 'other')]
+    return kind, errors
+
+
+def check_new(values, now):
+    """Strict checks for a card the user saves now; stored cards stay readable.
+
+    The expiry month is compared 12 hours behind UTC, so a card that is still
+    valid in the user's own time zone is never refused by the broker.
+    """
+    if not isinstance(values, dict) or set(values) != set(FIELDS) or any(
+            not isinstance(v, str) or len(v) > 128 for v in values.values()):
+        raise WriteError(MESSAGES['unsupported'])
+    current = datetime.fromtimestamp(now - 12 * 3600, timezone.utc)
+    _, errors = problems(values, (current.year, current.month))
+    if errors:
+        raise WriteError(next(iter(errors.values())))
+    return validate(values)
+
+
+def check_destination(values):
+    """Title and group rules shared by create-card, update-card and the page."""
+    if not isinstance(values, dict) or set(values) != {'title', 'group'} or any(
+        not isinstance(v, str) or len(v.encode('utf-8')) > 4096
+        or any(unicodedata.category(c).startswith('C') for c in v) for v in values.values()
+    ) or not values['title'].strip():
+        raise WriteError('invalid card destination metadata')
+    return dict(values)
 
 
 def read_card(entry):
@@ -50,10 +147,7 @@ def read_card(entry):
 def metadata(entry):
     values = read_card(entry)
     number = values['number']
-    brand = 'visa' if number.startswith('4') else 'amex' if number[:2] in {'34', '37'} else 'other'
-    if 51 <= int(number[:2]) <= 55 or 2221 <= int(number[:4]) <= 2720:
-        brand = 'mastercard'
-    return dict(title=entry.title or '', group='/'.join(entry.path[:-1]), brand=brand, last_four=number[-4:])
+    return dict(title=entry.title or '', group='/'.join(entry.path[:-1]), brand=brand(number), last_four=number[-4:])
 
 
 def value_for(entry, field, formatting, now):
@@ -149,12 +243,7 @@ class CardManager:
         allowed = {'action', 'card_protocol', 'metadata'} | ({'handle'} if update else set())
         if set(request) != allowed:
             raise WriteError('card save accepts destination metadata only')
-        values = request.get('metadata')
-        if not isinstance(values, dict) or set(values) != {'title', 'group'} or any(
-            not isinstance(v, str) or len(v.encode('utf-8')) > 4096
-            or any(unicodedata.category(c).startswith('C') for c in v) for v in values.values()
-        ) or not values['title'].strip():
-            raise WriteError('invalid card destination metadata')
+        values = check_destination(request.get('metadata'))
         writes = self.broker.writes
         if not writes.available():
             raise WriteError('private card writes unavailable')
@@ -171,23 +260,48 @@ class CardManager:
         return dict(ok=True, state='pending', write_handle=handle,
                     private_url=writes.public_base.rstrip('/') + '/card?token=' + op.token)
 
-    def submit(self, op, values, confirmed):
-        """Keep invalid forms pending; make attempted persistence failures terminal."""
-        if (not confirmed or op.kind != 'card' or op.state != 'pending'
-                or op.revision != self.broker.writes.revision or op.expires <= self.broker.clock()):
-            return dict(ok=False, error='invalid or expired card save')
+    def submit(self, op, values, confirmed, destination=None):
+        """Keep invalid forms pending; make attempted persistence failures terminal.
+
+        ``destination`` holds the title and/or group the user chose on the
+        page; a missing key keeps the prepared value. The result's ``reason`` tells the page
+        which state the save reached: saved, rejected (still pending), expired,
+        stale (vault changed) or failed.
+        """
+        if op.kind != 'card' or op.state != 'pending' or op.expires <= self.broker.clock():
+            return dict(ok=False, reason='expired', error=EXPIRED)
+        if op.revision != self.broker.writes.revision:
+            return dict(ok=False, reason='stale', error=STALE)
+        def rejected(message):
+            return dict(ok=False, reason='rejected', error=message)
+        if not confirmed:
+            return rejected('Confirm this card and destination before saving.')
+        # The update page sends no group: it keeps the prepared one.
+        destination = dict(op.values, **(destination or {}))
         try:
-            values = validate(values)
+            destination = check_destination(destination)
         except WriteError:
-            return dict(ok=False, error='check cardholder name, card number, two-digit month, four-digit year and optional security code')
+            return rejected('Enter a title without control characters, up to 4096 bytes.')
+        if op.uuid is not None and destination['group'] != op.values['group']:
+            return rejected('An updated card stays in its current group.')
+        try:
+            group_for(self.broker.vault, destination['group'])
+        except WriteError:
+            return rejected('Choose a group from the list.')
+        if self._duplicate(self.broker.vault, op, destination):
+            return rejected('A card with this title already exists in this group. Choose another title.')
+        try:
+            values = check_new(values, self.broker.wall_clock())
+        except WriteError as error:
+            return rejected(str(error))
         try:
             def mutate(candidate):
-                group = group_for(candidate, op.values['group'])
+                group = group_for(candidate, destination['group'])
+                if self._duplicate(candidate, op, destination):
+                    raise WriteError('duplicate card title in destination group')
                 if op.uuid is None:
-                    if any(is_card(e) and e.title == op.values['title'] and e.group == group for e in active_entries(candidate)):
-                        raise WriteError('duplicate card title in destination group')
                     from pykeepass.entry import Entry
-                    entry = Entry(title=op.values['title'], username='', password='', kp=candidate)
+                    entry = Entry(title=destination['title'], username='', password='', kp=candidate)
                     group.append(entry)
                     changed_at = None
                 else:
@@ -197,6 +311,7 @@ class CardManager:
                     entry = matches[0]
                     changed_at = _entry_changed_at(entry, self.broker.wall_clock)
                     entry.save_history()
+                    entry.title = destination['title']
                 entry.set_custom_property(MARKER, 'v1')
                 for key, field in FIELDS.items():
                     entry.set_custom_property(field, values[key], protect=True)
@@ -206,7 +321,7 @@ class CardManager:
                     entry.mtime = changed_at
             def verify(candidate):
                 matches = [e for e in active_entries(candidate) if is_card(e)
-                           and e.title == op.values['title'] and '/'.join(e.path[:-1]) == op.values['group']]
+                           and e.title == destination['title'] and '/'.join(e.path[:-1]) == destination['group']]
                 if len(matches) != 1 or read_card(matches[0]) != values or any(
                     matches[0]._element.find('./String[Key="' + key + '"]/Value').get('Protected') != 'True'
                     for key in FIELDS.values()
@@ -215,16 +330,23 @@ class CardManager:
             vault = self.broker.vault
             self.broker.vault = vault._akdbx_store.commit(vault, mutate, verify_candidate=verify)
             op.state = 'saved'
+            # write-status reports the final non-secret destination.
+            op.values = destination
             self.broker.writes.invalidate_revision(op)
             self.broker.writes.notify_card(op)
-            return dict(ok=True, state='saved')
-        except (WriteError, SaveError):
-            op.state = 'failed'
-            op.error = 'card save failed; vault update not confirmed'
-            self.broker.writes.notify_card(op)
-            return dict(ok=False, error=op.error)
+            return dict(ok=True, state='saved', reason='saved', **destination)
         except Exception:
             op.state = 'failed'
             op.error = 'card save failed; vault update not confirmed'
             self.broker.writes.notify_card(op)
-            return dict(ok=False, error=op.error)
+            return dict(ok=False, reason='failed', error=FAILED)
+
+    @staticmethod
+    def _duplicate(vault, op, destination):
+        return any(is_card(e) and e.uuid != op.uuid and e.title == destination['title']
+                   and '/'.join(e.path[:-1]) == destination['group'] for e in active_entries(vault))
+
+
+EXPIRED = 'This card page has expired or is no longer valid. Ask for a new card page.'
+STALE = 'The vault changed after this page opened, so the card was not saved. Ask for a new card page.'
+FAILED = 'The card was not saved: the vault changed or could not be updated. Ask for a new card page.'

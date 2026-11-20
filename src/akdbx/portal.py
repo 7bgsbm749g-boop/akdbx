@@ -4,6 +4,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import html
+import json
+
+from .cards import CSC_LENGTHS, LENGTHS, MESSAGES
 
 
 STYLE = r"""
@@ -97,24 +100,30 @@ button:active { transform: scale(.985); }
 button:focus-visible { outline: 1px solid #fff; outline-offset: 4px; }
 button[type=button] { border-color: #ffffff20; background: #ffffff03; box-shadow: none; color: #ffffffb3; }
 button:disabled { cursor: default; opacity: .4; }
-.unlock-submit { isolation: isolate; }
-.unlock-submit .button-label { position: relative; z-index: 1; }
-.unlock-submit.is-pending, .unlock-submit.is-pending:active {
+.portal-submit { isolation: isolate; }
+.portal-submit .button-label { position: relative; z-index: 1; }
+.portal-submit.is-pending, .portal-submit.is-pending:active {
   transform: translateY(1px); opacity: 1; cursor: wait; border-color: #ffffff70;
   background-color: #ffffff12; box-shadow: inset 0 3px 9px #000a, inset 0 1px 0 #ffffff08;
 }
-.unlock-submit.is-pending::before, .unlock-submit.is-pending::after { display: none; }
-.unlock-progress { position: absolute; inset: 0; pointer-events: none; background: #ffffff0b; }
-.unlock-progress::before {
+.portal-submit.is-pending::before, .portal-submit.is-pending::after { display: none; }
+.portal-submit.is-done, .portal-submit.is-error { opacity: 1; cursor: default; box-shadow: none; }
+.portal-submit.is-done { border-color: #ffffff70; background-color: #ffffff12; }
+.portal-submit.is-done::after { width: 5px; height: 10px; border-top: 0; border-bottom: 1px solid currentColor; transform: translateY(-2px) rotate(45deg); }
+.portal-submit.is-error { border-style: dashed; border-color: #ffffff52; background: #ffffff03; }
+.portal-submit.is-error::after, .portal-submit.is-done::before, .portal-submit.is-error::before { display: none; }
+.portal-progress { position: absolute; inset: 0; pointer-events: none; background: #ffffff0b; }
+.portal-progress::before {
   content: ""; position: absolute; inset: 0; width: 40%;
   background: linear-gradient(90deg, transparent, #ffffff38, transparent);
 }
 [hidden] { display: none !important; }
-.unlock-status.is-error {
+.portal-status.is-error, .portal-status.is-shown {
   position: static; width: auto; height: auto; margin: 18px 0 0 !important;
   overflow: visible; clip-path: none; white-space: normal;
 }
-.unlock-status {
+.portal-status.is-error { border-left: 1px solid #ffffff70; padding-left: 12px; color: #fff; }
+.portal-status {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px !important;
   overflow: hidden; clip-path: inset(50%); white-space: nowrap;
 }
@@ -125,6 +134,11 @@ dt { color: #ffffffa6; text-transform: capitalize; }
 dd { color: #fff; margin: 0; overflow-wrap: anywhere; }
 .error { color: #fff; border-left: 1px solid #ffffff70; padding-left: 12px; }
 #message:empty { display: none; }
+.field-hint, .field-error { margin: 6px 0 0; font-size: 12px; line-height: 1.5; }
+.field-hint { color: #ffffffa6; }
+.field-error { color: #fff; }
+.field-error::before { content: "! "; }
+.field:has([aria-invalid=true]) { border-color: #ffffff8c; border-style: dashed; }
 @media (min-width: 700px) { main { padding-top: 80px; padding-bottom: 56px; } .sheet { padding: 30px; } }
 @media (max-width: 360px) { main { padding-left: 16px; padding-right: 16px; } .sheet { padding: 20px; } .field { padding-left: 13px; padding-right: 13px; } dl { grid-template-columns: minmax(0, 1fr); gap: 2px; } dd { margin-bottom: 6px; } }
 @media (prefers-reduced-motion: no-preference) {
@@ -137,8 +151,8 @@ dd { color: #fff; margin: 0; overflow-wrap: anywhere; }
   .field:nth-of-type(5) { animation-delay: .24s; }
   .field, label, button, a { transition: border-color .3s, color .3s, background-color .3s, box-shadow .3s, transform .35s var(--ease), opacity .25s; }
   button:not([type=button])::before { animation: glint 9s ease-in-out 2s infinite; }
-  .unlock-submit.is-pending { animation: unlock-press .16s ease-out; }
-  .unlock-submit.is-pending .unlock-progress::before { animation: unlock-loading 1.3s ease-in-out infinite; }
+  .portal-submit.is-pending { animation: unlock-press .16s ease-out; }
+  .portal-submit.is-pending .portal-progress::before { animation: unlock-loading 1.3s ease-in-out infinite; }
   @keyframes unlock-press { from { transform: translateY(0); } to { transform: translateY(1px); } }
   @keyframes unlock-loading { from { transform: translateX(-100%); } to { transform: translateX(350%); } }
   @keyframes enter { from { opacity: 0; transform: translateY(16px) scale(.985); } to { opacity: 1; transform: none; } }
@@ -150,8 +164,54 @@ dd { color: #fff; margin: 0; overflow-wrap: anywhere; }
 """
 
 
+CARD_CHECK = r"""function cardBrand(n) {
+    if (/^3[47]/.test(n)) return "amex";
+    if (n[0] === "4") return "visa";
+    const two = Number(n.slice(0, 2)), four = Number(n.slice(0, 4));
+    if (n.length >= 2 && two >= 51 && two <= 55 || n.length >= 4 && four >= 2221 && four <= 2720) return "mastercard";
+    return "other";
+  }
+  function luhn(n) {
+    let sum = 0;
+    for (let i = 0; i < n.length; i++) {
+      let d = Number(n[n.length - 1 - i]);
+      if (i % 2) { d *= 2; if (d > 9) d -= 9; }
+      sum += d;
+    }
+    return sum % 10 === 0;
+  }
+  // The same rules and messages as cards.problems() in the broker.
+  function checkCard(card, today) {
+    const M = __MESSAGES__, LENGTHS = __LENGTHS__, CSC = __CSC__;
+    const errors = {};
+    const number = card.number.replace(/[ -]/g, "");
+    const digits = /^[0-9]+$/.test(number);
+    const brand = digits ? cardBrand(number) : null;
+    if (/\p{C}/u.test(card.name + card.number + card.month + card.year + card.csc)) errors.name = M.unsupported;
+    else if (!card.name.trim()) errors.name = M.name;
+    if (!number) errors.number = M.number_empty;
+    else if (!digits) errors.number = M.number_digits;
+    else if (!LENGTHS[brand].includes(number.length)) errors.number = M["number_" + brand];
+    else if (!luhn(number)) errors.number = M.number_checksum;
+    const month = /^(0[1-9]|1[0-2])$/.test(card.month), year = /^20[0-9]{2}$/.test(card.year);
+    if (!month) errors.month = M.month;
+    if (!year) errors.year = M.year;
+    if (month && year && (Number(card.year) < today[0] || Number(card.year) === today[0] && Number(card.month) < today[1])) errors.month = M.expiry;
+    if (card.csc && !(/^[0-9]+$/.test(card.csc) && CSC[brand || "other"].includes(card.csc.length))) errors.csc = M["csc_" + (brand || "other")];
+    return {brand, errors};
+  }""".replace("__MESSAGES__", json.dumps(MESSAGES, sort_keys=True)).replace(
+    "__LENGTHS__", json.dumps({k: list(v) for k, v in LENGTHS.items()}, sort_keys=True)).replace(
+    "__CSC__", json.dumps({k: list(v) for k, v in CSC_LENGTHS.items()}, sort_keys=True))
+
+
 SCRIPT = r""""use strict";
 (() => {
+  """ + CARD_CHECK + r"""
+  const CARD_FIELDS = ["name", "number", "month", "year", "csc"];
+  const BRAND_NAMES = {visa: "Visa", mastercard: "Mastercard", amex: "American Express", other: "another brand"};
+  // Final button state for each card save result from the broker.
+  const CARD_RESULTS = {saved: ["Saved", "is-done"], expired: ["Page expired", "is-error"],
+    stale: ["Vault changed", "is-error"], cancelled: ["Cancelled", "is-error"], failed: ["Not saved", "is-error"]};
   function concealPasswords() {
     document.querySelectorAll("[data-password-toggle]").forEach(button => {
       const input = document.getElementById(button.getAttribute("aria-controls"));
@@ -167,39 +227,112 @@ SCRIPT = r""""use strict";
     input.type = visible ? "text" : "password";
     button.setAttribute("aria-pressed", String(visible));
   });
-  function resetUnlock(form) {
-    form.removeAttribute("aria-busy");
-    const button = form.querySelector(".unlock-submit");
-    button.disabled = false;
-    button.classList.remove("is-pending");
-    button.querySelector(".button-label").textContent = "Unlock AKDBX";
-    button.querySelector(".unlock-progress").hidden = true;
+  function setBusy(form, busy) {
+    const button = form.querySelector(".portal-submit");
+    if (busy) form.setAttribute("aria-busy", "true");
+    else form.removeAttribute("aria-busy");
+    button.disabled = busy;
+    button.classList.toggle("is-pending", busy);
+    button.querySelector(".button-label").textContent = button.getAttribute(busy ? "data-busy-label" : "data-idle-label");
+    button.querySelector(".portal-progress").hidden = !busy;
   }
-  document.addEventListener("submit", async event => {
-    const form = event.target;
-    concealPasswords();
-    if (!form.matches("[data-unlock-form]")) return;
-    event.preventDefault();
-    if (form.getAttribute("aria-busy") === "true") return;
-    form.closest(".sheet").querySelector("[role=alert]")?.remove();
-    form.setAttribute("aria-busy", "true");
-    const button = form.querySelector(".unlock-submit");
-    button.disabled = true;
-    button.classList.add("is-pending");
-    button.querySelector(".button-label").textContent = "Unlocking AKDBX…";
-    button.querySelector(".unlock-progress").hidden = false;
-    const status = document.getElementById("unlock-status");
-    status.classList.remove("is-error");
-    status.textContent = "Unlocking AKDBX. Please wait.";
+  function setStatus(status, text, kind) {
+    status.classList.remove("is-error", "is-shown");
+    if (kind) status.classList.add(kind);
+    status.textContent = text;
+  }
+  async function post(form) {
+    // Standard form encoding is used only for the authorized same-origin POST.
+    const response = await fetch(form.action, {
+      method: "POST", body: new URLSearchParams(new FormData(form)),
+      credentials: "same-origin", cache: "no-store", redirect: "error"
+    });
+    if (!response.headers.get("Content-Type")?.startsWith("text/html")) throw new Error();
+    return new DOMParser().parseFromString(await response.text(), "text/html");
+  }
+  function today() {
+    const now = new Date();
+    return [now.getFullYear(), now.getMonth() + 1];
+  }
+  function cardFields(form) {
+    // The only place card values are read: local checks before the POST.
+    // They are never shown, copied to status text, logged or stored.
+    const card = {};
+    CARD_FIELDS.forEach(name => { card[name] = form.elements.namedItem(name).value; });
+    return card;
+  }
+  function showCardErrors(form, errors, onlyMarked) {
+    CARD_FIELDS.forEach(name => {
+      const input = form.elements.namedItem(name), note = document.getElementById(name + "-error");
+      if (onlyMarked && input.getAttribute("aria-invalid") !== "true") return;
+      const message = errors[name] || "";
+      note.textContent = message;
+      note.hidden = !message;
+      if (message) input.setAttribute("aria-invalid", "true");
+      else input.removeAttribute("aria-invalid");
+    });
+  }
+  document.addEventListener("input", event => {
+    const form = event.target.closest("[data-card-form]");
+    if (!form) return;
+    const result = checkCard(cardFields(form), today());
+    const digits = form.elements.namedItem("number").value.replace(/[ -]/g, "").length;
+    document.getElementById("card-brand").textContent =
+      result.brand && digits >= 4 ? "Detected brand: " + BRAND_NAMES[result.brand] + "." : "";
+    showCardErrors(form, result.errors, true);
+  });
+  async function saveCard(form) {
+    const status = document.getElementById("card-status");
+    const errors = checkCard(cardFields(form), today()).errors;
+    showCardErrors(form, errors, false);
+    const first = CARD_FIELDS.find(name => errors[name]);
+    if (first) {
+      setStatus(status, "Check the marked card details.", "is-error");
+      form.elements.namedItem(first).focus();
+      return;
+    }
+    setBusy(form, true);
+    setStatus(status, "Saving the card. Please wait.", "");
+    let result = "", message = "";
     try {
-      // Standard form encoding is used only for the authorized POST. No field
-      // is inspected, copied to status text, logged, or persisted by this UI.
-      const response = await fetch(form.action, {
-        method: "POST", body: new URLSearchParams(new FormData(form)),
-        credentials: "same-origin", cache: "no-store", redirect: "error"
-      });
-      if (!response.headers.get("Content-Type")?.startsWith("text/html")) throw new Error();
-      const page = new DOMParser().parseFromString(await response.text(), "text/html");
+      const note = (await post(form)).querySelector("[data-card-result]");
+      if (!note) throw new Error();
+      result = note.getAttribute("data-card-result");
+      message = note.textContent;
+    } catch {
+      result = "";
+    }
+    setBusy(form, false);
+    if (result === "rejected") {
+      setStatus(status, message, "is-error");
+      return;
+    }
+    const final = CARD_RESULTS[result];
+    if (!final) {
+      setStatus(status, "Card save result not confirmed. Ask for the save status before you try again.", "is-error");
+      return;
+    }
+    // A final result: clear the card values and stop further submissions.
+    // The non-secret title and group keep what the user chose.
+    const chosen = ["title", "group"].map(name => form.elements.namedItem(name)).filter(Boolean)
+      .map(control => [control, control.value]);
+    form.reset();
+    chosen.forEach(([control, text]) => { control.value = text; });
+    showCardErrors(form, {}, false);
+    document.getElementById("card-brand").textContent = "";
+    form.querySelectorAll("input, select, button").forEach(control => { control.disabled = true; });
+    const button = form.querySelector(".portal-submit");
+    button.classList.add(final[1]);
+    button.querySelector(".button-label").textContent = final[0];
+    setStatus(status, message, final[1] === "is-done" ? "is-shown" : "is-error");
+  }
+  async function unlock(form) {
+    form.closest(".sheet").querySelector("[role=alert]")?.remove();
+    setBusy(form, true);
+    const status = document.getElementById("unlock-status");
+    setStatus(status, "Unlocking AKDBX. Please wait.", "");
+    try {
+      const page = await post(form);
       const sheet = page.querySelector("main > .sheet");
       if (!sheet || !sheet.querySelector("#portal-title")) throw new Error();
       // The same-origin server provides the real success or error page. Scripts
@@ -210,21 +343,31 @@ SCRIPT = r""""use strict";
       focus.setAttribute("tabindex", "-1");
       focus.focus();
     } catch {
-      status.classList.add("is-error");
-      status.textContent = "AKDBX unlock result not confirmed. Check its status before trying again.";
+      setStatus(status, "AKDBX unlock result not confirmed. Check its status before trying again.", "is-error");
     } finally {
       form.reset();
-      resetUnlock(form);
+      setBusy(form, false);
     }
+  }
+  document.addEventListener("submit", event => {
+    const form = event.target;
+    concealPasswords();
+    const card = form.matches("[data-card-form]");
+    if (!card && !form.matches("[data-unlock-form]")) return;
+    event.preventDefault();
+    if (form.getAttribute("aria-busy") === "true") return;
+    (card ? saveCard : unlock)(form);
   });
   window.addEventListener("pageshow", () => {
     // A history restore must never resume a previous attempt or infer success.
     concealPasswords();
     document.querySelectorAll("[data-unlock-form]").forEach(form => {
-      resetUnlock(form);
-      const status = document.getElementById("unlock-status");
-      status.classList.remove("is-error");
-      status.textContent = "";
+      setBusy(form, false);
+      setStatus(document.getElementById("unlock-status"), "", "");
+    });
+    document.querySelectorAll("[data-card-form][aria-busy=true]").forEach(form => {
+      setBusy(form, false);
+      setStatus(document.getElementById("card-status"), "", "");
     });
   });
 })();
@@ -246,8 +389,14 @@ def content_security_policy(*, import_page: bool = False) -> str:
 def field(label: str, name: str, *, kind: str = "password",
           autocomplete: str = "off", maxlength: int | None = None,
           required: bool = True, autofocus: bool = False,
-          submitted: bool = True) -> str:
-    """Keep labels associated with inputs without changing submitted field names."""
+          submitted: bool = True, value: str | None = None,
+          inputmode: str | None = None, note: str = "",
+          describedby: str | None = None) -> str:
+    """Keep labels associated with inputs without changing submitted field names.
+
+    ``value`` prefills non-secret text only. ``note`` is already escaped markup
+    placed under the control; ``describedby`` names the ids that describe it.
+    """
     escaped = html.escape(name, quote=True)
     attrs = f' id="{escaped}"'
     if submitted:
@@ -256,6 +405,14 @@ def field(label: str, name: str, *, kind: str = "password",
               f' autocomplete="{html.escape(autocomplete, quote=True)}"')
     if maxlength is not None:
         attrs += f' maxlength="{maxlength}"'
+    if value is not None:
+        if kind == "password":
+            raise ValueError("password fields are never prefilled")
+        attrs += f' value="{html.escape(value, quote=True)}"'
+    if inputmode is not None:
+        attrs += f' inputmode="{html.escape(inputmode, quote=True)}"'
+    if describedby is not None:
+        attrs += f' aria-describedby="{html.escape(describedby, quote=True)}"'
     if required:
         attrs += ' required'
     if autofocus:
@@ -272,7 +429,7 @@ def field(label: str, name: str, *, kind: str = "password",
                    '<circle cx="12" cy="12" r="3"/>'
                    '<path class="eye-slash" d="m3 3 18 18"/></svg></button></div>')
     return (f'<div class="field"><label for="{escaped}">{html.escape(label)}</label>'
-            f'{control}</div>')
+            f'{control}{note}</div>')
 
 
 def render(title: str, body: str) -> bytes:
