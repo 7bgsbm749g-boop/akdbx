@@ -141,3 +141,33 @@ test("popup compares origins as the browser serializes them", () => {
   assert.equal(privateLink("https://localhost/extension/pair?token=x", "/extension/pair", "https://localhost:443"),
     "https://localhost/extension/pair?token=x");
 });
+
+test("released pins do not evict a live pin's spec record", async () => {
+  const {exports, chrome} = loadBackground();
+  const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
+  exports.setSealKey(key);
+  const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
+  chrome.tabs.get = async () => ({id: 7, url: chain[0].url});
+  chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
+  let next = 0;
+  chrome.scripting.executeScript = async details => {
+    if (details.files) return [{}];
+    const source = String(details.func);
+    if (source.includes(".pin(")) return [{result: String(next++).padStart(32, "0")}];
+    return [{result: source.includes(".fill(") ? "filled" : true}];
+  };
+  const spec = {selector: "#number", field: "cc-number", processor: null};
+  const request = {tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card", spec};
+  const live = await exports.pin(request);
+  for (let i = 0; i < 33; i++) {
+    const other = await exports.pin(request);
+    await exports.release({tab_id: 7, document_id: "DOC", pin_id: other.pin_id});
+  }
+  const facts = {tab_id: 7, document_id: "DOC", chain, kind: "card", pin_id: live.pin_id, max_age_ms: 1000, spec};
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({name: "AES-GCM", iv, additionalData: new TextEncoder().encode("fill:" + live.pin_id)},
+    key, new TextEncoder().encode(JSON.stringify({values: {value: "4111111111111111"}, facts})));
+  const b64 = bytes => Buffer.from(bytes).toString("base64url");
+  const result = await exports.fill({pin_id: live.pin_id, sealed: {iv: b64(iv), data: b64(data)}});
+  assert.equal(result.state, "filled");
+});

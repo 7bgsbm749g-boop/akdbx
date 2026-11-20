@@ -82,6 +82,7 @@ MAX_CHAIN = 9
 MAX_FRAMES = 64
 MAX_TABS = 4
 MAX_ENTRIES = 20
+MATCH_BUDGET = 36 * 1024  # Encoded entries before sealing; leaves room for base64 and facts.
 MAX_POPUP_REQUESTS = 4
 PUBLIC_KEY = re.compile(r'[A-Za-z0-9_-]{87}')  # base64url, 65-byte uncompressed P-256 point
 HKDF_INFO = b'akdbx-extension-v1'
@@ -624,8 +625,17 @@ class ExtensionHub:
                 entries.append((item, entry))
         else:
             raise ExtensionError()
-        entries = [(item, entry) for item, entry in entries
-                   if all(len(str(v).encode('utf-8')) <= 1024 for v in item.values())][:MAX_ENTRIES]
+        # Bound the encoded list before issuing handles: sealing grows it by about
+        # a third (base64), and the transport refuses frames over 64 KiB.
+        bounded, budget = [], MATCH_BUDGET
+        for item, entry in entries:
+            size = len(json.dumps(dict(item, handle='0' * 64), separators=(',', ':'))) + 1
+            if all(len(str(v).encode('utf-8')) <= 1024 for v in item.values()) and size <= budget:
+                bounded.append((item, entry))
+                budget -= size
+            if len(bounded) == MAX_ENTRIES:
+                break
+        entries = bounded
         result = []
         now = self.clock()
         with self._lock:

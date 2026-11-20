@@ -823,3 +823,15 @@ def test_target_settings_reach_the_cdp_manager():
 def test_build_stores_the_browser_serialization_of_the_trusted_origin(tmp_path):
     built = extension_host.build(tmp_path / 'ext', unlock_origin='https://localhost:443')
     assert 'AKDBX_TRUSTED_ORIGIN = "https://localhost";' in (built / 'config.js').read_text()
+
+
+def test_sealed_match_list_stays_within_the_transport_limit():
+    title = 'é' * 500  # Escaped as \u00e9 in JSON: six bytes per character.
+    broker = make_broker([Entry(title=title + str(i), username=USERNAME, password=PASSWORD, url=LOGIN)
+                          for i in range(20)])
+    channel, _ = attach(broker, {})
+    raw = broker.extension.popup(channel, dict(type='request', id='p1', op='match', kind='login', **facts()))
+    framed = json.dumps(dict(type='response', id='p1', result=raw), separators=(',', ':')).encode()
+    assert len(framed) <= MAX_MESSAGE
+    entries = popup(broker, channel, 'match', kind='login', **facts())['entries']
+    assert 0 < len(entries) < 20 and len(broker.extension.selections) == 2 * len(entries)

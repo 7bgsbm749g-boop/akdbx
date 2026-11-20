@@ -378,6 +378,7 @@ async function release(message) {
     // The document is gone; its isolated world went with it.
   }
   processorGuards.delete(message.pin_id);
+  pinSpecs.delete(message.pin_id);
   return {ok: true};
 }
 
@@ -483,6 +484,6 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 
 connect();
 if (typeof module !== "undefined") {
-  module.exports = {fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys, fill, pin,
+  module.exports = {fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys, fill, pin, release,
     setSealKey: key => { sealKey = Promise.resolve(key); }, state: () => state};
 }
