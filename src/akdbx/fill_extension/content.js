@@ -186,6 +186,11 @@
     return null;
   }
 
+  function isLoginPassword(el, processor) {
+    const found = role(el, processor);
+    return Boolean(found && found.kind === "login" && found.role === "password");
+  }
+
   function sameScope(focused, el) {
     return focused.form ? el.form === focused.form : !el.form;
   }
@@ -199,7 +204,7 @@
       .filter(el => sameScope(focus.el, el) && shown(el));
     const index = inputs.indexOf(focus.el);
     if (!first && focus.el instanceof HTMLInputElement && ["text", "email"].includes(focus.el.type) &&
-        inputs.slice(index + 1).some(el => el instanceof HTMLInputElement && el.type === "password")) {
+        inputs.slice(index + 1).some(el => isLoginPassword(el, processor))) {
       first = {kind: "login", role: "username"};  // A sign-in form without hints.
     }
     if (!first || index < 0) return null;
@@ -208,7 +213,7 @@
       const text = el => el instanceof HTMLInputElement && ["text", "email"].includes(el.type);
       const partner = first.role === "password"
         ? inputs.slice(0, index).reverse().find(text)
-        : inputs.slice(index + 1).find(el => el instanceof HTMLInputElement && el.type === "password");
+        : inputs.slice(index + 1).find(el => isLoginPassword(el, processor));
       if (partner) fields.push({el: partner, role: first.role === "password" ? "username" : "password"});
     } else {
       for (const el of inputs) {
@@ -229,7 +234,10 @@
           : (item.el.maxLength === 2 ? "YY" : "YYYY");
       }
     }
-    for (const item of fields) item.identity = identity(item.el);
+    for (const item of fields) {
+      item.identity = identity(item.el);
+      item.form = item.el.form;
+    }
     const id = randomId();
     remember(probes, MAX_PROBES, id, {fields, focused: focus.el, created: performance.now()});
     return {id, t: focus.t, kind: first.kind, roles: fields.map(item => item.role), formats};
@@ -238,7 +246,7 @@
   // What a retained field was when the user opened the popup.
   function identity(el) {
     return JSON.stringify([el.tagName, el instanceof HTMLInputElement ? el.type : "", el.getAttribute("autocomplete"),
-      el.id, el.getAttribute("name"), el.form ? Array.from(document.forms).indexOf(el.form) : -1, el.parentElement === null]);
+      el.id, el.getAttribute("name"), el.parentElement === null]);
   }
 
   // Plan one assignment without touching the field; null refuses.
@@ -249,13 +257,27 @@
         fieldRole.startsWith("country") && o.textContent.trim().toLowerCase() === value.toLowerCase()));
       if (options.length !== 1) return null;
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "selectedIndex").set;
-      return () => setter.call(el, options[0].index);
+      const step = () => setter.call(el, options[0].index);
+      step.expected = options[0].value;
+      return step;
     }
     if (el instanceof HTMLInputElement && value.includes("\n")) return null;
     if (el.maxLength >= 0 && value.length > el.maxLength) return null;
     const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
-    return () => setter.call(el, value);
+    const step = () => setter.call(el, value);
+    step.expected = value;
+    return step;
+  }
+
+  function accepted(field, value, expected) {
+    const el = field.el;
+    const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype
+      : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLSelectElement.prototype;
+    const actual = Object.getOwnPropertyDescriptor(proto, "value").get.call(el);
+    // Card fields may add grouping spaces in their own input handler.
+    return actual === expected || ["cc-number", "cc-exp"].includes(field.role) &&
+      actual.replace(/\s/g, "") === expected.replace(/\s/g, "");
   }
 
   function probeFill(id, values) {
@@ -266,7 +288,8 @@
     const targets = item.fields.filter(field => typeof values[field.role] === "string");
     // A field that became hidden, disabled, detached or different never
     // receives a value. Every check and assignment runs before any page event.
-    if (!targets.length || targets.some(field => !shown(field.el) || identity(field.el) !== field.identity)) return "refused";
+    if (!targets.length || targets.some(field => !shown(field.el) || identity(field.el) !== field.identity ||
+        field.el.form !== field.form)) return "refused";
     const steps = targets.map(field => plan(field.el, values[field.role], field.role));
     if (steps.some(step => step === null)) return "refused";
     steps.forEach(step => step());
@@ -274,7 +297,10 @@
       field.el.dispatchEvent(new Event("input", {bubbles: true}));
       field.el.dispatchEvent(new Event("change", {bubbles: true}));
     }
-    return "filled";
+    // A page handler may change a later field; never report that as filled.
+    // The comparison stays in this isolated world and returns only a state.
+    const kept = targets.every((field, i) => accepted(field, values[field.role], steps[i].expected));
+    return kept ? "filled" : "uncertain";
   }
 
   Object.defineProperty(globalThis, "__akdbxContent", {value: Object.freeze({

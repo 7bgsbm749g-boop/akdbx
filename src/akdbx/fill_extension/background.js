@@ -8,6 +8,7 @@
  * exact document; they are never stored, logged or put on the clipboard.
  */
 "use strict";
+importScripts("config.js");
 const HOST = "org.akdbx.extension";
 const PROTOCOL = 1;
 const RECONNECT_MINUTES = [0.5, 1, 2, 5, 10];
@@ -103,10 +104,11 @@ async function unseal(sealed, context) {
   if (!key || !sealed || typeof sealed.iv !== "string" || typeof sealed.data !== "string") throw new Error();
   const plain = await crypto.subtle.decrypt({name: "AES-GCM", iv: unbase64url(sealed.iv),
     additionalData: encoder.encode(context)}, key, unbase64url(sealed.data));
-  const values = JSON.parse(new TextDecoder().decode(plain));
+  const payload = JSON.parse(new TextDecoder().decode(plain));
   new Uint8Array(plain).fill(0);
-  if (!values || typeof values !== "object") throw new Error();
-  return values;
+  if (!payload || typeof payload.values !== "object" || payload.values === null ||
+      typeof payload.facts !== "object" || payload.facts === null) throw new Error();
+  return payload;
 }
 
 async function connect() {
@@ -316,28 +318,32 @@ async function pin(message) {
 async function fill(message) {
   let values = {};
   try {
+    let facts;
     try {
-      values = await unseal(message.sealed, "fill:" + message.pin_id);
+      ({values, facts} = await unseal(message.sealed, "fill:" + message.pin_id));
     } catch {
       await release(message);
       return {state: "refused"};
     }
-    const tab = await chrome.tabs.get(message.tab_id);
-    const chain = await chainFor(message.tab_id, message.document_id);
-    if (!tab || tab.url !== message.top_url || !chain || !sameChain(chain, message.chain)) {
-      await release(message);
+    // Only the facts the broker authorized and sealed count, never the
+    // relayed message: they must equal what this browser reports now.
+    const tab = await chrome.tabs.get(facts.tab_id);
+    const chain = await chainFor(facts.tab_id, facts.document_id);
+    if (facts.pin_id !== message.pin_id || !Array.isArray(facts.chain) || !facts.chain.length || !tab ||
+        tab.url !== facts.chain[0].url || !chain || !sameChain(chain, facts.chain)) {
+      await release({...message, tab_id: facts.tab_id, document_id: facts.document_id});
       return {state: "refused"};
     }
-    const guardId = processorGuards.get(message.pin_id);
-    if (message.kind === "card" && guardId && !(await processorCheck(message.tab_id, chain, message.pin_id, guardId))) {
-      await release(message);
+    const guardId = processorGuards.get(facts.pin_id);
+    if (facts.kind === "card" && guardId && !(await processorCheck(facts.tab_id, chain, facts.pin_id, guardId))) {
+      await release({...message, tab_id: facts.tab_id, document_id: facts.document_id});
       return {state: "refused"};
     }
     let result;
     try {
-      result = await run(message.tab_id, message.document_id,
+      result = await run(facts.tab_id, facts.document_id,
         (id, kind, value, maxAge) => globalThis.__akdbxContent.fill(id, kind, value, maxAge),
-        [message.pin_id, message.kind, values, message.max_age_ms]);
+        [facts.pin_id, facts.kind, values, message.max_age_ms]);
     } catch {
       return {state: "uncertain"};
     }
@@ -391,6 +397,7 @@ async function popupProbe(message) {
   const id = randomText(16);
   while (sessions.size >= MAX_SESSIONS) sessions.delete(sessions.keys().next().value);
   sessions.set(id, {tabId: tab.id, documentId: best.documentId, topUrl: tab.url, chain, probe: best.result.id,
+    kind: best.result.kind,
     roles: best.result.roles, formats: best.result.formats, handles: match.entries.map(e => e.handle),
     created: Date.now()});
   return {ok: true, session: id, kind: match.kind, origin: new URL(chain[chain.length - 1].url).origin,
@@ -412,9 +419,14 @@ async function popupFill(message) {
   if (!released || released.ok !== true) {
     return {ok: false, error: (released && released.error) || "akdbx refused this fill"};
   }
-  let values;
+  let values = {};
   try {
-    values = await unseal(released.sealed, "release:" + session.handles[message.index]);
+    const sealed = await unseal(released.sealed, "release:" + session.handles[message.index]);
+    const facts = sealed.facts;
+    // The broker authorized exactly this tab, document, chain, kind and fields.
+    if (facts.tab_id !== session.tabId || facts.document_id !== session.documentId || facts.kind !== session.kind ||
+        !sameChain(facts.chain, session.chain) || !sameChain(facts.roles, session.roles)) throw new Error();
+    values = sealed.values;
   } catch {
     return {ok: false, error: "akdbx answer could not be verified; nothing filled"};
   }
@@ -440,6 +452,6 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 
 connect();
 if (typeof module !== "undefined") {
-  module.exports = {fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys,
+  module.exports = {fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys, fill,
     setSealKey: key => { sealKey = Promise.resolve(key); }, state: () => state};
 }

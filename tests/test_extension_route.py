@@ -115,8 +115,13 @@ class FakeExtension:
             if payload['pin_id'] not in self.pins or self.chain(payload['tab_id'], payload['document_id']) != payload['chain']:
                 return dict(state='refused')
             self.pins.pop(payload['pin_id'])
-            values = unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, self.channel.broker_public_key, payload['sealed'],
+            sealed = unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, self.channel.broker_public_key, payload['sealed'],
                             'fill:' + payload['pin_id'])
+            facts = sealed['facts']
+            # The broker sealed exactly the facts of the pin it authorized.
+            assert facts == dict(tab_id=payload['tab_id'], document_id=payload['document_id'], chain=payload['chain'],
+                                 kind=payload['kind'], pin_id=payload['pin_id'])
+            values = sealed['values']
             if self.fill_state == 'filled':
                 self.filled.append(values)
             return dict(state=self.fill_state)
@@ -424,7 +429,10 @@ def test_popup_match_returns_metadata_only_and_release_is_bound_to_the_document(
     released = popup(broker, channel, 'release', handle=handle, roles=['username', 'password'], formats={}, **facts())
     assert set(released) == {'ok', 'sealed'} and PASSWORD not in json.dumps(released)
     assert unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'],
-                  'release:' + handle) == dict(username=USERNAME, password=PASSWORD)
+                  'release:' + handle) == dict(values=dict(username=USERNAME, password=PASSWORD),
+                                               facts=dict(tab_id=3, document_id='TOP', kind='login',
+                                                          chain=[dict(document_id='TOP', url=LOGIN)],
+                                                          roles=['username', 'password']))
     # A ciphertext answers only its own selection: another context fails.
     with pytest.raises(Exception):
         unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'], 'release:other')
@@ -450,7 +458,7 @@ def test_popup_refuses_cross_site_login_frames_and_foreign_card_frames():
                      formats={'cc-exp': 'MM/YY'}, **facts('S', top=TOP, chain=chain))
     assert CARD['number'] not in json.dumps(released)
     assert unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'],
-                  'release:' + handle) == {'cc-number': CARD['number'], 'cc-exp': '09/31'}
+                  'release:' + handle)['values'] == {'cc-number': CARD['number'], 'cc-exp': '09/31'}
 
 
 def test_popup_on_locked_broker_reports_locked_and_releases_nothing():
@@ -652,7 +660,10 @@ def test_pairing_page_needs_the_master_password(locked):
 # ----- install and build -------------------------------------------------------------
 def test_build_fills_the_content_script_from_the_cdp_route(tmp_path):
     from akdbx import browser_card, browser_password, card_processor
-    built = extension_host.build(tmp_path / 'akdbx-extension')
+    built = extension_host.build(tmp_path / 'akdbx-extension', unlock_origin='https://localhost:9443/')
+    assert 'AKDBX_TRUSTED_ORIGIN = "https://localhost:9443";' in (built / 'config.js').read_text()
+    with pytest.raises(Exception):
+        extension_host.build(tmp_path / 'insecure', unlock_origin='http://localhost:9443')
     manifest = json.loads((built / 'manifest.json').read_text())
     assert manifest['key'] == extension_host.EXTENSION_KEY and manifest['permissions'].count('nativeMessaging') == 1
     content = (built / 'content.js').read_text()

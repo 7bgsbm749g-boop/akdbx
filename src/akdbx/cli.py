@@ -484,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
         print('--broker-uid applies only to Linux; Windows requires the same user/session', file=sys.stderr)
         return 2
     if args.command == 'extension':
-        return extension_host.run(args, args.socket)
+        return extension_host.run(args, args.socket, args.unlock_origin)
     if args.socket is None:
         try:
             args.socket = default_socket()

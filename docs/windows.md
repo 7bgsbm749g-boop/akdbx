@@ -207,7 +207,12 @@ for the commands, capabilities and security model.
    ```
 
    Run the same command again after an upgrade; it updates only a folder that
-   already holds this extension.
+   already holds this extension. The build writes the unlock origin
+   (`AKDBX_UNLOCK_ORIGIN`, or `--unlock-origin` before `extension`; on Windows
+   the default is `https://localhost:9443`) into the extension. The popup opens
+   pairing and unlock links only on that origin, so a replaced native host
+   cannot send you to a look-alike master-password page. Rebuild after you
+   change the origin.
 4. In Helium open `chrome://extensions`, turn on **Developer mode**, choose
    **Load unpacked** and select that folder. The extension ID must be
    `jjoamaejjkldcjcpgncoomoaagdfimhg`; its manifest key keeps it fixed.

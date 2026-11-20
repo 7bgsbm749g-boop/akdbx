@@ -29,9 +29,12 @@ Security model:
   page shows the code the popup computes from its own key.
 * Every value is **sealed** with AES-256-GCM under a key that the broker's
   per-connection ECDH key and the extension's private key agree, and bound to
-  the pin or selection it answers. The native host and any process that
-  replaces it relay only ciphertext; without the extension's private key it
-  never receives a value.
+  the pin or selection it answers. The sealed payload also carries the tab,
+  document, frame chain and kind that the broker authorized; the extension
+  fills only when they equal its own browser facts, so a host cannot redirect
+  a value by changing the facts in transit. The native host and any process
+  that replaces it relay only ciphertext; without the extension's private key
+  it never receives a value.
 * Origin and frame identity come from the browser (``tabs``, ``webNavigation``
   and injection results), never from page content. The broker applies the
   same frame policies as the CDP route: logins need the exact credential
@@ -707,7 +710,9 @@ class ExtensionHub:
             if not isinstance(value, str) or len(value) > 4096 or any(
                     unicodedata.category(c) == 'Cc' and c != '\n' for c in value):
                 raise ExtensionError()
-        sealed = channel.seal(values, 'release:' + handle)
+        # The extension fills only if these broker-authorized facts equal its own.
+        facts = dict(tab_id=tab_id, document_id=document_id, chain=chain, kind=selection.kind, roles=roles)
+        sealed = channel.seal(dict(values=values, facts=facts), 'release:' + handle)
         values.clear()
         return dict(ok=True, sealed=sealed)
 
@@ -944,7 +949,9 @@ class ExtensionHub:
             return 'refused'
         max_age_ms = max(0, min(TTL * 1000, (deadline - pin.created) * 1000))
         try:
-            sealed = pin.channel.seal(values, 'fill:' + pin.pin_id)
+            facts = dict(tab_id=pin.tab_id, document_id=pin.document_id, chain=pin.chain, kind=pin.kind,
+                         pin_id=pin.pin_id)
+            sealed = pin.channel.seal(dict(values=values, facts=facts), 'fill:' + pin.pin_id)
             result = pin.channel.call('fill', remaining + 0.5, tab_id=pin.tab_id, document_id=pin.document_id,
                                       pin_id=pin.pin_id, top_url=pin.top_url, chain=pin.chain, kind=pin.kind,
                                       sealed=sealed, max_age_ms=max_age_ms)

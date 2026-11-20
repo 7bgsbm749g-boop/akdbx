@@ -26,10 +26,10 @@ function loadBackground() {
     webNavigation: {getAllFrames: async () => []},
     scripting: {executeScript: async () => []},
   };
-  const sandbox = {chrome, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, TextEncoder,
+  const sandbox = {chrome, importScripts: () => {}, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, TextEncoder,
     TextDecoder, Uint8Array, module: {exports: {}}};
   vm.runInNewContext(fs.readFileSync(path.join(root, "background.js"), "utf8"), sandbox);
-  return {exports: sandbox.module.exports, listeners, posted};
+  return {exports: sandbox.module.exports, listeners, posted, chrome};
 }
 
 test("popup fills only from a trusted click with user activation", () => {
@@ -39,12 +39,38 @@ test("popup fills only from a trusted click with user activation", () => {
   assert.equal(userGesture(null, {isActive: true}), false);
 });
 
-test("popup opens only HTTPS private links on the expected path", () => {
-  assert.equal(privateLink("https://localhost:9443/extension/pair?token=x", "/extension/pair"),
+test("popup opens private links only on the configured broker origin", () => {
+  const trusted = "https://localhost:9443";
+  assert.equal(privateLink("https://localhost:9443/extension/pair?token=x", "/extension/pair", trusted),
     "https://localhost:9443/extension/pair?token=x");
-  assert.equal(privateLink("http://localhost:9443/extension/pair?token=x", "/extension/pair"), null);
-  assert.equal(privateLink("https://u:p@localhost/extension/pair", "/extension/pair"), null);
-  assert.equal(privateLink("javascript:alert(1)", "/extension/pair"), null);
+  assert.equal(privateLink("https://look-alike.example/extension/pair?token=x", "/extension/pair", trusted), null);
+  assert.equal(privateLink("https://localhost:9443/extension/pair?token=x", "/extension/pair", null), null);
+  assert.equal(privateLink("http://localhost:9443/extension/pair?token=x", "/extension/pair", "http://localhost:9443"), null);
+  assert.equal(privateLink("https://u:p@localhost:9443/extension/pair", "/extension/pair", trusted), null);
+  assert.equal(privateLink("javascript:alert(1)", "/extension/pair", trusted), null);
+});
+
+test("agent fill trusts only the sealed facts and refuses a forged destination", async () => {
+  const {exports, chrome} = loadBackground();
+  const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
+  exports.setSealKey(key);
+  // The broker authorized a bank page; the browser's tab 7 shows another site.
+  const facts = {tab_id: 7, document_id: "DOC", chain: [{document_id: "DOC", url: "https://bank.example/login"}],
+    kind: "password", pin_id: "p".repeat(32)};
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({name: "AES-GCM", iv, additionalData: new TextEncoder().encode("fill:" + facts.pin_id)},
+    key, new TextEncoder().encode(JSON.stringify({values: {mode: "password", password: "synthetic"}, facts})));
+  const b64 = bytes => Buffer.from(bytes).toString("base64url");
+  chrome.tabs.get = async () => ({id: 7, url: "https://evil.example/login"});
+  chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: "https://evil.example/login"}];
+  const scripts = [];
+  chrome.scripting.executeScript = async details => { scripts.push(details); return [{result: true}]; };
+  // A host in the middle claims the evil page is the authorized one.
+  const result = await exports.fill({pin_id: facts.pin_id, tab_id: 7, document_id: "DOC", kind: "password",
+    top_url: "https://evil.example/login", chain: [{document_id: "DOC", url: "https://evil.example/login"}],
+    sealed: {iv: b64(iv), data: b64(data)}, max_age_ms: 1000});
+  assert.equal(result.state, "refused");
+  assert.ok(scripts.every(s => !String(s.func).includes("__akdbxContent.fill(")));
 });
 
 test("service worker accepts popup requests only from its own popup page", async () => {

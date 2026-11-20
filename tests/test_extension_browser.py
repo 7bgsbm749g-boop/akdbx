@@ -47,6 +47,9 @@ async function digest(id) {
 }
 </script>'''
 PAGES = {
+    '/clearing': '''<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number">
+<input id="expiry" autocomplete="cc-exp" maxlength="5"></form>
+<script>number.addEventListener('input', () => { expiry.value = ''; });</script>''' + DIGEST,
     '/masked': '''<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number">
 <input id="csc" type="password" autocomplete="cc-csc"></form>''' + DIGEST,
     '/hidden': '''<!doctype html><meta charset="utf-8"><form><input id="username" autocomplete="username">
@@ -331,3 +334,14 @@ def test_user_click_route_refuses_a_field_changed_after_the_probe(harness):
     result = harness.worker_call(f'popupFill({{session: {json.dumps(found["session"])}, index: 0}})')
     assert result['ok'] is False
     assert lab.digest('username') == EMPTY and lab.digest('password') == EMPTY
+
+
+def test_user_click_route_reports_a_page_that_clears_a_filled_field(harness):
+    lab = harness.lab
+    lab.navigate('/clearing')
+    harness.focus('number')
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+    assert found['ok'] and found['kind'] == 'card', found
+    result = harness.worker_call(f'popupFill({{session: {json.dumps(found["session"])}, index: 0}})')
+    assert result['ok'] is False and 'incomplete' in result['error']

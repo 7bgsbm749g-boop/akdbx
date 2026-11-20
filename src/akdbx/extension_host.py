@@ -341,9 +341,23 @@ def _content_script():
     return text
 
 
-def build(destination, *, host_name=HOST_NAME):
-    """Write the unpacked extension. An existing folder must already hold this extension."""
+def trusted_origin(value):
+    """The independently configured HTTPS origin of the broker's private pages."""
+    from .cli import _validate_unlock_url
+    origin = value.rstrip('/') if isinstance(value, str) else ''
+    _validate_unlock_url(origin + '/?token=configuration-check', origin)
+    return origin
+
+
+def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
+    """Write the unpacked extension. An existing folder must already hold this extension.
+
+    The popup opens pairing and unlock links only on ``unlock_origin``. It comes
+    from local configuration, never from the native host, so a replaced host
+    cannot send the user to a look-alike master-password page.
+    """
     destination = Path(destination)
+    origin = trusted_origin(unlock_origin) if unlock_origin is not None else None
     if destination.exists():
         try:
             current = json.loads((destination / 'manifest.json').read_text(encoding='utf-8'))
@@ -372,6 +386,9 @@ def build(destination, *, host_name=HOST_NAME):
                 raise ValueError('invalid host name')
             data = data.replace(HOST_NAME.encode(), host_name.encode())
         (destination / item.name).write_bytes(data)
+    (destination / 'config.js').write_text(
+        '"use strict";\n// Written by `akdbx extension build`: the only origin for pairing and unlock links.\n'
+        'globalThis.AKDBX_TRUSTED_ORIGIN = ' + json.dumps(origin) + ';\n', encoding='utf-8')
     return destination
 
 
@@ -389,7 +406,7 @@ def add_parser(commands):
     actions.add_parser('info', help='show the extension ID, host name and per-browser host locations')
 
 
-def run(args, socket_path=None):
+def run(args, socket_path=None, unlock_origin=None):
     try:
         if args.extension_command == 'install':
             where = install(args.browser, socket_path=socket_path, manifest_dir=getattr(args, 'manifest_dir', None))
@@ -399,8 +416,9 @@ def run(args, socket_path=None):
             removed = uninstall(args.browser, manifest_dir=getattr(args, 'manifest_dir', None))
             print(json.dumps(dict(ok=True, browser=args.browser, removed=removed), indent=2))
         elif args.extension_command == 'build':
-            path = build(args.output)
-            print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, path=str(path.absolute())), indent=2))
+            path = build(args.output, unlock_origin=unlock_origin)
+            print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, path=str(path.absolute()),
+                                  trusted_origin=trusted_origin(unlock_origin)), indent=2))
         else:
             print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, host=HOST_NAME, protocol=PROTOCOL,
                                   browsers={b: {k: str(v) for k, v in paths(b).items()} for b in BROWSERS}), indent=2))

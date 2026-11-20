@@ -112,8 +112,12 @@ disabled and detached fields never receive a value.
   per-connection ECDH key and the extension's private key agree, and bound to
   the pin or popup selection it answers. The host, or a process that replaces
   the host registration, relays only ciphertext and never receives a value.
-  If someone replaces the host while the user pairs, the page shows a
-  different code from the popup's; the user then does not approve.
+  The sealed payload also carries the tab, document, frame chain and kind the
+  broker authorized, and the extension fills only when they equal its own
+  browser facts. If someone replaces the host while the user pairs, the page
+  shows a different code from the popup's; the user then does not approve. The
+  popup opens pairing and unlock links only on the unlock origin written at
+  build time, never on an origin the host sends.
 - Values exist only in the broker, the relay, extension memory and the field.
   There is no clipboard, no extension storage and no logging. The content
   script runs in the extension's isolated world; it uses the CDP route's own
@@ -134,7 +138,9 @@ akdbx extension install --browser helium   # or chrome, edge
 akdbx extension build --output /path/to/akdbx-extension
 ```
 
-Then load the folder as an unpacked extension (`chrome://extensions`,
+The build writes the configured unlock origin (`AKDBX_UNLOCK_ORIGIN` or the
+global `--unlock-origin`) into the extension; the popup opens pairing and unlock
+links only there. Then load the folder as an unpacked extension (`chrome://extensions`,
 **Developer mode**, **Load unpacked**). Run `akdbx extension uninstall
 --browser NAME` to remove the host registration.
 

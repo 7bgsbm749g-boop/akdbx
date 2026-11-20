@@ -6,10 +6,13 @@ function userGesture(event, activation) {
   return Boolean(event && event.isTrusted === true && activation && activation.isActive === true);
 }
 
-function privateLink(value, path) {
+// Links arrive through the native host, so they open only on the broker origin
+// that `akdbx extension build` wrote into this extension.
+function privateLink(value, path, trusted = globalThis.AKDBX_TRUSTED_ORIGIN) {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.pathname === path && !url.username && !url.password ? url.href : null;
+    return typeof trusted === "string" && url.origin === trusted && url.protocol === "https:" &&
+      url.pathname === path && !url.username && !url.password ? url.href : null;
   } catch {
     return null;
   }
@@ -36,6 +39,7 @@ async function main() {
     // The code comes from this browser's own key, never from the host.
     if (link && /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(state.code)) {
       document.getElementById("code").textContent = state.code;
+      document.getElementById("origin").textContent = "Pairing page: " + new URL(link).origin;
       document.getElementById("pairing").hidden = false;
       document.getElementById("pair").onclick = () => chrome.tabs.create({url: link});
     }

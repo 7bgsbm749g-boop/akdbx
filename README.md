@@ -142,7 +142,7 @@ metadata only. `status` advertises `extension_protocol: 1`, `fill_routes`,
 
 ```bash
 akdbx extension install --browser helium   # or chrome, edge; Windows and Linux
-akdbx extension build --output /path/to/akdbx-extension   # then Load unpacked
+akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" extension build --output /path/to/akdbx-extension   # then Load unpacked
 ```
 
 The extension pairs its ECDH public key with the broker once per browser
