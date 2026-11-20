@@ -296,7 +296,8 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
   const opaque = value => !/^(?:transparent|rgba\([^)]*,\s*0(?:\.0*)?\))$/.test(value.trim());
   const shown = r => {
     const s = getComputedStyle(element);
-    if (!opaque(s.color) || !opaque(s.webkitTextFillColor || s.color) || parseFloat(s.fontSize) < 4) return false;
+    if (!opaque(s.color) || !opaque(s.webkitTextFillColor || s.color) || parseFloat(s.fontSize) < 4 ||
+        (s.webkitTextSecurity || 'none') !== 'none') return false;  // Masked glyphs do not show the value.
     let rects = [r];
     if (!isInput) {
       const range = document.createRange();
