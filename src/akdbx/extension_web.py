@@ -33,9 +33,9 @@ def handle_pairing(handler, state):
     token = handler._token()
     code = hub.pairing_code(token)
     if not identity or code is None or handler.command not in {'GET', 'POST'}:
-        send(HTTPStatus.NOT_FOUND, '<p>This pairing link is not valid any more. A link expires after ten minutes, '
-                                   'and a browser, extension or broker restart replaces it.</p><p>Click the akdbx '
-                                   'extension button again: the popup opens a new pairing link.</p>')
+        send(HTTPStatus.NOT_FOUND, '<p>This pairing link is not valid any more. A link expires after ten minutes '
+                                   'or when the broker restarts.</p><p>Click the akdbx extension button again, then '
+                                   'choose <strong>Open the pairing page</strong> for a new link.</p>')
         return True
 
     def form(error=''):

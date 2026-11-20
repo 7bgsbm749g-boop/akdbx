@@ -845,5 +845,5 @@ def test_expired_pairing_link_explains_how_to_get_a_new_one():
     page = PageHandler('/extension/pair?token=expired')
     assert handle_pairing(page, UnlockState(broker, None, None))
     status, body = page.sent[0]
-    assert status == 404 and 'Click the akdbx extension button again' in body and 'ten minutes' in body
+    assert status == 404 and 'Open the pairing page' in body and 'ten minutes' in body
     assert b'<meta name="referrer" content="same-origin">' in render('x', '')
