@@ -21,7 +21,8 @@ from .runtime import anchored_socket_path, open_private_runtime_directory
 from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
 from .notifications import validate_webhook_url
-from . import capture_cli, card_cli, identity_cli, secret_cli
+from . import capture_cli, card_cli, extension_host, identity_cli, secret_cli
+from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
 from .sink_helper import SinkError
 
 
@@ -204,6 +205,17 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         _validate_unlock_url(response["private_url"], expected_unlock_origin)
     if "unlock_url" in response:
         _validate_unlock_url(response["unlock_url"], expected_unlock_origin)
+    pairing = response.get("extension_pairing")
+    if pairing is not None:
+        # Pairing links are private broker pages, like the unlock link.
+        if not isinstance(pairing, list) or len(pairing) > 4:
+            raise ProtocolError("invalid broker response")
+        for item in pairing:
+            if not isinstance(item, dict) or set(item) != {"browser", "code", "url"}:
+                raise ProtocolError("invalid broker response")
+            _validate_unlock_url(item["url"], expected_unlock_origin)
+            if urlsplit(item["url"]).path != "/extension/pair":
+                raise ProtocolError("invalid broker response")
     return response
 
 
@@ -214,7 +226,7 @@ def _request_timeout(payload: dict) -> int:
         return 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
     # Frame routes resolve bounded out-of-process iframe targets first.
     slow = action in {'pin-card-target', 'pin-identity-target', 'list-password-frames'} or (
-        action == 'pin-password-target' and 'frame_origin' in payload)
+        action == 'pin-password-target' and ('frame_origin' in payload or payload.get('route') == 'extension'))
     return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password', secret_cli.COMMAND, *capture_cli.COMMANDS) else 15 if slow else 5
 
 
@@ -302,6 +314,7 @@ def parser() -> argparse.ArgumentParser:
     commands = result.add_subparsers(dest="command", required=True)
     card_cli.add_parsers(commands)
     identity_cli.add_parsers(commands)
+    extension_host.add_parser(commands)
     secret_cli.add_parser(commands)
     capture_cli.add_parsers(commands)
     start = commands.add_parser("serve", help="unlock a KDBX and run the local broker")
@@ -320,6 +333,8 @@ def parser() -> argparse.ArgumentParser:
                        help='operator sink configuration for deliver-secret (root- or broker-owned, not group/other writable)')
     start.add_argument('--tls-cert', type=Path, help='Windows: trusted PEM certificate for the local HTTPS unlock page')
     start.add_argument('--tls-key', type=Path, help='Windows: private PEM certificate key with a restrictive DACL')
+    start.add_argument('--default-fill-route', choices=FILL_ROUTES, default=os.environ.get('AKDBX_DEFAULT_FILL_ROUTE', 'cdp'),
+                       help='route for pins that name none: cdp (debugging port) or extension (paired browser extension)')
     search = commands.add_parser("search", help="return matching non-secret login metadata")
     search.add_argument("query", nargs="?", default="")
     fill = commands.add_parser("fill", help="autofill using a handle returned by search")
@@ -340,9 +355,12 @@ def parser() -> argparse.ArgumentParser:
                               help='explicitly verified purpose for password-only fields with absent or on autocomplete')
     password_pin.add_argument('--allow-autocomplete-off', action='store_true',
                               help='allow a verified off password field; requires --password-purpose and broker capability')
+    password_pin.add_argument('--route', choices=FILL_ROUTES,
+                              help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
     frames = commands.add_parser('list-password-frames', help='read-only: list frame ids, origins and visible field counts of one exact HTTPS page')
     frames.add_argument('--top-url', required=True, help='exact verified top-level page URL')
     frames.add_argument('--page-id', help='page target id; required only when several tabs show the same exact URL')
+    frames.add_argument('--route', choices=FILL_ROUTES, help="cdp or extension; default: the broker's")
     for name in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password', 'setup-totp'):
         help_text = {
             'create-sso-entry': 'save a Google/GitHub SSO identity (no password form)',
@@ -418,18 +436,20 @@ def _valid_frame_list(response):
     def text(value, limit=128):
         return isinstance(value, str) and 0 < len(value) <= limit
     frames = response.get('frames')
-    if (set(response) != {'ok', 'page_id', 'main_frame_id', 'frame_policy', 'frames', 'truncated'}
+    extension = response.get('route') == 'extension'
+    if (set(response) != {'ok', 'page_id', 'main_frame_id', 'frame_policy', 'frames', 'truncated'} | ({'route'} if extension else set())
             or not text(response['page_id']) or not text(response['main_frame_id'])
             or response['frame_policy'] != 'same-site-chain-v1' or type(response['truncated']) is not bool
             or not isinstance(frames, list) or len(frames) > 64):
         return False
-    keys = {'frame_id', 'parent_frame_id', 'depth', 'origin', 'out_of_process', 'eligible', 'visible_fields'}
+    keys = {'frame_id', 'parent_frame_id', 'depth', 'origin', 'eligible', 'visible_fields'} | (
+        set() if extension else {'out_of_process'})
     for frame in frames:
         fields = frame.get('visible_fields') if isinstance(frame, dict) else None
         if (not isinstance(frame, dict) or set(frame) != keys or not text(frame['frame_id'])
                 or not (frame['parent_frame_id'] is None or text(frame['parent_frame_id']))
                 or type(frame['depth']) is not int or not 0 <= frame['depth'] <= 64 or not text(frame['origin'], 512)
-                or type(frame['out_of_process']) is not bool or type(frame['eligible']) is not bool
+                or not extension and type(frame['out_of_process']) is not bool or type(frame['eligible']) is not bool
                 or not (fields is None or isinstance(fields, dict) and set(fields) == {'password', 'text'}
                         and all(type(v) is int and 0 <= v <= 512 for v in fields.values()))):
             return False
@@ -463,6 +483,8 @@ def main(argv: list[str] | None = None) -> int:
     if os.name == 'nt' and args.broker_uid is not None:
         print('--broker-uid applies only to Linux; Windows requires the same user/session', file=sys.stderr)
         return 2
+    if args.command == 'extension':
+        return extension_host.run(args, args.socket, args.unlock_origin)
     if args.socket is None:
         try:
             args.socket = default_socket()
@@ -483,7 +505,8 @@ def main(argv: list[str] | None = None) -> int:
                          else default_notification_state(args.socket))
                 broker = Broker(None, WindowsTyper(), card_browser_profile=args.card_browser_profile,
                                 password_browser_profile=args.password_browser_profile,
-                                notification_state_path=state, secret_sinks_path=args.secret_sinks)
+                                notification_state_path=state, secret_sinks_path=args.secret_sinks,
+                                default_fill_route=args.default_fill_route)
             except SinkError as exc:
                 print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
                 return 2
@@ -507,7 +530,7 @@ def main(argv: list[str] | None = None) -> int:
                 broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
                                 password_browser_profile=args.password_browser_profile,
                                 notification_state_path=args.notification_state or default_notification_state(args.socket),
-                                secret_sinks_path=args.secret_sinks)
+                                secret_sinks_path=args.secret_sinks, default_fill_route=args.default_fill_route)
             except SinkError as exc:
                 print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
                 return 2
@@ -570,10 +593,17 @@ def main(argv: list[str] | None = None) -> int:
             payload['allow_autocomplete_off'] = True
         if args.frame_origin is not None:
             payload.update(frame_protocol=1, frame_origin=args.frame_origin)
+        if args.route is not None:
+            if args.route == 'extension' and args.mode == 'read':
+                print('--mode read (secret capture) uses the cdp route only', file=sys.stderr)
+                return 2
+            payload['route'] = args.route
     elif args.command == 'list-password-frames':
         payload.update(password_protocol=1, frame_protocol=1, top_url=args.top_url)
         if args.page_id is not None:
             payload['page_id'] = args.page_id
+        if args.route is not None:
+            payload['route'] = args.route
     elif args.command == 'pin-target':
         payload.update(pid=args.pid, window=args.window, target_protocol=1)
     elif args.command == "search":
@@ -673,16 +703,28 @@ def main(argv: list[str] | None = None) -> int:
                     or capabilities['password_frame_protocol'] != 1 or capabilities.get('password_frame_policy') != 'same-site-chain-v1'):
                 print(json.dumps({'ok': False, 'error': 'broker lacks password frame protocol 1; require broker 0.16.0 or newer; frame request not sent'}))
                 return 1
+        if getattr(args, 'route', None) == 'extension':
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True or type(capabilities.get('extension_protocol')) is not int
+                    or capabilities['extension_protocol'] != 1 or capabilities.get('extension_delivery') != EXTENSION_DELIVERY):
+                print(json.dumps({'ok': False, 'error': 'broker lacks extension route protocol 1; require broker 0.21.0 or newer; request not sent'}))
+                return 1
         if args.command in {'pin-password-target', 'pin-target', 'fill', 'fill-generated', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
+            # A paired extension can deliver without a debugging-port profile.
+            if args.command == 'pin-password-target':
+                extension_route = (args.route or capabilities.get('default_fill_route')) == 'extension'
+            else:
+                extension_route = capabilities.get('extension_paired') is True
             if args.command in {'pin-password-target', 'fill-generated'} or args.command == 'fill' and args.mode != 'username':
                 if (capabilities.get('ok') is not True or type(capabilities.get('password_fill_protocol')) is not int
                         or capabilities.get('password_fill_protocol') != 1
                         or capabilities.get('password_fill_delivery') != PASSWORD_DELIVERY):
                     print(json.dumps({'ok': False, 'error': 'broker lacks DOM password delivery; target request not sent'}))
                     return 1
-                if os.name == 'nt' and capabilities.get('password_browser_configured') is False:
+                if os.name == 'nt' and capabilities.get('password_browser_configured') is False and not extension_route:
                     print(json.dumps({'ok': False, 'error': PASSWORD_BROWSER_REFUSAL}))
                     return 1
             if args.command == 'pin-password-target' and args.password_purpose is not None:
@@ -825,11 +867,13 @@ def main(argv: list[str] | None = None) -> int:
         print('frame list rejected: unexpected broker response', file=sys.stderr)
         return 2
     if args.command == 'pin-password-target' and response.get('ok'):
+        pin_route = args.route or ('extension' if capabilities.get('default_fill_route') == 'extension'
+                                   and args.mode != 'read' else 'cdp')
         token = response.get('target')
         if (set(response) != {'ok', 'target', 'expires_in', 'target_delivery'} or not isinstance(token, str)
                 or len(token) != 64 or any(c not in '0123456789abcdef' for c in token)
                 or type(response.get('expires_in')) is not int or response['expires_in'] != 30
-                or response.get('target_delivery') != PASSWORD_DELIVERY):
+                or response.get('target_delivery') != (EXTENSION_DELIVERY if pin_route == 'extension' else PASSWORD_DELIVERY)):
             print('password pin outcome unconfirmed: receipt rejected', file=sys.stderr)
             return 2
     if args.command in {'pin-target', 'fill', 'fill-generated', 'fill-totp'} and response.get('ok'):
@@ -844,6 +888,8 @@ def main(argv: list[str] | None = None) -> int:
         expected_delivery = PASSWORD_DELIVERY if args.command == 'fill-generated' or args.command == 'fill' and args.mode != 'username' else DELIVERY
         if args.command == 'fill' and args.mode == 'username' and response.get('target_delivery') == PASSWORD_DELIVERY:
             expected_delivery = PASSWORD_DELIVERY
+        if args.command in {'fill', 'fill-generated'} and response.get('target_delivery') == EXTENSION_DELIVERY:
+            expected_delivery = EXTENSION_DELIVERY
         if response.get('target_delivery') != expected_delivery or invalid_pin or invalid_fill:
             print('target operation outcome unconfirmed: receipt rejected; do not retry automatically', file=sys.stderr)
             return 2

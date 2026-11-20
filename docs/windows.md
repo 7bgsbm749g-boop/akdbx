@@ -38,6 +38,9 @@ host for authenticator capture stays Linux-only; see
 - `merge` (including `--check`, `--refresh-target` and `--preserve-conflicts`),
   `admit` and `merge-status`, with KeePassXC CLI 2.7.10 or newer, below 2.8,
   installed for all users. See [Merge and admission](#merge-and-admission).
+- Fills through the paired akdbx browser extension in Helium, Chrome or Edge,
+  with no debugging port (`extension-dom-v1`). See
+  [Browser extension route](#browser-extension-route).
 - Unlock webhook subscriptions that survive a broker restart.
 - Private password and authenticator imports through the HTTPS page.
 
@@ -63,7 +66,12 @@ host for authenticator capture stays Linux-only; see
   prompts and apps at a higher integrity level are not supported. Services
   without an interactive desktop cannot fill applications.
 - Card processor iframes (Adyen, Computop, Stripe) use the same code as Linux,
-  where CI tests them. On Windows only main-frame card fields have been tested.
+  where CI tests them. On the CDP route only main-frame card fields have been
+  tested on Windows; the extension route is tested with a Stripe frame.
+- The extension route cannot attest which `<iframe>` element hosts a child
+  frame, has no browser-native hit test, and does not support secret capture.
+  Pairing is held in memory only: a browser or broker restart needs a new
+  pairing with the master password.
 
 ## Install and prepare private files
 
@@ -160,6 +168,68 @@ Origin checks reject cross-origin requests. No Tailscale identity header is trus
 on Windows. The URL token is secret, rate-limited and rotated on successful unlock.
 Stopping the broker invalidates its links. TLS protects a stale link if another
 local user later takes the port; keep the certificate key private.
+
+## Browser extension route
+
+From 0.21.0 the broker can also fill through the akdbx browser extension in
+your everyday Helium, Chrome or Edge, without a remote-debugging port. A
+debugging port gives every process of the same user full control of that
+profile; the extension route removes that need. Agents use it with
+`--route extension`, and you can click the extension yourself to fill a
+focused field. See the skill's [extension route](../skills/akdbx/references/extension.md)
+for the commands, capabilities and security model.
+
+### Install in Helium
+
+1. Start the broker as described above. The extension route needs no
+   `--password-browser-profile` or `--card-browser-profile`. To make it the
+   default for pins that name no route, add `--default-fill-route extension`.
+2. Register the native-messaging host for this user, in a second PowerShell
+   window with the same unlock origin:
+
+   ```powershell
+   .\.venv\Scripts\akdbx.exe extension install --browser helium
+   ```
+
+   This writes a launcher and a host manifest in
+   `%LOCALAPPDATA%\akdbx\extension-host\` and sets
+   `HKEY_CURRENT_USER\Software\Chromium\NativeMessagingHosts\org.akdbx.extension`.
+   Helium is a Chromium-branded build: it reads Chromium's key, then Google
+   Chrome's key, and not `Software\imput\Helium` (Chromium's
+   `launch_context_win.cc`; confirmed with Helium 144.0.7559.109). Use
+   `--browser chrome` (`Software\Google\Chrome\...`) or `--browser edge`
+   (`Software\Microsoft\Edge\...`) for those browsers. Add the global
+   `--socket \\.\pipe\akdbx-NAME` before `extension` only for a custom pipe.
+3. Write the unpacked extension to the folder you load extensions from:
+
+   ```powershell
+   .\.venv\Scripts\akdbx.exe extension build --output "$env:LOCALAPPDATA\HeliumExtensions\akdbx"
+   ```
+
+   Run the same command again after an upgrade; it updates only a folder that
+   already holds this extension. The build writes the unlock origin
+   (`AKDBX_UNLOCK_ORIGIN`, or `--unlock-origin` before `extension`; on Windows
+   the default is `https://localhost:9443`) into the extension. The popup opens
+   pairing and unlock links only on that origin, so a replaced native host
+   cannot send you to a look-alike master-password page. Rebuild after you
+   change the origin.
+4. In Helium open `chrome://extensions`, turn on **Developer mode**, choose
+   **Load unpacked** and select that folder. The extension ID must be
+   `jjoamaejjkldcjcpgncoomoaagdfimhg`; its manifest key keeps it fixed.
+5. Click the akdbx toolbar button. The popup shows a code. Choose **Open the
+   pairing page**, check that the page shows the same code, and enter the
+   master password there. If the broker is locked, this also unlocks it.
+   Pairing lasts until the browser or the broker restarts.
+
+To fill, click into a login, card or address field, then click the akdbx
+button, use **Fill with akdbx…** in the context menu, or press Alt+Shift+K, and
+choose an entry. `.\.venv\Scripts\akdbx.exe extension uninstall --browser helium`
+removes the host registration, manifest and launcher; remove the extension in
+`chrome://extensions`.
+
+Google Chrome 137 and later still load an unpacked extension through
+**Load unpacked**, but ignore the `--load-extension` switch. The automated
+checks therefore run in Helium and Edge.
 
 ## Search and fill
 
@@ -350,6 +420,7 @@ the engine installed for all users; hosted Windows CI installs it and runs all
 | Admission | Exact-byte preview and save, external snapshots, locator binding, refusals with fixed diagnostics, unsafe or changed snapshot folder, interruption and restart | Pass |
 | Notifications | Until-unlock subscription across a restart; public folder or file, malformed and oversized state | Restored and delivered; unsafe state refused, not repaired |
 | Saves and pipe | Named pipe, DACL checks, encrypted saves, recovery receipts (unchanged from 0.15.0) | Pass |
+| Extension route (0.21.0) | `test_extension_browser.py` in a disposable Helium 144 and Edge profile: host found through the browser's own registry key, agent list/pin/fill of password and login, Stripe processor frame, user-click popup fill; refusals for wrong origin, cross-site frame, hidden field, processor markup on another host, locked broker. `test_extension_route.py`: pairing, policy, framing and size limits | Pass |
 
 Hosted Windows CI runs the same suites on every pull request and release tag.
 It does not prove that a native application accepts directed window messages.

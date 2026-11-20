@@ -28,6 +28,15 @@ site shows the secret, never screenshot, snapshot, read, copy or record that
 page, and never select its text (focus the element instead); choose the
 selector from structure only.
 
+When the browser has no remote-debugging port, use the browser extension
+route (0.21.0): the user's everyday Helium, Chrome or Edge with the paired akdbx
+extension. Read [the extension route](references/extension.md). Add `--route
+extension` to `list-password-frames`, `pin-password-target`, `pin-card-target`
+and `pin-identity-target`; fills are unchanged. Require `extension_protocol: 1`
+and `extension_paired: true` in `status`. If the browser is not paired, give the
+user the `extension_pairing` link; never handle the master password. Do not use
+this route to hide automation from a website.
+
 Use this skill for the user's authorized login task. The broker exposes login metadata and delivers passwords to verified, retained Chromium DOM inputs. Username/TOTP routes can use pinned X11 targets. It does not return passwords. Prefer an already authenticated application session when it satisfies the task.
 
 On native Windows, first read [Windows operation](references/windows.md). Its
@@ -42,8 +51,9 @@ capability and check each application's nonsecret outcome after a fill.
 When the user's standing authorization covers akdbx PRs, merges and patch
 releases, start a separate agent for each unsupported site, field type,
 processor or workflow you find. Give it the task to implement support, file
-a PR, full-send it and release a patch. Do this even if the current task can
-continue another way. Wait for the release only if the current task needs it.
+a PR, ship it (the user's name for taking a PR to a merge and a release) and
+release a patch. Do this even if the current task can continue another way.
+Wait for the release only if the current task needs it.
 
 When sign-in is needed, check the current model and available delegation through the current orchestration tools. If the current model is GPT-6.1 Terra (`gpt-6.1-terra`), perform the sign-in directly. Otherwise, if GPT-6.1 Terra and delegation are available, delegate only the sign-in to a GPT-6.1 Terra subagent. Give it this skill, the destination and account context needed to sign in, including known account emails, possible sign-in providers and prior attempts, and instructions to verify the authenticated state and report the result or blocker. Do not delegate the user's wider task or ask the subagent to continue it after sign-in. The parent agent retains the wider task and resumes it after the sign-in result. If GPT-6.1 Terra or delegation is unavailable, perform the sign-in directly using the current model. This delegation requirement does not apply to other tasks that use this skill.
 
@@ -195,7 +205,8 @@ Use supported tools to verify the site, account and intended input. Read
 For DOM fills, also verify the exact HTTPS URL, page ID and main-frame ID.
 DOM fills require broker `password_fill_protocol: 1` and
 `password_fill_delivery: "chromium-password-dom-v1"`, plus
-`password_browser_configured: true`, from `status`. The operator can configure
+`password_browser_configured: true`, from `status`, or the extension route
+with `extension_paired: true` (see [the extension route](references/extension.md)). The operator can configure
 the profile at broker startup with `--password-browser-profile PATH` or
 `AKDBX_PASSWORD_BROWSER_PROFILE`. An unconfigured profile or unsupported DOM
 path refuses delivery.

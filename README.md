@@ -125,6 +125,39 @@ The master password travels inside the tailnet HTTPS connection directly to the 
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
+### Browser extension route (0.21.0)
+
+The broker can also fill through the akdbx browser extension in the user's
+everyday Helium, Chrome or Edge, reached through a native-messaging host. The
+browser then needs no remote-debugging port, which would give every process
+of the same user full control of that profile. Agents add `--route extension`
+to `list-password-frames`, `pin-password-target`, `pin-card-target` and
+`pin-identity-target`; the list, single-use pin, fresh handle and receipt model
+of the CDP route is unchanged, with `extension-dom-v1` receipts. The user can
+also click the extension (toolbar button, context menu or Alt+Shift+K) and
+pick a saved login, card or address for the focused field; the popup shows
+metadata only. `status` advertises `extension_protocol: 1`, `fill_routes`,
+`default_fill_route` (`serve --default-fill-route`), `extension_connected` and
+`extension_paired`.
+
+```bash
+akdbx extension install --browser helium   # or chrome, edge; Windows and Linux
+akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" extension build --output /path/to/akdbx-extension   # then Load unpacked
+```
+
+The extension pairs its ECDH public key with the broker once per browser
+session: the popup shows a code computed from that key, and the broker's
+private page shows the same code and asks for the master password. Every value
+is sealed with AES-256-GCM to the extension, so the native host relays only
+ciphertext. This adds `cryptography` as a runtime dependency. Origin
+and frame identity come from the browser, never from page content; cards go
+only to merchant frames or to the supported processor frames below them. On
+Linux the host manifest goes in `~/.config/net.imput.helium`,
+`~/.config/google-chrome` or `~/.config/microsoft-edge` under
+`NativeMessagingHosts`. See [the extension route](skills/akdbx/references/extension.md)
+and [Windows setup](docs/windows.md#browser-extension-route). The Linux host is
+covered by unit tests; the real-browser checks run on Windows.
+
 ### Shown-once secrets and service sinks (0.20.0)
 
 `pin-password-target --mode read` pins one focused element that

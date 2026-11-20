@@ -1,0 +1,837 @@
+"""Extension fill route: broker policy, pairing, popup selection and host framing.
+
+A scripted fake extension answers the broker's frame, pin and fill requests the
+way the real service worker does, from a synthetic tab model. Real-browser
+coverage of the DOM checks is in test_extension_browser.py. Synthetic values only.
+"""
+from dataclasses import dataclass
+import hashlib
+import io
+import json
+import socket
+import struct
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+from akdbx import extension_host, extension_route as route
+from akdbx.broker import Broker
+from akdbx.browser_card import failure as card_failure
+from akdbx.cards import FIELDS as CARD_FIELDS, MARKER as CARD_MARKER
+from akdbx.identities import MARKER as IDENTITY_MARKER, property_key
+from akdbx.protocol import MAX_MESSAGE, receive_message, send_message
+from akdbx.target import failure
+from test_broker import Entry, RecordingTyper, Vault
+
+PASSWORD = 'Synthetic-only password 42!'
+USERNAME = 'synthetic.user@example.test'
+CARD = dict(name='Synthetic Holder', number='4111111111111111', month='09', year='2031', csc='123')
+TOP = 'https://shop.example.com/checkout'
+LOGIN = 'https://www.example.com/login'
+STRIPE = 'https://js.stripe.com/v3/elements-inner-accessory-target-' + 'a' * 32 + '.html'
+
+
+def new_key():
+    """A synthetic extension ECDH key pair: private key and raw public point."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    private = ec.generate_private_key(ec.SECP256R1())
+    return private, private.public_key().public_bytes(serialization.Encoding.X962,
+                                                      serialization.PublicFormat.UncompressedPoint)
+
+
+def unseal(private, raw, broker_raw, sealed, context):
+    """Decrypt a sealed value the way background.js does."""
+    import base64
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    shared = private.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), broker_raw))
+    key = HKDF(hashes.SHA256(), 32, salt=bytes(32), info=route.HKDF_INFO + raw + broker_raw).derive(shared)
+    decode = lambda text: base64.urlsafe_b64decode(text + '=' * (-len(text) % 4))
+    return json.loads(AESGCM(key).decrypt(decode(sealed['iv']), decode(sealed['data']), context.encode()))
+
+
+EXTENSION_PRIVATE, EXTENSION_PUBLIC = new_key()
+KEY = route.b64url(EXTENSION_PUBLIC)
+
+
+class CardEntry(Entry):
+    def get_custom_property(self, key):
+        return {CARD_MARKER: 'v1', **{field: CARD[k] for k, field in CARD_FIELDS.items()}}.get(key)
+
+
+class IdentityEntry(Entry):
+    _element = None
+
+    def get_custom_property(self, key):
+        return {IDENTITY_MARKER: 'v1', property_key('given-name'): 'Synthetic',
+                property_key('postal-code'): '12345'}.get(key)
+
+
+@dataclass
+class Document:
+    id: str
+    url: str
+    parent: str | None = None
+
+
+class FakeExtension:
+    """Answers broker calls like background.js, from a synthetic browser model."""
+
+    def __init__(self, tabs):
+        self.tabs = tabs          # tab id -> list[Document], first is the top document
+        self.pins = {}
+        self.filled = []
+        self.calls = []
+        self.fill_state = 'filled'
+
+    def chain(self, tab, document):
+        documents = {d.id: d for d in self.tabs.get(tab, [])}
+        found, chain = documents.get(document), []
+        while found is not None:
+            chain.insert(0, dict(document_id=found.id, url=found.url))
+            found = documents.get(found.parent)
+        return chain or None
+
+    def handle(self, op, payload):
+        self.calls.append(op)
+        if op == 'frames':
+            tabs = [dict(tab_id=t, frames=[dict(document_id=d.id, parent_document_id=d.parent, url=d.url,
+                                                visible_fields=dict(password=1, text=1)) for d in docs])
+                    for t, docs in self.tabs.items() if docs[0].url == payload['top_url']
+                    and payload['tab_id'] in (None, t)]
+            return dict(ok=True, tabs=tabs)
+        if op == 'pin':
+            chain = self.chain(payload['tab_id'], payload['document_id'])
+            if not chain or chain[0]['url'] != payload['top_url'] or payload['spec']['selector'] == '#missing':
+                return dict(ok=False)
+            pin_id = format(len(self.pins) + 1, '032x')
+            self.pins[pin_id] = dict(kind=payload['kind'], spec=payload['spec'])
+            return dict(ok=True, pin_id=pin_id, chain=chain)
+        if op == 'fill':
+            if payload['pin_id'] not in self.pins or self.chain(payload['tab_id'], payload['document_id']) != payload['chain']:
+                return dict(state='refused')
+            stored = self.pins.pop(payload['pin_id'])
+            sealed = unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, self.channel.broker_public_key, payload['sealed'],
+                            'fill:' + payload['pin_id'])
+            facts = sealed['facts']
+            # The broker sealed exactly the facts of the pin it authorized.
+            assert facts == dict(tab_id=payload['tab_id'], document_id=payload['document_id'], chain=payload['chain'],
+                                 kind=payload['kind'], pin_id=payload['pin_id'], spec=stored['spec'],
+                                 max_age_ms=payload['max_age_ms'])
+            values = sealed['values']
+            if self.fill_state == 'filled':
+                self.filled.append(values)
+            return dict(state=self.fill_state)
+        if op == 'release':
+            self.pins.pop(payload['pin_id'], None)
+            return dict(ok=True)
+        return dict(ok=False)
+
+
+class FakeChannel(route.Channel):
+    def __init__(self, hub, extension, browser='helium'):
+        super().__init__(hub, None, browser, EXTENSION_PUBLIC)
+        self.extension = extension
+        extension.channel = self
+
+    def send(self, message):
+        pass
+
+    def call(self, op, timeout, **payload):
+        return self.extension.handle(op, payload)
+
+    def notify(self, op, **payload):
+        self.extension.handle(op, payload)
+
+
+def make_broker(entries=None, *, locked=False, now=None):
+    clock = (lambda: now[0]) if now is not None else None
+    entries = entries if entries is not None else [Entry(username=USERNAME, password=PASSWORD, url=LOGIN)]
+    options = dict(clock=clock) if clock else {}
+    broker = Broker(None if locked else Vault(entries), RecordingTyper(), **options)
+    broker.writes.public_base = 'https://unlock.example.test:9443'
+    return broker
+
+
+def attach(broker, tabs, *, paired=True):
+    extension = FakeExtension(tabs)
+    channel = FakeChannel(broker.extension, extension)
+    broker.extension.channels[channel.id] = channel
+    if paired:
+        broker.extension.approved.append(channel.digest)
+    return channel, extension
+
+
+def search(broker, query=''):
+    return broker.dispatch(dict(action='search', query=query))['entries'][0]['handle']
+
+
+def pin_password(broker, channel, tab, document, top, **extra):
+    request = dict(action='pin-password-target', password_protocol=1, page_id=f'{channel.id}.{tab}',
+                   frame_id=document, top_url=top, selector='#password', mode='password', route='extension')
+    request.update(extra)
+    return broker.dispatch(request)
+
+
+# ----- status and pairing -------------------------------------------------
+def test_status_advertises_the_extension_route_without_a_connection():
+    status = make_broker().dispatch(dict(action='ping'))
+    assert status['extension_protocol'] == 1 and status['extension_delivery'] == route.DELIVERY
+    assert status['fill_routes'] == ['cdp', 'extension'] and status['default_fill_route'] == 'cdp'
+    assert status['extension_connected'] is False and status['extension_paired'] is False
+    assert status['extension_id'] == route.EXTENSION_ID and 'extension_pairing' not in status
+
+
+def test_unpaired_channel_gets_no_pin_no_match_and_a_pairing_link():
+    broker = make_broker()
+    channel, extension = attach(broker, {7: [Document('TOP', LOGIN)]}, paired=False)
+    status = broker.dispatch(dict(action='ping'))
+    assert status['extension_connected'] is True and status['extension_paired'] is False
+    [pairing] = status['extension_pairing']
+    assert pairing['url'].startswith('https://unlock.example.test:9443/extension/pair?token=')
+    assert len(pairing['code']) == 9 and pairing['code'][4] == '-'
+    assert pin_password(broker, channel, 7, 'TOP', LOGIN) == failure()
+    assert extension.calls == []
+    match = broker.extension.popup(channel, dict(type='request', id='p1', op='match'))
+    assert match['ok'] is False and 'paired' in match['error']
+
+
+def test_pairing_approves_only_the_shown_key_once():
+    broker = make_broker()
+    channel, _ = attach(broker, {}, paired=False)
+    info = broker.extension._pairing_info(channel.digest)
+    token = info['url'].split('token=')[1]
+    assert broker.extension.pairing_code(token) == info['code']
+    assert broker.extension.pairing_code('wrong') is None
+    assert broker.extension.approve(token) is True
+    assert broker.extension.approve(token) is False  # One use.
+    assert broker.dispatch(dict(action='ping'))['extension_paired'] is True
+
+
+def test_pairing_expires(monkeypatch):
+    now = [100.0]
+    broker = make_broker(now=now)
+    channel, _ = attach(broker, {}, paired=False)
+    token = broker.extension._pairing_info(channel.digest)['url'].split('token=')[1]
+    now[0] += route.PAIRING_TTL
+    assert broker.extension.pairing_code(token) is None and broker.extension.approve(token) is False
+
+
+# ----- agent route: passwords -----------------------------------------------
+def test_frame_listing_has_the_cdp_shape_without_urls():
+    broker = make_broker()
+    channel, _ = attach(broker, {3: [Document('TOP', LOGIN), Document('AUTH', 'https://auth.example.com/x?code=1', 'TOP'),
+                                     Document('EVIL', 'https://evil.example.net/login', 'TOP')]})
+    listing = broker.dispatch(dict(action='list-password-frames', password_protocol=1, frame_protocol=1,
+                                   top_url=LOGIN, route='extension'))
+    assert listing['ok'] and listing['route'] == 'extension' and listing['page_id'] == channel.id + '.3'
+    assert listing['main_frame_id'] == 'TOP' and 'code=1' not in json.dumps(listing)
+    frames = {f['frame_id']: f for f in listing['frames']}
+    assert frames['AUTH']['origin'] == 'https://auth.example.com' and frames['AUTH']['eligible'] is True
+    assert frames['EVIL']['eligible'] is False and frames['EVIL']['visible_fields'] is None
+    from akdbx.cli import _valid_frame_list
+    assert _valid_frame_list(listing)
+
+
+def test_main_frame_password_fill_reaches_only_the_pinned_element():
+    broker = make_broker()
+    channel, extension = attach(broker, {3: [Document('TOP', LOGIN)]})
+    pin = pin_password(broker, channel, 3, 'TOP', LOGIN)
+    assert pin == dict(ok=True, target=pin['target'], expires_in=30, target_delivery=route.DELIVERY)
+    receipt = broker.dispatch(dict(action='fill', handle=search(broker), mode='password', target=pin['target'],
+                                   target_protocol=1))
+    assert receipt == dict(ok=True, filled='password', target_delivery=route.DELIVERY)
+    assert extension.filled == [dict(mode='password', username='', password=PASSWORD)]
+    assert PASSWORD not in json.dumps(receipt)
+    # Single use: the same target never fills twice.
+    again = broker.dispatch(dict(action='fill', handle=search(broker), mode='password', target=pin['target'],
+                                 target_protocol=1))
+    assert again['ok'] is False and len(extension.filled) == 1
+
+
+def test_login_mode_fills_both_pinned_fields():
+    broker = make_broker()
+    channel, extension = attach(broker, {3: [Document('TOP', LOGIN)]})
+    pin = pin_password(broker, channel, 3, 'TOP', LOGIN, mode='login', username_selector='#username')
+    assert pin['ok']
+    assert broker.dispatch(dict(action='fill', handle=search(broker), mode='login', target=pin['target'],
+                                target_protocol=1))['ok']
+    assert extension.filled == [dict(mode='login', username=USERNAME, password=PASSWORD)]
+
+
+def test_wrong_origin_credential_is_refused_before_any_value_leaves():
+    broker = make_broker([Entry(username=USERNAME, password=PASSWORD, url='https://other.example.org/')])
+    channel, extension = attach(broker, {3: [Document('TOP', LOGIN)]})
+    pin = pin_password(broker, channel, 3, 'TOP', LOGIN)
+    assert broker.dispatch(dict(action='fill', handle=search(broker), mode='password', target=pin['target'],
+                                target_protocol=1)) == failure()
+    assert extension.filled == [] and 'fill' not in extension.calls
+
+
+@pytest.mark.parametrize('case', ['wrong-top', 'child-without-origin', 'cross-site-frame', 'origin-mismatch',
+                                  'missing-element', 'read-mode', 'bad-page', 'other-channel'])
+def test_password_pin_refuses_a_destination_it_cannot_prove(case):
+    broker = make_broker()
+    tabs = {3: [Document('TOP', LOGIN), Document('AUTH', 'https://auth.example.com/login', 'TOP'),
+                Document('EVIL', 'https://evil.example.net/login', 'TOP')]}
+    channel, extension = attach(broker, tabs)
+    args = {
+        'wrong-top': dict(document='TOP', top='https://www.example.com/other'),
+        'child-without-origin': dict(document='AUTH'),
+        'cross-site-frame': dict(document='EVIL', frame_protocol=1, frame_origin='https://evil.example.net'),
+        'origin-mismatch': dict(document='AUTH', frame_protocol=1, frame_origin='https://www.example.com'),
+        'missing-element': dict(document='TOP', selector='#missing'),
+        'read-mode': dict(document='TOP', mode='read'),
+        'bad-page': dict(document='TOP', page_id='not-a-page'),
+        'other-channel': dict(document='TOP', page_id='00000000.3'),
+    }[case]
+    document, top = args.pop('document'), args.pop('top', LOGIN)
+    assert pin_password(broker, channel, 3, document, top, **args) == failure()
+    assert not broker.extension.pins and not extension.pins  # Any element pinned was released.
+
+
+def test_same_site_child_frame_fills_when_the_credential_origin_matches():
+    broker = make_broker([Entry(username=USERNAME, password=PASSWORD, url='https://auth.example.com/')])
+    channel, extension = attach(broker, {3: [Document('TOP', LOGIN), Document('AUTH', 'https://auth.example.com/login', 'TOP')]})
+    pin = pin_password(broker, channel, 3, 'AUTH', LOGIN, frame_protocol=1, frame_origin='https://auth.example.com')
+    assert pin['ok'], pin
+    assert broker.dispatch(dict(action='fill', handle=search(broker), mode='password', target=pin['target'],
+                                target_protocol=1))['ok']
+    assert extension.filled[0]['password'] == PASSWORD
+
+
+def test_expired_pin_and_changed_frame_never_fill():
+    now = [10.0]
+    broker = make_broker(now=now)
+    tabs = {3: [Document('TOP', LOGIN)]}
+    channel, extension = attach(broker, tabs)
+    pin = pin_password(broker, channel, 3, 'TOP', LOGIN)
+    now[0] += route.TTL
+    assert broker.dispatch(dict(action='fill', handle=search(broker), mode='password', target=pin['target'],
+                                target_protocol=1, start_deadline=now[0] + 4)) == failure()
+    pin = pin_password(broker, channel, 3, 'TOP', LOGIN)
+    tabs[3][0] = Document('NEW', LOGIN)  # A navigation replaces the document.
+    assert broker.dispatch(dict(action='fill', handle=search(broker), mode='password', target=pin['target'],
+                                target_protocol=1, start_deadline=now[0] + 4)) == failure()
+    assert extension.filled == []
+
+
+def test_uncertain_browser_answer_is_reported_as_uncertain():
+    broker = make_broker()
+    channel, extension = attach(broker, {3: [Document('TOP', LOGIN)]})
+    extension.fill_state = 'lost'
+    pin = pin_password(broker, channel, 3, 'TOP', LOGIN)
+    assert broker.dispatch(dict(action='fill', handle=search(broker), mode='password', target=pin['target'],
+                                target_protocol=1)) == failure(True)
+
+
+def test_default_route_extension_applies_to_requests_without_a_route():
+    broker = Broker(Vault([Entry(username=USERNAME, password=PASSWORD, url=LOGIN)]), RecordingTyper(),
+                    default_fill_route='extension')
+    channel, extension = attach(broker, {3: [Document('TOP', LOGIN)]})
+    request = dict(action='pin-password-target', password_protocol=1, page_id=f'{channel.id}.3', frame_id='TOP',
+                   top_url=LOGIN, selector='#password', mode='password')
+    assert broker.dispatch(request)['target_delivery'] == route.DELIVERY
+    with pytest.raises(ValueError):
+        Broker(None, RecordingTyper(), default_fill_route='keyboard')
+
+
+# ----- agent route: cards and identities -------------------------------------
+def card_pin(broker, channel, document, field='cc-number', **extra):
+    request = dict(action='pin-card-target', card_protocol=1, page_id=f'{channel.id}.5', frame_id=document,
+                   top_url=TOP, selector='#number', field=field, route='extension')
+    request.update(extra)
+    return broker.dispatch(request)
+
+
+def test_card_fills_merchant_frame_and_supported_processor_frame():
+    broker = make_broker([CardEntry()])
+    tabs = {5: [Document('TOP', TOP), Document('SAME', 'https://shop.example.com/pay', 'TOP'),
+                Document('STRIPE', STRIPE, 'SAME')]}
+    channel, extension = attach(broker, tabs)
+    for document, extra in (('TOP', {}), ('SAME', {}), ('STRIPE', dict(processor='stripe', processor_protocol=1))):
+        pin = card_pin(broker, channel, document, **extra)
+        assert pin == dict(ok=True, target=pin['target'], expires_in=30, field='cc-number', card_delivery=route.DELIVERY)
+        handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
+        receipt = broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=pin['target'],
+                                       field='cc-number'))
+        assert receipt == dict(ok=True, filled='cc-number', card_delivery=route.DELIVERY)
+    assert [v['value'] for v in extension.filled] == [CARD['number']] * 3
+
+
+@pytest.mark.parametrize('case', ['foreign-frame', 'processor-not-claimed', 'processor-wrong-url',
+                                  'processor-under-foreign-parent', 'processor-field', 'asserted-url'])
+def test_card_pin_refuses_frames_outside_the_merchant_and_processor_rules(case):
+    broker = make_broker([CardEntry()])
+    tabs = {5: [Document('TOP', TOP), Document('FOREIGN', 'https://pay.attacker.example/frame', 'TOP'),
+                Document('STRIPE', STRIPE, 'TOP'), Document('WRAP', 'https://ads.example.net/', 'TOP'),
+                Document('DEEP', STRIPE, 'WRAP')]}
+    channel, extension = attach(broker, tabs)
+    stripe = dict(processor='stripe', processor_protocol=1)
+    document, extra = {
+        'foreign-frame': ('FOREIGN', {}),
+        'processor-not-claimed': ('STRIPE', {}),
+        'processor-wrong-url': ('FOREIGN', stripe),
+        'processor-under-foreign-parent': ('DEEP', stripe),
+        'processor-field': ('STRIPE', dict(stripe, field='cc-name')),
+        'asserted-url': ('TOP', dict(frame_url=TOP + '?other')),
+    }[case]
+    field = extra.pop('field', 'cc-number')
+    assert card_pin(broker, channel, document, field, **extra) == card_failure()
+    assert not broker.extension.pins and not extension.pins
+
+
+def test_identity_goes_only_to_frames_of_the_top_origin():
+    broker = make_broker([IdentityEntry(title='Home')])
+    tabs = {5: [Document('TOP', TOP), Document('FOREIGN', 'https://maps.example.net/', 'TOP')]}
+    channel, extension = attach(broker, tabs)
+
+    def pin(document):
+        return broker.dispatch(dict(action='pin-identity-target', identity_protocol=1, page_id=f'{channel.id}.5',
+                                    frame_id=document, top_url=TOP, selector='#given', field='given-name',
+                                    route='extension'))
+    assert pin('FOREIGN') == card_failure(kind='identity')
+    target = pin('TOP')
+    assert target['identity_delivery'] == route.DELIVERY
+    handle = broker.dispatch(dict(action='search-identities', identity_protocol=1, query='Home'))['entries'][0]['handle']
+    receipt = broker.dispatch(dict(action='fill-identity', identity_protocol=1, handle=handle, target=target['target'],
+                                   field='given-name', start_deadline=broker.clock() + 4))
+    assert receipt == dict(ok=True, filled='given-name', identity_delivery=route.DELIVERY)
+    assert extension.filled == [dict(value='Synthetic')]
+
+
+# ----- user-click popup route ------------------------------------------------
+def popup(broker, channel, op, **payload):
+    result = broker.extension.popup(channel, dict(type='request', id='p1', op=op, **payload))
+    if op == 'match' and result.get('ok'):
+        # The match list is sealed with the facts it answers, like values.
+        assert set(result) == {'ok', 'sealed'}
+        opened = unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, result['sealed'], 'match')
+        assert opened['facts'] == {k: payload[k] for k in ('tab_id', 'document_id', 'chain', 'kind')}
+        return dict(ok=True, kind=payload['kind'], entries=opened['values']['entries'])
+    return result
+
+
+def facts(document='TOP', top=LOGIN, chain=None, tab=3):
+    return dict(tab_id=tab, document_id=document, top_url=top, chain=chain or [dict(document_id='TOP', url=top)])
+
+
+def test_popup_match_returns_metadata_only_and_release_is_bound_to_the_document():
+    broker = make_broker([Entry(username=USERNAME, password=PASSWORD, url=LOGIN),
+                          Entry(username='other', password='x', url='https://other.example.org/')])
+    channel, _ = attach(broker, {})
+    match = popup(broker, channel, 'match', kind='login', **facts())
+    assert match['ok'] and [set(e) for e in match['entries']] == [{'title', 'username', 'handle'}]
+    assert PASSWORD not in json.dumps(match) and match['entries'][0]['username'] == USERNAME
+    handle = match['entries'][0]['handle']
+    wrong = popup(broker, channel, 'release', handle=handle, roles=['password'], formats={},
+                  **facts(chain=[dict(document_id='TOP', url=LOGIN)], document='TOP', tab=4))
+    assert wrong['ok'] is False
+    # The handle was spent by the refused attempt: match again.
+    assert popup(broker, channel, 'release', handle=handle, roles=['password'], formats={}, **facts())['ok'] is False
+    handle = popup(broker, channel, 'match', kind='login', **facts())['entries'][0]['handle']
+    released = popup(broker, channel, 'release', handle=handle, roles=['username', 'password'], formats={}, **facts())
+    assert set(released) == {'ok', 'sealed'} and PASSWORD not in json.dumps(released)
+    assert unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'],
+                  'release:' + handle) == dict(values=dict(username=USERNAME, password=PASSWORD),
+                                               facts=dict(tab_id=3, document_id='TOP', kind='login',
+                                                          chain=[dict(document_id='TOP', url=LOGIN)],
+                                                          roles=['username', 'password'], formats={}))
+    # A ciphertext answers only its own selection: another context fails.
+    with pytest.raises(Exception):
+        unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'], 'release:other')
+    # A process without the extension's private key cannot read it.
+    stranger, stranger_public = new_key()
+    with pytest.raises(Exception):
+        unseal(stranger, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'], 'release:' + handle)
+
+
+def test_popup_refuses_cross_site_login_frames_and_foreign_card_frames():
+    broker = make_broker([Entry(username=USERNAME, password=PASSWORD, url='https://evil.example.net/'), CardEntry()])
+    channel, _ = attach(broker, {})
+    chain = [dict(document_id='TOP', url=LOGIN), dict(document_id='EVIL', url='https://evil.example.net/login')]
+    assert popup(broker, channel, 'match', kind='login', **facts('EVIL', chain=chain))['ok'] is False
+    chain = [dict(document_id='TOP', url=TOP), dict(document_id='F', url='https://pay.attacker.example/')]
+    assert popup(broker, channel, 'match', kind='card', **facts('F', top=TOP, chain=chain))['ok'] is False
+    chain = [dict(document_id='TOP', url=TOP), dict(document_id='S', url=STRIPE)]
+    match = popup(broker, channel, 'match', kind='card', **facts('S', top=TOP, chain=chain))
+    assert match['ok'] and set(match['entries'][0]) == {'title', 'brand', 'last_four', 'handle'}
+    assert CARD['number'] not in json.dumps(match)
+    handle = match['entries'][0]['handle']
+    released = popup(broker, channel, 'release', handle=handle, roles=['cc-number', 'cc-exp'],
+                     formats={'cc-exp': 'MM/YY'}, **facts('S', top=TOP, chain=chain))
+    assert CARD['number'] not in json.dumps(released)
+    assert unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'],
+                  'release:' + handle)['values'] == {'cc-number': CARD['number'], 'cc-exp': '09/31'}
+
+
+def test_popup_on_locked_broker_reports_locked_and_releases_nothing():
+    broker = make_broker(locked=True)
+    broker.unlock_url = 'https://unlock.example.test:9443/?token=synthetic'
+    channel, _ = attach(broker, {})
+    result = popup(broker, channel, 'match', kind='login', **facts())
+    assert result == dict(ok=False, error='vault locked', unlock_url=broker.unlock_url)
+    state = popup(broker, channel, 'state')
+    assert state['ok'] and state['locked'] is True and state['paired'] is True
+
+
+def test_popup_skips_expired_cards():
+    class Expired(CardEntry):
+        def get_custom_property(self, key):
+            return {**{CARD_MARKER: 'v1'}, **{f: v for f, v in ((CARD_FIELDS[k], CARD[k]) for k in CARD)},
+                    CARD_FIELDS['year']: '2020'}.get(key)
+    broker = make_broker([Expired()])
+    channel, _ = attach(broker, {})
+    assert popup(broker, channel, 'match', kind='card', **facts(top=TOP, chain=[dict(document_id='TOP', url=TOP)]))['entries'] == []
+
+
+# ----- attach over a real socket -----------------------------------------------
+@pytest.fixture
+def pair_of_sockets(monkeypatch):
+    import select as select_module
+
+    def readable(connection, timeout):
+        return bool(select_module.select([connection], [], [], timeout)[0])
+    monkeypatch.setattr(route, '_wait_readable', readable)
+    left, right = socket.socketpair()
+    yield left, right
+    left.close()
+    right.close()
+
+
+@pytest.mark.parametrize('request_fields', [
+    dict(extension_id='a' * 32), dict(public_key='short'), dict(public_key='A' * 87), dict(extension_protocol=2),
+    dict(browser='other'),
+    dict(extra=True)])
+def test_attach_refuses_other_extensions_keys_and_protocols(pair_of_sockets, request_fields):
+    broker_side, host_side = pair_of_sockets
+    request = dict(action='extension-attach', extension_protocol=1, extension_id=route.EXTENSION_ID,
+                   browser='helium', public_key=KEY)
+    request.update(request_fields)
+    broker = make_broker()
+    broker.extension.attach(broker_side, request)
+    assert receive_message(host_side) == dict(type='error', error='extension attach refused')
+    assert broker.extension.channels == {}
+
+
+def test_attach_serves_calls_and_popup_requests_over_one_connection(pair_of_sockets):
+    broker_side, host_side = pair_of_sockets
+    broker = make_broker()
+    request = dict(action='extension-attach', extension_protocol=1, extension_id=route.EXTENSION_ID,
+                   browser='edge', public_key=KEY)
+    worker = threading.Thread(target=broker.extension.attach, args=(broker_side, request), daemon=True)
+    worker.start()
+    attached = receive_message(host_side)
+    assert attached['type'] == 'attached' and attached['paired'] is False and attached['pairing']['code']
+    assert attached['broker_public_key'] and attached['pairing']['code'] == route.pairing_code(
+        hashlib.sha256(EXTENSION_PUBLIC).digest())
+    broker.extension.approved.append(hashlib.sha256(EXTENSION_PUBLIC).digest())
+    channel = broker.extension._paired_channel()[0]
+    result = {}
+    caller = threading.Thread(target=lambda: result.update(channel.call('frames', 5, top_url=LOGIN, tab_id=None)))
+    caller.start()
+    call = receive_message(host_side)
+    assert call['type'] == 'call' and call['op'] == 'frames'
+    send_message(host_side, dict(type='reply', id=call['id'], result=dict(ok=True, tabs=[])))
+    caller.join(5)
+    assert result == dict(ok=True, tabs=[])
+    send_message(host_side, dict(type='request', id='p1', op='state'))
+    response = receive_message(host_side)
+    assert response['type'] == 'response' and response['result']['paired'] is True
+    host_side.close()
+    worker.join(5)
+    assert broker.extension.channels == {}
+
+
+# ----- native messaging framing --------------------------------------------------
+def frame(value):
+    data = json.dumps(value).encode() if not isinstance(value, bytes) else value
+    return struct.pack('<I', len(data)) + data
+
+
+@pytest.mark.parametrize('raw', [struct.pack('<I', 0), struct.pack('<I', MAX_MESSAGE + 1) + b'{}',
+                                 struct.pack('<I', 10) + b'{}', b'\x01\x00', frame(b'[1]'), frame(b'\xff\xfe')])
+def test_native_frames_refuse_bad_sizes_and_payloads(raw):
+    with pytest.raises(extension_host.FrameError):
+        extension_host.read_frame(io.BytesIO(raw))
+
+
+def test_native_frames_round_trip_and_cap_outgoing_size():
+    stream = io.BytesIO()
+    extension_host.write_frame(stream, dict(type='state', paired=True))
+    assert extension_host.read_frame(io.BytesIO(stream.getvalue())) == dict(type='state', paired=True)
+    assert extension_host.read_frame(io.BytesIO(b'')) is None
+    with pytest.raises(extension_host.FrameError):
+        extension_host.write_frame(io.BytesIO(), dict(data='x' * MAX_MESSAGE))
+
+
+def test_host_refuses_other_callers_and_bad_hello_without_connecting():
+    connected = []
+    hello = frame(dict(type='hello', protocol=1, public_key=KEY))
+    out = io.BytesIO()
+    assert extension_host.relay(io.BytesIO(hello), out, 'chrome-extension://' + 'a' * 32 + '/', 'helium',
+                                lambda: connected.append(1)) == 1
+    for bad in (dict(type='hello', protocol=1, public_key='x'), dict(type='reply', id=1), dict(type='hello', protocol=2,
+                                                                                              public_key=KEY)):
+        assert extension_host.relay(io.BytesIO(frame(bad)), out, route.EXTENSION_ORIGIN, 'helium',
+                                    lambda: connected.append(1)) == 1
+    assert connected == [] and out.getvalue() == b''
+
+
+def test_host_relays_only_known_message_types(pair_of_sockets):
+    broker_side, host_side = pair_of_sockets
+    messages = frame(dict(type='hello', protocol=1, public_key=KEY)) + frame(dict(type='reply', id=1, result={})) \
+        + frame(dict(type='unexpected'))
+    out = io.BytesIO()
+    status = extension_host.relay(io.BytesIO(messages), out, route.EXTENSION_ORIGIN, 'chrome', lambda: host_side)
+    assert status == 0
+    attach_request = receive_message(broker_side)
+    assert attach_request == dict(action='extension-attach', extension_protocol=1, extension_id=route.EXTENSION_ID,
+                                  browser='chrome', public_key=KEY)
+    assert receive_message(broker_side) == dict(type='reply', id=1, result={})
+    # The unknown type ended the session instead of reaching the broker.
+    broker_side.settimeout(1)
+    assert broker_side.recv(1) == b''
+
+
+def test_host_reports_an_unreachable_broker_and_exits():
+    out = io.BytesIO()
+
+    def unavailable():
+        raise FileNotFoundError()
+    hello = frame(dict(type='hello', protocol=1, public_key=KEY))
+    assert extension_host.relay(io.BytesIO(hello), out, route.EXTENSION_ORIGIN, 'helium', unavailable) == 0
+    assert extension_host.read_frame(io.BytesIO(out.getvalue())) == dict(type='state', connected=False,
+                                                                         error='broker unavailable')
+
+
+# ----- pairing page -----------------------------------------------------------------
+class PageHandler:
+    def __init__(self, path, command='GET', body=b'', origin='https://unlock.example.test:9443'):
+        self.path, self.command = path, command
+        self.headers = {'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': str(len(body)),
+                        **({'Origin': origin} if origin else {})}
+        self.rfile = io.BytesIO(body)
+        self.sent = []
+
+    def _identity(self):
+        return 'synthetic user'
+
+    def _token(self):
+        from urllib.parse import parse_qs, urlsplit
+        return parse_qs(urlsplit(self.path).query).get('token', [''])[0]
+
+    def _expired(self):
+        return False
+
+    def _send(self, status, body, **_):
+        self.sent.append((int(status), body.decode()))
+
+
+@pytest.mark.parametrize('locked', [False, True])
+def test_pairing_page_needs_the_master_password(locked):
+    from akdbx.extension_web import handle_pairing
+    from akdbx.web_unlock import UnlockState
+    master = 'synthetic master'
+    vault = SimpleNamespace(entries=[], password=master)
+    broker = make_broker(locked=locked)
+    if not locked:
+        broker.vault = vault
+    channel, _ = attach(broker, {}, paired=False)
+    info = broker.extension._pairing_info(channel.digest)
+    path = '/extension/pair?token=' + info['url'].split('token=')[1]
+
+    def opener(_database, password, _keyfile):
+        if password != master:
+            raise ValueError('synthetic failure')
+        return vault
+    state = UnlockState(broker, None, None, opener)
+    page = PageHandler(path)
+    assert handle_pairing(page, state) and page.sent[0][0] == 200 and info['code'] in page.sent[0][1]
+    wrong = PageHandler(path, 'POST', b'password=wrong&confirmed=yes')
+    handle_pairing(wrong, state)
+    assert wrong.sent[0][0] == 401 and broker.extension.approved == [] and broker.locked is locked
+    no_origin = PageHandler(path, 'POST', b'password=synthetic+master&confirmed=yes', origin=None)
+    handle_pairing(no_origin, state)
+    assert no_origin.sent[0][0] == 400 and broker.extension.approved == []
+    right = PageHandler(path, 'POST', b'password=synthetic+master&confirmed=yes')
+    handle_pairing(right, state)
+    assert right.sent[0][0] == 200 and broker.extension.approved == [channel.digest]
+    assert broker.locked is False and master not in right.sent[0][1]
+    assert not handle_pairing(PageHandler('/other'), state)
+
+
+# ----- install and build -------------------------------------------------------------
+def test_build_fills_the_content_script_from_the_cdp_route(tmp_path):
+    from akdbx import browser_card, browser_password, card_processor
+    built = extension_host.build(tmp_path / 'akdbx-extension', unlock_origin='https://localhost:9443/')
+    assert 'AKDBX_TRUSTED_ORIGIN = "https://localhost:9443";' in (built / 'config.js').read_text()
+    with pytest.raises(Exception):
+        extension_host.build(tmp_path / 'insecure', unlock_origin='http://localhost:9443')
+    manifest = json.loads((built / 'manifest.json').read_text())
+    assert manifest['key'] == extension_host.EXTENSION_KEY and manifest['permissions'].count('nativeMessaging') == 1
+    content = (built / 'content.js').read_text()
+    assert '__' + 'PASSWORD_CAPTURE__' not in content
+    for source in (browser_password.CAPTURE, browser_password.FILL, browser_card.PIN_SCRIPT, card_processor.GUARD):
+        assert source in content
+    # The manifest key determines the fixed extension ID.
+    import base64
+    digest = hashlib.sha256(base64.b64decode(manifest['key'])).hexdigest()[:32]
+    assert ''.join(chr(ord('a') + int(c, 16)) for c in digest) == route.EXTENSION_ID
+    extension_host.build(built)  # Updating the same extension folder is allowed.
+    other = tmp_path / 'other'
+    other.mkdir()
+    (other / 'manifest.json').write_text('{}')
+    with pytest.raises(ValueError):
+        extension_host.build(other)
+
+
+def test_launcher_quotes_paths_and_passes_the_browser_origin():
+    text = extension_host._launcher_text('helium', '/opt/py thon/bin/python3', None)
+    if extension_host.os.name == 'nt':
+        assert '-I -m akdbx.extension_host --browser helium' in text and text.endswith('%*\r\n')
+        with pytest.raises(ValueError):
+            extension_host._launcher_text('chrome', 'C:\\a%PATH%\\python.exe', None)
+    else:
+        assert text.startswith('#!/bin/sh\nexec ') and "'/opt/py thon/bin/python3'" in text and text.endswith('"$@"\n')
+
+
+# ----- CLI ------------------------------------------------------------------------------
+def run_cli(monkeypatch, capsys, broker, argv):
+    from akdbx import cli
+
+    def request(_socket, payload, **_options):
+        return json.loads(json.dumps(broker.dispatch(dict(payload))))
+    monkeypatch.setattr(cli, 'request', request)
+    status = cli.main(['--socket', 'unused', *argv])
+    output = capsys.readouterr()
+    return status, json.loads(output.out) if output.out.strip() else None, output.err
+
+
+def test_cli_lists_pins_and_fills_through_the_extension_route(monkeypatch, capsys):
+    broker = make_broker()
+    channel, extension = attach(broker, {3: [Document('TOP', LOGIN)]})
+    status, listing, _ = run_cli(monkeypatch, capsys, broker, ['list-password-frames', '--top-url', LOGIN,
+                                                                '--route', 'extension'])
+    assert status == 0 and listing['route'] == 'extension'
+    status, pin, _ = run_cli(monkeypatch, capsys, broker, [
+        'pin-password-target', '--page-id', listing['page_id'], '--frame-id', listing['main_frame_id'],
+        '--top-url', LOGIN, '--selector', '#password', '--route', 'extension'])
+    assert status == 0 and pin['target_delivery'] == route.DELIVERY
+    status, receipt, _ = run_cli(monkeypatch, capsys, broker, ['fill', search(broker), '--mode', 'password',
+                                                                '--target', pin['target']])
+    assert status == 0 and receipt == dict(ok=True, filled='password', target_delivery=route.DELIVERY)
+    assert extension.filled[0]['password'] == PASSWORD
+    status, _, error = run_cli(monkeypatch, capsys, broker, [
+        'pin-password-target', '--page-id', listing['page_id'], '--frame-id', 'TOP', '--top-url', LOGIN,
+        '--selector', '#secret', '--mode', 'read', '--route', 'extension'])
+    assert status == 2 and 'cdp route only' in error
+
+
+def test_cli_pins_cards_on_the_extension_route_without_a_frame_url(monkeypatch, capsys):
+    broker = make_broker([CardEntry()])
+    channel, extension = attach(broker, {5: [Document('TOP', TOP)]})
+    base = ['pin-card-target', '--page-id', f'{channel.id}.5', '--frame-id', 'TOP', '--top-url', TOP,
+            '--selector', '#number', '--field', 'cc-number']
+    status, refused, _ = run_cli(monkeypatch, capsys, broker, base)
+    assert status == 1 and 'frame-url' in refused['error']  # The cdp route still needs it.
+    status, pin, _ = run_cli(monkeypatch, capsys, broker, base + ['--route', 'extension'])
+    assert status == 0 and pin['card_delivery'] == route.DELIVERY
+    handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
+    status, receipt, _ = run_cli(monkeypatch, capsys, broker, ['fill-card', handle, '--target', pin['target'],
+                                                                '--field', 'cc-number'])
+    assert status == 0 and receipt['card_delivery'] == route.DELIVERY
+
+
+def test_cli_status_validates_pairing_links(monkeypatch, capsys):
+    from akdbx import cli
+    broker = make_broker()
+    attach(broker, {}, paired=False)
+    status, result, _ = run_cli(monkeypatch, capsys, broker, ['status'])
+    assert status == 0 and result['extension_paired'] is False
+    good = dict(ok=True, extension_pairing=[dict(browser='helium', code='ABCD-EFGH',
+                                                 url='https://unlock.example.test:9443/extension/pair?token=x')])
+    assert cli._validate_response(good, 'https://unlock.example.test:9443') == good
+    for bad in ('https://elsewhere.example/extension/pair?token=x', 'https://unlock.example.test:9443/other?token=x'):
+        with pytest.raises(Exception):
+            cli._validate_response(dict(ok=True, extension_pairing=[dict(browser='helium', code='ABCD-EFGH', url=bad)]),
+                                   'https://unlock.example.test:9443')
+
+
+def test_install_and_uninstall_touch_only_their_own_files(tmp_path, monkeypatch):
+    import os
+    import uuid
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'data'))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'config'))
+    monkeypatch.delenv('CHROME_CONFIG_HOME', raising=False)
+    test_key = None
+    if os.name == 'nt':
+        import winreg
+        test_key = 'Software\\akdbx-test-' + uuid.uuid4().hex[:8]
+        monkeypatch.setitem(extension_host.WINDOWS_KEYS, 'helium', test_key + '\\NativeMessagingHosts')
+    try:
+        where = extension_host.install('helium')
+        manifest = json.loads(open(where['manifest'], encoding='utf-8').read())
+        assert manifest == dict(name=route.HOST_NAME, description=manifest['description'], path=where['launcher'],
+                                type='stdio', allowed_origins=[route.EXTENSION_ORIGIN])
+        if os.name == 'nt':
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, test_key + '\\NativeMessagingHosts\\' + route.HOST_NAME) as h:
+                assert winreg.QueryValueEx(h, '')[0] == where['manifest']
+        else:
+            assert where['manifest'] == str(tmp_path / 'config' / 'net.imput.helium' / 'NativeMessagingHosts'
+                                            / (route.HOST_NAME + '.json'))
+            assert os.stat(where['launcher']).st_mode & 0o777 == 0o700
+        extension_host.install('helium')  # Reinstalling the same registration is allowed.
+        assert set(extension_host.uninstall('helium')) == ({'registry', 'manifest', 'launcher'} if os.name == 'nt'
+                                                           else {'manifest', 'launcher'})
+        assert not os.path.exists(where['manifest']) and not os.path.exists(where['launcher'])
+        assert extension_host.uninstall('helium') == []
+    finally:
+        if test_key is not None:
+            for key in (test_key + '\\NativeMessagingHosts\\' + route.HOST_NAME, test_key + '\\NativeMessagingHosts', test_key):
+                try:
+                    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
+                except OSError:
+                    pass
+
+
+def test_abandoned_pins_expire_instead_of_blocking_new_pins():
+    now = [10.0]
+    broker = make_broker(now=now)
+    channel, extension = attach(broker, {3: [Document('TOP', LOGIN)]})
+    for _ in range(route.MAX_PINS + 2):
+        assert pin_password(broker, channel, 3, 'TOP', LOGIN)['ok']
+        now[0] += route.TTL  # Never filled: each pin expires before the next.
+    assert len(broker.extension.pins) == 1 and len(extension.pins) == 1  # Released in the browser too.
+    broker.card_targets.prune()
+    assert not broker.extension.pins
+
+
+def test_target_settings_reach_the_cdp_manager():
+    broker = make_broker()
+    broker.card_targets.clock = clock = lambda: 5.0
+    broker.identity_targets.profile = 'synthetic-profile'
+    assert broker.card_targets.cdp.clock is clock and broker.identity_targets.cdp.profile == 'synthetic-profile'
+    assert broker.card_targets.kind == 'card'
+
+
+def test_build_stores_the_browser_serialization_of_the_trusted_origin(tmp_path):
+    built = extension_host.build(tmp_path / 'ext', unlock_origin='https://localhost:443')
+    assert 'AKDBX_TRUSTED_ORIGIN = "https://localhost";' in (built / 'config.js').read_text()
+
+
+def test_sealed_match_list_stays_within_the_transport_limit():
+    title = 'é' * 500  # Escaped as \u00e9 in JSON: six bytes per character.
+    broker = make_broker([Entry(title=title + str(i), username=USERNAME, password=PASSWORD, url=LOGIN)
+                          for i in range(20)])
+    channel, _ = attach(broker, {})
+    raw = broker.extension.popup(channel, dict(type='request', id='p1', op='match', kind='login', **facts()))
+    framed = json.dumps(dict(type='response', id='p1', result=raw), separators=(',', ':')).encode()
+    assert len(framed) <= MAX_MESSAGE
+    entries = popup(broker, channel, 'match', kind='login', **facts())['entries']
+    assert 0 < len(entries) < 20 and len(broker.extension.selections) == 2 * len(entries)

@@ -44,6 +44,8 @@ jobs:
           with zipfile.ZipFile(wheel) as archive:
               for name in ('akdbx/import_assets/jsQR.js', 'akdbx/import_assets/jsQR.LICENSE',
                            'akdbx/import_assets/import.js', 'akdbx/browser_extension/manifest.json',
-                           'akdbx/browser_extension/popup.js', 'akdbx/browser_import.py'):
+                           'akdbx/browser_extension/popup.js', 'akdbx/browser_import.py',
+                           'akdbx/fill_extension/manifest.json', 'akdbx/fill_extension/content.js',
+                           'akdbx/fill_extension/background.js', 'akdbx/extension_host.py'):
                   assert archive.read(name)
           PY

@@ -82,3 +82,10 @@ A receipt reports the field token and delivery outcome. Check the site's
 non-secret state without reading the filled value. On an uncertain response
 or timeout, check the destination before taking any further action. Use
 fresh references for a deliberate retry.
+
+## Extension route (0.21.0)
+
+`pin-identity-target --route extension` pins the field through the paired akdbx
+browser extension. Only frames of the top origin are accepted, and receipts
+carry `identity_delivery: "extension-dom-v1"`. Read
+[the extension route](extension.md).

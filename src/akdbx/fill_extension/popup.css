@@ -1,0 +1,11 @@
+:root { color-scheme: light dark; --border: #8886; }
+body { width: 320px; margin: 0; padding: 12px; font: 14px system-ui, sans-serif; }
+h1 { font-size: 16px; margin: 0 0 8px; }
+p { margin: 6px 0; }
+.code { font: 600 20px ui-monospace, monospace; letter-spacing: 2px; }
+ul { list-style: none; margin: 8px 0 0; padding: 0; }
+li + li { margin-top: 6px; }
+button { box-sizing: border-box; width: 100%; padding: 8px; text-align: left; border: 1px solid var(--border);
+         border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+button:hover, button:focus-visible { border-color: currentColor; }
+.detail { display: block; opacity: .75; font-size: 12px; }
