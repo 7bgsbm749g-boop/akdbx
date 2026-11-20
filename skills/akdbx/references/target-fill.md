@@ -314,3 +314,11 @@ fills and TOTP. These paths retain their existing PID/window/focus checks and
 `x11-send-event-v1` receipts. They do not attest DOM fields or origins. In
 particular, this password repair does not extend field protection to TOTP.
 See [TOTP](totp.md). Never use username mode to deliver a password.
+
+## Extension route (0.21.0)
+
+Every DOM pin in this guide can also go through the paired akdbx browser
+extension instead of a debugging port: add `--route extension` to
+`list-password-frames` and `pin-password-target`. The pin rules are the same;
+receipts carry `target_delivery: "extension-dom-v1"`. Read
+[the extension route](extension.md) for pairing, capabilities and limits.

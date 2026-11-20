@@ -225,6 +225,7 @@ def serve(path, broker, stop=None):
                 event.Close()
     finally:
         pending.Close()
+        broker.extension.close()
         broker.unlock_notifications.close()
         broker.card_save_notifications.close()
         with lock:

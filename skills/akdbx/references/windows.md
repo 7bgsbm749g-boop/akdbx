@@ -28,7 +28,9 @@ with these replacements:
 - Run `status`. Require an unlocked broker with `recovery_required: false`.
   For password, login and generated-password fills also require integer
   `password_fill_protocol: 1`, `password_fill_delivery:
-  "chromium-password-dom-v1"` and `password_browser_configured: true`. For
+  "chromium-password-dom-v1"` and `password_browser_configured: true`, or use
+  the [browser extension route](extension.md) with `extension_paired: true`
+  when the browser has no debugging port (Helium, Chrome or Edge). For
   window pins require `target_fill_delivery: "win32-char-v1"` and target
   protocol 1. `target_fill_modes: ["username"]` describes window pins only.
 - When locked, give the exact returned private HTTPS link to the user. It opens

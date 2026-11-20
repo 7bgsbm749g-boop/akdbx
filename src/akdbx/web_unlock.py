@@ -334,7 +334,8 @@ def handler_for(state: UnlockState):
 
         def _write_request(self) -> bool:
             from .import_web import handle_import
-            if handle_import(self, state):
+            from .extension_web import handle_pairing
+            if handle_import(self, state) or handle_pairing(self, state):
                 return True
             route = urlsplit(self.path).path
             kind = {'/write': 'password', '/totp': 'totp', '/card': 'card', '/identity': 'identity'}.get(route)

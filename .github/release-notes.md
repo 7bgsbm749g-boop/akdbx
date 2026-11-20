@@ -2,8 +2,8 @@ akdbx {{VERSION}} is one release for every platform. Install the same wheel on L
 
 | Platform | Status | Fills | Not available |
 | --- | --- | --- | --- |
-| Linux (X11 + Chromium) | Established | Passwords and logins to verified Chromium DOM inputs; usernames and TOTP to pinned X11 windows; cards and identity fields in Chromium | — |
-| Windows 10/11 | Same feature set from 0.17.0 | Passwords and logins to verified Chromium DOM inputs; usernames and TOTP to pinned windows; cards and identity fields in Chromium | Unlock from another device; the browser native host for authenticator capture |
+| Linux (X11 + Chromium) | Established | Passwords and logins to verified Chromium DOM inputs; usernames and TOTP to pinned X11 windows; cards and identity fields in Chromium; the browser extension route | — |
+| Windows 10/11 | Same feature set from 0.17.0 | Passwords and logins to verified Chromium DOM inputs; usernames and TOTP to pinned windows; cards and identity fields in Chromium; the browser extension route (Helium, Chrome, Edge) | Unlock from another device; the browser native host for authenticator capture |
 
 Verify a download before installing it:
 

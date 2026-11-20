@@ -164,3 +164,11 @@ back or capture it unmasked. A fill receipt does not prove merchant acceptance.
 Refusals consume authorizations. After an uncertain response or connection
 loss, stop and inspect non-secret form state; do not retry automatically.
 Complete only the authorized task. Card fill alone never authorizes payment.
+
+## Extension route (0.21.0)
+
+`pin-card-target --route extension` pins the field through the paired akdbx
+browser extension instead of a debugging port. `--frame-url` is optional on
+this route; the broker uses the browser's own document URL. The merchant-frame
+and processor rules are the same, and receipts carry `card_delivery:
+"extension-dom-v1"`. Read [the extension route](extension.md).
