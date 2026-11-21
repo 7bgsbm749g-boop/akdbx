@@ -902,26 +902,30 @@ def test_end_of_input_stops_setup_cleanly(home, vault, capsys):
 
 
 def test_an_enabled_relay_follows_a_port_move_before_later_stages_use_the_origin(home, vault, monkeypatch, capsys):
-    # Later stages (the extension build) use this origin, so setup asks the relay first.
+    # The broker saves a relay port move when it starts; later stages (the extension build) must use
+    # the origin it serves. setup itself never asks the relay (no network, no second writer).
     from akdbx import relay as relay_module
     old = relay_module.RelayConfig('https://relay.akdbx.link:8443', 'k3x7q2mbn5vd.akdbx.link', 'k3x7q2mbn5vd',
                                    8443, True, 'A' * 43)
     new = relay_module.RelayConfig('https://relay.akdbx.link', old.name, old.broker_id, 443, True, old.secret)
-    asked = []
+    moved = []
 
     class Store:
         def load(self):
-            return old
+            return new if moved else old
 
         def certificate(self, name):
             return object()
 
-    def refresh(store, config):
-        asked.append(config)
-        return relay_module.Refresh(new, ('relay moved the public port from 8443 to 443',))
     monkeypatch.setattr(relay_module, 'RelayStore', Store)
-    monkeypatch.setattr(relay_module, 'refresh', refresh)
+    monkeypatch.setattr(relay_module, 'refresh', lambda *a, **k: pytest.fail('setup must not ask the relay'))
+    login = setup_cli.Setup.stage_login
+
+    def start_broker(self, ready):  # the broker the login stage starts saves the move
+        moved.append(True)
+        return login(self, ready)
+    monkeypatch.setattr(setup_cli.Setup, 'stage_login', start_broker)
     code, result, _ = setup('--yes', '--json', '--vault', str(vault), '--access', 'relay', runner=Runner(),
                             capsys=capsys)
-    assert asked == [old], result
-    assert result['stages']['access']['origin'] == 'https://k3x7q2mbn5vd.akdbx.link'
+    assert moved and result['stages']['access']['origin'] == 'https://k3x7q2mbn5vd.akdbx.link:8443', result
+    assert result['broker']['origin'] == 'https://k3x7q2mbn5vd.akdbx.link'

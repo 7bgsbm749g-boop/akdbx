@@ -632,6 +632,7 @@ class Setup:
     # -- broker status
     def broker_status(self):
         """{'running': True/False/'unknown', 'response': dict or None}, with the CLI's own checks."""
+        self._follow_relay_origin()
         try:
             response = self.status_request(self.origin)
         except (FileNotFoundError, ConnectionRefusedError):
@@ -639,6 +640,22 @@ class Setup:
         except Exception as exc:
             return {'running': 'unknown', 'response': None, 'error': type(exc).__name__}
         return {'running': True, 'response': response if isinstance(response, dict) else None}
+
+    def _follow_relay_origin(self):
+        """Use the relay origin saved now: a broker moves to the relay's new port when it starts.
+
+        Read only, no network: the broker that serves the pages saves the move,
+        so later stages (the extension build) get the origin that it serves.
+        """
+        if self.choice.get('access') != 'relay' or self.dry_run:
+            return
+        from .relay import RelayStore, RelayStoreError
+        try:
+            config = RelayStore().load()
+        except RelayStoreError:
+            return
+        if config is not None and config.enabled:
+            self.origin = config.origin
 
     # ----- 1. system ------------------------------------------------------
     def stage_system(self):
@@ -1106,7 +1123,7 @@ class Setup:
         return config is not None and config.enabled
 
     def _access_relay(self, enabled):
-        from .relay import RelayStore, RelayStoreError, refresh
+        from .relay import RelayStore, RelayStoreError
         self.say('Trust point: the relay operator controls the akdbx.link DNS zone and could get a second '
                  'certificate for your broker name; public Certificate Transparency logs would show it.')
         store = RelayStore()
@@ -1118,14 +1135,6 @@ class Setup:
             self.step("Fix the relay folder permissions, or run 'akdbx relay disable --forget'.", 'access')
             self.record('access', 'failed', access='relay', error=str(exc))
             return False
-        if ready and not self.dry_run:
-            # Follow a relay port move now: later stages (the extension build) use this origin.
-            result = refresh(store, config)
-            for change in result.changes:
-                self.say(change)
-            if result.warning:
-                self.say(result.warning)
-            config = result.config
         if ready:
             self.origin = config.origin
             self.say(f'The relay is already enabled: {config.origin}')
