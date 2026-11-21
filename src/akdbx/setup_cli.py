@@ -67,6 +67,7 @@ FUNNEL_PORTS = (443, 8443, 10000)
 SERVICE_NAME = 'akdbx.service'
 TASK_NAME = 'akdbx-broker'
 MARKER = 'akdbx-setup'
+SAFE_WORD = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./:=\\')
 STATE_LIMIT = 64 * 1024
 LINUX_BROWSERS = {
     'helium': ('helium', 'helium-browser'),
@@ -88,11 +89,13 @@ def add_parser(commands):
         COMMAND, help='guided setup from install to a working broker; every answer is also a flag',
         description=('One guided command from install to a working broker. The broker is the only required '
                      'part; every other stage is optional. At a terminal it asks questions with defaults. '
-                     'With --yes it never asks: it takes the flags, the saved answers of an earlier run and '
-                     'the defaults, and makes only the changes that the flags select. Setup never reads the '
-                     'vault and never asks for the master password.'))
+                     'With --yes it never asks, and only the flags of this run select a change (start at login, '
+                     'relay, browsers, CDP profile, capture host, skill link, tailscale serve); the saved answers '
+                     'of an earlier run give only values such as paths and ports. Setup never reads the vault '
+                     'and never asks for the master password.'))
     command.add_argument('-y', '--yes', action='store_true',
-                         help='never ask: use flags, earlier answers and defaults, and apply the selected changes')
+                         help=('never ask; make only the changes that the flags of this run select (saved answers '
+                               'give only paths, ports and other values)'))
     command.add_argument('--dry-run', action='store_true', help='show every check and planned change; change nothing')
     command.add_argument('--json', action='store_true', help='print a machine-readable summary on stdout')
     command.add_argument('--skip', action='append', choices=STAGES, default=[], metavar='STAGE',
@@ -207,6 +210,20 @@ def systemd_quote(value):
     return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%').replace('$', '$$') + '"'
 
 
+def systemd_path(value):
+    """The executable word of ExecStart: systemd never expands variables in it, so "$" stays as it is."""
+    value = str(value)
+    if any(c in value for c in '\0\r\n'):
+        raise ValueError('a path for the login service contains a line break')
+    return value.replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%')
+
+
+def systemd_exec(argv):
+    """ExecStart with the "@" prefix: the program path as written, then argv[0] and the arguments, in
+    which systemd expands variables (so "$" is written "$$" there). Python finds its venv from argv[0]."""
+    return '"@' + systemd_path(argv[0]) + '" ' + ' '.join(systemd_quote(part) for part in argv)
+
+
 def systemd_environment(name, value):
     value = str(value)
     if any(c in value for c in '\0\r\n'):
@@ -224,7 +241,7 @@ def unit_text(argv, environment):
         '',
         '[Service]',
         'Type=simple',
-        'ExecStart=' + ' '.join(systemd_quote(part) for part in argv),
+        'ExecStart=' + systemd_exec(argv),
     ]
     lines += [systemd_environment(name, value) for name, value in environment]
     if not any(name == 'AKDBX_UNLOCK_ORIGIN' for name, _ in environment):
@@ -295,18 +312,41 @@ def task_action(xml):
     return MARKER in (field('Description') or ''), field('Command'), field('Arguments')
 
 
-def tailscale_proxy(serve_status, port):
-    """The proxy target of the Serve handler on ``port``, or None; from `tailscale serve status --json`."""
-    web = serve_status.get('Web') if isinstance(serve_status, dict) else None
-    if not isinstance(web, dict):
-        return None
-    for host, config in web.items():
-        if isinstance(host, str) and host.rsplit(':', 1)[-1] == str(port) and isinstance(config, dict):
-            handler = (config.get('Handlers') or {}).get('/')
-            if isinstance(handler, dict):
-                return handler.get('Proxy') or handler.get('Path') or handler.get('Text') or 'another handler'
-            return 'another handler'
-    return None
+def tailscale_mapping(serve_status, host, port, target):
+    """What `tailscale serve status --json` shows for ``host:port``: ``(kind, detail)``.
+
+    kind is 'free' (nothing uses the port), 'ours' (exactly one HTTPS handler for / that proxies to
+    ``target``, with Funnel off), 'funnel' (Funnel is on for host:port) or 'other'. A status that is not
+    the expected JSON shape raises ValueError: setup then never adds a mapping.
+    """
+    if not isinstance(serve_status, dict):
+        raise ValueError('the serve status is not a JSON object')
+    tcp, web, funnel = ({} if serve_status.get(name) is None else serve_status[name]
+                        for name in ('TCP', 'Web', 'AllowFunnel'))
+    if not all(isinstance(part, dict) for part in (tcp, web, funnel)):
+        raise ValueError('the serve status has an unexpected shape')
+    key = f'{host}:{port}'
+    listener = tcp.get(str(port))
+    users = [name for name in web if isinstance(name, str) and name.rsplit(':', 1)[-1] == str(port)]
+    funnels = [name for name, on in funnel.items() if on is True and isinstance(name, str)
+               and name.rsplit(':', 1)[-1] == str(port)]
+    if listener is None and not users and not funnels:
+        return 'free', None
+    if funnels:
+        return 'funnel', ', '.join(sorted(funnels))
+    if users != [key]:
+        return 'other', 'the host names ' + ', '.join(sorted(map(str, users))) if users else 'a TCP forwarder'
+    if not isinstance(listener, dict) or listener.get('HTTPS') is not True:
+        return 'other', 'a listener that is not HTTPS'
+    config = web[key]
+    handlers = config.get('Handlers') if isinstance(config, dict) else None
+    if not isinstance(handlers, dict) or set(handlers) != {'/'} or not isinstance(handlers['/'], dict):
+        return 'other', 'other handlers'
+    handler = handlers['/']
+    proxy = handler.get('Proxy')
+    if proxy == target and set(handler) == {'Proxy'}:
+        return 'ours', proxy
+    return 'other', proxy or handler.get('Path') or handler.get('Text') or 'another handler'
 
 
 def link_target(path):
@@ -340,15 +380,27 @@ def create_link(source, target):
         os.symlink(source, target, target_is_directory=True)
 
 
+def powershell_quote(value):
+    """One PowerShell word: bare when it is plainly safe, else a single-quoted literal ('' for ')."""
+    value = str(value)
+    if value and all(c in SAFE_WORD for c in value):
+        return value
+    # PowerShell also ends a literal at the typographic single quotes: double them too.
+    return "'" + ''.join(c * 2 if c in "'\u2018\u2019\u201a\u201b" else c for c in value) + "'"
+
+
 def shell_command(argv, windows):
+    """The command as a user types it: POSIX sh on Linux; PowerShell, with the call operator &, on Windows."""
     if windows:
-        # Also valid in PowerShell, which needs & before a quoted program path.
-        text = subprocess.list2cmdline([str(part) for part in argv])
-        return '& ' + text if text.startswith('"') else text
+        return '& ' + ' '.join(powershell_quote(part) for part in argv)
     return shlex.join(str(part) for part in argv)
 
 
 # ----- the setup run -------------------------------------------------------
+
+class Refusal(Exception):
+    """Answers that cannot work together: setup stops before any change (exit status 2)."""
+
 
 class Setup:
     def __init__(self, args, *, ui, runner=run_command, status=None, which=shutil.which, windows=None,
@@ -370,11 +422,16 @@ class Setup:
         self.commands_run = []
         self.socket_explicit = getattr(args, 'socket_explicit', False)
         self.socket = args.socket
+        if self.socket_explicit and not self.windows:
+            # The unit, the extension host and every printed command run from another folder.
+            self.socket = Path(os.path.abspath(Path(self.socket).expanduser()))
         self.origin = DEFAULT_ORIGIN
         self.started_service = False
         self.service_ready = False
         self.tools = {}
         self.choice = {}
+        self.declined = set()  # selections whose change was declined: never saved as selected
+        self.unselected = set()  # selections that --yes left out: the earlier saved answer is kept
         self.state, self.state_problem = self._load_state()
 
     # -- paths
@@ -430,8 +487,12 @@ class Setup:
     def say(self, text):
         self.ui.say('  ' + text)
 
-    def change(self, stage, what, show, action, *, selected, default=True):
-        """Show a change, then apply it after confirmation. True: applied; None: not applied; False: failed."""
+    def change(self, stage, what, show, action, *, selected, default=True, key=None):
+        """Show a change, then apply it after confirmation. True: applied; None: not applied; False: failed.
+
+        ``key`` names the saved selection that the change belongs to: a declined change keeps it from
+        being saved as selected (a failed one stays selected, so the next run offers it again).
+        """
         self.say('Will ' + what + ':')
         for line in show:
             self.ui.say('    ' + line)
@@ -440,10 +501,20 @@ class Setup:
             return None
         if not (self.ui.confirm('  Apply this change?', default) if self.ui.interactive else selected):
             self.note(stage, 'not_applied', what)
+            if key and self.ui.interactive:
+                # A real decline; under --yes an unselected change keeps the earlier answer.
+                self.declined.add(key)
             return None
+        errors = [OSError, ValueError, RuntimeError, subprocess.SubprocessError]
+        if self.windows:
+            try:
+                import pywintypes
+                errors.append(pywintypes.error)
+            except ImportError:
+                pass
         try:
             action()
-        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        except tuple(errors) as exc:
             self.note(stage, 'errors', f'{what}: {exc}')
             self.say(f'Failed: {exc}')
             return False
@@ -521,10 +592,28 @@ class Setup:
         except Exception as exc:
             return {}, f'the saved answers in {path} are not used ({type(exc).__name__}: {exc})'
 
+    def saved_choices(self):
+        """The answers to save. A selection is saved as selected only when no change of it was declined;
+        one that --yes left out keeps the earlier answer."""
+        choices = dict(self.choice)
+        for key in self.unselected:
+            choices[key] = self.state.get(key)
+        browsers = [b for b in choices.get('browsers') or [] if 'browser:' + b not in self.declined]
+        choices['browsers'] = [] if 'browsers' in self.declined else browsers
+        for key in ('start_at_login', 'capture_host', 'link_skill'):
+            if key in self.declined:
+                choices[key] = False
+        if 'cdp_profile' in self.declined:
+            choices['cdp_profile'] = None
+        if 'access' in self.declined:
+            earlier = self.state.get('access')
+            choices['access'] = earlier if earlier in ACCESS and earlier != choices.get('access') else None
+        return choices
+
     def save_state(self):
         if self.dry_run:
             return
-        state = {'version': __version__, **{key: value for key, value in self.choice.items()
+        state = {'version': __version__, **{key: value for key, value in self.saved_choices().items()
                                             if key in STATE_KEYS and value is not None}}
         data = json.dumps(state, indent=2, default=str).encode('utf-8')
         path = self.state_path()
@@ -564,9 +653,21 @@ class Setup:
             os.close(directory)
 
     def remembered(self, key, flag=None, default=None):
+        """A value (a path, a port, a name): the flag, else the earlier saved answer, else the default."""
         if flag is not None:
             return flag
         return self.state.get(key, default)
+
+    def selected(self, key, flag, empty=False):
+        """A selection of a change. At a terminal the earlier answer is the question's default; with --yes
+        only this run's flag selects it."""
+        if flag is not None:
+            return flag
+        if self.ui.interactive:
+            return self.state.get(key, empty)
+        if key in self.state:
+            self.unselected.add(key)
+        return empty
 
     # -- broker status
     def broker_status(self):
@@ -674,7 +775,9 @@ class Setup:
 
     # ----- answers ----------------------------------------------------------
     def collect(self):
-        """Every answer: a flag, else the earlier run's answer, else a question or the default."""
+        """Every answer. A value: a flag, else the earlier answer, else a question or the default. A selection
+        of a change: with --yes only a flag of this run; at a terminal a question whose default is the earlier
+        answer."""
         args, ui, choice = self.args, self.ui, self.choice
         skip = set(args.skip)
         vault = self.remembered('vault', args.vault)
@@ -696,28 +799,44 @@ class Setup:
             access = ui.choose('Access', [(key, ACCESS_LINES[key]) for key in ACCESS], access)
         choice['access'] = access
         if access in ('tailscale', 'tunnel'):
-            name = self.remembered('tailscale_name', args.tailscale_name) or self._tailscale_name()
-            choice['tailscale_name'] = ui.text("This computer's tailnet name", name)
-            port = args.tailnet_port or (self.state.get('tailnet_port') if self.state.get('access') == access
-                                         else None) or (9443 if access == 'tailscale' else 8443)
-            choice['tailnet_port'] = self._port('Tailnet HTTPS port', port)
+            explicit = self.explicit_origin_parts()
+            if explicit:
+                # The explicit origin names the tailnet host and port; a different flag cannot work.
+                name, port = explicit
+                for flag, value, given in (('--tailscale-name', name, args.tailscale_name),
+                                           ('--tailnet-port', port, args.tailnet_port)):
+                    if given is not None and str(given).rstrip('.').lower() != str(value):
+                        raise Refusal(f'{flag} {given} does not match the explicit unlock origin '
+                                      f'{self.args.unlock_origin} (it names {value}); give one of them only')
+                choice['tailscale_name'], choice['tailnet_port'] = name, port
+            else:
+                name = self.remembered('tailscale_name', args.tailscale_name) or self._tailscale_name()
+                choice['tailscale_name'] = ui.text("This computer's tailnet name", name)
+                port = args.tailnet_port or (self.state.get('tailnet_port') if self.state.get('access') == access
+                                             else None) or (9443 if access == 'tailscale' else 8443)
+                choice['tailnet_port'] = self._port('Tailnet HTTPS port', port)
             choice['local_port'] = self._port('Loopback port of the broker',
                                               self.remembered('local_port', args.local_port, 9444))
 
-        cert = self.remembered('tls_cert', args.tls_cert)
-        key = self.remembered('tls_key', args.tls_key)
-        if cert is None and key is None:
-            default_cert, default_key = self.default_tls()
-            cert, key = default_cert, default_key
+        if (args.tls_cert is None) != (args.tls_key is None):
+            raise Refusal('give --tls-cert and --tls-key together (the certificate and its private key), or '
+                          'neither')
+        cert, key = ((args.tls_cert, args.tls_key) if args.tls_cert is not None
+                     else (self.state.get('tls_cert'), self.state.get('tls_key')))
+        if (cert is None) != (key is None):
+            raise Refusal(f'the saved answers in {self.state_path()} name only one of the certificate and its key: '
+                          'give --tls-cert and --tls-key')
+        if cert is None:
+            cert, key = self.default_tls()
         choice['tls_cert'] = str(Path(cert).expanduser().absolute())
         choice['tls_key'] = str(Path(key).expanduser().absolute())
 
-        start = self.remembered('start_at_login', args.start_at_login, False)
+        start = self.selected('start_at_login', args.start_at_login)
         if 'login' not in skip:
             start = ui.confirm('Start the broker at login (it starts locked)?', bool(start))
         choice['start_at_login'] = bool(start)
 
-        browsers = [] if args.no_extension else (args.browser or self.state.get('browsers') or [])
+        browsers = [] if args.no_extension else (args.browser or self.selected('browsers', None, []) or [])
         browsers = [b for b in browsers if b in BROWSERS]
         if 'fill' not in skip and ui.interactive:
             self.ui.say('Fill route. The extension route works in your everyday browser and is preferred; the '
@@ -733,14 +852,14 @@ class Setup:
         choice['browsers'] = list(dict.fromkeys(browsers))
         choice['extension_dir'] = str(Path(self.remembered('extension_dir', args.extension_dir)
                                            or self.default_extension_dir()).expanduser().absolute())
-        cdp = None if args.no_cdp else self.remembered('cdp_profile', args.cdp_profile)
+        cdp = None if args.no_cdp else self.selected('cdp_profile', args.cdp_profile, None)
         if 'fill' not in skip and ui.interactive:
             answer = ui.text("Private Chromium profile folder for the CDP route ('none' to skip)",
                              str(cdp) if cdp else 'none')
             cdp = None if not answer or answer.lower() == 'none' else answer
         choice['cdp_profile'] = str(Path(cdp).expanduser().absolute()) if cdp else None
 
-        capture = self.remembered('capture_host', args.capture_host, False)
+        capture = self.selected('capture_host', args.capture_host)
         if 'features' not in skip:
             capture = ui.confirm('Set up the authenticator capture extension (reads a setup QR from a page)?',
                                  bool(capture))
@@ -756,12 +875,26 @@ class Setup:
                 extension_id = None if extension_id == 'later' else extension_id
             choice['capture_extension_id'] = extension_id
 
-        link = self.remembered('link_skill', args.link_skill, False)
+        link = self.selected('link_skill', args.link_skill)
         if 'skill' not in skip:
             link = ui.confirm('Link the akdbx skill into your agent skills folders?', bool(link) or ui.interactive)
         choice['link_skill'] = bool(link)
         dirs = args.skill_dir or self.state.get('skill_dirs')
         choice['skill_dirs'] = [str(Path(d).expanduser().absolute()) for d in dirs] if dirs else None
+
+    def explicit_origin_parts(self):
+        """(host, port) of an explicit --unlock-origin or AKDBX_UNLOCK_ORIGIN, or None."""
+        if not getattr(self.args, 'unlock_origin_explicit', False):
+            return None
+        from urllib.parse import urlsplit
+        try:
+            parts = urlsplit(self.args.unlock_origin)
+            host, port = parts.hostname, parts.port or 443
+        except ValueError as exc:
+            raise Refusal(f'the explicit unlock origin {self.args.unlock_origin!r} is not a URL ({exc})') from None
+        if parts.scheme != 'https' or not host:
+            raise Refusal(f'the explicit unlock origin {self.args.unlock_origin!r} is not an https:// origin')
+        return host.rstrip('.').lower(), port
 
     def _port(self, question, default):
         while True:
@@ -1015,9 +1148,6 @@ class Setup:
         from .relay import RelayStore, RelayStoreError
         self.say('Trust point: the relay operator controls the akdbx.link DNS zone and could get a second '
                  'certificate for your broker name; public Certificate Transparency logs would show it.')
-        if self.env.get('AKDBX_UNLOCK_ORIGIN') or getattr(self.args, 'unlock_origin_explicit', False):
-            self.step('Unset AKDBX_UNLOCK_ORIGIN (and drop --unlock-origin): an explicit origin wins over the relay.',
-                      'access')
         store = RelayStore()
         try:
             config = store.load()
@@ -1030,6 +1160,8 @@ class Setup:
         if ready:
             self.origin = config.origin
             self.say(f'The relay is already enabled: {config.origin}')
+            if self._relay_conflict():
+                return False
             self.record('access', 'done', access='relay', origin=config.origin)
             return True
         argv = self.akdbx_argv('relay', 'enable', *(['--relay', self.args.relay_url] if self.args.relay_url else []))
@@ -1042,14 +1174,40 @@ class Setup:
             outcome.update(result or {})
         applied = self.change('access', 'register this broker at the akdbx relay and save its key and certificate '
                               'in the private relay folder', [shell_command(argv, self.windows)], enable,
-                              selected=True)
+                              selected=self.args.access == 'relay', key='access')
         if applied:
             self.origin = outcome.get('origin') or self.origin
             self.say(f'The private pages will open at {self.origin} on any device.')
+            if self._relay_conflict():
+                return False
             self.record('access', 'changed', access='relay', origin=self.origin)
             return True
+        if applied is None and not self.dry_run and not self.ui.interactive:
+            self.say('Add --access relay to register this broker at the relay.')
         self.record('access', self.outcome(applied), access='relay')
         return False
+
+    def _relay_conflict(self):
+        """Refuse an explicit origin that would turn the relay off: True when the access stage failed."""
+        variable = self.env.get('AKDBX_UNLOCK_ORIGIN') or None
+        explicit = variable or (self.args.unlock_origin if getattr(self.args, 'unlock_origin_explicit', False)
+                                else None)
+        if not explicit:
+            return False
+        if explicit.rstrip('/') != self.origin:
+            error = (f'the explicit unlock origin {explicit} (AKDBX_UNLOCK_ORIGIN or --unlock-origin) is not the '
+                     f'relay origin {self.origin}: every akdbx command would expect the wrong page, and a broker '
+                     'started with it would not use the relay')
+        elif self.windows and variable:
+            error = ('AKDBX_UNLOCK_ORIGIN is set: the logon task inherits it, and an explicit origin turns the relay '
+                     'off, so the broker could not start')
+        else:
+            return False
+        self.say('Refused: ' + error + '.')
+        self.step('Unset AKDBX_UNLOCK_ORIGIN everywhere it is set (and drop --unlock-origin), then run akdbx setup '
+                  'again.', 'access')
+        self.record('access', 'failed', access='relay', origin=self.origin, error=error)
+        return True
 
     def _access_tailscale(self, access):
         port, local_port = self.choice['tailnet_port'], self.choice['local_port']
@@ -1088,15 +1246,33 @@ class Setup:
                       'access')
             self.record('access', 'todo', access=access, origin=self.origin, local_port=local_port)
             return True
-        current = self._serve_proxy(port)
-        if current == target:
-            self.say(f'Tailscale Serve already proxies port {port} to {target}.')
+        host = self.choice['tailscale_name'].rstrip('.').lower()
+        try:
+            kind, detail = self._serve_mapping(host, port, target)
+        except RuntimeError as exc:
+            error = f'could not inspect Tailscale Serve ({exc}); setup adds no mapping it cannot check'
+            self.say(error + '.')
+            self.step(f'Check {shell_command([tailscale, "serve", "status", "--json"], self.windows)} works (on '
+                      'Linux as root or the Tailscale operator user), then run akdbx setup again.', 'access')
+            self.record('access', 'failed', access=access, origin=self.origin, local_port=local_port, error=error)
+            return False
+        if kind == 'funnel':
+            error = (f'Tailscale Funnel is on for {detail}: anyone on the internet can reach that port, so this is '
+                     'not a private setup')
+            self.say('Refused: ' + error + '.')
+            off = shell_command([tailscale, 'funnel', f'--https={port}', 'off'], self.windows)
+            self.step(f'Turn Funnel off for port {port} ({off}), or choose --access tunnel if you want the public '
+                      'route; then run akdbx setup again.', 'access')
+            self.record('access', 'failed', access=access, origin=self.origin, local_port=local_port, error=error)
+            return False
+        if kind == 'ours':
+            self.say(f'Tailscale Serve already proxies {host}:{port} to {target} over HTTPS, with Funnel off.')
             self.step(trust, 'access')
             self.record('access', 'done', access=access, origin=self.origin, local_port=local_port)
             return True
-        if current is not None:
-            self.say(f'Tailscale Serve already uses port {port} for {current}. Setup never replaces it.')
-            if current.startswith(('http://', 'https+insecure://')):
+        if kind == 'other':
+            self.say(f'Tailscale Serve already uses port {port} ({detail}). Setup never replaces it.')
+            if str(detail).startswith(('http://', 'https+insecure://')):
                 self.say('That target is not verified: another local user could take the port and show a fake '
                          'unlock page. Replace it with a verified https:// target.')
             self.step(f'Remove or move that mapping yourself, then run {shell_command(argv, self.windows)}.', 'access')
@@ -1117,12 +1293,23 @@ class Setup:
         self.record('access', state, access=access, origin=self.origin, local_port=local_port)
         return True
 
-    def _serve_proxy(self, port):
+    def _serve_mapping(self, host, port, target):
+        """tailscale_mapping() of the live serve status; RuntimeError when it cannot be read."""
         try:
             result = self.run([self.tools['tailscale'], 'serve', 'status', '--json'], timeout=15)
-            return tailscale_proxy(json.loads(result.stdout or '{}'), port) if result.returncode == 0 else None
-        except (OSError, ValueError, subprocess.SubprocessError):
-            return None
+        except subprocess.TimeoutExpired:
+            raise RuntimeError('tailscale serve status timed out') from None
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError(f'tailscale serve status did not run: {exc}') from None
+        if result.returncode != 0:
+            text = (result.stderr or result.stdout or '').strip()[-200:]
+            raise RuntimeError(f'tailscale serve status exited with status {result.returncode}'
+                               + (f': {text}' if text else ''))
+        try:
+            # An empty configuration prints {}: no output is not proof that the port is free.
+            return tailscale_mapping(json.loads(result.stdout or ''), host, port, target)
+        except ValueError as exc:
+            raise RuntimeError(f'tailscale serve status printed no usable JSON: {exc}') from None
 
     def _tailscale(self, argv):
         result = self.run(argv, timeout=60)
@@ -1130,8 +1317,12 @@ class Setup:
             raise RuntimeError('tailscale refused: ' + (result.stderr or result.stdout).strip()[-300:])
 
     # ----- 5. start at login -----------------------------------------------
-    def serve_argv(self):
-        """The exact `akdbx serve` command for the chosen settings."""
+    def serve_argv(self, service=False):
+        """The exact `akdbx serve` command for the chosen settings.
+
+        ``service``: for the login unit or task, whose output a log keeps; the broker then prints no
+        unlock link at start (`akdbx status` shows it).
+        """
         access = self.choice['access']
         python = self.executable
         if self.windows and python.with_name('pythonw.exe').is_file():
@@ -1144,6 +1335,11 @@ class Setup:
             # Explicit, so that an enabled relay cannot take over this broker.
             argv += ['--unlock-origin', self.origin]
         argv += ['serve', self.choice['vault']]
+        if access == 'relay':
+            # Refuse to start without the relay, instead of serving another origin.
+            argv += ['--relay']
+        if service:
+            argv += ['--no-print-unlock-link']
         if self.choice.get('keyfile'):
             argv += ['--keyfile', self.choice['keyfile']]
         if access != 'relay':
@@ -1164,7 +1360,7 @@ class Setup:
             return
         if not broker_ready:
             self.say('Waiting for the required parts above; the broker cannot start yet.')
-            self.record('login', 'todo', reason='the vault or the page is not ready')
+            self.record('login', 'todo', reason='the vault, the page or the access stage is not ready')
             return
         broker = self.broker_status()
         if self.windows:
@@ -1175,8 +1371,9 @@ class Setup:
     def _login_linux(self, broker):
         path = self.unit_path()
         try:
-            text = unit_text(self.serve_argv(), [(name, self.env[name]) for name in ('DISPLAY', 'XAUTHORITY')
-                                                 if self.env.get(name)])
+            text = unit_text(self.serve_argv(service=True), [(name, self.env[name])
+                                                             for name in ('DISPLAY', 'XAUTHORITY')
+                                                             if self.env.get(name)])
         except ValueError as exc:
             self.record('login', 'failed', error=str(exc))
             return
@@ -1184,13 +1381,13 @@ class Setup:
         current = self._read_own_file(path)
         if current is False:
             self.say(f'{path} exists and was not written by akdbx setup. Setup never replaces it.')
-            self.step(f'Move {path} away or start the broker your own way: ' + shell_command(self.serve_argv(), False),
-                      'login')
+            self.step(f'Move {path} away or start the broker your own way: '
+                      + shell_command(self.serve_argv(service=True), False), 'login')
             self.record('login', 'failed', unit=str(path), error='a unit that setup did not write exists')
             return
         if current != text:
             applied = self.change('login', f'write the systemd user unit {path}', text.rstrip('\n').splitlines(),
-                                  lambda: self._write_unit(path, text), selected=True)
+                                  lambda: self._write_unit(path, text), selected=True, key='start_at_login')
             if not applied:
                 self.record('login', self.outcome(applied), unit=str(path))
                 return
@@ -1198,14 +1395,15 @@ class Setup:
                 self.run([systemctl, '--user', 'daemon-reload'], timeout=30)
         if not systemctl:
             self.step(f'This system has no systemctl: start the broker at login with your desktop session, using '
-                      f'{shell_command(self.serve_argv(), False)}', 'login')
+                      f'{shell_command(self.serve_argv(service=True), False)}', 'login')
             self.record('login', 'todo', unit=str(path))
             return
         enabled = self._unit_enabled(systemctl)
         if not enabled:
             applied = self.change('login', f'enable {SERVICE_NAME} so it starts at login',
                                   [f'{systemctl} --user enable {SERVICE_NAME}'],
-                                  lambda: self._checked([systemctl, '--user', 'enable', SERVICE_NAME]), selected=True)
+                                  lambda: self._checked([systemctl, '--user', 'enable', SERVICE_NAME]), selected=True,
+                                  key='start_at_login')
             if not applied:
                 self.record('login', self.outcome(applied), unit=str(path))
                 return
@@ -1261,7 +1459,7 @@ class Setup:
         return result
 
     def _login_windows(self, broker):
-        argv = self.serve_argv()
+        argv = self.serve_argv(service=True)
         xml = task_xml(argv[0], subprocess.list2cmdline(argv[1:]), self._windows_user())
         path = self.task_path()
         schtasks = self.which('schtasks') or 'schtasks'
@@ -1284,7 +1482,7 @@ class Setup:
         applied = self.change('login', f'{"replace" if replace else "create"} the logon task {TASK_NAME} for this '
                               'user (no elevation), from ' + str(path),
                               [*xml.rstrip('\n').splitlines(), shell_command(create, True)],
-                              lambda: self._create_task(path, xml, create), selected=True)
+                              lambda: self._create_task(path, xml, create), selected=True, key='start_at_login')
         if not applied:
             self.record('login', self.outcome(applied), task=TASK_NAME)
             return
@@ -1339,14 +1537,14 @@ class Setup:
         return max(current, new, key=order.index)
 
     def _install_host(self, browser):
-        from .extension_host import _launcher_text, _owned_manifest, paths
+        from .extension_host import LAUNCHER_LIMIT, _launcher_text, _owned_manifest, _read_regular, paths
         where = paths(browser)
-        socket_path = str(Path(self.socket).absolute()) if self.socket_explicit and not self.windows else (
-            str(self.socket) if self.socket_explicit else None)
+        socket_path = str(self.socket) if self.socket_explicit else None
         try:
-            expected = _launcher_text(browser, str(self.executable), socket_path)
-            current = Path(where['launcher']).read_text(encoding='utf-8')
-            installed = current == expected and _owned_manifest(where['manifest'], where['launcher'])
+            expected = _launcher_text(browser, str(self.executable), socket_path).encode('utf-8')
+            # Regular files only: a link at either path is never taken as installed.
+            installed = (_read_regular(where['launcher'], LAUNCHER_LIMIT) == expected
+                         and _owned_manifest(where['manifest'], where['launcher']))
             if installed and self.windows:
                 import winreg
                 from .extension_host import HOST_NAME, WINDOWS_KEYS
@@ -1361,7 +1559,7 @@ class Setup:
         show = [shell_command(argv, self.windows), f'writes {where["launcher"]} and {where["manifest"]}'
                 + (f' and {where["registry"]}' if 'registry' in where else '')]
         applied = self.change('fill', f'install the native-messaging host for {browser}', show,
-                              lambda: self._akdbx_ok(argv), selected=True)
+                              lambda: self._akdbx_ok(argv), selected=True, key='browser:' + browser)
         return self.outcome(applied)
 
     def _akdbx_ok(self, argv, timeout=120):
@@ -1385,7 +1583,8 @@ class Setup:
             self.say(f'The extension {EXTENSION_VERSION} for {self.origin} is already built in {folder}.')
         else:
             applied = self.change('fill', f'write the unpacked fill extension {EXTENSION_VERSION} to {folder}',
-                                  [shell_command(argv, self.windows)], lambda: self._akdbx_ok(argv), selected=True)
+                                  [shell_command(argv, self.windows)], lambda: self._akdbx_ok(argv), selected=True,
+                                  key='browsers')
             result = self.outcome(applied)
             if not applied:
                 return result
@@ -1416,7 +1615,7 @@ class Setup:
         show = [f'mkdir -m 700 {shlex.quote(str(profile))}' if not self.windows
                 else f'create {profile} for this user and SYSTEM only']
         applied = self.change('fill', f'create the private CDP profile folder {profile}', show,
-                              lambda: self._private_folder(profile), selected=True)
+                              lambda: self._private_folder(profile), selected=True, key='cdp_profile')
         return self.outcome(applied)
 
     def _private_folder(self, path):
@@ -1455,8 +1654,10 @@ class Setup:
             self.say(f'The capture extension is already in {folder}.')
         else:
             argv = [tool, 'build-extension', folder]
-            applied = self.change('features', f'write the unpacked capture extension to {folder}',
-                                  [shell_command(argv, self.windows)], lambda: self._checked(argv), selected=True)
+            show = ([] if self.windows else ['mkdir -p -m 700 ' + shlex.quote(str(folder.parent))]) + [
+                shell_command(argv, self.windows)]
+            applied = self.change('features', f'write the unpacked capture extension to {folder}', show,
+                                  lambda: self._build_capture(argv, folder), selected=True, key='capture_host')
             if not applied:
                 return self.outcome(applied)
             state = 'changed'
@@ -1478,8 +1679,18 @@ class Setup:
             name = 'agentic-kdbx-unlock.sock' if Path(self.socket).name == 'agentic-kdbx.sock' else 'akdbx-unlock.sock'
             argv += ['--socket', Path(self.socket).with_name(name), '--manifest-dir', linux_manifest_dir(browser)]
         applied = self.change('features', f'register the capture native host for {browser}',
-                              [shell_command(argv, self.windows)], lambda: self._checked(argv), selected=True)
+                              [shell_command(argv, self.windows)], lambda: self._checked(argv), selected=True,
+                              key='capture_host')
         return self.outcome(applied)
+
+    def _build_capture(self, argv, folder):
+        """The builder never replaces an existing folder; it needs the parent folder, private to this user."""
+        if self.windows:
+            from .windows_security import ensure_private_directory
+            ensure_private_directory(folder.parent)
+        else:
+            folder.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._checked(argv)
 
     # ----- 8. agent skill ---------------------------------------------------
     def skill_source(self):
@@ -1525,7 +1736,8 @@ class Setup:
             if current == 'missing':
                 kind = 'directory junction' if self.windows else 'symbolic link'
                 applied = self.change('skill', f'link {target} to {source} ({kind})',
-                                      [f'{target} -> {source}'], lambda t=target: self._link(source, t), selected=True)
+                                      [f'{target} -> {source}'], lambda t=target: self._link(source, t), selected=True,
+                                      key='link_skill')
                 result = self.outcome(applied)
             elif current != 'other' and same_folder(current[1], source):
                 self.say(f'{target} already links to {source}.')
@@ -1620,7 +1832,11 @@ class Setup:
             ok = getattr(self, 'stage_' + name)()
             if name in ('vault', 'page'):
                 ready = ready and ok
-        if self.choice['access'] == 'relay' and self.stages.get('access', {}).get('state') not in ('done', 'changed'):
+        # A failed access stage (a refused origin, Funnel on, an uninspectable Serve) blocks the broker, and
+        # the relay route needs an enabled relay.
+        access_state = self.stages.get('access', {}).get('state')
+        if access_state == 'failed' or (self.choice['access'] == 'relay'
+                                        and access_state not in ('done', 'changed')):
             ready = False
         for name in ('login', 'fill', 'features', 'skill'):
             self.ui.say('\n' + TITLES[name])
@@ -1672,6 +1888,13 @@ def run(args, *, status, ask=None, interactive=None, **options):
     setup = Setup(args, ui=Prompter(interactive, out, ask), status=status, **options)
     try:
         result = setup.execute()
+    except Refusal as exc:
+        # Before any change: answers that cannot work together.
+        print(f'akdbx setup: refused: {exc}', file=sys.stderr)
+        if args.json:
+            print(json.dumps({'ok': False, 'version': __version__, 'dry_run': args.dry_run, 'error': str(exc)},
+                             indent=2))
+        return 2
     except (KeyboardInterrupt, EOFError):
         print('\nakdbx setup stopped; nothing more was changed. Run it again to continue.', file=sys.stderr)
         return 130

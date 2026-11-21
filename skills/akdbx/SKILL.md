@@ -108,7 +108,10 @@ akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
   its trust point first), `--start-at-login`, `--browser NAME`,
   `--cdp-profile DIR`, `--capture-host`, `--link-skill`. Run `--dry-run`
   first when you are not sure what it would change.
-- `--yes` makes only the changes that the flags select. It never runs
+- `--yes` makes only the changes that the flags of that run select; saved
+  answers from an earlier run give only paths, ports and other values, so
+  repeat `--start-at-login`, `--browser`, `--access relay` and the other
+  selections on every run that should make or keep them. It never runs
   `mkcert -install` (it changes the computer's trust) and runs `tailscale
   serve` only with `--configure-tailscale`. Those are the user's decisions:
   give them the exact command from `user_steps`.

@@ -29,7 +29,17 @@ behind Tailscale). It issues a certificate with mkcert only after you ran
 `https://127.0.0.1:PORT` target and runs it only with `--configure-tailscale`
 (or your answer), never replaces another Serve mapping, runs
 `akdbx relay enable` for the relay, prints the Funnel commands without running
-them, and does not configure a proxy that decrypts HTTPS.
+them, and does not configure a proxy that decrypts HTTPS. It accepts an
+existing Serve mapping only for the exact host and port, over HTTPS, to that
+target and with Funnel off, and it adds a mapping only when `tailscale serve
+status --json` shows that the port is free.
+
+For a broker that runs as a service (a systemd unit, a logon task, any
+supervisor that keeps its output in a log), start it with
+`akdbx serve --no-print-unlock-link`. It then prints only that the vault is
+locked; get the private link with `akdbx status`. This is the recommended
+setting for every service: a log such as the systemd journal keeps the link's
+secret token. The units and tasks that `akdbx setup` writes use it.
 
 `--tls-cert` and `--tls-key` select the loopback HTTPS page. An enabled
 [akdbx relay](#the-akdbx-relay) selects the same page with the relay's

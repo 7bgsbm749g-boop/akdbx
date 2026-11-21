@@ -1224,5 +1224,56 @@ def test_setup_creates_a_logon_task_file_and_starts_it_once(synthetic_vault, nat
     marker, command, arguments = setup_cli.task_action(xml)
     assert marker and command.lower().endswith(('pythonw.exe', 'python.exe'))
     assert subprocess.list2cmdline(['serve', str(synthetic_vault)]) in arguments
+    # M1: the task output never keeps the unlock link.
+    assert '--no-print-unlock-link' in arguments
     assert ['schtasks', '/Create', '/TN', 'akdbx-broker', '/XML', str(task_file)] in calls
     assert len(started) == 1
+
+
+def test_setup_reports_a_failed_windows_call_as_a_clean_failure(private_dir, monkeypatch):
+    # M14: a pywintypes.error inside a change is a reported failure, not a traceback.
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    instance, _ = _setup('--yes')
+
+    def denied():
+        raise pywintypes.error(5, 'CreateFile', 'Access is denied.')
+    assert instance.change('fill', 'write a synthetic file', [], denied, selected=True, key='cdp_profile') is False
+    assert 'Access is denied' in instance.stages['fill']['errors'][0]
+
+
+def test_setup_builds_the_capture_extension_in_a_fresh_private_folder(private_dir, monkeypatch):
+    # M8: on a fresh install %LOCALAPPDATA%\\akdbx does not exist; the builder needs it.
+    from akdbx import setup_cli
+    from akdbx.browser_import import build_extension
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+
+    def runner(command):
+        if command[1] == 'build-extension':
+            try:
+                build_extension(Path(command[2]))
+            except OSError as exc:
+                return subprocess.CompletedProcess(command, 1, '', str(exc))
+        return subprocess.CompletedProcess(command, 0, '', '')
+    folder = private_dir / 'akdbx' / 'capture-extension'
+    assert not folder.parent.exists()
+    instance, calls = _setup('--yes', '--capture-host', runner=runner)
+    instance.choice.update(capture_host=True, capture_browser='chrome', capture_dir=str(folder))
+    instance.origin = setup_cli.DEFAULT_ORIGIN
+    instance.stage_features()
+    assert instance.stages['features']['state'] == 'todo', instance.stages['features']
+    assert (folder / 'manifest.json').is_file()
+    # The parent folder passes the same private-folder check as the setup answers.
+    security.ensure_private_directory(folder.parent)
+
+
+def test_setup_prints_windows_commands_that_powershell_runs_as_shown(tmp_path):
+    # M7: the printed command is valid PowerShell and passes every argument unchanged.
+    from akdbx import setup_cli
+    script = tmp_path / "print it's args.py"
+    script.write_text('import json, sys\nprint(json.dumps(sys.argv[1:]))\n', encoding='utf-8')
+    arguments = ["O'Neil", 'a b', '$env:USERNAME', 'it\u2019s', 'a;b', '--https=9443', '@(1)']
+    command = setup_cli.shell_command([sys.executable, str(script), *arguments], True)
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', command],
+                            capture_output=True, text=True, timeout=120, check=False)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == arguments

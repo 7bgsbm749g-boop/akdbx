@@ -128,8 +128,10 @@ Windows differences:
 - **Start at login** writes `%LOCALAPPDATA%\akdbx\akdbx-broker.task.xml` and
   registers it with `schtasks /Create /TN akdbx-broker /XML FILE`: a logon
   trigger for your user only, an interactive token and the least privilege.
-  It runs `pythonw.exe -m akdbx.cli serve ...` from the same environment, so no
-  console window opens; `akdbx status` gives the unlock link. Setup starts the
+  It runs `pythonw.exe -m akdbx.cli serve ... --no-print-unlock-link` from the
+  same environment, so no console window opens and no task output keeps the
+  link; `akdbx status` gives the unlock link. With the relay, setup refuses
+  while `AKDBX_UNLOCK_ORIGIN` is set, because the task inherits it. Setup starts the
   task with `schtasks /Run` only when no broker answers on your pipe, and never
   replaces a task named `akdbx-broker` that it did not create. Remove it with
   `schtasks /Delete /TN akdbx-broker`.

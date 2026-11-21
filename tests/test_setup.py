@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import subprocess
 import sys
@@ -116,18 +117,19 @@ def which_for(*names):
     return lambda name: f'/usr/bin/{name}' if name in names else None
 
 
-def parse(*argv):
-    args = cli.parser().parse_args(['setup', *argv])
+def parse(*argv, global_options=()):
+    args = cli.parser().parse_args([*global_options, 'setup', *argv])
     cli.resolve_unlock_origin(args)
     args.socket_explicit = args.socket is not None
     args.socket = args.socket or cli.default_socket()
     return args
 
 
-def setup(*argv, runner=None, status=None, which=None, ask=None, interactive=False, capsys=None, **options):
+def setup(*argv, runner=None, status=None, which=None, ask=None, interactive=False, capsys=None, global_options=(),
+          **options):
     runner = runner or Runner()
     status = status or Status(runner)
-    args = parse(*argv)
+    args = parse(*argv, global_options=global_options)
     code = setup_cli.run(args, status=status, runner=runner, which=which or which_for('systemctl'),
                          ask=ask, interactive=interactive, executable=EXECUTABLE, sleep=lambda _: None, **options)
     result = json.loads(capsys.readouterr().out) if capsys is not None and args.json else None
@@ -156,8 +158,9 @@ def test_a_non_interactive_run_sets_up_every_selected_stage(home, vault, pair, c
     assert stages['fill']['state'] == 'changed' and stages['skill']['state'] == 'changed'
     unit = (home / '.config/systemd/user/akdbx.service').read_text()
     assert unit.startswith('# akdbx-setup:')
-    assert (f'ExecStart="{EXECUTABLE}" "-m" "akdbx.cli" "--unlock-origin" "https://localhost:9443" "serve" '
-            f'"{vault}" "--tls-cert" "{pair[0]}" "--tls-key" "{pair[1]}" "--default-fill-route" "extension"') in unit
+    assert (f'ExecStart="@{EXECUTABLE}" "{EXECUTABLE}" "-m" "akdbx.cli" "--unlock-origin" "https://localhost:9443" '
+            f'"serve" "{vault}" "--no-print-unlock-link" "--tls-cert" "{pair[0]}" "--tls-key" "{pair[1]}" '
+            '"--default-fill-route" "extension"') in unit
     assert 'Environment="DISPLAY=:7"' in unit and 'UnsetEnvironment=AKDBX_UNLOCK_ORIGIN' in unit
     assert stat.S_IMODE((home / '.config/systemd/user/akdbx.service').stat().st_mode) == 0o600
     commands = [argv[1:] for argv in runner.commands() if argv[0].endswith('systemctl')]
@@ -187,14 +190,59 @@ def test_running_setup_again_changes_nothing(home, vault, pair, capsys):
     setup(*options, runner=first, capsys=capsys)
     second = Runner()
     second.enabled = True
-    # The service started the broker after the first run.
-    code, result, runner = setup('--yes', '--json', runner=second, status=Status(second, running=True),
-                                 capsys=capsys)
+    # The service started the broker after the first run. The flags select the same changes again; the
+    # vault and certificate paths come from the saved answers.
+    code, result, runner = setup('--yes', '--json', '--start-at-login', '--browser', 'edge', '--link-skill',
+                                 runner=second, status=Status(second, running=True), capsys=capsys)
     assert code == 0, result
     assert {name: result['stages'][name]['state'] for name in ('login', 'fill', 'skill')} == {
         'login': 'done', 'fill': 'done', 'skill': 'done'}
-    # Only read-only checks ran: the earlier answers came from the saved state.
+    # Only read-only checks ran.
     assert [argv[1:] for argv in runner.commands()] == [['--user', 'is-enabled', 'akdbx.service']]
+
+
+def test_with_yes_only_the_flags_of_this_run_select_a_change(home, vault, pair, tmp_path, capsys):
+    # M2: saved answers give paths and ports; they never select a change under --yes.
+    profile = tmp_path / 'cdp-profile'
+    state = home / '.config/akdbx/setup.json'
+    setup(*base(vault, pair), capsys=capsys)
+    saved = json.loads(state.read_text())
+    saved.update(start_at_login=True, browsers=['chrome'], cdp_profile=str(profile), capture_host=True,
+                 link_skill=True, access='relay')
+    state.write_text(json.dumps(saved))
+    runner = Runner()
+    code, result, _ = setup('--yes', '--json', runner=runner, capsys=capsys)
+    assert runner.calls == [], runner.calls
+    assert not (home / '.config/systemd').exists() and not profile.exists()
+    assert not (home / '.claude/skills').exists() and not (home / '.local/share/akdbx').exists()
+    assert {result['stages'][name]['state'] for name in ('login', 'fill', 'skill')} == {'skipped'}
+    assert result['stages']['access']['state'] == 'todo' and result['stages']['features']['capture_host'] is False
+    # The answers that this run did not decide stay saved for the next interactive run.
+    again = json.loads(state.read_text())
+    assert again['start_at_login'] is True and again['browsers'] == ['chrome'] and again['link_skill'] is True
+
+
+def test_a_declined_change_is_never_saved_as_selected(home, vault, pair, capsys):
+    # M2: at a terminal, a selection whose change was declined is saved as not selected.
+    answers = iter([
+        str(vault), '',      # vault, no key file
+        '1',                 # local
+        'y',                 # start at login
+        'chrome',            # extension browser
+        '',                  # no CDP profile
+        '',                  # no capture host
+        'y',                 # link the skill
+        'n',                 # decline the unit
+        'n',                 # decline the host install
+        'n',                 # decline the extension build
+        'n', 'n',            # decline both skill links
+    ])
+    code, _, runner = setup('--tls-cert', str(pair[0]), '--tls-key', str(pair[1]), ask=lambda: next(answers),
+                            interactive=True)
+    capsys.readouterr()
+    assert next(answers, None) is None
+    saved = json.loads((home / '.config/akdbx/setup.json').read_text())
+    assert saved['start_at_login'] is False and saved['browsers'] == [] and saved['link_skill'] is False
 
 
 def test_dry_run_changes_nothing(home, vault, pair, capsys):
@@ -393,7 +441,8 @@ def test_an_existing_serve_mapping_is_never_replaced(home, vault, pair, capsys):
                             which=which_for('tailscale'), capsys=capsys)
     assert not any(argv[1:3] == ['serve', '--bg'] for argv in runner.commands())
     assert result['stages']['access']['state'] == 'todo'
-    done = {'Web': {'node.tailnet.ts.net:9443': {'Handlers': {'/': {'Proxy': 'https://127.0.0.1:9444'}}}}}
+    done = {'TCP': {'9443': {'HTTPS': True}},
+            'Web': {'node.tailnet.ts.net:9443': {'Handlers': {'/': {'Proxy': 'https://127.0.0.1:9444'}}}}}
     runner = Runner(tailscale(done))
     code, result, _ = setup(*base(vault, pair, '--access', 'tailscale'), runner=runner,
                             which=which_for('tailscale'), capsys=capsys)
@@ -434,6 +483,32 @@ def test_the_relay_runs_the_existing_relay_enable(home, vault, capsys):
     unit = (home / '.config/systemd/user/akdbx.service').read_text()
     assert '"serve"' in unit and '--tls-cert' not in unit and '--unlock-origin' not in unit
     assert 'UnsetEnvironment=AKDBX_UNLOCK_ORIGIN' in unit
+    # It refuses to start without the relay, and keeps the link out of the journal.
+    assert '"--relay"' in unit and '"--no-print-unlock-link"' in unit
+
+
+def test_an_explicit_origin_that_is_not_the_relay_origin_is_refused(home, vault, monkeypatch, capsys):
+    # M10: the relay login setup never reports success for a broker that would not use the relay.
+    monkeypatch.setenv('AKDBX_UNLOCK_ORIGIN', 'https://node.tailnet.ts.net:9443')
+    runner = Runner()
+    code, result, _ = setup('--yes', '--json', '--vault', str(vault), '--access', 'relay', '--start-at-login',
+                            runner=runner, capsys=capsys)
+    access = result['stages']['access']
+    assert code == 1 and access['state'] == 'failed'
+    assert 'is not the relay origin https://k3x7q2mbn5vd.akdbx.link:8443' in access['error']
+    assert result['stages']['login']['state'] == 'todo' and not (home / '.config/systemd').exists()
+    assert any('Unset AKDBX_UNLOCK_ORIGIN' in step for step in result['user_steps'])
+    assert not any(step.startswith('Start the broker') for step in result['user_steps'])
+
+
+def test_on_windows_any_persistent_origin_variable_blocks_the_relay_task(tmp_path):
+    # M10: the logon task inherits AKDBX_UNLOCK_ORIGIN, and any explicit origin turns the relay off.
+    windows = windows_setup(tmp_path, Runner())
+    windows.origin = 'https://k3x7q2mbn5vd.akdbx.link:8443'
+    assert windows._relay_conflict() is False
+    windows.env['AKDBX_UNLOCK_ORIGIN'] = windows.origin
+    assert windows._relay_conflict() is True
+    assert 'the logon task inherits it' in windows.stages['access']['error']
 
 
 def test_a_public_tunnel_is_instructions_only(home, vault, pair, capsys):
@@ -454,6 +529,116 @@ def test_a_decrypting_proxy_is_warned_about_and_not_configured(home, vault, pair
     assert access['access'] == 'local' and access['origin'] == 'https://localhost:9443'
     assert 'can read the master password' in access['warnings'][0]
     assert runner.calls == []
+
+
+def test_a_serve_mapping_is_ours_only_for_the_exact_host_over_https_with_funnel_off(home, vault, pair, capsys):
+    # M3 and M5: Funnel on is not private, and a failed access stage blocks the login stage.
+    target = {'Handlers': {'/': {'Proxy': 'https://127.0.0.1:9444'}}}
+    public = {'TCP': {'9443': {'HTTPS': True}}, 'Web': {'node.tailnet.ts.net:9443': target},
+              'AllowFunnel': {'node.tailnet.ts.net:9443': True}}
+    runner = Runner(tailscale(public))
+    code, result, _ = setup(*base(vault, pair, '--access', 'tailscale', '--start-at-login'), runner=runner,
+                            which=which_for('tailscale', 'systemctl'), capsys=capsys)
+    access = result['stages']['access']
+    assert code == 1 and access['state'] == 'failed'
+    assert 'Funnel is on for node.tailnet.ts.net:9443' in access['error']
+    assert result['stages']['login']['state'] == 'todo' and not (home / '.config/systemd').exists()
+    assert any('tailscale funnel --https=9443 off' in step for step in result['user_steps'])
+    assert not any(step.startswith('Start the broker') for step in result['user_steps'])
+    assert result['broker']['ready'] is False
+    for status in ({'TCP': {'9443': {'HTTPS': True}}, 'Web': {'other.tailnet.ts.net:9443': target}},
+                   {'TCP': {'9443': {'TCPForward': '127.0.0.1:9444'}}, 'Web': {'node.tailnet.ts.net:9443': target}}):
+        runner = Runner(tailscale(status))
+        code, result, _ = setup(*base(vault, pair, '--access', 'tailscale', '--configure-tailscale'), runner=runner,
+                                which=which_for('tailscale'), capsys=capsys)
+        assert result['stages']['access']['state'] == 'todo', status
+        assert not any(argv[1:3] == ['serve', '--bg'] for argv in runner.commands())
+
+
+@pytest.mark.parametrize('failure', ['exit', 'json', 'empty', 'timeout'])
+def test_a_serve_status_that_cannot_be_read_never_adds_a_mapping(failure, home, vault, pair, capsys):
+    # M4: only a confirmed free port gets a mapping.
+    def answer(argv):
+        if argv[1:4] == ['serve', 'status', '--json']:
+            if failure == 'timeout':
+                raise subprocess.TimeoutExpired(argv, 15)
+            return {'exit': Runner.done('', 1, 'access denied'), 'json': Runner.done('<html>'),
+                    'empty': Runner.done('')}[failure]
+        if argv[1:3] == ['status', '--json']:
+            return Runner.done(json.dumps({'Self': {'DNSName': 'node.tailnet.ts.net.'}}))
+        return Runner.done()
+    runner = Runner({'tailscale': answer})
+    code, result, _ = setup(*base(vault, pair, '--access', 'tailscale', '--configure-tailscale'), runner=runner,
+                            which=which_for('tailscale'), capsys=capsys)
+    access = result['stages']['access']
+    assert code == 1 and access['state'] == 'failed' and 'could not inspect Tailscale Serve' in access['error']
+    assert not any(argv[1:3] == ['serve', '--bg'] for argv in runner.commands())
+    assert result['broker']['ready'] is False
+
+
+def test_an_explicit_origin_gives_the_tailnet_name_and_port(home, vault, pair, capsys):
+    # M13: the Serve port and the origin cannot disagree.
+    origin = ('--unlock-origin', 'https://node.tailnet.ts.net:8443')
+    runner = Runner(tailscale())
+    code, result, _ = setup(*base(vault, pair, '--access', 'tailscale', '--configure-tailscale'), runner=runner,
+                            which=which_for('tailscale'), global_options=origin, capsys=capsys)
+    assert result['stages']['access']['origin'] == 'https://node.tailnet.ts.net:8443'
+    assert ['/usr/bin/tailscale', 'serve', '--bg', '--https=8443', 'https://127.0.0.1:9444'] in runner.commands()
+    code, result, runner = setup(*base(vault, pair, '--access', 'tailscale', '--tailnet-port', '9443'),
+                                 global_options=origin, capsys=capsys)
+    assert code == 2 and result['ok'] is False and runner.calls == []
+    assert '--tailnet-port 9443 does not match the explicit unlock origin' in result['error']
+    code, result, _ = setup(*base(vault, pair, '--access', 'tailscale', '--tailscale-name', 'other.ts.net'),
+                            global_options=origin, capsys=capsys)
+    assert code == 2 and '--tailscale-name other.ts.net does not match' in result['error']
+
+
+def test_only_one_of_the_certificate_and_key_is_refused(home, vault, pair, capsys):
+    # M9: a clear refusal with exit status 2, also in --json.
+    code, result, runner = setup('--yes', '--json', '--vault', str(vault), '--tls-cert', str(pair[0]),
+                                 capsys=capsys)
+    assert code == 2 and result['ok'] is False and runner.calls == []
+    assert '--tls-cert and --tls-key together' in result['error']
+    code, _, _ = setup('--yes', '--vault', str(vault), '--tls-key', str(pair[1]))
+    assert code == 2 and '--tls-cert and --tls-key together' in capsys.readouterr().err
+
+
+def test_a_relative_socket_becomes_absolute_in_the_unit_and_the_host(home, vault, pair, tmp_path, monkeypatch,
+                                                                     capsys):
+    # M6: the unit and the extension launcher run from another folder.
+    monkeypatch.chdir(tmp_path)
+    socket = tmp_path / 'sockets' / 'broker.sock'
+    code, result, runner = setup(*base(vault, pair, '--start-at-login', '--browser', 'chrome'),
+                                 global_options=('--socket', 'sockets/broker.sock'), capsys=capsys)
+    assert code == 0, result
+    unit = (home / '.config/systemd/user/akdbx.service').read_text()
+    assert f'"--socket" "{socket}"' in unit and '"sockets/broker.sock"' not in unit
+    launcher = home / '.local/share/akdbx/extension-host/chrome.sh'
+    assert f'--socket {socket} ' in launcher.read_text()
+    assert all('sockets/broker.sock' not in argv for argv in runner.commands())
+
+
+def test_capture_only_setup_on_a_fresh_install_creates_the_private_parent(home, vault, pair, capsys):
+    # M8: ~/.local/share/akdbx does not exist yet; the real builder never replaces a folder.
+    from akdbx.browser_import import build_extension
+
+    def build(argv):
+        try:
+            build_extension(Path(argv[2]))
+        except OSError as exc:
+            return Runner.done('', 1, str(exc))
+        return Runner.done()
+    assert not (home / '.local/share').exists()
+    runner = Runner({'akdbx-browser-import': build})
+    code, result, _ = setup(*base(vault, pair, '--capture-host'), runner=runner, capsys=capsys)
+    capture = home / '.local/share/akdbx/capture-extension'
+    assert result['stages']['features']['state'] == 'todo', result['stages']['features']
+    assert (capture / 'manifest.json').is_file()
+    assert stat.S_IMODE(capture.parent.stat().st_mode) == 0o700
+    # An existing destination is still never replaced.
+    (capture / 'manifest.json').unlink()
+    code, result, _ = setup(*base(vault, pair, '--capture-host'), runner=runner, capsys=capsys)
+    assert result['stages']['features']['state'] == 'failed'
 
 
 # ----- fill route, features, skill --------------------------------------------
@@ -489,7 +674,8 @@ def test_the_capture_host_is_built_then_installed_with_its_extension_id(home, va
     (capture / 'manifest.json').write_text('{}')
     runner = Runner()
     extension_id = 'a' * 32
-    code, result, _ = setup('--yes', '--json', '--capture-extension-id', extension_id, runner=runner, capsys=capsys)
+    code, result, _ = setup('--yes', '--json', '--capture-host', '--capture-extension-id', extension_id,
+                            runner=runner, capsys=capsys)
     socket = Path(os.environ['XDG_RUNTIME_DIR']) / 'akdbx' / 'akdbx-unlock.sock'
     assert runner.commands() == [[tool, 'install-host', '--extension-id', extension_id, '--origin',
                                   'https://localhost:9443', '--socket', str(socket), '--manifest-dir',
@@ -565,18 +751,91 @@ def test_interactive_numbers_are_checked(home):
 
 # ----- helpers and Windows content (pure functions) ----------------------------
 
+def exec_words(value):
+    """Split an ExecStart value the way systemd does: double quotes and C escapes, then %% to %."""
+    words, word, quoted, index = [], None, False, 0
+    while index < len(value):
+        char = value[index]
+        if quoted and char == '\\':
+            word += value[index + 1]
+            index += 1
+        elif char == '"':
+            quoted, word = not quoted, word or ''
+        elif char == ' ' and not quoted:
+            if word is not None:
+                words.append(word)
+            word = None
+        else:
+            word = (word or '') + char
+        index += 1
+    if word is not None:
+        words.append(word)
+    return [word.replace('%%', '%') for word in words]
+
+
+def test_a_dollar_in_the_python_path_survives_in_the_unit(tmp_path):
+    # M12: systemd never expands variables in the program path, only in argv.
+    folder = tmp_path / 'py $HOME ${USER} 100%'
+    folder.mkdir()
+    python = folder / 'python3'
+    python.write_text('#!/bin/sh\nexit 0\n')
+    python.chmod(0o700)
+    argv = [str(python), '-m', 'akdbx.cli', 'serve', str(tmp_path / '$vault.kdbx')]
+    text = setup_cli.unit_text(argv, [])
+    words = exec_words(next(line for line in text.splitlines() if line.startswith('ExecStart='))[10:])
+    path = words[0][1:] if words[0].startswith('@') else words[0]
+    rest = words[1:] if words[0].startswith('@') else words
+    assert path == str(python)
+    assert [word.replace('$$', '$') for word in rest] == argv
+    analyze = shutil.which('systemd-analyze')
+    if analyze:
+        unit = tmp_path / 'akdbx-setup-test.service'
+        unit.write_text(text)
+        checked = subprocess.run([analyze, 'verify', str(unit)], capture_output=True, text=True, timeout=120,
+                                 check=False)
+        assert 'is not executable' not in checked.stdout + checked.stderr, checked.stderr
+
+
+def test_windows_commands_are_valid_powershell():
+    # M7: single-quoted literals, apostrophes doubled, and the call operator.
+    argv = [r"C:\Users\O'Neil\venv\Scripts\python.exe", '-m', 'akdbx.cli', '--https=9443', r'C:\a b\v.kdbx',
+            'it\u2019s', '$env:USERNAME', 'a;b', '']
+    assert setup_cli.shell_command(argv, True) == (
+        r"& 'C:\Users\O''Neil\venv\Scripts\python.exe' -m akdbx.cli --https=9443 'C:\a b\v.kdbx' "
+        "'it\u2019\u2019s' '$env:USERNAME' 'a;b' ''")
+    assert setup_cli.shell_command(['schtasks', '/Run', '/TN', 'akdbx-broker'], True) == (
+        '& schtasks /Run /TN akdbx-broker')
+
+
 def test_systemd_quoting_disables_specifiers_and_variables():
     assert setup_cli.systemd_quote('/a b/100%$HOME"\\') == '"/a b/100%%$$HOME\\"\\\\"'
     with pytest.raises(ValueError):
         setup_cli.systemd_quote('a\nb')
 
 
-def test_tailscale_proxy_reads_the_serve_status():
+def test_tailscale_mapping_reads_the_serve_status():
+    target = 'https://127.0.0.1:9444'
     status = {'TCP': {'9443': {'HTTPS': True}},
-              'Web': {'node.ts.net:9443': {'Handlers': {'/': {'Proxy': 'https://127.0.0.1:9444'}}}}}
-    assert setup_cli.tailscale_proxy(status, 9443) == 'https://127.0.0.1:9444'
-    assert setup_cli.tailscale_proxy(status, 8443) is None
-    assert setup_cli.tailscale_proxy({}, 9443) is None
+              'Web': {'node.ts.net:9443': {'Handlers': {'/': {'Proxy': target}}}}}
+    mapping = setup_cli.tailscale_mapping
+    assert mapping(status, 'node.ts.net', 9443, target) == ('ours', target)
+    assert mapping(status, 'node.ts.net', 8443, target) == ('free', None)
+    assert mapping({}, 'node.ts.net', 9443, target) == ('free', None)
+    # M3: the exact host, an HTTPS listener and Funnel off.
+    assert mapping(status, 'other.ts.net', 9443, target)[0] == 'other'
+    assert mapping({**status, 'TCP': {'9443': {'TCPForward': '127.0.0.1:9444'}}}, 'node.ts.net', 9443,
+                   target)[0] == 'other'
+    assert mapping({**status, 'AllowFunnel': {'node.ts.net:9443': True}}, 'node.ts.net', 9443,
+                   target) == ('funnel', 'node.ts.net:9443')
+    assert mapping({**status, 'AllowFunnel': {'node.ts.net:9443': False}}, 'node.ts.net', 9443,
+                   target) == ('ours', target)
+    assert mapping({'TCP': {'9443': {'TCPForward': 'x'}}}, 'node.ts.net', 9443, target)[0] == 'other'
+    extra = {'/': {'Proxy': target}, '/files/': {'Path': '/srv'}}
+    assert mapping({**status, 'Web': {'node.ts.net:9443': {'Handlers': extra}}}, 'node.ts.net', 9443,
+                   target)[0] == 'other'
+    for bad in ([], {'Web': []}):
+        with pytest.raises(ValueError):
+            mapping(bad, 'node.ts.net', 9443, target)
 
 
 def test_the_windows_task_runs_at_this_users_logon_without_elevation():

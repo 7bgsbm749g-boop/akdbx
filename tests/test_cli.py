@@ -871,6 +871,21 @@ def test_serve_with_a_restored_block_prints_no_unlock_url(monkeypatch, tmp_path,
     assert "only after the user confirms" in err
 
 
+def test_serve_can_keep_the_unlock_link_out_of_a_service_log(monkeypatch, tmp_path, capsys):
+    # M1: a systemd journal or task output must not keep the link's token; interactive use still prints it.
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _serve_capturing_brokers(monkeypatch)
+    serve = ["--unlock-origin", "https://node.example:9443", "serve", "synthetic.kdbx",
+             "--notification-state", str(tmp_path / "state" / "notifications.json")]
+    assert cli.main([*serve, "--no-print-unlock-link"]) == 0
+    err = capsys.readouterr().err
+    assert "token=" not in err and "https://" not in err
+    assert "Vault locked" in err and "akdbx status" in err
+    assert cli.main(serve) == 0
+    assert "Open the private HTTPS page: https://node.example:9443/?token=synthetic" in capsys.readouterr().err
+
+
 def test_refusal_message_survives_a_failed_notifier_close(monkeypatch, tmp_path, capsys):
     # A state write that fails while the notifiers close must not hide which
     # permissions to fix: the diagnostic is printed first.

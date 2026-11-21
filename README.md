@@ -44,7 +44,9 @@ and can be skipped (`--skip STAGE`):
    that decrypts HTTPS, which setup warns about and does not configure. See
    [Unlock from the internet](#unlock-from-the-internet).
 5. **Start at login**: a systemd user service on Linux, a logon task for your
-   user on Windows. Setup never starts a second broker.
+   user on Windows. Setup never starts a second broker. The service runs
+   `akdbx serve --no-print-unlock-link`, so the journal or task output never
+   keeps the unlock link: run `akdbx status` to get it.
 6. **Fill route**: the browser extension (`akdbx extension install` and
    `build`) and/or the CDP route.
 7. **Optional features**: the authenticator capture host, unlock notifications
@@ -57,9 +59,11 @@ and can be skipped (`--skip STAGE`):
 
 Each stage detects what is already done and shows each change before it makes
 it, so you can run setup again at any time. Every answer is also a flag.
-`--yes` never asks: it uses the flags, your earlier answers and the defaults,
-and makes only the changes that the flags select. `--dry-run` changes nothing,
-and `--json` prints a summary for scripts and agents:
+`--yes` never asks, and only the flags of that run select a change: start at
+login, the relay, browsers, a CDP profile, the capture host, the skill link and
+`--configure-tailscale`. Your earlier answers give only values such as paths
+and ports. `--dry-run` changes nothing, and `--json` prints a summary for
+scripts and agents:
 
 ```sh
 akdbx setup --yes --json --vault ~/vaults/passwords.kdbx --create-cert \

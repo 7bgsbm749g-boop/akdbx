@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import socket
 import struct
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -1016,6 +1017,50 @@ def test_install_and_uninstall_touch_only_their_own_files(tmp_path, monkeypatch)
                     winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
                 except OSError:
                     pass
+
+
+def test_install_replaces_only_its_own_launcher_and_never_writes_through_a_link(tmp_path, monkeypatch):
+    # M11: a launcher that akdbx did not write is kept; a link at the launcher or manifest is refused.
+    import os
+    import uuid
+    monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
+    monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'data'))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'config'))
+    monkeypatch.delenv('CHROME_CONFIG_HOME', raising=False)
+    if os.name == 'nt':
+        # Never registered: every refusal comes before the registry write.
+        monkeypatch.setitem(extension_host.WINDOWS_KEYS, 'helium',
+                            'Software\\akdbx-test-' + uuid.uuid4().hex[:8] + '\\NativeMessagingHosts')
+    where = extension_host.paths('helium')
+    launcher, manifest = where['launcher'], where['manifest']
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text('#!/bin/sh\necho my own helper\n')
+    with pytest.raises(ValueError, match='not written by akdbx'):
+        extension_host.install('helium')
+    assert launcher.read_text() == '#!/bin/sh\necho my own helper\n' and not manifest.exists()
+    assert extension_host.uninstall('helium') == [] and launcher.exists()
+    launcher.unlink()
+    if os.name == 'nt':
+        return
+    ours = extension_host._launcher_text('helium', sys.executable, None)
+    elsewhere = tmp_path / 'elsewhere.sh'
+    elsewhere.write_text(ours)
+    launcher.symlink_to(elsewhere)
+    with pytest.raises(ValueError, match='is a link'):
+        extension_host.install('helium')
+    assert elsewhere.read_text() == ours and not manifest.exists()
+    launcher.unlink()
+    other = tmp_path / 'other-manifest.json'
+    other.write_text(json.dumps({'path': str(launcher)}))
+    manifest.parent.mkdir(parents=True)
+    manifest.symlink_to(other)
+    with pytest.raises(ValueError, match='is a link'):
+        extension_host.install('helium')
+    assert json.loads(other.read_text()) == {'path': str(launcher)} and not launcher.exists()
+    manifest.unlink()
+    extension_host.install('helium')
+    assert extension_host._owned_launcher(launcher) and not launcher.is_symlink()
+    extension_host.install('helium')  # Its own launcher is replaced.
 
 
 def test_abandoned_pins_expire_instead_of_blocking_new_pins():

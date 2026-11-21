@@ -351,6 +351,10 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument('--relay', action='store_true',
                        help=('require the saved akdbx relay (akdbx relay enable). Without this flag, serve uses '
                              'an enabled relay unless --unlock-origin or AKDBX_UNLOCK_ORIGIN is set'))
+    start.add_argument('--no-print-unlock-link', action='store_true',
+                       help=('do not print the private unlock link at start; print only that the vault is locked '
+                             "and to run 'akdbx status'. Recommended for a service or task, whose output a log "
+                             'such as the systemd journal keeps'))
     start.add_argument('--default-fill-route', choices=FILL_ROUTES, default=os.environ.get('AKDBX_DEFAULT_FILL_ROUTE', 'cdp'),
                        help='route for pins that name none: cdp (debugging port) or extension (paired browser extension)')
     search = commands.add_parser("search", help="return matching non-secret login metadata")
@@ -747,6 +751,9 @@ def _serve(args, database, keyfile, relay_config, relay_store) -> int:
         print("Vault locked. The unlock link is blocked after three failed master-password attempts. "
               "Ask the user whether they made the failed attempts and want a new link; only after the "
               "user confirms, run: akdbx new-unlock-link --user-confirmed", file=sys.stderr)
+    elif args.no_print_unlock_link:
+        # A service log (journal, task output) must not keep the link's token.
+        print("Vault locked. Run 'akdbx status' to get the private unlock link.", file=sys.stderr)
     else:
         print(f"Vault locked. Open the private HTTPS page: {unlock_url}", file=sys.stderr)
     relay_client = None
