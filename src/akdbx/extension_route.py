@@ -57,6 +57,7 @@ import select
 import threading
 import time
 import unicodedata
+from importlib.resources import files
 from urllib.parse import urlsplit
 
 from .protocol import ProtocolError, receive_message, send_message
@@ -93,6 +94,32 @@ DOCUMENT_ID = re.compile(r'[0-9A-Za-z]{1,64}')
 PIN_ID = re.compile(r'[0-9a-f]{32}')
 CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 NO_EXTENSION = 'extension route unavailable: no paired akdbx browser extension is connected'
+# The fill extension's own version, independent of the akdbx package version.
+# Bump it whenever the built extension changes: tests/fill_extension_fingerprint.json
+# records each version's contents, and test_extension_route.py checks the record.
+EXTENSION_VERSION_FORMAT = re.compile(r'(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})')
+EXTENSION_VERSION = json.loads(files('akdbx').joinpath('fill_extension', 'manifest.json')
+                               .read_text(encoding='utf-8'))['version']
+if not EXTENSION_VERSION_FORMAT.fullmatch(EXTENSION_VERSION):
+    raise RuntimeError('the packaged fill extension has an invalid version')
+
+
+def valid_extension_version(value):
+    """True for a strict MAJOR.MINOR.PATCH string of ASCII digits, at most 17 characters."""
+    return isinstance(value, str) and len(value) <= 17 and EXTENSION_VERSION_FORMAT.fullmatch(value) is not None
+
+
+def version_status(version):
+    """How a loaded extension's version compares with the one this akdbx build ships.
+
+    An extension built before 1.0.0 does not report a version, so a missing
+    version means an outdated extension.
+    """
+    if version is None:
+        return 'outdated'
+    loaded = tuple(int(part) for part in version.split('.'))
+    shipped = tuple(int(part) for part in EXTENSION_VERSION.split('.'))
+    return 'current' if loaded == shipped else 'outdated' if loaded < shipped else 'newer'
 
 
 class ExtensionError(Exception):
@@ -234,11 +261,11 @@ def _wait_readable(connection, timeout):
 class Channel:
     """One attached native host, bound to one browser profile's extension."""
 
-    def __init__(self, hub, connection, browser, public_key):
+    def __init__(self, hub, connection, browser, public_key, version=None):
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-        self.hub, self.connection, self.browser = hub, connection, browser
+        self.hub, self.connection, self.browser, self.version = hub, connection, browser, version
         self.digest = hashlib.sha256(public_key).digest()
         own = ec.generate_private_key(ec.SECP256R1())
         self.broker_public_key = own.public_key().public_bytes(serialization.Encoding.X962,
@@ -384,7 +411,9 @@ class ExtensionHub:
                      fill_routes=list(ROUTES), default_fill_route=self.default_route,
                      extension_connected=bool(channels),
                      extension_paired=any(c.digest in approved for c in channels),
-                     extension_browsers=[dict(browser=c.browser, paired=c.digest in approved) for c in channels])
+                     extension_version_expected=EXTENSION_VERSION,
+                     extension_browsers=[dict(browser=c.browser, paired=c.digest in approved, version=c.version,
+                                              version_status=version_status(c.version)) for c in channels])
         pairing = [dict(browser=c.browser, **info) for c in channels if c.digest not in approved
                    for info in [self._pairing_info(c.digest)] if info.get('url')]
         if pairing:
@@ -468,15 +497,20 @@ class ExtensionHub:
     def attach(self, connection, request):
         """Serve one long-lived host connection until it closes."""
         try:
-            if (set(request) != {'action', 'extension_protocol', 'extension_id', 'browser', 'public_key'}
+            # A host relaying an extension older than 1.0.0 sends no version.
+            if (set(request) - {'extension_version'} != {'action', 'extension_protocol', 'extension_id', 'browser',
+                                                          'public_key'}
                     or type(request.get('extension_protocol')) is not int or request['extension_protocol'] != PROTOCOL
                     or request.get('extension_id') != EXTENSION_ID or request.get('browser') not in BROWSERS):
                 raise ExtensionError()
             public_key = public_key_bytes(request['public_key'])
+            version = request.get('extension_version')
+            if 'extension_version' in request and not valid_extension_version(version):
+                raise ExtensionError()
         except ExtensionError:
             send_message(connection, dict(type='error', error='extension attach refused'))
             return
-        channel = Channel(self, connection, request['browser'], public_key)
+        channel = Channel(self, connection, request['browser'], public_key, version)
         with self._lock:
             if self._closed or len(self.channels) >= MAX_CHANNELS:
                 channel = None

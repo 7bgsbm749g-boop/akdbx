@@ -8,6 +8,8 @@ from dataclasses import dataclass
 import hashlib
 import io
 import json
+import os
+from pathlib import Path
 import socket
 import struct
 import threading
@@ -847,3 +849,130 @@ def test_expired_pairing_link_explains_how_to_get_a_new_one():
     status, body = page.sent[0]
     assert status == 404 and 'Open the pairing page' in body and 'ten minutes' in body
     assert b'<meta name="referrer" content="same-origin">' in render('x', '')
+
+
+# ----- extension version ---------------------------------------------------------
+FINGERPRINT_RECORD = Path(__file__).with_name('fill_extension_fingerprint.json')
+
+
+def extension_fingerprint(folder):
+    """SHA-256 over every built file except config.js, with line endings normalized."""
+    digest = hashlib.sha256()
+    for item in sorted(folder.iterdir(), key=lambda p: p.name):
+        if item.name == 'config.js':
+            continue
+        data = item.read_bytes().replace(b'\r\n', b'\n')
+        digest.update(item.name.encode() + b'\0' + hashlib.sha256(data).digest())
+    return digest.hexdigest()
+
+
+def version_tuple(text):
+    return tuple(int(part) for part in text.split('.'))
+
+
+def test_extension_version_changes_with_its_contents(tmp_path):
+    """The fill extension has its own version; any change to what `extension build` writes needs a new one.
+
+    Bump "version" in src/akdbx/fill_extension/manifest.json (patch: fix,
+    minor: feature, major: protocol break), then run this test once with
+    AKDBX_UPDATE_EXTENSION_FINGERPRINT=1 to record the new contents.
+    """
+    built = extension_host.build(tmp_path / 'ext', unlock_origin='https://localhost:9443')
+    current = dict(version=route.EXTENSION_VERSION, sha256=extension_fingerprint(built))
+    recorded = json.loads(FINGERPRINT_RECORD.read_text(encoding='utf-8'))
+    if current == recorded:
+        return
+    newer = version_tuple(current['version']) > version_tuple(recorded['version'])
+    if newer and os.environ.get('AKDBX_UPDATE_EXTENSION_FINGERPRINT') == '1':
+        FINGERPRINT_RECORD.write_text(json.dumps(current, indent=2) + '\n', encoding='utf-8')
+        return
+    if current['version'] == recorded['version']:
+        pytest.fail(f"the built fill extension changed but its version is still {current['version']}: bump "
+                    '"version" in src/akdbx/fill_extension/manifest.json (patch for fixes, minor for features, '
+                    'major for protocol breaks), then run this test once with AKDBX_UPDATE_EXTENSION_FINGERPRINT=1')
+    if not newer:
+        pytest.fail(f"the fill extension version went back from {recorded['version']} to {current['version']}")
+    pytest.fail(f"the fill extension version is now {current['version']} but {FINGERPRINT_RECORD.name} still "
+                f"records {recorded['version']}: run this test once with AKDBX_UPDATE_EXTENSION_FINGERPRINT=1")
+
+
+def test_build_keeps_the_extension_version_and_reports_it(tmp_path, capsys):
+    built = extension_host.build(tmp_path / 'ext', unlock_origin='https://localhost:9443')
+    manifest = json.loads((built / 'manifest.json').read_text())
+    assert manifest['version'] == route.EXTENSION_VERSION
+    assert route.EXTENSION_VERSION_FORMAT.fullmatch(route.EXTENSION_VERSION)
+    assert version_tuple(route.EXTENSION_VERSION) >= (1, 0, 0)
+    args = SimpleNamespace(extension_command='build', output=tmp_path / 'cli')
+    assert extension_host.run(args, unlock_origin='https://localhost:9443') == 0
+    assert json.loads(capsys.readouterr().out)['extension_version'] == route.EXTENSION_VERSION
+    assert json.loads((tmp_path / 'cli' / 'manifest.json').read_text())['version'] == route.EXTENSION_VERSION
+    assert extension_host.run(SimpleNamespace(extension_command='info')) == 0
+    assert json.loads(capsys.readouterr().out)['extension_version'] == route.EXTENSION_VERSION
+
+
+def test_host_forwards_a_valid_extension_version(pair_of_sockets):
+    broker_side, host_side = pair_of_sockets
+    hello = frame(dict(type='hello', protocol=1, public_key=KEY, version='1.0.0'))
+    assert extension_host.relay(io.BytesIO(hello), io.BytesIO(), route.EXTENSION_ORIGIN, 'helium',
+                                lambda: host_side) == 0
+    assert receive_message(broker_side) == dict(action='extension-attach', extension_protocol=1,
+                                                extension_id=route.EXTENSION_ID, browser='helium', public_key=KEY,
+                                                extension_version='1.0.0')
+
+
+@pytest.mark.parametrize('version', ['1.0', '1.0.0.0', '01.0.0', '1.0.0-beta', ' 1.0.0', '1.0.0\n', '123456.0.0',
+                                     1, None, ['1.0.0'], '١.٠.٠'])
+def test_host_refuses_a_malformed_extension_version(version):
+    connected = []
+    hello = frame(dict(type='hello', protocol=1, public_key=KEY, version=version))
+    out = io.BytesIO()
+    assert extension_host.relay(io.BytesIO(hello), out, route.EXTENSION_ORIGIN, 'helium',
+                                lambda: connected.append(1)) == 1
+    assert connected == [] and out.getvalue() == b''
+
+
+def test_extension_version_check_is_strict():
+    assert route.valid_extension_version('1.2.3') and route.valid_extension_version('99999.0.0')
+    for bad in ('1.2', '1.2.3.4', '01.2.3', '1.2.3 ', '1.2.3\n', '99999.99999.999999', 1, True, None,
+                '١.٢.٣', ''):
+        assert not route.valid_extension_version(bad)
+
+
+@pytest.mark.parametrize('version', ['1.0', 'x', 7, None, '1.0.0' * 10])
+def test_attach_refuses_a_malformed_extension_version(pair_of_sockets, version):
+    broker_side, host_side = pair_of_sockets
+    request = dict(action='extension-attach', extension_protocol=1, extension_id=route.EXTENSION_ID,
+                   browser='helium', public_key=KEY, extension_version=version)
+    broker = make_broker()
+    broker.extension.attach(broker_side, request)
+    assert receive_message(host_side) == dict(type='error', error='extension attach refused')
+    assert broker.extension.channels == {}
+
+
+@pytest.mark.parametrize('extra, version, version_status', [
+    (dict(extension_version=route.EXTENSION_VERSION), route.EXTENSION_VERSION, 'current'),
+    (dict(extension_version='0.9.9'), '0.9.9', 'outdated'),
+    (dict(extension_version='999.0.0'), '999.0.0', 'newer'),
+    # An extension built before 1.0.0 sends no version: it attaches and shows as outdated.
+    ({}, None, 'outdated'),
+])
+def test_status_shows_each_loaded_extension_version(pair_of_sockets, extra, version, version_status):
+    broker_side, host_side = pair_of_sockets
+    broker = make_broker()
+    request = dict(action='extension-attach', extension_protocol=1, extension_id=route.EXTENSION_ID,
+                   browser='helium', public_key=KEY, **extra)
+    worker = threading.Thread(target=broker.extension.attach, args=(broker_side, request), daemon=True)
+    worker.start()
+    assert receive_message(host_side)['type'] == 'attached'
+    status = broker.dispatch(dict(action='ping'))
+    assert status['extension_version_expected'] == route.EXTENSION_VERSION and status['extension_connected'] is True
+    assert status['extension_browsers'] == [dict(browser='helium', paired=False, version=version,
+                                                 version_status=version_status)]
+    host_side.close()
+    worker.join(5)
+    assert broker.extension.channels == {}
+
+
+def test_status_lists_the_expected_extension_version_without_a_connection():
+    status = make_broker().dispatch(dict(action='ping'))
+    assert status['extension_version_expected'] == route.EXTENSION_VERSION and status['extension_browsers'] == []

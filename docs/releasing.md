@@ -21,6 +21,9 @@ pull requests into it separately.
 
    Add a short entry for user-visible changes where the README or skill
    references describe versioned capabilities.
+
+   The browser extension has its own version, independent of akdbx releases:
+   see [Extension version](#extension-version).
 2. Merge the pull request into `main` after all checks pass. Fast-forward
    `master` to the same commit.
 3. Tag the merge commit and push only the tag:
@@ -45,6 +48,33 @@ The `Release` workflow then:
 
 If any step fails, nothing is published. Fix the problem with a new version;
 do not move or reuse a published tag.
+
+## Extension version
+
+The fill extension's version is `"version"` in
+`src/akdbx/fill_extension/manifest.json`. `akdbx extension build` keeps it;
+it does not copy the akdbx version. Bump it in the same pull request as any
+change to the files the build writes (every file except `config.js`; this
+includes the generated `content.js`, which copies the CDP route's DOM checks,
+so a change to those checks also changes the extension):
+
+- patch (`1.0.1`) for fixes;
+- minor (`1.1.0`) for features;
+- major (`2.0.0`) for a protocol break that needs a matching broker.
+
+`tests/fill_extension_fingerprint.json` records a SHA-256 fingerprint of the
+built files with the version. `test_extension_version_changes_with_its_contents`
+in `tests/test_extension_route.py` fails when the contents change but the
+version did not. After the bump, record the new fingerprint:
+
+```sh
+AKDBX_UPDATE_EXTENSION_FINGERPRINT=1 python -m pytest -q tests/test_extension_route.py -k contents
+```
+
+The test writes the record only when the version is higher than the recorded
+one. The extension version is not tied to an akdbx release: a release can ship
+the same extension version, and one release can include several extension
+bumps.
 
 ## Install or upgrade a broker from a release
 

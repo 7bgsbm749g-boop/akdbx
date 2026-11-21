@@ -134,7 +134,8 @@ async function connect() {
     waiting.clear();
     scheduleReconnect();
   });
-  current.postMessage({type: "hello", protocol: PROTOCOL, public_key: key});
+  // The version lets `akdbx status` show a stale unpacked extension after an update.
+  current.postMessage({type: "hello", protocol: PROTOCOL, public_key: key, version: chrome.runtime.getManifest().version});
 }
 
 function scheduleReconnect() {

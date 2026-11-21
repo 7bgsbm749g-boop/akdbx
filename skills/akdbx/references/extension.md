@@ -8,10 +8,19 @@ fills the field, reached through a native-messaging host:
 CLI/agent -> broker -> native-messaging host -> akdbx extension -> retained DOM element
 ```
 
-Use it when the browser must not run with a remote-debugging port. The akdbx
-docs warn that a debugging port gives every process of the same user full
-control of that profile. This route is not a way to hide automation from a
-website: do not use it to avoid bot detection or fraud checks.
+Prefer this route whenever the extension is paired. It needs no
+remote-debugging port, which would give every process of the same user full
+control of the browser profile. It also runs in the user's real browser, with
+its normal history and sessions. Anti-bot and anti-fraud checks often misfire
+on a debugging-port browser and refuse genuine use (in practice: Cloudflare's
+sign-in check failing, and Stripe returning `generic_decline` for a valid card
+before the bank saw it). The same tasks pass in the user's own browser. When a
+check like that blocks the CDP route for the user's own account and data, stop
+retrying there and use this route.
+
+The extension is the user's browser, not a disguise. Do not use it to
+impersonate anyone, to get past a block a site applied to this user or account
+on purpose, or with someone else's account or card.
 
 Supported browsers: Helium, Google Chrome and Microsoft Edge, on Windows and
 Linux. The extension has the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg` and
@@ -32,10 +41,41 @@ Require these values in `status` before you use the route:
 `default_fill_route` is `"cdp"` unless the operator started the broker with
 `serve --default-fill-route extension` (or `AKDBX_DEFAULT_FILL_ROUTE`).
 `extension_browsers` lists attached browsers and whether each is paired.
+Each item also has the extension version that browser loaded and how it
+compares with this broker (see [Extension version](#extension-version)).
 While a browser is not paired, `extension_pairing` gives its code and private
 pairing link. The existing `password_fill_delivery`, `card_delivery` and
 `identity_delivery` values still describe the CDP route; receipts of this
 route carry `"extension-dom-v1"` in the same keys.
+
+## Extension version
+
+The extension has its own version (from 1.0.0), separate from the akdbx
+package version. `status` shows:
+
+| Key | Value |
+| --- | --- |
+| `extension_version_expected` | The version this akdbx build ships, for example `"1.0.0"` |
+| `extension_browsers[].version` | The version the loaded extension reported, or `null` |
+| `extension_browsers[].version_status` | `"current"`, `"outdated"` (older, or no version) or `"newer"` |
+
+An extension built before 1.0.0 (akdbx 0.21.2 and earlier) reports no
+version. It still attaches and works, with `version: null` and
+`version_status: "outdated"`. The popup shows the version in its footer
+(**akdbx extension 1.0.0**); an extension without that footer is older than
+1.0.0. `akdbx extension build` and `akdbx extension info` also print
+`extension_version`.
+
+When a browser shows `outdated`, the unpacked copy in that browser is stale
+after an akdbx update. Tell the user; do not reload it for them. The user
+rebuilds into the same folder and reloads:
+
+1. `akdbx extension build --output SAME_FOLDER_AS_BEFORE`
+2. In `chrome://extensions`, click the reload button on the akdbx card.
+3. Pair again from the popup if it asks.
+
+`newer` means the broker is older than the extension: restart the broker on
+the updated akdbx.
 
 ## Pairing
 
@@ -151,3 +191,5 @@ links only there. Then load the folder as an unpacked extension (`chrome://exten
 | `frame list unavailable` or `target unavailable` with `extension_connected: false` | The browser is closed, the extension is not loaded, or the host is not installed for that browser. |
 | The same with `extension_paired: false` | Give the user the `extension_pairing` link. Wait for the pairing; do not retry in a loop. |
 | `autofill outcome uncertain` | The browser did not confirm the fill. Check the page; do not retry automatically. |
+| `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Ask the user to rebuild into the same folder and reload it in `chrome://extensions`. |
+| Right after an update, the popup says the broker is not reachable and `status` shows `extension_connected: false` | The broker, or the Python that the host launcher runs, still has akdbx 0.21.2 or earlier, and it refuses the new extension's hello. Restart the broker on the new version. If the launcher points to another Python, run `akdbx extension install --browser NAME` again from the updated installation. |
