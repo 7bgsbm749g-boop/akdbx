@@ -9,3 +9,4 @@ button { box-sizing: border-box; width: 100%; padding: 8px; text-align: left; bo
          border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
 button:hover, button:focus-visible { border-color: currentColor; }
 .detail { display: block; opacity: .75; font-size: 12px; }
+.footer { margin: 10px 0 0; opacity: .6; font-size: 11px; }

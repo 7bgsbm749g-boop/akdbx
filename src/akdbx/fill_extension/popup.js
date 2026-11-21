@@ -18,6 +18,12 @@ function privateLink(value, path, trusted = globalThis.AKDBX_TRUSTED_ORIGIN) {
   }
 }
 
+// The extension's own version, so a user can see a stale unpacked copy.
+function versionText(manifest) {
+  const version = manifest && typeof manifest.version === "string" ? manifest.version : "";
+  return /^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version) ? "akdbx extension " + version : "akdbx extension";
+}
+
 function label(kind, entry) {
   if (kind === "card") return [entry.title, `${entry.brand} •••• ${entry.last_four}`];
   if (kind === "login") return [entry.title, entry.username + (entry.passwordless ? " (no password)" : "")];
@@ -28,6 +34,7 @@ async function main() {
   const status = document.getElementById("status");
   const list = document.getElementById("entries");
   const send = message => chrome.runtime.sendMessage(message);
+  document.getElementById("version").textContent = versionText(chrome.runtime.getManifest());
   const state = await send({op: "state"});
   if (!state || !state.connected) {
     status.textContent = "The akdbx broker is not reachable. Start the broker, then run “akdbx extension install” for this browser.";
@@ -93,4 +100,4 @@ if (typeof document !== "undefined" && typeof chrome !== "undefined" && chrome.r
     document.getElementById("status").textContent = "akdbx request failed.";
   });
 }
-if (typeof module !== "undefined") module.exports = {userGesture, privateLink, label};
+if (typeof module !== "undefined") module.exports = {userGesture, privateLink, label, versionText};

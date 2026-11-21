@@ -32,7 +32,8 @@ import sys
 import threading
 from importlib.resources import files
 
-from .extension_route import BROWSERS, EXTENSION_ID, EXTENSION_ORIGIN, HOST_NAME, PUBLIC_KEY, PROTOCOL
+from .extension_route import (BROWSERS, EXTENSION_ID, EXTENSION_ORIGIN, EXTENSION_VERSION, HOST_NAME, PUBLIC_KEY,
+                              PROTOCOL, valid_extension_version)
 from .protocol import MAX_MESSAGE, ProtocolError, receive_message, send_message
 
 MAX_FRAME = MAX_MESSAGE
@@ -127,9 +128,11 @@ def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
         hello = read_frame(incoming)
     except FrameError:
         return 1
-    if (hello is None or set(hello) != {'type', 'protocol', 'public_key'} or hello['type'] != 'hello'
+    # Extensions before 1.0.0 send no version; they still attach and show as outdated.
+    if (hello is None or set(hello) - {'version'} != {'type', 'protocol', 'public_key'} or hello['type'] != 'hello'
             or type(hello['protocol']) is not int or hello['protocol'] != PROTOCOL
-            or not isinstance(hello['public_key'], str) or not PUBLIC_KEY.fullmatch(hello['public_key'])):
+            or not isinstance(hello['public_key'], str) or not PUBLIC_KEY.fullmatch(hello['public_key'])
+            or ('version' in hello and not valid_extension_version(hello['version']))):
         return 1
     out_lock = threading.Lock()
     try:
@@ -140,9 +143,12 @@ def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
         return 0
     send_lock = threading.Lock()
     closed = threading.Event()
+    attach = dict(action='extension-attach', extension_protocol=PROTOCOL, extension_id=EXTENSION_ID, browser=browser,
+                  public_key=hello['public_key'])
+    if 'version' in hello:
+        attach['extension_version'] = hello['version']
     try:
-        send_message(connection, dict(action='extension-attach', extension_protocol=PROTOCOL,
-                                      extension_id=EXTENSION_ID, browser=browser, public_key=hello['public_key']))
+        send_message(connection, attach)
     except Exception:
         connection.close()
         return 0
@@ -378,9 +384,8 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
             data = item.read_bytes()
         if item.name == 'manifest.json':
             manifest = json.loads(data)
+            # The manifest keeps the extension's own version (EXTENSION_VERSION).
             manifest['key'] = EXTENSION_KEY
-            from . import __version__
-            manifest['version'] = __version__
             data = json.dumps(manifest, indent=2).encode('utf-8')
         if item.name == 'background.js' and host_name != HOST_NAME:
             if not re.fullmatch(r'[a-z0-9_]+(\.[a-z0-9_]+)+', host_name):
@@ -418,10 +423,11 @@ def run(args, socket_path=None, unlock_origin=None):
             print(json.dumps(dict(ok=True, browser=args.browser, removed=removed), indent=2))
         elif args.extension_command == 'build':
             path = build(args.output, unlock_origin=unlock_origin)
-            print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, path=str(path.absolute()),
-                                  trusted_origin=trusted_origin(unlock_origin)), indent=2))
+            print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, extension_version=EXTENSION_VERSION,
+                                  path=str(path.absolute()), trusted_origin=trusted_origin(unlock_origin)), indent=2))
         else:
-            print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, host=HOST_NAME, protocol=PROTOCOL,
+            print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, extension_version=EXTENSION_VERSION,
+                                  host=HOST_NAME, protocol=PROTOCOL,
                                   browsers={b: {k: str(v) for k, v in paths(b).items()} for b in BROWSERS}), indent=2))
         return 0
     except (OSError, ValueError, RuntimeError) as exc:

@@ -165,6 +165,10 @@ def harness(private_dir, certificates, monkeypatch):
                 time.sleep(.1)
             [channel] = broker.extension.channels.values()
             assert channel.browser == kind
+            # The loaded extension reports its own manifest version to the broker.
+            assert channel.version == route.EXTENSION_VERSION
+            assert broker.dispatch(dict(action='ping'))['extension_browsers'] == [
+                dict(browser=kind, paired=False, version=route.EXTENSION_VERSION, version_status='current')]
             # The popup shows a code computed from its own key; it must equal
             # the code the broker's pairing page shows for the key it received.
             workers = [t for t in lab.observer.call('Target.getTargets')['targetInfos']

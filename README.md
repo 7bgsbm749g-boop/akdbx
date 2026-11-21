@@ -95,8 +95,17 @@ of the CDP route is unchanged, with `extension-dom-v1` receipts. The user can
 also click the extension (toolbar button, context menu or Alt+Shift+K) and
 pick a saved login, card or address for the focused field; the popup shows
 metadata only. `status` advertises `extension_protocol: 1`, `fill_routes`,
-`default_fill_route` (`serve --default-fill-route`), `extension_connected` and
-`extension_paired`.
+`default_fill_route` (`serve --default-fill-route`), `extension_connected`,
+`extension_paired`, and `extension_version_expected`. Each `extension_browsers`
+item shows the `version` that browser loaded and a `version_status`
+(`current`, `outdated` or `newer`).
+
+The extension has its own semantic version, starting at 1.0.0, separate from
+the akdbx version; the popup shows it in its footer. After an akdbx update,
+`version_status: "outdated"` means the unpacked copy is stale: run
+`extension build` into the same folder again, then click reload on the akdbx
+card in `chrome://extensions`. An extension built by akdbx 0.21.2 or earlier
+reports no version; it still works and shows as outdated.
 
 ```bash
 akdbx extension install --browser helium   # or chrome, edge; Windows and Linux

@@ -7,7 +7,8 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const path = require("node:path");
 const root = path.join(__dirname, "../src/akdbx/fill_extension");
-const {userGesture, privateLink} = require(path.join(root, "popup.js"));
+const {userGesture, privateLink, versionText} = require(path.join(root, "popup.js"));
+const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
 
 function loadBackground() {
   const posted = [];
@@ -16,7 +17,7 @@ function loadBackground() {
   const port = {postMessage: m => posted.push(m), onMessage: event("port.message"), onDisconnect: event("port.disconnect")};
   const chrome = {
     runtime: {id: "jjoamaejjkldcjcpgncoomoaagdfimhg", getURL: p => "chrome-extension://jjoamaejjkldcjcpgncoomoaagdfimhg/" + p,
-      connectNative: () => port, onStartup: event("startup"), onInstalled: event("installed"),
+      getManifest: () => manifest, connectNative: () => port, onStartup: event("startup"), onInstalled: event("installed"),
       onMessage: event("message"), lastError: undefined},
     storage: {session: {setAccessLevel: () => {}, get: async () => ({}), set: async () => {}}},
     alarms: {create: () => {}, clear: () => {}, onAlarm: event("alarm")},
@@ -86,11 +87,12 @@ test("service worker accepts popup requests only from its own popup page", async
   assert.equal(answered, false);
 });
 
-test("service worker sends only its public key, and refuses unsealed or foreign values", async () => {
+test("service worker sends only its public key and version, and refuses unsealed or foreign values", async () => {
   const {exports, posted} = loadBackground();
   for (let i = 0; i < 50 && !posted.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(posted.length, 1);
-  assert.deepEqual(Object.keys(posted[0]).sort(), ["protocol", "public_key", "type"]);
+  assert.deepEqual(Object.keys(posted[0]).sort(), ["protocol", "public_key", "type", "version"]);
+  assert.equal(posted[0].version, manifest.version);
   assert.match(posted[0].public_key, /^[A-Za-z0-9_-]{87}$/);
   assert.match(await exports.localCode(posted[0].public_key), /^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
   // No agreed key yet: nothing can be unsealed.
@@ -170,4 +172,11 @@ test("released pins do not evict a live pin's spec record", async () => {
   const b64 = bytes => Buffer.from(bytes).toString("base64url");
   const result = await exports.fill({pin_id: live.pin_id, sealed: {iv: b64(iv), data: b64(data)}});
   assert.equal(result.state, "filled");
+});
+
+test("popup footer shows the extension's own version", () => {
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
+  assert.equal(versionText(manifest), "akdbx extension " + manifest.version);
+  assert.equal(versionText({version: "<b>1</b>"}), "akdbx extension");
+  assert.equal(versionText(null), "akdbx extension");
 });

@@ -41,10 +41,41 @@ Require these values in `status` before you use the route:
 `default_fill_route` is `"cdp"` unless the operator started the broker with
 `serve --default-fill-route extension` (or `AKDBX_DEFAULT_FILL_ROUTE`).
 `extension_browsers` lists attached browsers and whether each is paired.
+Each item also has the extension version that browser loaded and how it
+compares with this broker (see [Extension version](#extension-version)).
 While a browser is not paired, `extension_pairing` gives its code and private
 pairing link. The existing `password_fill_delivery`, `card_delivery` and
 `identity_delivery` values still describe the CDP route; receipts of this
 route carry `"extension-dom-v1"` in the same keys.
+
+## Extension version
+
+The extension has its own version (from 1.0.0), separate from the akdbx
+package version. `status` shows:
+
+| Key | Value |
+| --- | --- |
+| `extension_version_expected` | The version this akdbx build ships, for example `"1.0.0"` |
+| `extension_browsers[].version` | The version the loaded extension reported, or `null` |
+| `extension_browsers[].version_status` | `"current"`, `"outdated"` (older, or no version) or `"newer"` |
+
+An extension built before 1.0.0 (akdbx 0.21.2 and earlier) reports no
+version. It still attaches and works, with `version: null` and
+`version_status: "outdated"`. The popup shows the version in its footer
+(**akdbx extension 1.0.0**); an extension without that footer is older than
+1.0.0. `akdbx extension build` and `akdbx extension info` also print
+`extension_version`.
+
+When a browser shows `outdated`, the unpacked copy in that browser is stale
+after an akdbx update. Tell the user; do not reload it for them. The user
+rebuilds into the same folder and reloads:
+
+1. `akdbx extension build --output SAME_FOLDER_AS_BEFORE`
+2. In `chrome://extensions`, click the reload button on the akdbx card.
+3. Pair again from the popup if it asks.
+
+`newer` means the broker is older than the extension: restart the broker on
+the updated akdbx.
 
 ## Pairing
 
@@ -160,3 +191,5 @@ links only there. Then load the folder as an unpacked extension (`chrome://exten
 | `frame list unavailable` or `target unavailable` with `extension_connected: false` | The browser is closed, the extension is not loaded, or the host is not installed for that browser. |
 | The same with `extension_paired: false` | Give the user the `extension_pairing` link. Wait for the pairing; do not retry in a loop. |
 | `autofill outcome uncertain` | The browser did not confirm the fill. Check the page; do not retry automatically. |
+| `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Ask the user to rebuild into the same folder and reload it in `chrome://extensions`. |
+| The popup says the attach was refused after an update | The broker still runs the old akdbx. Restart the broker on the new version. |

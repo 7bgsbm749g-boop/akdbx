@@ -207,7 +207,7 @@ for the commands, capabilities and security model.
    ```
 
    Run the same command again after an upgrade; it updates only a folder that
-   already holds this extension. The build writes the unlock origin
+   already holds this extension. It prints the `extension_version` it wrote. The build writes the unlock origin
    (`AKDBX_UNLOCK_ORIGIN`, or `--unlock-origin` before `extension`; on Windows
    the default is `https://localhost:9443`) into the extension. The popup opens
    pairing and unlock links only on that origin, so a replaced native host
@@ -219,7 +219,23 @@ for the commands, capabilities and security model.
 5. Click the akdbx toolbar button. The popup shows a code. Choose **Open the
    pairing page**, check that the page shows the same code, and enter the
    master password there. If the broker is locked, this also unlocks it.
-   Pairing lasts until the browser or the broker restarts.
+   Pairing lasts until the browser or the broker restarts. The popup footer
+   shows the extension version, for example **akdbx extension 1.0.0**.
+
+### Update the extension
+
+The extension has its own version, separate from the akdbx version. After you
+update akdbx:
+
+1. Restart the broker on the new version, as described above.
+2. Run the same `extension build --output` command into the same folder.
+3. In `chrome://extensions`, click the reload button on the akdbx card. Pair
+   again if the popup asks.
+
+`akdbx status` then shows `version_status: "current"` for the browser in
+`extension_browsers`, and `version` equal to `extension_version_expected`.
+`"outdated"` means the browser still runs the old copy: check that you built
+into the folder Helium loads, then reload again.
 
 To fill, click into a login, card or address field, then click the akdbx
 button, use **Fill with akdbx…** in the context menu, or press Alt+Shift+K, and
