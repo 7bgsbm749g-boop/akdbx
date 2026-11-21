@@ -946,3 +946,109 @@ def test_native_host_install_registers_one_browser_and_uninstalls(private_dir, m
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, test_key + name)
             except OSError:
                 pass
+
+
+def _relay_config(enabled=True):
+    from akdbx.relay import RelayConfig
+    return RelayConfig('https://relay.akdbx.link:8443', 'abcdefghijkl.akdbx.link', 'abcdefghijkl', 8443,
+                       enabled, 'S' * 43)
+
+
+def _relay_tls(name):
+    """A key and a self-signed certificate for ``name`` in one PEM, as relay enable saves it."""
+    from datetime import datetime, timedelta, timezone
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from akdbx.relay import new_key_and_csr
+    key_pem, _ = new_key_and_csr(name)
+    key = serialization.load_pem_private_key(key_pem, password=None)
+    now = datetime.now(timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(x509.Name([])).issuer_name(x509.Name([]))
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5)).not_valid_after(now + timedelta(days=90))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), critical=True)
+            .sign(key, hashes.SHA256()))
+    return key_pem + cert.public_bytes(serialization.Encoding.PEM)
+
+
+def test_relay_directory_is_private_per_user_and_refuses_public_files(private_dir, monkeypatch):
+    from akdbx import relay
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    store = relay.RelayStore()
+    assert store.directory == private_dir / 'akdbx' / 'relay'
+    assert store.load() is None and relay.saved_origin(store) is None
+    config = _relay_config()
+    store.save(config)
+    store.save_tls(_relay_tls(config.name))
+    assert store.load() == config
+    assert relay.saved_origin(store) == 'https://abcdefghijkl.akdbx.link:8443'
+    assert store.certificate(config.name) is not None
+    # Both files open only through the private-file checks.
+    for path in (store.config_path, store.tls_path):
+        security.read_private(path)
+    acl = win32security.ACL()
+    user = win32security.ConvertStringSidToSid(security.current_identity()[0])
+    everyone = win32security.CreateWellKnownSid(win32security.WinWorldSid)
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, user)
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, win32con.GENERIC_READ, everyone)
+    win32security.SetNamedSecurityInfo(str(store.config_path), win32security.SE_FILE_OBJECT,
+                                       win32security.DACL_SECURITY_INFORMATION
+                                       | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+                                       None, None, acl, None)
+    with pytest.raises(relay.RelayStoreError):
+        store.load()
+    assert relay.saved_origin(store) is None
+    store.save(config)  # A replacement gets a private ACL again.
+    assert store.load() == config
+    store.forget()
+    assert not store.directory.exists()
+
+
+def test_relay_lock_admits_one_broker(private_dir, monkeypatch):
+    from akdbx import relay
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    store = relay.RelayStore()
+    held = store.lock()
+    try:
+        with pytest.raises(relay.RelayStoreError, match='another akdbx process'):
+            relay.RelayStore().lock()
+    finally:
+        held.release()
+    store.lock().release()
+
+
+def test_relay_tls_file_loads_and_hot_reloads_on_windows(private_dir, monkeypatch):
+    from akdbx import relay
+    from akdbx.local_https import reload_certificate, server_context
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    store = relay.RelayStore()
+    config = _relay_config()
+    store.save(config)
+    store.save_tls(_relay_tls(config.name))
+    # The key and the chain are one private file, given as both certificate and key.
+    server = SimpleNamespace(context=server_context(store.tls_path, store.tls_path))
+    first = server.context
+    store.save_tls(_relay_tls(config.name))
+    reload_certificate(server, store.tls_path, store.tls_path)
+    assert server.context is not first
+
+
+def test_windows_cli_uses_the_relay_origin_and_refuses_conflicts(private_dir, monkeypatch, capsys):
+    from akdbx import relay
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    monkeypatch.delenv('AKDBX_UNLOCK_ORIGIN', raising=False)
+    store = relay.RelayStore()
+    store.save(_relay_config())
+    args = cli.parser().parse_args(['status'])
+    cli.resolve_unlock_origin(args)
+    assert args.unlock_origin == 'https://abcdefghijkl.akdbx.link:8443'
+    pipe = rpc.PREFIX + 'akdbx-test-' + uuid.uuid4().hex
+    vault = str(private_dir / 'unused.kdbx')
+    assert cli.main(['--socket', pipe, 'serve', vault]) == 2
+    assert "no usable certificate yet: run 'akdbx relay enable' again" in capsys.readouterr().err
+    store.save_tls(_relay_tls('abcdefghijkl.akdbx.link'))
+    assert cli.main(['--socket', pipe, 'serve', vault, '--tls-cert', 'c.pem', '--tls-key', 'k.pem']) == 2
+    assert 'the akdbx relay is enabled' in capsys.readouterr().err
+    store.save(_relay_config(enabled=False))
+    cli.resolve_unlock_origin(args := cli.parser().parse_args(['status']))
+    assert args.unlock_origin == 'https://localhost:9443'
