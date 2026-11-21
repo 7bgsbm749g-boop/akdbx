@@ -186,7 +186,15 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
   const stripe = processor === 'stripe';
   const ids = {'cc-name':'creditCardHolder','cc-number':'_KKnr',
                'cc-exp':'expiry_date','cc-csc':'cccvc'};
-  const stripeFields = __STRIPE_FIELDS__;
+  // One `stripe` processor, two frames: the exact frame path selects the
+  // Payment Element (id + name) or the classic Card Element (name, no id).
+  function stripeTable() {
+    let path;
+    try { path = new URL(frameURL).pathname; } catch { return null; }
+    const hits = Object.values(__STRIPE_ELEMENTS__).filter(e => new RegExp(e.path).test(path));
+    return hits.length === 1 ? hits[0].fields : null;
+  }
+  const stripeFields = stripe ? stripeTable() : null;
   const id = el.id, name = el.getAttribute('name');
   function knownComputopField() {
     return input && type === 'text' && form !== null && autocomplete === 'off' &&
@@ -195,11 +203,13 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
       document.querySelectorAll('[id="'+ids[field]+'"]').length === 1;
   }
   function knownStripeField() {
-    if (!Object.hasOwn(stripeFields, field)) return false;
+    if (!stripeFields || !Object.hasOwn(stripeFields, field)) return false;
     const [expectedId, expectedName] = stripeFields[field];
+    const bound = expectedId === null ?
+      !el.hasAttribute('id') && document.querySelectorAll('[name="'+expectedName+'"]').length === 1 :
+      el.id === expectedId && document.querySelectorAll('[id="'+expectedId+'"]').length === 1;
     return input && type === 'text' && autocomplete === field &&
-      el.id === expectedId && el.getAttribute('name') === expectedName &&
-      document.querySelectorAll('[id="'+expectedId+'"]').length === 1;
+      el.getAttribute('name') === expectedName && bound;
   }
   // Identity fields follow the ordered HTML autocomplete token grammar.
   const prefix = tokens.slice(0, -1);
@@ -296,7 +306,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
     return accepted === actual || equivalent ? 'filled' : 'uncertain';
   }};
 }'''.replace('__STYLE_GUARD__', card_processor.STYLE_GUARD).replace(
-    '__STRIPE_FIELDS__', json.dumps(card_processor.STRIPE_FIELDS))
+    '__STRIPE_ELEMENTS__', card_processor.STRIPE_ELEMENTS_JSON)
 
 
 class BrowserCards:
@@ -318,7 +328,9 @@ class BrowserCards:
         return dict(cards_supported=True, card_protocol=1, card_delivery=DELIVERY,
                     card_browser_configured=self.profile is not None,
                     card_processor_frames_protocol=card_processor.PROTOCOL,
-                    card_processors=list(card_processor.PROCESSORS))
+                    card_processors=list(card_processor.PROCESSORS),
+                    # `stripe` also accepts the classic Card Element frame.
+                    stripe_card_element=True)
 
     def prune(self):
         for token, pin in list(self.pins.items()):

@@ -37,6 +37,8 @@ PASSWORD = 'Synthetic-ONLY!$`\\Aa19 Ω'
 EMPTY = hashlib.sha256(b'').hexdigest()
 STRIPE_PATH = '/v3/elements-inner-accessory-target-' + 'b' * 32 + '.html'
 STRIPE = 'https://js.stripe.com' + STRIPE_PATH
+CARD_ELEMENT_PATH = '/v3/elements-inner-card-' + 'd' * 32 + '.html'
+CARD_ELEMENT = 'https://js.stripe.com' + CARD_ELEMENT_PATH + '#__shared_params__[version]=v3&componentName=card'
 DIGEST = '''<script>
 window.syntheticEvents = [];
 document.addEventListener('input', e => syntheticEvents.push({field: e.target.id, trusted: e.isTrusted}));
@@ -63,6 +65,23 @@ PAGES = {
     STRIPE_PATH: '''<!doctype html><meta charset="utf-8"><style>input{display:block;width:200px;height:24px}</style>
 <input id="payment-numberInput" name="number" autocomplete="cc-number">
 <input id="payment-expiryInput" name="expiry" autocomplete="cc-exp">''' + DIGEST,
+    '/card-element': f'''<!doctype html><meta charset="utf-8"><h1>Merchant</h1>
+<iframe name="__privateStripeFrame5551" title="Secure card payment input frame" src="{CARD_ELEMENT}"
+ style="width:400px;height:240px;border:0"></iframe>''',
+    # Synthetic classic Card Element: no ids, two decoys named "hidden".
+    CARD_ELEMENT_PATH: '''<!doctype html><meta charset="utf-8"><style>input{display:block;width:200px;height:24px}</style>
+<form><input name="hidden" autocomplete="fake">
+<input type="text" name="cardnumber" autocomplete="cc-number" placeholder="Card number">
+<input type="text" name="exp-date" autocomplete="cc-exp" placeholder="MM / YY">
+<input type="text" name="cvc" autocomplete="cc-csc" placeholder="CVC">
+<input name="hidden" autocomplete="fake"></form>
+<script>
+async function digestName(name, index = 0) {
+  const data = new TextEncoder().encode(document.getElementsByName(name)[index].value);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+}
+</script>''',
 }
 
 
@@ -278,6 +297,35 @@ def test_cards_go_only_to_the_supported_processor_frame_below_the_merchant(harne
                                    field='cc-number'))
     assert receipt == dict(ok=True, filled='cc-number', card_delivery=route.DELIVERY)
     assert lab.observer.evaluate("digest('payment-numberInput')", session, await_promise=True) == sha(CARD['number'])
+
+
+def test_card_element_fills_its_three_inputs_and_never_a_decoy(harness):
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate('/card-element')
+    lab.wait("document.readyState === 'complete'")
+    session = harness.frame_session(CARD_ELEMENT)
+    frames = harness.frames(url)
+    frame = {f['origin']: f for f in frames['frames']}['https://js.stripe.com']
+    stripe_route = dict(processor='stripe', processor_protocol=1)
+
+    def pin(selector, field):
+        return broker.dispatch(dict(action='pin-card-target', card_protocol=1, page_id=frames['page_id'],
+                                    frame_id=frame['frame_id'], top_url=url, selector=selector, field=field,
+                                    route='extension', **stripe_route))
+    assert pin('form > input:first-child', 'cc-number') == card_failure()   # Decoy.
+    assert pin('input[name="cardnumber"]', 'cc-exp') == card_failure()      # Wrong field.
+    for name, field, options, expected in (('cardnumber', 'cc-number', {}, CARD['number']),
+                                           ('exp-date', 'cc-exp', {'format': 'MM/YY'}, '09/31'),
+                                           ('cvc', 'cc-csc', {}, CARD['csc'])):
+        target = pin(f'input[name="{name}"]', field)
+        assert target['ok'] and target['card_delivery'] == route.DELIVERY, target
+        handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
+        receipt = broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
+                                       field=field, **options))
+        assert receipt == dict(ok=True, filled=field, card_delivery=route.DELIVERY)
+        assert lab.observer.evaluate(f"digestName('{name}')", session, await_promise=True) == sha(expected)
+    for index in (0, 1):
+        assert lab.observer.evaluate(f"digestName('hidden', {index})", session, await_promise=True) == EMPTY
 
 
 def test_user_click_route_fills_the_focused_login_and_skips_hidden_fields(harness):

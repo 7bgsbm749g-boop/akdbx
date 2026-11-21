@@ -344,6 +344,11 @@ processor action and matching target name.
 Version 0.18.1 supports `--processor stripe` for the Stripe Payment Element
 iframe used by Cloudflare. It accepts only the Stripe card-entry endpoint and
 its exact card number, combined expiry (MM/YY) and security code inputs.
+Version 0.24.0 also accepts Stripe's classic Card Element iframe
+(`js.stripe.com/v3/elements-inner-card-<hash>.html`) under the same
+`--processor stripe`, advertised as `stripe_card_element: true`. The frame path
+selects the input set: only the `cardnumber`, `exp-date` (MM/YY) and `cvc`
+inputs with no id and the matching autocomplete token; decoy inputs refuse.
 Other cross-origin frames, shadow DOM, unrecognised fields and native
 applications remain unsupported. Merchant verification uses part of the pin's
 lifetime, while the four-second fill deadline starts with the fill request.
