@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "akdbx"
 version = "0.26.0"
 description = "A secret-withholding KeePass autofill broker for local agents"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = [
   "cryptography>=43,<47",
   "idna>=3.7,<4",
