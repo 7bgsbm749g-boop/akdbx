@@ -5,7 +5,6 @@ Output is JSON on stdout. It never holds the relay secret or the private key.
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import time
@@ -144,11 +143,12 @@ def _disable(args, store):
 
 
 def _not_running(exc):
-    """True when no broker listens; any other failure (a check that failed) leaves the state unknown."""
-    if isinstance(exc, (FileNotFoundError, ConnectionRefusedError)):
-        return True
-    # Windows: the broker pipe does not exist (windows_rpc.connect raises a plain OSError).
-    return os.name == 'nt' and type(exc) is OSError
+    """True when no broker listens; any other failure (a check that failed) leaves the state unknown.
+
+    Windows raises FileNotFoundError for a missing broker pipe; a busy pipe or a
+    pipe I/O failure is a plain OSError, so the state is unknown.
+    """
+    return isinstance(exc, (FileNotFoundError, ConnectionRefusedError))
 
 
 def _broker_state(broker_status):

@@ -212,6 +212,9 @@ class FakeRelay:
         # A Location for a redirect answer to every WebSocket upgrade, and the upgrades asked for.
         self.redirect = None
         self.upgrade_requests = 0
+        # Upgrades answered with a 503 that claims a huge body and streams it.
+        self.oversize_upgrades = 0
+        self.oversize_sent = 0
         self._stop = threading.Event()
         self._listeners = []
         self.control_port = self._listen(self._serve_control)
@@ -298,6 +301,11 @@ class FakeRelay:
         if method == 'GET' and (path == '/api/v1/connect' or path.startswith('/api/v1/stream/')):
             with self.lock:
                 self.upgrade_requests += 1
+                oversize = self.oversize_upgrades > 0
+                if oversize:
+                    self.oversize_upgrades -= 1
+            if oversize:
+                return self._oversize_answer(sock)
             if self.redirect is not None:
                 return sock.sendall(f'HTTP/1.1 302 Found\r\nLocation: {self.redirect}{path}\r\n'
                                     'Content-Length: 0\r\nConnection: close\r\n\r\n'.encode())
@@ -306,6 +314,17 @@ class FakeRelay:
         if method == 'GET' and path.startswith('/api/v1/stream/'):
             return self._stream(sock, headers, path.rsplit('/', 1)[1])
         self._error(sock, 404, 'not_found')
+
+    _BODY_CHUNK = b'x' * 65536
+
+    def _oversize_answer(self, sock, claimed=1 << 30, streamed=4 << 20):
+        # Claims 1 GiB; streams 4 MiB and closes, so a client without a limit fails fast too.
+        sock.sendall(f'HTTP/1.1 503 Service Unavailable\r\nContent-Length: {claimed}\r\n\r\n'.encode())
+        with suppress(OSError):
+            while self.oversize_sent < streamed and not self._stop.is_set():
+                sock.sendall(self._BODY_CHUNK)
+                with self.lock:
+                    self.oversize_sent += len(self._BODY_CHUNK)
 
     def _register(self, sock, body):
         with self.lock:

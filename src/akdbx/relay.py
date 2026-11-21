@@ -61,6 +61,11 @@ CONTROL_IDLE_TIMEOUT = 90
 # The relay pings idle streams every 30 s and closes them after 5 minutes.
 STREAM_IDLE_TIMEOUT = 330
 CONNECT_TIMEOUT = 10
+# The most the broker reads from the relay before the 101 upgrade answer is
+# accepted: status line, headers and any error body. websocket-client reads a
+# non-101 body by its Content-Length into memory, so a larger answer aborts the
+# connection instead.
+UPGRADE_RESPONSE_LIMIT = 64 * 1024
 MAX_BACKOFF = 60.0
 # A control connection that stayed up this long resets the backoff to 1 s.
 STABLE_CONNECTION = 30.0
@@ -810,10 +815,14 @@ class RelayClient:
             # new, unverified connection (even ws://) and let the relay make
             # this broker connect to its local network. Only 101 is accepted;
             # anything else is a failed attempt with the normal backoff.
-            ws.connect(self.endpoint.ws_url + path, socket=sock, suppress_origin=True, redirect_limit=0,
+            # The upgrade reads go through a byte budget; the verified socket
+            # itself is unchanged and carries the frames after the 101.
+            ws.connect(self.endpoint.ws_url + path, socket=_UpgradeBudget(sock, UPGRADE_RESPONSE_LIMIT),
+                       suppress_origin=True, redirect_limit=0,
                        header=['Authorization: Bearer ' + self.config.secret])
             if ws.getstatus() != 101:
                 raise ConnectionError('the relay did not switch protocols')
+            ws.sock = sock
             ws.settimeout(timeout)
             return ws
         except BaseException:
@@ -973,6 +982,33 @@ def _abort(item):
             item.shutdown()
         else:
             item.close()
+
+
+class UpgradeTooLarge(ConnectionError):
+    """The relay's upgrade answer was over UPGRADE_RESPONSE_LIMIT; the connection is aborted."""
+
+
+class _UpgradeBudget:
+    """A socket view that reads at most `limit` bytes, for the HTTP upgrade only.
+
+    Every other attribute is the wrapped socket's, so TLS stays the verified
+    connection from Endpoint.open_socket. At the limit the socket is aborted.
+    """
+
+    def __init__(self, sock, limit):
+        self._sock = sock
+        self._left = limit
+
+    def recv(self, bufsize, *flags):
+        if self._left <= 0:
+            _abort(self._sock)
+            raise UpgradeTooLarge(f'the relay upgrade answer is over {UPGRADE_RESPONSE_LIMIT} bytes')
+        data = self._sock.recv(min(bufsize, self._left), *flags)
+        self._left -= len(data)
+        return data
+
+    def __getattr__(self, name):
+        return getattr(self._sock, name)
 
 
 class MessageTooLarge(ConnectionError):

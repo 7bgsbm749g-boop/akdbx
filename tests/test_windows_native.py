@@ -98,6 +98,29 @@ def test_native_pipe_roundtrip_verifies_server_and_refuses_second_broker(monkeyp
         pass
 
 
+def test_missing_pipe_is_not_found_and_a_busy_pipe_is_unknown():
+    from akdbx import relay_cli
+    name = r'\\.\pipe\akdbx-test-' + uuid.uuid4().hex
+    with pytest.raises(FileNotFoundError):
+        rpc.connect(name)
+    # One pipe instance held by another client: the broker exists but is busy.
+    server = rpc.new_pipe(name, first=True)
+    client = None
+    try:
+        client = win32file.CreateFile(name, win32con.GENERIC_READ | win32con.GENERIC_WRITE, 0, None,
+                                      win32con.OPEN_EXISTING, 0, None)
+        with pytest.raises(OSError) as busy:
+            rpc.connect(name)
+        assert type(busy.value) is OSError
+        assert relay_cli._broker_state(lambda: rpc.connect(name)) == {
+            'running': 'unknown', 'error': 'the broker check failed (OSError)'}
+    finally:
+        if client is not None:
+            client.Close()
+        server.Close()
+    assert relay_cli._broker_state(lambda: rpc.connect(name)) == {'running': False}
+
+
 @pytest.mark.parametrize('name', [r'\\server\pipe\akdbx-test', r'\\.\pipe\other',
                                  r'C:\tmp\broker.sock', r'\\.\pipe\akdbx-a\b'])
 def test_remote_or_invalid_pipe_names_rejected(name):

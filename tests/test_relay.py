@@ -575,6 +575,35 @@ def test_websocket_redirects_are_not_followed(fake, page):
     assert secret_of() not in ''.join(logs)
 
 
+def test_an_oversize_upgrade_answer_is_aborted_at_the_limit(fake, page):
+    # A 503 that claims 1 GiB and streams it: websocket-client would keep it all in memory.
+    fake.oversize_upgrades = 1
+    holder = {}
+    client, logs = client_for(fake, page, wait=lambda seconds: holder['client']._stop.set())
+    holder['client'] = client
+    tracemalloc.start()
+    try:
+        client._control_loop()  # one attempt; its backoff wait stops the loop
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 1024 * 1024, peak
+    assert client.delays == [0.5] and not client.connected.is_set()
+    assert any('cannot connect' in line and 'UpgradeTooLarge' in line for line in logs)
+    # The normal backoff follows, and a 101 upgrade still connects through the same path.
+    fake.oversize_upgrades = 2
+    waits = []
+    client, logs = client_for(fake, page, jitter=lambda: 1.0, wait=waits.append)
+    client.start()
+    try:
+        wait_until(client.connected.is_set)
+        assert get_page(fake, page)[0] == 200
+    finally:
+        client.stop()
+    assert waits == [1.0, 2.0]
+    assert sum('cannot connect' in line for line in logs) == 1
+
+
 def test_the_control_channel_aborts_an_oversize_frame_before_reading_it(fake, page):
     client, logs = client_for(fake, page)
     client.start()
@@ -711,6 +740,22 @@ def test_a_failed_broker_check_is_unknown_not_stopped(fake, capsys):
         assert broker['running'] == running, error
         if running == 'unknown':
             assert broker['error'] == f'the broker check failed ({type(error).__name__})'
+
+
+def test_a_busy_or_failing_windows_pipe_is_unknown_not_stopped(fake, capsys, monkeypatch):
+    # windows_rpc.connect: FileNotFoundError for a missing pipe, a plain OSError for a
+    # busy pipe or failed pipe I/O. Only the missing pipe means no broker runs.
+    monkeypatch.setattr(relay_cli, 'os', SimpleNamespace(name='nt'), raising=False)
+    enable(fake, capsys)
+    args = cli.parser().parse_args(['relay', 'status'])
+    cli.resolve_unlock_origin(args)
+    for error, running in ((OSError('Windows broker pipe busy or unavailable'), 'unknown'),
+                           (OSError('Windows pipe I/O failed'), 'unknown'),
+                           (FileNotFoundError('Windows broker pipe not found'), False)):
+        def broker_status():
+            raise error
+        assert relay_cli.run(args, broker_status) == 0
+        assert json.loads(capsys.readouterr().out)['broker']['running'] == running, error
 
 
 def test_serve_relay_names_unlock_url_when_it_refuses_it(fake, capsys, tmp_path, database):

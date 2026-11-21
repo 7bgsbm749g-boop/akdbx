@@ -139,8 +139,10 @@ def connect(path, *, capture=False):
                                      win32con.FILE_FLAG_OVERLAPPED | 0x00100000 | 0x00010000, None)
         # SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION prevents a pipe
         # squatter from impersonating the connecting user's primary token.
-    except pywintypes.error:
-        raise OSError('Windows broker pipe unavailable or busy') from None
+    except pywintypes.error as exc:
+        if exc.winerror == 2:  # ERROR_FILE_NOT_FOUND: no broker serves this pipe
+            raise FileNotFoundError('Windows broker pipe not found') from None
+        raise OSError('Windows broker pipe busy or unavailable') from None
     try:
         return PipeConnection(handle, verify_peer(handle, server=True))
     except BaseException:
