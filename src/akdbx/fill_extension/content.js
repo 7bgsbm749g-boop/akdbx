@@ -12,7 +12,7 @@
   const PASSWORD_FILL = __PASSWORD_FILL__;
   const CARD_PIN = __CARD_PIN_SCRIPT__;
   const GUARD = __CARD_GUARD__;
-  const STRIPE_FIELDS = __STRIPE_FIELDS__;
+  const STRIPE_ELEMENTS = __STRIPE_ELEMENTS__;
   const count = () => __PASSWORD_COUNT__;
   const MAX_PINS = 16, MAX_PROBES = 4, PIN_MS = 30000, PROBE_MS = 60000;
   const CARD_TOKENS = ["cc-name", "cc-number", "cc-exp-month", "cc-exp-year", "cc-exp", "cc-csc"];
@@ -164,7 +164,16 @@
     const type = input ? el.type : el.tagName.toLowerCase();
     const last = tokens(el).slice(-1)[0] || "";
     if (processor === "stripe") {
-      const hit = Object.entries(STRIPE_FIELDS).find(([, [id, name]]) => el.id === id && el.getAttribute("name") === name);
+      // The popup fills only the Payment Element's id/name pairs. The classic
+      // Card Element's inputs have no id; only the verified agent pin route
+      // (exact type, autocomplete, unique name, merchant iframe owner and hit
+      // test) may target them, so no input in such a document matches here.
+      // Only an embedded Payment Element frame at its exact path matches: a
+      // top-level Stripe document has no merchant owner, and an unrecognized
+      // Stripe path is not a frame whose inputs akdbx has verified.
+      if (window === window.top || !new RegExp(STRIPE_ELEMENTS["payment-element"].path).test(location.pathname)) return null;
+      const hit = Object.entries(STRIPE_ELEMENTS["payment-element"].fields).find(([, [id, name]]) =>
+        id !== null && el.id === id && el.getAttribute("name") === name);
       return hit && input ? {kind: "card", role: hit[0]} : null;
     }
     if (processor === "computop") {

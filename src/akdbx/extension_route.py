@@ -41,6 +41,8 @@ Security model:
   origin in a same-site frame chain; cards go only to the merchant's own
   frames or to the supported processor frames (Adyen, Computop, Stripe) below
   same-origin merchant frames; identities go only to frames of the top origin.
+  The user-click popup never serves Stripe's classic Card Element frame; only
+  the agent pin route fills it.
 * Values exist only in the broker, the relay, the extension's memory and the
   field that receives them. There is no clipboard, no storage and no logging.
 """
@@ -185,6 +187,18 @@ def card_route(chain, processor):
         return
     if (len(chain) < 2 or len(chain) > 16 or processor_for(chain[-1]['url']) != processor
             or _secure(chain[-1]['url']) == top or any(_secure(hop['url']) != top for hop in chain[:-1])):
+        raise ExtensionError()
+
+
+def popup_route(chain):
+    """The user-click popup never serves a Stripe classic Card Element document.
+
+    Its inputs have no id, so only the agent pin route, which checks the exact
+    type, autocomplete token, unique name, merchant iframe owner and hit test,
+    may target them. This holds at any depth, including a top-level document.
+    """
+    from . import card_processor
+    if any(card_processor.stripe_element(hop['url']) == 'card-element' for hop in chain):
         raise ExtensionError()
 
 
@@ -609,6 +623,7 @@ class ExtensionHub:
         if set(message) != {'type', 'id', 'op', 'tab_id', 'document_id', 'top_url', 'chain', 'kind'}:
             raise ExtensionError()
         tab_id, document_id, top_url, chain = _facts(message)
+        popup_route(chain)
         kind = message['kind']
         from .versions import active_entries
         from .cards import is_card, metadata, read_card
@@ -700,6 +715,7 @@ class ExtensionHub:
         tab_id, document_id, top_url, chain = _facts(message)
         if (tab_id, document_id, chain) != (selection.tab_id, selection.document_id, selection.chain):
             raise ExtensionError()  # A navigation or another frame: match again.
+        popup_route(chain)
         roles, formats = message.get('roles'), message.get('formats')
         if (not isinstance(roles, list) or not 0 < len(roles) <= 16 or len(set(roles)) != len(roles)
                 or not all(isinstance(r, str) for r in roles) or not isinstance(formats, dict)
