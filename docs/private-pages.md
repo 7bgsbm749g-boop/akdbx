@@ -14,13 +14,16 @@ Unix-socket route for existing deployments.
 | [Loopback HTTPS page](#loopback-https-page) | Linux (0.23.0+), Windows | The broker's computer | A certificate and private key |
 | [Unlock from another device](#unlock-from-another-device) | Linux (0.23.0+), Windows (0.22.0+) | Any device in your tailnet, including the broker's computer | The loopback page, plus Tailscale Serve to a verified `https://127.0.0.1:PORT` target |
 | [Tailscale Serve Unix socket](#tailscale-serve-unix-socket-linux-only) | Linux only | Any device in your tailnet | Tailscale Serve to the broker's Unix socket; no certificate |
+| [The akdbx relay](#the-akdbx-relay) | Linux, Windows (0.26.0+) | Any device | `akdbx relay enable`; no certificate, port or proxy to set up |
 | [Unlock from the internet](#unlock-from-the-internet) | Linux, Windows | Any device | The loopback page, plus a public route; read the section before you choose one |
 
 Every route has the same limit on failed attempts: see
 [Failed attempts block the link](#failed-attempts-block-the-link).
 
-`--tls-cert` and `--tls-key` select the loopback HTTPS page. Without them,
-Linux uses the Unix-socket route and Windows refuses to start.
+`--tls-cert` and `--tls-key` select the loopback HTTPS page. An enabled
+[akdbx relay](#the-akdbx-relay) selects the same page with the relay's
+certificate. Without either, Linux uses the Unix-socket route and Windows
+refuses to start.
 
 ## Loopback HTTPS page
 
@@ -158,22 +161,29 @@ To stop remote unlock, remove the proxy with `tailscale serve --https=9443 off`.
 
 ## Unlock from the internet
 
-Choose the route that exposes the page to the fewest people. In order of
-recommendation:
+Choose the route that exposes the page to the fewest people. Linux and
+Windows have the same choices, in this order of recommendation:
 
 1. **Local only** (most secure). Use the [loopback HTTPS page](#loopback-https-page)
    and open the link on the broker's computer. Nothing outside that computer
    can reach the page.
-2. **A private proxy** (most secure remote option; recommended first). Use
-   [Tailscale Serve](#unlock-from-another-device): only devices in your tailnet
-   can reach the page, and tailnet access controls can limit them further.
-   TLS ends on the broker's computer, so no third party sees the password.
-3. **A public tunnel that does not decrypt the traffic** (available, not
-   recommended). Tailscale Funnel publishes the page at the computer's
-   tailnet name to the whole internet. The Funnel relays pass the TLS
-   connection through without decrypting it; TLS still ends on the broker's
-   computer. Use the loopback page with a verified target, the same way as
-   Serve. Funnel accepts only ports 443, 8443 and 10000:
+2. **A private proxy** such as [Tailscale Serve](#unlock-from-another-device)
+   (the most secure remote option; recommended first). Only devices in your
+   tailnet can reach the page, and tailnet access controls can limit them
+   further. TLS ends on the broker's computer, so no third party sees the
+   password.
+3. **The akdbx relay** (0.26.0+): one command, no open port, no router change
+   and no VPN. The relay forwards the encrypted connection; TLS ends in the
+   broker, with a key that never leaves the broker's computer, so the relay
+   cannot read the master password. Anyone on the internet can reach the page.
+   See [The akdbx relay](#the-akdbx-relay) for the setup and its one trust
+   point.
+4. **Another public tunnel that does not decrypt the traffic** (available, not
+   recommended), such as Tailscale Funnel. Funnel publishes the page at the
+   computer's tailnet name to the whole internet. The Funnel relays pass the
+   TLS connection through without decrypting it; TLS still ends on the
+   broker's computer. Use the loopback page with a verified target, the same
+   way as Serve. Funnel accepts only ports 443, 8443 and 10000:
 
    ```sh
    tailscale funnel --bg --https=8443 https://127.0.0.1:9444
@@ -186,21 +196,134 @@ recommendation:
    through Funnel: Funnel sends no tailnet identity header, so the page
    refuses every request. Remove the route with
    `tailscale funnel --https=8443 off`.
-4. **Proxies that decrypt HTTPS** (STRONGLY DISCOURAGED). Services such as
+5. **Proxies that decrypt HTTPS** (STRONGLY DISCOURAGED). Services such as
    Cloudflare Tunnel end TLS on the provider's servers and open a new
    connection to your computer. The proxy operator, and anyone who controls
    that proxy, can read the master password and every secret you enter on the
    page. Do not use them for akdbx.
 
-An akdbx relay service is planned. It is not available yet.
+On a public route (3, 4 or 5), anyone on the internet can reach the page.
+Only two things protect the vault there: the secret token in the link, and
+the [three-attempt block](#failed-attempts-block-the-link). Keep the link
+private, and use a strong master password. Stop the public route when you do
+not need it. Private save pages (passwords, authenticators, cards, identities)
+and the extension pairing page are reachable on the same route and are
+protected by their own secret links.
 
-On a public route, anyone on the internet can reach the page. Only two things
-protect the vault there: the secret token in the link, and the
-[three-attempt block](#failed-attempts-block-the-link). Keep the link private,
-and use a strong master password. Stop the public route when you do not need
-it. Private save pages (passwords, authenticators, cards, identities) and the
-extension pairing page are reachable on the same route and are protected by
-their own secret links.
+### The akdbx relay
+
+The relay at `relay.akdbx.link` gives the broker a random public name such as
+`https://k3x7q2mbn5vd.akdbx.link:8443`. A browser that opens that name connects
+to the relay, and the relay passes the connection, still encrypted, to the
+broker through a WebSocket that the broker opened. The broker answers with its
+own certificate for that name, from a key that only the broker has. The relay
+sees the name and encrypted bytes, never the page or the password.
+
+```
+phone --TLS for <id>.akdbx.link--> relay :8443 (reads the name only)
+      --encrypted bytes over the broker's WebSocket--> broker
+      --> the broker's own HTTPS page on 127.0.0.1 (TLS ends here)
+```
+
+Set it up once (Linux and Windows, the same commands):
+
+```sh
+akdbx relay enable
+akdbx serve /absolute/path/to/passwords.kdbx
+```
+
+`relay enable` registers the broker, creates an ECDSA P-256 key and a
+certificate request for the broker's name only, gets the certificate from
+Let's Encrypt through the relay, and saves everything in a private folder. It
+prints the broker's public origin and what to do next. Run it again to finish
+an interrupted setup; it keeps the same name. `--relay URL` selects another
+relay (default `https://relay.akdbx.link:8443`).
+
+`serve` then uses the relay by itself: the relay origin, the relay certificate
+for the loopback page, and a free loopback port. Do not give `--tls-cert`,
+`--tls-key` or `--local-port` with the relay; `serve` refuses them. `serve
+--relay` requires the relay and refuses to start without it. The broker opens
+one control WebSocket to the relay, reconnects after a failure (1 s, doubling
+to 60 s, with jitter), and opens one WebSocket per browser connection. It
+renews the certificate when less than a third of its lifetime is left, and
+loads the new certificate without a restart; open connections are not
+dropped. Only one broker can use a relay registration at a time: it holds the
+lock file `.relay.lock` in the relay folder open while it runs (Linux: an
+exclusive `flock`; Windows: share mode 0, which every logon session sees).
+
+Every akdbx command finds the relay origin by itself, so you do not copy it.
+The CLI and `serve` choose the trusted origin in this order:
+
+1. `--unlock-origin` (before the subcommand);
+2. `AKDBX_UNLOCK_ORIGIN`;
+3. the origin of an enabled relay (`akdbx relay enable`) whose files pass the
+   private-file checks;
+4. `https://localhost:9443`.
+
+So an `AKDBX_UNLOCK_ORIGIN` that you set for Tailscale keeps the broker on
+Tailscale even with the relay enabled; `relay enable` and `relay status` warn
+about it. Unset it to use the relay.
+
+```sh
+akdbx relay status            # name, origin, certificate expiry, running broker's relay state; no secret
+akdbx relay disable           # use no relay from the next broker start; files are kept
+akdbx relay enable            # use it again, with the same name
+akdbx relay disable --forget  # also delete the name, secret, key and certificate
+```
+
+Restart a running broker after `disable` to stop using the relay. A running
+broker's `status` has a `relay` object with `connected`, `name`, `origin` and
+the certificate dates. `relay status` asks the running broker for its relay
+state and the origin of its private page with a separate, peer-checked
+request that holds no private URL, so it also works after `disable`, when the
+CLI already expects another origin. Its `broker.running` is `true`, `false`
+(no broker listens) or `"unknown"` (a socket, peer or answer check failed;
+the broker may still run). The browser extension opens pairing and unlock links
+only on the origin it was built with: run `akdbx extension build` again after
+you enable or disable the relay, and reload the extension.
+
+The relay folder holds `relay.json` (relay URL, name, port, origin and the
+bearer secret that authorizes this broker at the relay) and `tls.pem` (the
+private key, then the certificate chain). akdbx never prints or logs the
+secret or the key.
+
+- **Linux:** `${XDG_STATE_HOME:-~/.local/state}/akdbx/relay/`, folder mode
+  `0700`, files mode `0600`, below folders owned by you or root that group and
+  others cannot write. Files are opened without following symbolic links.
+- **Windows:** `%LOCALAPPDATA%\akdbx\relay\`, a folder and files that only this
+  user and SYSTEM can open, on a local NTFS path.
+
+If the folder or a file fails these checks, `serve` refuses to start and names
+what to fix, and the CLI does not use the relay origin. akdbx never repairs the
+permissions itself. `relay disable --forget` is the repair for untrusted or
+malformed files: it checks only the folder, never reads the files, and deletes
+`relay.json`, `tls.pem` and the lock file by name.
+
+The broker trusts nothing that the relay sends. It checks the name, the port
+and the certificate the relay returns (exactly the broker's name, and the
+broker's own key), and the page keeps every check: the one-time token,
+`Host` and `Origin` equal to the relay origin, and the three-attempt block. No
+header from the relay counts as an identity. The WebSocket upgrades follow no
+redirect (a redirect would resend the bearer secret to another address) and
+accept only HTTP 101; anything else is a failed attempt with the normal
+backoff. The broker reads each WebSocket frame header first and aborts the
+connection before it reads a message over the protocol limits: 4 KiB on the
+control connection, 256 KiB and 256 fragments on a stream.
+
+**Trust point.** The relay operator controls the `akdbx.link` DNS zone. With
+it, the operator could get a second certificate for your broker's name and
+serve a fake page there. Every publicly trusted certificate is written to the
+public Certificate Transparency logs, so such a certificate would be visible,
+for example on [crt.sh](https://crt.sh/?q=%25.akdbx.link). Tailscale Serve
+(option 2) has no such point outside your tailnet. The relay's source and
+protocol are public: [akdbx-relay](https://github.com/7bgsbm749g-boop/akdbx-relay)
+(`docs/PROTOCOL.md`).
+
+Limits: the relay accepts a few registrations per network address each day
+and a few certificates per broker each week. When a limit is reached,
+`relay enable` waits for a short `retry_after` (up to five minutes in total)
+and otherwise says when to try again. A failed renewal keeps the current
+certificate and tries again later; `relay status` shows the error.
 
 ## Failed attempts block the link
 

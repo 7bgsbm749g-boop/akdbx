@@ -24,6 +24,18 @@ pull requests into it separately.
 
    The browser extension has its own version, independent of akdbx releases:
    see [Extension version](#extension-version).
+   A release that changes the relay client (`src/akdbx/relay.py`) also runs
+   the end-to-end test against the real relay server. CI skips it, because
+   the server is a separate package:
+
+   ```sh
+   git clone https://github.com/7bgsbm749g-boop/akdbx-relay ../akdbx-relay
+   python -m pip install ../akdbx-relay 'cryptography>=43,<47'  # keep akdbx's range
+   AKDBX_RELAY_SOURCE=../akdbx-relay python -m pytest -q -rs tests/test_relay_integration.py
+   ```
+
+   With `AKDBX_RELAY_SOURCE`, the relay gets the certificate through its real
+   ACME client from that repository's fake ACME and Cloudflare servers.
 2. Merge the pull request into `main` after all checks pass. Fast-forward
    `master` to the same commit.
 3. Tag the merge commit and push only the tag:

@@ -193,16 +193,31 @@ def load_certificate(context, certificate, private_key):
         context.load_cert_chain(*paths, password=lambda: b'')
 
 
+def server_context(certificate, private_key):
+    """A TLS 1.2+ server context with the checked PEM pair loaded."""
+    certificate, private_key = Path(certificate).absolute(), Path(private_key).absolute()
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    load_certificate(context, certificate, private_key)
+    return context
+
+
+def reload_certificate(server, certificate, private_key):
+    """Serve a renewed certificate without a restart.
+
+    Open connections keep their TLS session; each new connection gets the
+    new context. A pair that fails the checks leaves the old one in use.
+    """
+    server.context = server_context(certificate, private_key)
+
+
 def start_local_unlock_server(broker, database, keyfile, public_base_url, certificate,
                               private_key, opener=open_vault_with_password, *, local_port=None,
                               before_start=None, capture_socket=None):
     origin, port = local_origin(public_base_url, local_port)
     if certificate is None or private_key is None:
         raise ValueError('the private HTTPS page requires --tls-cert and --tls-key')
-    certificate, private_key = Path(certificate).absolute(), Path(private_key).absolute()
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1_2
-    load_certificate(context, certificate, private_key)
+    context = server_context(certificate, private_key)
     state = UnlockState(broker, database, keyfile, opener, public_base=origin)
     server = LoopbackHTTPSServer(('127.0.0.1', port), handler_for(state), context, origin)
     url = state.url
