@@ -24,6 +24,7 @@ from .web_unlock import start_unlock_server
 from .local_https import is_loopback_origin, reload_certificate, start_local_unlock_server
 from .notifications import validate_webhook_url
 from . import capture_cli, card_cli, extension_host, identity_cli, relay as relay_module, relay_cli, secret_cli
+from . import setup_cli
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
 from .sink_helper import SinkError
 
@@ -328,6 +329,7 @@ def parser() -> argparse.ArgumentParser:
     secret_cli.add_parser(commands)
     capture_cli.add_parsers(commands)
     relay_cli.add_parser(commands)
+    setup_cli.add_parser(commands)
     start = commands.add_parser("serve", help="unlock a KDBX and run the local broker")
     start.add_argument("database", type=Path)
     start.add_argument('--card-browser-profile', type=Path, default=os.environ.get('AKDBX_CARD_BROWSER_PROFILE'),
@@ -613,12 +615,17 @@ def main(argv: list[str] | None = None) -> int:
     resolve_unlock_origin(args)
     if args.command == 'extension':
         return extension_host.run(args, args.socket, args.unlock_origin)
+    # Setup passes --socket on to the commands it runs only when it was given.
+    args.socket_explicit = args.socket is not None
     if args.socket is None:
         try:
             args.socket = default_socket()
         except OSError:
             print('could not locate default broker socket; use --socket', file=sys.stderr)
             return 2
+    if args.command == setup_cli.COMMAND:
+        return setup_cli.run(args, status=lambda origin: request(
+            args.socket, {'action': 'ping'}, broker_uid=args.broker_uid, expected_unlock_origin=origin))
     if args.command == relay_cli.COMMAND:
         return relay_cli.run(args, lambda: request(args.socket, {'action': 'relay-status'},
                                                    broker_uid=args.broker_uid,

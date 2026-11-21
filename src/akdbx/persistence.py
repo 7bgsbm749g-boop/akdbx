@@ -217,10 +217,50 @@ class VaultStore:
                 os.close(current)
 
     def _file_info(self, fd, *, writing=True):
-        info = os.fstat(fd)
+        return self._checked_info(os.fstat(fd), writing=writing)
+
+    @staticmethod
+    def _checked_info(info, *, writing=True):
         if not stat.S_ISREG(info.st_mode) or (writing and (info.st_uid != os.getuid() or info.st_nlink != 1)):
             raise SaveError('unsafe vault file')
         return info
+
+    def check_location(self):
+        """`akdbx setup`: the broker's vault path checks from metadata only.
+
+        It never opens or reads the vault file. It raises SaveError or OSError
+        when the broker could not open the vault, and returns why saves would
+        be refused, or None when they would be allowed.
+        """
+        directory = self._directory(writing=False)
+        try:
+            info = self._checked_info(os.stat(self.path.name, dir_fd=directory, follow_symlinks=False),
+                                      writing=False)
+        finally:
+            os.close(directory)
+        try:
+            directory = self._directory()
+        except SaveError:
+            return 'a folder above the vault can be changed by another user'
+        try:
+            try:
+                self._checked_info(info)
+            except SaveError:
+                return 'the vault file has another owner or a second hard link'
+            try:
+                self._check_write_names(directory)
+            except SaveError as exc:
+                return str(exc)
+            if not os.access('.', os.W_OK | os.X_OK, dir_fd=directory, effective_ids=True):
+                return 'the vault folder is not writable'
+            return None
+        finally:
+            os.close(directory)
+
+    def check_keyfile_location(self, keyfile):
+        """`akdbx setup`: the broker's key-file path check; never reads the key file."""
+        self.keyfile_path = Path(keyfile).expanduser().resolve(strict=True)
+        os.close(self._open_keyfile())
 
     def _read(self, directory, *, writing=True):
         fd = os.open(self.path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
