@@ -15,6 +15,7 @@ import win32pipe
 from .windows_security import current_identity, private_attributes, verify_process
 
 PREFIX = '\\\\.\\pipe\\'
+CAPTURE_SUFFIX = '-capture'
 
 
 def default_pipe():
@@ -22,9 +23,11 @@ def default_pipe():
     return Path(PREFIX + f'akdbx-{sid}-{session}')
 
 
-def pipe_name(path):
+def pipe_name(path, *, capture=False):
     value = str(path)
-    if not re.fullmatch(r'\\\\\.\\pipe\\akdbx-[A-Za-z0-9-]{1,160}', value):
+    # A capture pipe adds CAPTURE_SUFFIX to any valid RPC pipe name.
+    limit = 160 + len(CAPTURE_SUFFIX) if capture else 160
+    if not re.fullmatch(r'\\\\\.\\pipe\\akdbx-[A-Za-z0-9-]{1,%d}' % limit, value):
         raise ValueError('Windows --socket must be a local \\\\.\\pipe\\akdbx-NAME pipe')
     return value
 
@@ -128,8 +131,8 @@ class PipeConnection:
             self.peer = None
 
 
-def connect(path):
-    name = pipe_name(path)
+def connect(path, *, capture=False):
+    name = pipe_name(path, capture=capture)
     try:
         handle = win32file.CreateFile(name, win32con.GENERIC_READ | win32con.GENERIC_WRITE, 0,
                                      None, win32con.OPEN_EXISTING,
@@ -153,26 +156,25 @@ def new_pipe(name, *, first=False):
         18, 65540, 65540, 1000, private_attributes())
 
 
-def serve(path, broker, stop=None):
-    from .broker import _serve_connection, MAX_RPC_WORKERS, CONNECTION_TIMEOUT
+def capture_pipe(path):
+    """The broker's authenticator-capture pipe: the RPC pipe name plus ``-capture``.
+
+    It is a separate endpoint, so a captured key never enters the agent RPC.
+    """
     name = pipe_name(path)
-    # Always retain an instance to pin the namespace. FIRST_PIPE_INSTANCE
-    # refuses an already-running or pre-created endpoint at startup.
-    pending = new_pipe(name, first=True)
-    slots = threading.BoundedSemaphore(MAX_RPC_WORKERS)
-    workers, lock = set(), threading.Lock()
+    if name.endswith(CAPTURE_SUFFIX):
+        raise ValueError('the broker RPC pipe name must not end with ' + CAPTURE_SUFFIX)
+    return Path(pipe_name(name + CAPTURE_SUFFIX, capture=True))
 
-    def run(connection):
-        try:
-            _serve_connection(connection, broker)
-        finally:
-            with lock:
-                workers.discard(threading.current_thread())
-            slots.release()
 
+def accept_connections(name, pending, on_connection, stop=None):
+    """Accept verified clients on ``pending`` until ``stop``; then close the open instance.
+
+    ``pending`` is the first instance (created with ``first=True`` by the
+    caller). ``on_connection`` receives each same-user/session connection and
+    owns it; a failure there closes it.
+    """
     try:
-        # Restored card-save results go out only when the endpoint is ready.
-        broker.card_save_notifications.resume()
         while stop is None or not stop.is_set():
             event = win32event.CreateEvent(None, True, False, None)
             overlapped = pywintypes.OVERLAPPED()
@@ -183,6 +185,14 @@ def serve(path, broker, stop=None):
                     status = win32pipe.ConnectNamedPipe(pending, overlapped)
                     connected = status in {0, 535}
                 except pywintypes.error as exc:
+                    if exc.winerror == 232:
+                        # ERROR_NO_DATA: a client connected and closed before
+                        # this accept. Replace the dead instance and go on.
+                        fresh = new_pipe(name)
+                        pending.Close()
+                        pending = fresh
+                        connected = True  # Nothing is pending to cancel.
+                        continue
                     if exc.winerror != 535:  # ERROR_PIPE_CONNECTED: raced accept
                         raise
                     connected = True
@@ -200,19 +210,7 @@ def serve(path, broker, stop=None):
                 pending = new_pipe(name)
                 try:
                     connection.peer = verify_peer(connection.handle, server=False)
-                    if not slots.acquire(blocking=False):
-                        connection.close()
-                        continue
-                    worker = threading.Thread(target=run, args=(connection,), daemon=True)
-                    with lock:
-                        workers.add(worker)
-                    try:
-                        worker.start()
-                    except BaseException:
-                        with lock:
-                            workers.discard(worker)
-                        slots.release()
-                        raise
+                    on_connection(connection)
                 except Exception:
                     connection.close()
             finally:
@@ -225,6 +223,49 @@ def serve(path, broker, stop=None):
                 event.Close()
     finally:
         pending.Close()
+
+
+def serve(path, broker, stop=None):
+    from .broker import _serve_connection, MAX_RPC_WORKERS, CONNECTION_TIMEOUT
+    name = pipe_name(path)
+    # Always retain an instance to pin the namespace. FIRST_PIPE_INSTANCE
+    # refuses an already-running or pre-created endpoint at startup.
+    pending = new_pipe(name, first=True)
+    slots = threading.BoundedSemaphore(MAX_RPC_WORKERS)
+    workers, lock = set(), threading.Lock()
+
+    def run(connection):
+        try:
+            _serve_connection(connection, broker)
+        finally:
+            with lock:
+                workers.discard(threading.current_thread())
+            slots.release()
+
+    def dispatch(connection):
+        if not slots.acquire(blocking=False):
+            connection.close()
+            return
+        worker = threading.Thread(target=run, args=(connection,), daemon=True)
+        with lock:
+            workers.add(worker)
+        try:
+            worker.start()
+        except BaseException:
+            with lock:
+                workers.discard(worker)
+            slots.release()
+            raise
+
+    try:
+        try:
+            # Restored card-save results go out only when the endpoint is ready.
+            broker.card_save_notifications.resume()
+        except BaseException:
+            pending.Close()
+            raise
+        accept_connections(name, pending, dispatch, stop)
+    finally:
         broker.extension.close()
         broker.unlock_notifications.close()
         broker.card_save_notifications.close()

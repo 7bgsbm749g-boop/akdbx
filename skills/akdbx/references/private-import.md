@@ -90,13 +90,21 @@ manifest. It refuses to overwrite existing files. Use the same config environmen
 when Chrome starts the host. No database/password/key is stored in this config.
 Neither build nor install reads the vault or restarts the browser/broker.
 
+On Windows (0.22.0+) use `akdbx-browser-import.exe install-host --browser
+chrome|edge|helium --extension-id EXTENSION_ID --origin ORIGIN`. It registers
+the host under `HKEY_CURRENT_USER` and, without `--socket`, uses the default
+broker's capture pipe (the RPC pipe name plus `-capture`), never the agent RPC
+pipe. `uninstall-host --browser NAME` removes one registration. See
+`docs/windows.md`.
+
 For capture, prepare the normal private `setup-totp` URL, verify the website and
 account without reading the setup key, then open the extension on the enrollment
 tab. The user supplies that private URL and clicks **Capture this tab's setup QR**.
 The extension requests temporary `activeTab` access, not blanket site permission.
 It sends data through a Chrome native-messaging host restricted to that extension
 ID. The host validates the configured private origin, protected Unix socket and
-broker UID. The broker separately checks the actual captured source origin
+broker UID (on Windows: the capture named pipe and its same-user, same-session
+server). The broker separately checks the actual captured source origin
 against the selected entry, and rejects duplicate captures. The local capture
 route requires a same-UID Unix peer, rejects Tailscale identity/Origin headers,
 and cannot be used to unlock the vault. Agent RPC never accepts the secret data.

@@ -722,3 +722,105 @@ def test_windows_serve_accepts_browser_profiles_and_private_state(synthetic_vaul
     assert broker.unlock_notifications._state_path == state and not state.parent.exists()
     assert str(cli.default_notification_state(Path(rpc.PREFIX + 'akdbx-synthetic'))).endswith(
         r'\akdbx\akdbx-synthetic.unlock-notifications.json')
+
+
+def test_capture_pipe_name_is_the_rpc_pipe_plus_capture():
+    base = rpc.PREFIX + 'akdbx-synthetic'
+    assert str(rpc.capture_pipe(Path(base))) == base + '-capture'
+    with pytest.raises(ValueError):
+        rpc.capture_pipe(Path(base + '-capture'))
+    longest = rpc.PREFIX + 'akdbx-' + 'a' * 160  # still a valid RPC pipe
+    assert str(rpc.capture_pipe(Path(longest))) == longest + '-capture'
+
+
+def test_native_host_capture_through_the_capture_pipe(synthetic_vault, native_https_config):
+    from akdbx import browser_import
+    origin, certificate, key, submit = native_https_config
+    # The longest valid RPC name: its capture pipe exceeds the RPC limit by the suffix.
+    rpc_pipe = Path(rpc.PREFIX + 'akdbx-' + ('test-' + uuid.uuid4().hex).ljust(160, 'x'))
+    capture = rpc.capture_pipe(rpc_pipe)
+    broker = Broker(None, object())
+    server, unlock_url = start_windows_unlock_server(broker, synthetic_vault, None, origin, certificate, key,
+                                                     capture_pipe=capture)
+    try:
+        # A second broker cannot take the capture pipe name.
+        with pytest.raises(pywintypes.error):
+            rpc.new_pipe(str(capture), first=True)
+        assert submit(unlock_url, {'password': 'synthetic master'})[0] == 200
+        selected = broker.dispatch({'action': 'search', 'query': 'Synthetic'})['entries'][0]
+        prepared = broker.dispatch({'action': 'setup-totp', 'handle': selected['handle'],
+                                    'metadata': {k: selected[k] for k in ('title', 'username', 'url', 'group')}})
+        assert prepared['ok']
+        config = {'extension_id': 'a' * 32, 'origin': origin, 'socket': str(capture)}
+        uri = 'otpauth://totp/Example:synthetic-user?secret=JBSWY3DPEHPK3PXP&issuer=Example'
+        message = {'private_url': prepared['private_url'], 'source_url': 'https://example.test/setup', 'payloads': [uri]}
+        with pytest.raises(ValueError):
+            browser_import.capture({**message, 'source_url': 'https://evil.test/setup'}, config)
+        with pytest.raises(ValueError):  # the agent RPC pipe is never a capture endpoint
+            browser_import.capture(message, {**config, 'socket': str(rpc_pipe)})
+        before = synthetic_vault.read_bytes()
+        assert browser_import.capture(message, config) == browser_import.RECEIPT
+        assert synthetic_vault.read_bytes() == before
+        with pytest.raises(ValueError):  # replay
+            browser_import.capture(message, config)
+        assert broker.writes.get(prepared['write_handle']).import_candidates
+    finally:
+        server.shutdown()
+        server.server_close()
+        broker.unlock_notifications.close()
+    # Shutdown released the capture pipe: a new broker can create it.
+    with security.managed_handle(rpc.new_pipe(str(capture), first=True)):
+        pass
+
+
+def test_native_host_install_registers_one_browser_and_uninstalls(private_dir, monkeypatch):
+    import winreg
+    from akdbx import browser_import, extension_host
+    test_key = r'Software\akdbx-test-' + uuid.uuid4().hex
+    monkeypatch.setitem(extension_host.WINDOWS_KEYS, 'chrome', test_key + r'\Chrome')
+    monkeypatch.setitem(extension_host.WINDOWS_KEYS, 'edge', test_key + r'\Edge')
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    pipe = rpc.PREFIX + 'akdbx-synthetic-capture'
+    def args(browser, **extra):
+        return SimpleNamespace(extension_id='a' * 32, origin='https://node.tailnet.ts.net:9443',
+                               browser=browser, socket=extra.get('socket', pipe))
+    try:
+        where = browser_import.install_host_windows(args('chrome'))
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, where['key']) as handle:
+            assert winreg.QueryValueEx(handle, '')[0] == str(where['manifest'])
+        manifest = json.loads(where['manifest'].read_text())
+        # The console script itself, not a batch file that cmd.exe decodes.
+        assert manifest['path'] == str(browser_import.host_executable())
+        assert manifest['path'].endswith('akdbx-browser-import.exe')
+        assert manifest['allowed_origins'] == ['chrome-extension://' + 'a' * 32 + '/']
+        assert browser_import.load_config(browser_import.config_path())['socket'] == pipe
+        with pytest.raises(ValueError):  # never replaces a registration
+            browser_import.install_host_windows(args('chrome'))
+        with pytest.raises(ValueError):  # a second browser must share the configuration
+            browser_import.install_host_windows(args('edge', socket=rpc.PREFIX + 'akdbx-other-capture'))
+        assert browser_import.install_host_windows(args('edge'))['key'].endswith(r'\Edge\org.akdbx.private_import')
+        browser_import.uninstall_host_windows(SimpleNamespace(browser='chrome'))
+        with pytest.raises(OSError):
+            winreg.OpenKey(winreg.HKEY_CURRENT_USER, where['key'])
+        assert not where['manifest'].exists()
+        assert browser_import.config_path().exists()  # Edge still uses it.
+        browser_import.uninstall_host_windows(SimpleNamespace(browser='edge'))
+        assert not browser_import.config_path().exists()
+        # With the last registration gone, a new origin and the default pipe install.
+        moved = browser_import.install_host_windows(SimpleNamespace(
+            extension_id='a' * 32, origin='https://localhost:9443', browser='chrome', socket=None))
+        config = browser_import.load_config(browser_import.config_path())
+        assert config['origin'] == 'https://localhost:9443' and config['socket'] == ''
+        assert moved['key'] == where['key']
+        browser_import.uninstall_host_windows(SimpleNamespace(browser='chrome'))
+        with pytest.raises(ValueError):  # the RPC pipe is refused as a capture endpoint
+            browser_import._check_config({'extension_id': 'a' * 32, 'origin': 'https://x.test',
+                                          'socket': rpc.PREFIX + 'akdbx-synthetic'})
+    finally:
+        for browser in ('chrome', 'edge'):
+            browser_import.uninstall_host_windows(SimpleNamespace(browser=browser))
+        for name in (r'\Edge', r'\Chrome', ''):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, test_key + name)
+            except OSError:
+                pass

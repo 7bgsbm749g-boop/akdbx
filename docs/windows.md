@@ -9,9 +9,10 @@ generated-password fills through the Chromium DOM route, the full password-write
 workflow, cards, merge, snapshot admission and durable unlock notifications.
 The checks that prove each of these are in
 [Validation before production use](#validation-before-production-use). Three
-checks still need a person or a second account, and the optional browser native
-host for authenticator capture stays Linux-only; see
-[Limits](#limits).
+checks still need a person or a second account; see [Limits](#limits). From
+0.22.0 Windows also supports
+[unlock from another device](#unlock-from-another-device) through Tailscale
+Serve and the [browser native host for authenticator capture](#authenticator-capture-native-host).
 
 ## Supported operations
 
@@ -43,17 +44,18 @@ host for authenticator capture stays Linux-only; see
   [Browser extension route](#browser-extension-route).
 - Unlock webhook subscriptions that survive a broker restart.
 - Private password and authenticator imports through the HTTPS page.
+- Unlock and private pages from another tailnet device, through Tailscale Serve
+  (`--local-port`). See [Unlock from another device](#unlock-from-another-device).
+- Authenticator capture from a website's setup QR through the browser native
+  host (`akdbx-browser-import`). See
+  [Authenticator capture native host](#authenticator-capture-native-host).
 
 ## Limits
 
-- The private pages are served on `127.0.0.1` only. Unlock from another device
-  (the Linux Tailscale Serve route) is not available.
-- The optional browser native host for authenticator capture
-  (`akdbx-browser-import`) is Linux-only. It sends captured setup data to the
-  broker over a Unix socket that proves the peer's user. The Windows private
-  page is a loopback TLS listener that accepts a browser by its `Host` and
-  `Origin`; it has no peer-authenticated local channel for a helper process.
-  Use the private HTTPS import page instead.
+- The HTTPS listener binds `127.0.0.1` only. Other devices reach it only
+  through Tailscale Serve. The broker does not trust the `Tailscale-User-Login`
+  header on Windows, because any local process can send headers to a loopback
+  port; the one-time URL token and tailnet access control protect the page.
 - Use a local NTFS volume with restrictive DACLs. UNC paths, junctions, symlinks,
   other reparse points, hard-linked vaults and alternate data streams are refused.
   OneDrive placeholder paths can be reparse points and are not supported.
@@ -168,6 +170,106 @@ Origin checks reject cross-origin requests. No Tailscale identity header is trus
 on Windows. The URL token is secret, rate-limited and rotated on successful unlock.
 Stopping the broker invalidates its links. TLS protects a stale link if another
 local user later takes the port; keep the certificate key private.
+
+### Unlock from another device
+
+From 0.22.0 the private pages can open on any device in your tailnet, as on
+Linux. Tailscale Serve on the Windows computer proxies its HTTPS name to the
+broker's loopback listener. The listener still binds `127.0.0.1` only.
+
+1. Install Tailscale on the Windows computer and enable HTTPS certificates for
+   the tailnet. Find the computer's name, for example
+   `node.tailnet.ts.net`.
+2. Make the Tailscale service trust the CA that issued the broker's
+   certificate. Tailscale runs as SYSTEM and does not read your user
+   certificate store, where `mkcert -install` puts the CA. As the broker's
+   user (not elevated), find the CA file:
+
+   ```powershell
+   Join-Path (mkcert -CAROOT) 'rootCA.pem'
+   ```
+
+   Then, in an elevated PowerShell, add that exact path to the computer's
+   trusted roots. Do not run `mkcert -CAROOT` in the elevated shell: with a
+   separate administrator account it names that account's CA.
+
+   ```powershell
+   certutil -addstore -f Root 'C:\Users\YOU\AppData\Local\mkcert\rootCA.pem'
+   ```
+
+   This is a change to the trust of the whole computer. Keep the CA private key
+   (`rootCA-key.pem`) private.
+3. Pick a free loopback port for the broker, for example `9444`, and proxy a
+   tailnet HTTPS port to it with a **verified** `https://` target:
+
+   ```powershell
+   tailscale serve --bg --https=9443 https://127.0.0.1:9444
+   ```
+
+   Tailscale Serve then checks the broker's certificate for `127.0.0.1` on
+   every connection. Never use an `https+insecure://` or `http://` target. The
+   Serve proxy stays configured when the broker stops, and another local user
+   can then take the free port. With a verified target, Serve refuses that
+   listener, because it has no certificate from your CA. With an unverified
+   target, Serve would show that user's fake unlock page at your trusted
+   tailnet name, and could collect the master password.
+4. Start the broker with the Tailscale origin and the loopback port. Use the
+   same origin for every CLI command and for `akdbx extension build`:
+
+   ```powershell
+   $env:AKDBX_UNLOCK_ORIGIN = 'https://node.tailnet.ts.net:9443'
+   .\.venv\Scripts\akdbx.exe serve "$private\synthetic.kdbx" --local-port 9444 `
+     --tls-cert "$private\localhost.pem" --tls-key "$private\localhost-key.pem"
+   ```
+
+The broker then gives links on the Tailscale origin. Open them on any tailnet
+device, including the Windows computer itself. The page accepts a request only
+when its `Host` and `Origin` match the configured origin; Tailscale Serve keeps
+both. A remote origin must be a DNS name, not an IP address, and needs
+`--local-port` from 1024 to 65535. A loopback origin keeps its own port and
+needs no `--local-port`. Limit access to the Serve port with tailnet access
+controls. Do not use `tailscale funnel`: it publishes the page to the internet.
+When you stop using remote unlock, remove the proxy with
+`tailscale serve --https=9443 off`.
+
+### Authenticator capture native host
+
+From 0.22.0 the browser native host that captures a website's authenticator
+setup QR also runs on Windows. The extension and the review flow are the same
+as on Linux; see the skill's
+[private import reference](../skills/akdbx/references/private-import.md).
+
+The broker serves a separate capture pipe whose name is its RPC pipe name plus
+`-capture` (for example `\\.\pipe\akdbx-SID-SESSION-capture`). The pipe
+accepts one message type, which stages one captured setup for private review.
+It never returns a key, cannot unlock the vault, and is not part of the agent
+RPC. Like the RPC pipe, it accepts only clients of this Windows user and
+desktop session, and the host connects only to a pipe server of the same user
+and session.
+
+Build the extension, load it unpacked, then register the host for one browser
+with its extension ID and the broker's unlock origin:
+
+```powershell
+.\.venv\Scripts\akdbx-browser-import.exe build-extension "$private\capture-extension"
+.\.venv\Scripts\akdbx-browser-import.exe install-host --browser chrome `
+  --extension-id EXTENSION_ID --origin $env:AKDBX_UNLOCK_ORIGIN
+```
+
+`--browser` is `chrome`, `edge` or `helium`. Without `--socket` the host uses
+the capture pipe of this user's default broker; give `--socket` with the
+`-capture` pipe when the broker runs with its own `--socket`. The installer
+writes `%LOCALAPPDATA%\akdbx\browser-import.json` (private to this user, SYSTEM
+and administrators), a manifest under `%LOCALAPPDATA%\akdbx\browser-import`, and
+one `HKEY_CURRENT_USER` registry value. The manifest starts the installed
+`akdbx-browser-import.exe` of this environment directly. Without `--socket`
+the host finds the default pipe of the current desktop session each time it
+starts. It never replaces another registration. A second browser must use the
+same extension ID, origin and pipe. `install-host` reads no vault and starts no
+browser. `uninstall-host --browser NAME` removes that browser's registry value
+and manifest. When it removes the last browser, it also removes the shared
+configuration; to change the origin, extension ID or pipe, uninstall every
+browser and install again.
 
 ## Browser extension route
 

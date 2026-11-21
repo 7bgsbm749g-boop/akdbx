@@ -306,6 +306,8 @@ def handler_for(state: UnlockState):
             # Linux uses a protected Unix backend and Tailscale's identity
             # header. Windows terminates trusted HTTPS on loopback itself;
             # never accept a caller-supplied proxy identity on that listener.
+            # Its configured origin is loopback or, for unlock from another
+            # device, the Tailscale Serve name that proxies to the listener.
             origin = getattr(self.server, 'local_origin', None)
             if origin is not None:
                 expected = urlsplit(origin)
