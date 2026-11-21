@@ -18,9 +18,10 @@ release or upgrade a broker.
 
 ## How it works
 
-1. The broker starts **locked**. The user unlocks it on a private HTTPS page
-   (over Tailscale on Linux; on loopback or over Tailscale Serve on Windows). The master password never
-   passes through chat, the CLI, arguments or the environment.
+1. The broker starts **locked**. The user unlocks it on a private HTTPS page,
+   on the broker's computer or from another tailnet device through Tailscale
+   Serve; see [Private HTTPS pages](docs/private-pages.md). The master password
+   never passes through chat, the CLI, arguments or the environment.
 2. The agent runs `akdbx search`, `search-cards` or `search-identities` and gets
    metadata plus a single-use handle that expires after five minutes.
 3. The agent verifies the page and field, then asks the broker to **pin** that
@@ -58,15 +59,19 @@ pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
 
 ## Platforms
 
-- **Linux** (X11 desktop, Tailscale Serve for the unlock page): the original
-  platform. The setup notes in this README and the
-  [VPS setup reference](skills/akdbx/references/vps-setup.md) describe it.
+- **Linux** (X11 desktop): the original platform. The setup notes in this
+  README and the [VPS setup reference](skills/akdbx/references/vps-setup.md)
+  describe it. The unlock page is the same loopback HTTPS page as on Windows
+  (0.23.0+), optionally reached from other tailnet devices through Tailscale
+  Serve, or the earlier Tailscale Serve Unix-socket route.
 - **Windows** (0.17.0+): the same features. It uses local named pipes, Windows
   access checks, a loopback HTTPS page (from 0.22.0 also reachable from other
   tailnet devices through Tailscale Serve) and directed Unicode window messages for
   native-app username and TOTP fills. See [Windows setup and validation](docs/windows.md)
   for browser and engine requirements, limits and pending checks. The Linux
-  socket and Tailscale notes below do not describe the Windows transport.
+  broker-socket and Unix-socket unlock notes below do not describe the Windows
+  transport. [Private HTTPS pages](docs/private-pages.md) describes the unlock
+  page for both platforms.
 
 ## Security model
 
@@ -78,7 +83,7 @@ pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
 - The Unix socket and its directory are mode `0600` and `0700`. The CLI rejects
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
   peer UID before sending a request.
-- The broker starts locked. The user enters the master password only on the private Tailscale HTTPS unlock page, never in chat, terminal input, arguments, or environment variables.
+- The broker starts locked. The user enters the master password only on the private HTTPS unlock page, never in chat, terminal input, arguments, or environment variables. The page is HTTPS on `127.0.0.1` with the broker's own certificate, or (Linux only) a Unix socket behind Tailscale Serve; it never binds the LAN or tailnet and never serves plain HTTP over TCP.
 - After unlock, password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. They never send password keys or Tab. Unsupported targets refuse delivery without terminal approval.
 - Errors are deliberately generic after the typing boundary.
 
@@ -132,17 +137,18 @@ browser or the broker restarts; the popup then shows a new code.
 
 ## CDP route: install and run (Linux)
 
-Linux desktop with X11, X-Resource 1.2 local PID support and EWMH window-manager metadata. Set `AKDBX_UNLOCK_ORIGIN` in your private local environment to the HTTPS origin configured in Tailscale Serve before starting the broker or using the CLI. For example, `https://node.example:9443` is an illustrative origin, not a deployment address:
+Linux desktop with X11, X-Resource 1.2 local PID support and EWMH window-manager metadata. Set `AKDBX_UNLOCK_ORIGIN` in your private local environment to the private page's HTTPS origin before starting the broker or using the CLI, and create its certificate as [Private HTTPS pages](docs/private-pages.md) describes. `https://localhost:9443` is the default:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e .
 .venv/bin/akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" \
-  serve /absolute/path/to/passwords.kdbx --web-unlock \
+  serve /absolute/path/to/passwords.kdbx \
+  --tls-cert ~/.config/akdbx/tls/localhost.pem --tls-key ~/.config/akdbx/tls/localhost-key.pem \
   --password-browser-profile /absolute/path/to/chrome-user-data
 ```
 
-Keep the broker process running. Open its private unlock page from your Tailscale-connected device and enter the master password there. The broker needs no terminal input and can run in a persistent agent PTY that the user cannot access. After unlocking, use another shell—or an agent—to search, focus the destination, and explicitly fill:
+Keep the broker process running. Open its private unlock page (on this computer for a loopback origin, or from a tailnet device for a Tailscale origin) and enter the master password there. The broker needs no terminal input and can run in a persistent agent PTY that the user cannot access. After unlocking, use another shell—or an agent—to search, focus the destination, and explicitly fill:
 
 ```bash
 .venv/bin/akdbx search github.com
@@ -180,26 +186,38 @@ target and focus checks apply to saved and generated passwords.
 
 There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; it emits a deprecation warning. All fill commands now require `--target`. Omit `--yes-on-fill` from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
 
-## Unlock remotely over Tailscale
+## Private unlock page
 
-On your host, set the private deployment origin as described above, then start the broker without entering the master password locally:
+Start the broker without entering the master password locally, as above. The
+broker starts locked. `status` and `search` responses provide a one-time
+unlock link under your configured HTTPS origin. Open it, enter the KDBX master
+password, and then use the broker normally. The page and URL are
+non-cacheable, attempts are rate-limited, request logging is disabled, and the
+URL token is replaced after a successful unlock.
 
-```bash
-.venv/bin/akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" \
-  serve /absolute/path/to/passwords.kdbx --web-unlock \
-  --password-browser-profile /absolute/path/to/chrome-user-data
-```
+Linux and Windows serve the same page. [Private HTTPS pages](docs/private-pages.md)
+describes its three setups:
 
-The broker starts locked. `status` and `search` responses provide a one-time unlock link under your configured HTTPS origin. Open it from a device signed into the tailnet, enter the KDBX master password, and then use the broker normally. The backend listens only on a Unix-domain socket in the broker's private runtime directory; it does not open a TCP port. Tailscale Serve supplies HTTPS, tailnet access control, and the authenticated identity header. The filesystem boundary prevents another local UID from replacing a stopped backend behind the trusted HTTPS origin. The page and URL are non-cacheable, attempts are rate-limited, request logging is disabled, and the URL token is replaced after a successful unlock.
+- **Loopback HTTPS page** (`--tls-cert`, `--tls-key`): the broker serves HTTPS
+  on `127.0.0.1` with your certificate. Open the link on the broker's
+  computer. No Tailscale or other proxy is needed.
+- **Unlock from another device** (add a Tailscale origin and `--local-port`):
+  Tailscale Serve proxies the tailnet name to the loopback listener through a
+  verified `https://127.0.0.1:PORT` target.
+- **Tailscale Serve Unix socket** (Linux only, no TLS options): the earlier
+  Linux route. The backend listens only on a Unix-domain socket in the
+  broker's private runtime directory, and Tailscale Serve supplies HTTPS and
+  the authenticated identity header. Windows has no such route, because
+  Tailscale Serve proxies to Unix sockets only on Linux, macOS and BSD.
 
 The CLI independently trusts that HTTPS origin; it rejects broker responses
 containing an HTTP, malformed, credential-bearing, or different-origin unlock
 link. Every deployment must configure the client with the intended origin
 using global `--unlock-origin HTTPS_ORIGIN` (or `AKDBX_UNLOCK_ORIGIN`) before the
-subcommand. The same setting configures the broker's private-page origin at startup; the built-in default is a non-routable example. Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
+subcommand. The same setting configures the broker's private-page origin at startup; the built-in default is `https://localhost:9443` on both platforms (before 0.23.0, Linux used a non-routable example). Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
 requires global `--broker-uid UID` (or `AKDBX_BROKER_UID`).
 
-The master password travels inside the tailnet HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Unlock remains valid for the lifetime of the broker process.
+The master password travels inside the HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Unlock remains valid for the lifetime of the broker process.
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
@@ -668,12 +686,15 @@ unlock. Old handles do not survive a restart. See the
 [VPS setup reference](skills/akdbx/references/vps-setup.md) for the deployment
 command.
 
-Remote unlock requires Tailscale Serve to proxy HTTPS to the broker's Unix
-socket, not to a persistent loopback TCP port. Root must install that mapping
-with Tailscale 1.98.9 or newer (older versions had a Unix-socket Serve
-authorization flaw). Starting an updated broker does not migrate an existing
-Serve mapping; follow the setup reference when deployment changes are
-authorized.
+Remote unlock requires Tailscale Serve to proxy HTTPS either to the broker's
+Unix socket (Linux) or to the broker's own HTTPS listener through a verified
+`https://127.0.0.1:PORT` target (Linux and Windows). Never map it to plain
+HTTP on a loopback TCP port or to an `https+insecure://` target: another local
+user could take that port while the broker is stopped. Root must install a
+Unix-socket mapping with Tailscale 1.98.9 or newer (older versions had a
+Unix-socket Serve authorization flaw). Starting an updated broker does not
+migrate an existing Serve mapping; follow the setup reference when deployment
+changes are authorized.
 
 ## Development
 

@@ -65,7 +65,7 @@ akdbx setup-totp HANDLE --title 'Example' --username 'alice@example.com' \
 ```
 
 The command returns `write_handle`, `private_url` and `state: pending`.
-The user opens that private Tailscale page, confirms the displayed destination,
+The user opens that private HTTPS page, confirms the displayed destination,
 and enters the Base32 setup key or otpauth TOTP URI there. Never ask for the key
 in chat, pass it through RPC/CLI arguments/environment variables, read a live
 QR/setup key with GUI/browser tools, or extract a vault field. Do not observe

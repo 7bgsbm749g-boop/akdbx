@@ -11,7 +11,9 @@ live deployment is separate work; keep its current vault and credentials intact.
 
 1. Select the exact existing vault entry with a fresh search. Start the usual
    `setup-totp HANDLE --title ... --username ... --url ... --group ...` request.
-2. Give the user its private URL. On their Tailscale-connected device, they open
+2. Give the user its private URL. They open it where the unlock link opens (the
+   broker's computer for a loopback origin, any tailnet device for a Tailscale
+   origin) and select
    **Import QR images / Google export, or review a browser capture**.
 3. The user can enter a Base32 setup key / standard `otpauth://totp/` URI, select
    QR images, or take a QR photo. The images stay in the browser and are decoded
@@ -70,7 +72,11 @@ Load that directory through **chrome://extensions > Developer mode > Load
 unpacked** in the established main profile. Do not create a new profile to
 work around an error. Copy Chrome's extension ID, then explicitly register the
 native host using the current independently configured unlock origin and the
-broker's **HTTP unlock socket**, not its agent RPC socket:
+broker's **HTTP unlock socket**, not its agent RPC socket. On Linux this
+socket (`akdbx-unlock.sock` beside the broker socket, `agentic-kdbx-unlock.sock`
+beside a legacy `agentic-kdbx.sock`, or `--unlock-socket`)
+exists on both private-page routes: with `--tls-cert` and `--tls-key` (0.23.0+)
+it serves only this capture request, as the capture pipe does on Windows.
 
 ```bash
 /absolute/path/to/.venv/bin/akdbx-browser-import install-host \

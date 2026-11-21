@@ -48,8 +48,8 @@ class ConnectionDeadline:
 class ThreadingUnixHTTPServer(ThreadingHTTPServer):
     """HTTP over a filesystem-protected Unix socket for Tailscale Serve."""
 
-    # Windows CPython does not expose AF_UNIX. The Windows subclass supplies
-    # AF_INET and its own initializer; keep importing the shared handler safe.
+    # Windows CPython does not expose AF_UNIX. The loopback HTTPS subclass
+    # supplies AF_INET and its own initializer; keep importing it safe.
     address_family = getattr(socket, 'AF_UNIX', None)
     daemon_threads = True
     request_queue_size = MAX_HTTP_CONNECTIONS
@@ -303,18 +303,19 @@ def handler_for(state: UnlockState):
             return bool(self._identity())
 
         def _identity(self) -> str:
-            # Linux uses a protected Unix backend and Tailscale's identity
-            # header. Windows terminates trusted HTTPS on loopback itself;
-            # never accept a caller-supplied proxy identity on that listener.
+            # The loopback HTTPS listener (Linux and Windows) terminates TLS
+            # itself; never accept a caller-supplied proxy identity there.
             # Its configured origin is loopback or, for unlock from another
             # device, the Tailscale Serve name that proxies to the listener.
+            # Only the Linux Unix-socket backend, which Tailscale Serve alone
+            # can reach, uses Tailscale's identity header.
             origin = getattr(self.server, 'local_origin', None)
             if origin is not None:
                 expected = urlsplit(origin)
                 if (self.headers.get_all('Host', []) != [expected.netloc]
                         or self.headers.get_all('Origin', []) not in ([], [origin])):
                     return ''
-                return 'local Windows user'
+                return 'local user'
             return self.headers.get('Tailscale-User-Login', '')
 
         def _token(self) -> str:

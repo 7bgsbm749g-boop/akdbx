@@ -274,7 +274,7 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
             code, _, page = call(servers[0].server_address, "POST", path, urlencode({"password": MASTER}), timeout=30)
             assert code == 200
             assert MASTER.encode() not in page and SECRET.encode() not in page
-            assert command("status") == {"ok": True, "locked": False, "version": "0.22.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities(), **expected_extension_capabilities()}
+            assert command("status") == {"ok": True, "locked": False, "version": "0.23.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities(), **expected_extension_capabilities()}
             search = command("search", "example")
             assert typer.events == []  # Unlock/search must not trigger a fill.
             handle = search["entries"][0]["handle"]
@@ -296,7 +296,6 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
 
 
 @pytest.mark.parametrize(("environment", "global_options", "serve_options", "expected"), [
-    (None, [], [], "https://unlock.example.invalid:9443"),
     ("https://configured.example:9443", [], [], "https://configured.example:9443"),
     ("https://configured.example:9443", ["--unlock-origin", "https://override.example:8443"], [], "https://override.example:8443"),
     ("https://configured.example:9443", [], ["--unlock-url", "https://legacy.example:9443"], "https://legacy.example:9443"),
@@ -750,10 +749,35 @@ def test_generated_handles_starting_with_hyphen_use_positional_separator(command
     assert getattr(args, field) == '-synthetic-opaque-handle'
 
 
-@pytest.mark.parametrize('option', ['--tls-cert', '--tls-key'])
-def test_linux_serve_rejects_windows_tls_options_cleanly(option, tmp_path, capsys):
-    assert cli.main(['--socket', str(tmp_path / 'unused.sock'), 'serve',
-                     str(tmp_path / 'unused.kdbx'), option, 'unused.pem']) == 2
+@pytest.mark.parametrize('global_options, options', [
+    ([], []),  # the default origin is https://localhost:9443
+    (['--unlock-origin', 'https://localhost:9443'], []),
+    (['--unlock-origin', 'https://node.example:9443'], ['--local-port', '9444']),
+    (['--unlock-origin', 'https://node.example:9443'], ['--unlock-url', 'https://127.0.0.1:9443']),
+    (['--unlock-origin', 'https://localhost:9443'], ['--tls-cert', 'unused.pem', '--tls-key', 'unused.pem',
+                                                     '--unlock-url', 'https://localhost:9443']),
+])
+def test_linux_serve_refuses_a_loopback_route_without_tls_cleanly(global_options, options, tmp_path,
+                                                                 capsys, monkeypatch):
+    monkeypatch.delenv('AKDBX_UNLOCK_ORIGIN', raising=False)
+    monkeypatch.setattr(cli, 'start_unlock_server', lambda *_: pytest.fail('socket route started'))
+    monkeypatch.setattr(cli, 'start_local_unlock_server', lambda *_a, **_k: pytest.fail('HTTPS route started'))
+    assert cli.main(['--socket', str(tmp_path / 'unused.sock'), *global_options, 'serve',
+                     str(tmp_path / 'unused.kdbx'), *options]) == 2
     captured = capsys.readouterr()
-    assert not captured.out and 'Windows options' in captured.err
+    assert not captured.out and ('needs --tls-cert and --tls-key' in captured.err
+                                 or 'belongs to the Tailscale Serve socket route' in captured.err)
     assert 'Traceback' not in captured.err
+
+
+@pytest.mark.parametrize('failure', [ValueError('synthetic private detail'), OSError('synthetic private detail')])
+def test_linux_https_startup_errors_are_clean_and_private(failure, tmp_path, capsys, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise failure
+    monkeypatch.setattr(cli, 'X11Typer', RecordingTyper)
+    monkeypatch.setattr(cli, 'start_local_unlock_server', fail)
+    assert cli.main(['--socket', str(tmp_path / 'private' / 'unused.sock'), '--unlock-origin', 'https://localhost:9443',
+                     'serve', str(tmp_path / 'unused.kdbx'), '--tls-cert', 'c.pem', '--tls-key', 'k.pem']) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and 'could not start HTTPS unlock' in captured.err
+    assert 'synthetic private detail' not in captured.err and 'Traceback' not in captured.err
