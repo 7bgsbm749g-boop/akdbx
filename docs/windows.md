@@ -220,7 +220,7 @@ for the commands, capabilities and security model.
    pairing page**, check that the page shows the same code, and enter the
    master password there. If the broker is locked, this also unlocks it.
    Pairing lasts until the browser or the broker restarts. The popup footer
-   shows the extension version, for example **akdbx extension 1.0.0**.
+   shows the extension version, for example **akdbx extension 0.1.0**.
 
 ### Update the extension
 

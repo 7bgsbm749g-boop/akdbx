@@ -100,7 +100,7 @@ metadata only. `status` advertises `extension_protocol: 1`, `fill_routes`,
 item shows the `version` that browser loaded and a `version_status`
 (`current`, `outdated` or `newer`).
 
-The extension has its own semantic version, starting at 1.0.0, separate from
+The extension has its own semantic version, starting at 0.1.0, separate from
 the akdbx version; the popup shows it in its footer. After an akdbx update,
 `version_status: "outdated"` means the unpacked copy is stale: run
 `extension build` into the same folder again, then click reload on the akdbx

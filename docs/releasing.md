@@ -58,9 +58,9 @@ change to the files the build writes (every file except `config.js`; this
 includes the generated `content.js`, which copies the CDP route's DOM checks,
 so a change to those checks also changes the extension):
 
-- patch (`1.0.1`) for fixes;
-- minor (`1.1.0`) for features;
-- major (`2.0.0`) for a protocol break that needs a matching broker.
+- patch (`0.1.1`) for fixes;
+- minor (`0.2.0`) for features;
+- major (`1.0.0`) for a protocol break that needs a matching broker.
 
 `tests/fill_extension_fingerprint.json` records a SHA-256 fingerprint of the
 built files with the version. `test_extension_version_changes_with_its_contents`
