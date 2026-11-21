@@ -37,7 +37,7 @@ def valid_receipt(args, response, payload):
         return False
     if response.get('ok') is False:
         error = response.get('error')
-        allowed = {'ok', 'error', 'unlock_url'} if error == 'vault locked' else {'ok', 'error'}
+        allowed = {'ok', 'error', 'unlock_url', 'unlock_blocked'} if error == 'vault locked' else {'ok', 'error'}
         return isinstance(error, str) and len(error) <= 300 and set(response) <= allowed
     if response.get('ok') is not True:
         return False

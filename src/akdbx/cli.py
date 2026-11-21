@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
@@ -191,7 +192,7 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         raise ValueError("configured unlock origin must be an HTTPS origin without path, query, or credentials")
     if type(response.get("ok")) is not bool:
         raise ProtocolError("invalid broker response")
-    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'passwordless_identity_supported', 'target_fill_required', 'totp_supported'):
+    for capability in ('locked', 'unlock_blocked', 'unlock_block_saved', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'passwordless_identity_supported', 'target_fill_required', 'totp_supported'):
         if capability in response and type(response[capability]) is not bool:
             raise ProtocolError("invalid broker response")
     if 'version' in response and not isinstance(response['version'], str):
@@ -206,6 +207,13 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         _validate_unlock_url(response["private_url"], expected_unlock_origin)
     if "unlock_url" in response:
         _validate_unlock_url(response["unlock_url"], expected_unlock_origin)
+    if "unlock_origin" in response:
+        # A blocked link's status has no URL, only its non-secret origin.
+        origin = response["unlock_origin"]
+        parts = urlsplit(origin) if isinstance(origin, str) else None
+        if parts is None or parts.path or parts.query or parts.fragment:
+            raise ProtocolError("invalid broker response")
+        _validate_unlock_url(origin + "/?token=origin-check", expected_unlock_origin)
     pairing = response.get("extension_pairing")
     if pairing is not None:
         # Pairing links are private broker pages, like the unlock link.
@@ -329,7 +337,7 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--web-unlock", action="store_true", help="compatibility flag: private web unlock is always enabled")
     start.add_argument("--unlock-socket", type=Path, help=argparse.SUPPRESS)
     start.add_argument("--unlock-url", help=argparse.SUPPRESS)
-    start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket")
+    start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket. Linux saves a blocked unlock link beside this file when it is given, otherwise in ${XDG_STATE_HOME:-~/.local/state}/akdbx")
     start.add_argument('--secret-sinks', type=Path, default=os.environ.get('AKDBX_SECRET_SINKS'),
                        help='operator sink configuration for deliver-secret (root- or broker-owned, not group/other writable)')
     start.add_argument('--tls-cert', type=Path, help='trusted PEM certificate for the loopback HTTPS private page')
@@ -407,10 +415,21 @@ def parser() -> argparse.ArgumentParser:
     for command in (fill, generated, totp):
         command.add_argument('--target', required=True, help='fresh single-use pin-target token; no global fallback')
     commands.add_parser("status", help="check broker status")
+    new_link = commands.add_parser(
+        "new-unlock-link",
+        help="replace a blocked unlock link; only after the user confirms the failed attempts were theirs",
+        description="Works only while the current unlock link is blocked after three failed attempts. "
+                    "The broker cannot verify the user: ask the user first whether they made the failed "
+                    "attempts and want a new link. Never retry automatically.")
+    new_link.add_argument("--user-confirmed", action="store_true", required=True,
+                          help="the user said yes to both questions")
     subscribe = commands.add_parser("subscribe-unlock", help="register a one-shot HTTPS unlock webhook; no active agent wait")
     subscribe.add_argument("--webhook-url-file", required=True, type=Path,
                            help="owned mode-0600 file containing the private callback URL")
     subscribe.add_argument("--ttl", type=int, default=0, help="0 waits until unlock/cancel (default); 60–3600 seconds only for an explicitly time-limited wait")
+    subscribe.add_argument("--blocked-events", action="store_true",
+                           help="also send akdbx.unlock-blocked when the unlock link is blocked (broker 0.25.0+); "
+                                "only for a consumer that rechecks status on every event")
     for name in ("unlock-subscription-status", "unsubscribe-unlock"):
         command = commands.add_parser(name, help="inspect/cancel a one-shot unlock subscription")
         command.add_argument("subscription_id")
@@ -480,6 +499,52 @@ def default_notification_state(socket_path: Path) -> Path:
     return socket_path.with_name(name)
 
 
+def default_unlock_block_state(socket_path: Path) -> Path:
+    """Linux: where the broker saves a blocked unlock link by default.
+
+    The runtime folder that holds the socket is cleared on reboot or logout,
+    so the block lives in the persistent per-user state folder instead,
+    keyed to the broker endpoint so two brokers never share one flag.
+    """
+    base = os.environ.get('XDG_STATE_HOME', '')
+    root = Path(base) if os.path.isabs(base) else Path.home() / '.local' / 'state'
+    key = hashlib.sha256(os.fsencode(os.path.realpath(socket_path))).hexdigest()
+    return root / 'akdbx' / f'unlock-blocked-{key}.json'
+
+
+def refuse_untrusted_unlock_block(broker) -> bool:
+    """Return True, after it prints why, when `serve` must not start.
+
+    A saved unlock-link block that cannot be trusted never starts a broker
+    blocked with no way out, and never silently unblocks it.
+    """
+    manager = broker.unlock_notifications
+    try:
+        manager.load_unlock_blocked()
+        return False
+    except Exception as exc:
+        path = manager._blocked_path()
+        # A folder failure names the folder; a file failure has no detail.
+        detail = f' ({exc})' if isinstance(exc, RuntimeError) else ''
+    if os.name == 'nt':
+        rules = (f'{path.parent} must be a folder that only this user, SYSTEM and administrators can access, '
+                 'and the file must be private to this user')
+    else:
+        rules = (f'{path.parent} and each folder above it must be owned by you or root and not writable by '
+                 f'group or others (for example: chmod 700 {path.parent}), and the file must be a regular file '
+                 'you own with mode 0600')
+    # Print first: the notifiers have not started work, and a failed state
+    # write while closing them must not hide which permissions to fix.
+    print(f'refusing to start: the saved unlock-link block {path} cannot be trusted{detail}. {rules}. '
+          'Fix the permissions, or start with --notification-state FILE in a private folder.', file=sys.stderr)
+    for notifier in (manager, broker.card_save_notifications):
+        try:
+            notifier.close()
+        except Exception:
+            pass
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run one CLI command and return its process exit status."""
     args = parser().parse_args(argv)
@@ -517,6 +582,8 @@ def main(argv: list[str] | None = None) -> int:
                 print('could not open the private notification state; use --notification-state with a file in a '
                       'folder that only this user, SYSTEM and administrators can access', file=sys.stderr)
                 return 2
+            if refuse_untrusted_unlock_block(broker):
+                return 2
             try:
                 from .windows_rpc import capture_pipe
                 unlock_server, unlock_url = start_windows_unlock_server(
@@ -545,9 +612,14 @@ def main(argv: list[str] | None = None) -> int:
                 broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
                                 password_browser_profile=args.password_browser_profile,
                                 notification_state_path=args.notification_state or default_notification_state(args.socket),
+                                # An explicit --notification-state keeps the block beside it.
+                                unlock_block_path=(None if args.notification_state
+                                                   else default_unlock_block_state(args.socket)),
                                 secret_sinks_path=args.secret_sinks, default_fill_route=args.default_fill_route)
             except SinkError as exc:
                 print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
+                return 2
+            if refuse_untrusted_unlock_block(broker):
                 return 2
         unlock_name = ("agentic-kdbx-unlock.sock"
                        if args.socket.name == "agentic-kdbx.sock"
@@ -570,7 +642,13 @@ def main(argv: list[str] | None = None) -> int:
             unlock_server, unlock_url = start_unlock_server(
                 broker, database, keyfile, unlock_socket, args.unlock_url or args.unlock_origin,
             )
-        print(f"Vault locked. Open the private HTTPS page: {unlock_url}", file=sys.stderr)
+        if broker.unlock_blocked:
+            # A restored block: the link answers 403, so print no URL.
+            print("Vault locked. The unlock link is blocked after three failed master-password attempts. "
+                  "Ask the user whether they made the failed attempts and want a new link; only after the "
+                  "user confirms, run: akdbx new-unlock-link --user-confirmed", file=sys.stderr)
+        else:
+            print(f"Vault locked. Open the private HTTPS page: {unlock_url}", file=sys.stderr)
         print(f"Broker ready at {args.socket}; Ctrl-C locks it.", file=sys.stderr)
         try:
             serve(args.socket, broker)
@@ -596,6 +674,8 @@ def main(argv: list[str] | None = None) -> int:
     payload = {"action": "ping" if args.command == "status" else args.command}
     if args.command in {'unlock-subscription-status', 'unsubscribe-unlock'}:
         payload['subscription_id'] = args.subscription_id
+    elif args.command == 'new-unlock-link':
+        payload['user_confirmed'] = args.user_confirmed is True
     elif args.command == 'pin-password-target':
         if args.mode == 'login' and not args.username_selector:
             print('--mode login requires --username-selector', file=sys.stderr)
@@ -710,6 +790,27 @@ def main(argv: list[str] | None = None) -> int:
                 print('could not read private webhook URL file; subscription not sent', file=sys.stderr)
                 return 2
             payload.update(webhook_url=webhook_url, ttl=args.ttl, notification_protocol=1)
+            if args.blocked_events and capabilities.get('unlock_notifications_blocked_event') is True:
+                # Opt in only on request: a consumer that removes its one-shot
+                # trigger on any event must get only akdbx.unlocked. Older
+                # brokers keep their unlock-only subscription.
+                payload['blocked_events'] = True
+        if args.command == 'new-unlock-link':
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True or type(capabilities.get('unlock_link_protocol')) is not int
+                    or capabilities['unlock_link_protocol'] != 1):
+                print(json.dumps({'ok': False, 'error': 'broker lacks unlock link protocol 1; require broker 0.25.0 or newer; request not sent'}))
+                return 1
+            if capabilities.get('unlock_blocked') is not True:
+                print(json.dumps({'ok': False, 'error': 'the current unlock link is not blocked; no link created; request not sent'}))
+                return 1
+            # The status request already checked this origin against the
+            # configured one; without it the CLI cannot check before the
+            # broker replaces the link.
+            if not isinstance(capabilities.get('unlock_origin'), str):
+                print(json.dumps({'ok': False, 'error': 'broker did not report its unlock origin; no link created; request not sent'}))
+                return 1
         if args.command in {'setup-totp', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -878,7 +979,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.command in {'setup-totp', 'fill-totp'}:
         allowed = ({'ok', 'write_handle', 'private_url', 'state'} if args.command == 'setup-totp'
-                   else {'ok', 'filled', 'target_delivery'}) if response.get('ok') else {'ok', 'error', 'retry_after', 'unlock_url', 'delivery'}
+                   else {'ok', 'filled', 'target_delivery'}) if response.get('ok') else {'ok', 'error', 'retry_after', 'unlock_url', 'unlock_blocked', 'delivery'}
         invalid_delivery = 'delivery' in response and (
             args.command != 'fill-totp' or response['delivery'] not in ('not-started', 'uncertain'))
         invalid_retry = 'retry_after' in response and (
@@ -921,8 +1022,14 @@ def main(argv: list[str] | None = None) -> int:
         if response.get('target_delivery') != expected_delivery or invalid_pin or invalid_fill:
             print('target operation outcome unconfirmed: receipt rejected; do not retry automatically', file=sys.stderr)
             return 2
+    if args.command == 'new-unlock-link' and response.get('ok') and (
+            set(response) != {'ok', 'unlock_url', 'locked'} or type(response['locked']) is not bool):
+        print('new unlock link rejected: unexpected broker response; do not retry automatically', file=sys.stderr)
+        return 2
     if args.command in {'merge', 'admit'} and response.get('error') == 'vault locked':
-        response['continuation'] = 'Open unlock_url privately, then repeat the same command, policy and operation ID.'
+        response['continuation'] = ('The unlock link is blocked: follow the skill before any new-unlock-link, then repeat the same command, policy and operation ID.'
+                                    if response.get('unlock_blocked') else
+                                    'Open unlock_url privately, then repeat the same command, policy and operation ID.')
         response['operation_id'] = payload['operation_id']
     if args.command in URL_CHANGES and response.get('ok') and (
             set(response) != {'ok', 'state', 'metadata', 'additional_urls', 'changed', 'url'}

@@ -192,8 +192,17 @@ Start the broker without entering the master password locally, as above. The
 broker starts locked. `status` and `search` responses provide a one-time
 unlock link under your configured HTTPS origin. Open it, enter the KDBX master
 password, and then use the broker normally. The page and URL are
-non-cacheable, attempts are rate-limited, request logging is disabled, and the
-URL token is replaced after a successful unlock.
+non-cacheable, request logging is disabled, and the URL token is replaced
+after a successful unlock.
+
+Each link allows three failed master-password attempts in total (0.25.0+).
+The third failure blocks the link at once, and time never expires it. While
+it is blocked, `status` reports `unlock_blocked: true` without a link, and
+waiting unlock notifications that opted in get an `akdbx.unlock-blocked`
+event. A broker restart keeps the block. Only
+`akdbx new-unlock-link --user-confirmed` replaces a blocked link, after the
+user confirms that the failures were theirs; see
+[Failed attempts block the link](docs/private-pages.md#failed-attempts-block-the-link).
 
 Linux and Windows serve the same page. [Private HTTPS pages](docs/private-pages.md)
 describes its three setups:
@@ -220,6 +229,25 @@ requires global `--broker-uid UID` (or `AKDBX_BROKER_UID`).
 The master password travels inside the HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Unlock remains valid for the lifetime of the broker process.
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
+
+## Unlock from the internet
+
+Linux and Windows have the same choices. In order of recommendation:
+
+1. **Local only**: the loopback HTTPS page on the broker's computer.
+2. **A private proxy** such as Tailscale Serve: only your tailnet can reach the
+   page. This is the most secure remote option; use it first.
+3. **A public tunnel that does not decrypt traffic**, such as Tailscale
+   Funnel: available, but not recommended. Anyone on the internet can reach
+   the page. On Linux it needs the loopback HTTPS page, not the Unix-socket
+   route.
+4. **A proxy that decrypts HTTPS**, such as Cloudflare Tunnel: STRONGLY
+   DISCOURAGED. The proxy operator can read the master password.
+
+On a public route, the secret link and the three-attempt block are the only
+protections. An akdbx relay service is planned; it is not available yet.
+[Unlock from the internet](docs/private-pages.md#unlock-from-the-internet) has
+the setup.
 
 ## Shown-once secrets and service sinks (0.20.0)
 
@@ -420,6 +448,16 @@ Require the running broker's `unlock_notifications_supported: true` and integer
 `unlock_notifications_protocol: 1`; source/CLI updates alone do not activate a
 running broker. See [the notification workflow](skills/akdbx/references/unlock-notifications.md)
 for exact T3 registration, cleanup and recovery.
+
+From 0.25.0, a subscription can opt in with `blocked_events: true` (the CLI
+sends it with `subscribe-unlock --blocked-events` when the broker advertises
+`unlock_notifications_blocked_event: true`). When the unlock link is blocked after three failed attempts, each such
+waiting subscription also gets `{"event": "akdbx.unlock-blocked", "locked":
+true, "unlock_blocked": true, ...}` with a new event ID. The subscription stays
+`subscribed` and later sends the normal `akdbx.unlocked` event to the same URL.
+Subscriptions without the opt-in get only `akdbx.unlocked`. The block itself
+is saved, so a restarted or rebooted broker stays blocked and sends the blocked
+event again to waiting opted-in subscriptions.
 
 ## Authenticator codes (0.10.0)
 

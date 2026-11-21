@@ -260,7 +260,7 @@ def serve(path, broker, stop=None):
     try:
         try:
             # Restored card-save results go out only when the endpoint is ready.
-            broker.card_save_notifications.resume()
+            broker.resume_notifications()
         except BaseException:
             pending.Close()
             raise

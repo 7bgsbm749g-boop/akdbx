@@ -60,7 +60,7 @@ def add_parsers(commands):
 def valid_receipt(command, response, args):
     if response.get('ok') is not True:
         return (response.get('ok') is False and response.get('error') in ERRORS
-                and set(response) <= {'ok', 'error', 'unlock_url', 'delivery'}
+                and set(response) <= {'ok', 'error', 'unlock_url', 'unlock_blocked', 'delivery'}
                 and response.get('delivery', 'not-started') in {'not-started', 'uncertain'})
     if command in NOTIFICATIONS:
         keys = {'ok', 'subscription_id', 'state', 'attempts', 'result'}

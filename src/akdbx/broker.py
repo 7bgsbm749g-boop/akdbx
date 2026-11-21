@@ -56,6 +56,10 @@ MAX_CREDENTIAL_BYTES = 64 * 1024
 MAX_METADATA_BYTES = 4 * 1024
 MAX_SEARCH_RESPONSE = 48 * 1024
 MAX_OUTSTANDING_HANDLES = 1024
+# Failed master-password attempts allowed per unlock link, in total. The
+# failure that reaches it blocks the link; only new-unlock-link replaces it.
+UNLOCK_LINK_MAX_FAILURES = 3
+UNLOCK_LINK_PROTOCOL = 1
 CONNECTION_ERROR = {"ok": False, "error": "request failed"}
 DOM_PINS = (PasswordPin, ExtensionPin)
 
@@ -97,6 +101,7 @@ class Broker:
         wall_clock: Callable[[], float] = time.time,
         card_browser_profile: Path | None = None,
         notification_state_path=None,
+        unlock_block_path=None,
         password_browser_profile=None,
         secret_sinks_path=None,
         default_fill_route='cdp',
@@ -124,7 +129,10 @@ class Broker:
         self.merges = create_merge_manager(self)
         self.secrets = SecretCaptures(self, secret_sinks_path)
         self.unlock_url: str | None = None
-        self.unlock_notifications = UnlockNotifications(state_path=notification_state_path)
+        # The private page's UnlockState, when this broker serves one.
+        self.unlock_link = None
+        self.unlock_notifications = UnlockNotifications(state_path=notification_state_path,
+                                                        blocked_path=unlock_block_path)
         self.card_save_notifications = CardSaveNotifications(
             expire_handler=self._expire_card_save, clock=clock,
             state_path=(Path(str(notification_state_path) + '.card-saves')
@@ -140,6 +148,59 @@ class Broker:
     def locked(self) -> bool:
         with self._state_lock:
             return self.vault is None
+
+    @property
+    def unlock_blocked(self) -> bool:
+        """True after the current unlock link used all its failed attempts."""
+        link = self.unlock_link
+        return bool(link is not None and link.blocked)
+
+    def resume_notifications(self) -> None:
+        """Send restored notices; call only after the RPC endpoint listens.
+
+        A blocked notice queued before a restart was lost with it: the waiting
+        subscriptions that asked for it get it again.
+        """
+        self.card_save_notifications.resume()
+        if self.unlock_blocked:
+            self.unlock_notifications.publish_blocked()
+
+    def unlock_fields(self) -> dict:
+        """What a locked response may say about unlocking: never a blocked link."""
+        if self.unlock_blocked:
+            return {"unlock_blocked": True}
+        return {"unlock_url": self.unlock_url} if self.unlock_url else {}
+
+    def _blocked_status(self) -> dict:
+        """Status of a blocked link: no URL, but its non-secret origin.
+
+        The CLI checks the origin against its configuration before it asks
+        for a new link, so a wrong origin leaves the broker blocked.
+        """
+        origin = getattr(self.unlock_link, "origin", None)
+        return {"unlock_blocked": True, **({"unlock_origin": origin} if isinstance(origin, str) else {}),
+                # The block holds only until this broker stops.
+                **({"unlock_block_saved": False} if getattr(self.unlock_link, "block_saved", True) is False else {})}
+
+    def _new_unlock_link(self, request: dict) -> dict:
+        # The broker cannot verify the user. The agent must first ask the user
+        # whether the failed attempts were theirs and whether they want a link.
+        if set(request) != {"action", "user_confirmed"} or request["user_confirmed"] is not True:
+            return {"ok": False, "error": "new unlock link needs user_confirmed: true after the user "
+                                          "confirms; no link created"}
+        link = self.unlock_link
+        if link is None:
+            return {"ok": False, "error": "this broker has no private unlock page; no link created"}
+        try:
+            url = link.new_link()
+        except OSError:
+            # Fail closed: the link stays blocked until the clear is saved.
+            return {"ok": False, "error": "the unlock block could not be cleared in its private saved state; "
+                                          "the link stays blocked; no link created; check the broker's state "
+                                          "folder, then ask again", "unlock_blocked": True}
+        if url is None:
+            return {"ok": False, "error": "the current unlock link is not blocked; no link created"}
+        return {"ok": True, "unlock_url": url, "locked": self.locked}
 
     def unlock(self, vault: VaultLike) -> bool:
         with self._state_lock:
@@ -211,10 +272,17 @@ class Broker:
         if action in {'card-save-subscription-status', 'unsubscribe-card-save'}:
             return self.card_save_notifications.status(
                 request.get('subscription_id'), cancel=action == 'unsubscribe-card-save')
+        if action == "new-unlock-link":
+            return self._new_unlock_link(request)
         if action == "subscribe-unlock":
-            # Share unlock's lock so registration cannot miss a racing unlock.
+            # Share unlock's lock so registration cannot miss a racing unlock
+            # or a racing block: a block either reaches this subscription as
+            # an event or is reported in this receipt.
             with self._state_lock:
-                return self.unlock_notifications.subscribe(request, unlocked=self.vault is not None)
+                receipt = self.unlock_notifications.subscribe(request, unlocked=self.vault is not None)
+                if receipt.get("ok") and self.vault is None and self.unlock_blocked:
+                    receipt["unlock_blocked"] = True
+                return receipt
         if action in {"unlock-subscription-status", "unsubscribe-unlock"}:
             return self.unlock_notifications.status(
                 request.get("subscription_id"), cancel=action == "unsubscribe-unlock",
@@ -252,7 +320,7 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -265,7 +333,7 @@ class Broker:
             except Exception:
                 return {'ok': False, 'error': 'frame list unavailable: page missing, ambiguous, changed or unsupported'}
         if self.locked:
-            return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
+            return {"ok": False, "error": "vault locked", **self.unlock_fields()}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
             return {"ok": False, "error": "save outcome uncertain; restart and unlock"}
         if action == 'pin-password-target':
@@ -545,6 +613,16 @@ class Broker:
         return {"ok": False, "error": "unknown action"}
 
 
+def is_wrong_credentials(exc: BaseException) -> bool:
+    """True only for a wrong master password or key file.
+
+    Store, file and I/O errors say nothing about the password, so they never
+    count toward an unlock link's failed attempts.
+    """
+    from pykeepass.exceptions import CredentialsError
+    return isinstance(exc, CredentialsError)
+
+
 def open_vault_with_password(database: Path, password: str, keyfile: Path | None = None):
     if os.name == 'nt':
         from .windows_store import WindowsVaultStore as VaultStore
@@ -623,7 +701,7 @@ def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
         socket_identity = (socket_info.st_dev, socket_info.st_ino)
         server.settimeout(0.2 if stop else None)
         admission = threading.BoundedSemaphore(MAX_RPC_WORKERS)
-        broker.card_save_notifications.resume()
+        broker.resume_notifications()
 
         def run_connection(connection: socket.socket) -> None:
             try:

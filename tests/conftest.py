@@ -23,3 +23,9 @@ def no_terminal_input(monkeypatch):
 def tmp_path(tmp_path_factory):
     # Evidence roots can be long. Keep AF_UNIX test sockets below sun_path.
     return tmp_path_factory.mktemp('t')
+
+
+@pytest.fixture(autouse=True)
+def private_state_home(tmp_path_factory, monkeypatch):
+    """A Linux broker saves its unlock-link block under XDG_STATE_HOME: never the real home."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("state-home")))

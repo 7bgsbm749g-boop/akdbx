@@ -449,7 +449,8 @@ class ExtensionHub:
                 self.pairings[token] = (digest, now + PAIRING_TTL)
         base = getattr(self.broker.writes, 'public_base', None)
         info = dict(code=pairing_code(digest))
-        if isinstance(base, str) and base.startswith('https://'):
+        # A blocked unlock link also blocks pairing: offer no pairing link.
+        if isinstance(base, str) and base.startswith('https://') and not self.broker.unlock_blocked:
             info['url'] = base.rstrip('/') + '/extension/pair?token=' + token
         return info
 
@@ -461,7 +462,8 @@ class ExtensionHub:
                        broker_public_key=b64url(channel.broker_public_key))
         if not paired:
             message['pairing'] = self._pairing_info(channel.digest)
-        if locked and self.broker.unlock_url:
+        # A blocked link is never offered; the agent replaces it after asking the user.
+        if locked and self.broker.unlock_url and not self.broker.unlock_blocked:
             message['unlock_url'] = self.broker.unlock_url
         return message
 
@@ -486,6 +488,15 @@ class ExtensionHub:
                 return None
             digest = found[0]
         return pairing_code(digest)
+
+    def revoke_pairings(self):
+        """Invalidate every pending pairing link.
+
+        The unlock page calls this when its link is blocked or replaced, so a
+        pairing link from before never gets the new link's attempts.
+        """
+        with self._lock:
+            self.pairings.clear()
 
     def approve(self, token):
         """Mark one pending key as paired, after the page verified the master password."""
@@ -606,7 +617,8 @@ class ExtensionHub:
                 return dict(ok=False, error='extension not paired; open the pairing page from the extension')
             if self.broker.locked:
                 return dict(ok=False, error='vault locked', **({'unlock_url': self.broker.unlock_url}
-                                                             if self.broker.unlock_url else {}))
+                                                             if self.broker.unlock_url and not self.broker.unlock_blocked
+                                                             else {}))
             if op == 'match':
                 with self.broker._vault_lock:
                     return self._match(channel, message)

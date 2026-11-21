@@ -203,10 +203,11 @@ def start_local_unlock_server(broker, database, keyfile, public_base_url, certif
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     load_certificate(context, certificate, private_key)
-    state = UnlockState(broker, database, keyfile, opener)
+    state = UnlockState(broker, database, keyfile, opener, public_base=origin)
     server = LoopbackHTTPSServer(('127.0.0.1', port), handler_for(state), context, origin)
-    url = origin + '/?token=' + state.token
+    url = state.url
     broker.unlock_url = url
+    broker.unlock_link = state
     broker.writes.public_base = origin
     broker.merges.database = database
     server.write_manager = broker.writes
