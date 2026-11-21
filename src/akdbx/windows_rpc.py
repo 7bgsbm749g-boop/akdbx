@@ -23,9 +23,11 @@ def default_pipe():
     return Path(PREFIX + f'akdbx-{sid}-{session}')
 
 
-def pipe_name(path):
+def pipe_name(path, *, capture=False):
     value = str(path)
-    if not re.fullmatch(r'\\\\\.\\pipe\\akdbx-[A-Za-z0-9-]{1,160}', value):
+    # A capture pipe adds CAPTURE_SUFFIX to any valid RPC pipe name.
+    limit = 160 + len(CAPTURE_SUFFIX) if capture else 160
+    if not re.fullmatch(r'\\\\\.\\pipe\\akdbx-[A-Za-z0-9-]{1,%d}' % limit, value):
         raise ValueError('Windows --socket must be a local \\\\.\\pipe\\akdbx-NAME pipe')
     return value
 
@@ -162,7 +164,7 @@ def capture_pipe(path):
     name = pipe_name(path)
     if name.endswith(CAPTURE_SUFFIX):
         raise ValueError('the broker RPC pipe name must not end with ' + CAPTURE_SUFFIX)
-    return Path(pipe_name(name + CAPTURE_SUFFIX))
+    return Path(pipe_name(name + CAPTURE_SUFFIX, capture=True))
 
 
 def accept_connections(name, pending, on_connection, stop=None):
@@ -183,6 +185,14 @@ def accept_connections(name, pending, on_connection, stop=None):
                     status = win32pipe.ConnectNamedPipe(pending, overlapped)
                     connected = status in {0, 535}
                 except pywintypes.error as exc:
+                    if exc.winerror == 232:
+                        # ERROR_NO_DATA: a client connected and closed before
+                        # this accept. Replace the dead instance and go on.
+                        fresh = new_pipe(name)
+                        pending.Close()
+                        pending = fresh
+                        connected = True  # Nothing is pending to cancel.
+                        continue
                     if exc.winerror != 535:  # ERROR_PIPE_CONNECTED: raced accept
                         raise
                     connected = True

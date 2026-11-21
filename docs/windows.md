@@ -180,18 +180,32 @@ broker's loopback listener. The listener still binds `127.0.0.1` only.
 1. Install Tailscale on the Windows computer and enable HTTPS certificates for
    the tailnet. Find the computer's name, for example
    `node.tailnet.ts.net`.
-2. Pick a free loopback port for the broker, for example `9444`, and proxy a
-   tailnet HTTPS port to it:
+2. Make the Tailscale service trust the CA that issued the broker's
+   certificate. Tailscale runs as SYSTEM and does not read your user
+   certificate store, where `mkcert -install` puts the CA. From an elevated
+   PowerShell, add the CA to the computer's trusted roots:
 
    ```powershell
-   tailscale serve --bg --https=9443 https+insecure://127.0.0.1:9444
+   certutil -addstore -f Root "$(mkcert -CAROOT)\rootCA.pem"
    ```
 
-   `https+insecure` tells Tailscale Serve to accept the broker's local
-   certificate, which is issued for `localhost` and `127.0.0.1`. The
-   connection between the tailnet device and Tailscale uses the tailnet's own
-   trusted certificate.
-3. Start the broker with the Tailscale origin and the loopback port. Use the
+   This is a change to the trust of the whole computer. Keep the CA private key
+   (`rootCA-key.pem`) private.
+3. Pick a free loopback port for the broker, for example `9444`, and proxy a
+   tailnet HTTPS port to it with a **verified** `https://` target:
+
+   ```powershell
+   tailscale serve --bg --https=9443 https://127.0.0.1:9444
+   ```
+
+   Tailscale Serve then checks the broker's certificate for `127.0.0.1` on
+   every connection. Never use an `https+insecure://` or `http://` target. The
+   Serve proxy stays configured when the broker stops, and another local user
+   can then take the free port. With a verified target, Serve refuses that
+   listener, because it has no certificate from your CA. With an unverified
+   target, Serve would show that user's fake unlock page at your trusted
+   tailnet name, and could collect the master password.
+4. Start the broker with the Tailscale origin and the loopback port. Use the
    same origin for every CLI command and for `akdbx extension build`:
 
    ```powershell
@@ -207,6 +221,8 @@ both. A remote origin must be a DNS name, not an IP address, and needs
 `--local-port` from 1024 to 65535. A loopback origin keeps its own port and
 needs no `--local-port`. Limit access to the Serve port with tailnet access
 controls. Do not use `tailscale funnel`: it publishes the page to the internet.
+When you stop using remote unlock, remove the proxy with
+`tailscale serve --https=9443 off`.
 
 ### Authenticator capture native host
 
@@ -236,12 +252,16 @@ with its extension ID and the broker's unlock origin:
 the capture pipe of this user's default broker; give `--socket` with the
 `-capture` pipe when the broker runs with its own `--socket`. The installer
 writes `%LOCALAPPDATA%\akdbx\browser-import.json` (private to this user, SYSTEM
-and administrators), a launcher and a manifest under
-`%LOCALAPPDATA%\akdbx\browser-import`, and one `HKEY_CURRENT_USER` registry
-value. It never replaces another registration. A second browser must use the
+and administrators), a manifest under `%LOCALAPPDATA%\akdbx\browser-import`, and
+one `HKEY_CURRENT_USER` registry value. The manifest starts the installed
+`akdbx-browser-import.exe` of this environment directly. Without `--socket`
+the host finds the default pipe of the current desktop session each time it
+starts. It never replaces another registration. A second browser must use the
 same extension ID, origin and pipe. `install-host` reads no vault and starts no
-browser. `uninstall-host --browser NAME` removes that browser's registry value,
-launcher and manifest, and keeps the shared configuration.
+browser. `uninstall-host --browser NAME` removes that browser's registry value
+and manifest. When it removes the last browser, it also removes the shared
+configuration; to change the origin, extension ID or pipe, uninstall every
+browser and install again.
 
 ## Browser extension route
 

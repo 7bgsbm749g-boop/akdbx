@@ -729,6 +729,8 @@ def test_capture_pipe_name_is_the_rpc_pipe_plus_capture():
     assert str(rpc.capture_pipe(Path(base))) == base + '-capture'
     with pytest.raises(ValueError):
         rpc.capture_pipe(Path(base + '-capture'))
+    longest = rpc.PREFIX + 'akdbx-' + 'a' * 160  # still a valid RPC pipe
+    assert str(rpc.capture_pipe(Path(longest))) == longest + '-capture'
 
 
 def test_native_host_capture_through_the_capture_pipe(synthetic_vault, native_https_config):
@@ -786,9 +788,10 @@ def test_native_host_install_registers_one_browser_and_uninstalls(private_dir, m
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, where['key']) as handle:
             assert winreg.QueryValueEx(handle, '')[0] == str(where['manifest'])
         manifest = json.loads(where['manifest'].read_text())
-        assert manifest['path'] == str(where['launcher'])
+        # The console script itself, not a batch file that cmd.exe decodes.
+        assert manifest['path'] == str(browser_import.host_executable())
+        assert manifest['path'].endswith('akdbx-browser-import.exe')
         assert manifest['allowed_origins'] == ['chrome-extension://' + 'a' * 32 + '/']
-        assert '-m akdbx.browser_import' in where['launcher'].read_text()
         assert browser_import.load_config(browser_import.config_path())['socket'] == pipe
         with pytest.raises(ValueError):  # never replaces a registration
             browser_import.install_host_windows(args('chrome'))
@@ -798,12 +801,23 @@ def test_native_host_install_registers_one_browser_and_uninstalls(private_dir, m
         browser_import.uninstall_host_windows(SimpleNamespace(browser='chrome'))
         with pytest.raises(OSError):
             winreg.OpenKey(winreg.HKEY_CURRENT_USER, where['key'])
-        assert not where['manifest'].exists() and not where['launcher'].exists()
+        assert not where['manifest'].exists()
+        assert browser_import.config_path().exists()  # Edge still uses it.
+        browser_import.uninstall_host_windows(SimpleNamespace(browser='edge'))
+        assert not browser_import.config_path().exists()
+        # With the last registration gone, a new origin and the default pipe install.
+        moved = browser_import.install_host_windows(SimpleNamespace(
+            extension_id='a' * 32, origin='https://localhost:9443', browser='chrome', socket=None))
+        config = browser_import.load_config(browser_import.config_path())
+        assert config['origin'] == 'https://localhost:9443' and config['socket'] == ''
+        assert moved['key'] == where['key']
+        browser_import.uninstall_host_windows(SimpleNamespace(browser='chrome'))
         with pytest.raises(ValueError):  # the RPC pipe is refused as a capture endpoint
             browser_import._check_config({'extension_id': 'a' * 32, 'origin': 'https://x.test',
                                           'socket': rpc.PREFIX + 'akdbx-synthetic'})
     finally:
-        browser_import.uninstall_host_windows(SimpleNamespace(browser='edge'))
+        for browser in ('chrome', 'edge'):
+            browser_import.uninstall_host_windows(SimpleNamespace(browser=browser))
         for name in (r'\Edge', r'\Chrome', ''):
             try:
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, test_key + name)

@@ -35,7 +35,9 @@ with these replacements:
   protocol 1. `target_fill_modes: ["username"]` describes window pins only.
 - When locked, give the exact returned private HTTPS link to the user. A
   loopback link opens on the **Windows machine** only; a link on the configured
-  Tailscale Serve origin opens on any tailnet device. The user enters the
+  Tailscale Serve origin opens on any tailnet device. Serve must proxy to a
+  verified `https://127.0.0.1:PORT` target, never `https+insecure`; see
+  `docs/windows.md`. The user enters the
   master password privately. Never bypass a TLS certificate warning, read the
   master password, submit it for the user, or replace HTTPS with HTTP. Register
   an unlock notification as `SKILL.md` describes and resume on that event. The

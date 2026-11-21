@@ -163,3 +163,17 @@ def test_remote_origin_unlocks_only_with_its_own_host_and_origin(local_server):
     assert call('POST', form, {'Host': 'node.tailnet.ts.net:9443', 'Origin': remote,
                                'Tailscale-User-Login': 'not-trusted@example.test'})[0] == 200
     assert not broker.locked
+
+
+def test_windows_remote_unlock_docs_require_a_verified_serve_target():
+    # An unverified Serve target accepts any listener that takes the freed
+    # loopback port, which could then collect the master password.
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    for name in ('docs/windows.md', 'skills/akdbx/references/windows.md'):
+        text = (root / name).read_text(encoding='utf-8')
+        commands = re.findall(r'^\s*tailscale serve .*$', text, re.M)
+        assert all('https+insecure' not in c and 'http://' not in c for c in commands), name
+    docs = (root / 'docs/windows.md').read_text(encoding='utf-8')
+    assert re.search(r'^\s*tailscale serve --bg --https=\d+ https://127\.0\.0\.1:\d+\s*$', docs, re.M)

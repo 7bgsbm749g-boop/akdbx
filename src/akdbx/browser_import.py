@@ -41,9 +41,11 @@ def _check_config(config):
         raise ValueError
     if not re.fullmatch('[a-p]{32}', config['extension_id']):
         raise ValueError
-    if os.name == 'nt':
+    if os.name == 'nt' and config['socket']:
+        # An empty pipe means the default broker's capture pipe, resolved at
+        # run time: its name holds the current desktop session ID.
         from .windows_rpc import CAPTURE_SUFFIX, pipe_name
-        if not pipe_name(config['socket']).endswith(CAPTURE_SUFFIX):
+        if not pipe_name(config['socket'], capture=True).endswith(CAPTURE_SUFFIX):
             raise ValueError
     return config
 
@@ -112,7 +114,7 @@ def _capture_windows(message, config, parsed):
     import time
     from urllib.parse import parse_qs
     from .protocol import receive_message, send_message
-    from .windows_rpc import connect
+    from .windows_rpc import capture_pipe, connect, default_pipe
     query = parse_qs(parsed.query, strict_parsing=True)
     if set(query) != {'token'} or len(query['token']) != 1:
         raise ValueError
@@ -121,7 +123,8 @@ def _capture_windows(message, config, parsed):
     if len(json.dumps(request, separators=(',', ':')).encode()) > MAX_NATIVE_MESSAGE:
         raise ValueError
     # connect() refuses a pipe server of another user or desktop session.
-    with connect(Path(_check_config(config)['socket'])) as connection:
+    pipe = _check_config(config)['socket'] or capture_pipe(default_pipe())
+    with connect(Path(pipe)) as connection:
         connection.settimeout(10)
         send_message(connection, request)
         if receive_message(connection, deadline=time.monotonic() + 10) != RECEIPT:
@@ -212,8 +215,7 @@ def install_host(args):
 def windows_paths(browser):
     from .extension_host import WINDOWS_KEYS
     home = Path(os.environ['LOCALAPPDATA']) / 'akdbx' / 'browser-import'
-    return dict(launcher=home / f'{browser}.cmd', manifest=home / f'{HOST_NAME}.{browser}.json',
-                key=WINDOWS_KEYS[browser] + '\\' + HOST_NAME)
+    return dict(manifest=home / f'{HOST_NAME}.{browser}.json', key=WINDOWS_KEYS[browser] + '\\' + HOST_NAME)
 
 
 def _registered(key):
@@ -225,24 +227,34 @@ def _registered(key):
         return None
 
 
+def host_executable():
+    """The installed console script of this environment.
+
+    The manifest names it directly: a batch launcher would be read by cmd.exe in
+    the console code page, which breaks a non-ASCII interpreter path.
+    """
+    import sysconfig
+    executable = Path(sysconfig.get_path('scripts')) / 'akdbx-browser-import.exe'
+    if not executable.is_file():
+        raise ValueError('install akdbx into this Python environment first')
+    return executable.absolute()
+
+
 def install_host_windows(args):
-    """Register a launcher for one browser. Never replace another registration or file."""
+    """Register the host for one browser. Never replace another registration or file."""
     import winreg
     from .cli import _validate_unlock_url
-    from .windows_rpc import capture_pipe, default_pipe
     from .windows_security import ensure_private_directory, read_private_optional, write_new
     if not re.fullmatch('[a-p]{32}', args.extension_id):
         raise ValueError('invalid extension ID')
     _validate_unlock_url(args.origin.rstrip('/') + '/totp?token=configuration-check', args.origin)
-    socket_path = str(args.socket if args.socket is not None else capture_pipe(default_pipe()))
-    config = _check_config(dict(extension_id=args.extension_id, origin=args.origin.rstrip('/'), socket=socket_path))
-    python = str(Path(sys.executable).absolute())
-    if any(c in python for c in '"%\r\n^&|<>'):
-        raise ValueError('the Python path contains a character that a Windows launcher cannot quote')
+    config = _check_config(dict(extension_id=args.extension_id, origin=args.origin.rstrip('/'),
+                                socket=str(args.socket or '')))
+    executable = host_executable()
     where = windows_paths(args.browser)
-    launcher, manifest, key = where['launcher'], where['manifest'], where['key']
+    manifest, key = where['manifest'], where['key']
     path = config_path()
-    if _registered(key) is not None or launcher.exists() or manifest.exists():
+    if _registered(key) is not None or manifest.exists():
         raise ValueError('a private import host is already registered for this browser')
     # One configuration serves every browser; a second browser must match it.
     ensure_private_directory(path.parent)
@@ -250,16 +262,14 @@ def install_host_windows(args):
     existing = None if raw is None else _check_config(json.loads(raw))
     if existing is not None and existing != config:
         raise ValueError('a different private import configuration exists')
-    ensure_private_directory(launcher.parent)
+    ensure_private_directory(manifest.parent)
     created = []
     try:
         if existing is None:
             write_new(path, json.dumps(config).encode())
             created.append(path)
-        write_new(launcher, f'@echo off\r\n"{python}" -I -m akdbx.browser_import %*\r\n'.encode())
-        created.append(launcher)
         write_new(manifest, json.dumps(dict(name=HOST_NAME, description='Private akdbx authenticator import',
-                                            path=str(launcher), type='stdio',
+                                            path=str(executable), type='stdio',
                                             allowed_origins=['chrome-extension://' + args.extension_id + '/'])).encode())
         created.append(manifest)
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as handle:
@@ -275,16 +285,20 @@ def install_host_windows(args):
 
 
 def uninstall_host_windows(args):
-    """Remove this browser's registration, launcher and manifest; keep the configuration."""
+    """Remove this browser's registration and manifest.
+
+    The shared configuration goes with the last registration, so a new install
+    can use another origin, extension ID or pipe.
+    """
     import winreg
+    from .extension_route import BROWSERS
     where = windows_paths(args.browser)
     if _registered(where['key']) == str(where['manifest']):
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, where['key'])
-    for name in ('manifest', 'launcher'):
-        try:
-            where[name].unlink()
-        except FileNotFoundError:
-            pass
+    where['manifest'].unlink(missing_ok=True)
+    if not any(windows_paths(b)['manifest'].exists() or _registered(windows_paths(b)['key']) is not None
+               for b in BROWSERS):
+        config_path().unlink(missing_ok=True)
 
 
 def main(argv=None):

@@ -111,7 +111,7 @@ def start_capture_pipe(server, broker, path):
     import time
     from .import_web import serve_capture_connection
     from .windows_rpc import accept_connections, new_pipe, pipe_name
-    name = pipe_name(path)
+    name = pipe_name(path, capture=True)
     pending = new_pipe(name, first=True)
     stop = threading.Event()
 
