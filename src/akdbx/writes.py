@@ -6,6 +6,7 @@ import re
 import secrets
 import string
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import monotonic, sleep
@@ -298,27 +299,36 @@ def validate_metadata(values):
     site_origin(values['url'])
 
 
+def _group_path(group):
+    """Slash-joined path of a writable group, or None for archive/unnamed paths."""
+    parts = []
+    ancestor = group
+    while ancestor is not None:
+        if is_archive_group(ancestor):
+            return None
+        if not ancestor.is_root_group:
+            name = ancestor.name
+            # The dependency's path drops unnamed ancestors. Do not let a
+            # child of an unnamed group alias a different named path.
+            if not isinstance(name, str) or not name:
+                return None
+            parts.append(name)
+        ancestor = getattr(ancestor, 'parentgroup', None)
+    return '/'.join(reversed(parts))
+
+
 def group_for(vault, path):
-    groups = []
-    for group in vault.groups:
-        parts = []
-        ancestor = group
-        while ancestor is not None:
-            if is_archive_group(ancestor):
-                break
-            if not ancestor.is_root_group:
-                name = ancestor.name
-                # The dependency's path drops unnamed ancestors. Do not let a
-                # child of an unnamed group alias a different named path.
-                if not isinstance(name, str) or not name:
-                    break
-                parts.append(name)
-            ancestor = getattr(ancestor, 'parentgroup', None)
-        if ancestor is None and '/'.join(reversed(parts)) == path:
-            groups.append(group)
+    groups = [group for group in vault.groups if _group_path(group) == path]
     if len(groups) != 1:
         raise WriteError('destination group is missing or ambiguous')
     return groups[0]
+
+
+def group_paths(vault):
+    """Existing groups that group_for resolves, in vault order. '' is the top level."""
+    paths = [_group_path(group) for group in vault.groups]
+    counts = Counter(paths)
+    return [path for path in dict.fromkeys(paths) if path is not None and counts[path] == 1]
 
 
 def duplicate(vault, values):
@@ -748,7 +758,26 @@ class WriteManager:
             op.import_candidates = ()
             op.import_nonce = None
         self.notify_card(op)
-        return {'ok': True, 'state': op.state, **({'error': op.error} if op.error else {})}
+        result = {'ok': True, 'state': op.state, **({'error': op.error} if op.error else {})}
+        if op.kind == 'card' and op.state == 'saved':
+            # The page can change the title and group; report what was saved.
+            result.update(title=op.values['title'], group=op.values['group'])
+        return result
+
+    def card_page_state(self, token):
+        """Why a card page token no longer opens a form: saved, cancelled, stale or expired."""
+        self._prune()
+        for op in self.operations.values():
+            if (op.kind == 'card' and isinstance(token, str)
+                    and secrets.compare_digest(op.token.encode(), token.encode())):
+                if op.state == 'saved':
+                    return 'saved'
+                if op.state == 'cancelled':
+                    return 'cancelled'
+                if op.revision != self.revision or op.error == 'stale write; search and start again':
+                    return 'stale'
+                return 'failed' if op.state == 'failed' else 'expired'
+        return 'expired'
 
     def submit(self, op, password, confirmation, confirmed):
         if op.kind != 'password' or op.state != 'pending' or op.expires <= self.broker.clock():

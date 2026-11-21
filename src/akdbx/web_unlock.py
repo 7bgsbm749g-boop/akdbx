@@ -15,7 +15,9 @@ from urllib.parse import parse_qs, urlsplit
 
 from .broker import Broker, open_vault_with_password
 from .identities import FIELDS as IDENTITY_FIELDS, FIELD_LIMIT as IDENTITY_FIELD_LIMIT
+from . import cards
 from .portal import content_security_policy, field, render
+from .writes import group_paths
 from .runtime import (
     acquire_lifecycle_lock,
     prepare_private_runtime_directory,
@@ -291,6 +293,79 @@ def _page(title: str, body: str) -> bytes:
     return render(title, body)
 
 
+CARD_FORM = {'name', 'number', 'month', 'year', 'csc', 'confirmed'}
+CARD_GONE = dict(
+    saved='This card was already saved. You may close this page.',
+    cancelled='This card page was cancelled. Ask for a new card page.',
+    stale=cards.STALE, failed=cards.FAILED, expired=cards.EXPIRED)
+
+
+def _group_label(path: str) -> str:
+    return path or 'Top level (no folder)'
+
+
+def _card_gone(reason: str) -> dict:
+    """Result for a card token that no longer opens a form."""
+    return dict(ok=False, gone=True, reason=reason, error=CARD_GONE[reason])
+
+
+def _card_result(result: dict) -> str:
+    """The save result. data-card-result tells the page script the final state."""
+    if result['ok']:
+        message = (f'Card saved to AKDBX as \u201c{result["title"]}\u201d in '
+                   f'{_group_label(result["group"])}. You may close this page.')
+    else:
+        message = result['error']
+    role = 'status' if result['reason'] == 'saved' else 'alert'
+    return (f'<p id="card-result" data-card-result="{html.escape(result["reason"], quote=True)}" '
+            f'role="{role}">{html.escape(message)}</p>')
+
+
+def _card_form(op, action: str, groups: list) -> str:
+    """Card save or update form. Title and group are non-secret and editable;
+    an updated card keeps its group. Card values are never prefilled."""
+    update = op.uuid is not None
+    title = field('Title', 'title', kind='text', maxlength=4096, value=op.values['title'],
+                  describedby='title-hint',
+                  note='<p class="field-hint" id="title-hint">The name you and the agent see when choosing this card.</p>')
+    current = op.values['group']
+    options = [current] if update else groups
+    choices = ''.join(f'<option value="{html.escape(path, quote=True)}"{" selected" if path == current else ""}>'
+                      f'{html.escape(_group_label(path))}</option>' for path in options)
+    hint = 'The vault folder this card is saved in.' + (' An updated card stays in its folder.' if update else '')
+    # Not `required`: the top level has value "" and is the first option, which
+    # HTML treats as a placeholder and would block the save. The broker checks it.
+    control = 'disabled' if update else 'name="group"'
+    group = (f'<div class="field"><label for="group">Group</label>'
+             f'<select id="group" {control} aria-describedby="group-hint">{choices}</select>'
+             f'<p class="field-hint" id="group-hint">{hint}</p></div>')
+    fields = []
+    for key, label, typ, limit, required, mode in (
+            ('name', 'Cardholder name', 'text', 128, True, None),
+            ('number', 'Card number', 'password', 32, True, 'numeric'),
+            ('month', 'Expiry month (MM)', 'text', 2, True, 'numeric'),
+            ('year', 'Expiry year (YYYY)', 'text', 4, True, 'numeric'),
+            ('csc', 'Security code (optional)', 'password', 4, False, 'numeric')):
+        note = f'<p class="field-error" id="{key}-error" hidden></p>'
+        described = key + '-error'
+        if key == 'number':
+            # Only the detected brand is shown, never the number.
+            note = '<p class="field-hint" id="card-brand" aria-live="polite"></p>' + note
+            described += ' card-brand'
+        fields.append(field(label, key, kind=typ, maxlength=limit, required=required, inputmode=mode,
+                            describedby=described, note=note))
+    label = 'Update card in AKDBX' if update else 'Save card to AKDBX'
+    intro = ('<p>You are updating a saved card. Enter its current details.</p>' if update else
+             '<p>Check the title and group, then enter the card details.</p>')
+    return (f'{intro}<form data-card-form method="post" action="{action}" autocomplete="off">'
+            f'{title}{group}{"".join(fields)}'
+            '<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this card and destination</label>'
+            f'<button type="submit" class="portal-submit" data-idle-label="{label}" data-busy-label="Saving card\u2026">'
+            f'<span class="button-label">{label}</span>'
+            '<span class="portal-progress" role="progressbar" aria-label="Saving card" hidden></span></button>'
+            '</form><p id="card-status" class="portal-status" role="status" aria-live="polite"></p>')
+
+
 def handler_for(state: UnlockState):
     class Handler(BaseHTTPRequestHandler):
         server_version = "akdbx"
@@ -351,6 +426,10 @@ def handler_for(state: UnlockState):
                 return True
             with state.broker._vault_lock:
                 op = state.broker.writes.by_token(self._token(), kind)
+                if op is None and kind == 'card':
+                    gone = _card_gone(state.broker.writes.card_page_state(self._token()))
+                    self._send(HTTPStatus.NOT_FOUND, _page('AKDBX card save', _card_result(gone)))
+                    return True
                 if op is None or op.password is not None:
                     self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Invalid or expired password request.</p>'))
                     return True
@@ -358,13 +437,7 @@ def handler_for(state: UnlockState):
                     destination = ''.join(f'<dt>{html.escape(key)}</dt><dd>{html.escape(value)}</dd>' for key, value in op.values.items())
                     action = route + '?token=' + html.escape(op.token, quote=True)
                     if kind == 'card':
-                        fields = ''.join(field(label, key, kind=typ, maxlength=limit, required=bool(required)) for key, label, typ, limit, required in (
-                            ('name', 'Cardholder name', 'text', 128, 'required'),
-                            ('number', 'Card number', 'password', 32, 'required'),
-                            ('month', 'Expiry month (MM)', 'text', 2, 'required'),
-                            ('year', 'Expiry year (YYYY)', 'text', 4, 'required'),
-                            ('csc', 'Security code (optional)', 'password', 4, '')))
-                        body = f'<dl>{destination}</dl><form method="post" action="{action}" autocomplete="off">{fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this card and destination</label><button>Save card to AKDBX</button></form>'
+                        body = _card_form(op, action, group_paths(state.broker.vault))
                     elif kind == 'identity':
                         fields = ''.join(field(label, key, kind='text', maxlength=IDENTITY_FIELD_LIMIT, required=False)
                                          for key, label in IDENTITY_FIELDS.items())
@@ -377,7 +450,7 @@ def handler_for(state: UnlockState):
                     else:
                         password_fields = field('Chosen password', 'password', autocomplete='new-password') + field('Repeat password', 'confirmation', autocomplete='new-password')
                         body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes AKDBX only.</p><form method="post" action="{action}" autocomplete="off">{password_fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label><button>Save to AKDBX</button></form>'
-                    title = {'card': 'Save AKDBX card', 'identity': 'Save AKDBX identity',
+                    title = {'card': 'Update AKDBX card' if op.uuid else 'Save AKDBX card', 'identity': 'Save AKDBX identity',
                              'totp': 'Confirm AKDBX authenticator', 'password': 'Confirm AKDBX password'}[kind]
                     self._send(HTTPStatus.OK, _page(title, body))
                     return True
@@ -385,7 +458,8 @@ def handler_for(state: UnlockState):
             try:
                 length = int(self.headers.get('Content-Length', '0'))
                 # Each Unicode code point can use four percent-encoded UTF-8 bytes.
-                limit = 48 * 1024 if kind == 'identity' else MAX_BODY
+                # A card title and group can each be 4096 UTF-8 bytes.
+                limit = 48 * 1024 if kind in {'identity', 'card'} else MAX_BODY
                 if self.headers.get('Content-Type', '').split(';')[0] != 'application/x-www-form-urlencoded' or not 0 < length <= limit:
                     raise ValueError
                 raw = self.rfile.read(length)
@@ -396,7 +470,7 @@ def handler_for(state: UnlockState):
                     raise ValueError
                 if kind == 'totp' and set(values) - {'setup', 'confirmed'}:
                     raise ValueError
-                if kind == 'card' and set(values) != {'name', 'number', 'month', 'year', 'csc', 'confirmed'}:
+                if kind == 'card' and not CARD_FORM <= set(values) <= CARD_FORM | {'title', 'group'}:
                     raise ValueError
                 if kind == 'identity' and set(values) != IDENTITY_FIELDS.keys() | {'confirmed'}:
                     raise ValueError
@@ -406,11 +480,16 @@ def handler_for(state: UnlockState):
             with state.broker._vault_lock:
                 # Cancellation/expiry may have happened during the private POST.
                 op = state.broker.writes.by_token(self._token(), kind)
-                if op is None or self._expired():
+                if op is None and kind == 'card' and not self._expired():
+                    result = _card_gone(state.broker.writes.card_page_state(self._token()))
+                elif op is None or self._expired():
                     self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Invalid or expired password request.</p>'))
                     return True
-                if kind == 'card':
-                    result = state.broker.cards.submit(op, {k: values[k][0] for k in ('name', 'number', 'month', 'year', 'csc')}, values.get('confirmed') == ['yes'])
+                elif kind == 'card':
+                    # The page may change the prepared title and group.
+                    chosen = {key: values[key][0] for key in ('title', 'group') if key in values}
+                    result = state.broker.cards.submit(op, {k: values[k][0] for k in ('name', 'number', 'month', 'year', 'csc')},
+                                                       values.get('confirmed') == ['yes'], chosen)
                 elif kind == 'identity':
                     result = state.broker.identities.submit(op, {key: values[key][0] for key in IDENTITY_FIELDS},
                                                             values['confirmed'] == ['yes'])
@@ -419,6 +498,11 @@ def handler_for(state: UnlockState):
                 else:
                     result = state.broker.writes.submit(op, values.get('password', [''])[0], values.get('confirmation', [''])[0], values.get('confirmed') == ['yes'])
             # No submitted fields, parser exceptions or secrets enter the page.
+            if kind == 'card':
+                status = (HTTPStatus.OK if result['ok'] else HTTPStatus.NOT_FOUND
+                          if result.get('gone') or result['reason'] == 'expired' else HTTPStatus.CONFLICT)
+                self._send(status, _page('AKDBX card save', _card_result(result)))
+                return True
             subject = {'card': 'Card', 'identity': 'Identity', 'totp': 'Authenticator', 'password': 'Password'}[kind]
             body = (f'<p>{subject} saved to AKDBX. You may close this page.</p>' if result['ok']
                     else '<p>' + html.escape(result['error']) + '</p>')
@@ -443,10 +527,11 @@ def handler_for(state: UnlockState):
             message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
             body = (f'{message}<p>Unlocking for <strong>{login}</strong>.</p>'
                     f'<form data-unlock-form method="post" action="{action}" autocomplete="off">{password_field}'
-                    '<button type="submit" class="unlock-submit">'
+                    '<button type="submit" class="portal-submit unlock-submit"'
+                    ' data-idle-label="Unlock AKDBX" data-busy-label="Unlocking AKDBX\u2026">'
                     '<span class="button-label">Unlock AKDBX</span>'
-                    '<span class="unlock-progress" role="progressbar" aria-label="Unlocking AKDBX" hidden></span></button>'
-                    '</form><p id="unlock-status" class="unlock-status" role="status" aria-live="polite"></p>')
+                    '<span class="portal-progress unlock-progress" role="progressbar" aria-label="Unlocking AKDBX" hidden></span></button>'
+                    '</form><p id="unlock-status" class="portal-status unlock-status" role="status" aria-live="polite"></p>')
             return _page("Unlock AKDBX", body)
 
         def do_POST(self) -> None:

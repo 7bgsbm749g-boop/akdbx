@@ -15,8 +15,8 @@ CARD = dict(name='Synthetic Cardholder', number='4111111111111111', month='09', 
 
 
 def begin(broker, **changes):
-    return broker.dispatch(dict(action='create-card', card_protocol=1,
-                                metadata=dict(title='Synthetic Visa', group='Web'), **changes))
+    return broker.dispatch(dict(dict(action='create-card', card_protocol=1,
+                                     metadata=dict(title='Synthetic Visa', group='Web')), **changes))
 
 
 def post(socket, prepared, values=None, **changes):
@@ -50,7 +50,8 @@ def test_private_card_save_reopens_exact_protected_fields_and_hides_values(deplo
     assert call(socket, 'GET', route, identity=False)[0] == 404
     assert post(socket, prepared)[0] == 200
     assert post(socket, prepared)[0] == 404
-    assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle'])) == dict(ok=True, state='saved')
+    assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle'])) == dict(
+        ok=True, state='saved', title='Synthetic Visa', group='Web')
     entry = reopened(path).find_entries(title='Synthetic Visa', first=True)
     assert entry.username in {None, ''} and entry.password in {None, ''}
     assert read_card(entry) == CARD
@@ -284,3 +285,110 @@ def test_cli_checks_protocol_and_withholds_secret_bearing_receipts(monkeypatch, 
     monkeypatch.setattr(cli, 'request', lambda _s, payload, **kw: calls.append(payload) or dict(ok=True, cards_supported=True, card_protocol=True, card_delivery=DELIVERY))
     assert cli.main(['search-cards', 'Visa']) == 1
     assert calls == [dict(action='ping')]
+
+
+def page(socket, prepared):
+    parts = urlsplit(prepared['private_url'])
+    return call(socket, 'GET', parts.path + '?' + parts.query)
+
+
+def test_save_page_prefills_title_and_offers_existing_groups(deployed):
+    broker, _, _, socket = deployed
+    prepared = broker.dispatch(dict(action='create-card', card_protocol=1,
+                                    metadata=dict(title='Synthetic "Visa" <one>', group='Web')))
+    code, _, body = page(socket, prepared)
+    assert code == 200
+    text = body.decode()
+    assert 'name="title"' in text and 'value="Synthetic &quot;Visa&quot; &lt;one&gt;"' in text
+    # Not required: the empty top-level value would block the browser's submit.
+    assert '<select id="group" name="group" aria-describedby="group-hint">' in text
+    assert '<option value="">Top level (no folder)</option><option value="Web" selected>Web</option>' in text
+    assert 'The vault folder this card is saved in.' in text
+    assert 'data-card-form' in text and 'class="portal-submit"' in text and 'role="progressbar"' in text
+    assert 'id="card-brand"' in text and 'id="number-error"' in text
+
+
+def test_page_title_and_group_override_reach_vault_receipt_and_write_status(deployed):
+    broker, _, path, socket = deployed
+    prepared = begin(broker)
+    code, _, body = post(socket, prepared, title='Synthetic travel card', group='')
+    assert code == 200
+    assert 'data-card-result="saved"' in body.decode()
+    assert '\u201cSynthetic travel card\u201d in Top level (no folder)' in body.decode()
+    assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle'])) == dict(
+        ok=True, state='saved', title='Synthetic travel card', group='')
+    entry = reopened(path).find_entries(title='Synthetic travel card', first=True)
+    assert read_card(entry) == CARD and entry.path == ['Synthetic travel card']
+    assert reopened(path).find_entries(title='Synthetic Visa', first=True) is None
+    assert {k: v for k, v in search(broker)['entries'][0].items() if k != 'handle'} == dict(
+        title='Synthetic travel card', group='', brand='visa', last_four='1111')
+
+
+@pytest.mark.parametrize('changes, message', [
+    (dict(group='Missing'), b'Choose a group from the list.'),
+    (dict(title='   '), b'Enter a title without control characters'),
+    (dict(title='bad\ttitle'), b'Enter a title without control characters'),
+    (dict(number='411111111111111'), b'A Visa card number has 13, 16 or 19 digits.'),
+    (dict(number='378282246310005', csc='123'), b'An American Express security code has 4 digits.'),
+    (dict(month='01', year='2020'), b'This card has expired.'),
+])
+def test_bad_destination_or_card_is_refused_by_broker_and_stays_retryable(deployed, changes, message):
+    broker, _, path, socket = deployed
+    before = path.read_bytes()
+    prepared = begin(broker)
+    code, _, body = post(socket, prepared, **changes)
+    assert code == 409 and message in body and b'data-card-result="rejected"' in body
+    assert CARD['number'].encode() not in body
+    assert path.read_bytes() == before
+    assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle'])) == dict(ok=True, state='pending')
+    assert post(socket, prepared)[0] == 200
+
+
+def test_duplicate_title_can_be_corrected_on_the_same_page(deployed):
+    save(deployed)
+    broker, _, path, socket = deployed
+    prepared = begin(broker)
+    code, _, body = post(socket, prepared)
+    assert code == 409 and b'already exists in this group' in body
+    assert broker.writes.operations[prepared['write_handle']].state == 'pending'
+    assert post(socket, prepared, title='Synthetic Visa 2')[0] == 200
+    assert sorted(e['title'] for e in search(broker)['entries']) == ['Synthetic Visa', 'Synthetic Visa 2']
+
+
+def test_update_page_renames_but_keeps_the_group(deployed):
+    selected = save(deployed)
+    broker, _, path, socket = deployed
+    def prepare():
+        handle = search(broker)['entries'][0]['handle']
+        return broker.dispatch(dict(action='update-card', card_protocol=1, handle=handle,
+                                    metadata=dict(title=selected['title'], group='Web')))
+    prepared = prepare()
+    code, _, body = page(socket, prepared)
+    assert code == 200 and b'Update AKDBX card' in body and b'<select id="group" disabled' in body
+    assert b'An updated card stays in its folder.' in body and b'name="group"' not in body
+    code, _, body = post(socket, prepared, group='')
+    assert code == 409 and b'An updated card stays in its current group.' in body
+    assert post(socket, prepared, title='Synthetic renamed Visa')[0] == 200
+    assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle'])) == dict(
+        ok=True, state='saved', title='Synthetic renamed Visa', group='Web')
+    entry = reopened(path).find_entries(title='Synthetic renamed Visa', first=True)
+    assert entry.path == ['Web', 'Synthetic renamed Visa'] and read_card(entry) == CARD
+    assert entry.history[-1].title == 'Synthetic Visa'
+    assert len(search(broker)['entries']) == 1
+
+
+def test_finished_pages_report_why_they_no_longer_save(deployed):
+    broker, _, path, socket = deployed
+    saved = begin(broker)
+    assert post(socket, saved)[0] == 200
+    cancelled = begin(broker, metadata=dict(title='Cancelled card', group='Web'))
+    broker.dispatch(dict(action='cancel-write', write_handle=cancelled['write_handle']))
+    stale = begin(broker, metadata=dict(title='Stale card', group='Web'))
+    assert post(socket, begin(broker, metadata=dict(title='Other card', group='Web')))[0] == 200
+    expired = begin(broker, metadata=dict(title='Expired card', group='Web'))
+    broker.writes.operations[expired['write_handle']].expires = broker.clock() - 1
+    for prepared, reason in ((saved, 'saved'), (cancelled, 'cancelled'), (stale, 'stale'), (expired, 'expired')):
+        for code, _, body in (post(socket, prepared), page(socket, prepared)):
+            assert code == 404 and f'data-card-result="{reason}"'.encode() in body, reason
+            assert b'<form' not in body
+    assert broker.dispatch(dict(action='write-status', write_handle=stale['write_handle']))['state'] == 'failed'

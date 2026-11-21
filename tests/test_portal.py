@@ -138,7 +138,14 @@ def test_unlock_failed_rate_limit_and_ready_pages(tmp_path):
 
 def test_visibility_controls_do_not_inspect_or_persist_secrets():
     # Visibility uses types/attributes. Only standard form encoding handles the POST.
-    assert not re.search(r'\b(value|XMLHttpRequest|console|localStorage|sessionStorage)\b', portal.SCRIPT)
+    # The card checks read values locally (tests/test_card_validation.py);
+    # outside them the script reads no input value.
+    outside = portal.SCRIPT.replace(portal.CARD_CHECK, '')
+    outside = outside[:outside.index('function cardFields')] + outside[outside.index('function showCardErrors'):]
+    outside = outside.replace('form.elements.namedItem("number").value.replace(/[ -]/g, "").length', '')
+    # Only the non-secret title and group are kept after a final card result.
+    outside = outside.replace('.map(control => [control, control.value])', '').replace('control.value = text', '')
+    assert not re.search(r'\b(value|XMLHttpRequest|console|localStorage|sessionStorage)\b', outside)
     assert portal.SCRIPT.count('new FormData(form)') == 1
     assert 'body: new URLSearchParams(new FormData(form))' in portal.SCRIPT
     escaped = portal.field('Master <password>', 'secret"name')
