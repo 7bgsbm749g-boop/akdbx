@@ -134,7 +134,10 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   is optional on this route: the broker uses the browser's own URL for the
   document. Cards go only to frames of the merchant's top origin, or with
   `--processor adyen|computop|stripe` to that processor's exact frame below
-  same-origin merchant frames.
+  same-origin merchant frames. `stripe` covers the Payment Element and, with
+  fill extension 0.2.0 or newer, the classic Card Element frame. Against a
+  broker without `stripe_card_element: true`, give the exact Stripe
+  `--frame-url`; without it the CLI refuses a `stripe` pin before it sends it.
 - Identities: `pin-identity-target --route extension`, same rules as the CDP
   route; only frames of the top origin.
 - Secret capture (`--mode read`, `capture-secret`) stays on the CDP route.
@@ -149,6 +152,12 @@ address label). The fill happens only after a trusted click in the popup.
 Logins fill the focused field and its partner field in the same form; cards
 and addresses fill the recognised visible fields of the same form. Hidden,
 disabled and detached fields never receive a value.
+
+Stripe's classic Card Element frame (`elements-inner-card-<hash>.html`) is
+pin-route only. Its inputs have no ID, so the popup does not offer or fill a
+card there, at any frame depth; the content script and the broker both refuse
+it. Use `pin-card-target --processor stripe`, which checks the exact input
+type, autocomplete token, unique name, merchant iframe owner and hit test.
 
 ## Security model
 

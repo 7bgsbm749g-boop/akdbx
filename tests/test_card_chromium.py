@@ -85,6 +85,12 @@ STRIPE_CARD_FRAME = (
     'https://js.stripe.com/v3/elements-inner-accessory-target-'
     '0123456789abcdef0123456789abcdef.html#merchant=synthetic'
 )
+# Stripe's classic Card Element frame, with the fragment shape a live page uses.
+STRIPE_CARD_ELEMENT_FRAME = (
+    'https://js.stripe.com/v3/elements-inner-card-'
+    'fedcba9876543210fedcba9876543210.html'
+    '#__shared_params__[version]=v3&wait=false&rtl=false&componentName=card'
+)
 
 
 @pytest.fixture
@@ -125,19 +131,45 @@ def chrome(tmp_path, request):
                 body = b'''<!doctype html><iframe id="processor"
                   src="https://checkoutshopper-live.adyen.com/checkoutshopper/securedfields/live_test/6.3.0/securedFields.html"
                   style="width:550px;height:300px"></iframe>'''
+            elif self.path == '/stripe-unrecognized':
+                body = (b'<!doctype html><iframe src="https://js.stripe.com/v3/unrecognized-element.html" '
+                        b'style="width:550px;height:300px"></iframe>')
             elif self.path == '/stripe':
                 body = (f'<!doctype html><iframe src="{STRIPE_CARD_FRAME}" '
                         'style="width:550px;height:300px"></iframe>').encode()
-            elif self.path == urlsplit(STRIPE_CARD_FRAME).path:
+            elif self.path in (urlsplit(STRIPE_CARD_FRAME).path, '/v3/unrecognized-element.html'):
                 body = b'''<!doctype html><style>input{display:block;margin:10px}</style>
                   <input id=payment-numberInput name=number autocomplete=cc-number>
                   <input id=payment-expiryInput name=expiry autocomplete=cc-exp placeholder="MM / YY">
                   <input id=payment-cvcInput name=cvc autocomplete=cc-csc>
                   <input id=other-number name=other autocomplete=cc-number>
+                  <input name=cardnumber autocomplete=cc-number>
                   <script>
                   document.querySelector('#payment-expiryInput').addEventListener('input', e => {
                       e.target.value = e.target.value.replace('/', ' / ');
                   });
+                  </script>'''
+            elif self.path == '/stripe-card':
+                body = (f'<!doctype html><iframe name="__privateStripeFrame5551" '
+                        f'title="Secure card payment input frame" src="{STRIPE_CARD_ELEMENT_FRAME}" '
+                        'style="width:550px;height:300px"></iframe>').encode()
+            elif self.path == urlsplit(STRIPE_CARD_ELEMENT_FRAME).path:
+                # Synthetic Card Element: inputs without ids, decoys named
+                # "hidden", and a Payment Element binding that must not apply.
+                body = b'''<!doctype html><style>input{display:block;margin:10px}</style>
+                  <form novalidate>
+                  <input class=decoy name=hidden autocomplete=fake tabindex=-1>
+                  <input type=text name=cardnumber autocomplete=cc-number placeholder="Card number" inputmode=numeric>
+                  <input type=text name=exp-date autocomplete=cc-exp placeholder="MM / YY" inputmode=numeric>
+                  <input type=text name=cvc autocomplete=cc-csc placeholder="CVC" inputmode=numeric>
+                  <input class=decoy name=hidden autocomplete=fake tabindex=-1>
+                  <input id=payment-numberInput name=number autocomplete=cc-number>
+                  </form>
+                  <script>
+                  const n = document.querySelector('[name=cardnumber]');
+                  n.addEventListener('input', () => { n.value = n.value.replace(/([0-9]{4})(?=[0-9])/g, '$1 '); });
+                  const e = document.querySelector('[name=exp-date]');
+                  e.addEventListener('input', () => { e.value = e.value.replace('/', ' / '); });
                   </script>'''
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')

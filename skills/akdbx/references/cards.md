@@ -107,7 +107,8 @@ Require broker 0.18.1 or newer, integer `card_processor_frames_protocol: 1`
 and `stripe` in `card_processors`. Use `--processor stripe` after verifying
 the merchant and payment form. This route accepts the HTTPS
 `js.stripe.com/v3/elements-inner-accessory-target-<hash>.html` iframe used by
-Cloudflare. Keep the complete observed frame URL, including its fragment.
+Cloudflare. For the classic `elements-inner-card-<hash>.html` iframe, see
+[Stripe Card Element](#stripe-card-element). Keep the complete observed frame URL, including its fragment.
 Only the inputs with these exact IDs, names and autocomplete tokens are supported:
 
 | Input ID | Name | Field |
@@ -121,6 +122,49 @@ or newer. The broker checks the translated position and rejects covered inputs.
 
 Use `--format MM/YY` for the expiry field. Pin the exact iframe and one unique
 input for each fill, using a fresh card search handle each time.
+
+### Stripe Card Element
+
+Require broker 0.24.0 or newer with `stripe_card_element: true` in `status`,
+as well as the Payment Element requirements above. Use the same
+`--processor stripe`. The Card Element is pin-route only: use
+`pin-card-target --processor stripe` (CDP or extension route). The extension
+popup (user-click route) never offers or fills a card in this frame.
+
+A new CLI refuses an older broker (no `stripe_card_element: true`) before it
+sends the pin. On the extension route `--frame-url` is optional, so without it
+the CLI cannot tell the two Stripe frames apart: against an older broker it
+then refuses every `--processor stripe` pin and asks for the exact frame URL.
+Give `--frame-url` with the complete observed Stripe frame URL.
+The broker tells the two Stripe frames apart by the exact frame path only:
+`elements-inner-accessory-target-<hash>.html` is the Payment Element and
+`elements-inner-card-<hash>.html` is the classic Card Element. Each path accepts
+only its own inputs, never the inputs of the other frame.
+
+This route accepts the HTTPS
+`js.stripe.com/v3/elements-inner-card-<32 hex>.html` iframe (title "Secure card
+payment input frame"), with no query. Keep the complete observed frame URL,
+including its `#__shared_params__…` fragment. Its inputs have no ID. Only a
+visible editable type=text input with no `id` attribute, a name that is unique
+in the frame, and the matching autocomplete token is supported:
+
+| Name | Autocomplete | Field |
+| --- | --- | --- |
+| `cardnumber` | `cc-number` | `cc-number` |
+| `exp-date` | `cc-exp` | `cc-exp` |
+| `cvc` | `cc-csc` | `cc-csc` |
+
+The frame also holds decoy inputs (`name="hidden" autocomplete="fake"`). The
+broker refuses them, and every other input. Use a selector such as
+`input[name="cardnumber"]`. Use `--format MM/YY` for `exp-date`; other formats
+refuse. All the processor frame checks below apply.
+
+```bash
+akdbx pin-card-target --page-id MERCHANT_PAGE_ID --frame-id STRIPE_FRAME_ID \
+  --top-url EXACT_MERCHANT_HTTPS_URL --frame-url EXACT_STRIPE_CARD_FRAME_URL \
+  --selector 'input[name="exp-date"]' --field cc-exp --processor stripe
+akdbx fill-card SEARCH_HANDLE --target CARD_TARGET --field cc-exp --format MM/YY
+```
 
 ### Processor frame checks
 
@@ -169,6 +213,7 @@ Complete only the authorized task. Card fill alone never authorizes payment.
 
 `pin-card-target --route extension` pins the field through the paired akdbx
 browser extension instead of a debugging port. `--frame-url` is optional on
-this route; the broker uses the browser's own document URL. The merchant-frame
+this route; the broker uses the browser's own document URL (but see
+[Stripe Card Element](#stripe-card-element) for an older broker). The merchant-frame
 and processor rules are the same, and receipts carry `card_delivery:
 "extension-dom-v1"`. Read [the extension route](extension.md).

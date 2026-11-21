@@ -9,11 +9,29 @@ from . import card_hit_test
 PROTOCOL = 1
 PROCESSORS = ('adyen', 'computop', 'stripe')
 COMPUTOP_FIELDS = ('cc-name', 'cc-number', 'cc-exp', 'cc-csc')
+# Stripe serves two card iframes under the one `stripe` processor. The broker
+# tells them apart by the frame path alone; each path has its own exact inputs.
+# Payment Element: inputs are bound by their (id, name) pair.
 STRIPE_FIELDS = {
     'cc-number': ('payment-numberInput', 'number'),
     'cc-exp': ('payment-expiryInput', 'expiry'),
     'cc-csc': ('payment-cvcInput', 'cvc'),
 }
+# Classic Card Element: its inputs have no id (None: the input must have no id
+# attribute), so the name must be unique in the frame. Its decoy inputs
+# (name="hidden", autocomplete="fake") match no entry and are never targeted.
+STRIPE_CARD_ELEMENT_FIELDS = {
+    'cc-number': (None, 'cardnumber'),
+    'cc-exp': (None, 'exp-date'),
+    'cc-csc': (None, 'cvc'),
+}
+STRIPE_ELEMENTS = {
+    'payment-element': (r'/v3/elements-inner-accessory-target-[0-9a-f]{32}\.html', STRIPE_FIELDS),
+    'card-element': (r'/v3/elements-inner-card-[0-9a-f]{32}\.html', STRIPE_CARD_ELEMENT_FIELDS),
+}
+# The same table for the in-frame scripts (CDP pin script and extension).
+STRIPE_ELEMENTS_JSON = json.dumps({name: {'path': '^' + path + '$', 'fields': fields}
+                                   for name, (path, fields) in STRIPE_ELEMENTS.items()})
 
 
 # Shared by the merchant iframe guard and the input's isolated-world checks.
@@ -78,24 +96,36 @@ def computop_url(url):
             and parsed.path == '/payssl.aspx' and not parsed.query and not parsed.fragment)
 
 
-def stripe_url(url):
-    """Only the Stripe Payment Element card-entry endpoint used by Cloudflare."""
+def stripe_element(url):
+    """'payment-element' (Cloudflare) or 'card-element' (classic, Namecheap); else None.
+
+    Only the exact production card-entry endpoints; the fragment is kept.
+    """
     try:
         parsed = urlsplit(url)
         port = parsed.port
     except ValueError:
-        return False
-    return (parsed.scheme == 'https' and parsed.hostname == 'js.stripe.com'
+        return None
+    if not (parsed.scheme == 'https' and parsed.hostname == 'js.stripe.com'
             and port in (None, 443) and parsed.username is None and parsed.password is None
-            and '?' not in url.partition('#')[0] and bool(re.fullmatch(
-                r'/v3/elements-inner-accessory-target-[0-9a-f]{32}\.html', parsed.path)))
+            and '?' not in url.partition('#')[0]):
+        return None
+    for name, (path, _fields) in STRIPE_ELEMENTS.items():
+        if re.fullmatch(path, parsed.path):
+            return name
+    return None
+
+
+def stripe_url(url):
+    return stripe_element(url) is not None
 
 
 def supported_request(processor, url, field):
     if processor == 'adyen':
         return adyen_url(url)
     if processor == 'stripe':
-        return field in STRIPE_FIELDS and stripe_url(url)
+        element = stripe_element(url)
+        return element is not None and field in STRIPE_ELEMENTS[element][1]
     return processor == 'computop' and field in COMPUTOP_FIELDS and computop_url(url)
 
 
