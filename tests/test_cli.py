@@ -274,7 +274,7 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
             code, _, page = call(servers[0].server_address, "POST", path, urlencode({"password": MASTER}), timeout=30)
             assert code == 200
             assert MASTER.encode() not in page and SECRET.encode() not in page
-            assert command("status") == {"ok": True, "locked": False, "version": "0.26.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "unlock_notifications_blocked_event": True, "unlock_link_protocol": 1, "unlock_link_max_failures": 3, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "stripe_card_element": True, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities(), **expected_extension_capabilities()}
+            assert command("status") == {"ok": True, "locked": False, "version": "0.27.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "unlock_notifications_blocked_event": True, "unlock_link_protocol": 1, "unlock_link_max_failures": 3, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "stripe_card_element": True, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities(), **expected_extension_capabilities()}
             search = command("search", "example")
             assert typer.events == []  # Unlock/search must not trigger a fill.
             handle = search["entries"][0]["handle"]
@@ -869,6 +869,21 @@ def test_serve_with_a_restored_block_prints_no_unlock_url(monkeypatch, tmp_path,
     assert "token=" not in err and "https://" not in err
     assert "unlock link is blocked" in err and "akdbx new-unlock-link --user-confirmed" in err
     assert "only after the user confirms" in err
+
+
+def test_serve_can_keep_the_unlock_link_out_of_a_service_log(monkeypatch, tmp_path, capsys):
+    # M1: a systemd journal or task output must not keep the link's token; interactive use still prints it.
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _serve_capturing_brokers(monkeypatch)
+    serve = ["--unlock-origin", "https://node.example:9443", "serve", "synthetic.kdbx",
+             "--notification-state", str(tmp_path / "state" / "notifications.json")]
+    assert cli.main([*serve, "--no-print-unlock-link"]) == 0
+    err = capsys.readouterr().err
+    assert "token=" not in err and "https://" not in err
+    assert "Vault locked" in err and "akdbx status" in err
+    assert cli.main(serve) == 0
+    assert "Open the private HTTPS page: https://node.example:9443/?token=synthetic" in capsys.readouterr().err
 
 
 def test_refusal_message_survives_a_failed_notifier_close(monkeypatch, tmp_path, capsys):

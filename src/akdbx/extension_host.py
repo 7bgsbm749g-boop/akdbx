@@ -29,6 +29,7 @@ import shlex
 import socket
 import struct
 import sys
+import tempfile
 import threading
 from importlib.resources import files
 
@@ -262,12 +263,81 @@ def _manifest(launcher, name=HOST_NAME):
                 type='stdio', allowed_origins=[EXTENSION_ORIGIN])
 
 
-def _owned_manifest(path, launcher):
+LAUNCHER_LIMIT = 4096
+
+
+def _file_kind(path):
+    """'missing', 'file' for a regular file, or 'other' (a symlink, junction, folder or device)."""
     try:
-        with open(path, encoding='utf-8') as source:
-            return json.load(source).get('path') == str(launcher)
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return 'missing'
+    import stat
+    if stat.S_ISREG(info.st_mode) and not getattr(info, 'st_reparse_tag', 0):
+        return 'file'
+    return 'other'
+
+
+def _read_regular(path, limit):
+    """The bytes of a regular file that is not a link, or None."""
+    if _file_kind(path) != 'file':
+        return None
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0) | getattr(os, 'O_BINARY', 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    with os.fdopen(fd, 'rb') as source:
+        return source.read(limit + 1)
+
+
+def _owned_launcher(path, browser):
+    """True only for the exact launcher that this installer writes for these paths; never a link.
+
+    Every release since v0.21.0 writes the same format: the Python path and the optional socket are read
+    back from the file, the launcher is generated again, and only an identical file counts.
+    """
+    data = _read_regular(path, LAUNCHER_LIMIT)
+    if data is None or len(data) > LAUNCHER_LIMIT:
+        return False
+    try:
+        text = data.decode('utf-8')
+        if os.name == 'nt':
+            words = text.split('"')  # @echo off, "PYTHON", the arguments, then "SOCKET" when there is one
+            python, socket_path = words[1], words[3] if len(words) == 5 else None
+        else:
+            words = shlex.split(text.split('\n')[1])
+            python = words[1]
+            socket_path = words[words.index('--socket') + 1] if '--socket' in words else None
+        return text == _launcher_text(browser, python, socket_path)
+    except (UnicodeError, ValueError, IndexError):
+        return False
+
+
+def _owned_manifest(path, launcher):
+    data = _read_regular(path, 64 * 1024)
+    try:
+        return data is not None and json.loads(data.decode('utf-8')).get('path') == str(launcher)
     except Exception:
         return False
+
+
+def _replace_file(path, text, mode):
+    """Write ``text`` to a new temporary file beside ``path``, then rename it over ``path``: a link there is
+    replaced, never followed. Only that temporary file is ever removed."""
+    fd, temporary = tempfile.mkstemp(prefix='.' + path.name + '.', suffix='.tmp', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(text.encode('utf-8'))
+        if os.name != 'nt':
+            os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def install(browser, *, socket_path=None, manifest_dir=None, python=None):
@@ -288,14 +358,19 @@ def install(browser, *, socket_path=None, manifest_dir=None, python=None):
             current = None
         if current not in (None, str(manifest)):
             raise ValueError('another org.akdbx.extension host is registered for this browser; uninstall it first')
-    elif manifest.exists() and not _owned_manifest(manifest, launcher):
+    if _file_kind(manifest) == 'other':
+        raise ValueError(f'{manifest} is a link or not a regular file; akdbx never writes through it. Remove it first')
+    if _file_kind(manifest) == 'file' and not _owned_manifest(manifest, launcher):
         raise ValueError('another org.akdbx.extension manifest exists for this browser; uninstall it first')
+    if _file_kind(launcher) == 'other':
+        raise ValueError(f'{launcher} is a link or not a regular file; akdbx never writes through it. Remove it first')
+    if _file_kind(launcher) == 'file' and not _owned_launcher(launcher, browser):
+        raise ValueError(f'{launcher} exists and was not written by akdbx; move it away first')
+    text = _launcher_text(browser, python, socket_path)
     launcher.parent.mkdir(parents=True, exist_ok=True)
     manifest.parent.mkdir(parents=True, exist_ok=True)
-    launcher.write_text(_launcher_text(browser, python, socket_path), encoding='utf-8', newline='')
-    if os.name != 'nt':
-        os.chmod(launcher, 0o700)
-    manifest.write_text(json.dumps(_manifest(launcher), indent=2), encoding='utf-8')
+    _replace_file(launcher, text, 0o700)
+    _replace_file(manifest, json.dumps(_manifest(launcher), indent=2), 0o644)
     if os.name == 'nt':
         import winreg
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, WINDOWS_KEYS[browser] + '\\' + HOST_NAME) as handle:
@@ -319,10 +394,10 @@ def uninstall(browser, *, manifest_dir=None):
                 removed.append('registry')
         except OSError:
             pass
-    if manifest.exists() and _owned_manifest(manifest, launcher):
+    if _owned_manifest(manifest, launcher):
         manifest.unlink()
         removed.append('manifest')
-    if launcher.exists():
+    if _owned_launcher(launcher, browser):
         launcher.unlink()
         removed.append('launcher')
     return removed

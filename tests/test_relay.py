@@ -323,6 +323,34 @@ def test_an_explicit_origin_serves_without_the_relay(fake, capsys, tmp_path, dat
     assert seen['relay'] is None and seen['url'].startswith('https://node.example:9443/?token=')
 
 
+def test_serve_relay_ignores_an_inherited_origin_variable(fake, capsys, tmp_path, database, monkeypatch):
+    # N4: the units and tasks that setup writes run serve --relay, whatever the environment holds.
+    enabled, _ = enable(fake, capsys)
+    seen = []
+
+    def exercise(socket_path, broker):
+        seen.append((broker.relay is not None, broker.unlock_url))
+
+    monkeypatch.setattr(cli, 'X11Typer', RecordingTyper)
+    monkeypatch.setattr(cli, 'serve', exercise)
+    monkeypatch.setenv('AKDBX_UNLOCK_ORIGIN', 'https://node.example:9443')
+    socket_option = ['--socket', str(tmp_path / 'private' / 'broker.sock')]
+    assert cli.main([*socket_option, 'serve', str(database), '--relay']) == 0
+    warned = capsys.readouterr().err
+    assert ('AKDBX_UNLOCK_ORIGIN is https://node.example:9443' in warned and enabled['origin'] in warned
+            and 'unset AKDBX_UNLOCK_ORIGIN' in warned)
+    # An explicit option that names the relay origin itself is accepted; another one is still refused.
+    # The variable still differs, so the warning is still printed.
+    assert cli.main([*socket_option, '--unlock-origin', enabled['origin'] + '/', 'serve', str(database),
+                     '--relay']) == 0
+    assert 'AKDBX_UNLOCK_ORIGIN is https://node.example:9443' in capsys.readouterr().err
+    assert [relay for relay, _ in seen] == [True, True]
+    assert all(url.startswith(enabled['origin'] + '/?token=') for _, url in seen)
+    code, _, captured = run_cli(capsys, *socket_option, '--unlock-origin', 'https://node.example:9443', 'serve',
+                                str(database), '--relay')
+    assert code == 2 and f'--relay sets the origin itself ({enabled["origin"]})' in captured.err
+
+
 # The relay client
 
 
@@ -807,3 +835,16 @@ def test_a_folder_trust_failure_is_not_reported_as_a_running_broker(fake, capsys
                                 str(database))
     assert code == 2 and 'the relay directory cannot be trusted' in captured.err
     assert 'another akdbx broker' not in captured.err
+
+
+def test_origins_compare_by_host_and_effective_port():
+    # The serve --relay warning uses the same identity as client validation: no false warning.
+    assert cli._same_origin('https://Node.Example:443', 'https://node.example')
+    assert cli._same_origin('https://node.example:8443/', 'https://node.example:8443')
+    assert not cli._same_origin('https://node.example:9443', 'https://node.example:8443')
+    assert not cli._same_origin('https://other.example:8443', 'https://node.example:8443')
+    assert not cli._same_origin('https://node.example:bad', 'https://node.example')
+    # Origins that clients reject are never the same as the relay origin, so the warning is printed.
+    assert not cli._same_origin('https://node.example/help', 'https://node.example')
+    assert not cli._same_origin('https://node.example:0', 'https://node.example')
+    assert not cli._same_origin('http://node.example', 'http://node.example')

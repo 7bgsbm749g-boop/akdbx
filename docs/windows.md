@@ -102,6 +102,43 @@ are suitable. The broker checks existing permissions; it does not silently chang
 permissions on a production vault. Administrators and SYSTEM remain trusted, as
 root is trusted on Linux.
 
+## Guided setup
+
+`akdbx setup` (0.27.0+) runs the steps of this page in order and asks before
+each change: the system check, the vault and key-file checks, the
+certificate, the access method, a logon task, the extension host and build,
+the capture host and the skill junction. It works the same way as on Linux;
+see [Quick start: akdbx setup](../README.md#quick-start-akdbx-setup).
+
+```powershell
+.\.venv\Scripts\akdbx.exe setup
+.\.venv\Scripts\akdbx.exe setup --yes --json --vault "$private\synthetic.kdbx" --create-cert `
+  --start-at-login --browser helium --link-skill
+```
+
+Windows differences:
+
+- Run it as your normal user, without elevation. The system check reports an
+  elevated shell.
+- The vault and key file get the broker's handle, DACL, reparse-point and size
+  checks; setup never reads them.
+- The default certificate pair is `%LOCALAPPDATA%\akdbx\localhost.pem` and
+  `localhost-key.pem`, in a folder private to you and SYSTEM. `mkcert -install`
+  stays your step.
+- **Start at login** writes `%LOCALAPPDATA%\akdbx\akdbx-broker.task.xml` and
+  registers it with `schtasks /Create /TN akdbx-broker /XML FILE`: a logon
+  trigger for your user only, an interactive token and the least privilege.
+  It runs `pythonw.exe -m akdbx.cli serve ... --no-print-unlock-link` from the
+  same environment, so no console window opens and no task output keeps the
+  link; `akdbx status` gives the unlock link. With the relay the task runs
+  `serve --relay`, which ignores an inherited `AKDBX_UNLOCK_ORIGIN`; setup
+  warns when that variable names another origin. Setup starts the
+  task with `schtasks /Run` only when no broker answers on your pipe, and never
+  replaces a task named `akdbx-broker` that it did not create. Remove it with
+  `schtasks /Delete /TN akdbx-broker`.
+- **Agent skill** creates directory junctions, which need no elevation, in
+  `%USERPROFILE%\.claude\skills` and `%USERPROFILE%\.codex\skills`.
+
 ## Configure the private HTTPS page
 
 The private HTTPS page works the same way on Linux and Windows; the shared

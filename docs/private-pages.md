@@ -20,6 +20,27 @@ Unix-socket route for existing deployments.
 Every route has the same limit on failed attempts: see
 [Failed attempts block the link](#failed-attempts-block-the-link).
 
+`akdbx setup` (0.27.0+) sets up the loopback page and one access route in
+the order of [Unlock from the internet](#unlock-from-the-internet). It checks
+the certificate with the broker's own load and requires the host name that
+the route needs (`localhost` or `127.0.0.1` for a loopback origin, `127.0.0.1`
+behind Tailscale). It issues a certificate with mkcert only after you ran
+`mkcert -install`, runs `akdbx relay enable` for the relay, and does not
+configure a proxy that decrypts HTTPS. It never inspects or changes
+Tailscale: from the tailnet name and port (or an explicit origin) it prints
+the exact `tailscale serve --bg --https=PORT https://127.0.0.1:LOCALPORT`
+command (or the Funnel commands) for you to run, and the check:
+`tailscale serve status` must show that mapping, marked tailnet only, and no
+Funnel. The access stage stays `todo`; the broker itself works on loopback,
+so the login stage still runs.
+
+For a broker that runs as a service (a systemd unit, a logon task, any
+supervisor that keeps its output in a log), start it with
+`akdbx serve --no-print-unlock-link`. It then prints only that the vault is
+locked; get the private link with `akdbx status`. This is the recommended
+setting for every service: a log such as the systemd journal keeps the link's
+secret token. The units and tasks that `akdbx setup` writes use it.
+
 `--tls-cert` and `--tls-key` select the loopback HTTPS page. An enabled
 [akdbx relay](#the-akdbx-relay) selects the same page with the relay's
 certificate. Without either, Linux uses the Unix-socket route and Windows
@@ -262,7 +283,12 @@ The CLI and `serve` choose the trusted origin in this order:
 
 So an `AKDBX_UNLOCK_ORIGIN` that you set for Tailscale keeps the broker on
 Tailscale even with the relay enabled; `relay enable` and `relay status` warn
-about it. Unset it to use the relay.
+about it. Unset it to use the relay. `serve --relay` is the exception: it
+always uses the relay origin, ignores `AKDBX_UNLOCK_ORIGIN`, and refuses an
+`--unlock-origin` (or `--unlock-url`) that names another origin. The units and
+tasks that `akdbx setup` writes for the relay use `serve --relay`, so an
+inherited variable cannot change them; setup warns when the variable names
+another origin, because the other commands still use it.
 
 ```sh
 akdbx relay status            # name, origin, certificate expiry, running broker's relay state; no secret

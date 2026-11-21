@@ -30,6 +30,7 @@ session.
 | Snapshot admission (review prototype) | [Admission](references/snapshot-admission.md), [group selection](references/group-selection.md), [selection verification](references/selection-verification.md) |
 | Open the private pages from any device (no Tailscale) | [The akdbx relay](#the-akdbx-relay) |
 | Windows host | [Windows operation](references/windows.md) |
+| Set akdbx up for a user (first install, or add a part later) | [First-time setup](#first-time-setup) |
 | Broker missing, socket or Tailscale problems (Linux/VPS) | [VPS setup and recovery](references/vps-setup.md) |
 | akdbx itself is broken or lacks support | [Fixing akdbx](#when-akdbx-is-missing-something-or-broken), [repair-thread handoff](references/repair-thread.md) |
 
@@ -90,6 +91,41 @@ The maintained source of this skill is the repository's `skills/akdbx`
 directory. A local install links the agent's skills directory to it (a
 directory junction on Windows needs no elevation), so it can be invoked as
 `$akdbx` and stays in sync with the checkout.
+
+### First-time setup
+
+`akdbx setup` (0.27.0+) takes a user from install to a working broker, on
+Linux and Windows. You can run it for the user without questions:
+
+```bash
+akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
+  --start-at-login --browser chrome --link-skill
+```
+
+- Pass only the choices the user made: the vault path they gave (never a test
+  vault), `--access local|tailscale|relay|tunnel` (recommend `tailscale` for
+  remote use; `relay` makes the page reachable from the internet, so explain
+  its trust point first), `--start-at-login`, `--browser NAME`,
+  `--cdp-profile DIR`, `--capture-host`, `--link-skill`. Run `--dry-run`
+  first when you are not sure what it would change.
+- `--yes` makes only the changes that the flags of that run select; saved
+  answers from an earlier run give only paths, ports and other values, so
+  repeat `--start-at-login`, `--browser`, `--access relay` and the other
+  selections on every run that should make or keep them. It never runs
+  `mkcert -install` (it changes the computer's trust) and never inspects or
+  changes Tailscale: for `--access tailscale` give `--tailscale-name` (and
+  `--tailnet-port` if not 9443); it prints the `tailscale serve` command and
+  its check. Those are the user's decisions: give them the exact commands from
+  `user_steps`.
+- Read the JSON: `ok`, each stage's `state` (`done`, `changed`, `ok`,
+  `planned`, `todo`, `skipped`, `failed`), `user_steps` and `broker`. If
+  `broker.unlock_url` is present, give that link to the user privately and
+  continue as in [When the vault is locked](#when-the-vault-is-locked).
+  `broker.unlock_blocked: true` means [Blocked unlock link](#blocked-unlock-link).
+- Setup never reads the vault and never asks for the master password. It
+  never starts a second broker, and never replaces a unit, task, extension
+  host or skill folder that it did not write. Run it again to finish or
+  extend a setup; it detects what is already done.
 
 If the broker is not running or the socket is wrong, use
 [VPS setup and recovery](references/vps-setup.md). Do not start a second
@@ -195,8 +231,8 @@ broker's name, which public Certificate Transparency logs would show.
    vault. Restart only a broker that this workflow owns, with the user's
    agreement, and with the same vault, key file and socket, without
    `--tls-cert`, `--tls-key`, `--local-port` or an unlock origin. If
-   `AKDBX_UNLOCK_ORIGIN` is set in the broker's environment, the broker keeps
-   that origin: `enable` warns about it.
+   `AKDBX_UNLOCK_ORIGIN` is set in the broker's environment, a plain `serve`
+   keeps that origin (`enable` warns about it); `serve --relay` ignores it.
 4. `akdbx status`: the `relay` object must show `connected: true`, and the
    `unlock_url` must start with the relay origin. Give the user that link and
    continue as in [When the vault is locked](#when-the-vault-is-locked).

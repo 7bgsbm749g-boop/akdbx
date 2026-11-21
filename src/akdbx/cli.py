@@ -24,6 +24,7 @@ from .web_unlock import start_unlock_server
 from .local_https import is_loopback_origin, reload_certificate, start_local_unlock_server
 from .notifications import validate_webhook_url
 from . import capture_cli, card_cli, extension_host, identity_cli, relay as relay_module, relay_cli, secret_cli
+from . import setup_cli
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
 from .sink_helper import SinkError
 
@@ -128,6 +129,22 @@ def _peer_credentials(client: socket.socket) -> tuple[int, int, int]:
         raise RuntimeError("Unix peer credential verification is unavailable on this platform")
     size = struct.calcsize("3i")
     return struct.unpack("3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, size))
+
+
+def _same_origin(first: str, second: str) -> bool:
+    """True when two HTTPS origins name the same host and effective port, as client validation compares them."""
+    def identity(value):
+        parts = urlsplit(value)
+        port = parts.port
+        if (parts.scheme.lower() != 'https' or not parts.hostname or parts.username is not None
+                or parts.password is not None or parts.path not in {'', '/'} or parts.query or parts.fragment):
+            return None
+        return parts.hostname.lower(), 443 if port is None else port
+    try:
+        a, b = identity(first), identity(second)
+    except ValueError:
+        return False
+    return a is not None and a == b
 
 
 def _validate_unlock_url(url: object, expected_origin: str) -> None:
@@ -307,11 +324,17 @@ def _mutation_not_sent(command, error):
     return message
 
 
+def _socket_option(value: str) -> Path:
+    """--socket: a Windows pipe name as given; on Linux one absolute path, with ~ expanded, for the broker
+    connection and for every command that setup writes (they run from another folder)."""
+    return Path(value) if os.name == 'nt' else Path(os.path.abspath(Path(value).expanduser()))
+
+
 def parser() -> argparse.ArgumentParser:
     """Build command parsers for broker, vault, and target operations."""
     result = argparse.ArgumentParser(prog="akdbx", description="Secret-withholding AKDBX autofill broker")
     result.add_argument("--version", action="version", version=__version__)
-    result.add_argument("--socket", type=Path)
+    result.add_argument("--socket", type=_socket_option)
     result.add_argument(
         "--broker-uid", type=int, default=(None if os.name == 'nt' else os.environ.get("AKDBX_BROKER_UID", os.getuid())),
         help="expected operating-system UID of the broker",
@@ -319,7 +342,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--unlock-origin",
         help=("deployment HTTPS origin for private pages. Order: this option, then AKDBX_UNLOCK_ORIGIN, then the "
-              "origin of an enabled akdbx relay ('akdbx relay enable'), then https://localhost:9443"),
+              "origin of an enabled akdbx relay ('akdbx relay enable'), then https://localhost:9443. "
+              "'serve --relay' ignores AKDBX_UNLOCK_ORIGIN and refuses this option unless it is the relay origin"),
     )
     commands = result.add_subparsers(dest="command", required=True)
     card_cli.add_parsers(commands)
@@ -328,6 +352,7 @@ def parser() -> argparse.ArgumentParser:
     secret_cli.add_parser(commands)
     capture_cli.add_parsers(commands)
     relay_cli.add_parser(commands)
+    setup_cli.add_parser(commands)
     start = commands.add_parser("serve", help="unlock a KDBX and run the local broker")
     start.add_argument("database", type=Path)
     start.add_argument('--card-browser-profile', type=Path, default=os.environ.get('AKDBX_CARD_BROWSER_PROFILE'),
@@ -347,8 +372,13 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument('--local-port', type=int,
                        help='loopback HTTPS port when --unlock-origin is a remote (Tailscale Serve) origin')
     start.add_argument('--relay', action='store_true',
-                       help=('require the saved akdbx relay (akdbx relay enable). Without this flag, serve uses '
-                             'an enabled relay unless --unlock-origin or AKDBX_UNLOCK_ORIGIN is set'))
+                       help=('require the saved akdbx relay (akdbx relay enable) and its origin; '
+                             'AKDBX_UNLOCK_ORIGIN is then ignored. Without this flag, serve uses an enabled relay '
+                             'unless --unlock-origin or AKDBX_UNLOCK_ORIGIN is set'))
+    start.add_argument('--no-print-unlock-link', action='store_true',
+                       help=('do not print the private unlock link at start; print only that the vault is locked '
+                             "and to run 'akdbx status'. Recommended for a service or task, whose output a log "
+                             'such as the systemd journal keeps'))
     start.add_argument('--default-fill-route', choices=FILL_ROUTES, default=os.environ.get('AKDBX_DEFAULT_FILL_ROUTE', 'cdp'),
                        help='route for pins that name none: cdp (debugging port) or extension (paired browser extension)')
     search = commands.add_parser("search", help="return matching non-secret login metadata")
@@ -557,7 +587,9 @@ def resolve_unlock_origin(args) -> None:
     trusts the relay origin without the user copying it. A relay directory
     that fails the private-file checks gives no origin.
     """
-    explicit = args.unlock_origin or os.environ.get('AKDBX_UNLOCK_ORIGIN') or None
+    relay = args.command == 'serve' and getattr(args, 'relay', False)
+    # `serve --relay` takes the relay origin: an inherited variable must not change it.
+    explicit = args.unlock_origin or (None if relay else os.environ.get('AKDBX_UNLOCK_ORIGIN')) or None
     if args.command == 'serve' and getattr(args, 'unlock_url', None):
         explicit = explicit or args.unlock_url
     args.unlock_origin_explicit = explicit is not None
@@ -583,10 +615,17 @@ def _relay_for_serve(args):
             print("--relay needs an enabled relay: run 'akdbx relay enable' first", file=sys.stderr)
             return 2
         return None, None
-    if args.unlock_origin_explicit:
-        print('--relay sets the origin itself: remove --unlock-origin and --unlock-url, and unset '
-              'AKDBX_UNLOCK_ORIGIN', file=sys.stderr)
+    if args.unlock_origin_explicit and not _same_origin(args.unlock_origin, config.origin):
+        print(f'--relay sets the origin itself ({config.origin}): remove --unlock-origin and --unlock-url',
+              file=sys.stderr)
         return 2
+    inherited = os.environ.get('AKDBX_UNLOCK_ORIGIN', '').strip().rstrip('/')
+    if inherited and not _same_origin(inherited, config.origin):
+        # serve --relay ignores the variable, but other akdbx commands in this environment still use it
+        # and would refuse this broker's links as untrusted.
+        print(f'warning: AKDBX_UNLOCK_ORIGIN is {inherited}, but this broker serves the relay origin '
+              f'{config.origin}. Other akdbx commands with this variable will refuse its links: unset '
+              'AKDBX_UNLOCK_ORIGIN or set it to the relay origin.', file=sys.stderr)
     if args.tls_cert is not None or args.tls_key is not None or args.local_port is not None:
         print('the akdbx relay is enabled: it sets the origin, the certificate and the loopback port itself. '
               "Remove --tls-cert, --tls-key and --local-port, or run 'akdbx relay disable', or set "
@@ -613,12 +652,17 @@ def main(argv: list[str] | None = None) -> int:
     resolve_unlock_origin(args)
     if args.command == 'extension':
         return extension_host.run(args, args.socket, args.unlock_origin)
+    # Setup passes --socket on to the commands it runs only when it was given.
+    args.socket_explicit = args.socket is not None
     if args.socket is None:
         try:
             args.socket = default_socket()
         except OSError:
             print('could not locate default broker socket; use --socket', file=sys.stderr)
             return 2
+    if args.command == setup_cli.COMMAND:
+        return setup_cli.run(args, status=lambda origin: request(
+            args.socket, {'action': 'ping'}, broker_uid=args.broker_uid, expected_unlock_origin=origin))
     if args.command == relay_cli.COMMAND:
         return relay_cli.run(args, lambda: request(args.socket, {'action': 'relay-status'},
                                                    broker_uid=args.broker_uid,
@@ -740,6 +784,9 @@ def _serve(args, database, keyfile, relay_config, relay_store) -> int:
         print("Vault locked. The unlock link is blocked after three failed master-password attempts. "
               "Ask the user whether they made the failed attempts and want a new link; only after the "
               "user confirms, run: akdbx new-unlock-link --user-confirmed", file=sys.stderr)
+    elif args.no_print_unlock_link:
+        # A service log (journal, task output) must not keep the link's token.
+        print("Vault locked. Run 'akdbx status' to get the private unlock link.", file=sys.stderr)
     else:
         print(f"Vault locked. Open the private HTTPS page: {unlock_url}", file=sys.stderr)
     relay_client = None
