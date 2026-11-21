@@ -755,7 +755,7 @@ def test_generated_handles_starting_with_hyphen_use_positional_separator(command
     (['--unlock-origin', 'https://node.example:9443'], ['--local-port', '9444']),
     (['--unlock-origin', 'https://node.example:9443'], ['--unlock-url', 'https://127.0.0.1:9443']),
     (['--unlock-origin', 'https://localhost:9443'], ['--tls-cert', 'unused.pem', '--tls-key', 'unused.pem',
-                                                     '--unlock-socket', '/unused/unlock.sock']),
+                                                     '--unlock-url', 'https://localhost:9443']),
 ])
 def test_linux_serve_refuses_a_loopback_route_without_tls_cleanly(global_options, options, tmp_path,
                                                                  capsys, monkeypatch):
@@ -766,7 +766,7 @@ def test_linux_serve_refuses_a_loopback_route_without_tls_cleanly(global_options
                      str(tmp_path / 'unused.kdbx'), *options]) == 2
     captured = capsys.readouterr()
     assert not captured.out and ('needs --tls-cert and --tls-key' in captured.err
-                                 or 'belong to the Tailscale Serve socket route' in captured.err)
+                                 or 'belongs to the Tailscale Serve socket route' in captured.err)
     assert 'Traceback' not in captured.err
 
 

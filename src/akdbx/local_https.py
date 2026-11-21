@@ -15,7 +15,9 @@ import stat
 import threading
 from urllib.parse import urlsplit
 
-from .web_unlock import (ThreadingUnixHTTPServer, UnlockState, handler_for,
+from http import HTTPStatus
+
+from .web_unlock import (ThreadingUnixHTTPServer, UnlockState, handler_for, _page,
                          MAX_HTTP_CONNECTIONS)
 from .broker import open_vault_with_password
 
@@ -74,8 +76,11 @@ class LoopbackHTTPSServer(ThreadingUnixHTTPServer):
     """The shared bounded private-page server, on a 127.0.0.1 TLS listener."""
 
     address_family = socket.AF_INET
-    # No SO_REUSEADDR or SO_REUSEPORT: another process cannot share the port.
-    allow_reuse_address = False
+    # Linux SO_REUSEADDR only lets a restart bind over the TIME_WAIT
+    # connections that this server's closes leave; no socket can bind while a
+    # listener exists. On Windows it would let another socket share the port,
+    # so Windows uses SO_EXCLUSIVEADDRUSE instead. Never SO_REUSEPORT.
+    allow_reuse_address = os.name != 'nt'
     allow_reuse_port = False
 
     def __init__(self, address, handler, context, origin):
@@ -110,11 +115,43 @@ class LoopbackHTTPSServer(ThreadingUnixHTTPServer):
 
     def shutdown(self):
         super().shutdown()
-        capture = getattr(self, 'capture', None)
-        if capture is not None:
-            stop, thread = capture
-            stop.set()
-            thread.join(5)
+        close_capture = getattr(self, 'close_capture', None)
+        if close_capture is not None:
+            close_capture()
+
+
+def start_capture_socket(server, state, path):
+    """Linux: serve only the native host's ``/totp/capture`` on a private Unix socket.
+
+    The browser native host sends a captured authenticator setup here, as on
+    the Unix-socket route; Windows uses a capture pipe instead. The route
+    requires a same-UID peer and refuses proxy headers. This socket serves no
+    page, so it cannot unlock the vault.
+    """
+    from .import_web import handle_import
+    page = handler_for(state)
+
+    class CaptureHandler(page):
+        def do_GET(self):
+            self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Not found.</p>'))
+
+        def do_POST(self):
+            if urlsplit(self.path).path != '/totp/capture' or not handle_import(self, state):
+                self.do_GET()
+
+    capture = ThreadingUnixHTTPServer(str(path), CaptureHandler)
+    thread = threading.Thread(target=capture.serve_forever, name='akdbx-totp-capture', daemon=True)
+    try:
+        thread.start()
+    except BaseException:
+        capture.server_close()
+        raise
+
+    def close():
+        capture.shutdown()
+        capture.server_close()
+        thread.join(5)
+    server.close_capture = close
 
 
 @contextmanager
@@ -130,7 +167,7 @@ def _posix_checked_file(path, *, private):
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise PermissionError('TLS certificate and key must be regular files')
-        if private and (info.st_uid != os.getuid() or info.st_mode & 0o077):
+        if private and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & ~0o600):
             raise PermissionError("TLS key must be this user's file with mode 0600")
         # OpenSSL reopens this exact checked file, not a pathname that can change.
         yield f'/proc/self/fd/{fd}'
@@ -158,7 +195,7 @@ def load_certificate(context, certificate, private_key):
 
 def start_local_unlock_server(broker, database, keyfile, public_base_url, certificate,
                               private_key, opener=open_vault_with_password, *, local_port=None,
-                              before_start=None):
+                              before_start=None, capture_socket=None):
     origin, port = local_origin(public_base_url, local_port)
     if certificate is None or private_key is None:
         raise ValueError('the private HTTPS page requires --tls-cert and --tls-key')
@@ -177,12 +214,13 @@ def start_local_unlock_server(broker, database, keyfile, public_base_url, certif
     try:
         if before_start is not None:
             before_start(server)
+        if capture_socket is not None:
+            start_capture_socket(server, state, capture_socket)
         thread.start()
     except BaseException:
-        capture = getattr(server, 'capture', None)
-        if capture is not None:
-            capture[0].set()
-            capture[1].join(5)
+        close_capture = getattr(server, 'close_capture', None)
+        if close_capture is not None:
+            close_capture()
         server.server_close()
         raise
     return server, url

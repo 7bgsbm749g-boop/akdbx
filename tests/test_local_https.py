@@ -78,13 +78,16 @@ def test_linux_serve_unlocks_through_the_loopback_https_page(remote, private_pai
     assert 'Open the private HTTPS page: ' + origin + '/?token=' in capsys.readouterr().err
 
 
-@pytest.mark.parametrize('change', ['key-readable', 'key-group', 'cert-directory', 'key-symlink', 'key-missing'])
+@pytest.mark.parametrize('change', ['key-readable', 'key-group', 'key-executable', 'cert-directory', 'key-symlink',
+                                    'key-missing'])
 def test_unsafe_certificate_files_are_refused(change, private_pair, tmp_path):
     cert, key = private_pair
     if change == 'key-readable':
         key.chmod(0o644)
     elif change == 'key-group':
         key.chmod(0o640)
+    elif change == 'key-executable':
+        key.chmod(0o700)
     elif change == 'cert-directory':
         cert = tmp_path
     elif change == 'key-symlink':
@@ -122,3 +125,91 @@ def test_listener_binds_only_loopback_and_refuses_plaintext(private_pair, tmp_pa
         server.shutdown()
         server.server_close()
         broker.unlock_notifications.close()
+
+
+def test_restart_binds_the_port_right_after_a_served_request(private_pair, tmp_path):
+    # The server closes each connection first, which leaves TIME_WAIT sockets
+    # on its port; a restart must still bind it at once.
+    cert, key = private_pair
+    port = free_port()
+    origin = f'https://127.0.0.1:{port}'
+    for _ in range(2):
+        broker = Broker(None, RecordingTyper())
+        server, url = start_local_unlock_server(broker, tmp_path / 'vault.kdbx', None, origin, cert, key)
+        try:
+            for _ in range(3):
+                client = HTTPSConnection('127.0.0.1', port, timeout=5,
+                                         context=ssl.create_default_context(cafile=str(cert)))
+                client.request('GET', '/?' + urlsplit(url).query)
+                response = client.getresponse()
+                assert response.status == 200
+                response.read()
+                client.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            broker.unlock_notifications.close()
+
+
+def test_native_host_capture_through_the_capture_socket(private_pair, tmp_path):
+    from akdbx import browser_import
+    from test_web_unlock import call
+    cert, key = private_pair
+    database = tmp_path / 'vault.kdbx'
+    vault = create_database(str(database), password=MASTER)
+    vault.add_entry(vault.root_group, 'Synthetic', 'synthetic-user', 'synthetic password', url='https://example.test/')
+    vault.save()
+    capture = tmp_path / 'private' / 'akdbx-unlock.sock'
+    port = free_port()
+    origin = f'https://localhost:{port}'
+    broker = Broker(None, RecordingTyper())
+    server, url = start_local_unlock_server(broker, database, None, origin, cert, key, capture_socket=capture)
+    try:
+        assert oct(capture.stat().st_mode & 0o777) == '0o600'
+        # The socket serves no page and cannot unlock, even with a proxy identity.
+        path = '/?' + urlsplit(url).query
+        assert call(capture, 'GET', path)[0] == 404
+        assert call(capture, 'POST', path, urlencode({'password': MASTER}))[0] == 404
+        assert broker.locked
+        assert post(port, cert, path, urlencode({'password': MASTER}), f'localhost:{port}', origin)[0] == 200
+        selected = broker.dispatch({'action': 'search', 'query': 'Synthetic'})['entries'][0]
+        prepared = broker.dispatch({'action': 'setup-totp', 'handle': selected['handle'],
+                                    'metadata': {k: selected[k] for k in ('title', 'username', 'url', 'group')}})
+        assert prepared['ok'], prepared
+        config = {'extension_id': 'a' * 32, 'origin': origin, 'socket': str(capture)}
+        uri = 'otpauth://totp/Example:synthetic-user?secret=JBSWY3DPEHPK3PXP&issuer=Example'
+        message = {'private_url': prepared['private_url'], 'source_url': 'https://example.test/setup', 'payloads': [uri]}
+        with pytest.raises(ValueError):
+            browser_import.capture({**message, 'source_url': 'https://evil.test/setup'}, config)
+        before = database.read_bytes()
+        assert browser_import.capture(message, config) == browser_import.RECEIPT
+        assert database.read_bytes() == before
+        assert broker.writes.get(prepared['write_handle']).import_candidates
+        with pytest.raises(ValueError):  # replay
+            browser_import.capture(message, config)
+    finally:
+        server.shutdown()
+        server.server_close()
+        broker.unlock_notifications.close()
+    assert not capture.exists()
+
+
+def test_a_live_capture_socket_stops_a_second_broker(private_pair, tmp_path):
+    cert, key = private_pair
+    capture = tmp_path / 'private' / 'akdbx-unlock.sock'
+    first, second = Broker(None, RecordingTyper()), Broker(None, RecordingTyper())
+    server, _ = start_local_unlock_server(first, tmp_path / 'vault.kdbx', None, f'https://localhost:{free_port()}',
+                                          cert, key, capture_socket=capture)
+    port = free_port()
+    try:
+        with pytest.raises(RuntimeError):
+            start_local_unlock_server(second, tmp_path / 'vault.kdbx', None, f'https://localhost:{port}',
+                                      cert, key, capture_socket=capture)
+        # The second broker's HTTPS listener was closed again.
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', port))
+    finally:
+        server.shutdown()
+        server.server_close()
+        for broker in (first, second):
+            broker.unlock_notifications.close()

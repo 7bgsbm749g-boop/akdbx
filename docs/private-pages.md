@@ -86,6 +86,14 @@ Rules for both platforms:
 The broker prints the private link when it starts, and `status` returns it
 while the vault is locked. Open it in a browser on the broker's computer.
 
+The browser native host that captures an authenticator setup QR does not use
+this listener. On Windows it uses a capture pipe. On Linux the broker also
+opens its private Unix unlock socket (`akdbx-unlock.sock` beside the broker
+socket, or `--unlock-socket`), which on this route answers only the native
+host's capture request from the same user. It serves no page and cannot
+unlock the vault. Register the native host with that socket on both Linux
+routes; see the skill's private import reference.
+
 ## Unlock from another device
 
 Tailscale Serve on the broker's computer can proxy its tailnet HTTPS name to

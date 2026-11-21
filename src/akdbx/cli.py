@@ -533,8 +533,8 @@ def main(argv: list[str] | None = None) -> int:
             # page as on Windows. Without them, Linux keeps its Tailscale Serve
             # Unix-socket backend, which a loopback origin cannot reach.
             local_https = args.tls_cert is not None or args.tls_key is not None
-            if local_https and (args.unlock_socket is not None or args.unlock_url is not None):
-                print('--unlock-socket and --unlock-url belong to the Tailscale Serve socket route; '
+            if local_https and args.unlock_url is not None:
+                print('--unlock-url belongs to the Tailscale Serve socket route; '
                       'the HTTPS page uses --unlock-origin', file=sys.stderr)
                 return 2
             if not local_https and (args.local_port is not None
@@ -555,14 +555,16 @@ def main(argv: list[str] | None = None) -> int:
         unlock_socket = args.unlock_socket or args.socket.with_name(unlock_name)
         if os.name != 'nt' and local_https:
             try:
+                # The unlock socket path then serves only the browser native
+                # host's authenticator capture, as the capture pipe does on Windows.
                 unlock_server, unlock_url = start_local_unlock_server(
                     broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key,
-                    local_port=args.local_port)
-            except (OSError, ValueError):
+                    local_port=args.local_port, capture_socket=unlock_socket)
+            except (OSError, ValueError, RuntimeError):
                 broker.unlock_notifications.close()
                 broker.card_save_notifications.close()
                 print('could not start HTTPS unlock; check origin, local port, TLS files and permissions '
-                      '(key mode 0600), and that the port is free', file=sys.stderr)
+                      '(key mode 0600), and that no other broker uses this port or socket', file=sys.stderr)
                 return 2
         elif os.name != 'nt':
             unlock_server, unlock_url = start_unlock_server(

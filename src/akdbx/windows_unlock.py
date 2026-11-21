@@ -34,7 +34,10 @@ def start_capture_pipe(server, broker, path):
     except BaseException:
         pending.Close()
         raise
-    server.capture = (stop, thread)
+    def close():
+        stop.set()
+        thread.join(5)
+    server.close_capture = close
 
 
 def start_windows_unlock_server(broker, database, keyfile, public_base_url, certificate,
