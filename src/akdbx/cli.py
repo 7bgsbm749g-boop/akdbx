@@ -333,6 +333,8 @@ def parser() -> argparse.ArgumentParser:
                        help='operator sink configuration for deliver-secret (root- or broker-owned, not group/other writable)')
     start.add_argument('--tls-cert', type=Path, help='Windows: trusted PEM certificate for the local HTTPS unlock page')
     start.add_argument('--tls-key', type=Path, help='Windows: private PEM certificate key with a restrictive DACL')
+    start.add_argument('--local-port', type=int,
+                       help='Windows: loopback HTTPS port when --unlock-origin is a remote (Tailscale Serve) origin')
     start.add_argument('--default-fill-route', choices=FILL_ROUTES, default=os.environ.get('AKDBX_DEFAULT_FILL_ROUTE', 'cdp'),
                        help='route for pins that name none: cdp (debugging port) or extension (paired browser extension)')
     search = commands.add_parser("search", help="return matching non-secret login metadata")
@@ -515,16 +517,19 @@ def main(argv: list[str] | None = None) -> int:
                       'folder that only this user, SYSTEM and administrators can access', file=sys.stderr)
                 return 2
             try:
+                from .windows_rpc import capture_pipe
                 unlock_server, unlock_url = start_windows_unlock_server(
-                    broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key)
+                    broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key,
+                    local_port=args.local_port, capture_pipe=capture_pipe(args.socket))
             except (OSError, ValueError, pywintypes.error):
                 broker.unlock_notifications.close()
                 broker.card_save_notifications.close()
-                print('could not start Windows HTTPS unlock; check origin, TLS files, permissions and port', file=sys.stderr)
+                print('could not start Windows HTTPS unlock; check origin, local port, TLS files, permissions, '
+                      'and that no other broker uses this pipe', file=sys.stderr)
                 return 2
         else:
-            if args.tls_cert is not None or args.tls_key is not None:
-                print('--tls-cert and --tls-key are Windows options; Linux uses Tailscale Serve', file=sys.stderr)
+            if args.tls_cert is not None or args.tls_key is not None or args.local_port is not None:
+                print('--tls-cert, --tls-key and --local-port are Windows options; Linux uses Tailscale Serve', file=sys.stderr)
                 return 2
             try:
                 broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,

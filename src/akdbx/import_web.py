@@ -99,8 +99,7 @@ def handle_import(handler, state):
             if route in {'/totp/import', '/totp/capture'}:
                 if native:
                     source, payloads = values['source_url'], values['payloads']
-                    if not source or not isinstance(payloads, list) or len(payloads) != 1 or not isinstance(payloads[0], str) or not payloads[0].startswith('otpauth://totp/'):
-                        raise ValueError
+                    _check_capture(source, payloads)
                 else:
                     if set(values) != {'payloads'}:
                         raise ValueError
@@ -124,6 +123,44 @@ def handle_import(handler, state):
         # same fixed result is used even for deep or otherwise hostile input.
         send(HTTPStatus.BAD_REQUEST, '<p>Import rejected, expired or unavailable. Use a complete supported export and a fresh request.</p>')
     return True
+
+
+def _check_capture(source, payloads):
+    """One browser-captured TOTP setup URI from a named HTTPS page."""
+    if (not isinstance(source, str) or not source or not isinstance(payloads, list) or len(payloads) != 1
+            or not isinstance(payloads[0], str) or not payloads[0].startswith('otpauth://totp/')):
+        raise ValueError
+
+
+def serve_capture_connection(connection, broker, deadline):
+    """Answer one Windows capture-pipe request from the browser native host.
+
+    The pipe is separate from the agent RPC endpoint and accepts one message
+    type. The caller has verified that the peer runs as this user in this
+    session, as the Linux route checks the peer UID. The answer is the fixed
+    receipt or a fixed failure; neither holds a key or the reason.
+    """
+    import time
+    from .protocol import receive_message, send_message
+    result = {'ok': False}
+    try:
+        message = receive_message(connection, deadline=deadline)
+        if (set(message) != {'type', 'token', 'source_url', 'payloads'} or message['type'] != 'totp-capture'
+                or not isinstance(message['token'], str) or not 0 < len(message['token']) <= 128):
+            raise ValueError
+        _check_capture(message['source_url'], message['payloads'])
+        with broker._vault_lock:
+            op = broker.writes.by_token(message['token'], 'totp')
+            if op is None or not broker.writes.available() or time.monotonic() > deadline:
+                raise ValueError
+            broker.writes.stage_totp_import(op, message['payloads'], message['source_url'])
+        result = {'ok': True, 'state': 'awaiting-private-confirmation'}
+    except Exception:
+        pass  # Decoder and transport errors can contain submitted keys.
+    try:
+        send_message(connection, result)
+    except Exception:
+        pass
 
 
 def _review(send, op, token):

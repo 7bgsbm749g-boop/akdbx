@@ -126,3 +126,40 @@ def test_private_pages_use_a_referrer_policy_that_keeps_the_post_origin(local_se
     status, headers, body = call()
     assert status == 200 and headers['Referrer-Policy'] == 'same-origin'
     assert b'<meta name="referrer" content="same-origin">' in body
+
+
+@pytest.mark.parametrize('value, port, expected', [
+    ('https://node.tailnet.ts.net:9443', 9444, ('https://node.tailnet.ts.net:9443', 9444)),
+    ('https://node.tailnet.ts.net/', 9444, ('https://node.tailnet.ts.net', 9444)),
+    ('https://node.tailnet.ts.net:443', 9444, ('https://node.tailnet.ts.net', 9444)),
+    ('https://localhost:9443', 9443, ('https://localhost:9443', 9443)),
+])
+def test_remote_origin_listens_on_its_loopback_port(value, port, expected):
+    assert local_origin(value, port) == expected
+
+
+@pytest.mark.parametrize('value, port', [
+    ('https://node.tailnet.ts.net:9443', None), ('https://node.tailnet.ts.net:9443', 80),
+    ('https://node.tailnet.ts.net:9443', 70000), ('https://100.64.0.1:9443', 9444),
+    ('https://[fd7a:115c:a1e0::1]:9443', 9444), ('https://localhost:9443', 9444),
+    ('http://node.tailnet.ts.net', 9444), ('https://node.tailnet.ts.net/unlock', 9444),
+    ('https://user@node.tailnet.ts.net', 9444), ('https://node', 9444),
+])
+def test_remote_origin_without_a_valid_local_port_or_name_refused(value, port):
+    with pytest.raises(ValueError):
+        local_origin(value, port)
+
+
+def test_remote_origin_unlocks_only_with_its_own_host_and_origin(local_server):
+    # Tailscale Serve keeps the browser's Host and Origin when it proxies to
+    # the loopback listener; the page accepts only the configured remote name.
+    server, broker, _, call = local_server
+    remote = 'https://node.tailnet.ts.net:9443'
+    server.local_origin = broker.writes.public_base = remote
+    form = urlencode({'password': 'synthetic master'})
+    assert call('POST', form, {'Origin': remote})[0] == 404  # loopback Host
+    assert call('POST', form, {'Host': 'node.tailnet.ts.net:9443', 'Origin': 'https://attacker.test'})[0] == 404
+    assert broker.locked
+    assert call('POST', form, {'Host': 'node.tailnet.ts.net:9443', 'Origin': remote,
+                               'Tailscale-User-Login': 'not-trusted@example.test'})[0] == 200
+    assert not broker.locked

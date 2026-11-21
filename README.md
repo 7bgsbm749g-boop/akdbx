@@ -19,7 +19,7 @@ release or upgrade a broker.
 ## How it works
 
 1. The broker starts **locked**. The user unlocks it on a private HTTPS page
-   (over Tailscale on Linux, on loopback on Windows). The master password never
+   (over Tailscale on Linux; on loopback or over Tailscale Serve on Windows). The master password never
    passes through chat, the CLI, arguments or the environment.
 2. The agent runs `akdbx search`, `search-cards` or `search-identities` and gets
    metadata plus a single-use handle that expires after five minutes.
@@ -62,7 +62,8 @@ pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
   platform. The setup notes in this README and the
   [VPS setup reference](skills/akdbx/references/vps-setup.md) describe it.
 - **Windows** (0.17.0+): the same features. It uses local named pipes, Windows
-  access checks, a loopback HTTPS page and directed Unicode window messages for
+  access checks, a loopback HTTPS page (from 0.22.0 also reachable from other
+  tailnet devices through Tailscale Serve) and directed Unicode window messages for
   native-app username and TOTP fills. See [Windows setup and validation](docs/windows.md)
   for browser and engine requirements, limits and pending checks. The Linux
   socket and Tailscale notes below do not describe the Windows transport.

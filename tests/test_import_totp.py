@@ -421,3 +421,53 @@ def test_native_host_subprocess_to_private_broker(deployed,tmp_path):
     assert KEY.encode() not in result.stdout+result.stderr
     assert path.read_bytes()==before
     assert private(socket,prepared,'/totp/review')[0]==200
+
+
+def _pipe_capture(broker, request, deadline=None):
+    """Drive the Windows capture-pipe handler over a local stream pair."""
+    import socket as stream_socket
+    import threading
+    import time
+    from akdbx.import_web import serve_capture_connection
+    from akdbx.protocol import receive_message, send_message
+    server, client = stream_socket.socketpair()
+    worker = threading.Thread(target=serve_capture_connection,
+                              args=(server, broker, deadline or time.monotonic() + 5))
+    worker.start()
+    try:
+        send_message(client, request)
+        return receive_message(client, deadline=time.monotonic() + 5)
+    finally:
+        worker.join(5)
+        server.close()
+        client.close()
+
+
+def test_windows_capture_pipe_stages_once_and_needs_private_confirmation(deployed):
+    broker, _, path, socket = deployed
+    before = path.read_bytes()
+    prepared = prepare(broker)
+    token = urlsplit(prepared['private_url']).query.split('=', 1)[1]
+    request = {'type': 'totp-capture', 'token': token, 'source_url': 'https://example.test/setup', 'payloads': [URI]}
+    for bad in ({**request, 'source_url': 'https://evil.test'}, {**request, 'type': 'search'},
+                {**request, 'token': 'invalid'}, {**request, 'payloads': [URI, URI]},
+                {**request, 'payloads': [KEY]}, {**request, 'extra': True}):
+        assert _pipe_capture(broker, bad) == {'ok': False}
+    assert not broker.writes.get(prepared['write_handle']).import_candidates
+    receipt = _pipe_capture(broker, request)
+    assert receipt == browser_import.RECEIPT and KEY not in json.dumps(receipt)
+    assert path.read_bytes() == before
+    # A replay is refused; the user still confirms on the private page.
+    assert _pipe_capture(broker, request) == {'ok': False}
+    assert private(socket, prepared, '/totp/review', {'choice': '0', 'nonce': nonce(broker, prepared),
+                                                       'confirmed': 'yes'})[0] == 200
+
+
+def test_windows_capture_pipe_refuses_a_request_after_its_deadline(deployed):
+    import time
+    broker, _, _, _ = deployed
+    prepared = prepare(broker)
+    token = urlsplit(prepared['private_url']).query.split('=', 1)[1]
+    request = {'type': 'totp-capture', 'token': token, 'source_url': 'https://example.test/setup', 'payloads': [URI]}
+    assert _pipe_capture(broker, request, deadline=time.monotonic() - 1) == {'ok': False}
+    assert not broker.writes.get(prepared['write_handle']).import_candidates

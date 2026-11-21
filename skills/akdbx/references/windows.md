@@ -15,7 +15,7 @@ with these replacements:
 
 | Linux | Windows |
 | --- | --- |
-| Tailscale HTTPS page, opened on any tailnet device | Loopback HTTPS page, opened on the **Windows machine** |
+| Tailscale HTTPS page, opened on any tailnet device | Loopback HTTPS page, opened on the **Windows machine**; or, with a Tailscale Serve origin and `--local-port` (0.22.0+), on any tailnet device |
 | Unix socket, `--broker-uid` | Local named pipe of this user and session; `--broker-uid` is refused |
 | `pin-target` X11 window, `x11-send-event-v1` | `pin-target` top-level HWND, `win32-char-v1` |
 | `/absolute/path/to/akdbx/.venv/bin/akdbx` | `CHECKOUT\.venv\Scripts\akdbx.exe` |
@@ -33,8 +33,9 @@ with these replacements:
   when the browser has no debugging port (Helium, Chrome or Edge). For
   window pins require `target_fill_delivery: "win32-char-v1"` and target
   protocol 1. `target_fill_modes: ["username"]` describes window pins only.
-- When locked, give the exact returned private HTTPS link to the user. It opens
-  on the **Windows machine**, not a separate Tailscale device. The user enters the
+- When locked, give the exact returned private HTTPS link to the user. A
+  loopback link opens on the **Windows machine** only; a link on the configured
+  Tailscale Serve origin opens on any tailnet device. The user enters the
   master password privately. Never bypass a TLS certificate warning, read the
   master password, submit it for the user, or replace HTTPS with HTTP. Register
   an unlock notification as `SKILL.md` describes and resume on that event. The
@@ -105,7 +106,10 @@ field, another for the confirmation field, the site's acceptance, then
   that only this user, SYSTEM and administrators can open. Until-unlock
   subscriptions survive a broker restart.
 - The browser native host for authenticator capture (`akdbx-browser-import`)
-  is Linux-only. Use the private HTTPS import page of `setup-totp`.
+  works on Windows from 0.22.0. It sends the capture to the broker's
+  `-capture` named pipe, never the agent RPC. Follow
+  [private import](private-import.md); install it with `install-host
+  --browser NAME` as `docs/windows.md` describes.
 
 The broker, browser and target must have the same Windows user and desktop
 session. Do not elevate the broker to fill UAC, secure-desktop, service-session
