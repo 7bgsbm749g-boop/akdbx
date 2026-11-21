@@ -871,6 +871,29 @@ def test_serve_with_a_restored_block_prints_no_unlock_url(monkeypatch, tmp_path,
     assert "only after the user confirms" in err
 
 
+def test_refusal_message_survives_a_failed_notifier_close(monkeypatch, tmp_path, capsys):
+    # A state write that fails while the notifiers close must not hide which
+    # permissions to fix: the diagnostic is printed first.
+    from akdbx import notifications
+    runtime, state_home = tmp_path / "run", tmp_path / "state"
+    runtime.mkdir(mode=0o700)
+    state_home.mkdir()
+    state_home.chmod(0o775)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    def failing_close(self):
+        raise OSError(28, "synthetic ENOSPC")
+    for name in dir(notifications):
+        cls = getattr(notifications, name)
+        if isinstance(cls, type) and hasattr(cls, "close"):
+            monkeypatch.setattr(cls, "close", failing_close)
+    brokers = _serve_capturing_brokers(monkeypatch, restore_link=True)
+    serve = ["--unlock-origin", "https://node.example:9443", "serve", "synthetic.kdbx"]
+    assert cli.main(serve) == 2 and brokers == []
+    err = capsys.readouterr().err
+    assert "refusing to start" in err and f"chmod 700 {state_home / 'akdbx'}" in err
+
+
 def test_serve_refuses_a_group_writable_unlock_block_folder(monkeypatch, tmp_path, capsys):
     # H6: a common mode-0775 state folder must not start a broker that is
     # blocked with no way out: serve refuses and says how to fix it.

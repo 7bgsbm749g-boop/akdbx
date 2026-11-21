@@ -533,10 +533,15 @@ def refuse_untrusted_unlock_block(broker) -> bool:
         rules = (f'{path.parent} and each folder above it must be owned by you or root and not writable by '
                  f'group or others (for example: chmod 700 {path.parent}), and the file must be a regular file '
                  'you own with mode 0600')
-    manager.close()
-    broker.card_save_notifications.close()
+    # Print first: the notifiers have not started work, and a failed state
+    # write while closing them must not hide which permissions to fix.
     print(f'refusing to start: the saved unlock-link block {path} cannot be trusted{detail}. {rules}. '
           'Fix the permissions, or start with --notification-state FILE in a private folder.', file=sys.stderr)
+    for notifier in (manager, broker.card_save_notifications):
+        try:
+            notifier.close()
+        except Exception:
+            pass
     return True
 
 
