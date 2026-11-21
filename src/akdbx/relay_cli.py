@@ -99,7 +99,7 @@ def _enable(args, store, endpoint_factory, sleep):
               'next': ('Restart the broker with only the vault (no --unlock-origin, --tls-cert, --tls-key or '
                        f'--local-port): akdbx serve VAULT. Its private pages then open at {config.origin} on any '
                        'device, and every akdbx command uses that origin. The relay forwards encrypted traffic '
-                       'and cannot read it.')}
+                       'and cannot read it. If you use the browser extension, run akdbx extension build again.')}
     warning = _explicit_origin(args)
     if warning:
         result['warning'] = warning + '; unset it to use the relay'
