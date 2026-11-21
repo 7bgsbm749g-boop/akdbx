@@ -295,6 +295,12 @@ state: only this user and SYSTEM can open it and its files. Do not set
 `AKDBX_UNLOCK_ORIGIN`, `--tls-cert`, `--tls-key` or `--local-port` with the
 relay; the CLI finds the relay origin by itself.
 
+The relay origin is `https://<id>.akdbx.link`, with no port. A broker that
+registered before 0.28.0 has the old `https://<id>.akdbx.link:8443` origin; it
+moves to the new port by itself at its next start (the broker task's next
+run), as [The relay moved from port 8443 to 443](private-pages.md#the-relay-moved-from-port-8443-to-443)
+describes. Then run `akdbx extension build` again and reload the extension.
+
 ### Authenticator capture native host
 
 From 0.22.0 the browser native host that captures a website's authenticator

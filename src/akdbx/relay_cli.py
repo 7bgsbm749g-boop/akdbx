@@ -70,17 +70,18 @@ def _enable(args, store, endpoint_factory, sleep):
         held = store.lock()
     except RelayBusy:
         config = store.load()
-        if config is not None and config.enabled and config.relay == endpoint.url:
+        if config is not None and config.enabled and relay_module.same_relay(config.relay, endpoint.url):
             result = {'ok': True, 'enabled': True, 'changed': False, 'name': config.name, 'origin': config.origin,
                       'relay': config.relay, 'next': 'A running broker already uses the relay.'}
             _print(result)
             return 0
         return _fail('another akdbx process (a running broker) uses the relay directory; stop it and run '
                      "'akdbx relay enable' again")
+    refreshed = []
     with held:
         try:
             config, info, created = relay_module.enable(
-                store, endpoint, sleep=sleep,
+                store, endpoint, sleep=sleep, endpoint_factory=endpoint_factory, refreshed=refreshed,
                 notify=lambda text: print('akdbx relay: ' + text, file=sys.stderr, flush=True))
         except RelayError as exc:
             saved = None
@@ -103,9 +104,17 @@ def _enable(args, store, endpoint_factory, sleep):
                        f'--local-port): akdbx serve VAULT. Its private pages then open at {config.origin} on any '
                        'device, and every akdbx command uses that origin. The relay forwards encrypted traffic '
                        'and cannot read it. If you use the browser extension, run akdbx extension build again.')}
+    warnings = [refresh.warning for refresh in refreshed if refresh.warning]
+    changes = [change for refresh in refreshed for change in refresh.changes]
+    if changes:
+        result['moved'] = changes
+        result['next'] += (' The origin changed: restart a running broker, then run akdbx extension build again '
+                           'and reload the extension.')
     warning = _explicit_origin(args)
     if warning:
-        result['warning'] = warning + '; unset it to use the relay'
+        warnings.append(warning + '; unset it to use the relay')
+    if warnings:
+        result['warning'] = '; '.join(warnings)
     _print(result)
     return 0
 
@@ -170,6 +179,10 @@ def _broker_state(broker_status):
             broker['renewal_error'] = state['renewal_error'][:300]
     else:
         broker['uses_relay'] = False
+    if isinstance(state, dict) and isinstance(state.get('moved'), list):
+        moved = [item[:200] for item in state['moved'][:4] if isinstance(item, str)]
+        if moved:
+            broker['moved'] = moved
     origin = response.get('active_origin')
     if isinstance(origin, str) and ORIGIN.fullmatch(origin):
         broker['origin'] = origin
@@ -183,7 +196,8 @@ def _status(args, store, broker_status):
                 'next': "Run 'akdbx relay enable' to open the private pages from any device."})
         return 0
     result = {'ok': True, 'registered': True, 'enabled': config.enabled, 'name': config.name,
-              'origin': config.origin, 'relay': config.relay, 'directory': str(store.directory)}
+              'origin': config.origin, 'public_port': config.public_port, 'relay': config.relay,
+              'directory': str(store.directory)}
     info = store.certificate(config.name)
     if info is None:
         result['certificate'] = False
@@ -195,6 +209,13 @@ def _status(args, store, broker_status):
         result['next'] = 'The running broker still uses the relay until it restarts.'
     elif broker.get('uses_relay') is False and config.enabled and not _explicit_origin(args):
         result['next'] = 'Restart the broker to use the relay.'
+    elif (broker.get('uses_relay') is True and isinstance(broker.get('origin'), str)
+          and broker['origin'] != config.origin):
+        result['next'] = (f"The running broker still uses {broker['origin']}; restart it to use {config.origin}, "
+                          'then run akdbx extension build again and reload the extension.')
+    elif broker.get('moved'):
+        result['next'] = ('The broker moved to this origin at its start: run akdbx extension build again and '
+                          'reload the extension if you use it.')
     warning = _explicit_origin(args)
     if warning and config.enabled:
         result['warning'] = warning

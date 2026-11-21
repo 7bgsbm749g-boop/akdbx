@@ -619,13 +619,6 @@ def _relay_for_serve(args):
         print(f'--relay sets the origin itself ({config.origin}): remove --unlock-origin and --unlock-url',
               file=sys.stderr)
         return 2
-    inherited = os.environ.get('AKDBX_UNLOCK_ORIGIN', '').strip().rstrip('/')
-    if inherited and not _same_origin(inherited, config.origin):
-        # serve --relay ignores the variable, but other akdbx commands in this environment still use it
-        # and would refuse this broker's links as untrusted.
-        print(f'warning: AKDBX_UNLOCK_ORIGIN is {inherited}, but this broker serves the relay origin '
-              f'{config.origin}. Other akdbx commands with this variable will refuse its links: unset '
-              'AKDBX_UNLOCK_ORIGIN or set it to the relay origin.', file=sys.stderr)
     if args.tls_cert is not None or args.tls_key is not None or args.local_port is not None:
         print('the akdbx relay is enabled: it sets the origin, the certificate and the loopback port itself. '
               "Remove --tls-cert, --tls-key and --local-port, or run 'akdbx relay disable', or set "
@@ -635,6 +628,34 @@ def _relay_for_serve(args):
         print("the relay has no usable certificate yet: run 'akdbx relay enable' again", file=sys.stderr)
         return 2
     return config, store
+
+
+def _refresh_relay(args, config, store):
+    """With the relay lock held: take the relay's current public port and control URL, then warn.
+
+    A failed check keeps the saved values (one warning); it never stops the
+    start. Return ``(config, changes)``.
+    """
+    result = relay_module.refresh(store, config)
+    if result.warning:
+        print('akdbx relay: warning: ' + result.warning, file=sys.stderr)
+    for change in result.changes:
+        print('akdbx relay: ' + change, file=sys.stderr)
+    config = result.config
+    if result.changes and args.unlock_origin_explicit and not _same_origin(args.unlock_origin, config.origin):
+        print(f'warning: --unlock-origin names the old relay origin {args.unlock_origin}; this broker now '
+              f'serves {config.origin}. Remove --unlock-origin.', file=sys.stderr)
+    if result.changes:
+        print(f'akdbx relay: the private pages moved to {config.origin}. If you use the browser extension, '
+              'run akdbx extension build again and reload it.', file=sys.stderr)
+    inherited = os.environ.get('AKDBX_UNLOCK_ORIGIN', '').strip().rstrip('/')
+    if inherited and not _same_origin(inherited, config.origin):
+        # serve --relay ignores the variable, but other akdbx commands in this environment still use it
+        # and would refuse this broker's links as untrusted.
+        print(f'warning: AKDBX_UNLOCK_ORIGIN is {inherited}, but this broker serves the relay origin '
+              f'{config.origin}. Other akdbx commands with this variable will refuse its links: unset '
+              'AKDBX_UNLOCK_ORIGIN or set it to the relay origin.', file=sys.stderr)
+    return config, result.changes
 
 
 def _free_loopback_port() -> int:
@@ -685,20 +706,27 @@ def main(argv: list[str] | None = None) -> int:
                 print(f'refusing to start: the relay directory cannot be trusted ({exc}). Fix it, run '
                       "'akdbx relay disable --forget', or start with --unlock-origin.", file=sys.stderr)
                 return 2
+            try:
+                relay_config, relay_moved = _refresh_relay(args, relay_config, relay_store)
+            except BaseException:
+                relay_lock.release()
+                raise
             # The relay origin, the relay certificate and key (one private file),
             # and a free loopback port: the same loopback page as a Tailscale route.
             args.unlock_origin = relay_config.origin
             args.tls_cert = args.tls_key = relay_store.tls_path
             args.local_port = _free_loopback_port()
+        else:
+            relay_moved = ()
         try:
-            return _serve(args, database, keyfile, relay_config, relay_store)
+            return _serve(args, database, keyfile, relay_config, relay_store, relay_moved)
         finally:
             if relay_lock is not None:
                 relay_lock.release()
     return _command(args)
 
 
-def _serve(args, database, keyfile, relay_config, relay_store) -> int:
+def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -> int:
     if args.yes_on_fill:
         print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
     if os.name == 'nt':
@@ -793,7 +821,7 @@ def _serve(args, database, keyfile, relay_config, relay_store) -> int:
     if relay_config is not None:
         relay_client = relay_module.RelayClient(
             relay_module.endpoint(relay_config.relay), relay_config, relay_store, args.local_port,
-            reload_tls=lambda path: reload_certificate(unlock_server, path, path))
+            reload_tls=lambda path: reload_certificate(unlock_server, path, path), moved=relay_moved)
         broker.relay = relay_client.start()
         print(f"Relay: the private pages open at {relay_config.origin} on any device, through "
               f"{relay_config.relay}. TLS ends in this broker; the relay cannot read the traffic.",

@@ -64,7 +64,7 @@ def test_locked_broker_returns_only_unlock_url_and_types_nothing(action):
     assert SECRET not in json.dumps(response)
     assert broker.dispatch({"action": "ping"}) == {
         "ok": True, "locked": True, "unlock_url": broker.unlock_url,
-        "version": "0.27.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "unlock_notifications_blocked_event": True, "unlock_link_protocol": 1, "unlock_link_max_failures": 3, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "stripe_card_element": True, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities(), **expected_extension_capabilities(),
+        "version": "0.28.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "unlock_notifications_blocked_event": True, "unlock_link_protocol": 1, "unlock_link_max_failures": 3, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "stripe_card_element": True, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities(), **expected_extension_capabilities(),
     }
     assert typer.events == []
 
@@ -1135,3 +1135,33 @@ def test_restored_block_resends_the_blocked_notice_to_opted_in_subscribers(tmp_p
         server.shutdown()
         server.server_close()
         broker.unlock_notifications.close()
+
+
+def test_unlock_page_names_the_computer_and_the_tailscale_login(tmp_path, monkeypatch):
+    monkeypatch.setattr(web_unlock, "computer_name", lambda: "box<1>")
+    broker = Broker(None, RecordingTyper())
+    socket_path = tmp_path / "private" / "unlock.sock"
+    server, url = start_unlock_server(broker, tmp_path / "vault.kdbx", None, socket_path, "https://node.example:9443")
+    try:
+        path = urlsplit(url).path + "?" + urlsplit(url).query
+        status, _, page = call(socket_path, "GET", path, identity="owner<x>@example.test")
+        assert status == 200
+        assert (b"<p>Unlock AKDBX on <strong>box&lt;1&gt;</strong> as "
+                b"<strong>owner&lt;x&gt;@example.test</strong>.</p>") in page
+        assert b"Unlocking for" not in page and b"local user" not in page
+        assert call(socket_path, "GET", path, identity=False)[0] == 404  # the identity check is unchanged
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_computer_name_is_the_short_machine_name(monkeypatch):
+    monkeypatch.setattr(web_unlock.socket, "gethostname", lambda: "Build-Box.example.lan")
+    assert web_unlock.computer_name(windows=False) == "Build-Box"
+    monkeypatch.setenv("COMPUTERNAME", "DESKTOP-AB12")
+    assert web_unlock.computer_name(windows=True) == "DESKTOP-AB12"
+    monkeypatch.delenv("COMPUTERNAME")
+    monkeypatch.setattr(web_unlock.platform, "node", lambda: "desk-two")
+    assert web_unlock.computer_name(windows=True) == "desk-two"
+    monkeypatch.setattr(web_unlock.socket, "gethostname", lambda: "")
+    assert web_unlock.computer_name(windows=False) == "this computer"

@@ -209,6 +209,10 @@ class FakeRelay:
         self.pending = {}
         self.streams = 0
         self.bad_name = None
+        # GET /api/v1/broker: None answers 404 (an older relay); a function of the broker name
+        # returns (status, body) or a raw HTTP answer (bytes). The requests asked for.
+        self.broker_answer = None
+        self.broker_requests = []
         # A Location for a redirect answer to every WebSocket upgrade, and the upgrades asked for.
         self.redirect = None
         self.upgrade_requests = 0
@@ -298,6 +302,8 @@ class FakeRelay:
             return self._register(sock, json.loads(body))
         if method == 'POST' and path == '/api/v1/certificate':
             return self._certificate(sock, headers, json.loads(body))
+        if method == 'GET' and path == '/api/v1/broker':
+            return self._broker_description(sock, headers)
         if method == 'GET' and (path == '/api/v1/connect' or path.startswith('/api/v1/stream/')):
             with self.lock:
                 self.upgrade_requests += 1
@@ -338,6 +344,19 @@ class FakeRelay:
         name = self.bad_name or f'{broker_id}.{self.domain}'
         self._json(sock, 201, {'protocol': 1, 'name': name, 'broker_id': broker_id, 'secret': secret,
                                'public_port': 8443, 'future_field': True})
+
+    def _broker_description(self, sock, headers):
+        broker = self._broker(headers)
+        with self.lock:
+            self.broker_requests.append({'authorized': broker is not None, 'body': headers.get('content-length')})
+        if self.broker_answer is None:
+            return self._error(sock, 404, 'not_found')
+        if broker is None:
+            return self._error(sock, 401, 'unauthorized')
+        answer = self.broker_answer(f'{broker}.{self.domain}')
+        if isinstance(answer, bytes):
+            return sock.sendall(answer)
+        self._json(sock, *answer)
 
     def _upgrade(self, sock, headers):
         accept = base64.b64encode(hashlib.sha1(headers['sec-websocket-key'].encode() + GUID).digest()).decode()

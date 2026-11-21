@@ -139,8 +139,8 @@ search or fill. If it returns `unlock_blocked: true` instead, follow
 [Blocked unlock link](#blocked-unlock-link). Give the user that exact link (the token is required). A link
 on a loopback origin (`https://localhost:PORT` or `https://127.0.0.1:PORT`)
 opens only on the broker's computer. A link on a Tailscale origin opens on any
-device in the tailnet. A link on a relay origin (`https://<id>.akdbx.link:8443`)
-opens on any device; handle it exactly like any other unlock link: give it
+device in the tailnet. A link on a relay origin (`https://<id>.akdbx.link`; `:8443`
+before the 0.28.0 move) opens on any device; handle it exactly like any other unlock link: give it
 only to the user, privately. This is the same on Linux and Windows; the
 repository's `docs/private-pages.md` describes the setups.
 
@@ -239,6 +239,14 @@ broker's name, which public Certificate Transparency logs would show.
 5. If the user uses the browser extension, it trusts only the origin it was
    built with: run `akdbx extension build` again (same output folder) and ask
    the user to reload the extension.
+
+The relay moved from port 8443 to 443 (0.28.0): the origin is now
+`https://<id>.akdbx.link` with no port. A broker registered earlier keeps the
+`:8443` origin until its next start; then it asks the relay for the new port,
+saves it and logs `akdbx relay: relay moved the public port from 8443 to 443`
+(`relay enable` shows it in `moved`). Do not edit `relay.json` for this. After
+the move, run step 5 again. If the relay is old or unreachable, the broker
+keeps the saved port and warns once.
 
 `akdbx relay status` shows the name, origin, certificate dates, and whether a
 running broker is connected (`broker.connected`) or has a `renewal_error`.

@@ -234,14 +234,14 @@ protected by their own secret links.
 ### The akdbx relay
 
 The relay at `relay.akdbx.link` gives the broker a random public name such as
-`https://k3x7q2mbn5vd.akdbx.link:8443`. A browser that opens that name connects
+`https://k3x7q2mbn5vd.akdbx.link`. A browser that opens that name connects
 to the relay, and the relay passes the connection, still encrypted, to the
 broker through a WebSocket that the broker opened. The broker answers with its
 own certificate for that name, from a key that only the broker has. The relay
 sees the name and encrypted bytes, never the page or the password.
 
 ```
-phone --TLS for <id>.akdbx.link--> relay :8443 (reads the name only)
+phone --TLS for <id>.akdbx.link--> relay :443 (reads the name only)
       --encrypted bytes over the broker's WebSocket--> broker
       --> the broker's own HTTPS page on 127.0.0.1 (TLS ends here)
 ```
@@ -258,7 +258,39 @@ certificate request for the broker's name only, gets the certificate from
 Let's Encrypt through the relay, and saves everything in a private folder. It
 prints the broker's public origin and what to do next. Run it again to finish
 an interrupted setup; it keeps the same name. `--relay URL` selects another
-relay (default `https://relay.akdbx.link:8443`).
+relay (default `https://relay.akdbx.link`). A broker registered with the old
+default, `https://relay.akdbx.link:8443`, is registered with the same relay:
+`relay enable` accepts either URL for it.
+
+#### The relay moved from port 8443 to 443
+
+Until 0.28.0 the relay served the pages at `https://<id>.akdbx.link:8443` and
+its control API at `https://relay.akdbx.link:8443`. It now uses port 443, so
+the address has no port, and it still accepts port 8443 for a while for older
+brokers. A broker saves the relay URL and its public port in `relay.json`, so a
+broker that registered earlier keeps the `:8443` origin until it learns the
+new port. From 0.28.0 the broker learns it by itself: at each `serve` start
+with the relay, and in `relay enable`, it asks the relay for this broker's
+current public port and control URL (an authenticated `GET /api/v1/broker`,
+with the same TLS checks, redirect refusal, size limit and timeout as the other
+relay calls). It accepts the answer only when it names exactly this broker,
+the port is 1 to 65535, and a control URL is HTTPS on the same host as the
+saved one (only the port may differ). It then saves the change in
+`relay.json` and prints it, for example `akdbx relay: relay moved the public
+port from 8443 to 443`; `relay enable` shows it in `moved`, and `relay status`
+in `public_port` and `broker.moved`. An older relay (HTTP 404), no network or
+an answer that fails a check keeps the saved values, with one warning; the
+broker still starts.
+
+If the saved URL cannot be reached (the relay already closed the old port),
+the broker asks once more at the default relay URL on the same host, and
+`relay enable --relay URL` asks at that URL; the same checks apply.
+
+After the move the origin changes, so links of the old origin and an extension
+built for it stop working at the broker's first start on the new port. If you use the browser extension, run
+`akdbx extension build` again and reload the extension: it opens pairing and
+unlock links only on the origin it was built with. Unset or update an
+`AKDBX_UNLOCK_ORIGIN` or `--unlock-origin` that names the old origin.
 
 `serve` then uses the relay by itself: the relay origin, the relay certificate
 for the loopback page, and a free loopback port. Do not give `--tls-cert`,
@@ -298,8 +330,9 @@ akdbx relay disable --forget  # also delete the name, secret, key and certificat
 ```
 
 Restart a running broker after `disable` to stop using the relay. A running
-broker's `status` has a `relay` object with `connected`, `name`, `origin` and
-the certificate dates. `relay status` asks the running broker for its relay
+broker's `status` has a `relay` object with `connected`, `name`, `origin`,
+the certificate dates and, after a [port move](#the-relay-moved-from-port-8443-to-443)
+at its start, `moved`. `relay status` asks the running broker for its relay
 state and the origin of its private page with a separate, peer-checked
 request that holds no private URL, so it also works after `disable`, when the
 CLI already expects another origin. Its `broker.running` is `true`, `false`

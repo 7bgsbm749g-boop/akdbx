@@ -176,7 +176,8 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   shows a different code from the popup's; the user then does not approve. The
   popup opens pairing and unlock links only on the unlock origin written at
   build time, never on an origin the host sends. After `akdbx relay enable` or
-  `disable` (0.26.0+) changes that origin, build the extension again.
+  `disable` (0.26.0+) changes that origin, or a broker moves to the relay's new
+  port at its start (0.28.0, `moved` in `relay status`), build the extension again.
 - Values exist only in the broker, the relay, extension memory and the field.
   There is no clipboard, no extension storage and no logging. The content
   script runs in the extension's isolated world; it uses the CDP route's own

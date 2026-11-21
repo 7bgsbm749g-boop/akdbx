@@ -632,13 +632,36 @@ class Setup:
     # -- broker status
     def broker_status(self):
         """{'running': True/False/'unknown', 'response': dict or None}, with the CLI's own checks."""
-        try:
-            response = self.status_request(self.origin)
-        except (FileNotFoundError, ConnectionRefusedError):
-            return {'running': False, 'response': None}
-        except Exception as exc:
-            return {'running': 'unknown', 'response': None, 'error': type(exc).__name__}
+        self._follow_relay_origin()
+        for attempt in (1, 2):
+            origin = self.origin
+            try:
+                response = self.status_request(origin)
+                break
+            except (FileNotFoundError, ConnectionRefusedError):
+                return {'running': False, 'response': None}
+            except Exception as exc:
+                # The broker may have saved a relay move after the read above: read it again once.
+                self._follow_relay_origin()
+                if attempt == 2 or self.origin == origin:
+                    return {'running': 'unknown', 'response': None, 'error': type(exc).__name__}
         return {'running': True, 'response': response if isinstance(response, dict) else None}
+
+    def _follow_relay_origin(self):
+        """Use the relay origin saved now: a broker moves to the relay's new port when it starts.
+
+        Read only, no network: the broker that serves the pages saves the move,
+        so later stages (the extension build) get the origin that it serves.
+        """
+        if self.choice.get('access') != 'relay' or self.dry_run:
+            return
+        from .relay import RelayStore, RelayStoreError
+        try:
+            config = RelayStore().load()
+        except RelayStoreError:
+            return
+        if config is not None and config.enabled:
+            self.origin = config.origin
 
     # ----- 1. system ------------------------------------------------------
     def stage_system(self):
@@ -1644,14 +1667,24 @@ class Setup:
         self.link(source, target)
 
     # ----- 9. final check ---------------------------------------------------
-    def stage_final(self, broker_ready):
+    def wait_for_started_broker(self):
+        """The broker status, after waiting for a broker that this run started to answer.
+
+        A relay broker saves a relay port move before its socket listens, and
+        its relay check can take up to the relay timeouts; until it answers,
+        the saved origin may still be the old one.
+        """
         broker = self.broker_status()
         if self.started_service and broker['running'] is False:
-            for _ in range(20):  # a just-started broker needs a moment for its socket
+            for _ in range(150):  # up to 75 s: a just-started broker needs a moment for its socket
                 self.sleep(0.5)
                 broker = self.broker_status()
                 if broker['running'] is not False:
                     break
+        return broker
+
+    def stage_final(self, broker_ready):
+        broker = self.wait_for_started_broker()
         response = broker.get('response') or {}
         summary = {'ready': broker_ready, 'running': broker['running'], 'origin': self.origin}
         serve = self.serve_argv() if broker_ready else None
@@ -1735,6 +1768,14 @@ class Setup:
                 continue
             if name == 'login':
                 self.stage_login(ready)
+                if self.started_service and self.choice['access'] == 'relay':
+                    # Later stages build the extension for the origin the broker serves.
+                    if self.wait_for_started_broker()['running'] is False:
+                        folder = self.choice.get('extension_dir') or 'FOLDER'
+                        build = shell_command(self.akdbx_argv('extension', 'build', '--output', str(folder)),
+                                              self.windows)
+                        self.step('The broker has not started yet. When it runs, build the extension again so it '
+                                  f'uses the relay origin the broker serves: {build}', 'login')
             else:
                 getattr(self, 'stage_' + name)()
         self.save_state()

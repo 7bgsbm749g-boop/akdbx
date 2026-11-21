@@ -26,7 +26,7 @@ from test_windows_unlock import certificates  # noqa: F401
 
 pytestmark = pytest.mark.skipif(os.name == 'nt', reason='Linux paths and modes; Windows parts are native tests')
 EXECUTABLE = str(Path(sys.executable).absolute())
-LOCKED = {'ok': True, 'locked': True, 'version': '0.27.0', 'unlock_url': 'https://localhost:9443/?token=synthetic',
+LOCKED = {'ok': True, 'locked': True, 'version': '0.28.0', 'unlock_url': 'https://localhost:9443/?token=synthetic',
           'fill_routes': ['cdp', 'extension'], 'default_fill_route': 'extension'}
 
 
@@ -899,3 +899,102 @@ def test_end_of_input_stops_setup_cleanly(home, vault, capsys):
     code, _, runner = setup(ask=closed, interactive=True)
     assert code == 130 and runner.calls == []
     assert 'Run it again to continue' in capsys.readouterr().err
+
+
+def test_an_enabled_relay_follows_a_port_move_before_later_stages_use_the_origin(home, vault, monkeypatch, capsys):
+    # The broker saves a relay port move when it starts; later stages (the extension build) must use
+    # the origin it serves. setup itself never asks the relay (no network, no second writer).
+    from akdbx import relay as relay_module
+    old = relay_module.RelayConfig('https://relay.akdbx.link:8443', 'k3x7q2mbn5vd.akdbx.link', 'k3x7q2mbn5vd',
+                                   8443, True, 'A' * 43)
+    new = relay_module.RelayConfig('https://relay.akdbx.link', old.name, old.broker_id, 443, True, old.secret)
+    moved = []
+
+    class Store:
+        def load(self):
+            return new if moved else old
+
+        def certificate(self, name):
+            return object()
+
+    monkeypatch.setattr(relay_module, 'RelayStore', Store)
+    monkeypatch.setattr(relay_module, 'refresh', lambda *a, **k: pytest.fail('setup must not ask the relay'))
+    login = setup_cli.Setup.stage_login
+
+    def start_broker(self, ready):  # the broker the login stage starts saves the move
+        moved.append(True)
+        return login(self, ready)
+    monkeypatch.setattr(setup_cli.Setup, 'stage_login', start_broker)
+    code, result, _ = setup('--yes', '--json', '--vault', str(vault), '--access', 'relay', runner=Runner(),
+                            capsys=capsys)
+    assert moved and result['stages']['access']['origin'] == 'https://k3x7q2mbn5vd.akdbx.link:8443', result
+    assert result['broker']['origin'] == 'https://k3x7q2mbn5vd.akdbx.link'
+
+
+def test_the_extension_waits_for_a_started_relay_broker_to_save_its_move(home, vault, monkeypatch, capsys):
+    # systemctl start returns before the broker answers; it saves the relay move before its socket listens.
+    from akdbx import relay as relay_module
+    old = relay_module.RelayConfig('https://relay.akdbx.link:8443', 'k3x7q2mbn5vd.akdbx.link', 'k3x7q2mbn5vd',
+                                   8443, True, 'A' * 43)
+    new = relay_module.RelayConfig('https://relay.akdbx.link', old.name, old.broker_id, 443, True, old.secret)
+    moved = []
+
+    class Store:
+        def load(self):
+            return new if moved else old
+
+        def certificate(self, name):
+            return object()
+
+    class SlowStart(Status):
+        def __call__(self, origin):
+            response = super().__call__(origin)  # FileNotFoundError until the service starts
+            self.answers = getattr(self, 'answers', 0) + 1
+            if self.answers <= 3:
+                if self.answers == 3:
+                    moved.append(True)  # the broker saved the move; its socket listens next
+                raise FileNotFoundError  # still asking the relay
+            return response
+
+    monkeypatch.setattr(relay_module, 'RelayStore', Store)
+    runner = Runner()
+    code, result, _ = setup('--yes', '--json', '--vault', str(vault), '--access', 'relay', '--start-at-login',
+                            '--browser', 'chrome', runner=runner, status=SlowStart(runner), capsys=capsys)
+    builds = [argv for argv in runner.commands() if 'extension' in argv and 'build' in argv]
+    assert builds, result
+    assert all(argv[argv.index('--unlock-origin') + 1] == 'https://k3x7q2mbn5vd.akdbx.link' for argv in builds)
+
+
+def test_setup_reads_the_origin_again_when_the_broker_moved_during_its_status_check(home, vault, monkeypatch,
+                                                                                    capsys):
+    # The broker saves the move after setup read the origin and answers before setup asks: the CLI then
+    # refuses the new unlock URL. setup reads the saved origin again and asks once more.
+    from akdbx import relay as relay_module
+    old = relay_module.RelayConfig('https://relay.akdbx.link:8443', 'k3x7q2mbn5vd.akdbx.link', 'k3x7q2mbn5vd',
+                                   8443, True, 'A' * 43)
+    new = relay_module.RelayConfig('https://relay.akdbx.link', old.name, old.broker_id, 443, True, old.secret)
+    moved = []
+
+    class Store:
+        def load(self):
+            return new if moved else old
+
+        def certificate(self, name):
+            return object()
+
+    class MovesDuringCheck(Status):
+        def __call__(self, origin):
+            response = super().__call__(origin)  # FileNotFoundError until the service starts
+            if not moved:
+                moved.append(True)
+                raise ValueError('broker returned an untrusted unlock URL')
+            assert origin == 'https://k3x7q2mbn5vd.akdbx.link'
+            return response
+
+    monkeypatch.setattr(relay_module, 'RelayStore', Store)
+    runner = Runner()
+    code, result, _ = setup('--yes', '--json', '--vault', str(vault), '--access', 'relay', '--start-at-login',
+                            '--browser', 'chrome', runner=runner, status=MovesDuringCheck(runner), capsys=capsys)
+    builds = [argv for argv in runner.commands() if 'extension' in argv and 'build' in argv]
+    assert builds and result['broker']['running'] is True, result
+    assert all(argv[argv.index('--unlock-origin') + 1] == 'https://k3x7q2mbn5vd.akdbx.link' for argv in builds)
