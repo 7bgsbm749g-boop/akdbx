@@ -7,6 +7,7 @@ name = "akdbx"
 version = "0.25.0"
 description = "A secret-withholding KeePass autofill broker for local agents"
 requires-python = ">=3.11"
+license = { text = "MIT" }
 dependencies = [
   "cryptography>=43,<47",
   "idna>=3.7,<4",

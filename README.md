@@ -833,3 +833,7 @@ and peer checks. This lets an unlocked broker finish its session without a
 restart. Explicit `--socket` remains supported. Existing encrypted vaults,
 recovery directories, admission locators and receipts must retain their paths;
 the rebrand does not migrate or rewrite private vault data.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
