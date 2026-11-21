@@ -633,12 +633,18 @@ class Setup:
     def broker_status(self):
         """{'running': True/False/'unknown', 'response': dict or None}, with the CLI's own checks."""
         self._follow_relay_origin()
-        try:
-            response = self.status_request(self.origin)
-        except (FileNotFoundError, ConnectionRefusedError):
-            return {'running': False, 'response': None}
-        except Exception as exc:
-            return {'running': 'unknown', 'response': None, 'error': type(exc).__name__}
+        for attempt in (1, 2):
+            origin = self.origin
+            try:
+                response = self.status_request(origin)
+                break
+            except (FileNotFoundError, ConnectionRefusedError):
+                return {'running': False, 'response': None}
+            except Exception as exc:
+                # The broker may have saved a relay move after the read above: read it again once.
+                self._follow_relay_origin()
+                if attempt == 2 or self.origin == origin:
+                    return {'running': 'unknown', 'response': None, 'error': type(exc).__name__}
         return {'running': True, 'response': response if isinstance(response, dict) else None}
 
     def _follow_relay_origin(self):
@@ -1765,8 +1771,10 @@ class Setup:
                 if self.started_service and self.choice['access'] == 'relay':
                     # Later stages build the extension for the origin the broker serves.
                     if self.wait_for_started_broker()['running'] is False:
-                        self.step('The broker has not started yet. When it runs, build the extension again '
-                                  '(akdbx extension build) so it uses the relay origin the broker serves.', 'login')
+                        folder = self.choice.get('extension_dir') or 'FOLDER'
+                        self.step('The broker has not started yet. When it runs, build the extension again so it '
+                                  'uses the relay origin the broker serves: akdbx extension build --output '
+                                  f'"{folder}"', 'login')
             else:
                 getattr(self, 'stage_' + name)()
         self.save_state()
