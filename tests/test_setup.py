@@ -929,3 +929,37 @@ def test_an_enabled_relay_follows_a_port_move_before_later_stages_use_the_origin
                             capsys=capsys)
     assert moved and result['stages']['access']['origin'] == 'https://k3x7q2mbn5vd.akdbx.link:8443', result
     assert result['broker']['origin'] == 'https://k3x7q2mbn5vd.akdbx.link'
+
+
+def test_the_extension_waits_for_a_started_relay_broker_to_save_its_move(home, vault, monkeypatch, capsys):
+    # systemctl start returns before the broker answers; it saves the relay move before its socket listens.
+    from akdbx import relay as relay_module
+    old = relay_module.RelayConfig('https://relay.akdbx.link:8443', 'k3x7q2mbn5vd.akdbx.link', 'k3x7q2mbn5vd',
+                                   8443, True, 'A' * 43)
+    new = relay_module.RelayConfig('https://relay.akdbx.link', old.name, old.broker_id, 443, True, old.secret)
+    moved = []
+
+    class Store:
+        def load(self):
+            return new if moved else old
+
+        def certificate(self, name):
+            return object()
+
+    class SlowStart(Status):
+        def __call__(self, origin):
+            response = super().__call__(origin)  # FileNotFoundError until the service starts
+            self.answers = getattr(self, 'answers', 0) + 1
+            if self.answers <= 3:
+                if self.answers == 3:
+                    moved.append(True)  # the broker saved the move; its socket listens next
+                raise FileNotFoundError  # still asking the relay
+            return response
+
+    monkeypatch.setattr(relay_module, 'RelayStore', Store)
+    runner = Runner()
+    code, result, _ = setup('--yes', '--json', '--vault', str(vault), '--access', 'relay', '--start-at-login',
+                            '--browser', 'chrome', runner=runner, status=SlowStart(runner), capsys=capsys)
+    builds = [argv for argv in runner.commands() if 'extension' in argv and 'build' in argv]
+    assert builds, result
+    assert all(argv[argv.index('--unlock-origin') + 1] == 'https://k3x7q2mbn5vd.akdbx.link' for argv in builds)

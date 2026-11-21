@@ -1661,14 +1661,24 @@ class Setup:
         self.link(source, target)
 
     # ----- 9. final check ---------------------------------------------------
-    def stage_final(self, broker_ready):
+    def wait_for_started_broker(self):
+        """The broker status, after waiting for a broker that this run started to answer.
+
+        A relay broker saves a relay port move before its socket listens, and
+        its relay check can take up to the relay timeouts; until it answers,
+        the saved origin may still be the old one.
+        """
         broker = self.broker_status()
         if self.started_service and broker['running'] is False:
-            for _ in range(20):  # a just-started broker needs a moment for its socket
+            for _ in range(150):  # up to 75 s: a just-started broker needs a moment for its socket
                 self.sleep(0.5)
                 broker = self.broker_status()
                 if broker['running'] is not False:
                     break
+        return broker
+
+    def stage_final(self, broker_ready):
+        broker = self.wait_for_started_broker()
         response = broker.get('response') or {}
         summary = {'ready': broker_ready, 'running': broker['running'], 'origin': self.origin}
         serve = self.serve_argv() if broker_ready else None
@@ -1752,6 +1762,11 @@ class Setup:
                 continue
             if name == 'login':
                 self.stage_login(ready)
+                if self.started_service and self.choice['access'] == 'relay':
+                    # Later stages build the extension for the origin the broker serves.
+                    if self.wait_for_started_broker()['running'] is False:
+                        self.step('The broker has not started yet. When it runs, build the extension again '
+                                  '(akdbx extension build) so it uses the relay origin the broker serves.', 'login')
             else:
                 getattr(self, 'stage_' + name)()
         self.save_state()
