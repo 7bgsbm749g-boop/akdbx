@@ -112,9 +112,11 @@ akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
   answers from an earlier run give only paths, ports and other values, so
   repeat `--start-at-login`, `--browser`, `--access relay` and the other
   selections on every run that should make or keep them. It never runs
-  `mkcert -install` (it changes the computer's trust) and runs `tailscale
-  serve` only with `--configure-tailscale`. Those are the user's decisions:
-  give them the exact command from `user_steps`.
+  `mkcert -install` (it changes the computer's trust) and never inspects or
+  changes Tailscale: for `--access tailscale` give `--tailscale-name` (and
+  `--tailnet-port` if not 9443); it prints the `tailscale serve` command and
+  its check. Those are the user's decisions: give them the exact commands from
+  `user_steps`.
 - Read the JSON: `ok`, each stage's `state` (`done`, `changed`, `ok`,
   `planned`, `todo`, `skipped`, `failed`), `user_steps` and `broker`. If
   `broker.unlock_url` is present, give that link to the user privately and
@@ -229,8 +231,8 @@ broker's name, which public Certificate Transparency logs would show.
    vault. Restart only a broker that this workflow owns, with the user's
    agreement, and with the same vault, key file and socket, without
    `--tls-cert`, `--tls-key`, `--local-port` or an unlock origin. If
-   `AKDBX_UNLOCK_ORIGIN` is set in the broker's environment, the broker keeps
-   that origin: `enable` warns about it.
+   `AKDBX_UNLOCK_ORIGIN` is set in the broker's environment, a plain `serve`
+   keeps that origin (`enable` warns about it); `serve --relay` ignores it.
 4. `akdbx status`: the `relay` object must show `connected: true`, and the
    `unlock_url` must start with the relay origin. Give the user that link and
    continue as in [When the vault is locked](#when-the-vault-is-locked).

@@ -308,11 +308,17 @@ def _mutation_not_sent(command, error):
     return message
 
 
+def _socket_option(value: str) -> Path:
+    """--socket: a Windows pipe name as given; on Linux one absolute path, with ~ expanded, for the broker
+    connection and for every command that setup writes (they run from another folder)."""
+    return Path(value) if os.name == 'nt' else Path(os.path.abspath(Path(value).expanduser()))
+
+
 def parser() -> argparse.ArgumentParser:
     """Build command parsers for broker, vault, and target operations."""
     result = argparse.ArgumentParser(prog="akdbx", description="Secret-withholding AKDBX autofill broker")
     result.add_argument("--version", action="version", version=__version__)
-    result.add_argument("--socket", type=Path)
+    result.add_argument("--socket", type=_socket_option)
     result.add_argument(
         "--broker-uid", type=int, default=(None if os.name == 'nt' else os.environ.get("AKDBX_BROKER_UID", os.getuid())),
         help="expected operating-system UID of the broker",
@@ -320,7 +326,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--unlock-origin",
         help=("deployment HTTPS origin for private pages. Order: this option, then AKDBX_UNLOCK_ORIGIN, then the "
-              "origin of an enabled akdbx relay ('akdbx relay enable'), then https://localhost:9443"),
+              "origin of an enabled akdbx relay ('akdbx relay enable'), then https://localhost:9443. "
+              "'serve --relay' ignores AKDBX_UNLOCK_ORIGIN and refuses this option unless it is the relay origin"),
     )
     commands = result.add_subparsers(dest="command", required=True)
     card_cli.add_parsers(commands)
@@ -349,8 +356,9 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument('--local-port', type=int,
                        help='loopback HTTPS port when --unlock-origin is a remote (Tailscale Serve) origin')
     start.add_argument('--relay', action='store_true',
-                       help=('require the saved akdbx relay (akdbx relay enable). Without this flag, serve uses '
-                             'an enabled relay unless --unlock-origin or AKDBX_UNLOCK_ORIGIN is set'))
+                       help=('require the saved akdbx relay (akdbx relay enable) and its origin; '
+                             'AKDBX_UNLOCK_ORIGIN is then ignored. Without this flag, serve uses an enabled relay '
+                             'unless --unlock-origin or AKDBX_UNLOCK_ORIGIN is set'))
     start.add_argument('--no-print-unlock-link', action='store_true',
                        help=('do not print the private unlock link at start; print only that the vault is locked '
                              "and to run 'akdbx status'. Recommended for a service or task, whose output a log "
@@ -563,7 +571,9 @@ def resolve_unlock_origin(args) -> None:
     trusts the relay origin without the user copying it. A relay directory
     that fails the private-file checks gives no origin.
     """
-    explicit = args.unlock_origin or os.environ.get('AKDBX_UNLOCK_ORIGIN') or None
+    relay = args.command == 'serve' and getattr(args, 'relay', False)
+    # `serve --relay` takes the relay origin: an inherited variable must not change it.
+    explicit = args.unlock_origin or (None if relay else os.environ.get('AKDBX_UNLOCK_ORIGIN')) or None
     if args.command == 'serve' and getattr(args, 'unlock_url', None):
         explicit = explicit or args.unlock_url
     args.unlock_origin_explicit = explicit is not None
@@ -589,9 +599,9 @@ def _relay_for_serve(args):
             print("--relay needs an enabled relay: run 'akdbx relay enable' first", file=sys.stderr)
             return 2
         return None, None
-    if args.unlock_origin_explicit:
-        print('--relay sets the origin itself: remove --unlock-origin and --unlock-url, and unset '
-              'AKDBX_UNLOCK_ORIGIN', file=sys.stderr)
+    if args.unlock_origin_explicit and args.unlock_origin.rstrip('/') != config.origin:
+        print(f'--relay sets the origin itself ({config.origin}): remove --unlock-origin and --unlock-url',
+              file=sys.stderr)
         return 2
     if args.tls_cert is not None or args.tls_key is not None or args.local_port is not None:
         print('the akdbx relay is enabled: it sets the origin, the certificate and the loopback port itself. '

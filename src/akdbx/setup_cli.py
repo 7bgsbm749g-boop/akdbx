@@ -50,7 +50,7 @@ ACCESS = ('local', 'tailscale', 'relay', 'tunnel', 'decrypting')
 ACCESS_LINES = {
     'local': 'Local only: open the page on this computer; nothing else can reach it (always available).',
     'tailscale': ('A private proxy such as Tailscale Serve: open the page on any device in your tailnet '
-                  '(RECOMMENDED for remote use).'),
+                  '(RECOMMENDED for remote use; setup prints the tailscale serve command).'),
     'relay': ('The akdbx relay: open the page on any device, with no open port; the relay forwards '
               'encrypted traffic that it cannot read.'),
     'tunnel': ('Another public tunnel that does not decrypt, such as Tailscale Funnel: anyone on the '
@@ -90,9 +90,10 @@ def add_parser(commands):
         description=('One guided command from install to a working broker. The broker is the only required '
                      'part; every other stage is optional. At a terminal it asks questions with defaults. '
                      'With --yes it never asks, and only the flags of this run select a change (start at login, '
-                     'relay, browsers, CDP profile, capture host, skill link, tailscale serve); the saved answers '
-                     'of an earlier run give only values such as paths and ports. Setup never reads the vault '
-                     'and never asks for the master password.'))
+                     'relay, browsers, CDP profile, capture host, skill link); the saved answers of an earlier '
+                     'run give only values such as paths and ports. Setup never reads the vault, never asks for '
+                     'the master password, and never inspects or changes Tailscale: it prints the tailscale '
+                     'serve command for you to run.'))
     command.add_argument('-y', '--yes', action='store_true',
                          help=('never ask; make only the changes that the flags of this run select (saved answers '
                                'give only paths, ports and other values)'))
@@ -111,8 +112,6 @@ def add_parser(commands):
     command.add_argument('--tailscale-name', help="this computer's tailnet name, for example node.tailnet.ts.net")
     command.add_argument('--tailnet-port', type=int, help='tailnet HTTPS port (Serve default 9443; Funnel 8443)')
     command.add_argument('--local-port', type=int, help='loopback port of the broker behind a proxy (default 9444)')
-    command.add_argument('--configure-tailscale', action='store_true',
-                         help='run the shown tailscale serve command (never replaces another mapping)')
     command.add_argument('--relay-url', help='relay control URL for akdbx relay enable')
     command.add_argument('--start-at-login', action='store_true', default=None,
                          help='write the login service or task and enable it')
@@ -312,43 +311,6 @@ def task_action(xml):
     return MARKER in (field('Description') or ''), field('Command'), field('Arguments')
 
 
-def tailscale_mapping(serve_status, host, port, target):
-    """What `tailscale serve status --json` shows for ``host:port``: ``(kind, detail)``.
-
-    kind is 'free' (nothing uses the port), 'ours' (exactly one HTTPS handler for / that proxies to
-    ``target``, with Funnel off), 'funnel' (Funnel is on for host:port) or 'other'. A status that is not
-    the expected JSON shape raises ValueError: setup then never adds a mapping.
-    """
-    if not isinstance(serve_status, dict):
-        raise ValueError('the serve status is not a JSON object')
-    tcp, web, funnel = ({} if serve_status.get(name) is None else serve_status[name]
-                        for name in ('TCP', 'Web', 'AllowFunnel'))
-    if not all(isinstance(part, dict) for part in (tcp, web, funnel)):
-        raise ValueError('the serve status has an unexpected shape')
-    key = f'{host}:{port}'
-    listener = tcp.get(str(port))
-    users = [name for name in web if isinstance(name, str) and name.rsplit(':', 1)[-1] == str(port)]
-    funnels = [name for name, on in funnel.items() if on is True and isinstance(name, str)
-               and name.rsplit(':', 1)[-1] == str(port)]
-    if listener is None and not users and not funnels:
-        return 'free', None
-    if funnels:
-        return 'funnel', ', '.join(sorted(funnels))
-    if users != [key]:
-        return 'other', 'the host names ' + ', '.join(sorted(map(str, users))) if users else 'a TCP forwarder'
-    if not isinstance(listener, dict) or listener.get('HTTPS') is not True:
-        return 'other', 'a listener that is not HTTPS'
-    config = web[key]
-    handlers = config.get('Handlers') if isinstance(config, dict) else None
-    if not isinstance(handlers, dict) or set(handlers) != {'/'} or not isinstance(handlers['/'], dict):
-        return 'other', 'other handlers'
-    handler = handlers['/']
-    proxy = handler.get('Proxy')
-    if proxy == target and set(handler) == {'Proxy'}:
-        return 'ours', proxy
-    return 'other', proxy or handler.get('Path') or handler.get('Text') or 'another handler'
-
-
 def link_target(path):
     """'missing', ('link', target) for a symlink or junction, or 'other'."""
     try:
@@ -421,10 +383,7 @@ class Setup:
         self.user_steps = []
         self.commands_run = []
         self.socket_explicit = getattr(args, 'socket_explicit', False)
-        self.socket = args.socket
-        if self.socket_explicit and not self.windows:
-            # The unit, the extension host and every printed command run from another folder.
-            self.socket = Path(os.path.abspath(Path(self.socket).expanduser()))
+        self.socket = args.socket  # the CLI made an explicit one absolute, with ~ expanded
         self.origin = DEFAULT_ORIGIN
         self.started_service = False
         self.service_ready = False
@@ -810,8 +769,8 @@ class Setup:
                                       f'{self.args.unlock_origin} (it names {value}); give one of them only')
                 choice['tailscale_name'], choice['tailnet_port'] = name, port
             else:
-                name = self.remembered('tailscale_name', args.tailscale_name) or self._tailscale_name()
-                choice['tailscale_name'] = ui.text("This computer's tailnet name", name)
+                choice['tailscale_name'] = ui.text("This computer's tailnet name ('tailscale status' shows it)",
+                                                   self.remembered('tailscale_name', args.tailscale_name))
                 port = args.tailnet_port or (self.state.get('tailnet_port') if self.state.get('access') == access
                                              else None) or (9443 if access == 'tailscale' else 8443)
                 choice['tailnet_port'] = self._port('Tailnet HTTPS port', port)
@@ -864,7 +823,8 @@ class Setup:
             capture = ui.confirm('Set up the authenticator capture extension (reads a setup QR from a page)?',
                                  bool(capture))
         choice['capture_host'] = bool(capture)
-        if capture:
+        if capture or 'capture_host' in self.unselected:
+            # Values only: a capture host that --yes left out keeps its saved browser, folder and ID.
             choice['capture_browser'] = self.remembered('capture_browser', args.capture_browser, 'chrome')
             choice['capture_dir'] = str(Path(self.remembered('capture_dir', args.capture_dir)
                                              or self.default_capture_dir()).expanduser().absolute())
@@ -905,16 +865,6 @@ class Setup:
                 if not self.ui.interactive:
                     return default
                 self.ui.say('  Answer a port number.')
-
-    def _tailscale_name(self):
-        if not self.tools.get('tailscale'):
-            return None
-        try:
-            result = self.run([self.tools['tailscale'], 'status', '--json'], timeout=15)
-            name = json.loads(result.stdout).get('Self', {}).get('DNSName', '') if result.returncode == 0 else ''
-        except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
-            return None
-        return name.rstrip('.') or None
 
     # ----- 2. vault ---------------------------------------------------------
     def stage_vault(self):
@@ -1160,8 +1110,7 @@ class Setup:
         if ready:
             self.origin = config.origin
             self.say(f'The relay is already enabled: {config.origin}')
-            if self._relay_conflict():
-                return False
+            self._warn_origin_variable()
             self.record('access', 'done', access='relay', origin=config.origin)
             return True
         argv = self.akdbx_argv('relay', 'enable', *(['--relay', self.args.relay_url] if self.args.relay_url else []))
@@ -1178,8 +1127,7 @@ class Setup:
         if applied:
             self.origin = outcome.get('origin') or self.origin
             self.say(f'The private pages will open at {self.origin} on any device.')
-            if self._relay_conflict():
-                return False
+            self._warn_origin_variable()
             self.record('access', 'changed', access='relay', origin=self.origin)
             return True
         if applied is None and not self.dry_run and not self.ui.interactive:
@@ -1187,29 +1135,19 @@ class Setup:
         self.record('access', self.outcome(applied), access='relay')
         return False
 
-    def _relay_conflict(self):
-        """Refuse an explicit origin that would turn the relay off: True when the access stage failed."""
-        variable = self.env.get('AKDBX_UNLOCK_ORIGIN') or None
-        explicit = variable or (self.args.unlock_origin if getattr(self.args, 'unlock_origin_explicit', False)
-                                else None)
-        if not explicit:
-            return False
-        if explicit.rstrip('/') != self.origin:
-            error = (f'the explicit unlock origin {explicit} (AKDBX_UNLOCK_ORIGIN or --unlock-origin) is not the '
-                     f'relay origin {self.origin}: every akdbx command would expect the wrong page, and a broker '
-                     'started with it would not use the relay')
-        elif self.windows and variable:
-            error = ('AKDBX_UNLOCK_ORIGIN is set: the logon task inherits it, and an explicit origin turns the relay '
-                     'off, so the broker could not start')
-        else:
-            return False
-        self.say('Refused: ' + error + '.')
-        self.step('Unset AKDBX_UNLOCK_ORIGIN everywhere it is set (and drop --unlock-origin), then run akdbx setup '
-                  'again.', 'access')
-        self.record('access', 'failed', access='relay', origin=self.origin, error=error)
-        return True
+    def _warn_origin_variable(self):
+        """`serve --relay` ignores AKDBX_UNLOCK_ORIGIN, but every other akdbx command would still use it."""
+        variable = (self.env.get('AKDBX_UNLOCK_ORIGIN') or '').rstrip('/')
+        if variable and variable != self.origin:
+            warning = (f'AKDBX_UNLOCK_ORIGIN is {variable}, not the relay origin {self.origin}: the broker uses the '
+                       'relay, but other akdbx commands would expect that other page')
+            self.note('access', 'warnings', warning)
+            self.say('Warning: ' + warning + '.')
+            self.step('Unset AKDBX_UNLOCK_ORIGIN wherever you set it: every akdbx command finds the relay origin '
+                      'by itself.', 'access')
 
     def _access_tailscale(self, access):
+        """Instructions only: setup never inspects or changes Tailscale, and the broker works on loopback."""
         port, local_port = self.choice['tailnet_port'], self.choice['local_port']
         if not self.choice.get('tailscale_name'):
             self.say('No tailnet name: give --tailscale-name NAME (tailscale status shows it).')
@@ -1221,100 +1159,28 @@ class Setup:
             self.record('access', 'failed', access=access, error=error)
             return False
         verb = 'serve' if access == 'tailscale' else 'funnel'
-        tailscale = self.tools.get('tailscale') or 'tailscale'
         target = f'https://127.0.0.1:{local_port}'
-        argv = [tailscale, verb, '--bg', f'--https={port}', target]
-        if self.windows:
-            trust = ('Make the Tailscale service trust your CA: as your user run Join-Path (mkcert -CAROOT) '
-                     "'rootCA.pem', then in an elevated PowerShell run certutil -addstore -f Root with that exact "
-                     'path. This changes the trust of the whole computer.')
-        else:
-            trust = ('Make tailscaled trust your CA: mkcert -install adds it to the system store; then run '
-                     'sudo systemctl restart tailscaled (this briefly drops tailnet connections).')
-        self.say(f'The page opens at {self.origin}; the broker listens on {target} only.')
+        command = shell_command(['tailscale', verb, '--bg', f'--https={port}', target], self.windows)
+        self.say(f'The broker listens on {target} only. Setup does not check or change Tailscale.')
         if access == 'tunnel':
             self.say('Funnel publishes the page to the whole internet: only the secret link and the three-attempt '
                      'block protect it. Funnel accepts only ports 443, 8443 and 10000.')
-            self.step(trust, 'access')
-            self.step(f'Run {shell_command(argv, self.windows)} yourself when you want the public route, and '
-                      f'{shell_command([tailscale, "funnel", f"--https={port}", "off"], self.windows)} to remove it.',
-                      'access')
-            self.record('access', 'todo', access=access, origin=self.origin, local_port=local_port)
-            return True
-        if not self.tools.get('tailscale'):
-            self.step('Install Tailscale and enable HTTPS certificates for the tailnet, then run akdbx setup again.',
-                      'access')
-            self.record('access', 'todo', access=access, origin=self.origin, local_port=local_port)
-            return True
-        host = self.choice['tailscale_name'].rstrip('.').lower()
-        try:
-            kind, detail = self._serve_mapping(host, port, target)
-        except RuntimeError as exc:
-            error = f'could not inspect Tailscale Serve ({exc}); setup adds no mapping it cannot check'
-            self.say(error + '.')
-            self.step(f'Check {shell_command([tailscale, "serve", "status", "--json"], self.windows)} works (on '
-                      'Linux as root or the Tailscale operator user), then run akdbx setup again.', 'access')
-            self.record('access', 'failed', access=access, origin=self.origin, local_port=local_port, error=error)
-            return False
-        if kind == 'funnel':
-            error = (f'Tailscale Funnel is on for {detail}: anyone on the internet can reach that port, so this is '
-                     'not a private setup')
-            self.say('Refused: ' + error + '.')
-            off = shell_command([tailscale, 'funnel', f'--https={port}', 'off'], self.windows)
-            self.step(f'Turn Funnel off for port {port} ({off}), or choose --access tunnel if you want the public '
-                      'route; then run akdbx setup again.', 'access')
-            self.record('access', 'failed', access=access, origin=self.origin, local_port=local_port, error=error)
-            return False
-        if kind == 'ours':
-            self.say(f'Tailscale Serve already proxies {host}:{port} to {target} over HTTPS, with Funnel off.')
-            self.step(trust, 'access')
-            self.record('access', 'done', access=access, origin=self.origin, local_port=local_port)
-            return True
-        if kind == 'other':
-            self.say(f'Tailscale Serve already uses port {port} ({detail}). Setup never replaces it.')
-            if str(detail).startswith(('http://', 'https+insecure://')):
-                self.say('That target is not verified: another local user could take the port and show a fake '
-                         'unlock page. Replace it with a verified https:// target.')
-            self.step(f'Remove or move that mapping yourself, then run {shell_command(argv, self.windows)}.', 'access')
-            self.record('access', 'todo', access=access, origin=self.origin, local_port=local_port)
-            return True
-        prefix = '' if self.windows else 'On Linux run it as root or as the Tailscale operator user. '
-        applied = self.change('access', f'add a Tailscale Serve proxy from tailnet port {port} to {target} '
-                              '(a verified https target; other mappings stay unchanged)',
-                              [shell_command(argv, self.windows)], lambda: self._tailscale(argv),
-                              selected=self.args.configure_tailscale, default=False)
-        if applied is None and not self.dry_run:
-            self.step(prefix + f'Run {shell_command(argv, self.windows)} when you are ready '
-                      '(or run setup again with --configure-tailscale).', 'access')
-        elif applied is False:
-            self.step(prefix + f'Run {shell_command(argv, self.windows)} yourself.', 'access')
-        self.step(trust, 'access')
-        state = self.outcome(applied)
-        self.record('access', state, access=access, origin=self.origin, local_port=local_port)
+            off = shell_command(['tailscale', 'funnel', f'--https={port}', 'off'], self.windows)
+            check = f'{off} removes it'
+        else:
+            check = (f'then tailscale serve status must show {self.origin} (tailnet only) with / proxy {target}, '
+                     'and no Funnel')
+        self.step(('' if self.windows else 'On Linux as root or as the Tailscale operator user: ')
+                  + f'run {command} yourself; {check}.', 'access')
+        if self.windows:
+            self.step('Make the Tailscale service trust your CA: as your user run Join-Path (mkcert -CAROOT) '
+                      "'rootCA.pem', then in an elevated PowerShell run certutil -addstore -f Root with that exact "
+                      'path. This changes the trust of the whole computer.', 'access')
+        else:
+            self.step('Make tailscaled trust your CA: mkcert -install adds it to the system store; then run '
+                      'sudo systemctl restart tailscaled (this briefly drops tailnet connections).', 'access')
+        self.record('access', 'todo', access=access, origin=self.origin, local_port=local_port)
         return True
-
-    def _serve_mapping(self, host, port, target):
-        """tailscale_mapping() of the live serve status; RuntimeError when it cannot be read."""
-        try:
-            result = self.run([self.tools['tailscale'], 'serve', 'status', '--json'], timeout=15)
-        except subprocess.TimeoutExpired:
-            raise RuntimeError('tailscale serve status timed out') from None
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise RuntimeError(f'tailscale serve status did not run: {exc}') from None
-        if result.returncode != 0:
-            text = (result.stderr or result.stdout or '').strip()[-200:]
-            raise RuntimeError(f'tailscale serve status exited with status {result.returncode}'
-                               + (f': {text}' if text else ''))
-        try:
-            # An empty configuration prints {}: no output is not proof that the port is free.
-            return tailscale_mapping(json.loads(result.stdout or ''), host, port, target)
-        except ValueError as exc:
-            raise RuntimeError(f'tailscale serve status printed no usable JSON: {exc}') from None
-
-    def _tailscale(self, argv):
-        result = self.run(argv, timeout=60)
-        if result.returncode != 0:
-            raise RuntimeError('tailscale refused: ' + (result.stderr or result.stdout).strip()[-300:])
 
     # ----- 5. start at login -----------------------------------------------
     def serve_argv(self, service=False):
@@ -1346,10 +1212,12 @@ class Setup:
             argv += ['--tls-cert', self.choice['tls_cert'], '--tls-key', self.choice['tls_key']]
             if access in ('tailscale', 'tunnel'):
                 argv += ['--local-port', str(self.choice['local_port'])]
-        if self.choice.get('cdp_profile'):
-            argv += ['--password-browser-profile', self.choice['cdp_profile'],
-                     '--card-browser-profile', self.choice['cdp_profile']]
-        if self.choice.get('browsers'):
+        # A fill route that --yes left out keeps its saved values: they belong to this login change.
+        browsers, cdp = (self.state.get(key) if key in self.unselected else self.choice.get(key)
+                         for key in ('browsers', 'cdp_profile'))
+        if cdp:
+            argv += ['--password-browser-profile', cdp, '--card-browser-profile', cdp]
+        if browsers:
             argv += ['--default-fill-route', 'extension']
         return argv
 
@@ -1832,8 +1700,8 @@ class Setup:
             ok = getattr(self, 'stage_' + name)()
             if name in ('vault', 'page'):
                 ready = ready and ok
-        # A failed access stage (a refused origin, Funnel on, an uninspectable Serve) blocks the broker, and
-        # the relay route needs an enabled relay.
+        # A failed access stage (a refused origin, no tailnet name) blocks the broker, and the relay route
+        # needs an enabled relay. Tailscale instructions (todo) do not: the broker works on loopback.
         access_state = self.stages.get('access', {}).get('state')
         if access_state == 'failed' or (self.choice['access'] == 'relay'
                                         and access_state not in ('done', 'changed')):

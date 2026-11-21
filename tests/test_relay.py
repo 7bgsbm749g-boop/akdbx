@@ -323,6 +323,29 @@ def test_an_explicit_origin_serves_without_the_relay(fake, capsys, tmp_path, dat
     assert seen['relay'] is None and seen['url'].startswith('https://node.example:9443/?token=')
 
 
+def test_serve_relay_ignores_an_inherited_origin_variable(fake, capsys, tmp_path, database, monkeypatch):
+    # N4: the units and tasks that setup writes run serve --relay, whatever the environment holds.
+    enabled, _ = enable(fake, capsys)
+    seen = []
+
+    def exercise(socket_path, broker):
+        seen.append((broker.relay is not None, broker.unlock_url))
+
+    monkeypatch.setattr(cli, 'X11Typer', RecordingTyper)
+    monkeypatch.setattr(cli, 'serve', exercise)
+    monkeypatch.setenv('AKDBX_UNLOCK_ORIGIN', 'https://node.example:9443')
+    socket_option = ['--socket', str(tmp_path / 'private' / 'broker.sock')]
+    assert cli.main([*socket_option, 'serve', str(database), '--relay']) == 0
+    # An explicit option that names the relay origin itself is accepted; another one is still refused.
+    assert cli.main([*socket_option, '--unlock-origin', enabled['origin'] + '/', 'serve', str(database),
+                     '--relay']) == 0
+    assert [relay for relay, _ in seen] == [True, True]
+    assert all(url.startswith(enabled['origin'] + '/?token=') for _, url in seen)
+    code, _, captured = run_cli(capsys, *socket_option, '--unlock-origin', 'https://node.example:9443', 'serve',
+                                str(database), '--relay')
+    assert code == 2 and f'--relay sets the origin itself ({enabled["origin"]})' in captured.err
+
+
 # The relay client
 
 

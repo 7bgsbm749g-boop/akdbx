@@ -130,8 +130,9 @@ Windows differences:
   trigger for your user only, an interactive token and the least privilege.
   It runs `pythonw.exe -m akdbx.cli serve ... --no-print-unlock-link` from the
   same environment, so no console window opens and no task output keeps the
-  link; `akdbx status` gives the unlock link. With the relay, setup refuses
-  while `AKDBX_UNLOCK_ORIGIN` is set, because the task inherits it. Setup starts the
+  link; `akdbx status` gives the unlock link. With the relay the task runs
+  `serve --relay`, which ignores an inherited `AKDBX_UNLOCK_ORIGIN`; setup
+  warns when that variable names another origin. Setup starts the
   task with `schtasks /Run` only when no broker answers on your pipe, and never
   replaces a task named `akdbx-broker` that it did not create. Remove it with
   `schtasks /Delete /TN akdbx-broker`.
