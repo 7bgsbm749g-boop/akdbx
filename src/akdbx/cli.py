@@ -584,8 +584,8 @@ def _relay_for_serve(args):
             return 2
         return None, None
     if args.unlock_origin_explicit:
-        print('--relay sets the origin itself: remove --unlock-origin and unset AKDBX_UNLOCK_ORIGIN',
-              file=sys.stderr)
+        print('--relay sets the origin itself: remove --unlock-origin and --unlock-url, and unset '
+              'AKDBX_UNLOCK_ORIGIN', file=sys.stderr)
         return 2
     if args.tls_cert is not None or args.tls_key is not None or args.local_port is not None:
         print('the akdbx relay is enabled: it sets the origin, the certificate and the loopback port itself. '
@@ -620,7 +620,8 @@ def main(argv: list[str] | None = None) -> int:
             print('could not locate default broker socket; use --socket', file=sys.stderr)
             return 2
     if args.command == relay_cli.COMMAND:
-        return relay_cli.run(args, lambda: request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+        return relay_cli.run(args, lambda: request(args.socket, {'action': 'relay-status'},
+                                                   broker_uid=args.broker_uid,
                                                    expected_unlock_origin=args.unlock_origin))
     if args.command == "serve":
         database = args.database.expanduser()
@@ -633,8 +634,12 @@ def main(argv: list[str] | None = None) -> int:
         if relay_config is not None:
             try:
                 relay_lock = relay_store.lock()
-            except relay_module.RelayStoreError:
+            except relay_module.RelayBusy:
                 print('refusing to start: another akdbx broker uses the relay now', file=sys.stderr)
+                return 2
+            except relay_module.RelayStoreError as exc:
+                print(f'refusing to start: the relay directory cannot be trusted ({exc}). Fix it, run '
+                      "'akdbx relay disable --forget', or start with --unlock-origin.", file=sys.stderr)
                 return 2
             # The relay origin, the relay certificate and key (one private file),
             # and a free loopback port: the same loopback page as a Tailscale route.

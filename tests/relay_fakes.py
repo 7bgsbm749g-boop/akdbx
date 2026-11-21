@@ -108,16 +108,22 @@ class FakeWS:
         self.pongs = 0
         self.close_code = None
 
-    def send(self, opcode, payload=b''):
-        header = bytes([0x80 | opcode])
-        if len(payload) < 126:
-            header += bytes([len(payload)])
-        elif len(payload) < 65536:
-            header += bytes([126]) + struct.pack('!H', len(payload))
-        else:
-            header += bytes([127]) + struct.pack('!Q', len(payload))
+    @staticmethod
+    def header(opcode, length, fin=True):
+        """An unmasked frame header that declares ``length`` payload bytes."""
+        header = bytes([(0x80 if fin else 0) | opcode])
+        if length < 126:
+            return header + bytes([length])
+        if length < 65536:
+            return header + bytes([126]) + struct.pack('!H', length)
+        return header + bytes([127]) + struct.pack('!Q', length)
+
+    def send(self, opcode, payload=b'', fin=True):
+        self.send_raw(self.header(opcode, len(payload), fin) + payload)
+
+    def send_raw(self, data):
         with self.lock:
-            self.sock.sendall(header + payload)
+            self.sock.sendall(data)
 
     def send_text(self, text):
         self.send(1, text.encode())
@@ -203,6 +209,9 @@ class FakeRelay:
         self.pending = {}
         self.streams = 0
         self.bad_name = None
+        # A Location for a redirect answer to every WebSocket upgrade, and the upgrades asked for.
+        self.redirect = None
+        self.upgrade_requests = 0
         self._stop = threading.Event()
         self._listeners = []
         self.control_port = self._listen(self._serve_control)
@@ -286,6 +295,12 @@ class FakeRelay:
             return self._register(sock, json.loads(body))
         if method == 'POST' and path == '/api/v1/certificate':
             return self._certificate(sock, headers, json.loads(body))
+        if method == 'GET' and (path == '/api/v1/connect' or path.startswith('/api/v1/stream/')):
+            with self.lock:
+                self.upgrade_requests += 1
+            if self.redirect is not None:
+                return sock.sendall(f'HTTP/1.1 302 Found\r\nLocation: {self.redirect}{path}\r\n'
+                                    'Content-Length: 0\r\nConnection: close\r\n\r\n'.encode())
         if method == 'GET' and path == '/api/v1/connect':
             return self._connect(sock, headers)
         if method == 'GET' and path.startswith('/api/v1/stream/'):
@@ -368,6 +383,17 @@ class FakeRelay:
 
     def announce(self, stream_id):
         self.control.send_text(json.dumps({'type': 'open', 'stream': stream_id}))
+
+    def open_stream(self):
+        """Announce a stream to the broker as the public listener does; return its relay side."""
+        stream_id = secrets.token_hex(16)
+        waiter = {'ready': threading.Event(), 'done': threading.Event()}
+        with self.lock:
+            self.pending[stream_id] = waiter
+        self.announce(stream_id)
+        if not waiter['ready'].wait(10):
+            raise TimeoutError('the broker did not open the stream')
+        return waiter
 
     def _stream(self, sock, headers, stream_id):
         broker = self._broker(headers)

@@ -5,13 +5,16 @@ Output is JSON on stdout. It never holds the relay secret or the private key.
 from __future__ import annotations
 
 import json
+import os
+import re
 import sys
 import time
 
 from . import relay as relay_module
-from .relay import DEFAULT_RELAY, RelayError, RelayStore, RelayStoreError
+from .relay import DEFAULT_RELAY, RelayBusy, RelayError, RelayStore, RelayStoreError
 
 COMMAND = 'relay'
+ORIGIN = re.compile(r'https://[a-z0-9.-]{1,253}(:[0-9]{1,5})?')
 
 
 def add_parser(commands):
@@ -45,7 +48,8 @@ def _explicit_origin(args):
     return None
 
 
-def run(args, ping, *, store=None, endpoint_factory=None, sleep=time.sleep):
+def run(args, broker_status, *, store=None, endpoint_factory=None, sleep=time.sleep):
+    """``broker_status`` sends the peer-verified ``relay-status`` request to the running broker."""
     store = store or RelayStore()
     endpoint_factory = endpoint_factory or relay_module.endpoint
     try:
@@ -53,7 +57,7 @@ def run(args, ping, *, store=None, endpoint_factory=None, sleep=time.sleep):
             return _enable(args, store, endpoint_factory, sleep)
         if args.relay_command == 'disable':
             return _disable(args, store)
-        return _status(args, store, ping)
+        return _status(args, store, broker_status)
     except RelayStoreError as exc:
         return _fail(f'the relay directory cannot be trusted: {exc}', 2)
 
@@ -65,7 +69,7 @@ def _enable(args, store, endpoint_factory, sleep):
         return _fail(str(exc), 2)
     try:
         held = store.lock()
-    except RelayStoreError:
+    except RelayBusy:
         config = store.load()
         if config is not None and config.enabled and config.relay == endpoint.url:
             result = {'ok': True, 'enabled': True, 'changed': False, 'name': config.name, 'origin': config.origin,
@@ -108,20 +112,26 @@ def _enable(args, store, endpoint_factory, sleep):
 
 
 def _disable(args, store):
-    config = store.load()
-    if config is None and not store.exists():
-        _print({'ok': True, 'enabled': False, 'registered': False})
-        return 0
     if args.forget:
+        # The repair for untrusted or malformed files: never read them. Only
+        # the folder is checked; the fixed file names are deleted through it.
+        if not store.exists():
+            _print({'ok': True, 'enabled': False, 'registered': False})
+            return 0
         try:
             held = store.lock()
-        except RelayStoreError:
+        except RelayBusy:
             return _fail("a running broker uses the relay; stop it, then run 'akdbx relay disable --forget'")
         with held:
             store.forget()
+        store.remove_folder()
         _print({'ok': True, 'enabled': False, 'registered': False, 'forgot': True,
                 'next': "The name, secret, key and certificate are deleted. 'akdbx relay enable' registers a "
                         'new name. Restart a running broker to stop using the relay.'})
+        return 0
+    config = store.load()
+    if config is None and not store.exists():
+        _print({'ok': True, 'enabled': False, 'registered': False})
         return 0
     if config is not None and config.enabled:
         config.enabled = False
@@ -133,7 +143,40 @@ def _disable(args, store):
     return 0
 
 
-def _status(args, store, ping):
+def _not_running(exc):
+    """True when no broker listens; any other failure (a check that failed) leaves the state unknown."""
+    if isinstance(exc, (FileNotFoundError, ConnectionRefusedError)):
+        return True
+    # Windows: the broker pipe does not exist (windows_rpc.connect raises a plain OSError).
+    return os.name == 'nt' and type(exc) is OSError
+
+
+def _broker_state(broker_status):
+    try:
+        response = broker_status()
+    except Exception as exc:
+        if _not_running(exc):
+            return {'running': False}
+        # The broker may run, but its socket or answer failed a check: never report it stopped.
+        return {'running': 'unknown', 'error': f'the broker check failed ({type(exc).__name__})'}
+    if not isinstance(response, dict) or response.get('ok') is not True:
+        return {'running': True, 'uses_relay': 'unknown',
+                'error': 'the broker did not report its relay state (an older version?)'}
+    broker = {'running': True}
+    state = response.get('relay')
+    if isinstance(state, dict) and type(state.get('connected')) is bool:
+        broker.update(uses_relay=True, connected=state['connected'])
+        if isinstance(state.get('renewal_error'), str):
+            broker['renewal_error'] = state['renewal_error'][:300]
+    else:
+        broker['uses_relay'] = False
+    origin = response.get('active_origin')
+    if isinstance(origin, str) and ORIGIN.fullmatch(origin):
+        broker['origin'] = origin
+    return broker
+
+
+def _status(args, store, broker_status):
     config = store.load()
     if config is None:
         _print({'ok': True, 'registered': False, 'enabled': False,
@@ -147,21 +190,11 @@ def _status(args, store, ping):
     else:
         result.update(info.as_dict())
         result['certificate_expired'] = info.not_after <= relay_module._utcnow()
-    try:
-        response = ping()
-    except Exception:
-        response = None
-    if not isinstance(response, dict) or response.get('ok') is not True:
-        result['broker'] = {'running': False}
-    else:
-        state = response.get('relay')
-        if isinstance(state, dict) and type(state.get('connected')) is bool:
-            broker = {'running': True, 'uses_relay': True, 'connected': state['connected']}
-            if isinstance(state.get('renewal_error'), str):
-                broker['renewal_error'] = state['renewal_error'][:300]
-        else:
-            broker = {'running': True, 'uses_relay': False}
-        result['broker'] = broker
+    result['broker'] = broker = _broker_state(broker_status)
+    if broker.get('uses_relay') is True and not config.enabled:
+        result['next'] = 'The running broker still uses the relay until it restarts.'
+    elif broker.get('uses_relay') is False and config.enabled and not _explicit_origin(args):
+        result['next'] = 'Restart the broker to use the relay.'
     warning = _explicit_origin(args)
     if warning and config.enabled:
         result['warning'] = warning

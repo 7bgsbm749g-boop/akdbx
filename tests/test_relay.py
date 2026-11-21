@@ -1,11 +1,16 @@
 """The broker side of the akdbx relay against an in-process fake relay (loopback only)."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 import datetime
 import json
 import os
+from pathlib import Path
 import re
+import socket
 import stat
+import threading
 import time
+import tracemalloc
 from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
 
@@ -18,8 +23,8 @@ from akdbx import cli, relay as relay_module, relay_cli
 from akdbx.broker import Broker
 from akdbx.local_https import reload_certificate, start_local_unlock_server
 from akdbx.relay import RelayClient, RelayError, RelayStore, check_chain
-from relay_fakes import FakeRelay, phone_request
-from test_broker import RecordingTyper
+from relay_fakes import FakeRelay, FakeWS, phone_request
+from test_broker import RecordingTyper, running_broker
 
 pytestmark = pytest.mark.skipif(os.name == 'nt', reason='Linux paths and file modes; Windows: test_windows_native.py')
 MASTER = 'synthetic relay master'
@@ -486,7 +491,7 @@ def test_one_broker_holds_the_relay(fake, capsys):
     enable(fake, capsys)
     first = RelayStore().lock()
     try:
-        with pytest.raises(relay_module.RelayStoreError, match='another akdbx process'):
+        with pytest.raises(relay_module.RelayBusy, match='another akdbx process'):
             RelayStore().lock()
         # enable while a broker runs reports the running relay and changes nothing.
         code, result, _ = run_cli(capsys, 'relay', 'enable', '--relay', fake.url)
@@ -496,3 +501,264 @@ def test_one_broker_holds_the_relay(fake, capsys):
     finally:
         first.release()
     RelayStore().lock().release()
+
+
+# Review fixes: redirects, message limits, status of a running broker, locks and repair
+
+
+def flood(ws, first, chunk, count):
+    """Send ``first`` and then ``chunk`` up to ``count`` times, until the broker closes the connection."""
+    def send():
+        with suppress(OSError):
+            ws.send_raw(first)
+            for _ in range(count):
+                ws.send_raw(chunk)
+    thread = threading.Thread(target=send, daemon=True)
+    thread.start()
+    return thread
+
+
+def closed_by_broker(ws, timeout=10):
+    """True when the broker ends the WebSocket within ``timeout`` seconds."""
+    ws.sock.settimeout(timeout)
+    try:
+        while ws.recv()[0] != 8:
+            pass
+        return True
+    except TimeoutError:
+        return False
+    except (ConnectionError, OSError):
+        return True
+
+
+def test_websocket_redirects_are_not_followed(fake, page):
+    # Another loopback port, as a service on the broker's own network would be.
+    seen = []
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(8)
+    listener.settimeout(0.1)
+    done = threading.Event()
+
+    def accept():
+        while not done.is_set():
+            try:
+                conn, _ = listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+            with conn:
+                conn.settimeout(2)
+                with suppress(OSError):
+                    seen.append(conn.recv(65536))
+    thread = threading.Thread(target=accept, daemon=True)
+    thread.start()
+    fake.redirect = f'ws://127.0.0.1:{listener.getsockname()[1]}'
+    holder = {}
+    client, logs = client_for(fake, page, wait=lambda seconds: holder['client']._stop.set())
+    holder['client'] = client
+    try:
+        client._control_loop()  # one attempt; its backoff wait stops the loop
+        assert fake.upgrade_requests == 1 and client.delays == [0.5] and not client.connected.is_set()
+        assert any('cannot connect' in line for line in logs)
+        client._stop.clear()
+        client._slots.acquire()
+        client._stream('0' * 32)  # a stream upgrade does not follow a redirect either
+        assert fake.upgrade_requests == 2 and client.streams_opened == 0
+        time.sleep(0.3)
+    finally:
+        done.set()
+        listener.close()
+        thread.join(2)
+    assert seen == []
+    assert secret_of() not in ''.join(logs)
+
+
+def test_the_control_channel_aborts_an_oversize_frame_before_reading_it(fake, page):
+    client, logs = client_for(fake, page)
+    client.start()
+    try:
+        wait_until(client.connected.is_set)
+        ws = fake.control
+        tracemalloc.start()
+        try:
+            # The header declares 1 TiB; 4 MiB follow.
+            sender = flood(ws, FakeWS.header(1, 2 ** 40), b'x' * 65536, 64)
+            wait_until(lambda: fake.control is not ws)
+            sender.join(10)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak < 1024 * 1024
+        # A failed connection: the normal backoff, then a new control connection.
+        wait_until(lambda: fake.control_connects == 2 and client.connected.is_set())
+    finally:
+        client.stop()
+    assert any('control connection lost (MessageTooLarge)' in line for line in logs)
+
+
+def test_the_control_channel_aborts_endless_continuation_frames(fake, page):
+    client, logs = client_for(fake, page)
+    client.start()
+    try:
+        wait_until(client.connected.is_set)
+        ws = fake.control
+        flood(ws, FakeWS.header(1, 1, fin=False) + b'{', FakeWS.header(0, 1, fin=False) + b' ', 100000)
+        wait_until(lambda: fake.control is not ws)
+    finally:
+        client.stop()
+    assert any('control connection lost (MessageTooLarge)' in line for line in logs)
+
+
+def test_a_stream_aborts_an_oversize_message_or_endless_continuation_frames(fake, page):
+    client, _ = client_for(fake, page)
+    client.start()
+    try:
+        wait_until(client.connected.is_set)
+        for first, chunk, count in (
+                (FakeWS.header(2, 2 ** 40), b'x' * 65536, 64),
+                (FakeWS.header(2, 1, fin=False) + b'\x16', FakeWS.header(0, 1, fin=False) + b'\x03', 100000)):
+            waiter = fake.open_stream()
+            tracemalloc.start()
+            try:
+                sender = flood(waiter['ws'], first, chunk, count)
+                # At once: the loopback page itself drops a silent TLS client only after 5 s.
+                assert closed_by_broker(waiter['ws'], timeout=2)
+                sender.join(10)
+                peak = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+            assert peak < 1024 * 1024
+            waiter['done'].set()
+        wait_until(lambda: not client._live)
+        assert client.connected.is_set()  # a bad stream does not end the control connection
+    finally:
+        client.stop()
+
+
+def ws_pair():
+    """A client WebSocket and the relay side of it over a socket pair (no handshake)."""
+    import websocket
+    near, far = socket.socketpair()
+    near.settimeout(5)
+    ws = websocket.WebSocket(skip_utf8_validation=True)
+    ws.sock, ws.connected = near, True
+    return ws, FakeWS(far)
+
+
+@pytest.mark.parametrize('limit', [4096, 256 * 1024])  # protocol v1: control and stream messages
+def test_messages_up_to_the_protocol_limits_are_read_and_larger_ones_are_not(limit):
+    fragments = relay_module.MAX_FRAGMENTS
+    piece = limit // fragments
+    ws, relay = ws_pair()
+
+    def send():
+        relay.send(9, b'keepalive')  # a ping between messages is answered, not returned
+        for index in range(fragments):
+            relay.send(2 if index == 0 else 0, b'a' * piece, fin=index == fragments - 1)
+    sender = threading.Thread(target=send, daemon=True)
+    sender.start()
+    assert relay_module._recv_message(ws, limit) == (2, b'a' * limit)
+    sender.join(5)
+    # One byte more: refused from the header alone (no payload is ever sent).
+    relay.send_raw(FakeWS.header(2, limit + 1))
+    with pytest.raises(relay_module.MessageTooLarge):
+        relay_module._recv_message(ws, limit)
+    ws, relay = ws_pair()
+    relay.send_raw(FakeWS.header(2, 0, fin=False) + FakeWS.header(0, 0, fin=False) * fragments)
+    with pytest.raises(relay_module.MessageTooLarge):  # one fragment more
+        relay_module._recv_message(ws, limit)
+    ws, relay = ws_pair()
+    relay.send_raw(FakeWS.header(9, 126))
+    with pytest.raises(relay_module.MessageTooLarge):  # a control frame is at most 125 bytes
+        relay_module._recv_message(ws, limit)
+
+
+def test_status_after_disable_asks_the_running_broker(fake, capsys, tmp_path):
+    enabled, _ = enable(fake, capsys)
+    origin, token = enabled['origin'], 'T' * 43
+    # A locked broker that serves through the relay: its ping holds the relay unlock URL.
+    broker = Broker(None, RecordingTyper())
+    broker.relay = SimpleNamespace(status=lambda: {'connected': True, 'name': enabled['name'], 'origin': origin})
+    broker.unlock_link = SimpleNamespace(origin=origin, blocked=False)
+    broker.unlock_url = f'{origin}/?token={token}'
+    socket_path = tmp_path / 'private' / 'broker.sock'
+    with running_broker(socket_path, broker):
+        run_cli(capsys, 'relay', 'disable')
+        # The CLI now expects the localhost origin; the broker still uses the relay.
+        code, status, captured = run_cli(capsys, '--socket', str(socket_path), 'relay', 'status')
+    assert code == 0 and status['enabled'] is False
+    assert status['broker'] == {'running': True, 'uses_relay': True, 'connected': True, 'origin': origin}
+    assert 'still uses the relay' in status['next']
+    assert token not in captured.out + captured.err
+    response = broker.dispatch({'action': 'relay-status'})
+    assert 'unlock_url' not in response and token not in json.dumps(response)
+
+
+def test_a_failed_broker_check_is_unknown_not_stopped(fake, capsys):
+    enable(fake, capsys)
+    args = cli.parser().parse_args(['relay', 'status'])
+    cli.resolve_unlock_origin(args)
+    for error, running in ((cli.ProtocolError('broker returned an untrusted unlock URL'), 'unknown'),
+                           (PermissionError('broker peer UID does not match the configured broker UID'), 'unknown'),
+                           (ValueError('configured unlock origin is invalid'), 'unknown'),
+                           (FileNotFoundError(), False), (ConnectionRefusedError(), False)):
+        def broker_status():
+            raise error
+        assert relay_cli.run(args, broker_status) == 0
+        broker = json.loads(capsys.readouterr().out)['broker']
+        assert broker['running'] == running, error
+        if running == 'unknown':
+            assert broker['error'] == f'the broker check failed ({type(error).__name__})'
+
+
+def test_serve_relay_names_unlock_url_when_it_refuses_it(fake, capsys, tmp_path, database):
+    enable(fake, capsys)
+    code, _, captured = run_cli(capsys, '--socket', str(tmp_path / 'private' / 'broker.sock'), 'serve',
+                                str(database), '--relay', '--unlock-url', 'https://node.example:9443')
+    assert code == 2 and '--unlock-url' in captured.err
+
+
+@pytest.mark.parametrize('damage', ['config-mode', 'malformed'])
+def test_forget_removes_untrusted_or_malformed_files(fake, capsys, damage):
+    enable(fake, capsys)
+    store = RelayStore()
+    if damage == 'config-mode':
+        store.config_path.chmod(0o644)
+    else:
+        store.config_path.write_text('{"version": 1, "secret": "not json')
+    with pytest.raises(relay_module.RelayStoreError):
+        store.load()
+    code, result, _ = run_cli(capsys, 'relay', 'disable', '--forget')
+    assert code == 0 and result['forgot'] and not store.directory.exists()
+
+
+def test_forget_still_refuses_an_untrusted_folder(fake, capsys):
+    enable(fake, capsys)
+    store = RelayStore()
+    store.directory.chmod(0o750)
+    code, result, _ = run_cli(capsys, 'relay', 'disable', '--forget')
+    assert code == 2 and result['error'].startswith('the relay directory cannot be trusted')
+    assert store.config_path.exists() and store.tls_path.exists()
+
+
+def test_a_folder_trust_failure_is_not_reported_as_a_running_broker(fake, capsys, tmp_path, database):
+    state = Path(os.environ['XDG_STATE_HOME'])
+    state.chmod(0o777)
+    try:
+        with pytest.raises(relay_module.RelayStoreError):
+            RelayStore().lock()
+        code, result, _ = run_cli(capsys, 'relay', 'enable', '--relay', fake.url)
+        assert code == 2 and result['error'].startswith('the relay directory cannot be trusted')
+        assert 'running broker' not in result['error']
+    finally:
+        state.chmod(0o700)
+    enable(fake, capsys)
+    (RelayStore().directory / '.relay.lock').chmod(0o644)
+    with pytest.raises(relay_module.RelayStoreError):
+        RelayStore().lock()
+    code, _, captured = run_cli(capsys, '--socket', str(tmp_path / 'private' / 'broker.sock'), 'serve',
+                                str(database))
+    assert code == 2 and 'the relay directory cannot be trusted' in captured.err
+    assert 'another akdbx broker' not in captured.err

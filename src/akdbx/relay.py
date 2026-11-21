@@ -18,7 +18,6 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass, field
 import datetime
-import hashlib
 import http.client
 import json
 import os
@@ -39,6 +38,7 @@ DEFAULT_RELAY = 'https://relay.akdbx.link:8443'
 PROTOCOL = 1
 CONFIG_NAME = 'relay.json'
 TLS_NAME = 'tls.pem'
+LOCK_NAME = '.relay.lock'
 API_TIMEOUT = 30
 # The relay answers a certificate request within its 90 s deadline; wait 10 s more.
 CERTIFICATE_TIMEOUT = 120
@@ -51,7 +51,11 @@ ERROR_CODE = re.compile(r'[a-z_]{1,64}')
 DNS_NAME = re.compile(r'(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+')
 PEM_CERTIFICATE = re.compile(rb'-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\r?\n?')
 MAX_STREAMS = 64
+# Protocol v1 limits: a control message is at most 4 KiB, a stream message at
+# most 256 KiB, and a message has at most 256 fragments.
 CONTROL_MESSAGE_LIMIT = 4096
+STREAM_MESSAGE_LIMIT = 256 * 1024
+MAX_FRAGMENTS = 256
 # The relay pings every 30 s; with no frame for 90 s the connection is dead.
 CONTROL_IDLE_TIMEOUT = 90
 # The relay pings idle streams every 30 s and closes them after 5 minutes.
@@ -74,6 +78,10 @@ class RelayError(Exception):
 
 class RelayStoreError(Exception):
     """The relay directory or one of its files fails the private-file checks."""
+
+
+class RelayBusy(Exception):
+    """Another akdbx process (a running broker) holds the relay lock. Not a trust failure."""
 
 
 def _utcnow():
@@ -559,13 +567,17 @@ class RelayStore:
             return None
 
     def forget(self):
-        """Delete the saved files and the folder. The registration on the relay expires unused."""
+        """Delete the saved files by their fixed names, without reading them, and the empty folder.
+
+        Only the folder is checked, so this also removes untrusted or malformed
+        files. The registration on the relay expires unused.
+        """
         if not self.exists():
             return
         if os.name != 'nt':
             directory = self._posix_directory(create=False)
             try:
-                for name in (TLS_NAME, CONFIG_NAME, '.relay.lock'):
+                for name in (TLS_NAME, CONFIG_NAME, LOCK_NAME):
                     with suppress(FileNotFoundError):
                         os.unlink(name, dir_fd=directory)
             finally:
@@ -578,30 +590,78 @@ class RelayStore:
         with suppress(OSError):
             os.rmdir(self.directory)
 
-    def lock(self):
-        """Hold the relay for one broker. Raise RelayStoreError when another process holds it.
+    def remove_folder(self):
+        """After ``forget`` and the lock release: delete the lock file and the empty folder.
 
-        One registration has one control connection: a second broker would
-        replace the first one's connection again and again.
+        Windows cannot delete the lock file while this process holds it open,
+        and never deletes one that another process holds.
+        """
+        if not self.exists():
+            return
+        if os.name == 'nt':
+            self._windows(create=False)
+            with suppress(OSError):
+                (self.directory / LOCK_NAME).unlink()
+        with suppress(OSError):
+            os.rmdir(self.directory)
+
+    def lock(self):
+        """Hold the relay for one broker.
+
+        Raise RelayBusy when another process holds it, and RelayStoreError when
+        the folder or the lock file fails the private-file checks. One
+        registration has one control connection: a second broker would replace
+        the first one's connection again and again.
+
+        The lock is the file ``.relay.lock`` in the relay folder, held open for
+        the broker's lifetime: Linux takes an exclusive ``flock``; Windows opens
+        it with share mode 0, which every logon session sees.
         """
         if os.name == 'nt':
-            import win32api
-            import win32event
-            digest = hashlib.sha256(os.path.normcase(str(self.directory)).encode()).hexdigest()[:32]
-            handle = win32event.CreateMutex(None, False, f'Local\\akdbx-relay-{digest}')
-            if win32api.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-                handle.Close()
-                raise RelayStoreError('another akdbx process uses the relay now')
-            return _Held(handle.Close)
+            return self._windows_lock()
         from .runtime import acquire_lifecycle_lock
         directory = self._posix_directory(create=True)
         try:
-            descriptor = acquire_lifecycle_lock(directory, 'relay')
-        except RuntimeError:
-            raise RelayStoreError('another akdbx process uses the relay now') from None
+            descriptor = acquire_lifecycle_lock(directory, 'relay')  # opens LOCK_NAME
+        except RuntimeError as exc:
+            if isinstance(exc.__cause__, BlockingIOError):
+                raise RelayBusy('another akdbx process uses the relay now') from None
+            raise RelayStoreError(f'{self.directory / LOCK_NAME} must be a regular file that you own '
+                                  'with mode 0600') from None
+        except OSError:
+            raise RelayStoreError(f'{self.directory / LOCK_NAME} must be a regular file that you own '
+                                  'with mode 0600') from None
         finally:
             os.close(directory)
         return _Held(lambda: os.close(descriptor))
+
+    def _windows_lock(self):
+        import pywintypes
+        import win32con
+        import win32file
+        security = self._windows(create=True)
+        path = self.directory / LOCK_NAME
+        try:
+            # Share mode 0: no other process, in any logon session, can open
+            # the file until this handle closes (or this process exits).
+            handle = win32file.CreateFile(
+                str(path), win32con.GENERIC_READ | win32con.GENERIC_WRITE | win32con.READ_CONTROL, 0,
+                security.private_attributes(), win32con.OPEN_ALWAYS, security.FILE_FLAG_OPEN_REPARSE_POINT,
+                None)
+        except pywintypes.error as exc:
+            if exc.winerror == 32:  # ERROR_SHARING_VIOLATION
+                raise RelayBusy('another akdbx process uses the relay now') from None
+            raise RelayStoreError(f'{path} must be a file that only this user and SYSTEM can open') from None
+        try:
+            info = win32file.GetFileInformationByHandle(handle)
+            if (info[0] & (win32con.FILE_ATTRIBUTE_REPARSE_POINT | win32con.FILE_ATTRIBUTE_DIRECTORY)
+                    or info[7] != 1):
+                raise PermissionError('the relay lock must be a regular, unlinked file')
+            security.check_acl(handle)
+        except Exception:
+            handle.Close()
+            raise RelayStoreError(f'{path} must be a file that only this user and SYSTEM can open') from None
+        return _Held(handle.Close)
 
 
 class _Held:
@@ -746,8 +806,14 @@ class RelayClient:
         try:
             ws = websocket.WebSocket(enable_multithread=True, skip_utf8_validation=True)
             ws.settimeout(CONNECT_TIMEOUT)
-            ws.connect(self.endpoint.ws_url + path, socket=sock, suppress_origin=True,
+            # redirect_limit=0: a redirect would resend the bearer secret on a
+            # new, unverified connection (even ws://) and let the relay make
+            # this broker connect to its local network. Only 101 is accepted;
+            # anything else is a failed attempt with the normal backoff.
+            ws.connect(self.endpoint.ws_url + path, socket=sock, suppress_origin=True, redirect_limit=0,
                        header=['Authorization: Bearer ' + self.config.secret])
+            if ws.getstatus() != 101:
+                raise ConnectionError('the relay did not switch protocols')
             ws.settimeout(timeout)
             return ws
         except BaseException:
@@ -798,13 +864,11 @@ class RelayClient:
     def _control_session(self, ws):
         import websocket
         while not self._stop.is_set():
-            opcode, data = ws.recv_data()
+            opcode, data = _recv_message(ws, CONTROL_MESSAGE_LIMIT)
             if opcode == websocket.ABNF.OPCODE_CLOSE:
                 raise ConnectionError('closed by the relay')
             if opcode != websocket.ABNF.OPCODE_TEXT:
                 raise ConnectionError('unexpected binary frame')
-            if len(data) > CONTROL_MESSAGE_LIMIT:
-                continue
             try:
                 message = json.loads(data)
             except (ValueError, UnicodeDecodeError):
@@ -911,10 +975,60 @@ def _abort(item):
             item.close()
 
 
+class MessageTooLarge(ConnectionError):
+    """The relay sent a message over the protocol limits; the connection is aborted."""
+
+
+def _recv_message(ws, limit, max_fragments=MAX_FRAGMENTS):
+    """The next text or binary message as ``(opcode, bytes)``, or a close as ``(OPCODE_CLOSE, payload)``.
+
+    The library's reader buffers a frame of any declared length and joins any
+    number of fragments. Here each frame header is read first, and
+    MessageTooLarge is raised before a payload is read when the message would
+    pass ``limit`` bytes or ``max_fragments`` fragments, or a control frame
+    would pass 125 bytes. The caller aborts the connection. Pings are answered
+    and pongs skipped, as the library does.
+    """
+    from websocket import ABNF, WebSocketProtocolException
+    frames = ws.frame_buffer
+    parts, size, kind, fragments = [], 0, None, 0
+    while True:
+        if frames.needs_header():
+            frames.recv_header()
+        if frames.needs_length():
+            frames.recv_length()
+        opcode, length = frames.header[4], frames.length
+        if opcode >= 0x8:
+            if length > 125:
+                raise MessageTooLarge('control frame too large')
+        else:
+            fragments += 1
+            if fragments > max_fragments or size + length > limit:
+                raise MessageTooLarge('message too large')
+        frame = ws.recv_frame()
+        if frame.opcode == ABNF.OPCODE_CLOSE:
+            with suppress(Exception):
+                ws.send_close()
+            return frame.opcode, frame.data
+        if frame.opcode == ABNF.OPCODE_PING:
+            ws.pong(frame.data)
+            continue
+        if frame.opcode == ABNF.OPCODE_PONG:
+            continue
+        if (frame.opcode == ABNF.OPCODE_CONT) != (kind is not None):
+            raise WebSocketProtocolException('illegal fragment')
+        if kind is None:
+            kind = frame.opcode
+        parts.append(frame.data)
+        size += len(frame.data)
+        if frame.fin:
+            return kind, b''.join(parts)
+
+
 def _ws_to_local(ws, local):
     import websocket
     while True:
-        opcode, data = ws.recv_data()
+        opcode, data = _recv_message(ws, STREAM_MESSAGE_LIMIT)
         if opcode != websocket.ABNF.OPCODE_BINARY:
             return  # A close ends the stream; a text frame is a protocol error.
         local.sendall(data)

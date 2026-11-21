@@ -1010,11 +1010,44 @@ def test_relay_lock_admits_one_broker(private_dir, monkeypatch):
     store = relay.RelayStore()
     held = store.lock()
     try:
-        with pytest.raises(relay.RelayStoreError, match='another akdbx process'):
+        with pytest.raises(relay.RelayBusy, match='another akdbx process'):
             relay.RelayStore().lock()
     finally:
         held.release()
     store.lock().release()
+
+
+def test_relay_lock_is_a_file_that_every_logon_session_sees(private_dir, monkeypatch, capsys):
+    from akdbx import relay
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    monkeypatch.delenv('AKDBX_UNLOCK_ORIGIN', raising=False)
+    store = relay.RelayStore()
+    store.save(_relay_config())
+    lock_path = store.directory / '.relay.lock'
+    held = store.lock()
+    try:
+        # A file held open with share mode 0, not a session-local mutex: any
+        # process in any logon session fails to open it while a broker runs.
+        with pytest.raises(pywintypes.error) as error:
+            win32file.CreateFile(str(lock_path), win32con.GENERIC_READ,
+                                 win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+                                 None, win32con.OPEN_EXISTING, 0, None)
+        assert error.value.winerror == 32  # ERROR_SHARING_VIOLATION
+        with security.checked_handle(store.directory, directory=True):
+            pass  # the folder stays private
+        other = subprocess.run(
+            [sys.executable, '-c', 'from akdbx import relay\n'
+             'try:\n    relay.RelayStore().lock()\nexcept relay.RelayBusy:\n    print("busy")'],
+            capture_output=True, text=True, timeout=60, env={**os.environ, 'LOCALAPPDATA': str(private_dir)})
+        assert other.stdout.strip() == 'busy', other.stderr
+        assert cli.main(['relay', 'disable', '--forget']) == 1
+        assert 'stop it' in json.loads(capsys.readouterr().out)['error']
+        assert store.config_path.exists()
+    finally:
+        held.release()
+    assert cli.main(['relay', 'disable', '--forget']) == 0
+    assert json.loads(capsys.readouterr().out)['forgot'] is True
+    assert not store.directory.exists()
 
 
 def test_relay_tls_file_loads_and_hot_reloads_on_windows(private_dir, monkeypatch):

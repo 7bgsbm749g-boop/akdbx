@@ -247,7 +247,9 @@ one control WebSocket to the relay, reconnects after a failure (1 s, doubling
 to 60 s, with jitter), and opens one WebSocket per browser connection. It
 renews the certificate when less than a third of its lifetime is left, and
 loads the new certificate without a restart; open connections are not
-dropped. Only one broker can use a relay registration at a time.
+dropped. Only one broker can use a relay registration at a time: it holds the
+lock file `.relay.lock` in the relay folder open while it runs (Linux: an
+exclusive `flock`; Windows: share mode 0, which every logon session sees).
 
 Every akdbx command finds the relay origin by itself, so you do not copy it.
 The CLI and `serve` choose the trusted origin in this order:
@@ -263,7 +265,7 @@ Tailscale even with the relay enabled; `relay enable` and `relay status` warn
 about it. Unset it to use the relay.
 
 ```sh
-akdbx relay status            # name, origin, certificate expiry, broker connected or not; no secret
+akdbx relay status            # name, origin, certificate expiry, running broker's relay state; no secret
 akdbx relay disable           # use no relay from the next broker start; files are kept
 akdbx relay enable            # use it again, with the same name
 akdbx relay disable --forget  # also delete the name, secret, key and certificate
@@ -271,7 +273,12 @@ akdbx relay disable --forget  # also delete the name, secret, key and certificat
 
 Restart a running broker after `disable` to stop using the relay. A running
 broker's `status` has a `relay` object with `connected`, `name`, `origin` and
-the certificate dates. The browser extension opens pairing and unlock links
+the certificate dates. `relay status` asks the running broker for its relay
+state and the origin of its private page with a separate, peer-checked
+request that holds no private URL, so it also works after `disable`, when the
+CLI already expects another origin. Its `broker.running` is `true`, `false`
+(no broker listens) or `"unknown"` (a socket, peer or answer check failed;
+the broker may still run). The browser extension opens pairing and unlock links
 only on the origin it was built with: run `akdbx extension build` again after
 you enable or disable the relay, and reload the extension.
 
@@ -288,13 +295,20 @@ secret or the key.
 
 If the folder or a file fails these checks, `serve` refuses to start and names
 what to fix, and the CLI does not use the relay origin. akdbx never repairs the
-permissions itself.
+permissions itself. `relay disable --forget` is the repair for untrusted or
+malformed files: it checks only the folder, never reads the files, and deletes
+`relay.json`, `tls.pem` and the lock file by name.
 
 The broker trusts nothing that the relay sends. It checks the name, the port
 and the certificate the relay returns (exactly the broker's name, and the
 broker's own key), and the page keeps every check: the one-time token,
 `Host` and `Origin` equal to the relay origin, and the three-attempt block. No
-header from the relay counts as an identity.
+header from the relay counts as an identity. The WebSocket upgrades follow no
+redirect (a redirect would resend the bearer secret to another address) and
+accept only HTTP 101; anything else is a failed attempt with the normal
+backoff. The broker reads each WebSocket frame header first and aborts the
+connection before it reads a message over the protocol limits: 4 KiB on the
+control connection, 256 KiB and 256 fragments on a stream.
 
 **Trust point.** The relay operator controls the `akdbx.link` DNS zone. With
 it, the operator could get a second certificate for your broker's name and
