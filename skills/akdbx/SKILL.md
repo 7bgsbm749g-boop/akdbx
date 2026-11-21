@@ -139,7 +139,7 @@ log in again.
 ### Blocked unlock link
 
 Each unlock link allows three failed master-password attempts in total
-(broker 0.24.0+, `unlock_link_protocol: 1`). The third failure blocks it. Time
+(broker 0.25.0+, `unlock_link_protocol: 1`). The third failure blocks it. Time
 does not unblock it. While it is blocked, `status` and locked responses have
 `unlock_blocked: true` and no `unlock_url`, and a waiting unlock subscription
 receives an `akdbx.unlock-blocked` event (the current CLI asks for it when the

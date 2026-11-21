@@ -27,7 +27,7 @@ def capabilities() -> dict:
     # unlock_notifications_blocked_event: a subscription made with
     # blocked_events: true also gets akdbx.unlock-blocked when the unlock
     # link is blocked, and stays subscribed for the later akdbx.unlocked
-    # event (0.24.0+). Other subscriptions get only akdbx.unlocked.
+    # event (0.25.0+). Other subscriptions get only akdbx.unlocked.
     return {"unlock_notifications_supported": True, "unlock_notifications_protocol": 1,
             "unlock_notifications_until_unlock": True, "unlock_notifications_blocked_event": True}
 
@@ -89,7 +89,7 @@ class Subscription:
     attempts: int = 0
     subject: str | None = None
     result: str | None = None
-    # Opt-in (0.24.0+): also send akdbx.unlock-blocked before the unlock.
+    # Opt-in (0.25.0+): also send akdbx.unlock-blocked before the unlock.
     blocked_events: bool = False
     url_hash: bytes = field(init=False, repr=False)
 
@@ -206,7 +206,7 @@ class UnlockNotifications:
                 blocked_events = row.get('blocked_events', False)
                 if type(blocked_events) is not bool:
                     raise ValueError('invalid notification state')
-                # A row from before 0.24.0 has no field: it stays unlock-only.
+                # A row from before 0.25.0 has no field: it stays unlock-only.
                 item = Subscription(validate_webhook_url(row['url']), None, event_id=event,
                                     attempts=attempts, blocked_events=blocked_events)
                 self._restore_item(row, item)
@@ -283,7 +283,7 @@ class UnlockNotifications:
         return self._state_path.with_name(self._state_path.name + '.unlock-blocked')
 
     def load_unlock_blocked(self) -> bool:
-        """Return the saved unlock-link block (0.24.0+); False without saved state.
+        """Return the saved unlock-link block (0.25.0+); False without saved state.
 
         By default the flag sits next to the notification state; the Linux
         broker keeps it in a persistent state folder instead (``blocked_path``).

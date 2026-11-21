@@ -114,7 +114,7 @@ If the page fails:
 - `404`: check broker status and the exact current tokenized URL. Successful unlock invalidates the old URL. Missing identity also causes `404`.
 - Proxy/backend unavailable: check that the broker and Unix socket are present and inspect the existing Serve mapping.
 - `Unlock failed`: let the user retry on the page. If needed, check only the configured database/key-file paths and file accessibility; do not solicit or test passwords yourself.
-- `403` "Unlock link blocked": the link used its three failed attempts (0.24.0+). Follow the skill's "Blocked unlock link" steps; never run `new-unlock-link` without the user's two clear yes answers.
+- `403` "Unlock link blocked": the link used its three failed attempts (0.25.0+). Follow the skill's "Blocked unlock link" steps; never run `new-unlock-link` without the user's two clear yes answers.
 - `429`: another attempt on this link is still running. Let the user wait for its result.
 
 ## Sources for implementation-specific questions

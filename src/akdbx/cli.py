@@ -428,7 +428,7 @@ def parser() -> argparse.ArgumentParser:
                            help="owned mode-0600 file containing the private callback URL")
     subscribe.add_argument("--ttl", type=int, default=0, help="0 waits until unlock/cancel (default); 60–3600 seconds only for an explicitly time-limited wait")
     subscribe.add_argument("--blocked-events", action="store_true",
-                           help="also send akdbx.unlock-blocked when the unlock link is blocked (broker 0.24.0+); "
+                           help="also send akdbx.unlock-blocked when the unlock link is blocked (broker 0.25.0+); "
                                 "only for a consumer that rechecks status on every event")
     for name in ("unlock-subscription-status", "unsubscribe-unlock"):
         command = commands.add_parser(name, help="inspect/cancel a one-shot unlock subscription")
@@ -795,7 +795,7 @@ def main(argv: list[str] | None = None) -> int:
                                    expected_unlock_origin=args.unlock_origin)
             if (capabilities.get('ok') is not True or type(capabilities.get('unlock_link_protocol')) is not int
                     or capabilities['unlock_link_protocol'] != 1):
-                print(json.dumps({'ok': False, 'error': 'broker lacks unlock link protocol 1; require broker 0.24.0 or newer; request not sent'}))
+                print(json.dumps({'ok': False, 'error': 'broker lacks unlock link protocol 1; require broker 0.25.0 or newer; request not sent'}))
                 return 1
             if capabilities.get('unlock_blocked') is not True:
                 print(json.dumps({'ok': False, 'error': 'the current unlock link is not blocked; no link created; request not sent'}))

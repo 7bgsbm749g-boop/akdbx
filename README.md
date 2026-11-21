@@ -195,7 +195,7 @@ password, and then use the broker normally. The page and URL are
 non-cacheable, request logging is disabled, and the URL token is replaced
 after a successful unlock.
 
-Each link allows three failed master-password attempts in total (0.24.0+).
+Each link allows three failed master-password attempts in total (0.25.0+).
 The third failure blocks the link at once, and time never expires it. While
 it is blocked, `status` reports `unlock_blocked: true` without a link, and
 waiting unlock notifications that opted in get an `akdbx.unlock-blocked`
@@ -449,7 +449,7 @@ Require the running broker's `unlock_notifications_supported: true` and integer
 running broker. See [the notification workflow](skills/akdbx/references/unlock-notifications.md)
 for exact T3 registration, cleanup and recovery.
 
-From 0.24.0, a subscription can opt in with `blocked_events: true` (the CLI
+From 0.25.0, a subscription can opt in with `blocked_events: true` (the CLI
 sends it with `subscribe-unlock --blocked-events` when the broker advertises
 `unlock_notifications_blocked_event: true`). When the unlock link is blocked after three failed attempts, each such
 waiting subscription also gets `{"event": "akdbx.unlock-blocked", "locked":

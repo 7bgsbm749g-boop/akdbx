@@ -101,7 +101,7 @@ The payload contains only an event name, readiness flag and opaque identifiers:
 
 It contains no passwords, entry metadata, database paths or unlock tokens.
 
-### Blocked link event (0.24.0)
+### Blocked link event (0.25.0)
 
 Blocked events are opt-in. A broker that advertises
 `unlock_notifications_blocked_event: true` accepts `blocked_events: true` in
@@ -122,7 +122,7 @@ stays `subscribed`, and the later unlock sends the normal `akdbx.unlocked`
 event to the same URL. A blocked event that is queued when the vault unlocks
 still arrives first. A failed blocked event does not affect that later
 delivery. A subscription made without `blocked_events` (without the flag, by
-an older CLI, or restored from before 0.24.0) never gets the blocked event, only
+an older CLI, or restored from before 0.25.0) never gets the blocked event, only
 `akdbx.unlocked`: an older consumer may delete its one-shot trigger on any
 event. The event itself is not persisted, but the block is: a restarted broker
 sends the blocked event again to its waiting opted-in subscriptions (expect a

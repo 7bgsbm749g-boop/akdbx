@@ -100,7 +100,7 @@ password cannot be paired from an unlocked broker; restart it locked and pair
 with the unlock.
 
 Failed master-password attempts on the pairing page count toward the unlock
-link's three (0.24.0+). After the third, the pairing page also refuses
+link's three (0.25.0+). After the third, the pairing page also refuses
 attempts, every pairing link made before stops working, and `status` reports
 `unlock_blocked: true`, even when the vault is unlocked. Follow the skill's
 "Blocked unlock link" steps; after a new link, open a new pairing page from
