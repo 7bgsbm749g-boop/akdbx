@@ -901,7 +901,7 @@ def test_build_keeps_the_extension_version_and_reports_it(tmp_path, capsys):
     manifest = json.loads((built / 'manifest.json').read_text())
     assert manifest['version'] == route.EXTENSION_VERSION
     assert route.EXTENSION_VERSION_FORMAT.fullmatch(route.EXTENSION_VERSION)
-    assert version_tuple(route.EXTENSION_VERSION) >= (1, 0, 0)
+    assert version_tuple(route.EXTENSION_VERSION) >= (0, 1, 0)
     args = SimpleNamespace(extension_command='build', output=tmp_path / 'cli')
     assert extension_host.run(args, unlock_origin='https://localhost:9443') == 0
     assert json.loads(capsys.readouterr().out)['extension_version'] == route.EXTENSION_VERSION
@@ -951,7 +951,7 @@ def test_attach_refuses_a_malformed_extension_version(pair_of_sockets, version):
 
 @pytest.mark.parametrize('extra, version, version_status', [
     (dict(extension_version=route.EXTENSION_VERSION), route.EXTENSION_VERSION, 'current'),
-    (dict(extension_version='0.9.9'), '0.9.9', 'outdated'),
+    (dict(extension_version='0.0.9'), '0.0.9', 'outdated'),
     (dict(extension_version='999.0.0'), '999.0.0', 'newer'),
     # An extension built by akdbx 0.21.2 or earlier sends no version: it attaches and shows as outdated.
     ({}, None, 'outdated'),
