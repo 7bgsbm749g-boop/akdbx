@@ -1772,9 +1772,10 @@ class Setup:
                     # Later stages build the extension for the origin the broker serves.
                     if self.wait_for_started_broker()['running'] is False:
                         folder = self.choice.get('extension_dir') or 'FOLDER'
+                        build = shell_command(self.akdbx_argv('extension', 'build', '--output', str(folder)),
+                                              self.windows)
                         self.step('The broker has not started yet. When it runs, build the extension again so it '
-                                  'uses the relay origin the broker serves: akdbx extension build --output '
-                                  f'"{folder}"', 'login')
+                                  f'uses the relay origin the broker serves: {build}', 'login')
             else:
                 getattr(self, 'stage_' + name)()
         self.save_state()
