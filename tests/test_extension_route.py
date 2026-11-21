@@ -901,7 +901,7 @@ def test_build_keeps_the_extension_version_and_reports_it(tmp_path, capsys):
     manifest = json.loads((built / 'manifest.json').read_text())
     assert manifest['version'] == route.EXTENSION_VERSION
     assert route.EXTENSION_VERSION_FORMAT.fullmatch(route.EXTENSION_VERSION)
-    assert version_tuple(route.EXTENSION_VERSION) >= (1, 0, 0)
+    assert version_tuple(route.EXTENSION_VERSION) >= (0, 1, 0)
     args = SimpleNamespace(extension_command='build', output=tmp_path / 'cli')
     assert extension_host.run(args, unlock_origin='https://localhost:9443') == 0
     assert json.loads(capsys.readouterr().out)['extension_version'] == route.EXTENSION_VERSION
@@ -912,12 +912,12 @@ def test_build_keeps_the_extension_version_and_reports_it(tmp_path, capsys):
 
 def test_host_forwards_a_valid_extension_version(pair_of_sockets):
     broker_side, host_side = pair_of_sockets
-    hello = frame(dict(type='hello', protocol=1, public_key=KEY, version='1.0.0'))
+    hello = frame(dict(type='hello', protocol=1, public_key=KEY, version='0.1.0'))
     assert extension_host.relay(io.BytesIO(hello), io.BytesIO(), route.EXTENSION_ORIGIN, 'helium',
                                 lambda: host_side) == 0
     assert receive_message(broker_side) == dict(action='extension-attach', extension_protocol=1,
                                                 extension_id=route.EXTENSION_ID, browser='helium', public_key=KEY,
-                                                extension_version='1.0.0')
+                                                extension_version='0.1.0')
 
 
 @pytest.mark.parametrize('version', ['1.0', '1.0.0.0', '01.0.0', '1.0.0-beta', ' 1.0.0', '1.0.0\n', '123456.0.0',
@@ -951,9 +951,9 @@ def test_attach_refuses_a_malformed_extension_version(pair_of_sockets, version):
 
 @pytest.mark.parametrize('extra, version, version_status', [
     (dict(extension_version=route.EXTENSION_VERSION), route.EXTENSION_VERSION, 'current'),
-    (dict(extension_version='0.9.9'), '0.9.9', 'outdated'),
+    (dict(extension_version='0.0.9'), '0.0.9', 'outdated'),
     (dict(extension_version='999.0.0'), '999.0.0', 'newer'),
-    # An extension built before 1.0.0 sends no version: it attaches and shows as outdated.
+    # An extension built by akdbx 0.21.2 or earlier sends no version: it attaches and shows as outdated.
     ({}, None, 'outdated'),
 ])
 def test_status_shows_each_loaded_extension_version(pair_of_sockets, extra, version, version_status):

@@ -128,7 +128,7 @@ def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
         hello = read_frame(incoming)
     except FrameError:
         return 1
-    # Extensions before 1.0.0 send no version; they still attach and show as outdated.
+    # Extensions built by akdbx 0.21.2 or earlier send no version; they still attach and show as outdated.
     if (hello is None or set(hello) - {'version'} != {'type', 'protocol', 'public_key'} or hello['type'] != 'hello'
             or type(hello['protocol']) is not int or hello['protocol'] != PROTOCOL
             or not isinstance(hello['public_key'], str) or not PUBLIC_KEY.fullmatch(hello['public_key'])

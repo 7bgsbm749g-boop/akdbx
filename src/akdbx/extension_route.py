@@ -112,7 +112,7 @@ def valid_extension_version(value):
 def version_status(version):
     """How a loaded extension's version compares with the one this akdbx build ships.
 
-    An extension built before 1.0.0 does not report a version, so a missing
+    An extension built by akdbx 0.21.2 or earlier does not report a version, so a missing
     version means an outdated extension.
     """
     if version is None:
@@ -497,7 +497,7 @@ class ExtensionHub:
     def attach(self, connection, request):
         """Serve one long-lived host connection until it closes."""
         try:
-            # A host relaying an extension older than 1.0.0 sends no version.
+            # A host relaying an extension built by akdbx 0.21.2 or earlier sends no version.
             if (set(request) - {'extension_version'} != {'action', 'extension_protocol', 'extension_id', 'browser',
                                                           'public_key'}
                     or type(request.get('extension_protocol')) is not int or request['extension_protocol'] != PROTOCOL

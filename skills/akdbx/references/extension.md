@@ -50,21 +50,23 @@ route carry `"extension-dom-v1"` in the same keys.
 
 ## Extension version
 
-The extension has its own version (from 1.0.0), separate from the akdbx
+The extension has its own version (from 0.1.0), separate from the akdbx
 package version. `status` shows:
 
 | Key | Value |
 | --- | --- |
-| `extension_version_expected` | The version this akdbx build ships, for example `"1.0.0"` |
+| `extension_version_expected` | The version this akdbx build ships, for example `"0.1.0"` |
 | `extension_browsers[].version` | The version the loaded extension reported, or `null` |
 | `extension_browsers[].version_status` | `"current"`, `"outdated"` (older, or no version) or `"newer"` |
 
-An extension built before 1.0.0 (akdbx 0.21.2 and earlier) reports no
-version. It still attaches and works, with `version: null` and
-`version_status: "outdated"`. The popup shows the version in its footer
-(**akdbx extension 1.0.0**); an extension without that footer is older than
-1.0.0. `akdbx extension build` and `akdbx extension info` also print
-`extension_version`.
+An extension built by akdbx 0.21.2 or earlier reports no version. It still
+attaches and works, with `version: null` and `version_status: "outdated"`.
+akdbx 0.21.3 shipped the extension as 1.0.0; from 0.21.4 the numbering starts
+again at 0.1.0, so a browser that still runs the 1.0.0 copy shows `"newer"`.
+In both cases, build the extension again and reload it. The popup shows the
+version in its footer (**akdbx extension 0.1.0**); an extension without that
+footer was built by akdbx 0.21.2 or earlier. `akdbx extension build` and
+`akdbx extension info` also print `extension_version`.
 
 When a browser shows `outdated`, the unpacked copy in that browser is stale
 after an akdbx update. Tell the user; do not reload it for them. The user
