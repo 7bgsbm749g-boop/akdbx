@@ -14,8 +14,8 @@ Every instruction in `SKILL.md` and the other references applies on Windows,
 with these replacements. The private HTTPS page is the same on both
 platforms: a loopback link opens on the broker's computer, a link on a
 Tailscale Serve origin (`--local-port`) opens on any tailnet device, and a link
-on an akdbx relay origin (`https://<id>.akdbx.link:8443`, 0.26.0+) opens on any
-device. See the repository's `docs/private-pages.md`. The relay commands and
+on an akdbx relay origin (`https://<id>.akdbx.link`, 0.26.0+; `:8443` before the
+0.28.0 move) opens on any device. See the repository's `docs/private-pages.md`. The relay commands and
 steps are the same as in `SKILL.md`; its private folder is
 `%LOCALAPPDATA%\akdbx\relay` (this user and SYSTEM only).
 

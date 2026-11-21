@@ -34,7 +34,9 @@ from urllib.parse import urlsplit
 
 from . import __version__
 
-DEFAULT_RELAY = 'https://relay.akdbx.link:8443'
+DEFAULT_RELAY = 'https://relay.akdbx.link'
+# Brokers registered before 0.28.0 saved this URL; it names the same relay.
+OLD_DEFAULT_RELAY = 'https://relay.akdbx.link:8443'
 PROTOCOL = 1
 CONFIG_NAME = 'relay.json'
 TLS_NAME = 'tls.pem'
@@ -134,7 +136,7 @@ class Endpoint:
         host = (parsed.hostname or '').lower()
         if (parsed.scheme != 'https' or not DNS_NAME.fullmatch(host) or parsed.username is not None
                 or parsed.password is not None or parsed.path not in {'', '/'} or parsed.query
-                or parsed.fragment or port == -1 or host.count('.') < 2):
+                or parsed.fragment or port == -1 or port == 0 or host.count('.') < 2):
             raise ValueError('the relay URL must be an HTTPS origin such as ' + DEFAULT_RELAY)
         port = 443 if port is None else port
         normalized = f'https://{host}' + ('' if port == 443 else f':{port}')
@@ -169,6 +171,11 @@ class Endpoint:
 def endpoint(url):
     """The production endpoint for a saved or given relay URL (tests replace this)."""
     return Endpoint.parse(url)
+
+
+def _endpoint_for(url):
+    # Looked up at call time, so a test's replacement of ``endpoint`` applies.
+    return endpoint(url)
 
 
 class _Connection(http.client.HTTPSConnection):
@@ -208,14 +215,16 @@ def _describe(status, code, retry_after):
     return text
 
 
-def _call(endpoint, path, body, *, secret=None, timeout=API_TIMEOUT):
-    headers = {'Content-Type': 'application/json', 'Accept': 'application/json',
-               'User-Agent': f'akdbx/{__version__}'}
+def _call(endpoint, path, body, *, secret=None, timeout=API_TIMEOUT, method='POST'):
+    headers = {'Accept': 'application/json', 'User-Agent': f'akdbx/{__version__}'}
+    if body is not None:
+        headers['Content-Type'] = 'application/json'
     if secret is not None:
         headers['Authorization'] = 'Bearer ' + secret
     connection = _Connection(endpoint, timeout)
     try:
-        connection.request('POST', '/api/v1/' + path, json.dumps(body).encode(), headers)
+        connection.request(method, '/api/v1/' + path, None if body is None else json.dumps(body).encode(),
+                           headers)
         response = connection.getresponse()
         data = response.read(MAX_RESPONSE + 1)
         retry_header = response.getheader('Retry-After')
@@ -226,6 +235,10 @@ def _call(endpoint, path, body, *, secret=None, timeout=API_TIMEOUT):
         connection.close()
     if len(data) > MAX_RESPONSE:
         raise RelayError('the relay sent a response that is too large')
+    if 300 <= response.status < 400:
+        # Never followed: a redirect would resend the bearer secret to another address.
+        raise RelayError(f'the relay answered HTTP {response.status} (a redirect, not followed)',
+                         status=response.status)
     try:
         payload = json.loads(data) if data else None
     except (ValueError, UnicodeDecodeError):
@@ -261,6 +274,91 @@ def register(endpoint):
             or type(port) is not int or not 1 <= port <= 65535):
         raise RelayError('the relay sent an invalid registration')
     return Registration(name, broker_id, port, secret)
+
+
+@dataclass(frozen=True)
+class BrokerInfo:
+    """What the relay says about this broker now: its public port and, if it moved, its control URL."""
+    public_port: int
+    relay_url: str | None
+
+
+def same_relay(first, second):
+    """True when two saved or given relay URLs name the same control host (only the port may differ)."""
+    try:
+        return Endpoint.parse(first).host == Endpoint.parse(second).host
+    except ValueError:
+        return False
+
+
+def broker_info(endpoint, config):
+    """GET /broker. Check every field: the relay is not trusted to move this broker to another name or host.
+
+    The answer must name this broker exactly, give a port in 1..65535 and, if
+    it gives a control URL, an HTTPS origin on the same host as the saved one
+    (only the port may differ). Older relays answer 404 (a RelayError).
+    """
+    payload = _call(endpoint, 'broker', None, secret=config.secret, method='GET')
+    port, url = payload.get('public_port'), payload.get('relay_url')
+    if (payload.get('protocol', PROTOCOL) != PROTOCOL or payload.get('name') != config.name
+            or type(port) is not int or not 1 <= port <= 65535):
+        raise RelayError('the relay sent an invalid broker description')
+    if url is None:
+        return BrokerInfo(port, None)
+    try:
+        if not isinstance(url, str) or urlsplit(url).path not in {'', '/'}:
+            raise ValueError
+        given = Endpoint.parse(url)
+    except ValueError:
+        raise RelayError('the relay sent an invalid control URL') from None
+    if given.host != Endpoint.parse(config.relay).host:
+        raise RelayError('the relay sent a control URL on another host')
+    return BrokerInfo(port, given.url)
+
+
+@dataclass(frozen=True)
+class Refresh:
+    """The result of ``refresh``: the config to use, what changed (fixed text) and any warning."""
+    config: 'RelayConfig'
+    changes: tuple = ()
+    warning: str | None = None
+
+
+def refresh(store, config, endpoint_factory=None):
+    """Ask the relay for this broker's public port and control URL; save them when they changed.
+
+    The relay moves brokers to a new public port (8443 to 443) with this call.
+    Any failure (an older relay's 404, no network, a refused or invalid answer)
+    keeps the saved values and returns a warning: the broker still starts.
+    """
+    endpoint_factory = endpoint_factory or _endpoint_for
+    try:
+        info = broker_info(endpoint_factory(config.relay), config)
+    except RelayError as exc:
+        if exc.status == 404:
+            return Refresh(config, (), f'the relay at {config.relay} cannot report a new public port '
+                                       '(an older relay); keeping the saved one')
+        return Refresh(config, (), f'could not check the public port with the relay ({exc}); keeping '
+                                   'the saved one')
+    except (OSError, ValueError) as exc:
+        return Refresh(config, (), f'could not check the public port with the relay ({type(exc).__name__}); '
+                                   'keeping the saved one')
+    changes = []
+    relay_url = info.relay_url or config.relay
+    if info.public_port != config.public_port:
+        changes.append(f'relay moved the public port from {config.public_port} to {info.public_port}')
+    if relay_url != config.relay:
+        changes.append(f'relay moved its control URL from {config.relay} to {relay_url}')
+    if not changes:
+        return Refresh(config)
+    updated = RelayConfig(relay_url, config.name, config.broker_id, info.public_port, config.enabled,
+                          config.secret)
+    try:
+        store.save(updated)  # atomic: a temporary private file, then a rename
+    except RelayStoreError as exc:
+        return Refresh(config, (), f'the relay moved this broker, but the change could not be saved ({exc}); '
+                                   'keeping the saved values')
+    return Refresh(updated, tuple(changes))
 
 
 # Keys and certificates
@@ -713,18 +811,30 @@ def call_with_retry(call, *, max_wait=300.0, sleep=time.sleep, notify=None):
             waited += max(1, exc.retry_after)
 
 
-def enable(store, endpoint, *, sleep=time.sleep, notify=None):
+def enable(store, endpoint, *, sleep=time.sleep, notify=None, endpoint_factory=None, refreshed=None):
     """Register (once), get a certificate when none is usable, and mark the relay enabled.
 
     The registration is saved before the certificate request, so a failed
     request is resumed by the next ``enable`` without a new registration.
+    A saved registration first asks the relay for its current public port and
+    control URL (``refresh``); the result goes to the ``refreshed`` list.
+    A saved URL on the same host with another port is the same relay.
     Return ``(config, certificate_info, created)``.
     """
     config = store.load()
     created = False
-    if config is not None and config.relay != endpoint.url:
+    if config is not None and not same_relay(config.relay, endpoint.url):
         raise RelayError(f'this broker is registered with {config.relay}; run '
                          "'akdbx relay disable --forget' before you use another relay")
+    if config is not None:
+        given, fallback = endpoint, endpoint_factory or _endpoint_for
+        factory = lambda url: given if url == given.url else fallback(url)  # noqa: E731
+        result = refresh(store, config, factory)
+        if refreshed is not None:
+            refreshed.append(result)
+        config = result.config
+        if config.relay != endpoint.url:
+            endpoint = factory(config.relay)
     if config is None:
         registration = call_with_retry(lambda: register(endpoint), sleep=sleep, notify=notify)
         config = RelayConfig.from_registration(endpoint, registration)
@@ -757,8 +867,9 @@ class RelayClient:
 
     def __init__(self, endpoint, config, store, local_port, *, reload_tls, certificate=None,
                  log=_log, clock=_utcnow, monotonic=time.monotonic, jitter=random.random,
-                 max_streams=MAX_STREAMS, wait=None):
+                 max_streams=MAX_STREAMS, wait=None, moved=()):
         self.endpoint, self.config, self.store, self.local_port = endpoint, config, store, local_port
+        self.moved = tuple(moved)  # what the refresh at serve start changed (fixed text)
         self._reload_tls, self._log, self._clock = reload_tls, log, clock
         self._monotonic, self._jitter = monotonic, jitter
         self.certificate = certificate if certificate is not None else store.certificate(config.name)
@@ -801,6 +912,8 @@ class RelayClient:
             result.update(self.certificate.as_dict())
         if self.last_renewal_error is not None:
             result['renewal_error'] = self.last_renewal_error
+        if self.moved:
+            result['moved'] = list(self.moved)
         return result
 
     # WebSockets

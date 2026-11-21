@@ -274,9 +274,10 @@ describes its setups:
   Tailscale Serve proxies the tailnet name to the loopback listener through a
   verified `https://127.0.0.1:PORT` target.
 - **The akdbx relay** (`akdbx relay enable`, 0.26.0+): the page opens on any
-  device at a random `https://<id>.akdbx.link:8443` name. The relay forwards
-  the encrypted connection and cannot read it; see
-  [Unlock from the internet](#unlock-from-the-internet).
+  device at a random `https://<id>.akdbx.link` name (from 0.28.0 with no port
+  in the address; brokers registered earlier used `:8443` and move by
+  themselves at their next start). The relay forwards the encrypted connection
+  and cannot read it; see [Unlock from the internet](#unlock-from-the-internet).
 - **Tailscale Serve Unix socket** (Linux only, no TLS options): the earlier
   Linux route. The backend listens only on a Unix-domain socket in the
   broker's private runtime directory, and Tailscale Serve supplies HTTPS and

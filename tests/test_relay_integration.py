@@ -144,7 +144,18 @@ def test_phone_reaches_the_unlock_page_through_the_real_relay(real_relay, tmp_pa
     relay, endpoint, phone, real_acme = real_relay
     store = RelayStore()
     config, info, created = relay_module.enable(store, endpoint)
-    assert created and config.origin == f'https://{config.name}:8443' and config.enabled
+    # Relays from the port move answer 443; older ones 8443. Port 443 has no port in the origin.
+    assert created and config.enabled and config.public_port in (443, 8443)
+    assert config.origin == f'https://{config.name}' + ('' if config.public_port == 443 else ':8443')
+    # GET /api/v1/broker: the same name and port as the registration, and the control URL on the
+    # advertised port. A relay from before this call answers 404, which keeps the saved values.
+    described = relay_module.refresh(store, config, lambda url: endpoint)
+    if described.warning is None:
+        advertised = 'https://relay.akdbx.link' + ('' if config.public_port == 443 else f':{config.public_port}')
+        assert described.config.public_port == config.public_port and described.config.relay == advertised
+        store.save(config)  # the test relay listens on a random port, not the advertised one
+    else:
+        assert 'older relay' in described.warning and described.config is config
 
     from pykeepass import create_database
     database = tmp_path / 'vault.kdbx'
