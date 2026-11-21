@@ -844,3 +844,7 @@ def test_origins_compare_by_host_and_effective_port():
     assert not cli._same_origin('https://node.example:9443', 'https://node.example:8443')
     assert not cli._same_origin('https://other.example:8443', 'https://node.example:8443')
     assert not cli._same_origin('https://node.example:bad', 'https://node.example')
+    # Origins that clients reject are never the same as the relay origin, so the warning is printed.
+    assert not cli._same_origin('https://node.example/help', 'https://node.example')
+    assert not cli._same_origin('https://node.example:0', 'https://node.example')
+    assert not cli._same_origin('http://node.example', 'http://node.example')

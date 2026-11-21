@@ -133,12 +133,18 @@ def _peer_credentials(client: socket.socket) -> tuple[int, int, int]:
 
 def _same_origin(first: str, second: str) -> bool:
     """True when two HTTPS origins name the same host and effective port, as client validation compares them."""
+    def identity(value):
+        parts = urlsplit(value)
+        port = parts.port
+        if (parts.scheme.lower() != 'https' or not parts.hostname or parts.username is not None
+                or parts.password is not None or parts.path not in {'', '/'} or parts.query or parts.fragment):
+            return None
+        return parts.hostname.lower(), 443 if port is None else port
     try:
-        a, b = urlsplit(first), urlsplit(second)
-        return ((a.scheme.lower(), (a.hostname or '').lower(), a.port or 443)
-                == (b.scheme.lower(), (b.hostname or '').lower(), b.port or 443))
+        a, b = identity(first), identity(second)
     except ValueError:
         return False
+    return a is not None and a == b
 
 
 def _validate_unlock_url(url: object, expected_origin: str) -> None:
