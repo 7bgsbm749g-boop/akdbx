@@ -9,7 +9,7 @@ import sys
 import time
 
 from . import relay as relay_module
-from .relay import DEFAULT_RELAY, Endpoint, RelayError, RelayStore, RelayStoreError
+from .relay import DEFAULT_RELAY, RelayError, RelayStore, RelayStoreError
 
 COMMAND = 'relay'
 
@@ -45,8 +45,9 @@ def _explicit_origin(args):
     return None
 
 
-def run(args, ping, *, store=None, endpoint_factory=Endpoint.parse, sleep=time.sleep):
+def run(args, ping, *, store=None, endpoint_factory=None, sleep=time.sleep):
     store = store or RelayStore()
+    endpoint_factory = endpoint_factory or relay_module.endpoint
     try:
         if args.relay_command == 'enable':
             return _enable(args, store, endpoint_factory, sleep)

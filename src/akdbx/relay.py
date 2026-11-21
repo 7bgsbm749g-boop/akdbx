@@ -88,7 +88,7 @@ def wait_text(seconds):
         return f'about {max(1, int(seconds))} seconds'
     if seconds < 90 * 60:
         return f'about {round(seconds / 60)} minutes'
-    if seconds < 36 * 3600:
+    if seconds < 48 * 3600:
         return f'about {round(seconds / 3600)} hours'
     return f'about {round(seconds / 86400)} days'
 
@@ -151,6 +151,11 @@ class Endpoint:
         except BaseException:
             raw.close()
             raise
+
+
+def endpoint(url):
+    """The production endpoint for a saved or given relay URL (tests replace this)."""
+    return Endpoint.parse(url)
 
 
 class _Connection(http.client.HTTPSConnection):
@@ -687,12 +692,13 @@ class RelayClient:
 
     def __init__(self, endpoint, config, store, local_port, *, reload_tls, certificate=None,
                  log=_log, clock=_utcnow, monotonic=time.monotonic, jitter=random.random,
-                 max_streams=MAX_STREAMS):
+                 max_streams=MAX_STREAMS, wait=None):
         self.endpoint, self.config, self.store, self.local_port = endpoint, config, store, local_port
         self._reload_tls, self._log, self._clock = reload_tls, log, clock
         self._monotonic, self._jitter = monotonic, jitter
         self.certificate = certificate if certificate is not None else store.certificate(config.name)
         self._stop = threading.Event()
+        self._wait = wait or self._stop.wait
         self.connected = threading.Event()
         self._lock = threading.Lock()
         self._control = None
@@ -786,7 +792,7 @@ class RelayClient:
                 delay = 1.0
             wait = delay * (0.5 + 0.5 * self._jitter())
             self.delays.append(wait)
-            self._stop.wait(wait)
+            self._wait(wait)
             delay = min(delay * 2, MAX_BACKOFF)
 
     def _control_session(self, ws):

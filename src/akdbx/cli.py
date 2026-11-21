@@ -571,6 +571,7 @@ def _relay_for_serve(args):
         return None, None
     try:
         config = store.load()
+        certificate = store.certificate(config.name) if config is not None and config.enabled else None
     except relay_module.RelayStoreError as exc:
         if not args.relay and not store.exists():
             return None, None
@@ -591,7 +592,7 @@ def _relay_for_serve(args):
               "Remove --tls-cert, --tls-key and --local-port, or run 'akdbx relay disable', or set "
               '--unlock-origin to serve without the relay', file=sys.stderr)
         return 2
-    if store.certificate(config.name) is None:
+    if certificate is None:
         print("the relay has no usable certificate yet: run 'akdbx relay enable' again", file=sys.stderr)
         return 2
     return config, store
@@ -739,7 +740,7 @@ def _serve(args, database, keyfile, relay_config, relay_store) -> int:
     relay_client = None
     if relay_config is not None:
         relay_client = relay_module.RelayClient(
-            relay_module.Endpoint.parse(relay_config.relay), relay_config, relay_store, args.local_port,
+            relay_module.endpoint(relay_config.relay), relay_config, relay_store, args.local_port,
             reload_tls=lambda path: reload_certificate(unlock_server, path, path))
         broker.relay = relay_client.start()
         print(f"Relay: the private pages open at {relay_config.origin} on any device, through "
