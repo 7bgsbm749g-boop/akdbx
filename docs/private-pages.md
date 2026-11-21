@@ -14,6 +14,10 @@ Unix-socket route for existing deployments.
 | [Loopback HTTPS page](#loopback-https-page) | Linux (0.23.0+), Windows | The broker's computer | A certificate and private key |
 | [Unlock from another device](#unlock-from-another-device) | Linux (0.23.0+), Windows (0.22.0+) | Any device in your tailnet, including the broker's computer | The loopback page, plus Tailscale Serve to a verified `https://127.0.0.1:PORT` target |
 | [Tailscale Serve Unix socket](#tailscale-serve-unix-socket-linux-only) | Linux only | Any device in your tailnet | Tailscale Serve to the broker's Unix socket; no certificate |
+| [Unlock from the internet](#unlock-from-the-internet) | Linux, Windows | Any device | The loopback page, plus a public route; read the section before you choose one |
+
+Every route has the same limit on failed attempts: see
+[Failed attempts block the link](#failed-attempts-block-the-link).
 
 `--tls-cert` and `--tls-key` select the loopback HTTPS page. Without them,
 Linux uses the Unix-socket route and Windows refuses to start.
@@ -76,8 +80,8 @@ Rules for both platforms:
   origin's host and port, and its `Origin` header, if present, is the
   configured origin. It trusts no proxy identity header such as
   `Tailscale-User-Login`, because any local process can send headers to a
-  loopback port. The one-time URL token protects the page. It is rate-limited
-  and replaced after a successful unlock.
+  loopback port. The one-time URL token protects the page. It allows three
+  failed attempts in total and is replaced after a successful unlock.
 - No other process can share the port while the broker runs. When the broker
   stops, another local user can take the port, but cannot show a page that the
   browser trusts without the private key. Do not bypass certificate warnings
@@ -148,8 +152,86 @@ browser's `Host` and `Origin`, and the page accepts only the configured
 origin. A remote origin must be a DNS name, not an IP address, and needs
 `--local-port` from 1024 to 65535. A loopback origin keeps its own port and
 needs no `--local-port`. Limit access to the Serve port with tailnet access
-controls. Do not use `tailscale funnel`: it publishes the page to the internet.
+controls. `tailscale funnel` publishes the page to the internet instead: read
+[Unlock from the internet](#unlock-from-the-internet) before you use it.
 To stop remote unlock, remove the proxy with `tailscale serve --https=9443 off`.
+
+## Unlock from the internet
+
+Choose the route that exposes the page to the fewest people. In order of
+recommendation:
+
+1. **Local only** (most secure). Use the [loopback HTTPS page](#loopback-https-page)
+   and open the link on the broker's computer. Nothing outside that computer
+   can reach the page.
+2. **A private proxy** (most secure remote option; recommended first). Use
+   [Tailscale Serve](#unlock-from-another-device): only devices in your tailnet
+   can reach the page, and tailnet access controls can limit them further.
+   TLS ends on the broker's computer, so no third party sees the password.
+3. **A public tunnel that does not decrypt the traffic** (available, not
+   recommended). Tailscale Funnel publishes the page at the computer's
+   tailnet name to the whole internet. The Funnel relays pass the TLS
+   connection through without decrypting it; TLS still ends on the broker's
+   computer. Use the loopback page with a verified target, the same way as
+   Serve. Funnel accepts only ports 443, 8443 and 10000:
+
+   ```sh
+   tailscale funnel --bg --https=8443 https://127.0.0.1:9444
+   export AKDBX_UNLOCK_ORIGIN=https://node.tailnet.ts.net:8443
+   ```
+
+   Then start the broker with `--local-port 9444` and the TLS options, as in
+   [Unlock from another device](#unlock-from-another-device). The Linux
+   [Unix-socket route](#tailscale-serve-unix-socket-linux-only) does not work
+   through Funnel: Funnel sends no tailnet identity header, so the page
+   refuses every request. Remove the route with
+   `tailscale funnel --https=8443 off`.
+4. **Proxies that decrypt HTTPS** (STRONGLY DISCOURAGED). Services such as
+   Cloudflare Tunnel end TLS on the provider's servers and open a new
+   connection to your computer. The proxy operator, and anyone who controls
+   that proxy, can read the master password and every secret you enter on the
+   page. Do not use them for akdbx.
+
+An akdbx relay service is planned. It is not available yet.
+
+On a public route, anyone on the internet can reach the page. Only two things
+protect the vault there: the secret token in the link, and the
+[three-attempt block](#failed-attempts-block-the-link). Keep the link private,
+and use a strong master password. Stop the public route when you do not need
+it. Private save pages (passwords, authenticators, cards, identities) and the
+extension pairing page are reachable on the same route and are protected by
+their own secret links.
+
+## Failed attempts block the link
+
+Each unlock link allows three failed master-password attempts in total. Time
+does not reset the count, and a link never expires because of time. The third
+failure blocks the link at once: its token stops working, even with the right
+password, and the page says that the link is blocked and that you must ask
+your agent for a new one. Failed attempts on the extension pairing page count
+toward the same three. Parallel requests cannot exceed the limit: the broker
+reserves each attempt before it starts the key derivation.
+
+While the link is blocked, `status` and locked responses report
+`unlock_blocked: true` and contain no unlock link. The broker sends an
+`akdbx.unlock-blocked` event to each waiting
+[unlock notification](../skills/akdbx/references/unlock-notifications.md)
+subscription; the subscription keeps waiting and later sends the normal
+unlock event.
+
+Only an explicit command makes a new link, and only while the current link is
+blocked:
+
+```sh
+akdbx new-unlock-link --user-confirmed
+```
+
+It creates a fresh token with three new attempts and prints the new private
+link after the same origin check as every unlock link. The broker cannot check
+who asks for it. An agent must first ask you whether the three failures were
+yours and whether you want a new link. If they were not yours, someone else
+has the link: do not create a new one until you know how it leaked. A broker
+restart also makes a new link.
 
 ## Tailscale Serve Unix socket (Linux only)
 

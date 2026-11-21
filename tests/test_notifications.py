@@ -492,3 +492,60 @@ def test_deadline_also_stops_blocked_dns(tmp_path, delivery_children, monkeypatc
     assert len(delivery_children) == 1 and delivery_children[0].poll() is not None
     assert CALLBACK not in str(delivery_children[0].args)
     assert capsys.readouterr() == ('', '') and not caplog.records
+
+
+def test_blocked_notice_keeps_subscription_and_skips_cancelled(notifier):
+    manager, sent = notifier
+    waiting = manager.subscribe(registration(), unlocked=False)["subscription_id"]
+    cancelled = manager.subscribe(registration(CALLBACK + "-cancelled"), unlocked=False)["subscription_id"]
+    manager.status(cancelled, cancel=True)
+    manager.publish_blocked()
+    wait_for(lambda: len(sent) == 1)
+    assert sent[0] == (CALLBACK, {"event": "akdbx.unlock-blocked", "locked": True, "unlock_blocked": True,
+                                  "subscription_id": waiting, "event_id": sent[0][1]["event_id"],
+                                  "subscription_state": "subscribed"})
+    assert manager.status(waiting) == {"ok": True, "subscription_id": waiting, "state": "subscribed", "attempts": 0}
+    manager.publish()
+    assert terminal(manager, waiting)["state"] == "delivered"
+    assert [payload["event"] for _, payload in sent] == ["akdbx.unlock-blocked", "akdbx.unlocked"]
+
+
+def test_failed_blocked_notice_does_not_consume_unlock_delivery(monkeypatch):
+    monkeypatch.setattr(notifications.UnlockNotifications, "_blocked_payload",
+                        staticmethod(lambda notice: {"event": "akdbx.unlock-blocked"}))
+    sent = []
+
+    def sender(url, payload):
+        if payload["event"] == "akdbx.unlock-blocked":
+            raise OSError("synthetic receiver failure")
+        sent.append(payload)
+
+    manager = notifications.UnlockNotifications(sender=sender)
+    manager._stop.wait = lambda _delay: False  # no retry back-off in the test
+    try:
+        key = manager.subscribe(registration(), unlocked=False)["subscription_id"]
+        manager.publish_blocked()
+        wait_for(lambda: manager._worker is None)
+        assert manager.status(key)["state"] == "subscribed"
+        manager.publish()
+        assert terminal(manager, key) == {"ok": True, "subscription_id": key, "state": "delivered", "attempts": 1}
+        assert [payload["event"] for payload in sent] == ["akdbx.unlocked"]
+    finally:
+        manager.close()
+
+
+def test_blocked_notice_is_not_persisted(tmp_path):
+    sent = []
+    path = tmp_path / "private" / "notifications.json"
+    manager = notifications.UnlockNotifications(sender=lambda url, payload: sent.append(payload), state_path=path)
+    key = manager.subscribe(registration(), unlocked=False)["subscription_id"]
+    saved = path.read_bytes()
+    manager.publish_blocked()
+    wait_for(lambda: len(sent) == 1)
+    assert path.read_bytes() == saved
+    manager.close()
+    restored = notifications.UnlockNotifications(sender=lambda url, payload: sent.append(payload), state_path=path)
+    try:
+        assert restored.status(key)["state"] == "subscribed" and len(sent) == 1
+    finally:
+        restored.close()

@@ -170,7 +170,9 @@ an administrator. Keep the profile for work that the broker may fill.
 Open the broker-provided one-time HTTPS link in a Windows browser. Enter the
 synthetic master password there. The CLI and agent do not receive it. Host and
 Origin checks reject cross-origin requests. No Tailscale identity header is trusted
-on the loopback page. The URL token is secret, rate-limited and rotated on successful unlock.
+on the loopback page. The URL token is secret, allows three failed attempts in total
+([Failed attempts block the link](private-pages.md#failed-attempts-block-the-link))
+and is rotated on successful unlock.
 Stopping the broker invalidates its links. TLS protects a stale link if another
 local user later takes the port; keep the certificate key private.
 
@@ -232,7 +234,8 @@ when its `Host` and `Origin` match the configured origin; Tailscale Serve keeps
 both. A remote origin must be a DNS name, not an IP address, and needs
 `--local-port` from 1024 to 65535. A loopback origin keeps its own port and
 needs no `--local-port`. Limit access to the Serve port with tailnet access
-controls. Do not use `tailscale funnel`: it publishes the page to the internet.
+controls. `tailscale funnel` publishes the page to the internet instead: read
+[Unlock from the internet](private-pages.md#unlock-from-the-internet) first.
 When you stop using remote unlock, remove the proxy with
 `tailscale serve --https=9443 off`.
 

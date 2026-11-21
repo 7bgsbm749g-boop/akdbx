@@ -3,7 +3,8 @@
 The extension shows a code; this page shows the same code and asks for the
 master password. A locked broker unlocks with the same entry. The password is
 checked against the one the broker holds and is never stored or returned.
-Failed attempts share the unlock page's rate limit.
+Failed attempts count toward the current unlock link's total of three: when
+that link is blocked, this page refuses master-password attempts too.
 """
 from __future__ import annotations
 
@@ -49,6 +50,12 @@ def handle_pairing(handler, state):
                 '<label><input type="checkbox" name="confirmed" value="yes" required>'
                 'The extension shows this code</label><button>Pair the extension</button></form>')
 
+    blocked = ('<p>Master-password attempts are blocked after three failures. Ask your agent for a new '
+               'unlock link, then open the pairing page again. If you did not make these attempts, tell your '
+               'agent: someone else has the link.</p>')
+    if state.blocked:
+        send(HTTPStatus.FORBIDDEN, blocked)
+        return True
     if handler.command == 'GET':
         send(HTTPStatus.OK, form())
         return True
@@ -76,7 +83,10 @@ def handle_pairing(handler, state):
         return True
     attempt = state.reserve_attempt(identity)
     if attempt is None:
-        send(HTTPStatus.TOO_MANY_REQUESTS, form('Too many failed attempts. Wait one minute before trying again.'))
+        if state.blocked:
+            send(HTTPStatus.FORBIDDEN, blocked)
+        else:
+            send(HTTPStatus.TOO_MANY_REQUESTS, form('Another master-password attempt is in progress. Wait for its result.'))
         return True
     try:
         with state.unlock_lock:
@@ -97,7 +107,9 @@ def handle_pairing(handler, state):
                     password.encode('utf-8'), held.encode('utf-8'))
             password = ''
             if not ok:
-                state.record_failure(attempt)
+                if state.record_failure(attempt) or state.blocked:
+                    send(HTTPStatus.FORBIDDEN, blocked)
+                    return True
                 send(HTTPStatus.UNAUTHORIZED, form('The master password is not correct.'))
                 return True
         if not hub.approve(token):

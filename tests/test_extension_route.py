@@ -667,6 +667,43 @@ def test_pairing_page_needs_the_master_password(locked):
     assert not handle_pairing(PageHandler('/other'), state)
 
 
+@pytest.mark.parametrize('locked', [False, True])
+def test_pairing_failures_share_the_unlock_links_three_attempts(locked):
+    from akdbx.extension_web import handle_pairing
+    from akdbx.web_unlock import UnlockState
+    master = 'synthetic master'
+    vault = SimpleNamespace(entries=[], password=master)
+    broker = make_broker(locked=locked)
+    if not locked:
+        broker.vault = vault
+    channel, _ = attach(broker, {}, paired=False)
+    info = broker.extension._pairing_info(channel.digest)
+    path = '/extension/pair?token=' + info['url'].split('token=')[1]
+    calls = []
+
+    def opener(_database, password, _keyfile):
+        calls.append(password)
+        if password != master:
+            raise ValueError('synthetic failure')
+        return vault
+    state = UnlockState(broker, None, None, opener, public_base='https://unlock.example.test:9443')
+    broker.unlock_link = state
+    statuses = []
+    for _ in range(3):
+        page = PageHandler(path, 'POST', b'password=wrong&confirmed=yes')
+        handle_pairing(page, state)
+        statuses.append(page.sent[0][0])
+    assert statuses == [401, 401, 403] and state.blocked and broker.unlock_blocked
+    right = PageHandler(path, 'POST', b'password=synthetic+master&confirmed=yes')
+    handle_pairing(right, state)
+    assert right.sent[0][0] == 403 and 'new unlock link' in right.sent[0][1]
+    assert broker.extension.approved == [] and broker.locked is locked
+    assert len(calls) == (3 if locked else 0)
+    page = PageHandler(path)
+    handle_pairing(page, state)
+    assert page.sent[0][0] == 403
+
+
 # ----- install and build -------------------------------------------------------------
 def test_build_fills_the_content_script_from_the_cdp_route(tmp_path):
     from akdbx import browser_card, browser_password, card_processor

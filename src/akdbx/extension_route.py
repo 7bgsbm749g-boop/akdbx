@@ -447,7 +447,8 @@ class ExtensionHub:
                        broker_public_key=b64url(channel.broker_public_key))
         if not paired:
             message['pairing'] = self._pairing_info(channel.digest)
-        if locked and self.broker.unlock_url:
+        # A blocked link is never offered; the agent replaces it after asking the user.
+        if locked and self.broker.unlock_url and not self.broker.unlock_blocked:
             message['unlock_url'] = self.broker.unlock_url
         return message
 
@@ -592,7 +593,8 @@ class ExtensionHub:
                 return dict(ok=False, error='extension not paired; open the pairing page from the extension')
             if self.broker.locked:
                 return dict(ok=False, error='vault locked', **({'unlock_url': self.broker.unlock_url}
-                                                             if self.broker.unlock_url else {}))
+                                                             if self.broker.unlock_url and not self.broker.unlock_blocked
+                                                             else {}))
             if op == 'match':
                 with self.broker._vault_lock:
                     return self._match(channel, message)

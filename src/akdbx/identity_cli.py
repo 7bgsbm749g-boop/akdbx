@@ -50,7 +50,7 @@ def valid_receipt(args, response):
         if args.command == 'fill-identity' and response == TARGET_UNCERTAIN:
             return True
         error = response.get('error')
-        allowed = {'ok', 'error', 'unlock_url'} if error == 'vault locked' else {'ok', 'error'}
+        allowed = {'ok', 'error', 'unlock_url', 'unlock_blocked'} if error == 'vault locked' else {'ok', 'error'}
         return error in ERRORS and set(response) <= allowed
     if args.command == 'create-identity':
         if set(response) != {'ok', 'state', 'write_handle', 'private_url'}:

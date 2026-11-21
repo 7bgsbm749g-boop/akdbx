@@ -107,6 +107,24 @@ def test_invalid_token_or_wrong_password_cannot_unlock(local_server):
     assert broker.locked
 
 
+def test_https_page_blocks_the_link_after_three_failures_until_a_new_link(local_server):
+    # The loopback HTTPS page is the Windows route and the Linux HTTPS route.
+    server, broker, state, call = local_server
+    state.public_base = server.local_origin
+    broker.unlock_link = state
+    form = {'Origin': server.local_origin, 'Content-Type': 'application/x-www-form-urlencoded'}
+    old = state.token
+    assert [call('POST', urlencode({'password': 'wrong'}), form)[0] for _ in range(3)] == [401, 401, 403]
+    status, _, body = call('POST', urlencode({'password': 'synthetic master'}), form)
+    assert status == 403 and b'Ask your agent for a new unlock link' in body and broker.locked
+    ping = broker.dispatch({'action': 'ping'})
+    assert ping['unlock_blocked'] is True and 'unlock_url' not in ping
+    fresh = broker.dispatch({'action': 'new-unlock-link', 'user_confirmed': True})['unlock_url']
+    assert fresh.startswith(server.local_origin + '/?token=') and state.token != old
+    assert call(token=old)[0] == 404
+    assert call('POST', urlencode({'password': 'synthetic master'}), form)[0] == 200 and not broker.locked
+
+
 @pytest.mark.parametrize('value', ['http://localhost:9443', 'https://example.test:9443',
     'https://0.0.0.0:9443', 'https://localhost', 'https://localhost:0', 'https://localhost:443',
     'https://user@localhost:9443', 'https://localhost:9443/write', 'https://localhost:9443/?token=x'])

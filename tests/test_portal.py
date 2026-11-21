@@ -115,16 +115,22 @@ def test_unlock_failed_rate_limit_and_ready_pages(tmp_path):
         assert b'<h1 id="portal-title">Unlock AKDBX</h1>' in page
         assert b'role="progressbar"' in page and b'aria-valuenow' not in page
         assert b'role="status"' in page
-        for _ in range(5):
+        for left in (2, 1):
             code, headers, page = call(socket, 'POST', route, 'password=synthetic')
             assert code == 401
             check_page(headers, page)
             assert b'data-unlock-form' in page and b'role="alert"' in page
+            assert f'{left} attempt'.encode() in page
             assert b'synthetic diagnostic' not in page
-        code, headers, page = call(socket, 'POST', route, 'password=synthetic')
-        assert code == 429
-        check_page(headers, page)
-        assert b'Wait one minute' in page and b'data-unlock-form' in page
+        for method in ['POST', 'GET', 'POST']:
+            code, headers, page = call(socket, method, route, 'password=synthetic' if method == 'POST' else None)
+            assert code == 403
+            check_page(headers, page)
+            assert b'Unlock link blocked' in page and b'Ask your agent for a new unlock link' in page
+            assert b'<form' not in page and b'synthetic diagnostic' not in page
+        url = broker.dispatch({'action': 'new-unlock-link', 'user_confirmed': True})['unlock_url']
+        parts = urlsplit(url)
+        route = parts.path + '?' + parts.query
         broker.unlock(Vault([Entry()]))
         for method in ['GET', 'POST']:
             code, headers, page = call(socket, method, route, 'password=synthetic' if method == 'POST' else None)

@@ -20,9 +20,11 @@ there, and callback URLs remain private bearer credentials.
 ## T3
 
 1. Create a native `schedule_task` with `schedule: {"type": "webhook"}`,
-   `bindToCurrentThread: true`, and a prompt to remove this one-shot trigger,
-   recheck broker status and resume the pending authorized task with fresh
-   handles/pins. Include only the pending step and non-secret context. This is
+   `bindToCurrentThread: true`, and a prompt to recheck broker status first.
+   If status has `unlock_blocked: true`, keep the trigger and follow the
+   skill's "Blocked unlock link" steps (ask the user the two questions; never
+   create a link without two clear yes answers). Otherwise remove this
+   trigger and resume the pending authorized task with fresh handles/pins. Include only the pending step and non-secret context. This is
    an event trigger, not a timed schedule. Use a stable client request ID and
    reuse the same task after an uncertain create result.
 2. Confirm the task is enabled, is bound to this thread, is not blocked by
@@ -53,8 +55,12 @@ there, and callback URLs remain private bearer credentials.
    exact private unlock link and that the task will resume automatically. End
    the turn. Do not wait for a message or call a sleep/status loop. If the
    subscription reports failure/cancellation, repair or report it first.
-6. On the event, delete the native task before resuming. Recheck broker status
-   rather than trusting event data as current readiness. Cancel the broker
+6. On the event, recheck broker status rather than trusting event data as
+   current readiness. If status reports `unlock_blocked: true` (the event is
+   `akdbx.unlock-blocked`), keep the native task and the broker subscription:
+   the same subscription later delivers `akdbx.unlocked` to the same URL. Ask
+   the user the two questions in the skill's "Blocked unlock link" before
+   anything else. Otherwise delete the native task before resuming. Cancel the broker
    subscription when the original task is cancelled or superseded, and remove
    the native trigger. A delivered receipt proves host acceptance, not that the
    agent completed its pending task.
@@ -80,6 +86,27 @@ The payload contains only an event name, readiness flag and opaque identifiers:
 ```
 
 It contains no passwords, entry metadata, database paths or unlock tokens.
+
+### Blocked link event (0.24.0)
+
+A broker that advertises `unlock_notifications_blocked_event: true` also
+sends this event to each subscription that is still waiting when the unlock
+link is blocked after three failed attempts:
+
+```json
+{"event": "akdbx.unlock-blocked", "locked": true, "unlock_blocked": true, "subscription_id": "OPAQUE_ID", "event_id": "OPAQUE_EVENT_ID", "subscription_state": "subscribed"}
+```
+
+It has its own event ID and does not change the subscription: the receipt
+stays `subscribed`, and the later unlock sends the normal `akdbx.unlocked`
+event to the same URL. A failed blocked event does not affect that later
+delivery. The event is not persisted: a restarted broker has a new, unblocked
+link. A subscription registered while the link is already blocked gets no
+event; its receipt has `unlock_blocked: true` instead. Older consumers that
+recheck status on every event, as this workflow requires, stay correct: the
+`akdbx.unlocked` payload and `unlock_notifications_protocol: 1` are unchanged.
+Never create a new link because of this event alone; follow the skill's
+"Blocked unlock link" steps.
 HTTPS certificate verification is required; redirects and environment proxies
 are disabled. One bounded sender runs only when an event is queued; a slow or
 failed callback does not delay the unlock response. Failed delivery gets at

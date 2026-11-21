@@ -24,8 +24,11 @@ MAX_DELIVERY_INPUT = 16 * 1024
 
 
 def capabilities() -> dict:
+    # unlock_notifications_blocked_event: a waiting subscription also gets
+    # akdbx.unlock-blocked when the unlock link is blocked, and stays
+    # subscribed for the later akdbx.unlocked event (0.24.0+).
     return {"unlock_notifications_supported": True, "unlock_notifications_protocol": 1,
-            "unlock_notifications_until_unlock": True}
+            "unlock_notifications_until_unlock": True, "unlock_notifications_blocked_event": True}
 
 
 def validate_webhook_url(value: object) -> str:
@@ -91,6 +94,22 @@ class Subscription:
         self.url_hash = hashlib.sha256(self.url.encode()).digest()
 
 
+@dataclass
+class Notice:
+    """One extra event for a subscription that keeps waiting.
+
+    A notice never changes its subscription's state: after it, the same
+    subscription still delivers its final event. Notices live in memory only.
+    A broker restart makes a new, unblocked unlock link, so a notice from
+    before the restart would be stale.
+    """
+    key: str
+    item: Subscription = field(repr=False)
+    event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    state: str = "pending"
+    attempts: int = 0
+
+
 class UnlockNotifications:
     _label = 'unlock'
     def __init__(self, *, sender=post_event, clock=time.monotonic, state_path=None):
@@ -99,6 +118,7 @@ class UnlockNotifications:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._items: dict[str, Subscription] = {}
+        self._notices: list[Notice] = []
         self._worker: threading.Thread | None = None
         self._state_path = Path(state_path) if state_path is not None else None
         self._restore()
@@ -289,6 +309,63 @@ class UnlockNotifications:
                         item.state, item.url = 'failed', ''
             self._start_worker()
 
+    @staticmethod
+    def _blocked_payload(notice):
+        # The subscription stays subscribed and later sends akdbx.unlocked.
+        return {"event": "akdbx.unlock-blocked", "locked": True, "unlock_blocked": True,
+                "subscription_id": notice.key, "event_id": notice.event_id,
+                "subscription_state": "subscribed"}
+
+    def publish_blocked(self) -> None:
+        """Alert every waiting unlock subscription that the link is blocked.
+
+        Only subscriptions still waiting for unlock get the notice. A newer
+        block replaces a notice that was not sent yet.
+        """
+        with self._lock:
+            self._prune()
+            if self._stop.is_set():
+                return
+            waiting = {key: item for key, item in self._items.items()
+                       if item.state == "subscribed" and item.subject is None}
+            self._notices = [n for n in self._notices
+                             if n.state == "sending" or n.state == "pending" and n.key not in waiting]
+            self._notices.extend(Notice(key, item) for key, item in waiting.items())
+            self._start_worker()
+
+    def _next_notice(self):
+        """Called under _lock: the next notice that can still be sent."""
+        for notice in self._notices:
+            if notice.state != "pending":
+                continue
+            if self._items.get(notice.key) is notice.item and notice.item.state == "subscribed":
+                return notice
+            notice.state = "cancelled"
+        return None
+
+    def _deliver_notice(self, notice):
+        for attempt in range(MAX_ATTEMPTS):
+            with self._lock:
+                if (self._stop.is_set() or self._items.get(notice.key) is not notice.item
+                        or notice.item.state != "subscribed" or not notice.item.url):
+                    notice.state = "cancelled"
+                    return
+                notice.attempts += 1
+                url = notice.item.url
+                payload = self._blocked_payload(notice)
+            try:
+                self._sender(url, payload)
+            except Exception:
+                # Never log the callback URL, its token, or exception text.
+                if attempt + 1 < MAX_ATTEMPTS and not self._stop.wait(1 << attempt):
+                    continue
+                with self._lock:
+                    notice.state = "failed"
+                return
+            with self._lock:
+                notice.state = "delivered"
+            return
+
     def status(self, key: object, *, cancel=False) -> dict:
         with self._lock:
             self._prune()
@@ -303,7 +380,8 @@ class UnlockNotifications:
 
     def _start_worker(self):
         # Called under _lock. At most one sender, and no idle listener process.
-        if self._worker is not None or not any(i.state == "pending" for i in self._items.values()):
+        if self._worker is not None or not (any(i.state == "pending" for i in self._items.values())
+                                            or any(n.state == "pending" for n in self._notices)):
             return
         try:
             self._worker = threading.Thread(target=self._deliver, name="akdbx-unlock-events", daemon=True)
@@ -313,17 +391,29 @@ class UnlockNotifications:
             for item in self._items.values():
                 if item.state == "pending":
                     item.state, item.url = "failed", ""
+            for notice in self._notices:
+                if notice.state == "pending":
+                    notice.state = "failed"
 
     def _deliver(self):
         while not self._stop.is_set():
             with self._lock:
                 self._prune()
-                next_item = next(((k, i) for k, i in self._items.items() if i.state == "pending"), None)
-                if next_item is None:
-                    self._worker = None
-                    return
-                key, item = next_item
-                item.state = "sending"
+                # Notices first: they report an older event than any unlock.
+                self._notices = [n for n in self._notices if n.state in {"pending", "sending"}]
+                notice = self._next_notice()
+                if notice is not None:
+                    notice.state = "sending"
+                else:
+                    next_item = next(((k, i) for k, i in self._items.items() if i.state == "pending"), None)
+                    if next_item is None:
+                        self._worker = None
+                        return
+                    key, item = next_item
+                    item.state = "sending"
+            if notice is not None:
+                self._deliver_notice(notice)
+                continue
             for attempt in range(item.attempts, MAX_ATTEMPTS):
                 with self._lock:
                     if item.state == "cancelled" or self._stop.is_set():
@@ -365,6 +455,9 @@ class UnlockNotifications:
             for item in self._items.values():
                 if item.state in {"subscribed", "pending", "sending"}:
                     item.state, item.url = "cancelled", ""
+            for notice in self._notices:
+                if notice.state == "pending":
+                    notice.state = "cancelled"
             worker = self._worker
         if worker is not None:
             worker.join(timeout=DELIVERY_TIMEOUT + 0.5)
