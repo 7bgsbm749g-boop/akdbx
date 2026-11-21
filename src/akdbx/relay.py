@@ -49,7 +49,6 @@ MAX_FILE = 256 * 1024
 BROKER_ID = re.compile(r'[a-z2-7]{12}')
 SECRET = re.compile(r'[A-Za-z0-9_-]{43}')
 STREAM_ID = re.compile(r'[0-9a-f]{32}')
-ERROR_CODE = re.compile(r'[a-z_]{1,64}')
 DNS_NAME = re.compile(r'(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+')
 PEM_CERTIFICATE = re.compile(rb'-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\r?\n?')
 MAX_STREAMS = 64
@@ -81,6 +80,10 @@ class RelayError(Exception):
     def __init__(self, message, *, status=None, code=None, retry_after=None):
         super().__init__(message)
         self.status, self.code, self.retry_after = status, code, retry_after
+
+
+class RelayUnreachable(RelayError):
+    """The relay could not be reached (connection or TLS failure); no answer was read."""
 
 
 class RelayStoreError(Exception):
@@ -208,8 +211,8 @@ ERROR_TEXT = {
 
 
 def _describe(status, code, retry_after):
-    text = ERROR_TEXT.get(code) or (f'the relay refused the request ({code})' if code
-                                    else f'the relay answered HTTP {status}')
+    # Only fixed text: a relay-supplied code could echo the bearer secret.
+    text = ERROR_TEXT.get(code) or f'the relay answered HTTP {status}'
     if retry_after is not None:
         text += f'; try again in {wait_text(retry_after)}'
     return text
@@ -230,7 +233,7 @@ def _call(endpoint, path, body, *, secret=None, timeout=API_TIMEOUT, method='POS
         retry_header = response.getheader('Retry-After')
     except (OSError, http.client.HTTPException) as exc:
         # The exception type only: never a request, header or body.
-        raise RelayError(f'could not reach the relay at {endpoint.url} ({type(exc).__name__})') from None
+        raise RelayUnreachable(f'could not reach the relay at {endpoint.url} ({type(exc).__name__})') from None
     finally:
         connection.close()
     if len(data) > MAX_RESPONSE:
@@ -246,7 +249,7 @@ def _call(endpoint, path, body, *, secret=None, timeout=API_TIMEOUT, method='POS
     if response.status >= 400:
         payload = payload if isinstance(payload, dict) else {}
         code = payload.get('error')
-        code = code if isinstance(code, str) and ERROR_CODE.fullmatch(code) else None
+        code = code if isinstance(code, str) and code in ERROR_TEXT else None
         retry = _retry_after(payload.get('retry_after'), retry_header)
         raise RelayError(_describe(response.status, code, retry), status=response.status, code=code,
                          retry_after=retry)
@@ -324,16 +327,37 @@ class Refresh:
     warning: str | None = None
 
 
-def refresh(store, config, endpoint_factory=None):
+def _alternate(config, alternate):
+    """``alternate`` when it is another URL of the saved relay host, else None."""
+    try:
+        if alternate and alternate != config.relay and same_relay(config.relay, alternate):
+            return Endpoint.parse(alternate).url
+    except ValueError:
+        pass
+    return None
+
+
+def refresh(store, config, endpoint_factory=None, alternate=DEFAULT_RELAY):
     """Ask the relay for this broker's public port and control URL; save them when they changed.
 
     The relay moves brokers to a new public port (8443 to 443) with this call.
+    When the saved URL cannot be reached (for example, the old port is closed),
+    ask once more at ``alternate`` if it is on the same host: the answer is
+    checked the same way, so the secret only goes to the same verified host.
     Any failure (an older relay's 404, no network, a refused or invalid answer)
     keeps the saved values and returns a warning: the broker still starts.
     """
     endpoint_factory = endpoint_factory or _endpoint_for
     try:
-        info = broker_info(endpoint_factory(config.relay), config)
+        try:
+            info = broker_info(endpoint_factory(config.relay), config)
+        except RelayUnreachable:
+            other = _alternate(config, alternate)
+            if other is None:
+                raise
+            info = broker_info(endpoint_factory(other), config)
+            if info.relay_url is None:
+                info = BrokerInfo(info.public_port, other)
     except RelayError as exc:
         if exc.status == 404:
             return Refresh(config, (), f'the relay at {config.relay} cannot report a new public port '
@@ -355,8 +379,9 @@ def refresh(store, config, endpoint_factory=None):
                           config.secret)
     try:
         store.save(updated)  # atomic: a temporary private file, then a rename
-    except RelayStoreError as exc:
-        return Refresh(config, (), f'the relay moved this broker, but the change could not be saved ({exc}); '
+    except (RelayStoreError, OSError) as exc:
+        reason = exc if isinstance(exc, RelayStoreError) else type(exc).__name__
+        return Refresh(config, (), f'the relay moved this broker, but the change could not be saved ({reason}); '
                                    'keeping the saved values')
     return Refresh(updated, tuple(changes))
 
@@ -829,7 +854,7 @@ def enable(store, endpoint, *, sleep=time.sleep, notify=None, endpoint_factory=N
     if config is not None:
         given, fallback = endpoint, endpoint_factory or _endpoint_for
         factory = lambda url: given if url == given.url else fallback(url)  # noqa: E731
-        result = refresh(store, config, factory)
+        result = refresh(store, config, factory, alternate=endpoint.url)
         if refreshed is not None:
             refreshed.append(result)
         config = result.config

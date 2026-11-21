@@ -282,8 +282,12 @@ in `public_port` and `broker.moved`. An older relay (HTTP 404), no network or
 an answer that fails a check keeps the saved values, with one warning; the
 broker still starts.
 
-After the move the origin changes, so links of the old origin stop working
-when the relay stops serving port 8443. If you use the browser extension, run
+If the saved URL cannot be reached (the relay already closed the old port),
+the broker asks once more at the default relay URL on the same host, and
+`relay enable --relay URL` asks at that URL; the same checks apply.
+
+After the move the origin changes, so links of the old origin and an extension
+built for it stop working at the broker's first start on the new port. If you use the browser extension, run
 `akdbx extension build` again and reload the extension: it opens pairing and
 unlock links only on the origin it was built with. Unset or update an
 `AKDBX_UNLOCK_ORIGIN` or `--unlock-origin` that names the old origin.

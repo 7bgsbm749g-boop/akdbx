@@ -899,3 +899,29 @@ def test_end_of_input_stops_setup_cleanly(home, vault, capsys):
     code, _, runner = setup(ask=closed, interactive=True)
     assert code == 130 and runner.calls == []
     assert 'Run it again to continue' in capsys.readouterr().err
+
+
+def test_an_enabled_relay_follows_a_port_move_before_later_stages_use_the_origin(home, vault, monkeypatch, capsys):
+    # Later stages (the extension build) use this origin, so setup asks the relay first.
+    from akdbx import relay as relay_module
+    old = relay_module.RelayConfig('https://relay.akdbx.link:8443', 'k3x7q2mbn5vd.akdbx.link', 'k3x7q2mbn5vd',
+                                   8443, True, 'A' * 43)
+    new = relay_module.RelayConfig('https://relay.akdbx.link', old.name, old.broker_id, 443, True, old.secret)
+    asked = []
+
+    class Store:
+        def load(self):
+            return old
+
+        def certificate(self, name):
+            return object()
+
+    def refresh(store, config):
+        asked.append(config)
+        return relay_module.Refresh(new, ('relay moved the public port from 8443 to 443',))
+    monkeypatch.setattr(relay_module, 'RelayStore', Store)
+    monkeypatch.setattr(relay_module, 'refresh', refresh)
+    code, result, _ = setup('--yes', '--json', '--vault', str(vault), '--access', 'relay', runner=Runner(),
+                            capsys=capsys)
+    assert asked == [old], result
+    assert result['stages']['access']['origin'] == 'https://k3x7q2mbn5vd.akdbx.link'

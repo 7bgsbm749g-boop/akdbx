@@ -1043,3 +1043,70 @@ def test_relay_status_tells_a_running_broker_on_the_old_origin_to_restart(fake, 
     result = json.loads(capsys.readouterr().out)
     assert result['public_port'] == 443
     assert result['next'].startswith(f"The running broker still uses {enabled['origin']}; restart it")
+
+
+def test_relay_error_text_never_echoes_a_relay_supplied_code(fake, capsys):
+    # A relay could put the bearer secret (or any text) in its error field.
+    enable(fake, capsys)
+    store = RelayStore()
+    config = store.load()
+    for code in (config.secret, config.secret.lower(), 'unavailable', 'x' * 64):
+        fake.broker_answer = lambda name, code=code: (503, {'error': code})
+        result = relay_module.refresh(store, config)
+        assert code not in result.warning and 'HTTP 503' in result.warning
+    fake.broker_answer = lambda name: (503, {'error': config.secret})
+    with pytest.raises(relay_module.RelayError) as raised:
+        relay_module.broker_info(fake.endpoint(), config)
+    assert raised.value.code is None and config.secret not in str(raised.value)
+
+
+def test_refresh_asks_the_new_url_when_the_saved_port_is_closed(fake, capsys):
+    enable(fake, capsys)
+    store = RelayStore()
+    config = store.load()
+    fake.broker_answer = describe()
+    closed = relay_module.Endpoint.parse('https://relay.akdbx.link:1', connect_host='127.0.0.1')
+    dialled = []
+
+    def factory(url):
+        dialled.append(url)
+        return closed if url == config.relay else fake.endpoint()
+    result = relay_module.refresh(store, config, factory)
+    assert dialled == [config.relay, relay_module.DEFAULT_RELAY]
+    assert result.warning is None and RelayStore().load().relay == relay_module.DEFAULT_RELAY
+    assert RelayStore().load().public_port == 443
+    # Another host is never tried, and a closed alternate keeps the saved values.
+    written = saved_bytes()
+    saved = RelayStore().load()
+    other = relay_module.refresh(store, saved, lambda url: closed, alternate='https://relay.example.link')
+    assert other.warning and 'ConnectionRefusedError' in other.warning and saved_bytes() == written
+
+
+def test_enable_recovers_a_broker_whose_saved_port_is_closed(fake, capsys, monkeypatch):
+    enabled, _ = enable(fake, capsys)
+    saved_url = RelayStore().load().relay
+    fake.broker_answer = describe()
+    closed = relay_module.Endpoint.parse('https://relay.akdbx.link:1', connect_host='127.0.0.1')
+    import dataclasses
+    # The new default URL (no port) dials the fake; the saved one (the fake's own port) is closed.
+    new_url = dataclasses.replace(fake.endpoint(), url='https://relay.akdbx.link')
+    monkeypatch.setattr(relay_module, 'endpoint',
+                        lambda url: closed if url == saved_url else new_url)
+    code, result, captured = run_cli(capsys, 'relay', 'enable', '--relay', 'https://relay.akdbx.link')
+    assert code == 0, captured
+    assert result['origin'] == f"https://{enabled['name']}" and result['moved']
+    assert RelayStore().load().relay == 'https://relay.akdbx.link'
+    assert secret_of() not in captured.out + captured.err
+
+
+def test_refresh_keeps_the_saved_values_when_the_save_fails(fake, capsys, monkeypatch):
+    enable(fake, capsys)
+    store = RelayStore()
+    config = store.load()
+    fake.broker_answer = describe()
+
+    def full(config):
+        raise OSError(28, 'No space left on device')
+    monkeypatch.setattr(store, 'save', full)
+    result = relay_module.refresh(store, config, lambda url: fake.endpoint())
+    assert result.config is config and result.changes == () and 'OSError' in result.warning
