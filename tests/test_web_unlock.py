@@ -10,6 +10,7 @@ from urllib.parse import urlencode, urlsplit
 
 import pytest
 
+from pykeepass.exceptions import CredentialsError
 import akdbx.web_unlock as web_unlock
 from akdbx.broker import Broker
 from akdbx.web_unlock import start_unlock_server
@@ -71,7 +72,7 @@ def test_locked_broker_returns_only_unlock_url_and_types_nothing(action):
 def test_tailscale_identity_and_one_time_web_unlock(tmp_path):
     def opener(database, password, keyfile):
         if password != "right master":
-            raise ValueError("bad credentials")
+            raise CredentialsError("bad credentials")
         return Vault([Entry()])
 
     broker = Broker(None, RecordingTyper())
@@ -131,8 +132,9 @@ def test_unlock_rejects_lossy_percent_utf8_before_opening(tmp_path, encoding):
     route = parts.path + '?' + parts.query
     try:
         status, _, page = call(socket_path, 'POST', route, 'password=synthetic-' + encoding + '-tail')
-        assert status == 401 and b'synthetic-' not in page
-        assert broker.locked and not attempts
+        # A malformed form is rejected before it reserves an attempt.
+        assert status == 400 and b'synthetic-' not in page
+        assert broker.locked and not attempts and broker.unlock_link.remaining() == 3
         assert call(socket_path, 'POST', route, urlencode(dict(password=valid)))[0] == 200
         assert attempts == [valid] and not broker.locked
     finally:
@@ -158,7 +160,7 @@ def test_parallel_unlock_attempts_are_reserved_and_serialized(tmp_path, distinct
         try:
             if entered == 1:
                 assert release.wait(5)
-            raise ValueError("synthetic failure")
+            raise CredentialsError("synthetic failure")
         finally:
             with opener_lock:
                 active -= 1
@@ -413,7 +415,7 @@ def test_request_expired_while_waiting_releases_unlock_reservation(tmp_path, mon
         if password == "blocker":
             entered.set()
             assert release.wait(2)
-        raise ValueError("synthetic failure")
+        raise CredentialsError("synthetic failure")
 
     socket_path = tmp_path / "private" / "unlock.sock"
     server, url = start_unlock_server(
@@ -667,7 +669,7 @@ def blocking_server(tmp_path, opener_calls=None, *, broker=None):
         if opener_calls is not None:
             opener_calls.append(password)
         if password != RIGHT:
-            raise ValueError("synthetic failure")
+            raise CredentialsError("synthetic failure")
         return Vault([Entry()])
 
     broker = broker or Broker(None, RecordingTyper())
@@ -749,7 +751,7 @@ def test_parallel_wrong_attempts_cannot_exceed_three(tmp_path):
         with calls_lock:
             calls.append(password)
         assert release.wait(5)
-        raise ValueError("synthetic failure")
+        raise CredentialsError("synthetic failure")
 
     broker = Broker(None, RecordingTyper())
     socket_path = tmp_path / "private" / "unlock.sock"
@@ -820,7 +822,7 @@ def test_blocked_event_wakes_subscriber_and_later_unlock_still_arrives(tmp_path)
     broker, server, socket_path, url = blocking_server(tmp_path, broker=broker)
     try:
         receipt = broker.dispatch({"action": "subscribe-unlock", "notification_protocol": 1,
-                                   "webhook_url": WEBHOOK})
+                                   "webhook_url": WEBHOOK, "blocked_events": True})
         key = receipt["subscription_id"]
         assert receipt["state"] == "subscribed" and "unlock_blocked" not in receipt
         assert fail(socket_path, url, 3) == [401, 401, 403]
@@ -835,7 +837,7 @@ def test_blocked_event_wakes_subscriber_and_later_unlock_still_arrives(tmp_path)
         assert broker.dispatch({"action": "unlock-subscription-status", "subscription_id": key})["state"] == "subscribed"
         # A subscription made while blocked learns it from its receipt instead.
         late = broker.dispatch({"action": "subscribe-unlock", "notification_protocol": 1,
-                                "webhook_url": WEBHOOK + "-late"})
+                                "webhook_url": WEBHOOK + "-late", "blocked_events": True})
         assert late["unlock_blocked"] is True and late["state"] == "subscribed"
 
         fresh = broker.dispatch({"action": "new-unlock-link", "user_confirmed": True})["unlock_url"]
@@ -890,12 +892,158 @@ def test_cli_new_unlock_link_requires_blocked_link_and_validates_origin(tmp_path
             code, captured = command("new-unlock-link", "--user-confirmed")
             assert code == 1 and "not blocked" in json.loads(captured.out)["error"]
 
-            # A link on another origin never reaches the agent.
+            # A link on another origin never reaches the agent, and the check
+            # runs before the broker replaces the link: it stays blocked.
             assert fail(socket_path, broker.unlock_url, 3) == [401, 401, 403]
+            blocked_url = broker.unlock_url
+            code, captured = command("status")
+            assert json.loads(captured.out)["unlock_origin"] == "https://node.example:9443"
             code = cli.main(["--socket", str(broker_socket), "--unlock-origin", "https://other.example:9443",
                              "new-unlock-link", "--user-confirmed"])
             captured = capsys.readouterr()
             assert code != 0 and "token=" not in captured.out + captured.err
+            assert broker.unlock_blocked and broker.unlock_url == blocked_url
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_old_link_request_never_renders_the_replacement_token(tmp_path, monkeypatch):
+    # F1: the link is blocked and replaced after this GET passed its check
+    # but before its page was built. The page must keep the old token.
+    broker, server, socket_path, url = blocking_server(tmp_path)
+    state = broker.unlock_link
+    replaced = []
+
+    def rotate_once():
+        if not replaced:
+            for _ in range(3):
+                state.record_failure(state.reserve_attempt())
+            replaced.append(broker.dispatch({"action": "new-unlock-link", "user_confirmed": True})["unlock_url"])
+
+    # Rotate right after the request's token check returns.
+    for name in ("token_matches", "request_status"):
+        real = getattr(state, name, None)
+        if real is not None:
+            def checked(token, _real=real):
+                result = _real(token)
+                rotate_once()
+                return result
+            monkeypatch.setattr(state, name, checked)
+    try:
+        status, _, page = call(socket_path, "GET", route(url))
+        fresh_token = urlsplit(replaced[0]).query.split("token=", 1)[1]
+        old_token = urlsplit(url).query.split("token=", 1)[1]
+        assert status == 200 and fresh_token.encode() not in page and old_token.encode() in page
+        # The stale form cannot reach the new link either.
+        status, _, page = call(socket_path, "POST", route(url), urlencode({"password": RIGHT}))
+        assert status == 404 and fresh_token.encode() not in page and broker.locked
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_block_survives_a_broker_restart_until_a_confirmed_new_link(tmp_path):
+    # F2: a restart must not clear the block or show a fresh link.
+    notification_state = tmp_path / "state" / "unlock-notifications.json"
+    flag = notification_state.with_name(notification_state.name + ".unlock-blocked")
+
+    def start():
+        broker = Broker(None, RecordingTyper(), notification_state_path=notification_state)
+        return blocking_server(tmp_path, broker=broker)
+
+    def stop(broker, server):
+        server.shutdown()
+        server.server_close()
+        broker.unlock_notifications.close()
+
+    broker, server, socket_path, url = start()
+    try:
+        assert not flag.exists()
+        assert fail(socket_path, url, 3) == [401, 401, 403]
+    finally:
+        stop(broker, server)
+    assert flag.stat().st_mode & 0o777 == 0o600
+    assert json.loads(flag.read_text()) == {"blocked": True}
+
+    broker, server, socket_path, url = start()
+    try:
+        ping = broker.dispatch({"action": "ping"})
+        assert ping["locked"] is True and ping["unlock_blocked"] is True and "unlock_url" not in ping
+        assert broker.dispatch({"action": "search", "query": "x"}) == {
+            "ok": False, "error": "vault locked", "unlock_blocked": True}
+        status, _, page = call(socket_path, "POST", route(url), urlencode({"password": RIGHT}))
+        assert status == 403 and broker.locked
+        fresh = broker.dispatch({"action": "new-unlock-link", "user_confirmed": True})["unlock_url"]
+        assert json.loads(flag.read_text()) == {"blocked": False}
+    finally:
+        stop(broker, server)
+
+    broker, server, socket_path, url = start()
+    try:
+        ping = broker.dispatch({"action": "ping"})
+        assert "unlock_blocked" not in ping and ping["unlock_url"] == url != fresh
+        assert call(socket_path, "POST", route(url), urlencode({"password": RIGHT}))[0] == 200
+    finally:
+        stop(broker, server)
+
+
+def test_untrusted_saved_block_fails_closed(tmp_path):
+    notification_state = tmp_path / "state" / "unlock-notifications.json"
+    notification_state.parent.mkdir(mode=0o700)
+    flag = notification_state.with_name(notification_state.name + ".unlock-blocked")
+    flag.write_text(json.dumps({"blocked": False}))
+    flag.chmod(0o644)  # another user could have written it
+    broker = Broker(None, RecordingTyper(), notification_state_path=notification_state)
+    broker, server, socket_path, url = blocking_server(tmp_path, broker=broker)
+    try:
+        assert broker.unlock_blocked and "unlock_url" not in broker.dispatch({"action": "ping"})
+        assert broker.dispatch({"action": "new-unlock-link", "user_confirmed": True})["ok"] is True
+        assert flag.stat().st_mode & 0o777 == 0o600 and json.loads(flag.read_text()) == {"blocked": False}
+    finally:
+        server.shutdown()
+        server.server_close()
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.parametrize("body", ["", "password=", "other=value", "password=a&password=b", "password"])
+def test_malformed_unlock_forms_are_rejected_without_an_attempt(tmp_path, body):
+    # F6: only a real password check can use one of the three attempts.
+    attempts = []
+    broker, server, socket_path, url = blocking_server(tmp_path, attempts)
+    try:
+        for _ in range(4):
+            assert call(socket_path, "POST", route(url), body)[0] == 400
+        assert attempts == [] and broker.unlock_link.remaining() == 3 and not broker.unlock_blocked
+        assert call(socket_path, "POST", route(url), urlencode({"password": RIGHT}))[0] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("error", [OSError("synthetic disk error"), RuntimeError("synthetic store error"),
+                                   ValueError("synthetic parse error")])
+def test_vault_store_errors_do_not_count_as_failed_attempts(tmp_path, error):
+    # F6: a store or I/O error says nothing about the password.
+    calls = []
+
+    def opener(_database, password, _keyfile):
+        calls.append(password)
+        if len(calls) <= 4:
+            raise error
+        return Vault([Entry()])
+
+    broker = Broker(None, RecordingTyper())
+    socket_path = tmp_path / "private" / "unlock.sock"
+    server, url = start_unlock_server(broker, tmp_path / "vault.kdbx", None, socket_path,
+                                      "https://node.example:9443", opener=opener)
+    try:
+        for _ in range(4):
+            status, _, page = call(socket_path, "POST", route(url), urlencode({"password": RIGHT}))
+            assert status == 503 and b"could not open the vault" in page and b"synthetic" not in page
+        assert broker.unlock_link.remaining() == 3 and not broker.unlock_blocked and broker.locked
+        assert call(socket_path, "POST", route(url), urlencode({"password": RIGHT}))[0] == 200
+        assert not broker.locked
     finally:
         server.shutdown()
         server.server_close()

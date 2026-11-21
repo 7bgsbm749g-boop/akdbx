@@ -159,6 +159,15 @@ class Broker:
             return {"unlock_blocked": True}
         return {"unlock_url": self.unlock_url} if self.unlock_url else {}
 
+    def _blocked_status(self) -> dict:
+        """Status of a blocked link: no URL, but its non-secret origin.
+
+        The CLI checks the origin against its configuration before it asks
+        for a new link, so a wrong origin leaves the broker blocked.
+        """
+        origin = getattr(self.unlock_link, "origin", None)
+        return {"unlock_blocked": True, **({"unlock_origin": origin} if isinstance(origin, str) else {})}
+
     def _new_unlock_link(self, request: dict) -> dict:
         # The broker cannot verify the user. The agent must first ask the user
         # whether the failed attempts were theirs and whether they want a link.
@@ -291,7 +300,7 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **(self.unlock_fields() if self.locked else {"unlock_blocked": True} if self.unlock_blocked else {})}
+            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -582,6 +591,16 @@ class Broker:
                     except Exception:
                         pass
         return {"ok": False, "error": "unknown action"}
+
+
+def is_wrong_credentials(exc: BaseException) -> bool:
+    """True only for a wrong master password or key file.
+
+    Store, file and I/O errors say nothing about the password, so they never
+    count toward an unlock link's failed attempts.
+    """
+    from pykeepass.exceptions import CredentialsError
+    return isinstance(exc, CredentialsError)
 
 
 def open_vault_with_password(database: Path, password: str, keyfile: Path | None = None):

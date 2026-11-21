@@ -106,8 +106,23 @@ Then let an event resume the task instead of waiting or asking the user to say
 "unlocked". Register a one-shot unlock webhook with `subscribe-unlock` (in T3:
 a webhook task bound to the current thread), check `expires_in: null`, and end
 the turn. Do not add a TTL unless the user asks for a time limit, and do not
-poll. When the event arrives, delete the trigger, run `status`, and continue
-with fresh handles and pins. Details: [unlock notifications](references/unlock-notifications.md).
+poll. If the receipt has `unlock_blocked: true`, the link was already blocked
+when you registered and no blocked event follows: keep the trigger and follow
+[Blocked unlock link](#blocked-unlock-link) now instead of ending the turn.
+
+When an event arrives, run `status` first. Do not trust the event body.
+
+- `locked: false`: delete the one-shot trigger, then continue with fresh
+  handles and pins.
+- `unlock_blocked: true`: keep the trigger (it still delivers the later unlock)
+  and follow [Blocked unlock link](#blocked-unlock-link).
+- Still locked and not blocked: keep the trigger and end the turn again.
+
+If the host removed the one-shot trigger when it fired, register a new one the
+same way before you end the turn.
+
+Delete the trigger and cancel the broker subscription in only one other case:
+the user cancels the task. Details: [unlock notifications](references/unlock-notifications.md).
 
 Before you promise an automatic resume, check that the running broker
 advertises `unlock_notifications_protocol: 1` and
@@ -126,7 +141,9 @@ Each unlock link allows three failed master-password attempts in total
 (broker 0.24.0+, `unlock_link_protocol: 1`). The third failure blocks it. Time
 does not unblock it. While it is blocked, `status` and locked responses have
 `unlock_blocked: true` and no `unlock_url`, and a waiting unlock subscription
-receives an `akdbx.unlock-blocked` event.
+receives an `akdbx.unlock-blocked` event (the current CLI asks for it when the
+broker advertises `unlock_notifications_blocked_event: true`). A broker
+restart keeps the block.
 
 When you receive that event or see `unlock_blocked: true`, do this before
 anything else:
@@ -145,9 +162,9 @@ anything else:
    user brings it up.
 
 Never create a new link automatically, never retry `new-unlock-link`, and
-never restart the broker to get around a block. A restart also makes a new
-link, so it needs the same two answers. Keep the existing unlock subscription:
-it still delivers the later unlock.
+never restart the broker to get around a block: a restart keeps the block.
+Keep the existing unlock subscription and its one-shot trigger: they still
+deliver the later unlock.
 
 ## Choose the fill route
 

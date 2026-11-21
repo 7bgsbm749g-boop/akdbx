@@ -15,6 +15,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
+from pykeepass.exceptions import CredentialsError
 from akdbx.broker import Broker
 from akdbx.web_unlock import UnlockState, handler_for
 from akdbx.windows_unlock import WindowsHTTPServer, local_origin
@@ -51,7 +52,7 @@ def local_server(certificates):
     broker = Broker(None, object())
     def opener(_path, password, _key):
         if password != 'synthetic master':
-            raise ValueError('synthetic failure')
+            raise CredentialsError('synthetic failure')
         return SimpleNamespace(entries=[])
     state = UnlockState(broker, None, None, opener)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

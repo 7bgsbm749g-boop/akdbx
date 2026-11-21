@@ -435,7 +435,8 @@ class ExtensionHub:
                 self.pairings[token] = (digest, now + PAIRING_TTL)
         base = getattr(self.broker.writes, 'public_base', None)
         info = dict(code=pairing_code(digest))
-        if isinstance(base, str) and base.startswith('https://'):
+        # A blocked unlock link also blocks pairing: offer no pairing link.
+        if isinstance(base, str) and base.startswith('https://') and not self.broker.unlock_blocked:
             info['url'] = base.rstrip('/') + '/extension/pair?token=' + token
         return info
 
@@ -473,6 +474,15 @@ class ExtensionHub:
                 return None
             digest = found[0]
         return pairing_code(digest)
+
+    def revoke_pairings(self):
+        """Invalidate every pending pairing link.
+
+        The unlock page calls this when its link is blocked or replaced, so a
+        pairing link from before never gets the new link's attempts.
+        """
+        with self._lock:
+            self.pairings.clear()
 
     def approve(self, token):
         """Mark one pending key as paired, after the page verified the master password."""

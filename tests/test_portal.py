@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from pykeepass.exceptions import CredentialsError
 from akdbx import portal
 from akdbx.broker import Broker
 from akdbx.web_unlock import start_unlock_server
@@ -100,7 +101,7 @@ def test_private_forms_results_errors_and_branding(deployed, kind):
 
 def test_unlock_failed_rate_limit_and_ready_pages(tmp_path):
     def opener(*_args):
-        raise ValueError('synthetic diagnostic must not appear')
+        raise CredentialsError('synthetic diagnostic must not appear')
 
     broker = Broker(None, RecordingTyper())
     socket = tmp_path / 'private' / 'portal.sock'

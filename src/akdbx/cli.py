@@ -206,6 +206,13 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         _validate_unlock_url(response["private_url"], expected_unlock_origin)
     if "unlock_url" in response:
         _validate_unlock_url(response["unlock_url"], expected_unlock_origin)
+    if "unlock_origin" in response:
+        # A blocked link's status has no URL, only its non-secret origin.
+        origin = response["unlock_origin"]
+        parts = urlsplit(origin) if isinstance(origin, str) else None
+        if parts is None or parts.path or parts.query or parts.fragment:
+            raise ProtocolError("invalid broker response")
+        _validate_unlock_url(origin + "/?token=origin-check", expected_unlock_origin)
     pairing = response.get("extension_pairing")
     if pairing is not None:
         # Pairing links are private broker pages, like the unlock link.
@@ -720,6 +727,10 @@ def main(argv: list[str] | None = None) -> int:
                 print('could not read private webhook URL file; subscription not sent', file=sys.stderr)
                 return 2
             payload.update(webhook_url=webhook_url, ttl=args.ttl, notification_protocol=1)
+            if capabilities.get('unlock_notifications_blocked_event') is True:
+                # Opt in only where the broker supports it; older brokers
+                # keep their unlock-only subscription.
+                payload['blocked_events'] = True
         if args.command == 'new-unlock-link':
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -729,6 +740,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             if capabilities.get('unlock_blocked') is not True:
                 print(json.dumps({'ok': False, 'error': 'the current unlock link is not blocked; no link created; request not sent'}))
+                return 1
+            # The status request already checked this origin against the
+            # configured one; without it the CLI cannot check before the
+            # broker replaces the link.
+            if not isinstance(capabilities.get('unlock_origin'), str):
+                print(json.dumps({'ok': False, 'error': 'broker did not report its unlock origin; no link created; request not sent'}))
                 return 1
         if args.command in {'setup-totp', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,

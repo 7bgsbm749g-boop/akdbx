@@ -209,15 +209,25 @@ does not reset the count, and a link never expires because of time. The third
 failure blocks the link at once: its token stops working, even with the right
 password, and the page says that the link is blocked and that you must ask
 your agent for a new one. Failed attempts on the extension pairing page count
-toward the same three. Parallel requests cannot exceed the limit: the broker
-reserves each attempt before it starts the key derivation.
+toward the same three, and a block or a new link invalidates every pairing
+link made before it. Parallel requests cannot exceed the limit: the broker
+reserves each attempt before it starts the key derivation. Only a wrong
+password or key file counts: an empty or malformed form gets `400`, and a
+vault file or store error gets a "could not open the vault" page; neither
+uses an attempt.
+
+The block is saved next to the broker's notification state (a private file,
+mode `0600` on Linux, this user and SYSTEM only on Windows), so a broker
+restart keeps it. A saved block that cannot be read or trusted also counts as
+blocked.
 
 While the link is blocked, `status` and locked responses report
-`unlock_blocked: true` and contain no unlock link. The broker sends an
-`akdbx.unlock-blocked` event to each waiting
+`unlock_blocked: true` and contain no unlock link; `status` names only the
+link's origin (`unlock_origin`), which the CLI checks before it asks for a new
+link. The broker sends an `akdbx.unlock-blocked` event to each waiting
 [unlock notification](../skills/akdbx/references/unlock-notifications.md)
-subscription; the subscription keeps waiting and later sends the normal
-unlock event.
+subscription that opted in; the subscription keeps waiting and later sends
+the normal unlock event.
 
 Only an explicit command makes a new link, and only while the current link is
 blocked:
@@ -231,7 +241,7 @@ link after the same origin check as every unlock link. The broker cannot check
 who asks for it. An agent must first ask you whether the three failures were
 yours and whether you want a new link. If they were not yours, someone else
 has the link: do not create a new one until you know how it leaked. A broker
-restart also makes a new link.
+restart does not replace a blocked link.
 
 ## Tailscale Serve Unix socket (Linux only)
 

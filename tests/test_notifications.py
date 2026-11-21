@@ -13,6 +13,7 @@ from urllib.parse import urlencode, urlsplit
 
 import pytest
 
+from pykeepass.exceptions import CredentialsError
 from akdbx import cli, notifications
 from akdbx.broker import Broker
 from akdbx.web_unlock import start_unlock_server
@@ -71,7 +72,7 @@ def test_real_private_unlock_triggers_event_without_agent_wait(tmp_path, notifie
 
     def opener(_database, password, _keyfile):
         if password != "synthetic master":
-            raise ValueError("wrong password")
+            raise CredentialsError("wrong password")
         return Vault([Entry()])
 
     server, url = start_unlock_server(
@@ -496,8 +497,9 @@ def test_deadline_also_stops_blocked_dns(tmp_path, delivery_children, monkeypatc
 
 def test_blocked_notice_keeps_subscription_and_skips_cancelled(notifier):
     manager, sent = notifier
-    waiting = manager.subscribe(registration(), unlocked=False)["subscription_id"]
-    cancelled = manager.subscribe(registration(CALLBACK + "-cancelled"), unlocked=False)["subscription_id"]
+    waiting = manager.subscribe(registration(blocked_events=True), unlocked=False)["subscription_id"]
+    cancelled = manager.subscribe(registration(CALLBACK + "-cancelled", blocked_events=True),
+                                  unlocked=False)["subscription_id"]
     manager.status(cancelled, cancel=True)
     manager.publish_blocked()
     wait_for(lambda: len(sent) == 1)
@@ -523,7 +525,7 @@ def test_failed_blocked_notice_does_not_consume_unlock_delivery(monkeypatch):
     manager = notifications.UnlockNotifications(sender=sender)
     manager._stop.wait = lambda _delay: False  # no retry back-off in the test
     try:
-        key = manager.subscribe(registration(), unlocked=False)["subscription_id"]
+        key = manager.subscribe(registration(blocked_events=True), unlocked=False)["subscription_id"]
         manager.publish_blocked()
         wait_for(lambda: manager._worker is None)
         assert manager.status(key)["state"] == "subscribed"
@@ -538,7 +540,7 @@ def test_blocked_notice_is_not_persisted(tmp_path):
     sent = []
     path = tmp_path / "private" / "notifications.json"
     manager = notifications.UnlockNotifications(sender=lambda url, payload: sent.append(payload), state_path=path)
-    key = manager.subscribe(registration(), unlocked=False)["subscription_id"]
+    key = manager.subscribe(registration(blocked_events=True), unlocked=False)["subscription_id"]
     saved = path.read_bytes()
     manager.publish_blocked()
     wait_for(lambda: len(sent) == 1)
@@ -549,3 +551,110 @@ def test_blocked_notice_is_not_persisted(tmp_path):
         assert restored.status(key)["state"] == "subscribed" and len(sent) == 1
     finally:
         restored.close()
+
+
+def test_blocked_events_are_opt_in_and_saved_with_the_subscription(tmp_path):
+    # F4: an older consumer that deletes its trigger on any event must only
+    # ever get the unlock event.
+    sent = []
+    path = tmp_path / "private" / "notifications.json"
+    manager = notifications.UnlockNotifications(sender=lambda url, payload: sent.append((url, payload)),
+                                                state_path=path)
+    try:
+        legacy = manager.subscribe(registration(), unlocked=False)["subscription_id"]
+        opted = manager.subscribe(registration(CALLBACK + "-new", blocked_events=True),
+                                  unlocked=False)["subscription_id"]
+        for bad in ("yes", 1, None):
+            assert not manager.subscribe(registration(CALLBACK + "-bad", blocked_events=bad), unlocked=False)["ok"]
+        rows = {row["id"]: row for row in json.loads(path.read_text())}
+        assert "blocked_events" not in rows[legacy] and rows[opted]["blocked_events"] is True
+        manager.publish_blocked()
+        wait_for(lambda: manager._worker is None)
+        assert [(url, payload["event"]) for url, payload in sent] == [(CALLBACK + "-new", "akdbx.unlock-blocked")]
+    finally:
+        manager.close()
+    sent.clear()
+    restored = notifications.UnlockNotifications(sender=lambda url, payload: sent.append((url, payload)),
+                                                 state_path=path)
+    try:
+        # Restored rows keep their choice; a row without the field stays unlock-only.
+        restored.publish_blocked()
+        wait_for(lambda: restored._worker is None)
+        assert [url for url, _ in sent] == [CALLBACK + "-new"]
+        # A retry by a newer consumer opts the same subscription in.
+        retry = restored.subscribe(registration(blocked_events=True), unlocked=False)
+        assert retry["subscription_id"] == legacy
+        assert {row["id"]: row for row in json.loads(path.read_text())}[legacy]["blocked_events"] is True
+        restored.publish()
+        wait_for(lambda: len(sent) == 3)
+        assert sorted(payload["event"] for _, payload in sent[1:]) == ["akdbx.unlocked", "akdbx.unlocked"]
+    finally:
+        restored.close()
+
+
+def test_card_save_subscriptions_never_take_blocked_events():
+    manager = notifications.UnlockNotifications(sender=lambda *_: None)
+    try:
+        assert not manager.subscribe(registration(blocked_events=True), unlocked=False, subject="a" * 64)["ok"]
+    finally:
+        manager.close()
+
+
+def test_queued_blocked_notice_still_arrives_before_its_unlock_event():
+    # F7: an unlock moves subscriptions to pending while blocked notices are
+    # still queued; each notice must still deliver, before its unlock event.
+    sent = []
+    first_entered, release = threading.Event(), threading.Event()
+
+    def sender(url, payload):
+        if not first_entered.is_set():
+            first_entered.set()
+            assert release.wait(5)
+        sent.append((url, payload["event"]))
+
+    manager = notifications.UnlockNotifications(sender=sender)
+    try:
+        first = CALLBACK + "-first"
+        manager.subscribe(registration(first, blocked_events=True), unlocked=False)
+        manager.subscribe(registration(blocked_events=True), unlocked=False)
+        manager.publish_blocked()
+        assert first_entered.wait(5)
+        manager.publish()  # unlock while the second notice is still queued
+        release.set()
+        wait_for(lambda: len(sent) == 4)
+        assert sent.index((CALLBACK, "akdbx.unlock-blocked")) < sent.index((CALLBACK, "akdbx.unlocked"))
+        assert sent.index((first, "akdbx.unlock-blocked")) < sent.index((first, "akdbx.unlocked"))
+    finally:
+        release.set()
+        manager.close()
+
+
+def test_cli_opts_into_blocked_events_only_when_the_broker_advertises_them(tmp_path, notifier, capsys, monkeypatch):
+    manager, _ = notifier
+    seen = []
+    original = manager.subscribe
+
+    def recording(request, **kwargs):
+        seen.append(dict(request))
+        return original(request, **kwargs)
+
+    manager.subscribe = recording
+    broker = Broker(None, RecordingTyper())
+    broker.unlock_notifications = manager
+    url_file = tmp_path / "url"
+    url_file.write_text(CALLBACK)
+    url_file.chmod(0o600)
+    socket_path = tmp_path / "rpc" / "broker.sock"
+    prefix = ["--socket", str(socket_path), "--unlock-origin", "https://node.example:9443"]
+    with running_broker(socket_path, broker):
+        assert cli.main([*prefix, "subscribe-unlock", "--webhook-url-file", str(url_file)]) == 0
+        capsys.readouterr()
+        assert seen[-1]["blocked_events"] is True
+        # A broker without the capability never receives the new field.
+        monkeypatch.setattr("akdbx.broker.notification_capabilities", lambda: {
+            "unlock_notifications_supported": True, "unlock_notifications_protocol": 1,
+            "unlock_notifications_until_unlock": True})
+        url_file.write_text(CALLBACK + "-old")
+        assert cli.main([*prefix, "subscribe-unlock", "--webhook-url-file", str(url_file)]) == 0
+        capsys.readouterr()
+        assert "blocked_events" not in seen[-1]

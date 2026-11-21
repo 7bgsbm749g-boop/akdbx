@@ -4,7 +4,9 @@ The extension shows a code; this page shows the same code and asks for the
 master password. A locked broker unlocks with the same entry. The password is
 checked against the one the broker holds and is never stored or returned.
 Failed attempts count toward the current unlock link's total of three: when
-that link is blocked, this page refuses master-password attempts too.
+that link is blocked, this page refuses master-password attempts too, and a
+block or a new link invalidates every pairing link issued before it. Only a
+wrong password counts; a malformed form or a vault store error does not.
 """
 from __future__ import annotations
 
@@ -20,8 +22,9 @@ MAX_BODY = 4096
 
 
 def handle_pairing(handler, state):
+    from .broker import is_wrong_credentials
     from .totp import https_origin
-    from .web_unlock import _page
+    from .web_unlock import OPEN_FAILED, _page
     if urlsplit(handler.path).path != ROUTE:
         return False
     broker = state.broker
@@ -35,7 +38,7 @@ def handle_pairing(handler, state):
     code = hub.pairing_code(token)
     if not identity or code is None or handler.command not in {'GET', 'POST'}:
         send(HTTPStatus.NOT_FOUND, '<p>This pairing link is not valid any more. A link expires after ten minutes '
-                                   'or when the broker restarts.</p><p>Click the akdbx extension button again, then '
+                                   'or when the broker restarts, the unlock link is blocked or a new unlock link is made.</p><p>Click the akdbx extension button again, then '
                                    'choose <strong>Open the pairing page</strong> for a new link.</p>')
         return True
 
@@ -92,13 +95,30 @@ def handle_pairing(handler, state):
         with state.unlock_lock:
             if handler._expired():
                 return True
+            # Recheck the pairing link and the block just before the password
+            # check: either may have changed while this attempt waited.
+            status = state.pairing_status(attempt, lambda: hub.pairing_code(token) is not None)
+            if status != 'ready':
+                password = ''
+                if status == 'blocked':
+                    send(HTTPStatus.FORBIDDEN, blocked)
+                else:
+                    send(HTTPStatus.NOT_FOUND, '<p>This pairing link is not valid any more. Click the akdbx '
+                                               'extension button again for a new link.</p>')
+                return True
             ok = False
             if broker.locked:
                 try:
                     vault = state.opener(state.database, password, state.keyfile)
+                except Exception as exc:
+                    password = ''
+                    if not is_wrong_credentials(exc):
+                        # A store or I/O error is not a failed attempt.
+                        state.cancel_attempt(attempt)
+                        send(HTTPStatus.SERVICE_UNAVAILABLE, form(OPEN_FAILED))
+                        return True
+                else:
                     ok = broker.unlock(vault) or not broker.locked
-                except Exception:
-                    ok = False
                 if ok:
                     state.record_success(attempt)
             else:

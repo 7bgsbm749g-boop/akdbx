@@ -421,24 +421,55 @@ def test_windows_cli_blocks_the_link_after_three_failures_and_makes_a_new_one(sy
     origin, certificate, key, submit = native_https_config
     pipe = rpc.PREFIX + 'akdbx-test-' + uuid.uuid4().hex
     command = [sys.executable, '-m', 'akdbx.cli', '--socket', pipe, '--unlock-origin', origin]
+    state = synthetic_vault.parent / 'state' / 'unlock-notifications.json'
+    flag = state.with_name(state.name + '.unlock-blocked')
 
     def run(*args):
         result = subprocess.run([*command, *args], capture_output=True, text=True, timeout=10)
         return result.returncode, json.loads(result.stdout) if result.stdout.strip() else None
 
-    with subprocess.Popen(
-        [*command, 'serve', str(synthetic_vault), '--tls-cert', str(certificate), '--tls-key', str(key)],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ) as server:
+    def start():
+        return subprocess.Popen(
+            [*command, 'serve', str(synthetic_vault), '--tls-cert', str(certificate), '--tls-key', str(key),
+             '--notification-state', str(state)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def restart_on_new_port():
+        # SO_EXCLUSIVEADDRUSE can refuse the old port while its connections
+        # are in TIME_WAIT, so the restarted broker uses another port.
+        nonlocal origin, command, submit
+        with socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            port = reservation.getsockname()[1]
+        origin = f'https://127.0.0.1:{port}'
+        command = [sys.executable, '-m', 'akdbx.cli', '--socket', pipe, '--unlock-origin', origin]
+        context = ssl.create_default_context(cafile=str(certificate))
+
+        def submit(url, values):
+            connection = HTTPSConnection('127.0.0.1', port, context=context, timeout=10)
+            parsed = urlsplit(url)
+            try:
+                connection.request('POST', parsed.path + '?' + parsed.query, urlencode(values),
+                                   {'Content-Type': 'application/x-www-form-urlencoded', 'Origin': origin})
+                response = connection.getresponse()
+                return response.status, response.read()
+            finally:
+                connection.close()
+        return start()
+
+    def ready(server):
+        deadline = time.monotonic() + 10
+        while True:
+            code, status = run('status')
+            if code == 0:
+                return status
+            assert server.poll() is None, 'Windows CLI broker exited during startup'
+            assert time.monotonic() < deadline, 'Windows CLI broker did not become ready'
+            time.sleep(0.05)
+
+    with start() as server:
         try:
-            deadline = time.monotonic() + 10
-            while True:
-                code, locked = run('status')
-                if code == 0:
-                    break
-                assert server.poll() is None, 'Windows CLI broker exited during startup'
-                assert time.monotonic() < deadline, 'Windows CLI broker did not become ready'
-                time.sleep(0.05)
+            locked = ready(server)
             old = locked['unlock_url']
             assert locked['unlock_link_protocol'] == 1 and 'unlock_blocked' not in locked
             # Refused while the link still works: the CLI does not send it.
@@ -452,20 +483,60 @@ def test_windows_cli_blocks_the_link_after_three_failures_and_makes_a_new_one(sy
             code, blocked = run('status')
             assert code == 0 and blocked['locked'] is True and blocked['unlock_blocked'] is True
             assert 'unlock_url' not in blocked
+            assert blocked['unlock_origin'] == origin
             code, search = run('search', 'example.test')
             assert code == 1 and search == {'ok': False, 'error': 'vault locked', 'unlock_blocked': True}
-
+        finally:
+            server.terminate()
+            server.wait(timeout=5)
+    # The block is saved privately and survives a broker restart.
+    assert json.loads(security.read_private(flag)[0]) == {'blocked': True}
+    with restart_on_new_port() as server:
+        try:
+            blocked = ready(server)
+            assert blocked['locked'] is True and blocked['unlock_blocked'] is True and 'unlock_url' not in blocked
             code, receipt = run('new-unlock-link', '--user-confirmed')
             assert code == 0 and receipt['ok'] is True and receipt['locked'] is True
             fresh = receipt['unlock_url']
             assert fresh.startswith(origin + '/?token=') and fresh != old
-            assert submit(old, {'password': 'synthetic master'})[0] == 404
+            assert submit(origin + '/?' + urlsplit(old).query, {'password': 'synthetic master'})[0] == 404
             assert submit(fresh, {'password': 'synthetic master'})[0] == 200
             code, unlocked = run('status')
             assert code == 0 and unlocked['locked'] is False and 'unlock_blocked' not in unlocked
+            assert json.loads(security.read_private(flag)[0]) == {'blocked': False}
         finally:
             server.terminate()
             server.wait(timeout=5)
+
+
+def test_unlock_block_flag_is_private_and_untrusted_flags_fail_closed(private_dir):
+    from akdbx.broker import Broker
+    from akdbx.notifications import UnlockNotifications
+    from akdbx.web_unlock import UnlockState
+    state = private_dir / 'state' / 'unlock-notifications.json'
+    flag = state.with_name(state.name + '.unlock-blocked')
+    first = UnlockNotifications(state_path=state)
+    assert first.load_unlock_blocked() is False
+    first.save_unlock_blocked(False)
+    assert not state.parent.exists()  # clearing a block that was never saved writes nothing
+    first.save_unlock_blocked(True)
+    with security.checked_handle(state.parent, directory=True):
+        pass
+    assert json.loads(security.read_private(flag)[0]) == {'blocked': True}
+    first.close()
+    assert UnlockNotifications(state_path=state).load_unlock_blocked() is True
+    broker = Broker(None, object(), notification_state_path=state)
+    assert UnlockState(broker, private_dir / 'unused.kdbx', None, public_base='https://127.0.0.1:9').blocked
+    broker.unlock_notifications.close()
+    # A flag that another user can write is refused, so the link stays blocked.
+    public = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor('D:P(A;;FA;;;WD)', 1)
+    security.replace_private(flag, json.dumps({'blocked': False}).encode())
+    win32security.SetFileSecurity(str(flag), win32security.DACL_SECURITY_INFORMATION, public)
+    with pytest.raises((ValueError, PermissionError, pywintypes.error)):
+        UnlockNotifications(state_path=state).load_unlock_blocked()
+    broker = Broker(None, object(), notification_state_path=state)
+    assert UnlockState(broker, private_dir / 'unused.kdbx', None, public_base='https://127.0.0.1:9').blocked
+    broker.unlock_notifications.close()
 
 
 def test_native_https_unlock_password_totp_and_identity_saves(synthetic_vault, native_https_config):

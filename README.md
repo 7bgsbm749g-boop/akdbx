@@ -198,7 +198,8 @@ after a successful unlock.
 Each link allows three failed master-password attempts in total (0.24.0+).
 The third failure blocks the link at once, and time never expires it. While
 it is blocked, `status` reports `unlock_blocked: true` without a link, and
-waiting unlock notifications get an `akdbx.unlock-blocked` event. Only
+waiting unlock notifications that opted in get an `akdbx.unlock-blocked`
+event. A broker restart keeps the block. Only
 `akdbx new-unlock-link --user-confirmed` replaces a blocked link, after the
 user confirms that the failures were theirs; see
 [Failed attempts block the link](docs/private-pages.md#failed-attempts-block-the-link).
@@ -441,12 +442,14 @@ Require the running broker's `unlock_notifications_supported: true` and integer
 running broker. See [the notification workflow](skills/akdbx/references/unlock-notifications.md)
 for exact T3 registration, cleanup and recovery.
 
-From 0.24.0, when the unlock link is blocked after three failed attempts, each
+From 0.24.0, a subscription can opt in with `blocked_events: true` (the CLI
+does this when the broker advertises `unlock_notifications_blocked_event:
+true`). When the unlock link is blocked after three failed attempts, each such
 waiting subscription also gets `{"event": "akdbx.unlock-blocked", "locked":
 true, "unlock_blocked": true, ...}` with a new event ID. The subscription stays
 `subscribed` and later sends the normal `akdbx.unlocked` event to the same URL.
-`unlock_notifications_blocked_event: true` advertises this. The event is held
-in memory only: a restarted broker has a new, unblocked link.
+Subscriptions without the opt-in get only `akdbx.unlocked`. The block itself
+is saved next to the notification state, so a restarted broker stays blocked.
 
 ## Authenticator codes (0.10.0)
 
