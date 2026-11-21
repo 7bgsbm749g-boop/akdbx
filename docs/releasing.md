@@ -30,7 +30,7 @@ pull requests into it separately.
 
    ```sh
    git clone https://github.com/7bgsbm749g-boop/akdbx-relay ../akdbx-relay
-   python -m pip install ../akdbx-relay
+   python -m pip install ../akdbx-relay 'cryptography>=43,<47'  # keep akdbx's range
    AKDBX_RELAY_SOURCE=../akdbx-relay python -m pytest -q -rs tests/test_relay_integration.py
    ```
 
