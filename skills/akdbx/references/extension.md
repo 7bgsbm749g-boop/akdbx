@@ -8,10 +8,19 @@ fills the field, reached through a native-messaging host:
 CLI/agent -> broker -> native-messaging host -> akdbx extension -> retained DOM element
 ```
 
-Use it when the browser must not run with a remote-debugging port. The akdbx
-docs warn that a debugging port gives every process of the same user full
-control of that profile. This route is not a way to hide automation from a
-website: do not use it to avoid bot detection or fraud checks.
+Prefer this route whenever the extension is paired. It needs no
+remote-debugging port, which would give every process of the same user full
+control of the browser profile. It also runs in the user's real browser, with
+its normal history and sessions. Anti-bot and anti-fraud checks often misfire
+on a debugging-port browser and refuse genuine use (in practice: Cloudflare's
+sign-in check failing, and Stripe returning `generic_decline` for a valid card
+before the bank saw it). The same tasks pass in the user's own browser. When a
+check like that blocks the CDP route for the user's own account and data, stop
+retrying there and use this route.
+
+The extension is the user's browser, not a disguise. Do not use it to
+impersonate anyone, to get past a block a site applied to this user or account
+on purpose, or with someone else's account or card.
 
 Supported browsers: Helium, Google Chrome and Microsoft Edge, on Windows and
 Linux. The extension has the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg` and
