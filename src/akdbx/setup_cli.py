@@ -1672,8 +1672,8 @@ def run(args, *, status, ask=None, interactive=None, **options):
     setup = Setup(args, ui=Prompter(interactive, out, ask), status=status, **options)
     try:
         result = setup.execute()
-    except KeyboardInterrupt:
-        print('\nakdbx setup stopped; nothing more was changed.', file=sys.stderr)
+    except (KeyboardInterrupt, EOFError):
+        print('\nakdbx setup stopped; nothing more was changed. Run it again to continue.', file=sys.stderr)
         return 130
     if args.json:
         print(json.dumps(result, indent=2, default=str))

@@ -1108,3 +1108,121 @@ def test_windows_cli_uses_the_relay_origin_and_refuses_conflicts(private_dir, mo
     store.save(_relay_config(enabled=False))
     cli.resolve_unlock_origin(args := cli.parser().parse_args(['status']))
     assert args.unlock_origin == 'https://localhost:9443'
+
+
+# ----- akdbx setup on native Windows --------------------------------------------
+
+def _setup_args(*argv):
+    args = cli.parser().parse_args(['setup', *argv])
+    cli.resolve_unlock_origin(args)
+    args.socket_explicit = False
+    args.socket = cli.default_socket()
+    return args
+
+
+def _setup(*argv, runner=None, status=None, **options):
+    from akdbx import setup_cli
+    calls = []
+
+    def run(command, **_):
+        command = [str(part) for part in command]
+        calls.append(command)
+        if runner is not None:
+            return runner(command)
+        return subprocess.CompletedProcess(command, 0, '', '')
+
+    def no_broker(origin):
+        raise FileNotFoundError
+    instance = setup_cli.Setup(_setup_args(*argv), ui=setup_cli.Prompter(False, io.StringIO()), runner=run,
+                               status=status or no_broker, which=lambda name: None, sleep=lambda _: None, **options)
+    return instance, calls
+
+
+def test_setup_checks_a_windows_vault_through_handles_only(synthetic_vault, tmp_path):
+    instance, _ = _setup('--yes')
+    assert instance.check_vault(synthetic_vault, None) is None
+    original = win32file.GetFileAttributes(str(synthetic_vault))
+    try:
+        win32file.SetFileAttributes(str(synthetic_vault), original | win32con.FILE_ATTRIBUTE_READONLY)
+        assert instance.check_vault(synthetic_vault, None) == 'the vault file is read-only'
+    finally:
+        win32file.SetFileAttributes(str(synthetic_vault), original)
+    with pytest.raises(ValueError, match='never creates'):
+        instance.check_vault(synthetic_vault.with_name('missing.kdbx'), None)
+    with pytest.raises(ValueError, match='never creates'):
+        instance.check_vault(synthetic_vault, synthetic_vault.with_name('missing.key'))
+    import _winapi
+    junction = tmp_path / 'setup-junction'
+    _winapi.CreateJunction(str(synthetic_vault.parent), str(junction))
+    try:
+        with pytest.raises(ValueError):
+            instance.check_vault(junction / synthetic_vault.name, None)
+    finally:
+        os.rmdir(junction)
+    link = synthetic_vault.parent / 'setup-hard-link.kdbx'
+    os.link(synthetic_vault, link)
+    with pytest.raises(ValueError, match='private to you'):
+        instance.check_vault(synthetic_vault, None)
+
+
+def test_setup_state_is_a_private_file_in_local_app_data(private_dir, monkeypatch):
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    instance, _ = _setup('--yes')
+    instance.choice.update(vault=r'C:\synthetic.kdbx', access='local', browsers=['edge'])
+    instance.save_state()
+    path = private_dir / 'akdbx' / 'setup.json'
+    assert json.loads(security.read_private(path)[0])['browsers'] == ['edge']
+    again, _ = _setup('--yes')
+    assert again.state['vault'] == r'C:\synthetic.kdbx' and again.state_problem is None
+
+
+def test_setup_links_the_skill_with_a_junction_and_never_replaces_a_folder(tmp_path):
+    from akdbx import setup_cli
+    source = tmp_path / 'skill-source'
+    source.mkdir()
+    (source / 'SKILL.md').write_text('---\nname: akdbx\n---\n')
+    skills, other = tmp_path / 'agent-skills', tmp_path / 'other-skills'
+    other.mkdir()
+    (other / 'akdbx').mkdir()
+    argv = ('--yes', '--link-skill', '--skill-source', str(source), '--skill-dir', str(skills),
+            '--skill-dir', str(other))
+    instance, _ = _setup(*argv)
+    instance.choice.update(link_skill=True, skill_dirs=[str(skills), str(other)])
+    instance.stage_skill()
+    kind, target = setup_cli.link_target(skills / 'akdbx')
+    assert kind == 'link' and setup_cli.same_folder(target, source)
+    assert (skills / 'akdbx' / 'SKILL.md').is_file()
+    assert instance.stages['skill']['links'] == [{'path': str(skills / 'akdbx'), 'state': 'changed'},
+                                                 {'path': str(other / 'akdbx'), 'state': 'failed'}]
+    again, _ = _setup(*argv)
+    again.choice.update(link_skill=True, skill_dirs=[str(skills)])
+    again.stage_skill()
+    assert again.stages['skill']['state'] == 'done'
+    os.rmdir(skills / 'akdbx')
+
+
+def test_setup_creates_a_logon_task_file_and_starts_it_once(synthetic_vault, native_https_config, private_dir,
+                                                            monkeypatch):
+    from akdbx import setup_cli
+    _, certificate, key, _ = native_https_config
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    started = []
+
+    def runner(command):
+        if command[1] == '/Query':
+            return subprocess.CompletedProcess(command, 1, '', 'not found')
+        if command[1] == '/Run':
+            started.append(command)
+        return subprocess.CompletedProcess(command, 0, '', '')
+    instance, calls = _setup('--yes', '--vault', str(synthetic_vault), '--tls-cert', str(certificate),
+                             '--tls-key', str(key), '--start-at-login', runner=runner)
+    result = instance.execute()
+    assert result['stages']['vault']['state'] == 'ok' and result['stages']['page']['state'] == 'ok', result
+    assert result['stages']['login']['state'] == 'changed', result
+    task_file = private_dir / 'akdbx' / 'akdbx-broker.task.xml'
+    xml = security.read_private(task_file)[0].decode('utf-16')
+    marker, command, arguments = setup_cli.task_action(xml)
+    assert marker and command.lower().endswith(('pythonw.exe', 'python.exe'))
+    assert subprocess.list2cmdline(['serve', str(synthetic_vault)]) in arguments
+    assert ['schtasks', '/Create', '/TN', 'akdbx-broker', '/XML', str(task_file)] in calls
+    assert len(started) == 1

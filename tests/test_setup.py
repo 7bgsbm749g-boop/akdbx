@@ -641,3 +641,11 @@ def test_setup_help_lists_every_stage():
     assert text.dry_run is True
     with pytest.raises(SystemExit):
         cli.parser().parse_args(['setup', '--skip', 'unknown'])
+
+
+def test_end_of_input_stops_setup_cleanly(home, vault, capsys):
+    def closed():
+        raise EOFError
+    code, _, runner = setup(ask=closed, interactive=True)
+    assert code == 130 and runner.calls == []
+    assert 'Run it again to continue' in capsys.readouterr().err
