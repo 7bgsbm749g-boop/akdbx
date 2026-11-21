@@ -160,11 +160,18 @@ def run(args, request):
                         or args.processor not in caps.get('card_processors', [])):
                     print(json.dumps(dict(ok=False, error='broker lacks requested card processor frame protocol; pin request not sent')))
                     return 1
-                if (args.processor == 'stripe' and args.frame_url
-                        and card_processor.stripe_element(args.frame_url) == 'card-element'
-                        and caps.get('stripe_card_element') is not True):
-                    print(json.dumps(dict(ok=False, error='broker lacks Stripe Card Element support; pin request not sent')))
-                    return 1
+                if args.processor == 'stripe' and caps.get('stripe_card_element') is not True:
+                    # An older broker refuses a Card Element pin only with a
+                    # generic error. Without the frame URL (optional on the
+                    # extension route) the CLI cannot tell the two frames apart.
+                    if not args.frame_url:
+                        print(json.dumps(dict(ok=False, error=(
+                            'broker lacks Stripe Card Element support; give the exact Stripe frame URL with '
+                            '--frame-url so akdbx can check it; pin request not sent'))))
+                        return 1
+                    if card_processor.stripe_element(args.frame_url) == 'card-element':
+                        print(json.dumps(dict(ok=False, error='broker lacks Stripe Card Element support; pin request not sent')))
+                        return 1
                 payload.update(processor=args.processor, processor_protocol=card_processor.PROTOCOL)
         else:
             payload.update(handle=args.handle, target=args.target, field=args.field, start_deadline=time.monotonic() + 4)

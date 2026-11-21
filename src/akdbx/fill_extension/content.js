@@ -164,10 +164,13 @@
     const type = input ? el.type : el.tagName.toLowerCase();
     const last = tokens(el).slice(-1)[0] || "";
     if (processor === "stripe") {
-      // The frame path selects the Payment Element or the classic Card Element.
-      const element = Object.values(STRIPE_ELEMENTS).find(e => new RegExp(e.path).test(location.pathname));
-      const hit = element && Object.entries(element.fields).find(([, [id, name]]) =>
-        (id === null ? !el.hasAttribute("id") : el.id === id) && el.getAttribute("name") === name);
+      // The popup fills only the Payment Element's id/name pairs. The classic
+      // Card Element's inputs have no id; only the verified agent pin route
+      // (exact type, autocomplete, unique name, merchant iframe owner and hit
+      // test) may target them, so no input in such a document matches here.
+      if (new RegExp(STRIPE_ELEMENTS["card-element"].path).test(location.pathname)) return null;
+      const hit = Object.entries(STRIPE_ELEMENTS["payment-element"].fields).find(([, [id, name]]) =>
+        id !== null && el.id === id && el.getAttribute("name") === name);
       return hit && input ? {kind: "card", role: hit[0]} : null;
     }
     if (processor === "computop") {

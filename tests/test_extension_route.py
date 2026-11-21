@@ -482,23 +482,61 @@ def test_popup_refuses_cross_site_login_frames_and_foreign_card_frames():
                   'release:' + handle)['values'] == {'cc-number': CARD['number'], 'cc-exp': '09/31'}
 
 
-def test_popup_card_element_releases_only_its_three_fields_with_mm_yy():
+@pytest.mark.parametrize('case', ['processor-frame', 'top-level', 'nested', 'identity-top-level',
+                                  'login-top-level'])
+def test_popup_never_matches_a_stripe_card_element_document(case):
+    """The classic Card Element is pin-route only: the popup offers nothing there."""
+    broker = make_broker([CardEntry(), Entry(username=USERNAME, password=PASSWORD, url=STRIPE_CARD_ELEMENT)])
+    channel, _ = attach(broker, {})
+    top, kind = TOP, 'card'
+    chain = {
+        'processor-frame': [dict(document_id='TOP', url=TOP), dict(document_id='C', url=STRIPE_CARD_ELEMENT)],
+        'top-level': [dict(document_id='C', url=STRIPE_CARD_ELEMENT)],
+        'nested': [dict(document_id='TOP', url=TOP), dict(document_id='SAME', url='https://shop.example.com/pay'),
+                   dict(document_id='C', url=STRIPE_CARD_ELEMENT)],
+        'identity-top-level': [dict(document_id='C', url=STRIPE_CARD_ELEMENT)],
+        'login-top-level': [dict(document_id='C', url=STRIPE_CARD_ELEMENT)],
+    }[case]
+    if case.endswith('top-level'):
+        top = STRIPE_CARD_ELEMENT
+    if case.startswith('identity'):
+        kind = 'identity'
+    elif case.startswith('login'):
+        kind = 'login'
+    assert popup(broker, channel, 'match', kind=kind, **facts('C', top=top, chain=chain)) == dict(
+        ok=False, error='extension request refused; page, frame or field not supported')
+    assert not broker.extension.selections
+
+
+def test_popup_release_refuses_a_stripe_card_element_selection():
     broker = make_broker([CardEntry()])
     channel, _ = attach(broker, {})
     chain = [dict(document_id='TOP', url=TOP), dict(document_id='C', url=STRIPE_CARD_ELEMENT)]
-    def release(roles, formats):
-        match = popup(broker, channel, 'match', kind='card', **facts('C', top=TOP, chain=chain))
-        assert match['ok']
-        handle = match['entries'][0]['handle']
-        return handle, popup(broker, channel, 'release', handle=handle, roles=roles, formats=formats,
-                             **facts('C', top=TOP, chain=chain))
-    assert release(['cc-number', 'cc-exp'], {'cc-exp': 'MM/YYYY'})[1]['ok'] is False
-    assert release(['cc-name'], {})[1]['ok'] is False
-    handle, released = release(['cc-number', 'cc-exp', 'cc-csc'], {'cc-exp': 'MM/YY'})
+    entry = next(iter(broker.vault.entries))
+    # Even a selection for that document (none is issued) releases nothing.
+    broker.extension.selections['h' * 64] = route.Selection(entry, channel.id, 3, 'C', 'card', chain,
+                                                            broker.extension.clock() + 60)
+    released = popup(broker, channel, 'release', handle='h' * 64, roles=['cc-number', 'cc-exp', 'cc-csc'],
+                     formats={'cc-exp': 'MM/YY'}, **facts('C', top=TOP, chain=chain))
+    assert released == dict(ok=False, error='extension request refused; page, frame or field not supported')
     assert CARD['number'] not in json.dumps(released)
-    assert unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'],
-                  'release:' + handle)['values'] == {'cc-number': CARD['number'], 'cc-exp': '09/31',
-                                                     'cc-csc': CARD['csc']}
+
+
+def test_card_element_pin_route_still_fills_while_the_popup_refuses():
+    broker = make_broker([CardEntry()])
+    tabs = {5: [Document('TOP', TOP), Document('CARD', STRIPE_CARD_ELEMENT, 'TOP')]}
+    channel, extension = attach(broker, tabs)
+    chain = [dict(document_id='TOP', url=TOP), dict(document_id='CARD', url=STRIPE_CARD_ELEMENT)]
+    assert popup(broker, channel, 'match', kind='card', **facts('CARD', top=TOP, chain=chain, tab=5))['ok'] is False
+    for field, options, expected in (('cc-number', {}, CARD['number']), ('cc-exp', {'format': 'MM/YY'}, '09/31'),
+                                     ('cc-csc', {}, CARD['csc'])):
+        pin = card_pin(broker, channel, 'CARD', field, processor='stripe', processor_protocol=1)
+        assert pin['ok'], pin
+        handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
+        receipt = broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=pin['target'],
+                                       field=field, **options))
+        assert receipt == dict(ok=True, filled=field, card_delivery=route.DELIVERY)
+    assert [v['value'] for v in extension.filled] == [CARD['number'], '09/31', CARD['csc']]
 
 
 def test_popup_on_locked_broker_reports_locked_and_releases_nothing():

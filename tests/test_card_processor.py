@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from akdbx import cli
+from akdbx import cli, extension_host
 from akdbx.browser_card import BrowserCards, CardTargetError, DELIVERY
 from akdbx.card_processor import adyen_url, document_url, stripe_element, supported_request
 from test_card_chromium import STRIPE_CARD_ELEMENT_FRAME, STRIPE_CARD_FRAME, chrome, evaluate, pin, fill
@@ -283,16 +283,17 @@ def test_status_advertises_card_element_support():
     assert caps['stripe_card_element'] is True and 'stripe' in caps['card_processors']
 
 
-def stripe_cli(monkeypatch, frame_url, capabilities):
+def stripe_cli(monkeypatch, frame_url, capabilities, route=None):
     calls = []
     def request(_socket, payload, **kwargs):
         calls.append(payload)
         return dict(ok=True, cards_supported=True, card_protocol=1, card_delivery=DELIVERY,
                     card_processor_frames_protocol=1, card_processors=['adyen', 'computop', 'stripe'],
-                    **capabilities)
+                    extension_protocol=1, **capabilities)
     monkeypatch.setattr(cli, 'request', request)
     code = cli.main(['pin-card-target', '--page-id', 'page', '--frame-id', 'frame',
-        '--top-url', 'https://www.merchant.test/checkout', '--frame-url', frame_url,
+        '--top-url', 'https://www.merchant.test/checkout', *(['--frame-url', frame_url] if frame_url else []),
+        *(['--route', route] if route else []),
         '--selector', 'input[name="cardnumber"]', '--field', 'cc-number', '--processor', 'stripe'])
     return code, calls
 
@@ -309,6 +310,90 @@ def test_cli_still_sends_payment_element_and_card_element_pins(monkeypatch, caps
         _code, calls = stripe_cli(monkeypatch, frame_url, capabilities)
         assert len(calls) == 2 and calls[1]['processor'] == 'stripe' and calls[1]['frame_url'] == frame_url
     capsys.readouterr()
+
+
+@pytest.mark.parametrize('capabilities', [{}, {'stripe_card_element': 1}, {'stripe_card_element': 'true'}])
+def test_cli_extension_route_without_frame_url_refuses_an_older_broker(monkeypatch, capsys, capabilities):
+    # The extension route takes no frame URL, so the CLI cannot tell the two
+    # Stripe frames apart: an older broker would refuse only generically.
+    code, calls = stripe_cli(monkeypatch, None, capabilities, route='extension')
+    assert code == 1 and calls == [{'action': 'ping'}]
+    out = json.loads(capsys.readouterr().out)
+    assert out['ok'] is False and 'Stripe Card Element' in out['error'] and '--frame-url' in out['error']
+
+
+def test_cli_extension_route_sends_stripe_pins_it_can_check(monkeypatch, capsys):
+    for frame_url, capabilities in ((None, {'stripe_card_element': True}), (STRIPE_CARD_FRAME, {}),
+                                    (STRIPE_CARD_ELEMENT_FRAME, {'stripe_card_element': True})):
+        _code, calls = stripe_cli(monkeypatch, frame_url, capabilities, route='extension')
+        assert len(calls) == 2 and calls[1]['processor'] == 'stripe' and calls[1]['route'] == 'extension'
+        assert calls[1].get('frame_url') == frame_url
+    code, calls = stripe_cli(monkeypatch, STRIPE_CARD_ELEMENT_FRAME, {}, route='extension')
+    assert code == 1 and calls == [{'action': 'ping'}]
+    capsys.readouterr()
+
+
+# ----- the fill extension's user-click popup never serves the Card Element -----
+def popup_probe(chrome, session, focus, before=None):
+    """Run the built fill extension's content script in an isolated world of
+    this document, focus one input and return the popup's probe (None refuses)."""
+    frame = chrome.cdp.call('Page.getFrameTree', session=session)['frameTree']['frame']['id']
+    context = chrome.cdp.call('Page.createIsolatedWorld', {'frameId': frame, 'worldName': 'akdbx-content-test'},
+                              session)['executionContextId']
+    def run(expression):
+        result = chrome.cdp.call('Runtime.evaluate', {'expression': expression, 'contextId': context,
+                                                      'returnByValue': True}, session)
+        assert 'exceptionDetails' not in result, result
+        return result['result'].get('value')
+    run(extension_host._content_script())
+    if before:
+        child(chrome, session, before)
+    run(f'document.querySelector({json.dumps(focus)}).focus()')
+    assert run(f'document.activeElement === document.querySelector({json.dumps(focus)})')
+    return run('globalThis.__akdbxContent.probe()')
+
+
+def test_popup_probe_still_offers_the_payment_element(chrome):
+    _request, session = prepare(chrome, '#payment-numberInput', merchant_path='/stripe',
+                                endpoint=STRIPE_CARD_FRAME, processor='stripe')
+    found = popup_probe(chrome, session, '#payment-numberInput')
+    assert found['kind'] == 'card' and found['roles'] == ['cc-number', 'cc-exp', 'cc-csc'], found
+    assert found['formats'] == {'cc-exp': 'MM/YY'}
+
+
+COVER = """(() => { const c = document.createElement('div');
+  c.style.cssText = 'position:fixed;inset:0;background:white;z-index:2147483647;pointer-events:none';
+  document.body.append(c); })()"""
+
+
+@pytest.mark.parametrize('case,before', [
+    ('card-element', None),
+    ('duplicate-name', "document.querySelector('form').append(Object.assign(document.createElement('input'), "
+                       "{type: 'text', name: 'cardnumber', autocomplete: 'cc-number'}))"),
+    ('wrong-autocomplete', "document.querySelector('[name=cardnumber]').autocomplete = 'fake'"),
+    ('covered', COVER),
+    ('top-level', None),
+])
+def test_popup_probe_refuses_every_card_element_input(chrome, case, before):
+    if case == 'top-level':
+        # A top-level document at the Card Element path has no merchant owner.
+        chrome.cdp.call('Page.navigate', {'url': STRIPE_CARD_ELEMENT_FRAME}, chrome.session)
+        deadline = time.monotonic() + 8
+        while not evaluate(chrome, "location.hostname === 'js.stripe.com' && !!document.querySelector('[name=cvc]')"):
+            assert time.monotonic() < deadline, 'top-level Card Element document did not load'
+            time.sleep(.05)
+        session = chrome.session
+    else:
+        _request, session = card_element(chrome)
+    for selector in CARD_ELEMENT.values():
+        assert popup_probe(chrome, session, selector, before if selector == CARD_ELEMENT['cc-number'] else None) is None
+    assert card_element_empty(chrome, session)
+    if case == 'card-element':
+        # The verified processor pin route still fills the same frame.
+        request, _ = card_element(chrome)
+        target = pin(chrome, 'cc-number', CARD_ELEMENT['cc-number'], **request)
+        assert target['ok'], target
+        assert fill(chrome, target) == {'ok': True, 'filled': 'cc-number', 'card_delivery': DELIVERY}
 
 
 @pytest.mark.parametrize('field,selector,formatting,key',[

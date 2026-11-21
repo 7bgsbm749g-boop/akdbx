@@ -126,8 +126,16 @@ input for each fill, using a fresh card search handle each time.
 ### Stripe Card Element
 
 Require broker 0.24.0 or newer with `stripe_card_element: true` in `status`,
-as well as the Payment Element requirements above. A new CLI refuses an older
-broker before it sends a Card Element pin. Use the same `--processor stripe`.
+as well as the Payment Element requirements above. Use the same
+`--processor stripe`. The Card Element is pin-route only: use
+`pin-card-target --processor stripe` (CDP or extension route). The extension
+popup (user-click route) never offers or fills a card in this frame.
+
+A new CLI refuses an older broker (no `stripe_card_element: true`) before it
+sends the pin. On the extension route `--frame-url` is optional, so without it
+the CLI cannot tell the two Stripe frames apart: against an older broker it
+then refuses every `--processor stripe` pin and asks for the exact frame URL.
+Give `--frame-url` with the complete observed Stripe frame URL.
 The broker tells the two Stripe frames apart by the exact frame path only:
 `elements-inner-accessory-target-<hash>.html` is the Payment Element and
 `elements-inner-card-<hash>.html` is the classic Card Element. Each path accepts
@@ -205,6 +213,7 @@ Complete only the authorized task. Card fill alone never authorizes payment.
 
 `pin-card-target --route extension` pins the field through the paired akdbx
 browser extension instead of a debugging port. `--frame-url` is optional on
-this route; the broker uses the browser's own document URL. The merchant-frame
+this route; the broker uses the browser's own document URL (but see
+[Stripe Card Element](#stripe-card-element) for an older broker). The merchant-frame
 and processor rules are the same, and receipts carry `card_delivery:
 "extension-dom-v1"`. Read [the extension route](extension.md).

@@ -349,6 +349,8 @@ Version 0.24.0 also accepts Stripe's classic Card Element iframe
 `--processor stripe`, advertised as `stripe_card_element: true`. The frame path
 selects the input set: only the `cardnumber`, `exp-date` (MM/YY) and `cvc`
 inputs with no id and the matching autocomplete token; decoy inputs refuse.
+The Card Element fills only through `pin-card-target --processor stripe`; the
+extension popup refuses that frame.
 Other cross-origin frames, shadow DOM, unrecognised fields and native
 applications remain unsupported. Merchant verification uses part of the pin's
 lifetime, while the four-second fill deadline starts with the fill request.
