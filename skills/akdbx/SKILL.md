@@ -28,6 +28,7 @@ session.
 | Unlock link blocked (`unlock_blocked: true` or `akdbx.unlock-blocked`) | [Blocked unlock link](#blocked-unlock-link) |
 | Merge two vaults | [Merge](references/merge.md), [preservation format](references/preservation-format.md) |
 | Snapshot admission (review prototype) | [Admission](references/snapshot-admission.md), [group selection](references/group-selection.md), [selection verification](references/selection-verification.md) |
+| Open the private pages from any device (no Tailscale) | [The akdbx relay](#the-akdbx-relay) |
 | Windows host | [Windows operation](references/windows.md) |
 | Broker missing, socket or Tailscale problems (Linux/VPS) | [VPS setup and recovery](references/vps-setup.md) |
 | akdbx itself is broken or lacks support | [Fixing akdbx](#when-akdbx-is-missing-something-or-broken), [repair-thread handoff](references/repair-thread.md) |
@@ -66,8 +67,11 @@ The CLI is not on `PATH` everywhere. Find its absolute path in the private
 deployment configuration (for example `/path/to/akdbx/.venv/bin/akdbx`, or
 `CHECKOUT\.venv\Scripts\akdbx.exe` on Windows). Set `AKDBX_UNLOCK_ORIGIN` (or
 the global `--unlock-origin`) to the deployment's configured HTTPS origin
-before any broker call. Trust only that origin, never one learned from a broker
-response. Keep real hostnames and paths out of tracked files.
+before any broker call. With neither set, the CLI (0.26.0+) uses the origin of
+an enabled [akdbx relay](#the-akdbx-relay) from its private folder, then
+`https://localhost:9443`; do not copy the relay origin into the environment.
+Trust only that origin, never one learned from a broker response. Keep real
+hostnames and paths out of tracked files.
 
 Start every task with `akdbx status`. It always exits 0, so read the fields:
 `locked`, `version`, `recovery_required`, `writes_available`, and the
@@ -99,8 +103,10 @@ search or fill. If it returns `unlock_blocked: true` instead, follow
 [Blocked unlock link](#blocked-unlock-link). Give the user that exact link (the token is required). A link
 on a loopback origin (`https://localhost:PORT` or `https://127.0.0.1:PORT`)
 opens only on the broker's computer. A link on a Tailscale origin opens on any
-device in the tailnet. This is the same on Linux and Windows; the repository's
-`docs/private-pages.md` describes the setups.
+device in the tailnet. A link on a relay origin (`https://<id>.akdbx.link:8443`)
+opens on any device; handle it exactly like any other unlock link: give it
+only to the user, privately. This is the same on Linux and Windows; the
+repository's `docs/private-pages.md` describes the setups.
 
 Then let an event resume the task instead of waiting or asking the user to say
 "unlocked". Register a one-shot unlock webhook with
@@ -167,6 +173,40 @@ never restart the broker to get around a block: a restart or a reboot keeps
 the block, and `serve` then prints no unlock link.
 Keep the existing unlock subscription and its one-shot trigger: they still
 deliver the later unlock.
+
+## The akdbx relay
+
+The relay (0.26.0+) lets the user open the private pages (unlock, saves,
+extension pairing) from any device without Tailscale, an open port or a VPN.
+It forwards the encrypted connection; TLS ends in the broker, so the relay
+cannot read the master password. It makes the page reachable from the whole
+internet, so set it up only when the user asks for access from anywhere.
+Recommend Tailscale Serve first when the user has or wants a tailnet: it is
+the more private route. Tell the user the trust point: the relay operator
+controls the `akdbx.link` DNS and could get a second certificate for the
+broker's name, which public Certificate Transparency logs would show.
+
+1. `akdbx relay status`. With `enabled: true` and a certificate, skip to step 3.
+2. `akdbx relay enable`. It prints `origin` and `next`. On `ok: false` with
+   `retry_after`, tell the user when to try again; with `registered: true`,
+   the next `enable` resumes with the same name. Never read or print
+   `relay.json` or `tls.pem`: they hold the relay secret and the private key.
+3. The broker uses the relay only after a restart, and a restart locks the
+   vault. Restart only a broker that this workflow owns, with the user's
+   agreement, and with the same vault, key file and socket, without
+   `--tls-cert`, `--tls-key`, `--local-port` or an unlock origin. If
+   `AKDBX_UNLOCK_ORIGIN` is set in the broker's environment, the broker keeps
+   that origin: `enable` warns about it.
+4. `akdbx status`: the `relay` object must show `connected: true`, and the
+   `unlock_url` must start with the relay origin. Give the user that link and
+   continue as in [When the vault is locked](#when-the-vault-is-locked).
+
+`akdbx relay status` shows the name, origin, certificate dates, and whether a
+running broker is connected (`broker.connected`) or has a `renewal_error`.
+`akdbx relay disable` stops the relay at the next broker start (files kept);
+`--forget` also deletes the name, secret, key and certificate. Do not disable
+or forget a relay that another workflow's broker uses. Details:
+`docs/private-pages.md`, section "The akdbx relay".
 
 ## Choose the fill route
 

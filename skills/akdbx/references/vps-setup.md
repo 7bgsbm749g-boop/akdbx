@@ -60,7 +60,7 @@ Reuse an existing broker whenever possible. To start a new one, use the real dat
   serve /absolute/path/to/the-users-vault.kdbx --web-unlock
 ```
 
-This starts the [Tailscale Serve Unix-socket route](#tailscale-web-page), which existing deployments use. From 0.23.0 Linux can instead serve the same loopback HTTPS page as Windows: add `--tls-cert` and `--tls-key` (and `--local-port` for a Tailscale origin). [Private HTTPS pages](../../../docs/private-pages.md) describes both setups. A loopback origin without `--tls-cert` and `--tls-key` is refused. Do not change the route of a working deployment unless that change is authorized.
+This starts the [Tailscale Serve Unix-socket route](#tailscale-web-page), which existing deployments use. With an enabled akdbx relay (0.26.0+, `akdbx relay enable`) and no `AKDBX_UNLOCK_ORIGIN`, the same command uses the relay instead: see [akdbx relay](#akdbx-relay). From 0.23.0 Linux can instead serve the same loopback HTTPS page as Windows: add `--tls-cert` and `--tls-key` (and `--local-port` for a Tailscale origin). [Private HTTPS pages](../../../docs/private-pages.md) describes both setups. A loopback origin without `--tls-cert` and `--tls-key` is refused. Do not change the route of a working deployment unless that change is authorized.
 
 For a database requiring a key file, append `--keyfile /absolute/path/to/keyfile`. The key file must already be available on the broker host. Never print its contents. The browser accepts a master password; it does not upload the KDBX or key file, and its current form requires a nonempty password.
 
@@ -117,12 +117,22 @@ If the page fails:
 - `403` "Unlock link blocked": the link used its three failed attempts (0.25.0+). Follow the skill's "Blocked unlock link" steps; never run `new-unlock-link` without the user's two clear yes answers.
 - `429`: another attempt on this link is still running. Let the user wait for its result.
 
+## akdbx relay
+
+The relay (0.26.0+) reaches the private pages from any device with no Tailscale and no open port. Use it only when the user chose it after reading [Unlock from the internet](../../../docs/private-pages.md#unlock-from-the-internet); do not replace a working Tailscale route with it.
+
+- Files: `${XDG_STATE_HOME:-~/.local/state}/akdbx/relay/` (`relay.json` with the relay secret, `tls.pem` with the private key and chain). Folder `0700`, files `0600`, ancestors not group- or world-writable. Never print, copy or commit them. `serve` refuses a folder or file that fails the checks; fix the permissions instead of deleting the files.
+- `serve` with the relay needs no `--tls-cert`, `--tls-key`, `--local-port` or `AKDBX_UNLOCK_ORIGIN`, and refuses `--tls-cert`, `--tls-key` and `--local-port`. An `AKDBX_UNLOCK_ORIGIN` in the broker's environment wins over the relay. Only one broker can hold the relay; a second one refuses to start.
+- Checks: `akdbx relay status` (`broker.connected: true`), `akdbx status` (`relay.connected`, and `unlock_url` on the relay origin). The broker logs `akdbx relay: connected`, connection losses and renewals on stderr; it never logs the secret.
+- The relay endpoint is outbound HTTPS and WebSocket to `relay.akdbx.link:8443`. A firewall that blocks outbound port 8443 stops it: `relay status` then shows `connected: false`, and the broker retries every minute at most.
+- Certificate renewal is automatic. A failed renewal keeps the current certificate and shows `renewal_error`; it is retried with backoff.
+
 ## Sources for implementation-specific questions
 
 - Usage: [`README.md`](../../../README.md)
 - CLI defaults and arguments: [`src/akdbx/cli.py`](../../../src/akdbx/cli.py)
 - Broker and keyboard delivery: [`src/akdbx/broker.py`](../../../src/akdbx/broker.py)
-- Unlock page: [`src/akdbx/web_unlock.py`](../../../src/akdbx/web_unlock.py); loopback HTTPS listener: [`src/akdbx/local_https.py`](../../../src/akdbx/local_https.py)
+- Unlock page: [`src/akdbx/web_unlock.py`](../../../src/akdbx/web_unlock.py); loopback HTTPS listener: [`src/akdbx/local_https.py`](../../../src/akdbx/local_https.py); relay client: [`src/akdbx/relay.py`](../../../src/akdbx/relay.py)
 
 Consult source when observed behavior differs from this skill. Reading implementation is fine; using it to extract the user's vault secrets is not part of the login workflow.
 

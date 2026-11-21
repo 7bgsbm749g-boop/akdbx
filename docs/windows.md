@@ -46,6 +46,8 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
 - Private password and authenticator imports through the HTTPS page.
 - Unlock and private pages from another tailnet device, through Tailscale Serve
   (`--local-port`). See [Unlock from another device](#unlock-from-another-device).
+- Unlock and private pages from any device through the akdbx relay (0.26.0+),
+  with no open port. See [Unlock from the internet](#unlock-from-the-internet).
 - Authenticator capture from a website's setup QR through the browser native
   host (`akdbx-browser-import`). See
   [Authenticator capture native host](#authenticator-capture-native-host).
@@ -238,6 +240,23 @@ controls. `tailscale funnel` publishes the page to the internet instead: read
 [Unlock from the internet](private-pages.md#unlock-from-the-internet) first.
 When you stop using remote unlock, remove the proxy with
 `tailscale serve --https=9443 off`.
+
+### Unlock from the internet
+
+The choices and their order are the same as on Linux; see
+[Unlock from the internet](private-pages.md#unlock-from-the-internet). The
+akdbx relay needs no certificate, port or proxy setup:
+
+```powershell
+.\.venv\Scripts\akdbx.exe relay enable
+.\.venv\Scripts\akdbx.exe serve "$private\synthetic.kdbx"
+.\.venv\Scripts\akdbx.exe relay status
+```
+
+The relay folder is `%LOCALAPPDATA%\akdbx\relay`, next to the notification
+state: only this user and SYSTEM can open it and its files. Do not set
+`AKDBX_UNLOCK_ORIGIN`, `--tls-cert`, `--tls-key` or `--local-port` with the
+relay; the CLI finds the relay origin by itself.
 
 ### Authenticator capture native host
 

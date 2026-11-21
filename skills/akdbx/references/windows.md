@@ -12,9 +12,12 @@ broker.
 
 Every instruction in `SKILL.md` and the other references applies on Windows,
 with these replacements. The private HTTPS page is the same on both
-platforms: a loopback link opens on the broker's computer, and a link on a
-Tailscale Serve origin (`--local-port`) opens on any tailnet device. See the
-repository's `docs/private-pages.md`.
+platforms: a loopback link opens on the broker's computer, a link on a
+Tailscale Serve origin (`--local-port`) opens on any tailnet device, and a link
+on an akdbx relay origin (`https://<id>.akdbx.link:8443`, 0.26.0+) opens on any
+device. See the repository's `docs/private-pages.md`. The relay commands and
+steps are the same as in `SKILL.md`; its private folder is
+`%LOCALAPPDATA%\akdbx\relay` (this user and SYSTEM only).
 
 | Linux | Windows |
 | --- | --- |
@@ -28,6 +31,8 @@ repository's `docs/private-pages.md`.
 
 - Use the independently configured `AKDBX_UNLOCK_ORIGIN` (normally
   `https://localhost:9443`), not a hostname learned from a broker response.
+  With an enabled akdbx relay and no `AKDBX_UNLOCK_ORIGIN`, the CLI uses the
+  relay origin from its private folder by itself.
 - Run `status`. Require an unlocked broker with `recovery_required: false`.
   For password, login and generated-password fills also require integer
   `password_fill_protocol: 1`, `password_fill_delivery:
@@ -38,7 +43,8 @@ repository's `docs/private-pages.md`.
   protocol 1. `target_fill_modes: ["username"]` describes window pins only.
 - When locked, give the exact returned private HTTPS link to the user. A
   loopback link opens on the **Windows machine** only; a link on the configured
-  Tailscale Serve origin opens on any tailnet device. Serve must proxy to a
+  Tailscale Serve origin opens on any tailnet device, and a link on the relay
+  origin on any device. Serve must proxy to a
   verified `https://127.0.0.1:PORT` target, never `https+insecure`; see
   `docs/private-pages.md`. The user enters the
   master password privately. Never bypass a TLS certificate warning, read the

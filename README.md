@@ -63,10 +63,12 @@ pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
   README and the [VPS setup reference](skills/akdbx/references/vps-setup.md)
   describe it. The unlock page is the same loopback HTTPS page as on Windows
   (0.23.0+), optionally reached from other tailnet devices through Tailscale
-  Serve, or the earlier Tailscale Serve Unix-socket route.
+  Serve or from any device through the akdbx relay (0.26.0+), or the earlier
+  Tailscale Serve Unix-socket route.
 - **Windows** (0.17.0+): the same features. It uses local named pipes, Windows
   access checks, a loopback HTTPS page (from 0.22.0 also reachable from other
-  tailnet devices through Tailscale Serve) and directed Unicode window messages for
+  tailnet devices through Tailscale Serve, from 0.26.0 from any device through
+  the akdbx relay) and directed Unicode window messages for
   native-app username and TOTP fills. See [Windows setup and validation](docs/windows.md)
   for browser and engine requirements, limits and pending checks. The Linux
   broker-socket and Unix-socket unlock notes below do not describe the Windows
@@ -83,7 +85,7 @@ pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
 - The Unix socket and its directory are mode `0600` and `0700`. The CLI rejects
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
   peer UID before sending a request.
-- The broker starts locked. The user enters the master password only on the private HTTPS unlock page, never in chat, terminal input, arguments, or environment variables. The page is HTTPS on `127.0.0.1` with the broker's own certificate, or (Linux only) a Unix socket behind Tailscale Serve; it never binds the LAN or tailnet and never serves plain HTTP over TCP.
+- The broker starts locked. The user enters the master password only on the private HTTPS unlock page, never in chat, terminal input, arguments, or environment variables. The page is HTTPS on `127.0.0.1` with the broker's own certificate, or (Linux only) a Unix socket behind Tailscale Serve; it never binds the LAN or tailnet and never serves plain HTTP over TCP. Through the optional akdbx relay, TLS still ends in the broker: the relay forwards only encrypted bytes, and the broker trusts no name, certificate or header from it without checking.
 - After unlock, password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. They never send password keys or Tab. Unsupported targets refuse delivery without terminal approval.
 - Errors are deliberately generic after the typing boundary.
 
@@ -205,7 +207,7 @@ user confirms that the failures were theirs; see
 [Failed attempts block the link](docs/private-pages.md#failed-attempts-block-the-link).
 
 Linux and Windows serve the same page. [Private HTTPS pages](docs/private-pages.md)
-describes its three setups:
+describes its setups:
 
 - **Loopback HTTPS page** (`--tls-cert`, `--tls-key`): the broker serves HTTPS
   on `127.0.0.1` with your certificate. Open the link on the broker's
@@ -213,6 +215,10 @@ describes its three setups:
 - **Unlock from another device** (add a Tailscale origin and `--local-port`):
   Tailscale Serve proxies the tailnet name to the loopback listener through a
   verified `https://127.0.0.1:PORT` target.
+- **The akdbx relay** (`akdbx relay enable`, 0.26.0+): the page opens on any
+  device at a random `https://<id>.akdbx.link:8443` name. The relay forwards
+  the encrypted connection and cannot read it; see
+  [Unlock from the internet](#unlock-from-the-internet).
 - **Tailscale Serve Unix socket** (Linux only, no TLS options): the earlier
   Linux route. The backend listens only on a Unix-domain socket in the
   broker's private runtime directory, and Tailscale Serve supplies HTTPS and
@@ -223,7 +229,8 @@ The CLI independently trusts that HTTPS origin; it rejects broker responses
 containing an HTTP, malformed, credential-bearing, or different-origin unlock
 link. Every deployment must configure the client with the intended origin
 using global `--unlock-origin HTTPS_ORIGIN` (or `AKDBX_UNLOCK_ORIGIN`) before the
-subcommand. The same setting configures the broker's private-page origin at startup; the built-in default is `https://localhost:9443` on both platforms (before 0.23.0, Linux used a non-routable example). Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
+subcommand. With neither, the CLI uses the origin of an enabled akdbx relay
+(0.26.0+), then `https://localhost:9443`. The same setting configures the broker's private-page origin at startup; the built-in default is `https://localhost:9443` on both platforms (before 0.23.0, Linux used a non-routable example). Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
 requires global `--broker-uid UID` (or `AKDBX_BROKER_UID`).
 
 The master password travels inside the HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Unlock remains valid for the lifetime of the broker process.
@@ -237,17 +244,36 @@ Linux and Windows have the same choices. In order of recommendation:
 1. **Local only**: the loopback HTTPS page on the broker's computer.
 2. **A private proxy** such as Tailscale Serve: only your tailnet can reach the
    page. This is the most secure remote option; use it first.
-3. **A public tunnel that does not decrypt traffic**, such as Tailscale
-   Funnel: available, but not recommended. Anyone on the internet can reach
-   the page. On Linux it needs the loopback HTTPS page, not the Unix-socket
-   route.
-4. **A proxy that decrypts HTTPS**, such as Cloudflare Tunnel: STRONGLY
+3. **The akdbx relay** (0.26.0+): one command and no open port, router change
+   or VPN. The relay forwards the encrypted connection; TLS ends in the broker
+   with a key that never leaves it, so the relay cannot read the master
+   password. Trust point: the relay operator controls the `akdbx.link` DNS
+   and could get a second certificate for your broker's name, which the
+   public Certificate Transparency logs would show.
+4. **Another public tunnel that does not decrypt traffic**, such as Tailscale
+   Funnel: available, but not recommended. On Linux it needs the loopback
+   HTTPS page, not the Unix-socket route.
+5. **A proxy that decrypts HTTPS**, such as Cloudflare Tunnel: STRONGLY
    DISCOURAGED. The proxy operator can read the master password.
 
-On a public route, the secret link and the three-attempt block are the only
-protections. An akdbx relay service is planned; it is not available yet.
+The relay setup:
+
+```sh
+akdbx relay enable                     # register, get the certificate, save it privately
+akdbx serve /absolute/path/to/passwords.kdbx   # no --unlock-origin, --tls-cert, --tls-key or --local-port
+akdbx relay status                     # name, origin, certificate expiry, connected; never the secret
+akdbx relay disable [--forget]         # stop using it (keep the files, or delete them)
+```
+
+`serve` then opens the private pages at the broker's relay origin, keeps one
+connection to the relay, renews the certificate, and loads the new one without
+a restart. Every akdbx command uses the relay origin by itself; an explicit
+`--unlock-origin` or `AKDBX_UNLOCK_ORIGIN` still wins.
+
+On a public route (3, 4 or 5), anyone on the internet can reach the page: the
+secret link and the three-attempt block are the only protections.
 [Unlock from the internet](docs/private-pages.md#unlock-from-the-internet) has
-the setup.
+the details and the relay's files and checks.
 
 ## Shown-once secrets and service sinks (0.20.0)
 
