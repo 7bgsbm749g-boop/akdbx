@@ -103,7 +103,7 @@ sudo tailscale serve --bg --https=9443 "unix:${XDG_RUNTIME_DIR}/akdbx/akdbx-unlo
 tailscale serve status
 ```
 
-Use Serve and do not enable Funnel/public exposure for the unlock page. Preserve mappings for other applications; do not reset the entire Serve configuration. Do not retain or restore a plain-HTTP loopback TCP mapping or an `https+insecure://` target: a persistent mapping to a reclaimable high TCP port does not authenticate the backend while the broker is stopped. A verified `https://127.0.0.1:PORT` target to the broker's own HTTPS listener does authenticate it, by its certificate. Starting new application code cannot change an existing Tailscale configuration, so remote unlock must remain unavailable until this migration is completed.
+Use Serve. Do not enable Funnel or other public exposure for the unlock page unless the user explicitly chooses it after reading [Unlock from the internet](../../../docs/private-pages.md#unlock-from-the-internet); Funnel works only with the loopback HTTPS page. Preserve mappings for other applications; do not reset the entire Serve configuration. Do not retain or restore a plain-HTTP loopback TCP mapping or an `https+insecure://` target: a persistent mapping to a reclaimable high TCP port does not authenticate the backend while the broker is stopped. A verified `https://127.0.0.1:PORT` target to the broker's own HTTPS listener does authenticate it, by its certificate. Starting new application code cannot change an existing Tailscale configuration, so remote unlock must remain unavailable until this migration is completed.
 
 Tailscale versions before 1.98.9 must not be used for this socket mapping because TS-2026-005 allowed a non-root Tailscale operator to configure privileged Unix-socket proxy targets. Upgrade Tailscale through the host's managed package process before configuring the mapping. The broker's socket mode is `0600`; `tailscaled` normally runs as root and can reach it without making the socket accessible to other users.
 
@@ -114,7 +114,8 @@ If the page fails:
 - `404`: check broker status and the exact current tokenized URL. Successful unlock invalidates the old URL. Missing identity also causes `404`.
 - Proxy/backend unavailable: check that the broker and Unix socket are present and inspect the existing Serve mapping.
 - `Unlock failed`: let the user retry on the page. If needed, check only the configured database/key-file paths and file accessibility; do not solicit or test passwords yourself.
-- `429`: the current server limits failed attempts to five per minute. Wait before another user attempt.
+- `403` "Unlock link blocked": the link used its three failed attempts (0.24.0+). Follow the skill's "Blocked unlock link" steps; never run `new-unlock-link` without the user's two clear yes answers.
+- `429`: another attempt on this link is still running. Let the user wait for its result.
 
 ## Sources for implementation-specific questions
 

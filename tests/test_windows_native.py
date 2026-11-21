@@ -417,6 +417,57 @@ def test_windows_cli_serves_and_searches_synthetic_vault(synthetic_vault, native
             server.wait(timeout=5)
 
 
+def test_windows_cli_blocks_the_link_after_three_failures_and_makes_a_new_one(synthetic_vault, native_https_config):
+    origin, certificate, key, submit = native_https_config
+    pipe = rpc.PREFIX + 'akdbx-test-' + uuid.uuid4().hex
+    command = [sys.executable, '-m', 'akdbx.cli', '--socket', pipe, '--unlock-origin', origin]
+
+    def run(*args):
+        result = subprocess.run([*command, *args], capture_output=True, text=True, timeout=10)
+        return result.returncode, json.loads(result.stdout) if result.stdout.strip() else None
+
+    with subprocess.Popen(
+        [*command, 'serve', str(synthetic_vault), '--tls-cert', str(certificate), '--tls-key', str(key)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ) as server:
+        try:
+            deadline = time.monotonic() + 10
+            while True:
+                code, locked = run('status')
+                if code == 0:
+                    break
+                assert server.poll() is None, 'Windows CLI broker exited during startup'
+                assert time.monotonic() < deadline, 'Windows CLI broker did not become ready'
+                time.sleep(0.05)
+            old = locked['unlock_url']
+            assert locked['unlock_link_protocol'] == 1 and 'unlock_blocked' not in locked
+            # Refused while the link still works: the CLI does not send it.
+            code, refused = run('new-unlock-link', '--user-confirmed')
+            assert code == 1 and 'not blocked' in refused['error']
+
+            statuses = [submit(old, {'password': f'wrong-{index}'})[0] for index in range(3)]
+            assert statuses == [401, 401, 403]
+            status, page = submit(old, {'password': 'synthetic master'})
+            assert status == 403 and b'Ask your agent for a new unlock link' in page
+            code, blocked = run('status')
+            assert code == 0 and blocked['locked'] is True and blocked['unlock_blocked'] is True
+            assert 'unlock_url' not in blocked
+            code, search = run('search', 'example.test')
+            assert code == 1 and search == {'ok': False, 'error': 'vault locked', 'unlock_blocked': True}
+
+            code, receipt = run('new-unlock-link', '--user-confirmed')
+            assert code == 0 and receipt['ok'] is True and receipt['locked'] is True
+            fresh = receipt['unlock_url']
+            assert fresh.startswith(origin + '/?token=') and fresh != old
+            assert submit(old, {'password': 'synthetic master'})[0] == 404
+            assert submit(fresh, {'password': 'synthetic master'})[0] == 200
+            code, unlocked = run('status')
+            assert code == 0 and unlocked['locked'] is False and 'unlock_blocked' not in unlocked
+        finally:
+            server.terminate()
+            server.wait(timeout=5)
+
+
 def test_native_https_unlock_password_totp_and_identity_saves(synthetic_vault, native_https_config):
     origin, certificate, key, submit = native_https_config
     broker = Broker(None, object())

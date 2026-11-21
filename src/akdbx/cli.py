@@ -191,7 +191,7 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         raise ValueError("configured unlock origin must be an HTTPS origin without path, query, or credentials")
     if type(response.get("ok")) is not bool:
         raise ProtocolError("invalid broker response")
-    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'passwordless_identity_supported', 'target_fill_required', 'totp_supported'):
+    for capability in ('locked', 'unlock_blocked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'passwordless_identity_supported', 'target_fill_required', 'totp_supported'):
         if capability in response and type(response[capability]) is not bool:
             raise ProtocolError("invalid broker response")
     if 'version' in response and not isinstance(response['version'], str):
@@ -407,6 +407,14 @@ def parser() -> argparse.ArgumentParser:
     for command in (fill, generated, totp):
         command.add_argument('--target', required=True, help='fresh single-use pin-target token; no global fallback')
     commands.add_parser("status", help="check broker status")
+    new_link = commands.add_parser(
+        "new-unlock-link",
+        help="replace a blocked unlock link; only after the user confirms the failed attempts were theirs",
+        description="Works only while the current unlock link is blocked after three failed attempts. "
+                    "The broker cannot verify the user: ask the user first whether they made the failed "
+                    "attempts and want a new link. Never retry automatically.")
+    new_link.add_argument("--user-confirmed", action="store_true", required=True,
+                          help="the user said yes to both questions")
     subscribe = commands.add_parser("subscribe-unlock", help="register a one-shot HTTPS unlock webhook; no active agent wait")
     subscribe.add_argument("--webhook-url-file", required=True, type=Path,
                            help="owned mode-0600 file containing the private callback URL")
@@ -596,6 +604,8 @@ def main(argv: list[str] | None = None) -> int:
     payload = {"action": "ping" if args.command == "status" else args.command}
     if args.command in {'unlock-subscription-status', 'unsubscribe-unlock'}:
         payload['subscription_id'] = args.subscription_id
+    elif args.command == 'new-unlock-link':
+        payload['user_confirmed'] = args.user_confirmed is True
     elif args.command == 'pin-password-target':
         if args.mode == 'login' and not args.username_selector:
             print('--mode login requires --username-selector', file=sys.stderr)
@@ -710,6 +720,16 @@ def main(argv: list[str] | None = None) -> int:
                 print('could not read private webhook URL file; subscription not sent', file=sys.stderr)
                 return 2
             payload.update(webhook_url=webhook_url, ttl=args.ttl, notification_protocol=1)
+        if args.command == 'new-unlock-link':
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True or type(capabilities.get('unlock_link_protocol')) is not int
+                    or capabilities['unlock_link_protocol'] != 1):
+                print(json.dumps({'ok': False, 'error': 'broker lacks unlock link protocol 1; require broker 0.24.0 or newer; request not sent'}))
+                return 1
+            if capabilities.get('unlock_blocked') is not True:
+                print(json.dumps({'ok': False, 'error': 'the current unlock link is not blocked; no link created; request not sent'}))
+                return 1
         if args.command in {'setup-totp', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -878,7 +898,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.command in {'setup-totp', 'fill-totp'}:
         allowed = ({'ok', 'write_handle', 'private_url', 'state'} if args.command == 'setup-totp'
-                   else {'ok', 'filled', 'target_delivery'}) if response.get('ok') else {'ok', 'error', 'retry_after', 'unlock_url', 'delivery'}
+                   else {'ok', 'filled', 'target_delivery'}) if response.get('ok') else {'ok', 'error', 'retry_after', 'unlock_url', 'unlock_blocked', 'delivery'}
         invalid_delivery = 'delivery' in response and (
             args.command != 'fill-totp' or response['delivery'] not in ('not-started', 'uncertain'))
         invalid_retry = 'retry_after' in response and (
@@ -921,8 +941,14 @@ def main(argv: list[str] | None = None) -> int:
         if response.get('target_delivery') != expected_delivery or invalid_pin or invalid_fill:
             print('target operation outcome unconfirmed: receipt rejected; do not retry automatically', file=sys.stderr)
             return 2
+    if args.command == 'new-unlock-link' and response.get('ok') and (
+            set(response) != {'ok', 'unlock_url', 'locked'} or type(response['locked']) is not bool):
+        print('new unlock link rejected: unexpected broker response; do not retry automatically', file=sys.stderr)
+        return 2
     if args.command in {'merge', 'admit'} and response.get('error') == 'vault locked':
-        response['continuation'] = 'Open unlock_url privately, then repeat the same command, policy and operation ID.'
+        response['continuation'] = ('The unlock link is blocked: follow the skill before any new-unlock-link, then repeat the same command, policy and operation ID.'
+                                    if response.get('unlock_blocked') else
+                                    'Open unlock_url privately, then repeat the same command, policy and operation ID.')
         response['operation_id'] = payload['operation_id']
     if args.command in URL_CHANGES and response.get('ok') and (
             set(response) != {'ok', 'state', 'metadata', 'additional_urls', 'changed', 'url'}

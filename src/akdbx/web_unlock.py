@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
-from .broker import Broker, open_vault_with_password
+from .broker import UNLOCK_LINK_MAX_FAILURES, Broker, open_vault_with_password
 from .identities import FIELDS as IDENTITY_FIELDS, FIELD_LIMIT as IDENTITY_FIELD_LIMIT
 from .portal import content_security_policy, field, render
 from .runtime import (
@@ -24,8 +24,8 @@ from .runtime import (
 )
 
 MAX_BODY = 16 * 1024
-MAX_UNLOCK_ATTEMPTS = 5
-ATTEMPT_WINDOW = 60
+# Failed master-password attempts allowed per unlock link, in total.
+MAX_FAILED_ATTEMPTS = UNLOCK_LINK_MAX_FAILURES
 MAX_HTTP_CONNECTIONS = 8
 REQUEST_IO_TIMEOUT = 5.0
 CONNECTION_TIMEOUT = 15.0
@@ -211,80 +211,131 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
 
 
 class UnlockState:
+    """One private unlock link and its total budget of failed attempts.
+
+    A link allows ``MAX_FAILED_ATTEMPTS`` failed master-password attempts in
+    total, not per minute. The failure that reaches the limit blocks the link
+    at once: its token stops working and the broker alerts unlock-notification
+    subscribers. Time never expires a link. Only ``new_link`` (the broker's
+    ``new-unlock-link`` action, after the user confirms) makes a new token.
+    Reservations count toward the budget, so parallel requests cannot run
+    more than the limit through the vault opener.
+    """
+
     def __init__(
         self,
         broker: Broker,
         database: Path,
         keyfile: Path | None,
         opener: Callable = open_vault_with_password,
+        public_base: str | None = None,
     ) -> None:
         self.broker = broker
         self.database = database
         self.keyfile = keyfile
         self.opener = opener
+        self.public_base = public_base
         self.token = secrets.token_urlsafe(32)
-        self.failures: list[float] = []
-        self.identity_failures: dict[str, list[float]] = {}
-        self.pending: dict[int, str] = {}
+        self.failures = 0
+        self.blocked = False
+        self.pending: set[int] = set()
         self.next_attempt = 0
         self.lock = threading.Lock()
         self.unlock_lock = threading.Lock()
+
+    @property
+    def url(self) -> str:
+        assert self.public_base is not None
+        return self.public_base.rstrip("/") + "/?token=" + self.token
 
     def token_matches(self, token: str) -> bool:
         with self.lock:
             return secrets.compare_digest(token, self.token)
 
-    def reserve_attempt(self, identity: str) -> int | None:
-        """Atomically account for an attempt before expensive key derivation."""
-        now = time.monotonic()
+    def remaining(self) -> int:
         with self.lock:
-            self.failures = [stamp for stamp in self.failures if now - stamp < ATTEMPT_WINDOW]
-            for key, stamps in list(self.identity_failures.items()):
-                current = [stamp for stamp in stamps if now - stamp < ATTEMPT_WINDOW]
-                if current:
-                    self.identity_failures[key] = current
-                else:
-                    del self.identity_failures[key]
+            return max(0, MAX_FAILED_ATTEMPTS - self.failures)
 
-            pending_for_identity = sum(owner == identity for owner in self.pending.values())
-            if len(self.failures) + len(self.pending) >= MAX_UNLOCK_ATTEMPTS:
-                return None
-            if len(self.identity_failures.get(identity, ())) + pending_for_identity >= MAX_UNLOCK_ATTEMPTS:
-                return None
+    def reserve_attempt(self, identity: str = "") -> int | None:
+        """Atomically account for an attempt before expensive key derivation.
 
+        The budget belongs to the link, not to an identity, so a stolen link
+        cannot lock its owner out for a time window; it can only block itself.
+        """
+        with self.lock:
+            if self.blocked or self.failures + len(self.pending) >= MAX_FAILED_ATTEMPTS:
+                return None
             self.next_attempt += 1
-            self.pending[self.next_attempt] = identity
+            self.pending.add(self.next_attempt)
             return self.next_attempt
 
     def attempt_status(self, attempt: int, token: str) -> str:
         """Recheck mutable authorization state once this attempt reaches the opener."""
         with self.lock:
             if not self.broker.locked:
-                self.pending.pop(attempt, None)
+                self.pending.discard(attempt)
                 return "unlocked"
+            if self.blocked:
+                self.pending.discard(attempt)
+                return "blocked"
             if not secrets.compare_digest(token, self.token):
-                self.pending.pop(attempt, None)
+                self.pending.discard(attempt)
                 return "invalid"
             return "ready"
 
-    def record_failure(self, attempt: int) -> None:
+    def record_failure(self, attempt: int) -> bool:
+        """Count one failed attempt. Return True when it blocked the link."""
         with self.lock:
-            identity = self.pending.pop(attempt, None)
-            if identity is None:
-                return
-            now = time.monotonic()
-            self.failures.append(now)
-            self.identity_failures.setdefault(identity, []).append(now)
+            if attempt not in self.pending:
+                return False
+            self.pending.discard(attempt)
+            self.failures += 1
+            if self.blocked or self.failures < MAX_FAILED_ATTEMPTS:
+                return False
+            # Block and alert under the broker's state lock, which also guards
+            # subscribe-unlock: a subscriber either gets the blocked event or
+            # sees unlock_blocked in its receipt, never neither.
+            with self.broker._state_lock:
+                self.blocked = True
+                self.broker.unlock_notifications.publish_blocked()
+            return True
 
     def record_success(self, attempt: int) -> None:
         with self.lock:
-            self.pending.pop(attempt, None)
+            self.pending.discard(attempt)
             self.token = secrets.token_urlsafe(32)
+            self.failures = 0
 
     def cancel_attempt(self, attempt: int) -> None:
         """Release a reservation that did not reach an opener result."""
         with self.lock:
-            self.pending.pop(attempt, None)
+            self.pending.discard(attempt)
+
+    def new_link(self) -> str | None:
+        """Replace a blocked link with a fresh token and budget.
+
+        Return the new private URL, or None when the current link is not
+        blocked. The broker cannot verify the user; the agent must have the
+        user's confirmation before it asks for this.
+        """
+        with self.lock:
+            if not self.blocked or self.public_base is None or self.pending:
+                return None
+            self.token = secrets.token_urlsafe(32)
+            self.failures = 0
+            with self.broker._state_lock:
+                self.blocked = False
+                self.broker.unlock_url = self.url
+                return self.broker.unlock_url
+
+
+BLOCKED_TITLE = "Unlock link blocked"
+BLOCKED_BODY = (
+    "<p>This unlock link is blocked after three failed master-password attempts. "
+    "It cannot unlock AKDBX any more.</p>"
+    "<p>Ask your agent for a new unlock link. If you did not make these attempts, "
+    "tell your agent: someone else has this link.</p>"
+)
 
 
 def _page(title: str, body: str) -> bytes:
@@ -432,10 +483,16 @@ def handler_for(state: UnlockState):
             if not self._identity_ok() or not state.token_matches(self._token()):
                 self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
                 return
+            if state.blocked:
+                self._send_blocked()
+                return
             if not state.broker.locked:
                 self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
                 return
             self._send(HTTPStatus.OK, self._unlock_page())
+
+        def _send_blocked(self) -> None:
+            self._send(HTTPStatus.FORBIDDEN, _page(BLOCKED_TITLE, BLOCKED_BODY))
 
         def _unlock_page(self, error: str = "") -> bytes:
             action = "?token=" + html.escape(state.token, quote=True)
@@ -458,6 +515,9 @@ def handler_for(state: UnlockState):
             if not identity or not state.token_matches(submitted_token):
                 self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
                 return
+            if state.blocked:
+                self._send_blocked()
+                return
             if not state.broker.locked:
                 self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
                 return
@@ -477,7 +537,12 @@ def handler_for(state: UnlockState):
                 return
             attempt = state.reserve_attempt(identity)
             if attempt is None:
-                self._send(HTTPStatus.TOO_MANY_REQUESTS, self._unlock_page("Too many failed attempts. Wait one minute before trying again."))
+                if state.blocked:
+                    self._send_blocked()
+                else:
+                    # Every remaining attempt of this link is already running.
+                    self._send(HTTPStatus.TOO_MANY_REQUESTS, self._unlock_page(
+                        "Another unlock attempt is in progress. Wait for its result."))
                 return
 
             try:
@@ -493,6 +558,9 @@ def handler_for(state: UnlockState):
                     if status == "unlocked":
                         self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
                         return
+                    if status == "blocked":
+                        self._send_blocked()
+                        return
                     if status == "invalid":
                         self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
                         return
@@ -506,8 +574,14 @@ def handler_for(state: UnlockState):
                         vault = state.opener(state.database, password, state.keyfile)
                     except Exception:
                         password = ""
-                        state.record_failure(attempt)
-                        self._send(HTTPStatus.UNAUTHORIZED, self._unlock_page("AKDBX could not unlock the database. Check your master password and try again."))
+                        if state.record_failure(attempt) or state.blocked:
+                            self._send_blocked()
+                            return
+                        left = state.remaining()
+                        self._send(HTTPStatus.UNAUTHORIZED, self._unlock_page(
+                            "AKDBX could not unlock the database. Check your master password and try again. "
+                            + (f"{left} attempts left for this link." if left != 1 else
+                               "1 attempt left for this link; another failure blocks it.")))
                         return
 
                     password = ""
@@ -531,10 +605,11 @@ def start_unlock_server(
     socket_path = Path(socket_path).expanduser()
     if not socket_path.is_absolute():
         raise ValueError("unlock socket path must be absolute")
-    state = UnlockState(broker, database, keyfile, opener)
+    state = UnlockState(broker, database, keyfile, opener, public_base=public_base_url)
     server = ThreadingUnixHTTPServer(str(socket_path), handler_for(state))
-    url = public_base_url.rstrip("/") + "/?token=" + state.token
+    url = state.url
     broker.unlock_url = url
+    broker.unlock_link = state
     broker.writes.public_base = public_base_url
     broker.merges.database = database
     server.write_manager = broker.writes

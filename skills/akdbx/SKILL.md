@@ -25,6 +25,7 @@ session.
 | Create or change a password, save SSO/email-code accounts, add an origin, store a key file | [Password writes](references/password-writes.md) |
 | Capture a secret a site shows once | [Secret capture](references/secret-capture.md) |
 | Vault locked: wait for unlock | [Unlock notifications](references/unlock-notifications.md) |
+| Unlock link blocked (`unlock_blocked: true` or `akdbx.unlock-blocked`) | [Blocked unlock link](#blocked-unlock-link) |
 | Merge two vaults | [Merge](references/merge.md), [preservation format](references/preservation-format.md) |
 | Snapshot admission (review prototype) | [Admission](references/snapshot-admission.md), [group selection](references/group-selection.md), [selection verification](references/selection-verification.md) |
 | Windows host | [Windows operation](references/windows.md) |
@@ -94,7 +95,8 @@ configuration, never from the repository's test vaults.
 ## When the vault is locked
 
 A locked broker returns `unlock_url` from `status` and `vault locked` from
-search or fill. Give the user that exact link (the token is required). A link
+search or fill. If it returns `unlock_blocked: true` instead, follow
+[Blocked unlock link](#blocked-unlock-link). Give the user that exact link (the token is required). A link
 on a loopback origin (`https://localhost:PORT` or `https://127.0.0.1:PORT`)
 opens only on the broker's computer. A link on a Tailscale origin opens on any
 device in the tailnet. This is the same on Linux and Windows; the repository's
@@ -117,6 +119,35 @@ that continuation is set up.
 An unlock lasts until the broker process stops. There is no idle lock, and the
 link stops working after a successful unlock. Do not restart a broker just to
 log in again.
+
+### Blocked unlock link
+
+Each unlock link allows three failed master-password attempts in total
+(broker 0.24.0+, `unlock_link_protocol: 1`). The third failure blocks it. Time
+does not unblock it. While it is blocked, `status` and locked responses have
+`unlock_blocked: true` and no `unlock_url`, and a waiting unlock subscription
+receives an `akdbx.unlock-blocked` event.
+
+When you receive that event or see `unlock_blocked: true`, do this before
+anything else:
+
+1. Ask the user both questions, and wait for the answers:
+   - "Was it you who failed to unlock akdbx three times?"
+   - "Do you want a new unlock link?"
+2. Only on a clear yes to both, run
+   `akdbx new-unlock-link --user-confirmed` once and give the user the new
+   `unlock_url` from its output. The broker cannot verify the user; the flag
+   records the user's answers, so never pass it without them.
+3. If the user says it was not them, do not create a link. Tell the user that
+   someone else has the unlock link and tried to guess the master password.
+   Leave the next step to the user.
+4. If an answer is unclear or no, do not create a link. Ask again only when the
+   user brings it up.
+
+Never create a new link automatically, never retry `new-unlock-link`, and
+never restart the broker to get around a block. A restart also makes a new
+link, so it needs the same two answers. Keep the existing unlock subscription:
+it still delivers the later unlock.
 
 ## Choose the fill route
 
@@ -404,6 +435,7 @@ retained encrypted originals.
 | --- | --- |
 | `broker is not running` (exit 2) | Check the socket and environment ([VPS setup](references/vps-setup.md)). CLI 0.20.1+ finds a broker under `/run/user/UID` without `XDG_RUNTIME_DIR`; older CLIs over SSH need it or `--socket`. Do not restart the broker for this. |
 | `vault locked` | Give the user the unlock link, register an unlock notification, resume on the event. |
+| `vault locked` with `unlock_blocked: true` | Ask the user the two questions in [Blocked unlock link](#blocked-unlock-link). Never create a link without two clear yes answers. |
 | `entries: []` | Search by other known identifiers and check provider or email-code sign-in before you report a missing login. |
 | `unknown or expired handle; search again` | Search again. Never reuse or invent a handle. |
 | `autofill not started: ...` | Nothing was sent. Check focus, get a fresh handle and pin. |

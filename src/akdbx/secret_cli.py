@@ -125,7 +125,7 @@ def _valid_receipt(args, payload, response) -> bool:
                 and response['saved'] == ('updated' if args.handle is not None else 'created')
                 and response['metadata'] == payload['metadata'])
     return (response.get('ok') is False and isinstance(response.get('error'), str)
-            and set(response) <= {'ok', 'error', 'unlock_url'})
+            and set(response) <= {'ok', 'error', 'unlock_url', 'unlock_blocked'})
 
 
 def _emit(value) -> None:
@@ -151,6 +151,8 @@ def run(args, request) -> int:
         refusal = {'ok': False, 'error': 'vault locked; secret not read; request not sent'}
         if isinstance(caps.get('unlock_url'), str):
             refusal['unlock_url'] = caps['unlock_url']
+        if caps.get('unlock_blocked') is True:
+            refusal['unlock_blocked'] = True
         _emit(refusal)
         return 1
     if caps.get('recovery_required') is not False or caps.get('writes_available') is not True:

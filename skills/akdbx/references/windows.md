@@ -110,6 +110,9 @@ field, another for the confirmation field, the site's acceptance, then
 - `subscribe-unlock` and `subscribe-card-save` read the callback from a file
   that only this user, SYSTEM and administrators can open. Until-unlock
   subscriptions survive a broker restart.
+- The three-attempt unlock link block, `unlock_blocked`, the
+  `akdbx.unlock-blocked` event and `new-unlock-link --user-confirmed` work as
+  on Linux (0.24.0+). Ask the user the skill's two questions first.
 - The browser native host for authenticator capture (`akdbx-browser-import`)
   works on Windows from 0.22.0. It sends the capture to the broker's
   `-capture` named pipe, never the agent RPC. Follow

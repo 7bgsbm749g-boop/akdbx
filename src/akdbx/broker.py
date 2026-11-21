@@ -56,6 +56,10 @@ MAX_CREDENTIAL_BYTES = 64 * 1024
 MAX_METADATA_BYTES = 4 * 1024
 MAX_SEARCH_RESPONSE = 48 * 1024
 MAX_OUTSTANDING_HANDLES = 1024
+# Failed master-password attempts allowed per unlock link, in total. The
+# failure that reaches it blocks the link; only new-unlock-link replaces it.
+UNLOCK_LINK_MAX_FAILURES = 3
+UNLOCK_LINK_PROTOCOL = 1
 CONNECTION_ERROR = {"ok": False, "error": "request failed"}
 DOM_PINS = (PasswordPin, ExtensionPin)
 
@@ -124,6 +128,8 @@ class Broker:
         self.merges = create_merge_manager(self)
         self.secrets = SecretCaptures(self, secret_sinks_path)
         self.unlock_url: str | None = None
+        # The private page's UnlockState, when this broker serves one.
+        self.unlock_link = None
         self.unlock_notifications = UnlockNotifications(state_path=notification_state_path)
         self.card_save_notifications = CardSaveNotifications(
             expire_handler=self._expire_card_save, clock=clock,
@@ -140,6 +146,32 @@ class Broker:
     def locked(self) -> bool:
         with self._state_lock:
             return self.vault is None
+
+    @property
+    def unlock_blocked(self) -> bool:
+        """True after the current unlock link used all its failed attempts."""
+        link = self.unlock_link
+        return bool(link is not None and link.blocked)
+
+    def unlock_fields(self) -> dict:
+        """What a locked response may say about unlocking: never a blocked link."""
+        if self.unlock_blocked:
+            return {"unlock_blocked": True}
+        return {"unlock_url": self.unlock_url} if self.unlock_url else {}
+
+    def _new_unlock_link(self, request: dict) -> dict:
+        # The broker cannot verify the user. The agent must first ask the user
+        # whether the failed attempts were theirs and whether they want a link.
+        if set(request) != {"action", "user_confirmed"} or request["user_confirmed"] is not True:
+            return {"ok": False, "error": "new unlock link needs user_confirmed: true after the user "
+                                          "confirms; no link created"}
+        link = self.unlock_link
+        if link is None:
+            return {"ok": False, "error": "this broker has no private unlock page; no link created"}
+        url = link.new_link()
+        if url is None:
+            return {"ok": False, "error": "the current unlock link is not blocked; no link created"}
+        return {"ok": True, "unlock_url": url, "locked": self.locked}
 
     def unlock(self, vault: VaultLike) -> bool:
         with self._state_lock:
@@ -211,10 +243,17 @@ class Broker:
         if action in {'card-save-subscription-status', 'unsubscribe-card-save'}:
             return self.card_save_notifications.status(
                 request.get('subscription_id'), cancel=action == 'unsubscribe-card-save')
+        if action == "new-unlock-link":
+            return self._new_unlock_link(request)
         if action == "subscribe-unlock":
-            # Share unlock's lock so registration cannot miss a racing unlock.
+            # Share unlock's lock so registration cannot miss a racing unlock
+            # or a racing block: a block either reaches this subscription as
+            # an event or is reported in this receipt.
             with self._state_lock:
-                return self.unlock_notifications.subscribe(request, unlocked=self.vault is not None)
+                receipt = self.unlock_notifications.subscribe(request, unlocked=self.vault is not None)
+                if receipt.get("ok") and self.vault is None and self.unlock_blocked:
+                    receipt["unlock_blocked"] = True
+                return receipt
         if action in {"unlock-subscription-status", "unsubscribe-unlock"}:
             return self.unlock_notifications.status(
                 request.get("subscription_id"), cancel=action == "unsubscribe-unlock",
@@ -252,7 +291,7 @@ class Broker:
             delivery_ready = lambda: True
         action = request.get("action")
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **(self.unlock_fields() if self.locked else {"unlock_blocked": True} if self.unlock_blocked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -265,7 +304,7 @@ class Broker:
             except Exception:
                 return {'ok': False, 'error': 'frame list unavailable: page missing, ambiguous, changed or unsupported'}
         if self.locked:
-            return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
+            return {"ok": False, "error": "vault locked", **self.unlock_fields()}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
             return {"ok": False, "error": "save outcome uncertain; restart and unlock"}
         if action == 'pin-password-target':
