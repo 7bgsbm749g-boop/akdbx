@@ -11,11 +11,14 @@ validation record; this reference covers operation of an already configured
 broker.
 
 Every instruction in `SKILL.md` and the other references applies on Windows,
-with these replacements:
+with these replacements. The private HTTPS page is the same on both
+platforms: a loopback link opens on the broker's computer, and a link on a
+Tailscale Serve origin (`--local-port`) opens on any tailnet device. See the
+repository's `docs/private-pages.md`.
 
 | Linux | Windows |
 | --- | --- |
-| Tailscale HTTPS page, opened on any tailnet device | Loopback HTTPS page, opened on the **Windows machine**; or, with a Tailscale Serve origin and `--local-port` (0.22.0+), on any tailnet device |
+| Loopback HTTPS page (0.23.0+), or the Tailscale Serve Unix-socket page | Loopback HTTPS page only; Tailscale Serve cannot proxy to a Unix socket on Windows |
 | Unix socket, `--broker-uid` | Local named pipe of this user and session; `--broker-uid` is refused |
 | `pin-target` X11 window, `x11-send-event-v1` | `pin-target` top-level HWND, `win32-char-v1` |
 | `/absolute/path/to/akdbx/.venv/bin/akdbx` | `CHECKOUT\.venv\Scripts\akdbx.exe` |
@@ -37,7 +40,7 @@ with these replacements:
   loopback link opens on the **Windows machine** only; a link on the configured
   Tailscale Serve origin opens on any tailnet device. Serve must proxy to a
   verified `https://127.0.0.1:PORT` target, never `https+insecure`; see
-  `docs/windows.md`. The user enters the
+  `docs/private-pages.md`. The user enters the
   master password privately. Never bypass a TLS certificate warning, read the
   master password, submit it for the user, or replace HTTPS with HTTP. Register
   an unlock notification as `SKILL.md` describes and resume on that event. The

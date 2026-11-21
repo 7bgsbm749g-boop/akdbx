@@ -54,8 +54,10 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
 
 - The HTTPS listener binds `127.0.0.1` only. Other devices reach it only
   through Tailscale Serve. The broker does not trust the `Tailscale-User-Login`
-  header on Windows, because any local process can send headers to a loopback
-  port; the one-time URL token and tailnet access control protect the page.
+  header on the loopback page (Linux or Windows), because any local process can
+  send headers to a loopback port; the one-time URL token and tailnet access
+  control protect the page. Windows has no Unix-socket route like Linux's:
+  Tailscale Serve proxies to Unix sockets only on Linux, macOS and BSD.
 - Use a local NTFS volume with restrictive DACLs. UNC paths, junctions, symlinks,
   other reparse points, hard-linked vaults and alternate data streams are refused.
   OneDrive placeholder paths can be reparse points and are not supported.
@@ -100,8 +102,9 @@ root is trusted on Linux.
 
 ## Configure the private HTTPS page
 
-Windows does not expose the Linux Unix-socket Tailscale Serve backend. It serves
-HTTPS directly on `127.0.0.1`. Use a certificate trusted by the local browser for
+The private HTTPS page works the same way on Linux and Windows; the shared
+rules are in [Private HTTPS pages](private-pages.md). The broker serves HTTPS
+directly on `127.0.0.1`. Use a certificate trusted by the local browser for
 `localhost` (or `127.0.0.1`), plus its unencrypted PEM private key. A local development CA such
 as [mkcert](https://github.com/FiloSottile/mkcert) can issue this certificate:
 
@@ -167,15 +170,16 @@ an administrator. Keep the profile for work that the broker may fill.
 Open the broker-provided one-time HTTPS link in a Windows browser. Enter the
 synthetic master password there. The CLI and agent do not receive it. Host and
 Origin checks reject cross-origin requests. No Tailscale identity header is trusted
-on Windows. The URL token is secret, rate-limited and rotated on successful unlock.
+on the loopback page. The URL token is secret, rate-limited and rotated on successful unlock.
 Stopping the broker invalidates its links. TLS protects a stale link if another
 local user later takes the port; keep the certificate key private.
 
 ### Unlock from another device
 
-From 0.22.0 the private pages can open on any device in your tailnet, as on
-Linux. Tailscale Serve on the Windows computer proxies its HTTPS name to the
-broker's loopback listener. The listener still binds `127.0.0.1` only.
+From 0.22.0 the private pages can open on any device in your tailnet. Tailscale
+Serve on the Windows computer proxies its HTTPS name to the broker's loopback
+listener. The listener still binds `127.0.0.1` only. From 0.23.0 Linux uses the
+same steps; see [Private HTTPS pages](private-pages.md#unlock-from-another-device).
 
 1. Install Tailscale on the Windows computer and enable HTTPS certificates for
    the tailnet. Find the computer's name, for example

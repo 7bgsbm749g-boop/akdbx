@@ -20,6 +20,7 @@ from .browser_password import DELIVERY as PASSWORD_DELIVERY
 from .runtime import anchored_socket_path, open_private_runtime_directory
 from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
+from .local_https import is_loopback_origin, start_local_unlock_server
 from .notifications import validate_webhook_url
 from . import capture_cli, card_cli, extension_host, identity_cli, secret_cli
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
@@ -308,8 +309,8 @@ def parser() -> argparse.ArgumentParser:
         help="expected operating-system UID of the broker",
     )
     result.add_argument(
-        "--unlock-origin", default=os.environ.get("AKDBX_UNLOCK_ORIGIN", 'https://localhost:9443' if os.name == 'nt' else DEFAULT_UNLOCK_ORIGIN),
-        help="deployment HTTPS origin for private pages (or AKDBX_UNLOCK_ORIGIN); default is a non-routable example",
+        "--unlock-origin", default=os.environ.get("AKDBX_UNLOCK_ORIGIN", 'https://localhost:9443'),
+        help="deployment HTTPS origin for private pages (or AKDBX_UNLOCK_ORIGIN); default https://localhost:9443",
     )
     commands = result.add_subparsers(dest="command", required=True)
     card_cli.add_parsers(commands)
@@ -331,10 +332,10 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket")
     start.add_argument('--secret-sinks', type=Path, default=os.environ.get('AKDBX_SECRET_SINKS'),
                        help='operator sink configuration for deliver-secret (root- or broker-owned, not group/other writable)')
-    start.add_argument('--tls-cert', type=Path, help='Windows: trusted PEM certificate for the local HTTPS unlock page')
-    start.add_argument('--tls-key', type=Path, help='Windows: private PEM certificate key with a restrictive DACL')
+    start.add_argument('--tls-cert', type=Path, help='trusted PEM certificate for the loopback HTTPS private page')
+    start.add_argument('--tls-key', type=Path, help='private PEM certificate key (Linux: mode 0600; Windows: restrictive DACL)')
     start.add_argument('--local-port', type=int,
-                       help='Windows: loopback HTTPS port when --unlock-origin is a remote (Tailscale Serve) origin')
+                       help='loopback HTTPS port when --unlock-origin is a remote (Tailscale Serve) origin')
     start.add_argument('--default-fill-route', choices=FILL_ROUTES, default=os.environ.get('AKDBX_DEFAULT_FILL_ROUTE', 'cdp'),
                        help='route for pins that name none: cdp (debugging port) or extension (paired browser extension)')
     search = commands.add_parser("search", help="return matching non-secret login metadata")
@@ -528,8 +529,17 @@ def main(argv: list[str] | None = None) -> int:
                       'and that no other broker uses this pipe', file=sys.stderr)
                 return 2
         else:
-            if args.tls_cert is not None or args.tls_key is not None or args.local_port is not None:
-                print('--tls-cert, --tls-key and --local-port are Windows options; Linux uses Tailscale Serve', file=sys.stderr)
+            # --tls-cert and --tls-key select the loopback HTTPS page, the same
+            # page as on Windows. Without them, Linux keeps its Tailscale Serve
+            # Unix-socket backend, which a loopback origin cannot reach.
+            local_https = args.tls_cert is not None or args.tls_key is not None
+            if local_https and (args.unlock_socket is not None or args.unlock_url is not None):
+                print('--unlock-socket and --unlock-url belong to the Tailscale Serve socket route; '
+                      'the HTTPS page uses --unlock-origin', file=sys.stderr)
+                return 2
+            if not local_https and (args.local_port is not None
+                                    or is_loopback_origin(args.unlock_url or args.unlock_origin)):
+                print('a loopback unlock origin or --local-port needs --tls-cert and --tls-key', file=sys.stderr)
                 return 2
             try:
                 broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
@@ -543,7 +553,18 @@ def main(argv: list[str] | None = None) -> int:
                        if args.socket.name == "agentic-kdbx.sock"
                        else "akdbx-unlock.sock")
         unlock_socket = args.unlock_socket or args.socket.with_name(unlock_name)
-        if os.name != 'nt':
+        if os.name != 'nt' and local_https:
+            try:
+                unlock_server, unlock_url = start_local_unlock_server(
+                    broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key,
+                    local_port=args.local_port)
+            except (OSError, ValueError):
+                broker.unlock_notifications.close()
+                broker.card_save_notifications.close()
+                print('could not start HTTPS unlock; check origin, local port, TLS files and permissions '
+                      '(key mode 0600), and that the port is free', file=sys.stderr)
+                return 2
+        elif os.name != 'nt':
             unlock_server, unlock_url = start_unlock_server(
                 broker, database, keyfile, unlock_socket, args.unlock_url or args.unlock_origin,
             )

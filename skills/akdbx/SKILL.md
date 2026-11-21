@@ -76,9 +76,9 @@ advertise is not available, even if the CLI has the command: installing new
 code does not change a running broker. Never restart a broker that another live
 workflow owns.
 
-On Windows, read [Windows operation](references/windows.md) first: the unlock
-page is loopback HTTPS on the same machine, the transport is a named pipe, and
-native-window pins use HWNDs instead of X11 windows. Every workflow here works
+On Windows, read [Windows operation](references/windows.md) first: the
+transport is a named pipe, and native-window pins use HWNDs instead of X11
+windows. The private HTTPS page works the same way on both platforms. Every workflow here works
 on Windows from 0.17.0.
 
 The maintained source of this skill is the repository's `skills/akdbx`
@@ -94,9 +94,11 @@ configuration, never from the repository's test vaults.
 ## When the vault is locked
 
 A locked broker returns `unlock_url` from `status` and `vault locked` from
-search or fill. Give the user that exact link (the token is required). On
-Linux they open it from a Tailscale device. On Windows they open it on the
-same machine.
+search or fill. Give the user that exact link (the token is required). A link
+on a loopback origin (`https://localhost:PORT` or `https://127.0.0.1:PORT`)
+opens only on the broker's computer. A link on a Tailscale origin opens on any
+device in the tailnet. This is the same on Linux and Windows; the repository's
+`docs/private-pages.md` describes the setups.
 
 Then let an event resume the task instead of waiting or asking the user to say
 "unlocked". Register a one-shot unlock webhook with `subscribe-unlock` (in T3:

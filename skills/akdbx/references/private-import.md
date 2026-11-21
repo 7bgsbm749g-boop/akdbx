@@ -11,7 +11,9 @@ live deployment is separate work; keep its current vault and credentials intact.
 
 1. Select the exact existing vault entry with a fresh search. Start the usual
    `setup-totp HANDLE --title ... --username ... --url ... --group ...` request.
-2. Give the user its private URL. On their Tailscale-connected device, they open
+2. Give the user its private URL. They open it where the unlock link opens (the
+   broker's computer for a loopback origin, any tailnet device for a Tailscale
+   origin) and select
    **Import QR images / Google export, or review a browser capture**.
 3. The user can enter a Base32 setup key / standard `otpauth://totp/` URI, select
    QR images, or take a QR photo. The images stay in the browser and are decoded
