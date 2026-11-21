@@ -103,6 +103,10 @@ if the host's private deployment notes use source copies. Check that every
 runtime dependency in the release's `pyproject.toml` is present before
 switching. Keep the previous release directory for rollback.
 
+To set up a new broker after the install, run `akdbx setup` (0.27.0+); see
+[Quick start: akdbx setup](../README.md#quick-start-akdbx-setup). It finds the
+skill that the wheel ships under `<environment>/share/akdbx/skills/akdbx`.
+
 Restarting a broker locks its vault. Use the host's existing restart procedure
 and browser-control lease, confirm that exactly one broker runs the new
 version, and give the user the broker's private unlock link. Record the

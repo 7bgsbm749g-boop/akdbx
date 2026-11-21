@@ -30,6 +30,7 @@ session.
 | Snapshot admission (review prototype) | [Admission](references/snapshot-admission.md), [group selection](references/group-selection.md), [selection verification](references/selection-verification.md) |
 | Open the private pages from any device (no Tailscale) | [The akdbx relay](#the-akdbx-relay) |
 | Windows host | [Windows operation](references/windows.md) |
+| Set akdbx up for a user (first install, or add a part later) | [First-time setup](#first-time-setup) |
 | Broker missing, socket or Tailscale problems (Linux/VPS) | [VPS setup and recovery](references/vps-setup.md) |
 | akdbx itself is broken or lacks support | [Fixing akdbx](#when-akdbx-is-missing-something-or-broken), [repair-thread handoff](references/repair-thread.md) |
 
@@ -90,6 +91,36 @@ The maintained source of this skill is the repository's `skills/akdbx`
 directory. A local install links the agent's skills directory to it (a
 directory junction on Windows needs no elevation), so it can be invoked as
 `$akdbx` and stays in sync with the checkout.
+
+### First-time setup
+
+`akdbx setup` (0.27.0+) takes a user from install to a working broker, on
+Linux and Windows. You can run it for the user without questions:
+
+```bash
+akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
+  --start-at-login --browser chrome --link-skill
+```
+
+- Pass only the choices the user made: the vault path they gave (never a test
+  vault), `--access local|tailscale|relay|tunnel` (recommend `tailscale` for
+  remote use; `relay` makes the page reachable from the internet, so explain
+  its trust point first), `--start-at-login`, `--browser NAME`,
+  `--cdp-profile DIR`, `--capture-host`, `--link-skill`. Run `--dry-run`
+  first when you are not sure what it would change.
+- `--yes` makes only the changes that the flags select. It never runs
+  `mkcert -install` (it changes the computer's trust) and runs `tailscale
+  serve` only with `--configure-tailscale`. Those are the user's decisions:
+  give them the exact command from `user_steps`.
+- Read the JSON: `ok`, each stage's `state` (`done`, `changed`, `ok`,
+  `planned`, `todo`, `skipped`, `failed`), `user_steps` and `broker`. If
+  `broker.unlock_url` is present, give that link to the user privately and
+  continue as in [When the vault is locked](#when-the-vault-is-locked).
+  `broker.unlock_blocked: true` means [Blocked unlock link](#blocked-unlock-link).
+- Setup never reads the vault and never asks for the master password. It
+  never starts a second broker, and never replaces a unit, task, extension
+  host or skill folder that it did not write. Run it again to finish or
+  extend a setup; it detects what is already done.
 
 If the broker is not running or the socket is wrong, use
 [VPS setup and recovery](references/vps-setup.md). Do not start a second

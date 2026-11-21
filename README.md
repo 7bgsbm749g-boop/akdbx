@@ -16,6 +16,60 @@ one wheel per version for Linux and Windows, with `SHA256SUMS` and a
 build-provenance attestation. See [Releasing akdbx](docs/releasing.md) to cut a
 release or upgrade a broker.
 
+## Quick start: akdbx setup
+
+Install akdbx (a release wheel or `pip install -e .` in a checkout), then run
+one guided command (0.27.0+; the same on Linux and Windows):
+
+```sh
+akdbx setup
+```
+
+It asks a few questions with defaults and takes you from install to a working
+broker. The broker is the only required part; every other stage is optional
+and can be skipped (`--skip STAGE`):
+
+1. **System check**: Python, the desktop (Linux X11 or Windows), and optional
+   tools (KeePassXC CLI for merge, mkcert, Tailscale, Chromium browsers). It
+   reports gaps and installs no system software.
+2. **Vault**: your existing `.kdbx` file and key file, checked with the
+   broker's own path and permission rules. Setup never creates, copies, opens
+   or reads the vault, and never asks for the master password.
+3. **Local page**: the certificate for the private HTTPS page. Setup checks an
+   existing pair, or issues one with mkcert after you ran `mkcert -install`
+   yourself (that command changes which certificates your computer trusts).
+4. **Access**: local only; a private proxy such as Tailscale Serve
+   (recommended for remote use); the akdbx relay (`akdbx relay enable`);
+   another public tunnel that does not decrypt (instructions only); or a proxy
+   that decrypts HTTPS, which setup warns about and does not configure. See
+   [Unlock from the internet](#unlock-from-the-internet).
+5. **Start at login**: a systemd user service on Linux, a logon task for your
+   user on Windows. Setup never starts a second broker.
+6. **Fill route**: the browser extension (`akdbx extension install` and
+   `build`) and/or the CDP route.
+7. **Optional features**: the authenticator capture host, unlock notifications
+   and merge.
+8. **Agent skill**: links `~/.claude/skills/akdbx` and `~/.codex/skills/akdbx`
+   to the installed skill (a junction on Windows). It never replaces an
+   existing folder or a different link.
+9. **Final check**: `status`, the private unlock link if the vault is locked,
+   and what remains for you.
+
+Each stage detects what is already done and shows each change before it makes
+it, so you can run setup again at any time. Every answer is also a flag.
+`--yes` never asks: it uses the flags, your earlier answers and the defaults,
+and makes only the changes that the flags select. `--dry-run` changes nothing,
+and `--json` prints a summary for scripts and agents:
+
+```sh
+akdbx setup --yes --json --vault ~/vaults/passwords.kdbx --create-cert \
+  --access tailscale --start-at-login --browser chrome --link-skill
+```
+
+Setup saves its answers (paths and choices, never a secret) in a private file:
+`~/.config/akdbx/setup.json` on Linux, `%LOCALAPPDATA%\akdbx\setup.json` on
+Windows. `akdbx setup --help` lists every flag.
+
 ## How it works
 
 1. The broker starts **locked**. The user unlocks it on a private HTTPS page,
@@ -731,7 +785,8 @@ any live interaction ends.
 
 The agent skill is [skills/akdbx/SKILL.md](skills/akdbx/SKILL.md). Install it by
 linking your agent's skills directory to that folder, so it stays in sync with
-the checkout; agents can then invoke it as `$akdbx`. It explains route choice,
+the checkout (`akdbx setup --link-skill` does this; a wheel install also ships
+the skill); agents can then invoke it as `$akdbx`. It explains route choice,
 unlock, account selection, pinning, fills, writes and recovery, and links a
 reference file for each workflow. The [setup reference](skills/akdbx/references/vps-setup.md)
 covers the Linux desktop, socket discovery, startup and Tailscale configuration
