@@ -168,7 +168,10 @@
       // Card Element's inputs have no id; only the verified agent pin route
       // (exact type, autocomplete, unique name, merchant iframe owner and hit
       // test) may target them, so no input in such a document matches here.
-      if (new RegExp(STRIPE_ELEMENTS["card-element"].path).test(location.pathname)) return null;
+      // Only an embedded Payment Element frame at its exact path matches: a
+      // top-level Stripe document has no merchant owner, and an unrecognized
+      // Stripe path is not a frame whose inputs akdbx has verified.
+      if (window === window.top || !new RegExp(STRIPE_ELEMENTS["payment-element"].path).test(location.pathname)) return null;
       const hit = Object.entries(STRIPE_ELEMENTS["payment-element"].fields).find(([, [id, name]]) =>
         id !== null && el.id === id && el.getAttribute("name") === name);
       return hit && input ? {kind: "card", role: hit[0]} : null;

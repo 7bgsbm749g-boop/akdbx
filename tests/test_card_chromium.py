@@ -131,10 +131,13 @@ def chrome(tmp_path, request):
                 body = b'''<!doctype html><iframe id="processor"
                   src="https://checkoutshopper-live.adyen.com/checkoutshopper/securedfields/live_test/6.3.0/securedFields.html"
                   style="width:550px;height:300px"></iframe>'''
+            elif self.path == '/stripe-unrecognized':
+                body = (b'<!doctype html><iframe src="https://js.stripe.com/v3/unrecognized-element.html" '
+                        b'style="width:550px;height:300px"></iframe>')
             elif self.path == '/stripe':
                 body = (f'<!doctype html><iframe src="{STRIPE_CARD_FRAME}" '
                         'style="width:550px;height:300px"></iframe>').encode()
-            elif self.path == urlsplit(STRIPE_CARD_FRAME).path:
+            elif self.path in (urlsplit(STRIPE_CARD_FRAME).path, '/v3/unrecognized-element.html'):
                 body = b'''<!doctype html><style>input{display:block;margin:10px}</style>
                   <input id=payment-numberInput name=number autocomplete=cc-number>
                   <input id=payment-expiryInput name=expiry autocomplete=cc-exp placeholder="MM / YY">

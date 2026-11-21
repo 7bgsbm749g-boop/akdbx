@@ -361,6 +361,24 @@ def test_popup_probe_still_offers_the_payment_element(chrome):
     assert found['formats'] == {'cc-exp': 'MM/YY'}
 
 
+@pytest.mark.parametrize('url', [STRIPE_CARD_FRAME, 'https://js.stripe.com/v3/unrecognized-element.html'])
+def test_popup_probe_refuses_payment_element_fields_without_a_merchant_frame(chrome, url):
+    """A top-level Stripe document has no merchant owner, and an unrecognized
+    path is not a verified frame, even with Payment Element id/name pairs."""
+    chrome.cdp.call('Page.navigate', {'url': url}, chrome.session)
+    deadline = time.monotonic() + 8
+    while not evaluate(chrome, "location.hostname === 'js.stripe.com' && !!document.querySelector('#payment-numberInput')"):
+        assert time.monotonic() < deadline, 'top-level Stripe document did not load'
+        time.sleep(.05)
+    assert popup_probe(chrome, chrome.session, '#payment-numberInput') is None
+
+
+def test_popup_probe_refuses_an_embedded_unrecognized_stripe_path(chrome):
+    _request, session = prepare(chrome, '#payment-numberInput', merchant_path='/stripe-unrecognized',
+                                endpoint='https://js.stripe.com/v3/unrecognized-element.html', processor='stripe')
+    assert popup_probe(chrome, session, '#payment-numberInput') is None
+
+
 COVER = """(() => { const c = document.createElement('div');
   c.style.cssText = 'position:fixed;inset:0;background:white;z-index:2147483647;pointer-events:none';
   document.body.append(c); })()"""
