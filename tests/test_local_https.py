@@ -9,7 +9,7 @@ from urllib.parse import urlencode, urlsplit
 import pytest
 from pykeepass import PyKeePass, create_database
 
-from akdbx import cli
+from akdbx import cli, web_unlock
 from akdbx.broker import Broker
 from akdbx.local_https import start_local_unlock_server
 from test_broker import RecordingTyper
@@ -213,3 +213,38 @@ def test_a_live_capture_socket_stops_a_second_broker(private_pair, tmp_path):
         server.server_close()
         for broker in (first, second):
             broker.unlock_notifications.close()
+
+
+def get(port, cafile, path, host):
+    client = HTTPSConnection('127.0.0.1', port, context=ssl.create_default_context(cafile=str(cafile)), timeout=30)
+    try:
+        client.putrequest('GET', path, skip_host=True)
+        client.putheader('Host', host)
+        client.putheader('Tailscale-User-Login', 'forged@example.test')
+        client.endheaders()
+        response = client.getresponse()
+        return response.status, response.read()
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize('given', ['https://node.tailnet.ts.net', 'https://node.tailnet.ts.net:443'])
+def test_a_port_443_origin_has_no_port_and_the_page_names_the_computer(given, private_pair, tmp_path, monkeypatch):
+    monkeypatch.setattr(web_unlock, 'computer_name', lambda: 'box<&>')
+    cert, key = private_pair
+    port = free_port()
+    broker = Broker(None, RecordingTyper())
+    server, url = start_local_unlock_server(broker, tmp_path / 'vault.kdbx', None, given, cert, key,
+                                            local_port=port)
+    try:
+        assert url.startswith('https://node.tailnet.ts.net/?token=')
+        assert broker.unlock_link.origin == 'https://node.tailnet.ts.net'
+        status, body = get(port, cert, '/?' + urlsplit(url).query, 'node.tailnet.ts.net')
+        assert status == 200
+        # The loopback page shows no login (and never a forged Tailscale header).
+        assert b'<p>Unlock AKDBX on <strong>box&lt;&amp;&gt;</strong>.</p>' in body
+        assert b'local user' not in body and b'forged' not in body
+    finally:
+        server.shutdown()
+        server.server_close()
+        broker.unlock_notifications.close()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import os
+import platform
 import re
 import secrets
 import socket
@@ -453,6 +454,24 @@ def _page(title: str, body: str) -> bytes:
     return render(title, body)
 
 
+def computer_name(windows: bool | None = None) -> str:
+    """The short name of this computer, for the page text only (never for a check).
+
+    Windows: COMPUTERNAME, else ``platform.node()``. Linux: the host name before
+    the first dot. The caller escapes it.
+    """
+    windows = os.name == 'nt' if windows is None else windows
+    try:
+        if windows:
+            name = os.environ.get('COMPUTERNAME', '') or platform.node()
+        else:
+            name = socket.gethostname()
+    except Exception:
+        name = ''
+    name = (name or '').strip().split('.', 1)[0][:63]
+    return name or 'this computer'
+
+
 def handler_for(state: UnlockState):
     class Handler(BaseHTTPRequestHandler):
         server_version = "akdbx"
@@ -479,6 +498,16 @@ def handler_for(state: UnlockState):
                     return ''
                 return 'local user'
             return self.headers.get('Tailscale-User-Login', '')
+
+        def _unlock_line(self) -> str:
+            # Text only: _identity() still decides who may unlock. The loopback
+            # HTTPS listener has no login to show; the legacy Tailscale socket
+            # route shows the Tailscale login too.
+            computer = html.escape(computer_name())
+            if getattr(self.server, 'local_origin', None) is not None:
+                return f'Unlock AKDBX on <strong>{computer}</strong>.'
+            login = html.escape(self._identity())
+            return f'Unlock AKDBX on <strong>{computer}</strong> as <strong>{login}</strong>.'
 
         def _token(self) -> str:
             return parse_qs(urlsplit(self.path).query).get("token", [""])[0]
@@ -621,10 +650,9 @@ def handler_for(state: UnlockState):
             # Always the token that authorized this request, never state.token:
             # a caller with an old link must not see its replacement.
             action = "?token=" + html.escape(token, quote=True)
-            login = html.escape(self._identity())
             password_field = field('Master password', 'password', autocomplete='current-password', autofocus=True)
             message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
-            body = (f'{message}<p>Unlocking for <strong>{login}</strong>.</p>'
+            body = (f'{message}<p>{self._unlock_line()}</p>'
                     f'<form data-unlock-form method="post" action="{action}" autocomplete="off">{password_field}'
                     '<button type="submit" class="unlock-submit">'
                     '<span class="button-label">Unlock AKDBX</span>'
