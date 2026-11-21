@@ -182,11 +182,19 @@ broker's loopback listener. The listener still binds `127.0.0.1` only.
    `node.tailnet.ts.net`.
 2. Make the Tailscale service trust the CA that issued the broker's
    certificate. Tailscale runs as SYSTEM and does not read your user
-   certificate store, where `mkcert -install` puts the CA. From an elevated
-   PowerShell, add the CA to the computer's trusted roots:
+   certificate store, where `mkcert -install` puts the CA. As the broker's
+   user (not elevated), find the CA file:
 
    ```powershell
-   certutil -addstore -f Root "$(mkcert -CAROOT)\rootCA.pem"
+   Join-Path (mkcert -CAROOT) 'rootCA.pem'
+   ```
+
+   Then, in an elevated PowerShell, add that exact path to the computer's
+   trusted roots. Do not run `mkcert -CAROOT` in the elevated shell: with a
+   separate administrator account it names that account's CA.
+
+   ```powershell
+   certutil -addstore -f Root 'C:\Users\YOU\AppData\Local\mkcert\rootCA.pem'
    ```
 
    This is a change to the trust of the whole computer. Keep the CA private key

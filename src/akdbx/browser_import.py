@@ -124,7 +124,7 @@ def _capture_windows(message, config, parsed):
         raise ValueError
     # connect() refuses a pipe server of another user or desktop session.
     pipe = _check_config(config)['socket'] or capture_pipe(default_pipe())
-    with connect(Path(pipe)) as connection:
+    with connect(Path(pipe), capture=True) as connection:
         connection.settimeout(10)
         send_message(connection, request)
         if receive_message(connection, deadline=time.monotonic() + 10) != RECEIPT:

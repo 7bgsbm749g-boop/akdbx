@@ -736,7 +736,8 @@ def test_capture_pipe_name_is_the_rpc_pipe_plus_capture():
 def test_native_host_capture_through_the_capture_pipe(synthetic_vault, native_https_config):
     from akdbx import browser_import
     origin, certificate, key, submit = native_https_config
-    rpc_pipe = Path(rpc.PREFIX + 'akdbx-test-' + uuid.uuid4().hex)
+    # The longest valid RPC name: its capture pipe exceeds the RPC limit by the suffix.
+    rpc_pipe = Path(rpc.PREFIX + 'akdbx-' + ('test-' + uuid.uuid4().hex).ljust(160, 'x'))
     capture = rpc.capture_pipe(rpc_pipe)
     broker = Broker(None, object())
     server, unlock_url = start_windows_unlock_server(broker, synthetic_vault, None, origin, certificate, key,
