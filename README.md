@@ -836,4 +836,9 @@ the rebrand does not migrate or rewrite private vault data.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+akdbx's own code is MIT licensed. See [LICENSE](LICENSE).
+
+The package also bundles third-party files under their own licenses:
+
+- jsQR, Apache-2.0: [src/akdbx/import_assets/jsQR.LICENSE](src/akdbx/import_assets/jsQR.LICENSE) and [VENDOR.txt](src/akdbx/import_assets/VENDOR.txt).
+- The Public Suffix List, MPL-2.0: the notice at the top of [src/akdbx/public_suffix_assets/public_suffix_list.dat](src/akdbx/public_suffix_assets/public_suffix_list.dat), see [VENDOR.txt](src/akdbx/public_suffix_assets/VENDOR.txt).
