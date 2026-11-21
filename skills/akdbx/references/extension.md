@@ -192,4 +192,4 @@ links only there. Then load the folder as an unpacked extension (`chrome://exten
 | The same with `extension_paired: false` | Give the user the `extension_pairing` link. Wait for the pairing; do not retry in a loop. |
 | `autofill outcome uncertain` | The browser did not confirm the fill. Check the page; do not retry automatically. |
 | `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Ask the user to rebuild into the same folder and reload it in `chrome://extensions`. |
-| The popup says the attach was refused after an update | The broker still runs the old akdbx. Restart the broker on the new version. |
+| Right after an update, the popup says the broker is not reachable and `status` shows `extension_connected: false` | The broker, or the Python that the host launcher runs, still has akdbx 0.21.2 or earlier, and it refuses the new extension's hello. Restart the broker on the new version. If the launcher points to another Python, run `akdbx extension install --browser NAME` again from the updated installation. |

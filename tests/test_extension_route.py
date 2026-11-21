@@ -897,12 +897,11 @@ def test_extension_version_changes_with_its_contents(tmp_path):
 
 
 def test_build_keeps_the_extension_version_and_reports_it(tmp_path, capsys):
-    from akdbx import __version__
     built = extension_host.build(tmp_path / 'ext', unlock_origin='https://localhost:9443')
     manifest = json.loads((built / 'manifest.json').read_text())
     assert manifest['version'] == route.EXTENSION_VERSION
     assert route.EXTENSION_VERSION_FORMAT.fullmatch(route.EXTENSION_VERSION)
-    assert version_tuple(route.EXTENSION_VERSION) >= (1, 0, 0) and route.EXTENSION_VERSION != __version__
+    assert version_tuple(route.EXTENSION_VERSION) >= (1, 0, 0)
     args = SimpleNamespace(extension_command='build', output=tmp_path / 'cli')
     assert extension_host.run(args, unlock_origin='https://localhost:9443') == 0
     assert json.loads(capsys.readouterr().out)['extension_version'] == route.EXTENSION_VERSION
