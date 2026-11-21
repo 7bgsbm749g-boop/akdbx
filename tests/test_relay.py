@@ -336,6 +336,9 @@ def test_serve_relay_ignores_an_inherited_origin_variable(fake, capsys, tmp_path
     monkeypatch.setenv('AKDBX_UNLOCK_ORIGIN', 'https://node.example:9443')
     socket_option = ['--socket', str(tmp_path / 'private' / 'broker.sock')]
     assert cli.main([*socket_option, 'serve', str(database), '--relay']) == 0
+    warned = capsys.readouterr().err
+    assert ('AKDBX_UNLOCK_ORIGIN is https://node.example:9443' in warned and enabled['origin'] in warned
+            and 'unset AKDBX_UNLOCK_ORIGIN' in warned)
     # An explicit option that names the relay origin itself is accepted; another one is still refused.
     assert cli.main([*socket_option, '--unlock-origin', enabled['origin'] + '/', 'serve', str(database),
                      '--relay']) == 0

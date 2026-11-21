@@ -109,7 +109,8 @@ def add_parser(commands):
     command.add_argument('--create-cert', action='store_true',
                          help='issue the certificate with mkcert after you ran mkcert -install yourself')
     command.add_argument('--access', choices=ACCESS, help='how the private page is reached; default local')
-    command.add_argument('--tailscale-name', help="this computer's tailnet name, for example node.tailnet.ts.net")
+    command.add_argument('--tailscale-name', help="this computer's full MagicDNS name, for example node.tailnet.ts.net "
+                              "(tailscale status --json: Self.DNSName, without the final dot)")
     command.add_argument('--tailnet-port', type=int, help='tailnet HTTPS port (Serve default 9443; Funnel 8443)')
     command.add_argument('--local-port', type=int, help='loopback port of the broker behind a proxy (default 9444)')
     command.add_argument('--relay-url', help='relay control URL for akdbx relay enable')
@@ -769,7 +770,8 @@ class Setup:
                                       f'{self.args.unlock_origin} (it names {value}); give one of them only')
                 choice['tailscale_name'], choice['tailnet_port'] = name, port
             else:
-                choice['tailscale_name'] = ui.text("This computer's tailnet name ('tailscale status' shows it)",
+                choice['tailscale_name'] = ui.text("This computer's full MagicDNS name, for example node.tailnet.ts.net "
+                                                   "(tailscale status --json shows it as Self.DNSName; omit the final dot)",
                                                    self.remembered('tailscale_name', args.tailscale_name))
                 port = args.tailnet_port or (self.state.get('tailnet_port') if self.state.get('access') == access
                                              else None) or (9443 if access == 'tailscale' else 8443)
@@ -1065,6 +1067,14 @@ class Setup:
         if access == 'relay':
             return self._access_relay(relay_enabled)
         self.origin = self.origin_for_access()
+        if access in ('tailscale', 'tunnel') and self.origin == DEFAULT_ORIGIN:
+            # No tailnet name and no explicit origin: say what is missing, not that loopback was refused.
+            self.say('No tailnet name: give --tailscale-name with the full MagicDNS name, for example '
+                     'node.tailnet.ts.net (tailscale status --json: Self.DNSName, without the final dot).')
+            self.record('access', 'failed', access=access,
+                        error='no tailnet name: give --tailscale-name with the full MagicDNS name '
+                              '(tailscale status --json: Self.DNSName, without the final dot)')
+            return False
         try:
             from .local_https import local_origin
             self.origin = local_origin(self.origin, self.choice.get('local_port')
@@ -1150,8 +1160,11 @@ class Setup:
         """Instructions only: setup never inspects or changes Tailscale, and the broker works on loopback."""
         port, local_port = self.choice['tailnet_port'], self.choice['local_port']
         if not self.choice.get('tailscale_name'):
-            self.say('No tailnet name: give --tailscale-name NAME (tailscale status shows it).')
-            self.record('access', 'failed', access=access, error='no tailnet name')
+            self.say('No tailnet name: give --tailscale-name with the full MagicDNS name, for example '
+                     'node.tailnet.ts.net (tailscale status --json: Self.DNSName, without the final dot).')
+            self.record('access', 'failed', access=access,
+                        error='no tailnet name: give --tailscale-name with the full MagicDNS name '
+                              '(tailscale status --json: Self.DNSName, without the final dot)')
             return False
         if access == 'tunnel' and port not in FUNNEL_PORTS:
             error = 'Tailscale Funnel accepts only ports 443, 8443 and 10000'
@@ -1167,11 +1180,16 @@ class Setup:
                      'block protect it. Funnel accepts only ports 443, 8443 and 10000.')
             off = shell_command(['tailscale', 'funnel', f'--https={port}', 'off'], self.windows)
             check = f'{off} removes it'
+            first = (f'first run tailscale funnel status; if port {port} already serves something else, choose '
+                     'another --tailnet-port instead of replacing it; otherwise ')
         else:
             check = (f'then tailscale serve status must show {self.origin} (tailnet only) with / proxy {target}, '
                      'and no Funnel')
+            first = (f'first run tailscale serve status: if it already shows {self.origin} (tailnet only) with / '
+                     f'proxy {target} and no Funnel, nothing more is needed; if port {port} serves something else, '
+                     'choose another --tailnet-port instead of replacing it; otherwise ')
         self.step(('' if self.windows else 'On Linux as root or as the Tailscale operator user: ')
-                  + f'run {command} yourself; {check}.', 'access')
+                  + f'{first}run {command} yourself; {check}.', 'access')
         if self.windows:
             self.step('Make the Tailscale service trust your CA: as your user run Join-Path (mkcert -CAROOT) '
                       "'rootCA.pem', then in an elevated PowerShell run certutil -addstore -f Root with that exact "

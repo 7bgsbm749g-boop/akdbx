@@ -470,6 +470,9 @@ def test_tailscale_access_prints_the_serve_command_and_never_runs_tailscale(home
     code, result, _ = setup(*base(vault, pair, '--access', 'tailscale'), runner=runner,
                             which=which_for('tailscale'), capsys=capsys)
     assert result['stages']['access']['state'] == 'failed' and runner.calls == []
+    # The short name from plain 'tailscale status' is not enough: ask for the full MagicDNS name.
+    assert 'Self.DNSName' in result['stages']['access'].get('error', '') or any(
+        'Self.DNSName' in note for note in result.get('notes', []) + result.get('user_steps', []))
     runner = Runner()
     code, result, _ = setup(*base(vault, pair, '--access', 'tailscale', '--tailscale-name', 'node.tailnet.ts.net',
                                   '--start-at-login'), runner=runner,
@@ -478,6 +481,10 @@ def test_tailscale_access_prints_the_serve_command_and_never_runs_tailscale(home
     assert not any(Path(argv[0]).name == 'tailscale' for argv in runner.commands())
     access = result['stages']['access']
     assert access['origin'] == 'https://node.tailnet.ts.net:9443' and access['state'] == 'todo'
+    # The status check comes before the command, so an existing route on that port is never replaced.
+    step = next(step for step in result['user_steps'] if 'tailscale serve --bg' in step)
+    assert step.index('first run tailscale serve status') < step.index('run tailscale serve --bg')
+    assert 'choose another --tailnet-port instead of replacing it' in step
     assert any('run tailscale serve --bg --https=9443 https://127.0.0.1:9444 yourself' in step
                and 'tailscale serve status must show https://node.tailnet.ts.net:9443 (tailnet only)' in step
                and 'no Funnel' in step for step in result['user_steps'])

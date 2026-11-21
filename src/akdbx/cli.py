@@ -603,6 +603,13 @@ def _relay_for_serve(args):
         print(f'--relay sets the origin itself ({config.origin}): remove --unlock-origin and --unlock-url',
               file=sys.stderr)
         return 2
+    inherited = os.environ.get('AKDBX_UNLOCK_ORIGIN', '').strip().rstrip('/')
+    if not args.unlock_origin_explicit and inherited and inherited != config.origin:
+        # serve --relay ignores the variable, but other akdbx commands in this environment still use it
+        # and would refuse this broker's links as untrusted.
+        print(f'warning: AKDBX_UNLOCK_ORIGIN is {inherited}, but this broker serves the relay origin '
+              f'{config.origin}. Other akdbx commands with this variable will refuse its links: unset '
+              'AKDBX_UNLOCK_ORIGIN or set it to the relay origin.', file=sys.stderr)
     if args.tls_cert is not None or args.tls_key is not None or args.local_port is not None:
         print('the akdbx relay is enabled: it sets the origin, the certificate and the loopback port itself. '
               "Remove --tls-cert, --tls-key and --local-port, or run 'akdbx relay disable', or set "
