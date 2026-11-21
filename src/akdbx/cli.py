@@ -131,6 +131,16 @@ def _peer_credentials(client: socket.socket) -> tuple[int, int, int]:
     return struct.unpack("3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, size))
 
 
+def _same_origin(first: str, second: str) -> bool:
+    """True when two HTTPS origins name the same host and effective port, as client validation compares them."""
+    try:
+        a, b = urlsplit(first), urlsplit(second)
+        return ((a.scheme.lower(), (a.hostname or '').lower(), a.port or 443)
+                == (b.scheme.lower(), (b.hostname or '').lower(), b.port or 443))
+    except ValueError:
+        return False
+
+
 def _validate_unlock_url(url: object, expected_origin: str) -> None:
     if not isinstance(url, str):
         raise ProtocolError("invalid unlock URL")
@@ -599,12 +609,12 @@ def _relay_for_serve(args):
             print("--relay needs an enabled relay: run 'akdbx relay enable' first", file=sys.stderr)
             return 2
         return None, None
-    if args.unlock_origin_explicit and args.unlock_origin.rstrip('/') != config.origin:
+    if args.unlock_origin_explicit and not _same_origin(args.unlock_origin, config.origin):
         print(f'--relay sets the origin itself ({config.origin}): remove --unlock-origin and --unlock-url',
               file=sys.stderr)
         return 2
     inherited = os.environ.get('AKDBX_UNLOCK_ORIGIN', '').strip().rstrip('/')
-    if not args.unlock_origin_explicit and inherited and inherited != config.origin:
+    if inherited and not _same_origin(inherited, config.origin):
         # serve --relay ignores the variable, but other akdbx commands in this environment still use it
         # and would refuse this broker's links as untrusted.
         print(f'warning: AKDBX_UNLOCK_ORIGIN is {inherited}, but this broker serves the relay origin '

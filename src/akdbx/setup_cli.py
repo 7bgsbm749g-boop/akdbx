@@ -1067,7 +1067,8 @@ class Setup:
         if access == 'relay':
             return self._access_relay(relay_enabled)
         self.origin = self.origin_for_access()
-        if access in ('tailscale', 'tunnel') and self.origin == DEFAULT_ORIGIN:
+        if (access in ('tailscale', 'tunnel') and not self.choice.get('tailscale_name')
+                and not getattr(self.args, 'unlock_origin_explicit', False)):
             # No tailnet name and no explicit origin: say what is missing, not that loopback was refused.
             self.say('No tailnet name: give --tailscale-name with the full MagicDNS name, for example '
                      'node.tailnet.ts.net (tailscale status --json: Self.DNSName, without the final dot).')
@@ -1181,13 +1182,15 @@ class Setup:
             off = shell_command(['tailscale', 'funnel', f'--https={port}', 'off'], self.windows)
             check = f'{off} removes it'
             first = (f'first run tailscale funnel status; if port {port} already serves something else, choose '
-                     'another --tailnet-port instead of replacing it; otherwise ')
+                     'another --tailnet-port instead of replacing it (and update or remove --unlock-origin or '
+                     'AKDBX_UNLOCK_ORIGIN if it names the old port); otherwise ')
         else:
             check = (f'then tailscale serve status must show {self.origin} (tailnet only) with / proxy {target}, '
                      'and no Funnel')
             first = (f'first run tailscale serve status: if it already shows {self.origin} (tailnet only) with / '
                      f'proxy {target} and no Funnel, nothing more is needed; if port {port} serves something else, '
-                     'choose another --tailnet-port instead of replacing it; otherwise ')
+                     'choose another --tailnet-port instead of replacing it (and update or remove --unlock-origin '
+                     'or AKDBX_UNLOCK_ORIGIN if it names the old port); otherwise ')
         self.step(('' if self.windows else 'On Linux as root or as the Tailscale operator user: ')
                   + f'{first}run {command} yourself; {check}.', 'access')
         if self.windows:

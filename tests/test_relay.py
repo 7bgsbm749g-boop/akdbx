@@ -340,8 +340,10 @@ def test_serve_relay_ignores_an_inherited_origin_variable(fake, capsys, tmp_path
     assert ('AKDBX_UNLOCK_ORIGIN is https://node.example:9443' in warned and enabled['origin'] in warned
             and 'unset AKDBX_UNLOCK_ORIGIN' in warned)
     # An explicit option that names the relay origin itself is accepted; another one is still refused.
+    # The variable still differs, so the warning is still printed.
     assert cli.main([*socket_option, '--unlock-origin', enabled['origin'] + '/', 'serve', str(database),
                      '--relay']) == 0
+    assert 'AKDBX_UNLOCK_ORIGIN is https://node.example:9443' in capsys.readouterr().err
     assert [relay for relay, _ in seen] == [True, True]
     assert all(url.startswith(enabled['origin'] + '/?token=') for _, url in seen)
     code, _, captured = run_cli(capsys, *socket_option, '--unlock-origin', 'https://node.example:9443', 'serve',
@@ -833,3 +835,12 @@ def test_a_folder_trust_failure_is_not_reported_as_a_running_broker(fake, capsys
                                 str(database))
     assert code == 2 and 'the relay directory cannot be trusted' in captured.err
     assert 'another akdbx broker' not in captured.err
+
+
+def test_origins_compare_by_host_and_effective_port():
+    # The serve --relay warning uses the same identity as client validation: no false warning.
+    assert cli._same_origin('https://Node.Example:443', 'https://node.example')
+    assert cli._same_origin('https://node.example:8443/', 'https://node.example:8443')
+    assert not cli._same_origin('https://node.example:9443', 'https://node.example:8443')
+    assert not cli._same_origin('https://other.example:8443', 'https://node.example:8443')
+    assert not cli._same_origin('https://node.example:bad', 'https://node.example')

@@ -485,6 +485,7 @@ def test_tailscale_access_prints_the_serve_command_and_never_runs_tailscale(home
     step = next(step for step in result['user_steps'] if 'tailscale serve --bg' in step)
     assert step.index('first run tailscale serve status') < step.index('run tailscale serve --bg')
     assert 'choose another --tailnet-port instead of replacing it' in step
+    assert 'update or remove --unlock-origin or AKDBX_UNLOCK_ORIGIN if it names the old port' in step
     assert any('run tailscale serve --bg --https=9443 https://127.0.0.1:9444 yourself' in step
                and 'tailscale serve status must show https://node.tailnet.ts.net:9443 (tailnet only)' in step
                and 'no Funnel' in step for step in result['user_steps'])
@@ -495,6 +496,15 @@ def test_tailscale_access_prints_the_serve_command_and_never_runs_tailscale(home
     assert result['broker']['serve_command'].endswith('--local-port 9444')
     with pytest.raises(SystemExit):
         parse('--configure-tailscale')
+
+
+def test_an_explicit_localhost_origin_is_not_reported_as_a_missing_name(home, vault, pair, capsys):
+    # The origin is explicit, so the problem is the loopback origin with a proxy port, not a missing name.
+    code, result, _ = setup(*base(vault, pair, '--access', 'tailscale'), runner=Runner(),
+                            global_options=('--unlock-origin', 'https://localhost:9443'),
+                            which=which_for('tailscale'), capsys=capsys)
+    access = result['stages']['access']
+    assert access['state'] == 'failed' and 'no tailnet name' not in access.get('error', '')
 
 
 def test_a_proxy_origin_needs_a_certificate_for_127_0_0_1(home, vault, tmp_path, capsys):
