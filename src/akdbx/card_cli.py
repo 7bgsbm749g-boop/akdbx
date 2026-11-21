@@ -160,6 +160,11 @@ def run(args, request):
                         or args.processor not in caps.get('card_processors', [])):
                     print(json.dumps(dict(ok=False, error='broker lacks requested card processor frame protocol; pin request not sent')))
                     return 1
+                if (args.processor == 'stripe' and args.frame_url
+                        and card_processor.stripe_element(args.frame_url) == 'card-element'
+                        and caps.get('stripe_card_element') is not True):
+                    print(json.dumps(dict(ok=False, error='broker lacks Stripe Card Element support; pin request not sent')))
+                    return 1
                 payload.update(processor=args.processor, processor_protocol=card_processor.PROTOCOL)
         else:
             payload.update(handle=args.handle, target=args.target, field=args.field, start_deadline=time.monotonic() + 4)

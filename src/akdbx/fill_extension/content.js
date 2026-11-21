@@ -12,7 +12,7 @@
   const PASSWORD_FILL = __PASSWORD_FILL__;
   const CARD_PIN = __CARD_PIN_SCRIPT__;
   const GUARD = __CARD_GUARD__;
-  const STRIPE_FIELDS = __STRIPE_FIELDS__;
+  const STRIPE_ELEMENTS = __STRIPE_ELEMENTS__;
   const count = () => __PASSWORD_COUNT__;
   const MAX_PINS = 16, MAX_PROBES = 4, PIN_MS = 30000, PROBE_MS = 60000;
   const CARD_TOKENS = ["cc-name", "cc-number", "cc-exp-month", "cc-exp-year", "cc-exp", "cc-csc"];
@@ -164,7 +164,10 @@
     const type = input ? el.type : el.tagName.toLowerCase();
     const last = tokens(el).slice(-1)[0] || "";
     if (processor === "stripe") {
-      const hit = Object.entries(STRIPE_FIELDS).find(([, [id, name]]) => el.id === id && el.getAttribute("name") === name);
+      // The frame path selects the Payment Element or the classic Card Element.
+      const element = Object.values(STRIPE_ELEMENTS).find(e => new RegExp(e.path).test(location.pathname));
+      const hit = element && Object.entries(element.fields).find(([, [id, name]]) =>
+        (id === null ? !el.hasAttribute("id") : el.id === id) && el.getAttribute("name") === name);
       return hit && input ? {kind: "card", role: hit[0]} : null;
     }
     if (processor === "computop") {

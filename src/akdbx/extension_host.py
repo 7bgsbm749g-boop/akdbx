@@ -337,7 +337,7 @@ def _content_script():
         '__PASSWORD_FILL__': browser_password.FILL,
         '__CARD_PIN_SCRIPT__': browser_card.PIN_SCRIPT,
         '__CARD_GUARD__': card_processor.GUARD,
-        '__STRIPE_FIELDS__': json.dumps(card_processor.STRIPE_FIELDS),
+        '__STRIPE_ELEMENTS__': card_processor.STRIPE_ELEMENTS_JSON,
         '__PASSWORD_COUNT__': password_frames.COUNT,
     }
     for marker, value in replacements.items():

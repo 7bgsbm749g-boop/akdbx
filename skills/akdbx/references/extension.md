@@ -127,7 +127,8 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   is optional on this route: the broker uses the browser's own URL for the
   document. Cards go only to frames of the merchant's top origin, or with
   `--processor adyen|computop|stripe` to that processor's exact frame below
-  same-origin merchant frames.
+  same-origin merchant frames. `stripe` covers the Payment Element and, with
+  fill extension 0.2.0 or newer, the classic Card Element frame.
 - Identities: `pin-identity-target --route extension`, same rules as the CDP
   route; only frames of the top origin.
 - Secret capture (`--mode read`, `capture-secret`) stays on the CDP route.
