@@ -832,11 +832,17 @@ def test_linux_default_unlock_block_survives_a_cleared_runtime_folder(monkeypatc
     assert cli.main(["--socket", str(other), *serve]) == 0
     assert brokers[-1].unlock_notifications.load_unlock_blocked() is False
 
-    # The same trust checks apply: a flag another user could write fails closed.
+    # The same trust checks apply: a flag another user could write refuses
+    # start (H6); it neither starts blocked nor silently unblocks.
     flag.chmod(0o644)
-    assert cli.main(serve) == 0
-    with pytest.raises(ValueError):
-        brokers[-1].unlock_notifications.load_unlock_blocked()
+    count = len(brokers)
+    capsys.readouterr()
+    assert cli.main(serve) == 2 and len(brokers) == count
+    err = capsys.readouterr().err
+    assert f"refusing to start: the saved unlock-link block {flag} cannot be trusted" in err
+    assert "mode 0600" in err and "token=" not in err
+    assert json.loads(flag.read_text()) == {"blocked": True}
+    flag.chmod(0o600)
 
     # An explicit --notification-state keeps the block beside it.
     explicit = tmp_path / "explicit" / "notifications.json"
@@ -863,3 +869,33 @@ def test_serve_with_a_restored_block_prints_no_unlock_url(monkeypatch, tmp_path,
     assert "token=" not in err and "https://" not in err
     assert "unlock link is blocked" in err and "akdbx new-unlock-link --user-confirmed" in err
     assert "only after the user confirms" in err
+
+
+def test_serve_refuses_a_group_writable_unlock_block_folder(monkeypatch, tmp_path, capsys):
+    # H6: a common mode-0775 state folder must not start a broker that is
+    # blocked with no way out: serve refuses and says how to fix it.
+    runtime, state_home = tmp_path / "run", tmp_path / "state"
+    runtime.mkdir(mode=0o700)
+    state_home.mkdir()
+    state_home.chmod(0o775)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    brokers = _serve_capturing_brokers(monkeypatch, restore_link=True)
+    serve = ["--unlock-origin", "https://node.example:9443", "serve", "synthetic.kdbx"]
+
+    assert cli.main(serve) == 2 and brokers == []
+    err = capsys.readouterr().err
+    assert "refusing to start" in err and f"replaceable by another user: {state_home}" in err
+    assert f"chmod 700 {state_home / 'akdbx'}" in err and "--notification-state FILE" in err
+    assert "Broker ready" not in err and "https://" not in err
+
+    # A private folder starts; a missing akdbx folder is made 0700, and the
+    # block survives a restart.
+    state_home.chmod(0o700)
+    assert cli.main(serve) == 0 and not brokers[-1].unlock_blocked
+    assert (state_home / "akdbx").stat().st_mode & 0o777 == 0o700
+    brokers[-1].unlock_notifications.save_unlock_blocked(True)
+    assert cli.main(serve) == 0 and brokers[-1].unlock_blocked
+    assert "unlock link is blocked" in capsys.readouterr().err
+    assert brokers[-1].unlock_link.new_link().startswith("https://node.example:9443/?token=")
+    assert cli.main(serve) == 0 and not brokers[-1].unlock_blocked

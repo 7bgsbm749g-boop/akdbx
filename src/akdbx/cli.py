@@ -192,7 +192,7 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         raise ValueError("configured unlock origin must be an HTTPS origin without path, query, or credentials")
     if type(response.get("ok")) is not bool:
         raise ProtocolError("invalid broker response")
-    for capability in ('locked', 'unlock_blocked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'passwordless_identity_supported', 'target_fill_required', 'totp_supported'):
+    for capability in ('locked', 'unlock_blocked', 'unlock_block_saved', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'passwordless_identity_supported', 'target_fill_required', 'totp_supported'):
         if capability in response and type(response[capability]) is not bool:
             raise ProtocolError("invalid broker response")
     if 'version' in response and not isinstance(response['version'], str):
@@ -512,6 +512,34 @@ def default_unlock_block_state(socket_path: Path) -> Path:
     return root / 'akdbx' / f'unlock-blocked-{key}.json'
 
 
+def refuse_untrusted_unlock_block(broker) -> bool:
+    """Return True, after it prints why, when `serve` must not start.
+
+    A saved unlock-link block that cannot be trusted never starts a broker
+    blocked with no way out, and never silently unblocks it.
+    """
+    manager = broker.unlock_notifications
+    try:
+        manager.load_unlock_blocked()
+        return False
+    except Exception as exc:
+        path = manager._blocked_path()
+        # A folder failure names the folder; a file failure has no detail.
+        detail = f' ({exc})' if isinstance(exc, RuntimeError) else ''
+    if os.name == 'nt':
+        rules = (f'{path.parent} must be a folder that only this user, SYSTEM and administrators can access, '
+                 'and the file must be private to this user')
+    else:
+        rules = (f'{path.parent} and each folder above it must be owned by you or root and not writable by '
+                 f'group or others (for example: chmod 700 {path.parent}), and the file must be a regular file '
+                 'you own with mode 0600')
+    manager.close()
+    broker.card_save_notifications.close()
+    print(f'refusing to start: the saved unlock-link block {path} cannot be trusted{detail}. {rules}. '
+          'Fix the permissions, or start with --notification-state FILE in a private folder.', file=sys.stderr)
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run one CLI command and return its process exit status."""
     args = parser().parse_args(argv)
@@ -549,6 +577,8 @@ def main(argv: list[str] | None = None) -> int:
                 print('could not open the private notification state; use --notification-state with a file in a '
                       'folder that only this user, SYSTEM and administrators can access', file=sys.stderr)
                 return 2
+            if refuse_untrusted_unlock_block(broker):
+                return 2
             try:
                 from .windows_rpc import capture_pipe
                 unlock_server, unlock_url = start_windows_unlock_server(
@@ -583,6 +613,8 @@ def main(argv: list[str] | None = None) -> int:
                                 secret_sinks_path=args.secret_sinks, default_fill_route=args.default_fill_route)
             except SinkError as exc:
                 print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
+                return 2
+            if refuse_untrusted_unlock_block(broker):
                 return 2
         unlock_name = ("agentic-kdbx-unlock.sock"
                        if args.socket.name == "agentic-kdbx.sock"

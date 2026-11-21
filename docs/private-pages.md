@@ -221,10 +221,15 @@ reboot keeps it. On Linux the file is in
 `${XDG_STATE_HOME:-~/.local/state}/akdbx/` (folder mode `0700`, file mode
 `0600`), one file per broker socket; with `--notification-state FILE` it is
 next to that file instead. On Windows it is next to the notification state in
-`%LOCALAPPDATA%\akdbx` (this user and SYSTEM only). A saved block that cannot
-be read or trusted also counts as blocked. If the broker cannot save the
-cleared block, `new-unlock-link` refuses and the link stays blocked. A broker
-that starts blocked prints no unlock link, only how to get a new one.
+`%LOCALAPPDATA%\akdbx` (this user and SYSTEM only). If that folder (or a
+folder above it, such as a group-writable `~/.local/state`) or the file fails
+these checks, `serve` refuses to start and names the folder and the
+permissions it needs; fix them, or use `--notification-state FILE` in a
+private folder. If the broker cannot save the block, the block still holds
+until the broker stops: the broker logs it and `status` adds
+`unlock_block_saved: false`. If it cannot save the cleared block,
+`new-unlock-link` refuses and the link stays blocked. A broker that starts
+blocked prints no unlock link, only how to get a new one.
 
 While the link is blocked, `status` and locked responses report
 `unlock_blocked: true` and contain no unlock link; `status` names only the

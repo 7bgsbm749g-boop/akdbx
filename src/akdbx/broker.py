@@ -155,6 +155,16 @@ class Broker:
         link = self.unlock_link
         return bool(link is not None and link.blocked)
 
+    def resume_notifications(self) -> None:
+        """Send restored notices; call only after the RPC endpoint listens.
+
+        A blocked notice queued before a restart was lost with it: the waiting
+        subscriptions that asked for it get it again.
+        """
+        self.card_save_notifications.resume()
+        if self.unlock_blocked:
+            self.unlock_notifications.publish_blocked()
+
     def unlock_fields(self) -> dict:
         """What a locked response may say about unlocking: never a blocked link."""
         if self.unlock_blocked:
@@ -168,7 +178,9 @@ class Broker:
         for a new link, so a wrong origin leaves the broker blocked.
         """
         origin = getattr(self.unlock_link, "origin", None)
-        return {"unlock_blocked": True, **({"unlock_origin": origin} if isinstance(origin, str) else {})}
+        return {"unlock_blocked": True, **({"unlock_origin": origin} if isinstance(origin, str) else {}),
+                # The block holds only until this broker stops.
+                **({"unlock_block_saved": False} if getattr(self.unlock_link, "block_saved", True) is False else {})}
 
     def _new_unlock_link(self, request: dict) -> dict:
         # The broker cannot verify the user. The agent must first ask the user
@@ -689,7 +701,7 @@ def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
         socket_identity = (socket_info.st_dev, socket_info.st_ino)
         server.settimeout(0.2 if stop else None)
         admission = threading.BoundedSemaphore(MAX_RPC_WORKERS)
-        broker.card_save_notifications.resume()
+        broker.resume_notifications()
 
         def run_connection(connection: socket.socket) -> None:
             try:

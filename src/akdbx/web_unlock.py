@@ -6,6 +6,7 @@ import re
 import secrets
 import socket
 import socketserver
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -251,6 +252,8 @@ class UnlockState:
         self.token = secrets.token_urlsafe(32)
         self.failures = 0
         self.blocked = False
+        # False while the block holds only in memory (its save failed).
+        self.block_saved = True
         self.pending: set[int] = set()
         self.next_attempt = 0
         self.lock = threading.Lock()
@@ -259,9 +262,6 @@ class UnlockState:
         if self._saved_block():
             self.blocked = True
             self.failures = MAX_FAILED_ATTEMPTS
-            # A blocked notice queued before the restart was lost with it:
-            # send it again to the restored subscriptions that asked for it.
-            self.broker.unlock_notifications.publish_blocked()
 
     def _saved_block(self) -> bool:
         try:
@@ -388,7 +388,11 @@ class UnlockState:
                 try:
                     self._save_block(True)
                 except OSError:
-                    pass  # The block holds in memory; a later clear must save first.
+                    # The block holds in memory; a restart would lose it.
+                    self.block_saved = False
+                    print("akdbx: the unlock link is blocked, but the block could not be saved; "
+                          "a broker restart would undo it. Check the broker's state folder.",
+                          file=sys.stderr, flush=True)
                 self._revoke_pairings()
                 self.broker.unlock_notifications.publish_blocked()
             return True
@@ -425,6 +429,7 @@ class UnlockState:
             self._revoke_pairings()
             self.token = secrets.token_urlsafe(32)
             self.failures = 0
+            self.block_saved = True
             with self.broker._state_lock:
                 self.blocked = False
                 self.broker.unlock_url = self.url

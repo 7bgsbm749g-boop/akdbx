@@ -1051,7 +1051,7 @@ def test_vault_store_errors_do_not_count_as_failed_attempts(tmp_path, error):
         server.server_close()
 
 
-def test_unsaved_block_clear_keeps_the_link_blocked_and_refuses_a_new_link(tmp_path, monkeypatch):
+def test_unsaved_block_clear_keeps_the_link_blocked_and_refuses_a_new_link(tmp_path, monkeypatch, capsys):
     # H3: a restart must never undo a block whose clear was not saved.
     broker, server, socket_path, url = blocking_server(tmp_path)
     manager = broker.unlock_notifications
@@ -1068,6 +1068,11 @@ def test_unsaved_block_clear_keeps_the_link_blocked_and_refuses_a_new_link(tmp_p
         # Saving the block fails: it still holds in memory.
         assert fail(socket_path, url, 3) == [401, 401, 403] and writes == [True]
         assert broker.unlock_blocked
+        # The operator and status both learn that a restart would undo it.
+        err = capsys.readouterr().err
+        assert "the block could not be saved" in err and "token=" not in err and "wrong-" not in err
+        status = broker.dispatch({"action": "ping"})
+        assert status["unlock_blocked"] is True and status["unlock_block_saved"] is False
         for _ in range(2):
             receipt = broker.dispatch(new_link)
             assert receipt["ok"] is False and receipt["unlock_blocked"] is True
@@ -1081,6 +1086,7 @@ def test_unsaved_block_clear_keeps_the_link_blocked_and_refuses_a_new_link(tmp_p
         monkeypatch.setattr(manager, "save_unlock_blocked", saved)
         receipt = broker.dispatch(new_link)
         assert receipt["ok"] is True and not broker.unlock_blocked
+        assert "unlock_block_saved" not in broker.dispatch({"action": "ping"})
         assert call(socket_path, "POST", route(receipt["unlock_url"]), urlencode({"password": RIGHT}))[0] == 200
     finally:
         server.shutdown()
@@ -1099,19 +1105,32 @@ def test_restored_block_resends_the_blocked_notice_to_opted_in_subscribers(tmp_p
     before.save_unlock_blocked(True)
     before.close()
 
+    from test_broker import running_broker
+    rpc_socket = tmp_path / "rpc" / "broker.sock"
     sent = []
+
+    def sender(target, payload):
+        # The consumer rechecks status on the event: the endpoint must listen.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(str(rpc_socket))
+        sent.append((target, payload))
+
     broker = Broker(None, RecordingTyper())
-    broker.unlock_notifications = UnlockNotifications(sender=lambda url, payload: sent.append((url, payload)),
-                                                      state_path=state)
+    broker.unlock_notifications = UnlockNotifications(sender=sender, state_path=state)
     broker, server, socket_path, url = blocking_server(tmp_path, broker=broker)
     try:
         assert broker.unlock_blocked
-        wait_for(lambda: len(sent) == 1)
-        wait_for(lambda: broker.unlock_notifications._worker is None)
+        # Restoring the block sends nothing while the RPC endpoint is down.
+        time.sleep(0.1)
+        assert sent == [] and broker.unlock_notifications._worker is None
+        with running_broker(rpc_socket, broker):
+            wait_for(lambda: len(sent) == 1)
+            wait_for(lambda: broker.unlock_notifications._worker is None)
+            status = broker.dispatch({"action": "unlock-subscription-status", "subscription_id": opted})
+            assert status["state"] == "subscribed"
         target, payload = sent[0]
         assert len(sent) == 1 and target == WEBHOOK  # the unlock-only subscription gets nothing
         assert payload["event"] == "akdbx.unlock-blocked" and payload["subscription_id"] == opted
-        assert broker.dispatch({"action": "unlock-subscription-status", "subscription_id": opted})["state"] == "subscribed"
     finally:
         server.shutdown()
         server.server_close()
