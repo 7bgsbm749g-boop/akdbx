@@ -443,13 +443,14 @@ running broker. See [the notification workflow](skills/akdbx/references/unlock-n
 for exact T3 registration, cleanup and recovery.
 
 From 0.24.0, a subscription can opt in with `blocked_events: true` (the CLI
-does this when the broker advertises `unlock_notifications_blocked_event:
-true`). When the unlock link is blocked after three failed attempts, each such
+sends it with `subscribe-unlock --blocked-events` when the broker advertises
+`unlock_notifications_blocked_event: true`). When the unlock link is blocked after three failed attempts, each such
 waiting subscription also gets `{"event": "akdbx.unlock-blocked", "locked":
 true, "unlock_blocked": true, ...}` with a new event ID. The subscription stays
 `subscribed` and later sends the normal `akdbx.unlocked` event to the same URL.
 Subscriptions without the opt-in get only `akdbx.unlocked`. The block itself
-is saved next to the notification state, so a restarted broker stays blocked.
+is saved, so a restarted or rebooted broker stays blocked and sends the blocked
+event again to waiting opted-in subscriptions.
 
 ## Authenticator codes (0.10.0)
 

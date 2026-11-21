@@ -216,10 +216,15 @@ password or key file counts: an empty or malformed form gets `400`, and a
 vault file or store error gets a "could not open the vault" page; neither
 uses an attempt.
 
-The block is saved next to the broker's notification state (a private file,
-mode `0600` on Linux, this user and SYSTEM only on Windows), so a broker
-restart keeps it. A saved block that cannot be read or trusted also counts as
-blocked.
+The block is saved in a private file, so a broker restart, a logout or a
+reboot keeps it. On Linux the file is in
+`${XDG_STATE_HOME:-~/.local/state}/akdbx/` (folder mode `0700`, file mode
+`0600`), one file per broker socket; with `--notification-state FILE` it is
+next to that file instead. On Windows it is next to the notification state in
+`%LOCALAPPDATA%\akdbx` (this user and SYSTEM only). A saved block that cannot
+be read or trusted also counts as blocked. If the broker cannot save the
+cleared block, `new-unlock-link` refuses and the link stays blocked. A broker
+that starts blocked prints no unlock link, only how to get a new one.
 
 While the link is blocked, `status` and locked responses report
 `unlock_blocked: true` and contain no unlock link; `status` names only the

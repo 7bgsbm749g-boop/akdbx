@@ -629,7 +629,7 @@ def test_queued_blocked_notice_still_arrives_before_its_unlock_event():
         manager.close()
 
 
-def test_cli_opts_into_blocked_events_only_when_the_broker_advertises_them(tmp_path, notifier, capsys, monkeypatch):
+def test_cli_sends_blocked_events_only_with_the_flag_and_a_supporting_broker(tmp_path, notifier, capsys, monkeypatch):
     manager, _ = notifier
     seen = []
     original = manager.subscribe
@@ -646,8 +646,15 @@ def test_cli_opts_into_blocked_events_only_when_the_broker_advertises_them(tmp_p
     url_file.chmod(0o600)
     socket_path = tmp_path / "rpc" / "broker.sock"
     prefix = ["--socket", str(socket_path), "--unlock-origin", "https://node.example:9443"]
+    subscribe = [*prefix, "subscribe-unlock", "--webhook-url-file", str(url_file)]
     with running_broker(socket_path, broker):
-        assert cli.main([*prefix, "subscribe-unlock", "--webhook-url-file", str(url_file)]) == 0
+        # H1: without the flag the subscription stays unlock-only, even on a
+        # broker that supports blocked events.
+        assert cli.main(subscribe) == 0
+        capsys.readouterr()
+        assert "blocked_events" not in seen[-1]
+        url_file.write_text(CALLBACK + "-opted")
+        assert cli.main([*subscribe, "--blocked-events"]) == 0
         capsys.readouterr()
         assert seen[-1]["blocked_events"] is True
         # A broker without the capability never receives the new field.
@@ -655,6 +662,6 @@ def test_cli_opts_into_blocked_events_only_when_the_broker_advertises_them(tmp_p
             "unlock_notifications_supported": True, "unlock_notifications_protocol": 1,
             "unlock_notifications_until_unlock": True})
         url_file.write_text(CALLBACK + "-old")
-        assert cli.main([*prefix, "subscribe-unlock", "--webhook-url-file", str(url_file)]) == 0
+        assert cli.main([*subscribe, "--blocked-events"]) == 0
         capsys.readouterr()
         assert "blocked_events" not in seen[-1]

@@ -103,8 +103,9 @@ device in the tailnet. This is the same on Linux and Windows; the repository's
 `docs/private-pages.md` describes the setups.
 
 Then let an event resume the task instead of waiting or asking the user to say
-"unlocked". Register a one-shot unlock webhook with `subscribe-unlock` (in T3:
-a webhook task bound to the current thread), check `expires_in: null`, and end
+"unlocked". Register a one-shot unlock webhook with
+`subscribe-unlock --blocked-events` (in T3: a webhook task bound to the current
+thread), check `expires_in: null`, and end
 the turn. Do not add a TTL unless the user asks for a time limit, and do not
 poll. If the receipt has `unlock_blocked: true`, the link was already blocked
 when you registered and no blocked event follows: keep the trigger and follow
@@ -162,7 +163,8 @@ anything else:
    user brings it up.
 
 Never create a new link automatically, never retry `new-unlock-link`, and
-never restart the broker to get around a block: a restart keeps the block.
+never restart the broker to get around a block: a restart or a reboot keeps
+the block, and `serve` then prints no unlock link.
 Keep the existing unlock subscription and its one-shot trigger: they still
 deliver the later unlock.
 

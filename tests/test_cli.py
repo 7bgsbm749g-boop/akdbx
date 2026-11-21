@@ -781,3 +781,85 @@ def test_linux_https_startup_errors_are_clean_and_private(failure, tmp_path, cap
     captured = capsys.readouterr()
     assert not captured.out and 'could not start HTTPS unlock' in captured.err
     assert 'synthetic private detail' not in captured.err and 'Traceback' not in captured.err
+
+
+def _serve_capturing_brokers(monkeypatch, *, restore_link=False):
+    """Run `serve` without listeners; return the brokers it builds."""
+    from akdbx import web_unlock
+    brokers = []
+    listener = SimpleNamespace(shutdown=lambda: None, server_close=lambda: None)
+
+    def start_unlock(broker, database, keyfile, _socket_path, origin):
+        brokers.append(broker)
+        if restore_link:
+            # What start_unlock_server does, without a socket.
+            broker.unlock_link = web_unlock.UnlockState(broker, database, keyfile, public_base=origin)
+            broker.unlock_url = broker.unlock_link.url
+            return listener, broker.unlock_url
+        return listener, origin + "/?token=synthetic"
+
+    monkeypatch.setattr(cli, "X11Typer", RecordingTyper)
+    monkeypatch.setattr(cli, "start_unlock_server", start_unlock)
+    monkeypatch.setattr(cli, "serve", lambda *_: None)
+    return brokers
+
+
+def test_linux_default_unlock_block_survives_a_cleared_runtime_folder(monkeypatch, tmp_path, capsys):
+    # F2: XDG_RUNTIME_DIR is cleared on reboot or logout; the block must not be.
+    import shutil
+    runtime, state_home = tmp_path / "run", tmp_path / "state"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    brokers = _serve_capturing_brokers(monkeypatch)
+    serve = ["--unlock-origin", "https://node.example:9443", "serve", "synthetic.kdbx"]
+
+    assert cli.main(serve) == 0
+    brokers[-1].unlock_notifications.save_unlock_blocked(True)
+    flag = cli.default_unlock_block_state(runtime / "akdbx" / "akdbx.sock")
+    assert flag.parent == state_home / "akdbx" and json.loads(flag.read_text()) == {"blocked": True}
+    assert flag.stat().st_mode & 0o777 == 0o600 and flag.parent.stat().st_mode & 0o777 == 0o700
+    assert not [path for path in runtime.rglob("*") if "blocked" in path.name]
+
+    shutil.rmtree(runtime)  # a reboot or logout
+    runtime.mkdir(mode=0o700)
+    assert cli.main(serve) == 0
+    assert brokers[-1].unlock_notifications.load_unlock_blocked() is True
+
+    # Another broker endpoint has its own flag.
+    other = runtime / "other" / "broker.sock"
+    assert cli.default_unlock_block_state(other) != flag
+    assert cli.main(["--socket", str(other), *serve]) == 0
+    assert brokers[-1].unlock_notifications.load_unlock_blocked() is False
+
+    # The same trust checks apply: a flag another user could write fails closed.
+    flag.chmod(0o644)
+    assert cli.main(serve) == 0
+    with pytest.raises(ValueError):
+        brokers[-1].unlock_notifications.load_unlock_blocked()
+
+    # An explicit --notification-state keeps the block beside it.
+    explicit = tmp_path / "explicit" / "notifications.json"
+    assert cli.main([*serve, "--notification-state", str(explicit)]) == 0
+    brokers[-1].unlock_notifications.save_unlock_blocked(True)
+    assert json.loads(explicit.with_name("notifications.json.unlock-blocked").read_text()) == {"blocked": True}
+    capsys.readouterr()
+
+
+def test_serve_with_a_restored_block_prints_no_unlock_url(monkeypatch, tmp_path, capsys):
+    # H2: a blocked link answers 403, so serve must not offer it.
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    brokers = _serve_capturing_brokers(monkeypatch, restore_link=True)
+    state = tmp_path / "state" / "notifications.json"
+    serve = ["--unlock-origin", "https://node.example:9443", "serve", "synthetic.kdbx",
+             "--notification-state", str(state)]
+    assert cli.main(serve) == 0
+    assert "Open the private HTTPS page: https://node.example:9443/?token=" in capsys.readouterr().err
+    brokers[-1].unlock_notifications.save_unlock_blocked(True)
+
+    assert cli.main(serve) == 0
+    err = capsys.readouterr().err
+    assert brokers[-1].unlock_blocked
+    assert "token=" not in err and "https://" not in err
+    assert "unlock link is blocked" in err and "akdbx new-unlock-link --user-confirmed" in err
+    assert "only after the user confirms" in err

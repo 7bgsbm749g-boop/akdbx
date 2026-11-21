@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
@@ -336,7 +337,7 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--web-unlock", action="store_true", help="compatibility flag: private web unlock is always enabled")
     start.add_argument("--unlock-socket", type=Path, help=argparse.SUPPRESS)
     start.add_argument("--unlock-url", help=argparse.SUPPRESS)
-    start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket")
+    start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket. Linux saves a blocked unlock link beside this file when it is given, otherwise in ${XDG_STATE_HOME:-~/.local/state}/akdbx")
     start.add_argument('--secret-sinks', type=Path, default=os.environ.get('AKDBX_SECRET_SINKS'),
                        help='operator sink configuration for deliver-secret (root- or broker-owned, not group/other writable)')
     start.add_argument('--tls-cert', type=Path, help='trusted PEM certificate for the loopback HTTPS private page')
@@ -426,6 +427,9 @@ def parser() -> argparse.ArgumentParser:
     subscribe.add_argument("--webhook-url-file", required=True, type=Path,
                            help="owned mode-0600 file containing the private callback URL")
     subscribe.add_argument("--ttl", type=int, default=0, help="0 waits until unlock/cancel (default); 60–3600 seconds only for an explicitly time-limited wait")
+    subscribe.add_argument("--blocked-events", action="store_true",
+                           help="also send akdbx.unlock-blocked when the unlock link is blocked (broker 0.24.0+); "
+                                "only for a consumer that rechecks status on every event")
     for name in ("unlock-subscription-status", "unsubscribe-unlock"):
         command = commands.add_parser(name, help="inspect/cancel a one-shot unlock subscription")
         command.add_argument("subscription_id")
@@ -495,6 +499,19 @@ def default_notification_state(socket_path: Path) -> Path:
     return socket_path.with_name(name)
 
 
+def default_unlock_block_state(socket_path: Path) -> Path:
+    """Linux: where the broker saves a blocked unlock link by default.
+
+    The runtime folder that holds the socket is cleared on reboot or logout,
+    so the block lives in the persistent per-user state folder instead,
+    keyed to the broker endpoint so two brokers never share one flag.
+    """
+    base = os.environ.get('XDG_STATE_HOME', '')
+    root = Path(base) if os.path.isabs(base) else Path.home() / '.local' / 'state'
+    key = hashlib.sha256(os.fsencode(os.path.realpath(socket_path))).hexdigest()
+    return root / 'akdbx' / f'unlock-blocked-{key}.json'
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run one CLI command and return its process exit status."""
     args = parser().parse_args(argv)
@@ -560,6 +577,9 @@ def main(argv: list[str] | None = None) -> int:
                 broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
                                 password_browser_profile=args.password_browser_profile,
                                 notification_state_path=args.notification_state or default_notification_state(args.socket),
+                                # An explicit --notification-state keeps the block beside it.
+                                unlock_block_path=(None if args.notification_state
+                                                   else default_unlock_block_state(args.socket)),
                                 secret_sinks_path=args.secret_sinks, default_fill_route=args.default_fill_route)
             except SinkError as exc:
                 print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
@@ -585,7 +605,13 @@ def main(argv: list[str] | None = None) -> int:
             unlock_server, unlock_url = start_unlock_server(
                 broker, database, keyfile, unlock_socket, args.unlock_url or args.unlock_origin,
             )
-        print(f"Vault locked. Open the private HTTPS page: {unlock_url}", file=sys.stderr)
+        if broker.unlock_blocked:
+            # A restored block: the link answers 403, so print no URL.
+            print("Vault locked. The unlock link is blocked after three failed master-password attempts. "
+                  "Ask the user whether they made the failed attempts and want a new link; only after the "
+                  "user confirms, run: akdbx new-unlock-link --user-confirmed", file=sys.stderr)
+        else:
+            print(f"Vault locked. Open the private HTTPS page: {unlock_url}", file=sys.stderr)
         print(f"Broker ready at {args.socket}; Ctrl-C locks it.", file=sys.stderr)
         try:
             serve(args.socket, broker)
@@ -727,9 +753,10 @@ def main(argv: list[str] | None = None) -> int:
                 print('could not read private webhook URL file; subscription not sent', file=sys.stderr)
                 return 2
             payload.update(webhook_url=webhook_url, ttl=args.ttl, notification_protocol=1)
-            if capabilities.get('unlock_notifications_blocked_event') is True:
-                # Opt in only where the broker supports it; older brokers
-                # keep their unlock-only subscription.
+            if args.blocked_events and capabilities.get('unlock_notifications_blocked_event') is True:
+                # Opt in only on request: a consumer that removes its one-shot
+                # trigger on any event must get only akdbx.unlocked. Older
+                # brokers keep their unlock-only subscription.
                 payload['blocked_events'] = True
         if args.command == 'new-unlock-link':
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,

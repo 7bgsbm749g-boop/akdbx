@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import secrets
 import socket
 import socketserver
@@ -27,6 +28,16 @@ MAX_BODY = 16 * 1024
 # Failed master-password attempts allowed per unlock link, in total.
 MAX_FAILED_ATTEMPTS = UNLOCK_LINK_MAX_FAILURES
 MAX_HTTP_CONNECTIONS = 8
+# A '%' must start a two-digit hex escape. parse_qs keeps any other '%' as
+# text, so such a form would otherwise reach the password check.
+_INVALID_ESCAPE = re.compile(rb'%(?![0-9A-Fa-f]{2})')
+
+
+def parse_form(raw: bytes, **options) -> dict[str, list[str]]:
+    """Strictly parse an urlencoded form; raise ValueError for any malformed byte or escape."""
+    if _INVALID_ESCAPE.search(raw):
+        raise ValueError('invalid percent escape')
+    return parse_qs(raw.decode('utf-8'), strict_parsing=True, errors='strict', **options)
 REQUEST_IO_TIMEOUT = 5.0
 CONNECTION_TIMEOUT = 15.0
 
@@ -248,6 +259,9 @@ class UnlockState:
         if self._saved_block():
             self.blocked = True
             self.failures = MAX_FAILED_ATTEMPTS
+            # A blocked notice queued before the restart was lost with it:
+            # send it again to the restored subscriptions that asked for it.
+            self.broker.unlock_notifications.publish_blocked()
 
     def _saved_block(self) -> bool:
         try:
@@ -258,12 +272,11 @@ class UnlockState:
             return True
 
     def _save_block(self, blocked: bool) -> None:
+        """Save the block flag; raise OSError when it cannot be saved."""
         try:
             self.broker.unlock_notifications.save_unlock_blocked(blocked)
         except Exception:
-            # The block always holds in memory. A flag that cannot be
-            # cleared only makes a later restart start blocked (fail closed).
-            pass
+            raise OSError('unlock block state could not be saved') from None
 
     @property
     def url(self) -> str:
@@ -372,7 +385,10 @@ class UnlockState:
             # sees unlock_blocked in its receipt, never neither.
             with self.broker._state_lock:
                 self.blocked = True
-                self._save_block(True)
+                try:
+                    self._save_block(True)
+                except OSError:
+                    pass  # The block holds in memory; a later clear must save first.
                 self._revoke_pairings()
                 self.broker.unlock_notifications.publish_blocked()
             return True
@@ -382,7 +398,10 @@ class UnlockState:
             self.pending.discard(attempt)
             self.token = secrets.token_urlsafe(32)
             self.failures = 0
-            self._save_block(False)
+            try:
+                self._save_block(False)
+            except OSError:
+                pass  # Only a confirmed new link clears a saved block.
 
     def cancel_attempt(self, attempt: int) -> None:
         """Release a reservation that did not reach a credential result."""
@@ -393,15 +412,17 @@ class UnlockState:
         """Replace a blocked link with a fresh token and budget.
 
         Return the new private URL, or None when the current link is not
-        blocked. The broker cannot verify the user; the agent must have the
-        user's confirmation before it asks for this.
+        blocked. Raise OSError, and keep the link blocked, when the cleared
+        block cannot be saved: a restart must never undo a block silently.
+        The broker cannot verify the user; the agent must have the user's
+        confirmation before it asks for this.
         """
         with self.lock:
             if not self.blocked or self.public_base is None or self.pending:
                 return None
+            self._save_block(False)
             # Pairing links issued before now must not get the new budget.
             self._revoke_pairings()
-            self._save_block(False)
             self.token = secrets.token_urlsafe(32)
             self.failures = 0
             with self.broker._state_lock:
@@ -635,7 +656,7 @@ def handler_for(state: UnlockState):
                 return
             # Parse before reserving: a malformed or empty form is not an attempt.
             try:
-                values = parse_qs(raw.decode("utf-8"), strict_parsing=True, errors='strict')
+                values = parse_form(raw)
                 passwords = values.get("password", [])
                 if len(passwords) != 1 or not passwords[0]:
                     raise ValueError

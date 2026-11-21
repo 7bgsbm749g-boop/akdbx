@@ -43,7 +43,7 @@ there, and callback URLs remain private bearer credentials.
    evidence or user-facing output. Register it through the CLI:
 
    ```bash
-   /absolute/path/to/akdbx/.venv/bin/akdbx subscribe-unlock \
+   /absolute/path/to/akdbx/.venv/bin/akdbx subscribe-unlock --blocked-events \
      --webhook-url-file /private/temporary/url-file
    ```
 
@@ -105,7 +105,10 @@ It contains no passwords, entry metadata, database paths or unlock tokens.
 
 Blocked events are opt-in. A broker that advertises
 `unlock_notifications_blocked_event: true` accepts `blocked_events: true` in
-`subscribe-unlock`; the current CLI sends it only to such a broker. The broker
+`subscribe-unlock`. The CLI sends it only with `--blocked-events`, and only to
+such a broker; without the flag the subscription is unlock-only. Pass the flag
+only when the consumer runs `status` on every event, as this workflow does
+(step 6). The broker
 saves the choice with the subscription. Only those subscriptions, while still
 waiting, get this event when the unlock link is blocked after three failed
 attempts:
@@ -118,11 +121,13 @@ It has its own event ID and does not change the subscription: the receipt
 stays `subscribed`, and the later unlock sends the normal `akdbx.unlocked`
 event to the same URL. A blocked event that is queued when the vault unlocks
 still arrives first. A failed blocked event does not affect that later
-delivery. A subscription made without `blocked_events` (by an older CLI, or
-restored from before 0.24.0) never gets the blocked event, only
+delivery. A subscription made without `blocked_events` (without the flag, by
+an older CLI, or restored from before 0.24.0) never gets the blocked event, only
 `akdbx.unlocked`: an older consumer may delete its one-shot trigger on any
 event. The event itself is not persisted, but the block is: a restarted broker
-still reports `unlock_blocked: true` and has no link until
+sends the blocked event again to its waiting opted-in subscriptions (expect a
+duplicate; `status` decides), still reports `unlock_blocked: true` and has no
+link until
 `new-unlock-link --user-confirmed`. A subscription registered while the link
 is already blocked gets no event; its receipt has `unlock_blocked: true`
 instead. Never create a new link because of this event alone; follow the

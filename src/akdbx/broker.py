@@ -101,6 +101,7 @@ class Broker:
         wall_clock: Callable[[], float] = time.time,
         card_browser_profile: Path | None = None,
         notification_state_path=None,
+        unlock_block_path=None,
         password_browser_profile=None,
         secret_sinks_path=None,
         default_fill_route='cdp',
@@ -130,7 +131,8 @@ class Broker:
         self.unlock_url: str | None = None
         # The private page's UnlockState, when this broker serves one.
         self.unlock_link = None
-        self.unlock_notifications = UnlockNotifications(state_path=notification_state_path)
+        self.unlock_notifications = UnlockNotifications(state_path=notification_state_path,
+                                                        blocked_path=unlock_block_path)
         self.card_save_notifications = CardSaveNotifications(
             expire_handler=self._expire_card_save, clock=clock,
             state_path=(Path(str(notification_state_path) + '.card-saves')
@@ -177,7 +179,13 @@ class Broker:
         link = self.unlock_link
         if link is None:
             return {"ok": False, "error": "this broker has no private unlock page; no link created"}
-        url = link.new_link()
+        try:
+            url = link.new_link()
+        except OSError:
+            # Fail closed: the link stays blocked until the clear is saved.
+            return {"ok": False, "error": "the unlock block could not be cleared in its private saved state; "
+                                          "the link stays blocked; no link created; check the broker's state "
+                                          "folder, then ask again", "unlock_blocked": True}
         if url is None:
             return {"ok": False, "error": "the current unlock link is not blocked; no link created"}
         return {"ok": True, "unlock_url": url, "locked": self.locked}

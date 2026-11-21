@@ -103,7 +103,8 @@ class Notice:
 
     A notice never changes its subscription's state: after it, the same
     subscription still delivers its final event. Notices live in memory only;
-    the block itself is saved, and a status check after a restart reports it.
+    the block itself is saved, and a broker that restores a saved block sends
+    the notice again to waiting subscriptions that asked for it.
     """
     key: str
     item: Subscription = field(repr=False)
@@ -114,7 +115,7 @@ class Notice:
 
 class UnlockNotifications:
     _label = 'unlock'
-    def __init__(self, *, sender=post_event, clock=time.monotonic, state_path=None):
+    def __init__(self, *, sender=post_event, clock=time.monotonic, state_path=None, blocked_path=None):
         self._sender = sender
         self._clock = clock
         self._lock = threading.Lock()
@@ -123,13 +124,25 @@ class UnlockNotifications:
         self._notices: list[Notice] = []
         self._worker: threading.Thread | None = None
         self._state_path = Path(state_path) if state_path is not None else None
+        # Linux only: a separate, persistent file for the unlock-link block.
+        # Without it the block sits next to the notification state.
+        self._blocked_file = Path(blocked_path) if blocked_path is not None else None
         self._restore()
 
-    def _directory(self):
+    def _directory(self, path=None):
         from .runtime import prepare_private_runtime_directory
-        if not self._state_path.is_absolute() or self._state_path.name in {'', '.', '..'}:
+        path = self._state_path if path is None else path
+        if not path.is_absolute() or path.name in {'', '.', '..'}:
             raise ValueError('invalid notification state path')
-        return prepare_private_runtime_directory(self._state_path.parent)[1]
+        if path == self._blocked_file:
+            # A persistent state folder (for example ~/.local/state) may not
+            # exist yet: make each missing folder private (mode 0700).
+            for folder in reversed(path.parent.parents):
+                try:
+                    os.mkdir(folder, 0o700)
+                except FileExistsError:
+                    pass
+        return prepare_private_runtime_directory(path.parent)[1]
 
     def _windows_state(self, *, create):
         """Verify the private state folder; create it only to save a subscription.
@@ -157,7 +170,7 @@ class UnlockNotifications:
             except Exception:
                 raise ValueError('invalid notification state') from None
             return _MISSING if raw is None else json.loads(raw)
-        directory = self._directory()
+        directory = self._directory(path)
         try:
             try:
                 fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
@@ -241,7 +254,7 @@ class UnlockNotifications:
             except Exception:
                 raise OSError('notification state could not be saved') from None
             return
-        directory = self._directory()
+        directory = self._directory(path)
         name = '.unlock-notifications-' + uuid.uuid4().hex
         try:
             if not create:
@@ -265,16 +278,19 @@ class UnlockNotifications:
             os.close(directory)
 
     def _blocked_path(self):
+        if self._blocked_file is not None:
+            return self._blocked_file
         return self._state_path.with_name(self._state_path.name + '.unlock-blocked')
 
     def load_unlock_blocked(self) -> bool:
         """Return the saved unlock-link block (0.24.0+); False without saved state.
 
-        The flag sits next to the notification state with the same private
-        file checks on Linux and Windows. It holds no token or URL.
-        Raise ValueError for an untrusted or malformed file.
+        By default the flag sits next to the notification state; the Linux
+        broker keeps it in a persistent state folder instead (``blocked_path``).
+        The same private file checks apply on Linux and Windows. It holds no
+        token or URL. Raise ValueError for an untrusted or malformed file.
         """
-        if self._state_path is None:
+        if self._state_path is None and self._blocked_file is None:
             return False
         try:
             data = self._load(self._blocked_path())
@@ -288,7 +304,7 @@ class UnlockNotifications:
 
     def save_unlock_blocked(self, blocked: bool) -> None:
         """Save or clear the unlock-link block so a restart keeps it."""
-        if self._state_path is None:
+        if self._state_path is None and self._blocked_file is None:
             return
         with self._lock:
             self._write(self._blocked_path(), {'blocked': bool(blocked)}, create=bool(blocked))

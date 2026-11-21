@@ -790,7 +790,10 @@ def test_pairing_rechecks_its_link_just_before_the_password_check():
     assert state.pending == set() and state.remaining() == 3
 
 
-@pytest.mark.parametrize('body', [b'password=&confirmed=yes', b'confirmed=yes', b'password=x', b'password'])
+@pytest.mark.parametrize('body', [b'password=&confirmed=yes', b'confirmed=yes', b'password=x', b'password',
+                                  # H5: parse_qs keeps an invalid escape as text; it must not count.
+                                  b'password=wrong%zz&confirmed=yes', b'password=wrong%&confirmed=yes',
+                                  b'password=wrong%4&confirmed=yes'])
 def test_malformed_pairing_forms_use_no_attempt(body):
     from akdbx.extension_web import handle_pairing
     broker, state, path, calls = pairing_setup()

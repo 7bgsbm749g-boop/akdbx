@@ -1006,7 +1006,9 @@ def test_untrusted_saved_block_fails_closed(tmp_path):
         broker.unlock_notifications.close()
 
 
-@pytest.mark.parametrize("body", ["", "password=", "other=value", "password=a&password=b", "password"])
+@pytest.mark.parametrize("body", ["", "password=", "other=value", "password=a&password=b", "password",
+                                  # H5: parse_qs keeps an invalid escape as text; it must not count.
+                                  "password=wrong%zz", "password=%", "password=wrong%4", "password=wrong%%41"])
 def test_malformed_unlock_forms_are_rejected_without_an_attempt(tmp_path, body):
     # F6: only a real password check can use one of the three attempts.
     attempts = []
@@ -1047,3 +1049,70 @@ def test_vault_store_errors_do_not_count_as_failed_attempts(tmp_path, error):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_unsaved_block_clear_keeps_the_link_blocked_and_refuses_a_new_link(tmp_path, monkeypatch):
+    # H3: a restart must never undo a block whose clear was not saved.
+    broker, server, socket_path, url = blocking_server(tmp_path)
+    manager = broker.unlock_notifications
+    saved = manager.save_unlock_blocked
+    writes = []
+
+    def broken(blocked):
+        writes.append(blocked)
+        raise OSError("synthetic disk full")
+
+    new_link = {"action": "new-unlock-link", "user_confirmed": True}
+    try:
+        monkeypatch.setattr(manager, "save_unlock_blocked", broken)
+        # Saving the block fails: it still holds in memory.
+        assert fail(socket_path, url, 3) == [401, 401, 403] and writes == [True]
+        assert broker.unlock_blocked
+        for _ in range(2):
+            receipt = broker.dispatch(new_link)
+            assert receipt["ok"] is False and receipt["unlock_blocked"] is True
+            assert "could not be cleared" in receipt["error"] and "token=" not in json.dumps(receipt)
+            assert broker.unlock_blocked and "unlock_url" not in broker.dispatch({"action": "ping"})
+        assert writes == [True, False, False]
+        assert call(socket_path, "POST", route(url), urlencode({"password": RIGHT}))[0] == 403
+        assert broker.locked
+
+        # Only a saved clear returns a replacement link.
+        monkeypatch.setattr(manager, "save_unlock_blocked", saved)
+        receipt = broker.dispatch(new_link)
+        assert receipt["ok"] is True and not broker.unlock_blocked
+        assert call(socket_path, "POST", route(receipt["unlock_url"]), urlencode({"password": RIGHT}))[0] == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_restored_block_resends_the_blocked_notice_to_opted_in_subscribers(tmp_path):
+    # H4: a blocked notice queued before a restart is lost with it.
+    from akdbx.notifications import UnlockNotifications
+    state = tmp_path / "state" / "notifications.json"
+    before = UnlockNotifications(sender=lambda *_: pytest.fail("no delivery before the restart"),
+                                 state_path=state)
+    register = {"notification_protocol": 1, "webhook_url": WEBHOOK}
+    opted = before.subscribe({**register, "blocked_events": True}, unlocked=False)["subscription_id"]
+    before.subscribe({**register, "webhook_url": WEBHOOK + "-legacy"}, unlocked=False)
+    before.save_unlock_blocked(True)
+    before.close()
+
+    sent = []
+    broker = Broker(None, RecordingTyper())
+    broker.unlock_notifications = UnlockNotifications(sender=lambda url, payload: sent.append((url, payload)),
+                                                      state_path=state)
+    broker, server, socket_path, url = blocking_server(tmp_path, broker=broker)
+    try:
+        assert broker.unlock_blocked
+        wait_for(lambda: len(sent) == 1)
+        wait_for(lambda: broker.unlock_notifications._worker is None)
+        target, payload = sent[0]
+        assert len(sent) == 1 and target == WEBHOOK  # the unlock-only subscription gets nothing
+        assert payload["event"] == "akdbx.unlock-blocked" and payload["subscription_id"] == opted
+        assert broker.dispatch({"action": "unlock-subscription-status", "subscription_id": opted})["state"] == "subscribed"
+    finally:
+        server.shutdown()
+        server.server_close()
+        broker.unlock_notifications.close()

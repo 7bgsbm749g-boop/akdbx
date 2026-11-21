@@ -13,7 +13,7 @@ from __future__ import annotations
 import hmac
 import html
 from http import HTTPStatus
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 from .portal import field
 
@@ -24,7 +24,7 @@ MAX_BODY = 4096
 def handle_pairing(handler, state):
     from .broker import is_wrong_credentials
     from .totp import https_origin
-    from .web_unlock import OPEN_FAILED, _page
+    from .web_unlock import OPEN_FAILED, _page, parse_form
     if urlsplit(handler.path).path != ROUTE:
         return False
     broker = state.broker
@@ -74,7 +74,7 @@ def handle_pairing(handler, state):
         raw = handler.rfile.read(length)
         if len(raw) != length:
             raise ValueError
-        values = parse_qs(raw.decode('utf-8'), strict_parsing=True, errors='strict')
+        values = parse_form(raw)
         if set(values) != {'password', 'confirmed'} or any(len(v) != 1 for v in values.values()) \
                 or values['confirmed'] != ['yes'] or not values['password'][0]:
             raise ValueError
