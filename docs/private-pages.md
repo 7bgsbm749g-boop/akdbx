@@ -271,7 +271,9 @@ akdbx relay disable --forget  # also delete the name, secret, key and certificat
 
 Restart a running broker after `disable` to stop using the relay. A running
 broker's `status` has a `relay` object with `connected`, `name`, `origin` and
-the certificate dates.
+the certificate dates. The browser extension opens pairing and unlock links
+only on the origin it was built with: run `akdbx extension build` again after
+you enable or disable the relay, and reload the extension.
 
 The relay folder holds `relay.json` (relay URL, name, port, origin and the
 bearer secret that authorizes this broker at the relay) and `tls.pem` (the

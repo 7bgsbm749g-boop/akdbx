@@ -200,6 +200,9 @@ broker's name, which public Certificate Transparency logs would show.
 4. `akdbx status`: the `relay` object must show `connected: true`, and the
    `unlock_url` must start with the relay origin. Give the user that link and
    continue as in [When the vault is locked](#when-the-vault-is-locked).
+5. If the user uses the browser extension, it trusts only the origin it was
+   built with: run `akdbx extension build` again (same output folder) and ask
+   the user to reload the extension.
 
 `akdbx relay status` shows the name, origin, certificate dates, and whether a
 running broker is connected (`broker.connected`) or has a `renewal_error`.
