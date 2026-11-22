@@ -92,15 +92,13 @@ never a URL merely copied from entry metadata. Omit reset tokens, verification
 codes and other private values from command arguments.
 
 The preceding `pin-password-target --top-url` has a different contract: it needs
-the exact observed page URL, not its sanitized form. There is no private URL
-input in this CLI. If that exact URL contains a private token, the pin/fill
-workflow is unsupported; a sanitized `--target-url` does not remove this limit.
-Use a secret-free password page reached through the site's normal authorized
-flow if available, or report the limitation and refuse the fill. Never change
-the page URL or weaken the exact match to work around it. See the
-[exact-URL privacy limitation](target-fill.md#exact-url-privacy-limitation).
+the exact observed page URL, not its sanitized form. If that exact URL contains
+a private token, pass it with `--top-url-file FILE` (a mode-0600 file that you
+write without printing and delete after the pin). Do not ask the user. Never
+change the page URL or weaken the exact match. See
+[exact URL with a private token](target-fill.md#exact-url-with-a-private-token).
 
-For a supported secret-free page:
+For example:
 
 ```bash
 # Focus and verify the password field, then obtain a fresh pin-password-target token.

@@ -62,6 +62,12 @@ akdbx pin-card-target --page-id PAGE_ID --frame-id FRAME_ID \
 akdbx fill-card SEARCH_HANDLE --target CARD_TARGET --field cc-number
 ```
 
+If the checkout or frame URL contains a private token, do not put it on the
+command line and do not ask the user. Write it to a mode-0600 file without
+printing it, pass `--top-url-file FILE` or `--frame-url-file FILE` in place of
+the plain flag, and delete the file after the pin. See
+[exact URL with a private token](target-fill.md#exact-url-with-a-private-token).
+
 ### Adyen processor frames
 
 Require broker 0.14.0 or newer, integer `card_processor_frames_protocol: 1`

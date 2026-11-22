@@ -38,17 +38,46 @@ Do not restart a live broker, alter its browser/profile, or deploy this source
 repair without the owning workflow's authorization. Existing processes retain
 their old code until an authorized update and restart.
 
-## Exact URL privacy limitation
+## Exact URL with a private token
 
-`pin-password-target --top-url` must receive the exact observed page URL;
-the broker compares the full URL, including any query and fragment. Supplying
-only an origin or sanitized URL cannot authorize that page. The CLI has no
-private file/stdin input for this URL. If it contains a reset token, verification
-code, or other private value, this CLI pin workflow is unsupported: do not put
-that value in command arguments, logs, or notes, or change the live URL to bypass
-the check. Continue only if the site's normal authorized flow provides a
-verified password page with a secret-free exact URL; otherwise report this
-limitation and refuse the fill.
+`--top-url` and `--frame-url` must be the exact observed page URL. The broker
+compares the full URL, including any query and fragment. An origin or a
+sanitized URL does not authorize the page. Never change the live URL to get
+past the check.
+
+If the URL contains a reset token, an activation or verification code, or
+another private value, do not put it in a command argument, a log or a note.
+Do not ask the user. Use the private file form, which `pin-password-target`,
+`list-password-frames`, `pin-identity-target` and `pin-card-target` accept:
+
+1. Write the exact observed URL, on one line, to a new mode-0600 file in a
+   private directory. Do not print it. Write it with a file tool or a shell
+   redirect from the browser tool's output, never as a command argument
+   (for example not `echo URL > FILE`).
+2. Pass `--top-url-file FILE` in place of `--top-url`, and
+   `--frame-url-file FILE` in place of `--frame-url`. The plain flag and its
+   file form are mutually exclusive. The CLI reads the file and sends the URL
+   to the broker unchanged. No output or error from the CLI contains the URL.
+3. Delete the file after the pin (and after `list-password-frames`).
+
+```sh
+umask 077
+url_dir=$(mktemp -d)                       # private directory, mode 0700
+# Write the exact URL to "$url_dir/top-url" from the browser tool; do not print it.
+akdbx pin-password-target --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
+  --top-url-file "$url_dir/top-url" --selector '#password' --mode password
+rm -rf -- "$url_dir"
+```
+
+The CLI refuses, before it sends any request, a file that is missing,
+unreadable, a symlink, not a regular file, not owned by you, open to other
+users (group or other mode bits), empty, larger than 4096 bytes, or not one
+URL on one line. On Windows the file must be a private file of the current
+user, as for other akdbx private input files.
+
+`fill-generated --target-url` and `fill-totp --target-url` compare only the
+origin. Pass the observed origin there, for example
+`https://example.test/`; these commands do not need the token.
 
 ## Caller workflow
 
