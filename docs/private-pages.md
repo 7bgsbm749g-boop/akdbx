@@ -434,35 +434,51 @@ master-password page. From extension version 0.3.0 (akdbx 0.29.0), an origin
 change needs no rebuild, no reload and no approval:
 
 1. **Built origin.** `akdbx extension build` writes the CLI's origin into
-   `config.js`. It is the first trusted origin.
+   `config.js`. It is the first trusted origin. The extension always has a
+   trusted origin that the native host did not choose: the built origin, or
+   the one it stored after a verified key binding or a signed change. An
+   extension built without an origin opens no pairing or unlock page; the
+   popup asks you to run `akdbx extension build`. There is no trust on first
+   use.
 2. **First key, bound to HTTPS.** Each broker has a persistent identity key
    (ECDSA P-256). At each start it signs a statement with its current origin
    and a sequence number. When the extension has no stored key, it does not
-   take the key from the native host alone. The first time the popup talks to
-   the broker (normally at the first pairing), the extension's service worker
-   reads `GET <trusted origin>/.well-known/akdbx-identity` over HTTPS (no
+   take the key from the native host alone. When the native host first sends
+   the statement (at the connection, not only when the popup opens), the
+   extension's service worker reads
+   `GET <trusted origin>/.well-known/akdbx-identity` over HTTPS (no
    redirects, no cookies, no cache, a three-second limit). It stores the
    broker's public key, origin and sequence number in `chrome.storage.local`
    only when that statement verifies, names the trusted origin, and has the
    same key as the statement from the native host. If the read fails, the
-   extension stores nothing, keeps the trusted origin, and tries again the next
-   time the popup opens. The trusted origin is the built origin; a broker that
-   names another origin before the first pairing is refused. The popup shows
+   extension stores nothing, keeps the trusted origin, and tries again at the
+   next statement or popup. A broker that names another origin than the
+   trusted one before the first key is refused, with no reset: the popup says
+   that the extension was built for another address. Only a new local
+   `akdbx extension build` changes the first trusted origin. The popup shows
    the origin next to the pairing code: check it before you open the page.
 3. **Signed changes.** When the origin changes (a relay port move, `relay
    rotate`, `relay enable` or `disable`, another `--unlock-origin`), the broker
    adds 1 to the sequence number and signs the new origin. The extension
    accepts it only when the stored key verified the signature, the key id
    matches, the sequence number is higher than the stored one, and the origin
-   is an HTTPS origin with no path, query or credentials. The popup then says
-   that the broker moved. Anything else keeps the stored origin and shows why.
-4. **Reset.** The extension never accepts another broker key by itself. If the
-   broker's key changed (a new computer, or deleted akdbx state), or the
-   broker names another origin than the built one before the first pairing, the
-   popup shows **Reset broker trust…**. Click it, read the note, and click
-   **Reset and pair again**. The extension forgets the stored key and the built
-   origin, makes a new pairing key, and learns the broker that answers at the
-   next pairing. Reset only for a broker that you set up yourself.
+   is an HTTPS origin with no path, query or credentials. The extension
+   checks each statement when it arrives and saves the new sequence number at
+   once; an older statement never replaces a newer saved one. The popup then
+   says that the broker moved. Anything else keeps the stored origin and shows
+   why.
+4. **Reset.** The extension never accepts another broker key by itself, and
+   it opens no pairing or unlock page while the key differs. If the broker's
+   key changed (a new computer, or deleted akdbx state) and it names the
+   trusted origin, the popup shows **Reset broker trust…**. Click it, read the
+   note, and click **Reset and pair again**. The extension forgets the stored
+   key and sequence number, keeps the trusted origin, and makes a new pairing
+   key. It then accepts a new key only when
+   `GET <trusted origin>/.well-known/akdbx-identity` over HTTPS returns a valid
+   statement for that origin with that key. If you did not set up this broker
+   again yourself, do not reset and do not enter your master password. A
+   broker with another key that names another origin gets no reset: run
+   `akdbx extension build` again and load the new extension.
 
 The broker sends the statement in the `identity` field of its `attached` and
 `state` messages to the extension. Its private HTTPS page server (the
@@ -482,19 +498,19 @@ on Linux (folder `0700`, file `0600`, the relay folder's checks) and
 akdbx never prints the private key. If the file fails a check, `serve` warns
 and starts without a statement; extensions then keep the origin they trust.
 Deleting the file makes a new key, which every paired extension refuses until
-the user resets it.
+the user resets it. On Windows the default broker pipe name contains the logon
+session id, which changes at each sign-in; the default broker therefore keeps
+one file, `identity-default.json`, and every other `--socket` pipe has its own
+`identity-<hash>.json`.
 
-**Trust point.** With a built origin, the first key must come from the
-broker's HTTPS page on that origin, which the browser checks with TLS and the
-broker checks with `Host`. A replaced native host can send its own key, but
-the extension refuses it when the page has another key, so the host cannot
-sign a move off the built origin. After the first key, a replaced host can no
-longer change the trusted origin or key; the popup shows a key change as a
-warning. One case remains: with no trusted origin at all (an extension built
-without an origin, or after **Reset broker trust**), the extension reads the
-page on the origin that the statement names and trusts the first statement
-that this page confirms. If that page cannot be read, it trusts the host's
-statement on first use.
+**Trust point.** Every key, also the one after a reset, must come from the
+broker's HTTPS page on the trusted origin, which the browser checks with TLS
+and the broker checks with `Host`. The native host never chooses that origin.
+A replaced native host can send its own key, but the extension refuses it when
+the page has another key, so the host cannot sign a move off the trusted
+origin. After the first key, a replaced host can no longer change the trusted
+origin or key; the popup shows a key change as a warning and opens no link.
+The first trusted origin comes only from a local `akdbx extension build`.
 
 ## Failed attempts block the link
 

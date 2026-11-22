@@ -201,7 +201,10 @@ its current origin with a sequence number at each start. The extension learns
 the key at its first pairing from the broker's HTTPS page on the built origin
 (`/.well-known/akdbx-identity`), never from the native host alone, then follows only
 origin changes that key signed with a higher sequence number. A changed broker
-key is refused until the user clicks **Reset broker trust…** in the popup. See
+key is refused until the user clicks **Reset broker trust…** in the popup; the
+reset keeps the trusted origin, and the new key must again come from that
+origin's HTTPS page. There is no trust on first use: only a local
+`akdbx extension build` sets the first origin. See
 [Browser extension trust](docs/private-pages.md#browser-extension-trust).
 
 ## CDP route: install and run (Linux)

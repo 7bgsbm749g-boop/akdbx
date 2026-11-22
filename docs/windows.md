@@ -413,7 +413,9 @@ see [Browser extension trust](private-pages.md#browser-extension-trust).
   and stores the broker's identity key, origin and sequence number in its
   local storage only when that page confirms the key that the native host
   sent. If the page cannot be read, it stores nothing and tries again at the
-  next popup.
+  next connection or popup. A broker that names another origin than the
+  built one gets no reset: run `akdbx extension build` again and reload the
+  extension. An extension built with no origin opens no link.
 - **Signed changes.** After a relay port move, `relay rotate`, `relay enable`
   or `disable`, or another `--unlock-origin`, the broker signs the new origin
   with the same key at its next start. The extension accepts it only with the
@@ -421,14 +423,18 @@ see [Browser extension trust](private-pages.md#browser-extension-trust).
   statement, or an invalid origin keeps the stored origin, and the popup says
   why.
 - **Reset.** A broker with another key (a new computer, or a deleted
-  `%LOCALAPPDATA%\akdbx\broker-identity` folder) is never accepted by itself.
-  The popup shows **Reset broker trust…**; click it, then **Reset and pair
-  again**, and pair on the origin that the popup shows. Reset only for a broker
-  that you set up yourself.
+  `%LOCALAPPDATA%\akdbx\broker-identity` folder) is never accepted by itself,
+  and the popup opens no link meanwhile. The popup shows **Reset broker
+  trust…**; click it, then **Reset and pair again**. The reset keeps the
+  trusted origin: the new key is accepted only from that origin's HTTPS
+  identity page. If you did not set up this broker again yourself, do not
+  reset and do not enter your master password.
 
 The broker keeps its identity key in
-`%LOCALAPPDATA%\akdbx\broker-identity\identity-<hash>.json`, one file per
-broker pipe, that only this user and SYSTEM can open. `akdbx status` shows its
+`%LOCALAPPDATA%\akdbx\broker-identity\`, that only this user and SYSTEM can
+open: `identity-default.json` for the default pipe (its name changes with the
+logon session, the identity does not) and `identity-<hash>.json` for each other
+`--socket` pipe. `akdbx status` shows its
 `extension_trust` (`key_id`, `origin`, `seq`), never the key.
 
 ### Update the extension
