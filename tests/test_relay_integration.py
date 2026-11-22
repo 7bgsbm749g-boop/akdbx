@@ -203,3 +203,17 @@ def test_phone_reaches_the_unlock_page_through_the_real_relay(real_relay, tmp_pa
     assert not any(config.secret in line for line in logs)
     if os.environ.get('AKDBX_RELAY_SOURCE'):
         assert real_acme, 'AKDBX_RELAY_SOURCE is set but its tests/fakes.py was not found'
+
+
+def test_rotate_gets_a_new_name_and_certificate_from_the_real_relay(real_relay):
+    relay, endpoint, phone, real_acme = real_relay
+    store = RelayStore()
+    config, _, _ = relay_module.enable(store, endpoint)
+    rotation = relay_module.rotate(store, endpoint_factory=lambda url: endpoint)
+    assert rotation.previous.name == config.name and rotation.config.name != config.name
+    assert store.load().name == rotation.config.name and store.load_rotation() is None
+    assert store.certificate(rotation.config.name) is not None and store.certificate(config.name) is None
+    names = leaf_of(store).extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert names.get_values_for_type(x509.DNSName) == [rotation.config.name]
+    # The relay accepts the new secret: it describes the broker under the new name.
+    assert relay_module.broker_info(endpoint, store.load()).public_port == rotation.config.public_port
