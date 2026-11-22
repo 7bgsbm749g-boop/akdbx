@@ -116,6 +116,20 @@ def test_identity_files_are_per_endpoint(tmp_path):
         IdentityStore(tmp_path, '../escape.json')
 
 
+def test_the_default_windows_pipe_keeps_one_identity_across_logon_sessions():
+    sid = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
+    session_1, session_2 = (rf'\\.\pipe\akdbx-{sid}-{n}' for n in (1, 2))
+    # Each sign-in gets a new pipe name, but the default broker keeps its identity file and its sequence number.
+    first = broker_identity.file_name(session_1, windows=True, default_pipe=session_1)
+    assert first == broker_identity.file_name(session_2, windows=True, default_pipe=session_2)
+    assert first == broker_identity.DEFAULT_PIPE_NAME
+    # Another pipe is another broker: its own file, also in another session.
+    other = broker_identity.file_name(r'\\.\pipe\akdbx-work', windows=True, default_pipe=session_1)
+    assert other == broker_identity.file_name(r'\\.\pipe\akdbx-work', windows=True, default_pipe=session_2)
+    assert other not in (first, broker_identity.file_name(r'\\.\pipe\akdbx-home', windows=True, default_pipe=session_1))
+    IdentityStore(None, first)  # A valid file name.
+
+
 def sign_raw(key, statement, public_key=None):
     """Sign any statement, also an invalid one, the way Identity signs; for refusal fixtures."""
     from cryptography.hazmat.primitives import hashes

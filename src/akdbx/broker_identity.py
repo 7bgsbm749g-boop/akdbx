@@ -189,9 +189,27 @@ def default_directory():
     return root / 'akdbx' / DIRECTORY_NAME
 
 
-def file_name(socket_path):
-    """One identity per broker endpoint, so two brokers never share a sequence number."""
-    endpoint = str(socket_path) if os.name == 'nt' else os.path.realpath(socket_path)
+DEFAULT_PIPE_NAME = 'identity-default.json'
+
+
+def file_name(socket_path, *, windows=None, default_pipe=None):
+    """One identity per broker endpoint, so two brokers never share a sequence number.
+
+    On Windows the default RPC pipe name includes the logon session id, which
+    changes at each sign-in. The default broker keeps one identity file across
+    sessions; any other pipe gets its own file. ``default_pipe`` is the current
+    session's default pipe (for tests; else it comes from windows_rpc).
+    """
+    windows = os.name == 'nt' if windows is None else windows
+    if windows:
+        endpoint = str(socket_path)
+        if default_pipe is None:
+            from .windows_rpc import default_pipe as current_default
+            default_pipe = current_default()
+        if endpoint.lower() == str(default_pipe).lower():
+            return DEFAULT_PIPE_NAME
+    else:
+        endpoint = os.path.realpath(socket_path)
     return 'identity-' + hashlib.sha256(os.fsencode(endpoint)).hexdigest()[:32] + '.json'
 
 
