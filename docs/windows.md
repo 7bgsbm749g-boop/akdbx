@@ -439,7 +439,8 @@ and field with the authorized browser tool, focus the field, then:
 ```
 
 `list-password-frames` returns `page_id` and `main_frame_id`, so no raw CDP call
-is needed. Login pins add `--mode login --username-selector USERNAME_SELECTOR`
+is needed. If the URL contains a private token, pass `--top-url-file FILE` in
+place of `--top-url`; the file must be a private file of the current user. Login pins add `--mode login --username-selector USERNAME_SELECTOR`
 with the username focused. The skill's
 [password field delivery](../skills/akdbx/references/target-fill.md) and
 [password writes](../skills/akdbx/references/password-writes.md) references

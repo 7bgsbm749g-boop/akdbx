@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from .browser_card import TTL, failure
 from .browser_identity import DELIVERY
+from . import page_url
 from .identities import COMMANDS, FAILED, FIELDS, FIELDS_PROTOCOL, FILL_FIELDS, REFUSED, UPDATE_PROTOCOL, label_matches
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
 
@@ -34,10 +35,11 @@ def add_parsers(commands):
     p.add_argument('--group', help='limit matches to this exact group path')
     p.add_argument('--exact', action='store_true', help='match the entire label, including case')
     p = commands.add_parser('pin-identity-target', help='pin one focused HTTPS identity field')
-    for key in PIN_ARGS[:-1]:
-        p.add_argument('--' + key.replace('_', '-'), required=key != 'frame_url',
-                       **({'help': 'exact frame URL; required on the cdp route, optional on the extension route'}
-                          if key == 'frame_url' else {}))
+    for key in ('page_id', 'frame_id', 'selector'):
+        p.add_argument('--' + key.replace('_', '-'), required=True)
+    page_url.add(p, 'top-url', required=True, help='exact observed top-level page URL, query and fragment included')
+    page_url.add(p, 'frame-url', required=False,
+                 help='exact frame URL; required on the cdp route, optional on the extension route')
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
     p.add_argument('--route', choices=ROUTES, help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
     p = commands.add_parser('fill-identity', help='fill the pinned DOM field without sending keys or submitting')
@@ -127,7 +129,7 @@ def run(args, request):
                 print(json.dumps(dict(ok=False, error='broker lacks extension route protocol 1; request not sent')))
                 return 1
             if args.resolved_route == 'cdp' and not args.frame_url:
-                print(json.dumps(dict(ok=False, error='--frame-url is required on the cdp route; request not sent')))
+                print(json.dumps(dict(ok=False, error='--frame-url or --frame-url-file is required on the cdp route; request not sent')))
                 return 1
         extension_ready = (getattr(args, 'resolved_route', None) == 'extension' if args.command == 'pin-identity-target'
                            else caps.get('extension_paired') is True)

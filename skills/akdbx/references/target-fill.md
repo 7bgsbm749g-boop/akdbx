@@ -38,17 +38,73 @@ Do not restart a live broker, alter its browser/profile, or deploy this source
 repair without the owning workflow's authorization. Existing processes retain
 their old code until an authorized update and restart.
 
-## Exact URL privacy limitation
+## Exact URL with a private token
 
-`pin-password-target --top-url` must receive the exact observed page URL;
-the broker compares the full URL, including any query and fragment. Supplying
-only an origin or sanitized URL cannot authorize that page. The CLI has no
-private file/stdin input for this URL. If it contains a reset token, verification
-code, or other private value, this CLI pin workflow is unsupported: do not put
-that value in command arguments, logs, or notes, or change the live URL to bypass
-the check. Continue only if the site's normal authorized flow provides a
-verified password page with a secret-free exact URL; otherwise report this
-limitation and refuse the fill.
+`--top-url` and `--frame-url` must be the exact observed page URL. The broker
+compares the full URL, including any query and fragment. An origin or a
+sanitized URL does not authorize the page. Never change the live URL to get
+past the check.
+
+If the URL contains a reset token, an activation or verification code, or
+another private value, do not put it in a command argument, a log or a note.
+Do not ask the user. Use the private file form, which `pin-password-target`,
+`list-password-frames`, `pin-identity-target` and `pin-card-target` accept
+(akdbx CLI 0.28.4 or newer; the broker needs no change):
+
+1. Write the exact observed URL, on one line, to a new mode-0600 file in a
+   private directory. Do not print it. Prefer a direct transfer: redirect
+   the browser tool's URL output into the file (`BROWSER_URL_COMMAND >
+   FILE`), so the URL is in no tool input and no displayed result. Use a
+   file-writing tool only when your browser tool already showed you the URL;
+   it is then in your transcript already, and the file tool adds no new copy
+   for other processes or logs. Never put the URL in a command argument (for
+   example not `echo URL > FILE`), and never repeat it in a reply or note.
+2. Pass `--top-url-file FILE` in place of `--top-url`, and
+   `--frame-url-file FILE` in place of `--frame-url`. The plain flag and its
+   file form are mutually exclusive. The CLI reads the file and sends the URL
+   to the broker unchanged. No output or error from the CLI contains the URL.
+3. Delete the file after the pin (and after `list-password-frames`).
+
+For the configured password browser profile, Chrome's read-only `/json/list`
+is a direct transfer. Give only the token-free origin and path. The filter
+takes the one page tab whose URL is that path, or that path followed by `?` or
+`#`; two or more such tabs refuse. It writes the tab's exact URL to the file
+and prints only the page ID:
+
+```sh
+umask 077
+url_dir=$(mktemp -d)                       # private directory, mode 0700
+port=$(head -n 1 "$PASSWORD_BROWSER_PROFILE/DevToolsActivePort")
+curl -q -sf "http://127.0.0.1:$port/json/list" | python3 -I -c '
+import json, sys
+base = sys.argv[1]
+tabs = [t for t in json.load(sys.stdin) if t.get("type") == "page"
+        and (t.get("url") == base or t.get("url", "").startswith((base + "?", base + "#")))]
+if len(tabs) != 1:
+    sys.exit("need exactly one tab for this page; no URL written")
+sys.stdout.write(tabs[0]["url"])
+print("page_id", tabs[0]["id"], file=sys.stderr)
+' 'https://site.example/user/activate' > "$url_dir/top-url"
+akdbx pin-password-target --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
+  --top-url-file "$url_dir/top-url" --selector '#password' --mode password
+rm -rf -- "$url_dir"
+```
+
+Check that the printed page ID is the tab you verified. If the filter fails,
+the file stays empty and akdbx refuses it.
+
+The CLI refuses, before it sends any request, a file that is missing,
+unreadable, a symlink, not a regular file, not owned by you, open to other
+users (group or other mode bits), empty, larger than 4096 bytes, or not one
+URL on one line, or not UTF-8 without a byte order mark. On Windows the file
+must be a private file of the current user, as for other akdbx private input
+files; Windows PowerShell 5.1 redirects and `-Encoding utf8` add UTF-16 or a
+byte order mark, so write it with `[IO.File]::WriteAllText(FILE, URL)` from a
+variable, never with the URL in the command text.
+
+`fill-generated --target-url` and `fill-totp --target-url` compare only the
+origin. Pass the observed origin there, for example
+`https://example.test/`; these commands do not need the token.
 
 ## Caller workflow
 
@@ -267,7 +323,8 @@ an older broker must be upgraded through its owning deployment workflow.
 Some account forms use `autocomplete="off"` even on standard password inputs.
 Require broker 0.14.1 or newer and integer
 `password_autocomplete_off_protocol: 1`. After independently verifying the
-account, exact secret-free HTTPS main-frame URL, password field purpose,
+account, exact HTTPS main-frame URL (with `--top-url-file` if it holds a token),
+password field purpose,
 unique selector and current focus, add `--allow-autocomplete-off` to a
 password-only pin with `--password-purpose current-password` or `new-password`.
 The CLI refuses an older broker before requesting the pin. The new option is

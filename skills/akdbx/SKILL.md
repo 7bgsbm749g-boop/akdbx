@@ -398,6 +398,13 @@ Rules (full detail in [password field delivery](references/target-fill.md)):
   [additional URLs](references/password-writes.md#additional-urls-0180)). Never
   edit the main URL or make a duplicate entry.
 - One pin per fill. A pin lives 30 seconds and is single-use.
+- URL with a private token (reset or activation code, for example
+  `?code=...`): do not put it on the command line and do not ask the user.
+  Write the exact URL to a mode-0600 file without printing it (best: redirect
+  the browser tool's URL output into the file; never a command argument), pass
+  `--top-url-file FILE` (or `--frame-url-file FILE`) in place of the plain
+  flag, and delete the file after the pin. Never shorten or change the URL.
+  See [exact URL with a private token](references/target-fill.md#exact-url-with-a-private-token).
 - Native apps and username or TOTP fields outside a browser use window pins:
   `pin-target --pid PID --window WINDOW` (X11 on Linux, HWND on Windows). A
   window pin never accepts a password or login fill, because a browser's

@@ -24,7 +24,7 @@ from .web_unlock import start_unlock_server
 from .local_https import is_loopback_origin, reload_certificate, start_local_unlock_server
 from .notifications import validate_webhook_url
 from . import capture_cli, card_cli, extension_host, identity_cli, relay as relay_module, relay_cli, secret_cli
-from . import setup_cli
+from . import page_url, setup_cli
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
 from .sink_helper import SinkError
 
@@ -390,8 +390,9 @@ def parser() -> argparse.ArgumentParser:
     pin.add_argument('--pid', type=int, required=True)
     pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID or Windows top-level HWND, decimal or 0x hex')
     password_pin = commands.add_parser('pin-password-target', help='pin an exact HTTPS main-frame or same-site child-frame password field; no keyboard fallback')
-    for flag in ('page-id', 'frame-id', 'top-url', 'selector'):
+    for flag in ('page-id', 'frame-id', 'selector'):
         password_pin.add_argument('--' + flag, required=True)
+    page_url.add(password_pin, 'top-url', required=True, help='exact observed top-level page URL, query and fragment included')
     password_pin.add_argument('--frame-origin', help='exact HTTPS origin of the child frame named by --frame-id (from list-password-frames); '
                               'the saved credential must match this origin; requires broker password_frame_protocol 1')
     password_pin.add_argument('--mode', choices=('password', 'username', 'login', 'read'), default='password',
@@ -404,7 +405,7 @@ def parser() -> argparse.ArgumentParser:
     password_pin.add_argument('--route', choices=FILL_ROUTES,
                               help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
     frames = commands.add_parser('list-password-frames', help='read-only: list frame ids, origins and visible field counts of one exact HTTPS page')
-    frames.add_argument('--top-url', required=True, help='exact verified top-level page URL')
+    page_url.add(frames, 'top-url', required=True, help='exact verified top-level page URL')
     frames.add_argument('--page-id', help='page target id; required only when several tabs show the same exact URL')
     frames.add_argument('--route', choices=FILL_ROUTES, help="cdp or extension; default: the broker's")
     for name in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password', 'setup-totp'):
@@ -667,6 +668,10 @@ def _free_loopback_port() -> int:
 def main(argv: list[str] | None = None) -> int:
     """Run one CLI command and return its process exit status."""
     args = parser().parse_args(argv)
+    url_error = page_url.resolve(args)
+    if url_error is not None:
+        print(url_error, file=sys.stderr)
+        return 2
     if os.name == 'nt' and args.broker_uid is not None:
         print('--broker-uid applies only to Linux; Windows requires the same user/session', file=sys.stderr)
         return 2

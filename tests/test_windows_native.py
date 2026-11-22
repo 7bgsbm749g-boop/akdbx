@@ -1277,3 +1277,53 @@ def test_setup_prints_windows_commands_that_powershell_runs_as_shown(tmp_path):
                             capture_output=True, text=True, timeout=120, check=False)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == arguments
+
+
+# Synthetic only: a fake activation URL with a fake one-time token.
+PAGE_URL_TOKEN = 'SYNTHETIC-ONE-TIME-TOKEN-4f9c2e7a'
+PAGE_URL = f'https://forge.example.test/user/activate?code={PAGE_URL_TOKEN}'
+
+
+def _password_pin_broker(monkeypatch):
+    calls = []
+
+    def request(path, payload, **kwargs):
+        calls.append(payload)
+        if payload['action'] == 'ping':
+            return dict(ok=True, password_fill_protocol=1, password_fill_delivery='chromium-password-dom-v1',
+                        password_browser_configured=True)
+        return dict(ok=True, target='a' * 64, expires_in=30, target_delivery='chromium-password-dom-v1')
+    monkeypatch.setattr(cli, 'request', request)
+    return calls
+
+
+def test_top_url_file_reads_a_private_windows_file_unchanged(private_dir, monkeypatch, capsys):
+    calls = _password_pin_broker(monkeypatch)
+    path = private_dir / 'top-url'
+    security.write_new(path, PAGE_URL.encode() + b'\r\n')
+    assert cli.main(['pin-password-target', '--page-id', 'page', '--frame-id', 'frame',
+                     '--top-url-file', str(path), '--selector', '#password']) == 0
+    assert [call['top_url'] for call in calls if call['action'] == 'pin-password-target'] == [PAGE_URL]
+    captured = capsys.readouterr()
+    assert PAGE_URL_TOKEN not in captured.out + captured.err
+
+
+def test_top_url_file_refuses_a_public_windows_file_without_echoing_it(private_dir, monkeypatch, capsys):
+    calls = _password_pin_broker(monkeypatch)
+    path = private_dir / 'top-url'
+    security.write_new(path, PAGE_URL.encode())
+    acl = win32security.ACL()
+    user = win32security.ConvertStringSidToSid(security.current_identity()[0])
+    everyone = win32security.CreateWellKnownSid(win32security.WinWorldSid)
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, user)
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, win32con.GENERIC_READ, everyone)
+    win32security.SetNamedSecurityInfo(str(path), win32security.SE_FILE_OBJECT,
+                                     win32security.DACL_SECURITY_INFORMATION
+                                     | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+                                     None, None, acl, None)
+    assert cli.main(['pin-password-target', '--page-id', 'page', '--frame-id', 'frame',
+                     '--top-url-file', str(path), '--selector', '#password']) == 2
+    assert calls == []
+    captured = capsys.readouterr()
+    assert captured.err.startswith('--top-url-file: could not read it as a private Windows file')
+    assert PAGE_URL_TOKEN not in captured.out + captured.err

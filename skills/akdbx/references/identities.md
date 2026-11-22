@@ -82,8 +82,11 @@ values. For the configured password browser profile, `list-password-frames
 for the retained browser target. The field frame must have the top page's
 exact HTTPS origin. Supply the exact URL of each, including its path and any
 query or fragment. The two URLs are identical for a main-frame field. If either
-URL contains personal data or a private token, stop before passing it to the
-CLI.
+URL contains personal data or a private token, do not put it on the command
+line and do not ask the user: write it to a mode-0600 file without printing
+it, pass `--top-url-file FILE` or `--frame-url-file FILE` in place of the
+plain flag, and delete the file after the pin. See
+[exact URL with a private token](target-fill.md#exact-url-with-a-private-token).
 
 Focus the intended field and use one fresh pin and search handle per field.
 

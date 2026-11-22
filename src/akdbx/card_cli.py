@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from .browser_card import DELIVERY, failure
 from .cards import FILL_FIELDS
 from .card_notifications import RESULTS
-from . import card_processor
+from . import card_processor, page_url
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
 
 NOTIFICATIONS = {'subscribe-card-save', 'card-save-subscription-status', 'unsubscribe-card-save'}
@@ -43,9 +43,11 @@ def add_parsers(commands):
     p = commands.add_parser('search-cards', help='find cards by non-secret label, brand or last four digits')
     p.add_argument('query', nargs='?', default='')
     p = commands.add_parser('pin-card-target', help='pin one exact HTTPS DOM payment field; no keyboard delivery')
-    for name in ('page-id', 'frame-id', 'top-url', 'selector'):
+    for name in ('page-id', 'frame-id', 'selector'):
         p.add_argument('--' + name, required=True)
-    p.add_argument('--frame-url', help='exact frame URL; required on the cdp route, optional on the extension route')
+    page_url.add(p, 'top-url', required=True, help='exact observed top-level page URL, query and fragment included')
+    page_url.add(p, 'frame-url', required=False,
+                 help='exact frame URL; required on the cdp route, optional on the extension route')
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
     p.add_argument('--processor', choices=card_processor.PROCESSORS,
                    help='explicitly pin an attested supported production card processor iframe')
@@ -131,7 +133,7 @@ def run(args, request):
                 print(json.dumps(dict(ok=False, error='broker lacks extension route protocol 1; pin request not sent')))
                 return 1
             if args.resolved_route == 'cdp' and not args.frame_url:
-                print(json.dumps(dict(ok=False, error='--frame-url is required on the cdp route; pin request not sent')))
+                print(json.dumps(dict(ok=False, error='--frame-url or --frame-url-file is required on the cdp route; pin request not sent')))
                 return 1
         extension_ready = (getattr(args, 'resolved_route', None) == 'extension' if args.command == 'pin-card-target'
                            else caps.get('extension_paired') is True)
@@ -167,7 +169,7 @@ def run(args, request):
                     if not args.frame_url:
                         print(json.dumps(dict(ok=False, error=(
                             'broker lacks Stripe Card Element support; give the exact Stripe frame URL with '
-                            '--frame-url so akdbx can check it; pin request not sent'))))
+                            '--frame-url or --frame-url-file so akdbx can check it; pin request not sent'))))
                         return 1
                     if card_processor.stripe_element(args.frame_url) == 'card-element':
                         print(json.dumps(dict(ok=False, error='broker lacks Stripe Card Element support; pin request not sent')))
