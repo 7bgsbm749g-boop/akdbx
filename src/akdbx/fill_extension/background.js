@@ -213,8 +213,9 @@ function withTrust(task) {
   return next;
 }
 
-function builtOrigin() {
-  return globalThis.AKDBX_TRUSTED_ORIGIN ?? null;
+// What `akdbx extension build` wrote into config.js: the first trusted origin and this build's random ID.
+function builtConfig() {
+  return {origin: globalThis.AKDBX_TRUSTED_ORIGIN ?? null, build: globalThis.AKDBX_BUILD_ID ?? null};
 }
 
 // A verified signed move (old origin -> new origin), kept until a popup shows it once.
@@ -229,7 +230,7 @@ async function storedTrust() {
 async function trustNow(current) {
   const stored = await storedTrust();
   const verified = current.identity_received ? await akdbxTrust.verifyIdentity(current.identity) : null;
-  const built = builtOrigin();
+  const built = builtConfig();
   const received = current.identity_received === true;
   let decision = akdbxTrust.decide(stored, built, verified, received);
   if (decision.fetch) {
@@ -488,8 +489,8 @@ async function popupReset() {
   // The user clicked "Reset broker trust": forget the key and its sequence number, keep the trusted origin,
   // and pair again with a new browser key. The next key is bound only through that origin's HTTPS page.
   await withTrust(async () => {
-    const origin = akdbxTrust.trustedOrigin(await storedTrust(), builtOrigin());
-    if (origin) await chrome.storage.local.set({[akdbxTrust.STORAGE_KEY]: akdbxTrust.saveRecord({reset: true, origin}, builtOrigin())});
+    const origin = akdbxTrust.trustedOrigin(await storedTrust(), builtConfig());
+    if (origin) await chrome.storage.local.set({[akdbxTrust.STORAGE_KEY]: akdbxTrust.saveRecord({reset: true, origin}, builtConfig())});
     else await chrome.storage.local.remove(akdbxTrust.STORAGE_KEY);
   });
   keysPromise = null;

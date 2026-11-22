@@ -25,6 +25,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shlex
 import socket
 import struct
@@ -440,6 +441,9 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
     host: it is the first trusted origin. At the first pairing the extension
     reads the broker's identity key over HTTPS from this origin and later follows
     the origin changes that key signs (``broker_identity``), with no rebuild.
+    Every build writes a new random build ID (``BUILD_ID``): the extension
+    drops broker trust saved under another build and starts again from this
+    origin, while a reload of the same build keeps it.
     """
     destination = Path(destination)
     origin = trusted_origin(unlock_origin) if unlock_origin is not None else None
@@ -473,8 +477,14 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
     (destination / 'config.js').write_text(
         '"use strict";\n// Written by `akdbx extension build`: the first trusted origin for pairing and unlock links.\n'
         '// After the first pairing, origin changes signed by the broker identity key replace it.\n'
-        'globalThis.AKDBX_TRUSTED_ORIGIN = ' + json.dumps(origin) + ';\n', encoding='utf-8')
+        'globalThis.AKDBX_TRUSTED_ORIGIN = ' + json.dumps(origin) + ';\n'
+        '// A new random ID on every build: broker trust saved under another build no longer counts.\n'
+        'globalThis.AKDBX_BUILD_ID = ' + json.dumps(secrets.token_urlsafe(16)) + ';\n', encoding='utf-8')
     return destination
+
+
+# The build ID line in config.js: 128 random bits, base64url (trust.js BUILD_ID).
+BUILD_ID = re.compile(r'^globalThis\.AKDBX_BUILD_ID = "([A-Za-z0-9_-]{22})";$', re.M)
 
 
 def add_parser(commands):

@@ -234,8 +234,10 @@ def test_the_service_worker_binds_the_first_broker_key_from_the_https_identity_p
     while record is None and time.monotonic() < deadline:
         time.sleep(.2)
         record = harness.worker_call(read)
+    build = harness.worker_call('globalThis.AKDBX_BUILD_ID')  # The ID that config.js of this build holds.
+    assert isinstance(build, str) and len(build) == 22
     assert record == {'v': 1, 'public_key': harness.identity.message()['public_key'], 'key_id': statement['key_id'],
-                      'origin': harness.unlock_origin, 'seq': statement['seq'], 'built': harness.unlock_origin}
+                      'origin': harness.unlock_origin, 'seq': statement['seq'], 'build': build}
     state = harness.worker_call('popupState()')
     assert state['origin'] == harness.unlock_origin and state['trust_error'] is None and state['trust_reset'] is False
 

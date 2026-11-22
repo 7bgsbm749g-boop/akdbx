@@ -455,12 +455,15 @@ change needs no rebuild, no reload and no approval:
    next statement or popup. A broker that names another origin than the
    trusted one before the first key is refused, with no reset: the popup says
    that the extension was built for another address. Only a new local
-   `akdbx extension build` changes the first trusted origin. The extension
-   saves the built origin with its stored trust; when you build it for
-   another address and reload it, it discards the stored key and origin and
-   binds the broker key again from the new built origin's HTTPS page. A
-   reload of the same build keeps the stored trust. The popup shows
-   the origin next to the pairing code: check it before you open the page.
+   `akdbx extension build` changes the first trusted origin. Each build
+   writes a new random build ID into `config.js`, and the extension saves
+   that ID with its stored trust. After any local `akdbx extension build`
+   (for the same address or another one) and a reload, the extension
+   discards the stored key and origin and binds the broker key again from
+   the built origin's HTTPS page. A reload of the same build keeps the stored
+   trust. `akdbx setup` does not rebuild an unchanged extension folder, so it
+   keeps the stored trust too. The popup shows the origin next to the pairing
+   code: check it before you open the page.
 3. **Signed changes.** When the origin changes (a relay port move, `relay
    rotate`, `relay enable` or `disable`, another `--unlock-origin`), the broker
    adds 1 to the sequence number and signs the new origin. The extension
@@ -483,8 +486,9 @@ change needs no rebuild, no reload and no approval:
    statement for that origin with that key. If you did not set up this broker
    again yourself, do not reset and do not enter your master password. A
    broker with another key that names another origin gets no reset: run
-   `akdbx extension build` again for that origin and reload the extension. The
-   build for a new address replaces the stored trust (step 2).
+   `akdbx extension build` again for the broker's current origin and reload
+   the extension. Any new build replaces the stored trust (step 2), also a
+   build for the same address after a signed move away from it.
 
 The broker sends the statement in the `identity` field of its `attached` and
 `state` messages to the extension. Its private HTTPS page server (the
@@ -517,8 +521,8 @@ the page has another key, so the host cannot sign a move off the trusted
 origin. After the first key, a replaced host can no longer change the trusted
 origin or key; the popup shows a key change as a warning and opens no link.
 The first trusted origin comes only from a local `akdbx extension build`, and
-only a local build for another address discards the stored trust: the native
-host cannot write `config.js`.
+only a local build (a new build ID in `config.js`) discards the stored trust:
+the native host cannot write `config.js`.
 
 ## Failed attempts block the link
 

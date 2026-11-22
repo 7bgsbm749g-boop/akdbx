@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 from pykeepass import create_database
 
-from akdbx import cli, setup_cli
+from akdbx import cli, extension_host, setup_cli
 from akdbx.extension_route import EXTENSION_ID
 from akdbx.persistence import VaultStore
 from test_windows_unlock import certificates  # noqa: F401
@@ -194,6 +194,9 @@ def test_running_setup_again_changes_nothing(home, vault, pair, capsys):
     options = base(vault, pair, '--start-at-login', '--browser', 'edge', '--link-skill')
     first = Runner()
     setup(*options, runner=first, capsys=capsys)
+    config = home / '.local/share/akdbx/extension/config.js'
+    built = config.read_text()
+    assert extension_host.BUILD_ID.search(built)
     second = Runner()
     second.enabled = True
     # The service started the broker after the first run. The flags select the same changes again; the
@@ -203,6 +206,8 @@ def test_running_setup_again_changes_nothing(home, vault, pair, capsys):
     assert code == 0, result
     assert {name: result['stages'][name]['state'] for name in ('login', 'fill', 'skill')} == {
         'login': 'done', 'fill': 'done', 'skill': 'done'}
+    # The unchanged extension was not rebuilt: it keeps its build ID, so the browser keeps its broker trust.
+    assert config.read_text() == built
     # Only read-only checks ran.
     assert [argv[1:] for argv in runner.commands()] == [['--user', 'is-enabled', 'akdbx.service']]
 

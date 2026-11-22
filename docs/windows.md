@@ -415,7 +415,8 @@ see [Browser extension trust](private-pages.md#browser-extension-trust).
   sent. If the page cannot be read, it stores nothing and tries again at the
   next connection or popup. A broker that names another origin than the
   built one gets no reset: run `akdbx extension build` again and reload the
-  extension. An extension built with no origin opens no link.
+  extension. Any new build replaces the stored trust; a reload alone does
+  not. An extension built with no origin opens no link.
 - **Signed changes.** After a relay port move, `relay rotate`, `relay enable`
   or `disable`, or another `--unlock-origin`, the broker signs the new origin
   with the same key at its next start. The extension accepts it only with the
