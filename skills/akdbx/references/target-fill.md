@@ -48,7 +48,8 @@ past the check.
 If the URL contains a reset token, an activation or verification code, or
 another private value, do not put it in a command argument, a log or a note.
 Do not ask the user. Use the private file form, which `pin-password-target`,
-`list-password-frames`, `pin-identity-target` and `pin-card-target` accept:
+`list-password-frames`, `pin-identity-target` and `pin-card-target` accept
+(akdbx CLI 0.28.4 or newer; the broker needs no change):
 
 1. Write the exact observed URL, on one line, to a new mode-0600 file in a
    private directory. Do not print it. Prefer a direct transfer: redirect
