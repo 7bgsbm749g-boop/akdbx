@@ -198,7 +198,8 @@ browser or the broker restarts; the popup then shows a new code.
 From extension 0.3.0 (akdbx 0.29.0), an origin change needs no rebuild, no
 reload and no approval. The broker keeps a persistent identity key and signs
 its current origin with a sequence number at each start. The extension learns
-the key at its first pairing (only for the built origin), then follows only
+the key at its first pairing from the broker's HTTPS page on the built origin
+(`/.well-known/akdbx-identity`), never from the native host alone, then follows only
 origin changes that key signed with a higher sequence number. A changed broker
 key is refused until the user clicks **Reset broker trust…** in the popup. See
 [Browser extension trust](docs/private-pages.md#browser-extension-trust).

@@ -120,11 +120,15 @@ reload and no approval. This covers a relay port move, `akdbx relay rotate`,
   the origin changes. It sends the statement in the `identity` field of its
   `attached` and `state` messages. `status` shows `extension_trust`
   (`key_id`, `origin`, `seq`).
-- The built origin (`config.js`) is the first trusted origin. At the first
-  pairing, the extension stores the broker's public key, origin and `seq`
-  (trust on first use), but only when the signed origin is the built origin
-  or there is no built origin. The popup shows the origin next to the pairing
-  code.
+- The built origin (`config.js`) is the first trusted origin. With no stored
+  key, the extension never stores a key that only the native host sent: its
+  service worker reads `GET <trusted origin>/.well-known/akdbx-identity` over
+  HTTPS and stores the public key, origin and `seq` only when that statement
+  verifies, names the trusted origin and has the host's key. A failed read
+  stores nothing; the next popup tries again. With no trusted origin (no built
+  origin, or after a reset), it reads the page on the statement's origin and
+  falls back to trust on first use when that read fails. The popup shows the
+  origin next to the pairing code.
 - Later, it accepts a new origin only when the stored key signed it, the key
   id matches, `seq` is higher than the stored one, and the origin is an HTTPS
   origin without path, query or credentials. Otherwise it keeps the stored
@@ -247,6 +251,7 @@ load the folder as an unpacked extension (`chrome://extensions`,
 | The same with `extension_paired: false` | Give the user the `extension_pairing` link. Wait for the pairing; do not retry in a loop. |
 | `autofill outcome uncertain` | The browser did not confirm the fill. Check the page; do not retry automatically. |
 | Popup: "This broker signs with another identity key…" | The broker's identity key changed. Ask the user whether they moved akdbx or deleted its state. Only then may the user click **Reset broker trust…** and pair again. |
+| Popup: "The broker page at … names another identity than the native host sent" | The native host and the broker's HTTPS page disagree about the broker key, so the extension learned nothing. Tell the user not to enter the master password; check that the broker on that origin and the installed native host (`akdbx extension install`) are the user's own. |
 | Popup: "The broker names …, but this extension was built for …" | The origin changed before the first pairing at 0.3.0. The user resets the broker trust in the popup and pairs on the shown origin, or you run `akdbx extension build` again for the current origin and the user reloads. |
 | `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Ask the user to rebuild into the same folder and reload it in `chrome://extensions`. |
 | Right after an update, the popup says the broker is not reachable and `status` shows `extension_connected: false` | The broker, or the Python that the host launcher runs, still has akdbx 0.21.2 or earlier, and it refuses the new extension's hello. Restart the broker on the new version. If the launcher points to another Python, run `akdbx extension install --browser NAME` again from the updated installation. |

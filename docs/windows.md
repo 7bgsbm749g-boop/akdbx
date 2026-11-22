@@ -408,9 +408,12 @@ itself, with no rebuild, reload or approval. The rules are the same on Linux;
 see [Browser extension trust](private-pages.md#browser-extension-trust).
 
 - **First pairing.** The popup shows the pairing page's origin next to the
-  code. At the first pairing the extension stores the broker's identity key,
-  origin and sequence number in its local storage. It does this only when the
-  broker's signed origin is the built origin.
+  code. At the first pairing the extension reads the broker's signed
+  statement over HTTPS from the built origin (`/.well-known/akdbx-identity`)
+  and stores the broker's identity key, origin and sequence number in its
+  local storage only when that page confirms the key that the native host
+  sent. If the page cannot be read, it stores nothing and tries again at the
+  next popup.
 - **Signed changes.** After a relay port move, `relay rotate`, `relay enable`
   or `disable`, or another `--unlock-origin`, the broker signs the new origin
   with the same key at its next start. The extension accepts it only with the

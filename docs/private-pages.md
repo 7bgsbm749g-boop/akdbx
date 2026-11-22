@@ -435,13 +435,19 @@ change needs no rebuild, no reload and no approval:
 
 1. **Built origin.** `akdbx extension build` writes the CLI's origin into
    `config.js`. It is the first trusted origin.
-2. **First pairing (trust on first use).** Each broker has a persistent
-   identity key (ECDSA P-256). At each start it signs a statement with its
-   current origin and a sequence number. When the extension has no stored key,
-   it stores the broker's public key, origin and sequence number in
-   `chrome.storage.local` the first time the popup talks to the broker,
-   normally at the first pairing. It does this only when the signed origin is
-   the built origin (or the extension was built without one). The popup shows
+2. **First key, bound to HTTPS.** Each broker has a persistent identity key
+   (ECDSA P-256). At each start it signs a statement with its current origin
+   and a sequence number. When the extension has no stored key, it does not
+   take the key from the native host alone. The first time the popup talks to
+   the broker (normally at the first pairing), the extension's service worker
+   reads `GET <trusted origin>/.well-known/akdbx-identity` over HTTPS (no
+   redirects, no cookies, no cache, a three-second limit). It stores the
+   broker's public key, origin and sequence number in `chrome.storage.local`
+   only when that statement verifies, names the trusted origin, and has the
+   same key as the statement from the native host. If the read fails, the
+   extension stores nothing, keeps the trusted origin, and tries again the next
+   time the popup opens. The trusted origin is the built origin; a broker that
+   names another origin before the first pairing is refused. The popup shows
    the origin next to the pairing code: check it before you open the page.
 3. **Signed changes.** When the origin changes (a relay port move, `relay
    rotate`, `relay enable` or `disable`, another `--unlock-origin`), the broker
@@ -459,7 +465,15 @@ change needs no rebuild, no reload and no approval:
    next pairing. Reset only for a broker that you set up yourself.
 
 The broker sends the statement in the `identity` field of its `attached` and
-`state` messages to the extension. The exact encoding is in
+`state` messages to the extension. Its private HTTPS page server (the
+loopback listener, the relay route to it, and the legacy Tailscale socket)
+also serves it at `GET /.well-known/akdbx-identity` as `application/json`
+(`public_key`, `statement`, `signature`; `Cache-Control: no-store`). This
+route needs no token because it holds only public data. It keeps the `Host`
+check (and, on the Tailscale socket, the Tailscale login header) and accepts
+no `Origin` other than the page's own or the akdbx extension's, so a web page
+on another origin cannot read it. It answers `404` when the broker has no
+identity and `405` for a method other than `GET`. The exact encoding is in
 `src/akdbx/broker_identity.py`. `akdbx status` shows `extension_trust` (`key_id`,
 `origin`, `seq`; no key). The identity file is per broker endpoint:
 `${XDG_STATE_HOME:-~/.local/state}/akdbx/broker-identity/identity-<hash>.json`
@@ -470,12 +484,17 @@ and starts without a statement; extensions then keep the origin they trust.
 Deleting the file makes a new key, which every paired extension refuses until
 the user resets it.
 
-**Trust point.** The first pairing trusts the broker key that the native host
-delivers. A process that replaced the host before the extension's first
-pairing could deliver its own key for the built origin, and later sign a move
-to another origin. Before 0.3.0 such a host could never move the links off the
-built origin. After the first pairing, a replaced host can no longer change
-the trusted origin or key; the popup shows a key change as a warning.
+**Trust point.** With a built origin, the first key must come from the
+broker's HTTPS page on that origin, which the browser checks with TLS and the
+broker checks with `Host`. A replaced native host can send its own key, but
+the extension refuses it when the page has another key, so the host cannot
+sign a move off the built origin. After the first key, a replaced host can no
+longer change the trusted origin or key; the popup shows a key change as a
+warning. One case remains: with no trusted origin at all (an extension built
+without an origin, or after **Reset broker trust**), the extension reads the
+page on the origin that the statement names and trusts the first statement
+that this page confirms. If that page cannot be read, it trusts the host's
+statement on first use.
 
 ## Failed attempts block the link
 
