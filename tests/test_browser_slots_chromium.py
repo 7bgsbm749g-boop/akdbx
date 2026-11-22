@@ -40,9 +40,13 @@ def xvfb():
     try:
         assert select.select([read_fd], [], [], 10)[0], 'isolated X server startup timed out'
         number = os.read(read_fd, 32).decode().strip()
+        assert number.isdecimal() and number != '99'
+    except BaseException:
+        process.terminate()
+        stop(process)
+        raise
     finally:
         os.close(read_fd)
-    assert number.isdecimal() and number != '99'
     return process, ':' + number
 
 

@@ -41,7 +41,7 @@ Chrome publishes a valid `DevToolsActivePort`).
 Every CDP pin then names the slot of the desktop you work in:
 `--browser-slot SLOT` on `pin-password-target` (including `--mode read`),
 `list-password-frames`, `pin-card-target` and `pin-identity-target`. Without
-the option the CLI sends `$AGENT_DESKTOP_SLOT`. If that variable is not set,
+the option the CLI sends `$AGENT_DESKTOP_SLOT` to a broker that reports a root. If that variable is not set,
 run `vps-agent-desktop current` to learn your slot. Never pick another slot,
 and never guess one from `browser_slots_live`: that is another agent's Chrome.
 

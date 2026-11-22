@@ -160,6 +160,10 @@ def request_field(args, caps, route):
         if explicit is None:
             return {}, None
         return None, 'browser slot applies only to the cdp route; omit --browser-slot with --route extension; request not sent'
+    if explicit is None and not isinstance(caps.get('browser_profile_root'), str):
+        # A broker with one profile (or an older one) keeps working in an
+        # agent desktop shell; only an explicit option is refused there.
+        return {}, None
     if not valid_name(name):
         source = '--browser-slot' if explicit is not None else ENV
         return None, f'{source} is not a slot name such as slot1; request not sent'

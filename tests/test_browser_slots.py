@@ -344,7 +344,8 @@ def test_cli_status_shows_root_and_live_slots(root, browsers, monkeypatch, capsy
 CAPS = dict(ok=True, password_fill_protocol=1, password_fill_delivery='chromium-password-dom-v1',
             browser_slot_protocol=1, cards_supported=True, card_protocol=1, card_delivery='cdp-card-element-v1',
             identity_protocol=1, identity_delivery='cdp-identity-element-v1', identity_browser_configured=True,
-            locked=False, password_frame_protocol=1, password_frame_policy='same-site-chain-v1')
+            locked=False, password_frame_protocol=1, password_frame_policy='same-site-chain-v1',
+            browser_profile_root='/synthetic/profiles')
 PIN_ARGS = {
     'pin-password-target': ['--page-id', 'P', '--frame-id', 'F', '--top-url', TOP, '--selector', '#password'],
     'pin-card-target': ['--page-id', 'P', '--frame-id', 'F', '--top-url', TOP, '--frame-url', TOP,
@@ -377,6 +378,21 @@ def test_cli_sends_the_explicit_slot_or_agent_desktop_slot(monkeypatch, capsys, 
     monkeypatch.delenv('AGENT_DESKTOP_SLOT')
     cli.main([command, *PIN_ARGS[command]])
     assert 'browser_slot' not in calls[-1]
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize('command', list(PIN_ARGS))
+@pytest.mark.parametrize('caps', [{k: v for k, v in CAPS.items() if k != 'browser_profile_root'},
+                                  {k: v for k, v in CAPS.items() if k not in {'browser_profile_root', 'browser_slot_protocol'}}])
+def test_cli_keeps_single_profile_brokers_working_in_an_agent_desktop_shell(monkeypatch, capsys, command, caps):
+    calls = recording(monkeypatch, caps, response={'ok': False, 'error': 'request failed'})
+    monkeypatch.setenv('AGENT_DESKTOP_SLOT', 'slot2')
+    cli.main([command, *PIN_ARGS[command]])
+    assert calls[-1]['action'] == command and 'browser_slot' not in calls[-1]
+    # An explicit option is still a slot request, which such a broker refuses.
+    calls.clear()
+    cli.main([command, *PIN_ARGS[command], '--browser-slot', 'slot2'])
+    assert all(call['action'] == 'ping' for call in calls) or calls[-1]['browser_slot'] == 'slot2'
     capsys.readouterr()
 
 
