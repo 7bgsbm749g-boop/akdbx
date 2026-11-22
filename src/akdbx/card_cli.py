@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from .browser_card import DELIVERY, failure
 from .cards import FILL_FIELDS
 from .card_notifications import RESULTS
-from . import card_processor, page_url
+from . import browser_slots, card_processor, page_url
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
 
 NOTIFICATIONS = {'subscribe-card-save', 'card-save-subscription-status', 'unsubscribe-card-save'}
@@ -52,6 +52,7 @@ def add_parsers(commands):
     p.add_argument('--processor', choices=card_processor.PROCESSORS,
                    help='explicitly pin an attested supported production card processor iframe')
     p.add_argument('--route', choices=ROUTES, help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
+    browser_slots.add_argument(p)
     p = commands.add_parser('fill-card', help='fill only the pinned card field; never types keys or submits')
     p.add_argument('handle')
     p.add_argument('--target', required=True)
@@ -61,6 +62,8 @@ def add_parsers(commands):
 
 def valid_receipt(command, response, args):
     if response.get('ok') is not True:
+        if command == 'pin-card-target' and set(response) == {'ok', 'error'} and browser_slots.valid_message(response['error']):
+            return response['ok'] is False
         return (response.get('ok') is False and response.get('error') in ERRORS
                 and set(response) <= {'ok', 'error', 'unlock_url', 'unlock_blocked', 'delivery'}
                 and response.get('delivery', 'not-started') in {'not-started', 'uncertain'})
@@ -155,6 +158,11 @@ def run(args, request):
                 payload['frame_url'] = args.frame_url
             if args.route is not None:
                 payload['route'] = args.route
+            slot, refusal = browser_slots.request_field(args, caps, args.resolved_route)
+            if refusal is not None:
+                print(json.dumps(dict(ok=False, error=refusal)))
+                return 1
+            payload.update(slot)
             if args.processor is not None:
                 if (type(caps.get('card_processor_frames_protocol')) is not int
                         or caps['card_processor_frames_protocol'] != card_processor.PROTOCOL

@@ -110,6 +110,7 @@ class IdentityManager:
 
     def dispatch(self, request, ready):
         from .browser_card import failure
+        from .browser_slots import SlotError
 
         action = request['action']
         targets = self.broker.identity_targets
@@ -150,6 +151,8 @@ class IdentityManager:
             if action in {'create-identity', 'update-identity'}:
                 return self.begin(request)
             return self.search(request)
+        except SlotError as exc:
+            return dict(ok=False, error=str(exc))
         except WriteError:
             return failure(kind='identity') if action == 'pin-identity-target' else dict(ok=False, error=REFUSED)
         except Exception:

@@ -16,6 +16,7 @@ from .cards import FILL_FIELDS
 from . import card_processor
 from . import card_hit_test
 from .runtime import open_private_runtime_directory
+from . import browser_slots
 
 DELIVERY = 'cdp-card-element-v1'
 TTL = 30
@@ -320,13 +321,17 @@ class BrowserCards:
     def _receipt(self):
         return {f'{self.kind}_delivery': self.delivery}
 
-    def __init__(self, profile=None, *, clock=time.monotonic, connector=CDP):
-        self.profile, self.clock, self.connector = profile, clock, connector
+    def __init__(self, profile=None, *, clock=time.monotonic, connector=CDP, slots=None):
+        self.profile, self.clock, self.connector, self.slots = profile, clock, connector, slots
         self.pins = {}
+
+    @property
+    def configured(self):
+        return self.profile is not None or self.slots is not None
 
     def capabilities(self):
         return dict(cards_supported=True, card_protocol=1, card_delivery=DELIVERY,
-                    card_browser_configured=self.profile is not None,
+                    card_browser_configured=self.configured,
                     card_processor_frames_protocol=card_processor.PROTOCOL,
                     card_processors=list(card_processor.PROCESSORS),
                     # `stripe` also accepts the classic Card Element frame.
@@ -368,6 +373,7 @@ class BrowserCards:
         raise CardTargetError()
 
     def pin(self, request):
+        request, profile, slot = browser_slots.select(request, self.profile, self.slots)
         protocol = f'{self.kind}_protocol'
         allowed = {'action', protocol, 'page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field'}
         processor = request.get('processor')
@@ -375,7 +381,7 @@ class BrowserCards:
             allowed |= {'processor', 'processor_protocol'}
         self.prune()
         if (set(request) != allowed or type(request.get(protocol)) is not int or request[protocol] != 1
-                or self.profile is None or len(self.pins) >= MAX_PINS or request.get('field') not in self.fields
+                or profile is None or len(self.pins) >= MAX_PINS or request.get('field') not in self.fields
                 or any(not isinstance(request.get(k), str) or not 0 < len(request[k]) <= 4096
                        for k in ('page_id', 'frame_id', 'selector'))
                 or (processor is None and secure_url(request['top_url']) != secure_url(request['frame_url']))):
@@ -390,7 +396,7 @@ class BrowserCards:
                 raise CardTargetError()
         elif 'processor' in request:
             raise CardTargetError()
-        cdp = self.connector(self.profile)
+        cdp = self.connector(profile)
         try:
             info = cdp.call('Target.getTargetInfo', dict(targetId=request['page_id']))['targetInfo']
             if info['type'] != 'page' or info['url'] != request['top_url']:
@@ -402,7 +408,7 @@ class BrowserCards:
                     raise CardTargetError()
                 token = secrets.token_hex(32)
                 self.pins[token] = dict(cdp=cdp, **state, field=request['field'], processor=processor,
-                    request=dict(request), expires=state['created'] + TTL)
+                    request=dict(request), expires=state['created'] + TTL, slot=slot)
                 return dict(ok=True, target=token, expires_in=TTL, field=request['field'], **self._receipt())
             self._frames(cdp, session, request)
             context = cdp.call('Page.createIsolatedWorld', dict(frameId=request['frame_id'],
@@ -424,7 +430,8 @@ class BrowserCards:
                 raise CardTargetError()
             token = secrets.token_hex(32)
             self.pins[token] = dict(cdp=cdp, session=session, obj=obj['objectId'], field=request['field'],
-                                    request=dict(request), created=created, expires=created + TTL,input_node=input_node)
+                                    request=dict(request), created=created, expires=created + TTL,input_node=input_node,
+                                    slot=slot)
             return dict(ok=True, target=token, expires_in=TTL, field=request['field'], **self._receipt())
         except BaseException:
             cdp.close()

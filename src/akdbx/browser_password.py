@@ -1,7 +1,8 @@
 """Opt-in Chromium password delivery to retained DOM nodes; never keyboard input.
 
-CDP is a privileged local interface. The operator selects the profile at broker
-startup, never through RPC. Hostile pages/OS and other local debugging clients
+CDP is a privileged local interface. The operator selects the profile, or a
+root of agent desktop slot profiles (`browser_slots`), at broker startup; an RPC
+names at most a slot, never a path. Hostile pages/OS and other local debugging clients
 are outside this boundary. Unsupported frames/controls fail closed. Child frames
 need the explicit same-site route proof in `password_frames`. Linux and Windows
 share the DOM contract; only the profile and peer checks are per platform.
@@ -24,6 +25,7 @@ from urllib.parse import urlsplit
 from .target import TargetError, DeliveryError
 from .totp import https_origin
 from . import password_frames
+from . import browser_slots
 
 DELIVERY = 'chromium-password-dom-v1'
 PROTOCOL = 1
@@ -385,6 +387,8 @@ class PasswordPin:
     frame_origin: str | None = None
     route: dict | None = None
     guards: tuple = ()
+    # The agent desktop slot whose Chrome holds this pin, or None.
+    slot: str | None = None
 
     def close(self):
         try:
@@ -400,8 +404,8 @@ class PasswordPin:
 
 class BrowserPasswords:
     """Own bounded browser pins with map synchronization separate from the vault."""
-    def __init__(self, profile=None, *, clock=time.monotonic):
-        self.profile, self.clock = profile, clock
+    def __init__(self, profile=None, *, clock=time.monotonic, slots=None):
+        self.profile, self.clock, self.slots = profile, clock, slots
         self.pins = {}
         self._lock = threading.Lock()
         self._creating = 0
@@ -423,9 +427,14 @@ class BrowserPasswords:
         for _, pin in pins.values():
             pin.close()
 
+    @property
+    def configured(self):
+        return self.profile is not None or self.slots is not None
+
     def pin(self, request):
         """Reserve capacity atomically and capture the DOM target outside locks."""
         self.prune()
+        request, profile, slot = browser_slots.select(request, self.profile, self.slots)
         required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode'}
         optional = set(request) & {'password_purpose', 'allow_autocomplete_off', 'frame_protocol', 'frame_origin', 'capture_protocol'}
         reading = request.get('mode') == 'read'
@@ -457,14 +466,14 @@ class BrowserPasswords:
                 raise TargetError()
             self._creating += 1
         try:
-            return self._capture(request)
+            return self._capture(request, profile, slot)
         finally:
             with self._lock:
                 self._creating -= 1
 
-    def _capture(self, request):
+    def _capture(self, request, profile, slot=None):
         """Do browser I/O outside the vault/map locks, then publish one pin."""
-        connection = CDP(self.profile)
+        connection = CDP(profile)
         pin, retained = None, []
         try:
             page = connection.call('Target.getTargetInfo', {'targetId': request['page_id']})['targetInfo']
@@ -494,7 +503,7 @@ class BrowserPasswords:
             if 'exceptionDetails' in result or result['result'].get('type') != 'object' or 'objectId' not in result['result']:
                 raise TargetError()
             pin = PasswordPin(connection, field_session, result['result']['objectId'], page['targetId'], frame['id'], url, request['mode'],
-                              request['top_url'] if route else None, origin, route, guards)
+                              request['top_url'] if route else None, origin, route, guards, slot)
             if route is not None and not password_frames.verify(connection, route, request['top_url'], origin, guards):
                 raise TargetError()
             token = secrets.token_hex(32)
@@ -518,6 +527,7 @@ class BrowserPasswords:
         The page id is optional: without it exactly one page target must have
         the exact top URL. Only origins, ids and visible field counts return.
         """
+        request, profile, _ = browser_slots.select(request, self.profile, self.slots)
         allowed = {'action', 'password_protocol', 'frame_protocol', 'top_url'}
         if (set(request) - {'page_id'} != allowed or type(request.get('password_protocol')) is not int
                 or request['password_protocol'] != PROTOCOL or type(request.get('frame_protocol')) is not int
@@ -531,7 +541,7 @@ class BrowserPasswords:
                 raise TargetError()
             self._creating += 1
         try:
-            connection = CDP(self.profile)
+            connection = CDP(profile)
             try:
                 if 'page_id' in request:
                     page = connection.call('Target.getTargetInfo', {'targetId': request['page_id']})['targetInfo']

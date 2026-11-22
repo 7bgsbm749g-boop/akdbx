@@ -179,6 +179,7 @@ class CardManager:
 
     def dispatch(self, request, ready):
         from .browser_card import CardTargetError, failure
+        from .browser_slots import SlotError
         try:
             if request['action'] == 'fill-card':
                 # Consume both authorizations even on malformed requests.
@@ -232,6 +233,8 @@ class CardManager:
             if len(json.dumps([item for item, _ in matches]).encode()) > 45000:
                 raise WriteError('card search exceeds response budget')
             return dict(ok=True, entries=[dict(item, handle=self.broker._new_handle(entry)) for item, entry in matches])
+        except SlotError as exc:
+            return dict(ok=False, error=str(exc))
         except (CardTargetError, ValueError, TypeError):
             return failure() if request['action'] in {'fill-card', 'pin-card-target'} else dict(ok=False, error='card operation refused; check selection and destination')
         except Exception:

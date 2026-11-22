@@ -29,6 +29,36 @@ unverifiable ownership and redirects refuse. Protect this privileged CDP
 interface and profile from other local users. Configuration is not proof of
 protection against malicious processes running as the broker user.
 
+### Agent desktop slots
+
+On a host with several agent desktops, the operator starts the broker with
+`serve --browser-profile-root ROOT` (or `AKDBX_BROWSER_PROFILE_ROOT`) instead of
+one profile. Each slot `ROOT/slotN` is the Chrome user data directory of one
+desktop, with the same launch rules as above. `status` shows
+`browser_profile_root`, `browser_slots` and `browser_slots_live` (slots whose
+Chrome publishes a valid `DevToolsActivePort`).
+
+Every CDP pin then names the slot of the desktop you work in:
+`--browser-slot SLOT` on `pin-password-target` (including `--mode read`),
+`list-password-frames`, `pin-card-target` and `pin-identity-target`. Without
+the option the CLI sends `$AGENT_DESKTOP_SLOT`. If that variable is not set,
+run `vps-agent-desktop current` to learn your slot. Never pick another slot,
+and never guess one from `browser_slots_live`: that is another agent's Chrome.
+
+Refusals name the cause and send nothing to a browser:
+
+| Error | Meaning |
+| --- | --- |
+| `browser slot required: ... (slots: ...)` | The broker has a root and the request named no slot. Pass yours. |
+| `browser slot invalid: ...` | Not a slot name (`slot1` … `slot99`); paths are never accepted. |
+| `browser slot unknown: SLOT (slots: ...)` | No such slot folder under the root. |
+| `browser slot not supported: ...` | The broker runs with one profile; omit the slot. |
+| `browser slot applies only to the cdp route; ...` | The extension route takes no slot. |
+
+A slot that exists but runs no Chrome gives the usual `target unavailable`
+refusal. A pin stays in the Chrome it was made in: fill it with the usual
+`fill`, `fill-card` or `fill-identity` (these take no slot).
+
 For a reset, each `fill-generated --target-url VERIFIED_URL --target TOKEN -- REF`
 needs its own fresh pin after independently focusing that field. A failed or
 partial generated fill does not count toward the two successful fills needed
@@ -65,8 +95,8 @@ Do not ask the user. Use the private file form, which `pin-password-target`,
    to the broker unchanged. No output or error from the CLI contains the URL.
 3. Delete the file after the pin (and after `list-password-frames`).
 
-For the configured password browser profile, Chrome's read-only `/json/list`
-is a direct transfer. Give only the token-free origin and path. The filter
+For the configured password browser profile (with slots:
+`ROOT/$AGENT_DESKTOP_SLOT`), Chrome's read-only `/json/list` is a direct transfer. Give only the token-free origin and path. The filter
 takes the one page tab whose URL is that path, or that path followed by `?` or
 `#`; two or more such tabs refuse. It writes the tab's exact URL to the file
 and prints only the page ID:
