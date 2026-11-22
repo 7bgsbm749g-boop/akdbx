@@ -467,7 +467,7 @@ def test_update_page_refuses_a_changed_vault_and_a_renamed_identity(deployed):
     other = begin(broker, title='Other shipping', fields=['tel'])
     assert call(web, 'POST', private_path(other), urlencode({'tel': IDENTITY['tel'], 'confirmed': 'yes'}))[0] == 200
     code, _, page = call(web, 'POST', private_path(stale), urlencode({'email': IDENTITY['email'], 'confirmed': 'yes'}))
-    assert code == 404 and b'data-save-result="expired"' in page
+    assert code == 404 and b'data-save-result="stale"' in page and b'>Failure</h1>' in page
     assert broker.dispatch(dict(action='write-status', write_handle=stale['write_handle']))['state'] == 'failed'
     entry = reopened(path).find_entries(title=LABEL, first=True)
     assert stored(entry) == {'tel': IDENTITY['tel']} and entry.history == []
