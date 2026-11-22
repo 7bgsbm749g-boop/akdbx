@@ -11,20 +11,27 @@ inputs. Form names, types, limits, autocomplete hints and submission routes are
 preserved. The existing response security headers remain in effect. The design
 uses inline CSS/SVG and system fonts, with no remote assets. A hash-authorized
 presentation script controls password visibility, unlock feedback and card save
-feedback. Standard form encoding is used only for the same-origin unlock and card
+feedback. Standard form encoding is used only for the same-origin unlock and save
 POSTs. The script reads input values only to check card details on the page
 (`portal.CARD_CHECK`, the same rules and messages as the broker) and to keep the
 non-secret title and group after a final result; it never shows, logs or stores
 a card value. Normal pages allow only this exact script. Import pages
 also retain their existing same-origin QR scripts.
 
-The card save page reuses the unlock button component (`.portal-submit` with
-`.portal-progress`): it is disabled with an indeterminate bar while saving, then
-shows `Saved`, or a dashed error state (`Page expired`, `Vault changed`,
-`Cancelled`, `Not confirmed`). A broker refusal of the form, such as a duplicate
-title, returns the button to `Save card to AKDBX` with the message below it.
-Each server result carries `data-card-result`, so the page shows the real
-broker state; a lost response reports that the result is not confirmed.
+Every save page (card, identity, password and authenticator) reuses the unlock
+button component (`.portal-submit` with `.portal-progress`): it is disabled
+with an indeterminate bar while saving, then shows `Saved`, or a dashed error
+state (`Page expired`, `Vault changed`, `Cancelled`, `Not confirmed`). A broker
+refusal of the form, such as a duplicate card title or a password mismatch,
+returns the button to its idle label with the message below it. Each server
+result carries `data-save-result`, so the page shows the real broker state; a
+lost response reports that the result is not confirmed.
+
+The save result page is titled `Success` or `Failure`. A success says
+"<Kind> saved to vault. You may close this page." (a card also names its saved
+title and group). Result text says "vault", not "AKDBX", and portal pages never
+say "KeePass". With the page script, the heading and tab title change to the
+same `Success` or `Failure`, and the result text appears under the button.
 
 Motion follows the original design: an 800 ms sheet entrance, staggered fields,
 slow ambient lighting and a subtle button glint. These effects run only with

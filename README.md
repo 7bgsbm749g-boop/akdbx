@@ -358,7 +358,9 @@ Responses are receipts only.
 
 `create-identity --title LABEL --group EXISTING_GROUP` returns a private HTTPS
 save page for contact and postal details. The personal fields are protected
-custom strings on a standard KDBX entry. `search-identities LABEL` returns
+custom strings on a standard KDBX entry. `--fields tel,email` (0.28.2) limits
+the page, and the stored fields, to the listed fields; without it the page
+shows all fields. `search-identities LABEL` returns
 only labels, group paths and single-use handles. Login search excludes these
 records. `pin-identity-target` and `fill-identity` deliver one field to a
 verified and focused Chromium DOM element without using keys or submitting

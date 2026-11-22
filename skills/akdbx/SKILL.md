@@ -472,7 +472,9 @@ private page; register a [card-save notification](references/card-save-notificat
 first), and change one with `update-card`.
 
 **Addresses and contacts** ([identities](references/identities.md)).
-`create-identity` gives the user a private save page. `search-identities`,
+`create-identity` gives the user a private save page. Ask only for the fields
+the task needs: pass them with `--fields` (for example `--fields tel` for a
+phone number) so the page shows only those fields. `search-identities`,
 `pin-identity-target` and `fill-identity` fill one field at a time. Names,
 addresses, phone numbers and emails never go in CLI arguments, output, logs or
 evidence. Fill does not submit the form.

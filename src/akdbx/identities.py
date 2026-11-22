@@ -32,7 +32,24 @@ FILL_FIELDS = (*FIELDS, 'street-address')
 FIELD_LIMIT = 256
 COMMANDS = {'create-identity', 'search-identities', 'pin-identity-target', 'fill-identity'}
 REFUSED = 'identity operation refused; check label, group and vault readiness'
+# Optional ``fields`` on create-identity: the page shows and accepts only these.
+FIELDS_PROTOCOL = 1
 FAILED = 'identity operation failed'
+
+
+def capabilities():
+    return dict(identity_fields_protocol=FIELDS_PROTOCOL)
+
+
+def requested_fields(request):
+    """The page's fields in FIELDS order: all of them, or the requested subset."""
+    if 'fields' not in request:
+        return tuple(FIELDS)
+    fields = request['fields']
+    if (not isinstance(fields, list) or not fields or len(set(map(str, fields))) != len(fields)
+            or any(not isinstance(f, str) or f not in FIELDS for f in fields)):
+        raise WriteError()
+    return tuple(f for f in FIELDS if f in fields)
 
 
 def is_identity(entry):
@@ -158,11 +175,13 @@ class IdentityManager:
 
     def begin(self, request):
         values = request.get('metadata')
-        if (set(request) != {'action', 'identity_protocol', 'metadata'}
+        if (not {'action', 'identity_protocol', 'metadata'} <= set(request)
+                or set(request) - {'action', 'identity_protocol', 'metadata', 'fields'}
                 or not isinstance(values, dict) or set(values) != {'title', 'group'}
                 or any(not _text(v, 4096) or len(v.encode()) > 4096 for v in values.values())
                 or not values['title'].strip()):
             raise WriteError()
+        fields = requested_fields(request)
         writes = self.broker.writes
         writes._require_available()
         group_for(self.broker.vault, values['group'])
@@ -170,7 +189,8 @@ class IdentityManager:
         if len(writes.operations) >= MAX_WRITES:
             raise WriteError()
         handle = secrets.token_hex(32)
-        op = Write(secrets.token_urlsafe(32), self.broker.clock() + 300, writes.revision, dict(values), kind='identity')
+        op = Write(secrets.token_urlsafe(32), self.broker.clock() + 300, writes.revision, dict(values), kind='identity',
+                   fields=fields)
         writes.operations[handle] = op
         return dict(ok=True, state='pending', write_handle=handle,
                     private_url=writes.public_base.rstrip('/') + '/identity?token=' + op.token)
@@ -178,12 +198,14 @@ class IdentityManager:
     def submit(self, op, values, confirmed):
         if (not confirmed or op.kind != 'identity' or op.state != 'pending'
                 or op.revision != self.broker.writes.revision or op.expires <= self.broker.clock()
-                or set(values) != set(FIELDS) or any(not _text(v, FIELD_LIMIT, allow_joiners=True) for v in values.values())):
+                or not op.fields or set(values) != set(op.fields) or any(not _text(v, FIELD_LIMIT, allow_joiners=True) for v in values.values())):
             return dict(ok=False, error='invalid or expired identity save')
         values = {key: value.strip() for key, value in values.items()}
-        if not any(values.values()) or values['country'] and not re.fullmatch('[A-Za-z]{2}', values['country']):
+        country = values.get('country', '')
+        if not any(values.values()) or country and not re.fullmatch('[A-Za-z]{2}', country):
             return dict(ok=False, error='enter at least one field and use a two-letter country code if provided')
-        values['country'] = values['country'].upper()
+        if 'country' in values:
+            values['country'] = country.upper()
 
         def matches(candidate):
             group = group_for(candidate, op.values['group'])

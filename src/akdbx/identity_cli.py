@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from .browser_card import TTL, failure
 from .browser_identity import DELIVERY
-from .identities import COMMANDS, FAILED, FILL_FIELDS, REFUSED, label_matches
+from .identities import COMMANDS, FAILED, FIELDS, FIELDS_PROTOCOL, FILL_FIELDS, REFUSED, label_matches
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
 
 PIN_ARGS = ('page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field')
@@ -20,6 +20,9 @@ def add_parsers(commands):
     p = commands.add_parser('create-identity', help='prepare a private identity and address save page')
     p.add_argument('--title', required=True, help='non-secret label')
     p.add_argument('--group', required=True, help='existing group path')
+    p.add_argument('--fields', type=field_list, metavar='FIELD[,FIELD...]',
+                   help='show only these fields on the page, for example tel or tel,email; default: all. '
+                        'Fields: ' + ', '.join(FIELDS))
     p = commands.add_parser('search-identities', help='find identities by non-secret label')
     p.add_argument('query')
     p.add_argument('--group', help='limit matches to this exact group path')
@@ -35,6 +38,16 @@ def add_parsers(commands):
     p.add_argument('handle')
     p.add_argument('--target', required=True)
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
+
+
+def field_list(text):
+    """Comma-separated identity field keys, each once."""
+    import argparse
+    fields = [part.strip() for part in text.split(',')]
+    unknown = [f for f in fields if f not in FIELDS]
+    if not text.strip() or unknown or len(set(fields)) != len(fields):
+        raise argparse.ArgumentTypeError('use comma-separated fields from: ' + ', '.join(FIELDS))
+    return fields
 
 
 def _token(value):
@@ -93,6 +106,10 @@ def run(args, request):
                 or caps['identity_protocol'] != 1 or caps.get('identity_delivery') != DELIVERY):
             print(json.dumps(dict(ok=False, error='broker lacks identity protocol 1; request not sent')))
             return 1
+        if getattr(args, 'fields', None) is not None and (
+                type(caps.get('identity_fields_protocol')) is not int or caps['identity_fields_protocol'] != FIELDS_PROTOCOL):
+            print(json.dumps(dict(ok=False, error='broker lacks identity fields protocol 1; request not sent')))
+            return 1
         if args.command == 'pin-identity-target':
             args.resolved_route = args.route or caps.get('default_fill_route') or 'cdp'
             if args.resolved_route == 'extension' and (type(caps.get('extension_protocol')) is not int
@@ -111,6 +128,8 @@ def run(args, request):
         payload = dict(action=args.command, identity_protocol=1)
         if args.command == 'create-identity':
             payload['metadata'] = dict(title=args.title, group=args.group)
+            if args.fields is not None:
+                payload['fields'] = args.fields
         elif args.command == 'search-identities':
             payload['query'] = args.query
             if args.group is not None:

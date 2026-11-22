@@ -113,9 +113,11 @@ def handle_import(handler, state):
                 if set(values) != {'choice', 'nonce', 'confirmed'} or not values['choice'][0].isascii() or not values['choice'][0].isdigit():
                     raise ValueError
                 result = state.broker.writes.confirm_totp_import(op, int(values['choice'][0]), values['nonce'][0], values['confirmed'] == ['yes'])
-                send(HTTPStatus.OK if result['ok'] else HTTPStatus.CONFLICT,
-                     '<p>Authenticator saved to AKDBX. Website acceptance is not confirmed by this save.</p>'
-                     if result['ok'] else '<p>Import not saved. Check status before starting again.</p>')
+                # The same Success or Failure result page as the other saves.
+                handler._send(HTTPStatus.OK if result['ok'] else HTTPStatus.CONFLICT, _page(
+                    'Success', '<p>Authenticator saved to vault. You may close this page.</p>'
+                    '<p>Website acceptance is not confirmed by this save.</p>') if result['ok'] else _page(
+                    'Failure', '<p>Import not saved. Check status before starting again.</p>'), import_page=True)
             else:
                 raise ValueError
     except Exception:
