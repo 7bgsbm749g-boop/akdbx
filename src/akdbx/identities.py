@@ -9,7 +9,7 @@ import unicodedata
 from .persistence import SaveError
 from .protocol import MAX_MESSAGE
 from .versions import active_entries
-from .writes import MAX_WRITES, Write, WriteError, group_for
+from .writes import MAX_WRITES, Write, WriteError, _entry_changed_at, group_for
 
 MARKER = 'akdbx.identity'
 FIELDS = {
@@ -30,15 +30,17 @@ FIELDS = {
 }
 FILL_FIELDS = (*FIELDS, 'street-address')
 FIELD_LIMIT = 256
-COMMANDS = {'create-identity', 'search-identities', 'pin-identity-target', 'fill-identity'}
+COMMANDS = {'create-identity', 'update-identity', 'search-identities', 'pin-identity-target', 'fill-identity'}
 REFUSED = 'identity operation refused; check label, group and vault readiness'
 # Optional ``fields`` on create-identity: the page shows and accepts only these.
 FIELDS_PROTOCOL = 1
+# update-identity: add or change chosen fields of one selected identity.
+UPDATE_PROTOCOL = 1
 FAILED = 'identity operation failed'
 
 
 def capabilities():
-    return dict(identity_fields_protocol=FIELDS_PROTOCOL)
+    return dict(identity_fields_protocol=FIELDS_PROTOCOL, identity_update_protocol=UPDATE_PROTOCOL)
 
 
 def requested_fields(request):
@@ -50,6 +52,18 @@ def requested_fields(request):
             or any(not isinstance(f, str) or f not in FIELDS for f in fields)):
         raise WriteError()
     return tuple(f for f in FIELDS if f in fields)
+
+
+def _label(entry):
+    return entry.title or '', '/'.join(entry.path[:-1])
+
+
+def _selected(vault, uuid, title, group):
+    """The one active v1 identity with this uuid, title and group, if its label is unique."""
+    same = [e for e in active_entries(vault) if is_identity(e) and _label(e) == (title, group)]
+    if len(same) != 1 or same[0].uuid != uuid or same[0].get_custom_property(MARKER) != 'v1':
+        raise WriteError()
+    return same[0]
 
 
 def is_identity(entry):
@@ -124,10 +138,16 @@ class IdentityManager:
                 return failure(kind='identity')
         try:
             if not _protocol_ok(request):
+                if action == 'update-identity':
+                    # A search handle is single use, even on a refused request.
+                    try:
+                        self.broker._resolve(request.get('handle'))
+                    except ValueError:
+                        pass
                 raise WriteError()
             if action == 'pin-identity-target':
                 return targets.pin(request)
-            if action == 'create-identity':
+            if action in {'create-identity', 'update-identity'}:
                 return self.begin(request)
             return self.search(request)
         except WriteError:
@@ -174,9 +194,16 @@ class IdentityManager:
         return dict(ok=True, entries=entries)
 
     def begin(self, request):
+        update = request['action'] == 'update-identity'
+        # A search handle is single use, even when the request is refused.
+        try:
+            entry = self.broker._resolve(request.get('handle')) if update else None
+        except ValueError:
+            raise WriteError() from None
         values = request.get('metadata')
-        if (not {'action', 'identity_protocol', 'metadata'} <= set(request)
-                or set(request) - {'action', 'identity_protocol', 'metadata', 'fields'}
+        base = {'action', 'identity_protocol', 'metadata'}
+        if (((set(request) != base | {'handle', 'fields'}) if update else
+                (not base <= set(request) or set(request) - (base | {'fields'})))
                 or not isinstance(values, dict) or set(values) != {'title', 'group'}
                 or any(not _text(v, 4096) or len(v.encode()) > 4096 for v in values.values())
                 or not values['title'].strip()):
@@ -184,13 +211,19 @@ class IdentityManager:
         fields = requested_fields(request)
         writes = self.broker.writes
         writes._require_available()
-        group_for(self.broker.vault, values['group'])
+        if update:
+            # The exact title and group path the agent selected, of a unique
+            # identity. The entry itself is selected by uuid, so a group path
+            # that names two groups does not matter here.
+            _selected(self.broker.vault, entry.uuid, values['title'], values['group'])
+        else:
+            group_for(self.broker.vault, values['group'])
         writes._prune()
         if len(writes.operations) >= MAX_WRITES:
             raise WriteError()
         handle = secrets.token_hex(32)
         op = Write(secrets.token_urlsafe(32), self.broker.clock() + 300, writes.revision, dict(values), kind='identity',
-                   fields=fields)
+                   fields=fields, uuid=entry.uuid if update else None)
         writes.operations[handle] = op
         return dict(ok=True, state='pending', write_handle=handle,
                     private_url=writes.public_base.rstrip('/') + '/identity?token=' + op.token)
@@ -207,6 +240,11 @@ class IdentityManager:
         if 'country' in values:
             values['country'] = country.upper()
 
+        update = op.uuid is not None
+        if update:
+            # An update changes only the fields the user filled in.
+            values = {field: value for field, value in values.items() if value}
+
         def matches(candidate):
             group = group_for(candidate, op.values['group'])
             return group, [entry for entry in active_entries(candidate)
@@ -215,21 +253,31 @@ class IdentityManager:
         def mutate(candidate):
             from pykeepass.entry import Entry
 
-            group, duplicates = matches(candidate)
-            if duplicates:
-                raise WriteError()
-            entry = Entry(title=op.values['title'], username='', password='', kp=candidate)
-            group.append(entry)
-            entry.set_custom_property(MARKER, 'v1')
+            if update:
+                entry = _selected(candidate, op.uuid, op.values['title'], op.values['group'])
+                changed_at = _entry_changed_at(entry, self.broker.wall_clock)
+                entry.save_history()
+            else:
+                group, duplicates = matches(candidate)
+                if duplicates:
+                    raise WriteError()
+                entry = Entry(title=op.values['title'], username='', password='', kp=candidate)
+                group.append(entry)
+                entry.set_custom_property(MARKER, 'v1')
             for field, value in values.items():
                 if value:
                     entry.set_custom_property(property_key(field), value, protect=True)
+            if update:
+                entry.mtime = changed_at
 
         def verify(candidate):
-            _, entries = matches(candidate)
-            if len(entries) != 1 or entries[0].get_custom_property(MARKER) != 'v1':
-                raise SaveError()
-            entry = entries[0]
+            if update:
+                entry = _selected(candidate, op.uuid, op.values['title'], op.values['group'])
+            else:
+                _, entries = matches(candidate)
+                if len(entries) != 1 or entries[0].get_custom_property(MARKER) != 'v1':
+                    raise SaveError()
+                entry = entries[0]
             for field, value in values.items():
                 node = entry._element.find('./String[Key="' + property_key(field) + '"]/Value')
                 if (entry.get_custom_property(property_key(field)) or '') != value or (

@@ -9,6 +9,23 @@ the broker is locked.
 
 ## Save
 
+First look for the user's existing identities:
+
+```bash
+akdbx search-identities ''
+```
+
+- One identity fits the task (for example the user's only personal record):
+  add or change the missing field on it with `update-identity` (below).
+  Do not create a duplicate.
+- None fits: create a new one.
+- Several could fit: ask the user which one to use, or whether to create a
+  new one. Give only the titles and groups.
+
+Search leaves out identities that share the same title and group. If the user
+says a matching identity exists but search does not return it, ask the user
+which title to use; do not create another one.
+
 ```bash
 akdbx create-identity --title 'Home shipping' --group 'Personal' --fields tel
 akdbx write-status -- WRITE_HANDLE
@@ -34,10 +51,27 @@ The save button shows a busy bar while saving, then `Saved` or an error state
 open with the message under the button. The page expires after five minutes.
 Only `state: "saved"` from `write-status` confirms persistence.
 Use `cancel-write` to cancel a pending page. The broker refuses a duplicate
-identity label in the same group. To change an existing record, use KeePass
-and keep the `akdbx.identity=v1` marker and the protection on each
-`akdbx.identity.FIELD` custom string. Coordinate external editing as for any
-vault write.
+identity label in the same group.
+
+## Update an existing identity (0.28.3)
+
+```bash
+akdbx search-identities 'Home shipping' --exact --group 'Personal'
+akdbx update-identity --title 'Home shipping' --group 'Personal' --fields tel -- HANDLE_FROM_SEARCH
+akdbx write-status -- WRITE_HANDLE
+```
+
+Requires `identity_update_protocol: 1` from `akdbx status`. Pass a fresh
+search handle and the exact title and group the search returned, and
+`--fields` with only the fields to add or change. The broker refuses a used
+or expired handle, a title or group that does not match, and a title and group
+that more than one identity shares. The private page shows only those fields,
+with empty inputs; it never shows the saved values. A field the user leaves
+empty keeps its saved value, and at least one field must be filled in. Saving
+changes only the filled-in fields, keeps the `akdbx.identity=v1` marker and the
+protection on every field, and keeps the previous version in the entry
+history. The receipt, `write-status` states, `cancel-write`, five-minute
+expiry and save button are the same as for `create-identity`.
 
 ## Fill
 
