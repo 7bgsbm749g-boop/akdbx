@@ -347,6 +347,8 @@ def test_card_page_shows_broker_refusal_and_vault_change(synthetic_chromium, car
     wait_for(cdp, session, "document.querySelector('.portal-submit').classList.contains('is-error')")
     changed = button(cdp, session)
     assert changed['disabled'] and changed['label'] == 'Vault changed'
+    assert cdp.evaluate("[document.getElementById('portal-title').textContent, document.title]", session) == [
+        'Failure', 'AKDBX: Failure']
     assert changed['status'].startswith('The vault changed after this page opened')
 
 
@@ -437,12 +439,12 @@ def test_save_page_keeps_a_correctable_form_and_shows_a_final_error(synthetic_ch
     refused = button(cdp, session)
     assert not refused['disabled'] and not refused['error'] and refused['label'] == 'Save to AKDBX'
     assert refused['status'] == 'confirm destination and matching safe nonempty passwords'
-    # The page expires; the next save shows the dashed error state.
+    # The agent cancels the page; the next save shows the dashed error state.
     broker.dispatch(dict(action='cancel-write', write_handle=prepared['write_handle']))
     enter(cdp, session, {'password': 'public-synthetic-pass', 'confirmation': 'public-synthetic-pass'})
     cdp.evaluate("document.querySelector('.portal-submit').click()", session)
     wait_for(cdp, session, "document.querySelector('.portal-submit').classList.contains('is-error')")
-    expired = button(cdp, session)
-    assert expired['disabled'] and expired['label'] == 'Page expired'
-    assert expired['status'] == 'This page has expired or is no longer valid. Ask for a new save page.'
+    cancelled = button(cdp, session)
+    assert cancelled['disabled'] and cancelled['label'] == 'Cancelled'
+    assert cancelled['status'] == 'This page was cancelled. Ask for a new save page.'
     assert cdp.evaluate("document.getElementById('portal-title').textContent", session) == 'Failure'

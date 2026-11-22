@@ -766,20 +766,21 @@ class WriteManager:
             result.update(title=op.values['title'], group=op.values['group'])
         return result
 
-    def card_page_state(self, token):
-        """Why a card page token no longer opens a form: saved, cancelled, stale or expired."""
+    def page_state(self, token, kind='card'):
+        """Why a save page token no longer opens a form: saved, cancelled, stale,
+        failed or expired, and the failure text of a failed save."""
         self._prune()
         for op in self.operations.values():
-            if (op.kind == 'card' and isinstance(token, str)
+            if (op.kind == kind and isinstance(token, str)
                     and secrets.compare_digest(op.token.encode(), token.encode())):
                 if op.state == 'saved':
-                    return 'saved'
+                    return 'saved', None
                 if op.state == 'cancelled':
-                    return 'cancelled'
+                    return 'cancelled', None
                 if op.revision != self.revision or op.error == 'stale write; search and start again':
-                    return 'stale'
-                return 'failed' if op.state == 'failed' else 'expired'
-        return 'expired'
+                    return 'stale', None
+                return ('failed', op.error) if op.state == 'failed' else ('expired', None)
+        return 'expired', None
 
     def submit(self, op, password, confirmation, confirmed):
         if op.kind != 'password' or op.state != 'pending' or op.expires <= self.broker.clock():

@@ -391,4 +391,7 @@ def test_finished_pages_report_why_they_no_longer_save(deployed):
         for code, _, body in (post(socket, prepared), page(socket, prepared)):
             assert code == 404 and f'data-save-result="{reason}"'.encode() in body, reason
             assert b'<form' not in body
+            # The heading matches the final state: an earlier save is a success.
+            title = b'Success' if reason == 'saved' else b'Failure'
+            assert b'<h1 id="portal-title">' + title + b'</h1>' in body, reason
     assert broker.dispatch(dict(action='write-status', write_handle=stale['write_handle']))['state'] == 'failed'

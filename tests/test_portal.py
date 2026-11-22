@@ -158,3 +158,30 @@ def test_visibility_controls_do_not_inspect_or_persist_secrets():
     assert 'body: new URLSearchParams(new FormData(form))' in portal.SCRIPT
     escaped = portal.field('Master <password>', 'secret"name')
     assert 'Master &lt;password&gt;' in escaped and 'id="secret&quot;name"' in escaped
+
+
+def test_finished_password_and_identity_pages_report_why_they_no_longer_save(deployed):
+    from test_identities import begin as begin_identity, private_path
+    broker, _, _, socket = deployed
+    saved = begin(broker)
+    assert private_post(socket, saved)[0] == 200
+    # A repeated post (for example after a lost response) reports the earlier save.
+    code, _, body = private_post(socket, saved)
+    assert code == 404 and b'data-save-result="saved"' in body and b'>Success</h1>' in body
+    assert b'This password was already saved to vault. You may close this page.' in body
+    cancelled = begin_identity(broker, fields=['tel'])
+    broker.dispatch(dict(action='cancel-write', write_handle=cancelled['write_handle']))
+    code, _, body = call(socket, 'POST', private_path(cancelled), 'tel=1&confirmed=yes')
+    assert code == 404 and b'data-save-result="cancelled"' in body and b'>Failure</h1>' in body
+    # The unchanged GET answer for a finished non-card page.
+    assert call(socket, 'GET', private_path(cancelled))[0] == 404
+
+
+def test_too_long_password_form_stays_correctable(deployed):
+    broker, _, _, socket = deployed
+    op = begin(broker)
+    code, _, body = private_post(socket, op, password='p' * 9000, confirmation='p' * 9000)
+    assert code == 400 and b'data-save-result="rejected"' in body
+    assert b'The entered details are too long. Shorten them and try again.' in body
+    assert broker.dispatch(dict(action='write-status', write_handle=op['write_handle']))['state'] == 'pending'
+    assert private_post(socket, op)[0] == 200
