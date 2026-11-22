@@ -57,7 +57,8 @@ akdbx generate-entry --title 'VERIFIED_TITLE' --username 'VERIFIED_ACCOUNT' \
 ```
 
 Use the same two pinned fills, site acceptance and `commit-password` workflow
-below. The broker rechecks duplicates on commit. Never create a dummy or
+below (one fill when the form has only one new-password field; see
+[`--single-field`](#form-with-one-new-password-field-0310)). The broker rechecks duplicates on commit. Never create a dummy or
 passwordless entry as a workaround. If this capability is absent, do not claim
 it is active merely because source was updated; the running broker needs a
 coordinated restart and private unlock. Use another authorized private password
@@ -79,7 +80,8 @@ compatible length/symbol constraints. More restrictive unsupported policies
 require a scoped implementation change or private user entry, never an export.
 
 The response contains `write_handle`, `state: "pending"`, and `fill_handles`
-with separate `password` and `confirmation` references. It contains no secret.
+with separate `password` and `confirmation` references (only `password` for a
+[`--single-field` write](#form-with-one-new-password-field-0310)). It contains no secret.
 Put command options before `--` and the returned handle after it, as below.
 This also accepts opaque handles from older running brokers that start with `-`.
 The generated secret has a five-minute authorization; broker expiry cleanup
@@ -105,7 +107,8 @@ For example:
 akdbx fill-generated --target-url 'https://example.test/reset' --target TARGET_FROM_FRESH_PIN -- PASSWORD_FILL_HANDLE
 ```
 
-Then focus the confirmation field, verify again, and run:
+Then focus the confirmation field, verify again, and run (skip this step for a
+[`--single-field` write](#form-with-one-new-password-field-0310)):
 
 ```bash
 # Focus and verify the confirmation field, then obtain another fresh pin.
@@ -113,6 +116,32 @@ akdbx fill-generated --target-url 'https://example.test/reset' --target TARGET_F
 ```
 
 Keep opaque fill and write handles after `--`, as shown, because a handle can begin with `-`.
+
+### Form with one new-password field (0.31.0)
+
+Some sign-up and reset forms have exactly one new-password input and no
+confirmation input. For these forms only, add `--single-field` to
+`generate-entry` or `generate-password` when you stage the password. Require
+`generated_single_field: true` in the running broker's `status` first; the CLI
+refuses to send the option to a broker that does not report it.
+
+```bash
+akdbx generate-entry --single-field --title 'VERIFIED_TITLE' --username 'VERIFIED_ACCOUNT' \
+  --url 'https://example.test/signup' --group 'EXISTING_GROUP'
+```
+
+The response has `single_field: true` and `fill_handles` with only a
+`password` reference. Do one fresh pin and one `fill-generated` with that
+reference, verify site acceptance, then run `commit-password --site-accepted`.
+The commit needs that one successful fill. All other rules stay the same:
+fresh pin per fill, exact origin match, ASCII HTTPS, single-use references,
+five-minute expiry, duplicate recheck on commit and no secret in any output.
+
+Choose the mode when you stage the write. You cannot add it to a staged write,
+and `commit-password` and `fill-generated` refuse the option. If the form has a
+confirmation field, do not use `--single-field`. If you staged the wrong mode,
+`cancel-write` and stage again. Never fill one field twice, or use a dummy or
+passwordless entry, to make a form fit the other mode.
 
 Each reference permits only one attempt and types only the staged password,
 without Tab or submit. Both fills use the same secret. Generated resets require
@@ -133,7 +162,8 @@ akdbx commit-password --site-accepted -- WRITE_HANDLE
 akdbx write-status -- WRITE_HANDLE
 ```
 
-Commit requires both successful fill dispatches plus explicit site acceptance.
+Commit requires both successful fill dispatches (one for a `--single-field`
+write) plus explicit site acceptance.
 It saves the same staged secret to the selected entry UUID, preserves old
 password history and other vault data, and returns only `state: "saved"` after
 verified encrypted persistence. Fresh searches and fills use the saved vault

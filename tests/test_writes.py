@@ -205,6 +205,133 @@ def test_generated_new_entry_rechecks_duplicate_and_rejects_wrong_target(deploye
     assert reopened(path).find_entries(title=values['title'], first=True).password == CHOSEN
 
 
+def test_single_field_generated_entry_needs_one_fill_then_acceptance(deployed, capsys, caplog):
+    broker, typer, path, _ = deployed
+    assert broker.dispatch({'action': 'ping'})['generated_single_field'] is True
+    values = {'title': 'Single field', 'username': 'single-account', 'url': 'https://single.test/signup', 'group': 'Web'}
+    result = broker.dispatch({'action': 'generate-entry', 'metadata': values, 'single_field': True})
+    assert result['ok'] and result['single_field'] is True and set(result['fill_handles']) == {'password'}
+    # The commit refuses before the one fill, and with site acceptance missing.
+    assert not commit(broker, result)['ok']
+    assert reopened(path).find_entries(title=values['title'], first=True) is None
+    assert all(r['ok'] for r in fills(broker, result, target='https://single.test/signup'))
+    secret = typer.events[0][1]
+    assert typer.events == [('type', secret)]
+    assert not commit(broker, result, accepted=False)['ok']
+    assert commit(broker, result) == {'ok': True, 'state': 'saved'}
+    assert reopened(path).find_entries(title=values['title'], first=True).password == secret
+    assert not commit(broker, result)['ok']
+    assert not any(r['ok'] for r in fills(broker, result, target='https://single.test/signup'))
+    assert not broker.dispatch({'action': 'generate-entry', 'metadata': values, 'single_field': True})['ok']
+    assert all(op.password is None for op in broker.writes.operations.values())
+    assert secret not in json.dumps(result) + capsys.readouterr().out + caplog.text
+
+
+def test_single_field_generated_password_has_no_confirmation_reference(deployed):
+    broker, typer, path, _ = deployed
+    result = begin(broker, 'generate-password', single_field=True)
+    assert result['ok'] and set(result['fill_handles']) == {'password'}
+    assert len(broker.writes.get(result['write_handle']).fill_refs) == 1
+    # A reference from another write's confirmation mode cannot count here.
+    other = broker.dispatch({'action': 'generate-entry', 'metadata': {
+        'title': 'Other', 'username': 'other-account', 'url': 'https://example.test/x', 'group': 'Web'}})
+    confirmation = other['fill_handles']['confirmation']
+    assert broker.dispatch({'action': 'fill-generated', **target_request(broker, 'password'),
+                            'handle': confirmation, 'target_url': 'https://example.test/x'})['ok']
+    assert not commit(broker, result)['ok']
+    # Wrong origin consumes the only reference; the write cannot commit.
+    assert not fills(broker, result, target='https://attacker.test/reset')[0]['ok']
+    assert not any(r['ok'] for r in fills(broker, result))
+    assert not commit(broker, result)['ok']
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == OLD
+
+
+def test_single_field_cannot_be_added_to_a_staged_write(deployed):
+    broker, typer, path, _ = deployed
+    result = begin(broker, 'generate-password')
+    assert set(result['fill_handles']) == {'password', 'confirmation'} and 'single_field' not in result
+    [password] = [r for mode, r in result['fill_handles'].items() if mode == 'password']
+    assert broker.dispatch({'action': 'fill-generated', **target_request(broker, 'password'), 'handle': password,
+                            'target_url': 'https://example.test/reset'})['ok']
+    refused = broker.dispatch({'action': 'commit-password', 'write_handle': result['write_handle'],
+                               'site_accepted': True, 'single_field': True})
+    assert refused['ok'] is False and 'commit accepts only' in refused['error']
+    assert not commit(broker, result)['ok']
+    assert broker.writes.get(result['write_handle']).single_field is False
+    confirmation = result['fill_handles']['confirmation']
+    assert not broker.dispatch({'action': 'fill-generated', **target_request(broker, 'password'), 'handle': confirmation,
+                                'target_url': 'https://example.test/reset', 'single_field': True})['ok']
+    assert not commit(broker, result)['ok']
+    assert reopened(path).find_entries(title='Synthetic site', first=True).password == OLD
+
+
+@pytest.mark.parametrize('action,value', [('generate-password', 'yes'), ('generate-password', 1),
+                                          ('generate-entry', None), ('update-password', True), ('create-entry', True)])
+def test_single_field_option_is_a_boolean_for_generated_writes_only(deployed, action, value):
+    broker, typer, _, _ = deployed
+    if action in {'create-entry', 'generate-entry'}:
+        result = broker.dispatch({'action': action, 'single_field': value, 'metadata': {
+            'title': 'New', 'username': 'new-account', 'url': 'https://new.test/login', 'group': 'Web'}})
+    else:
+        result = begin(broker, action, single_field=value)
+    assert result['ok'] is False and 'single_field' in result['error']
+    assert broker.writes.operations == {} and typer.events == []
+
+
+def test_explicit_false_single_field_keeps_two_fills(deployed):
+    broker, typer, path, _ = deployed
+    result = begin(broker, 'generate-password', single_field=False)
+    assert set(result['fill_handles']) == {'password', 'confirmation'} and 'single_field' not in result
+    assert broker.dispatch({'action': 'fill-generated', **target_request(broker, 'password'),
+                            'handle': result['fill_handles']['password'], 'target_url': 'https://example.test/reset'})['ok']
+    assert not commit(broker, result)['ok']
+    assert broker.dispatch({'action': 'fill-generated', **target_request(broker, 'password'),
+                            'handle': result['fill_handles']['confirmation'], 'target_url': 'https://example.test/reset'})['ok']
+    assert commit(broker, result) == {'ok': True, 'state': 'saved'}
+
+
+def test_cli_single_field_flow_and_old_broker_refusal(deployed, capsys, caplog, monkeypatch):
+    broker, typer, path, socket = deployed
+    prefix = ['--socket', str(socket.with_name('cli.sock')), '--unlock-origin', 'https://node.example:9443']
+    def command(*args, expected=0):
+        if args[0] == 'fill-generated':
+            args = (args[0], *args[2:], '--target', target_request(broker, 'password')['target'], '--', args[1])
+        elif args[0] == 'commit-password':
+            args = (args[0], *args[2:], '--', args[1])
+        assert cli.main([*prefix, *args]) == expected
+        captured = capsys.readouterr()
+        assert MASTER not in captured.out + captured.err and OLD not in captured.out + captured.err
+        return json.loads(captured.out) if captured.out else captured.err
+    meta = ['--title', 'CLI single', '--username', 'cli-single', '--url', 'https://single.test/signup', '--group', 'Web']
+    with running_broker(socket.with_name('cli.sock'), broker):
+        assert command('status')['generated_single_field'] is True
+        generated = command('generate-entry', *meta, '--single-field')
+        assert set(generated['fill_handles']) == {'password'} and generated['single_field'] is True
+        assert command('commit-password', generated['write_handle'], '--site-accepted', expected=1)['ok'] is False
+        assert command('fill-generated', generated['fill_handles']['password'], '--target-url', 'https://single.test/signup')['ok']
+        assert command('commit-password', generated['write_handle'], '--site-accepted')['state'] == 'saved'
+    secret = typer.events[0][1]
+    assert typer.events == [('type', secret)] and secret not in caplog.text
+    assert reopened(path).find_entries(title='CLI single', first=True).password == secret
+    # A broker without the capability never receives the option.
+    sent = []
+    def old_broker(_socket, payload, **kwargs):
+        sent.append(payload['action'])
+        return {'ok': True, 'version': '0.30.0', 'generated_entry_protocol': 1}
+    monkeypatch.setattr(cli, 'request', old_broker)
+    for name, extra in (('generate-entry', ()), ('generate-password', ('selected-handle',))):
+        sent.clear()
+        assert cli.main([*prefix, name, *extra, *meta, '--single-field']) == 1
+        out = capsys.readouterr().out
+        assert 'lacks generated single-field support' in out and sent == ['ping'] * (2 if name == 'generate-entry' else 1)
+    # A receipt with a different fill count is refused before any fill.
+    monkeypatch.setattr(cli, 'request', lambda _s, payload, **k: (
+        {'ok': True, 'generated_entry_protocol': 1, 'generated_single_field': True} if payload['action'] == 'ping'
+        else {'ok': True, 'write_handle': 'w', 'state': 'pending', 'fill_handles': {'password': 'a', 'confirmation': 'b'}}))
+    assert cli.main([*prefix, 'generate-entry', *meta, '--single-field']) == 2
+    assert 'unexpected fill references' in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('policy', [{'length': 8}, {'length': True}, {'length': 129}, {'symbols': '\n'}, {'symbols': 'abc'}])
 def test_unsafe_generation_policy_rejected(deployed, policy):
     broker, typer, _, _ = deployed
@@ -666,7 +793,7 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog, 
         return json.loads(captured.out)
     with running_broker(socket.with_name('cli.sock'), broker):
         status = command('status')
-        assert status['version'] == '0.30.0' and status['writes_available']
+        assert status['version'] == '0.31.0' and status['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]
         args = [arg for field in ('title', 'username', 'url', 'group') for arg in ('--' + field, selected[field])]
         generated = command('generate-password', selected['handle'], *args, '--length', '28', '--symbols', '')
@@ -732,7 +859,7 @@ def test_actual_installed_executable_against_running_synthetic_broker(deployed, 
         assert all(secret not in result.stdout for secret in (MASTER, OLD, CHOSEN))
         return json.loads(result.stdout)
     version = subprocess.run([str(executable), '--version'], text=True, capture_output=True, check=True)
-    assert version.stdout.strip() == '0.30.0'
+    assert version.stdout.strip() == '0.31.0'
     with running_broker(socket.with_name('installed-cli.sock'), broker):
         assert command('status')['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]

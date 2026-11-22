@@ -805,7 +805,7 @@ Password fills also require integer `password_fill_protocol: 1`,
 
 - `create-entry --title TITLE --username ACCOUNT --url SITE --group GROUP`
 - `update-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP`
-- `generate-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP [--length 24] [--symbols '!@#$%*-_+=?']`
+- `generate-password SEARCH_HANDLE --title TITLE --username ACCOUNT --url SITE --group GROUP [--length 24] [--symbols '!@#$%*-_+=?'] [--single-field]`
 - `fill-generated --target-url VERIFIED_RESET_URL --target TARGET_FROM_FRESH_PIN -- SINGLE_USE_FILL_HANDLE`
 - `commit-password --site-accepted -- WRITE_HANDLE`
 - `write-status -- WRITE_HANDLE`
