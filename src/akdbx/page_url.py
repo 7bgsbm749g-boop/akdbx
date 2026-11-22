@@ -59,7 +59,13 @@ def _read(path):
 
 def read(path):
     """Return the one URL line from a private file; strip only a final line break."""
-    data = _read(Path(path).expanduser())
+    try:
+        path = Path(path).expanduser()
+    except RuntimeError:  # ~user that does not exist
+        raise PageURLFileError('could not open it (missing, unreadable or a symlink)') from None
+    data = _read(path)
+    if data.startswith(b'\xef\xbb\xbf'):
+        raise PageURLFileError('it must be UTF-8 without a byte order mark')
     if data.endswith(b'\r\n'):
         data = data[:-2]
     elif data.endswith(b'\n'):

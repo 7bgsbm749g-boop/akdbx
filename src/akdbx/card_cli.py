@@ -169,7 +169,7 @@ def run(args, request):
                     if not args.frame_url:
                         print(json.dumps(dict(ok=False, error=(
                             'broker lacks Stripe Card Element support; give the exact Stripe frame URL with '
-                            '--frame-url so akdbx can check it; pin request not sent'))))
+                            '--frame-url or --frame-url-file so akdbx can check it; pin request not sent'))))
                         return 1
                     if card_processor.stripe_element(args.frame_url) == 'card-element':
                         print(json.dumps(dict(ok=False, error='broker lacks Stripe Card Element support; pin request not sent')))

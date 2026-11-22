@@ -400,7 +400,8 @@ Rules (full detail in [password field delivery](references/target-fill.md)):
 - One pin per fill. A pin lives 30 seconds and is single-use.
 - URL with a private token (reset or activation code, for example
   `?code=...`): do not put it on the command line and do not ask the user.
-  Write the exact URL to a mode-0600 file without printing it, pass
+  Write the exact URL to a mode-0600 file without printing it (best: redirect
+  the browser tool's URL output into the file; never a command argument), pass
   `--top-url-file FILE` (or `--frame-url-file FILE`) in place of the plain
   flag, and delete the file after the pin. Never shorten or change the URL.
   See [exact URL with a private token](references/target-fill.md#exact-url-with-a-private-token).

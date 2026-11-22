@@ -142,17 +142,20 @@ def _bad_files(tmp_path):
     binary = tmp_path / 'binary'
     binary.write_bytes(b'https://forge.example.test/\xff' + TOKEN.encode())
     binary.chmod(0o600)
+    bom = tmp_path / 'bom'
+    bom.write_bytes(b'\xef\xbb\xbf' + TOP_URL.encode())
+    bom.chmod(0o600)
     directory = tmp_path / 'directory'
     directory.mkdir(mode=0o700)
     return dict(missing=(missing, 'could not open'), group=(group_readable, 'other users'),
                 world=(world_readable, 'other users'), unreadable=(unreadable, 'could not open'),
                 symlink=(link, 'could not open'), two_lines=(two_lines, 'one line'), spaced=(spaced, 'one line'),
                 empty=(empty, '1 to 4096 bytes'), large=(large, '1 to 4096 bytes'),
-                binary=(binary, 'not UTF-8'), directory=(directory, 'regular file'))
+                binary=(binary, 'not UTF-8'), bom=(bom, 'byte order mark'), directory=(directory, 'regular file'))
 
 
 @pytest.mark.parametrize('case', ['missing', 'group', 'world', 'unreadable', 'symlink', 'two_lines',
-                                  'spaced', 'empty', 'large', 'binary', 'directory'])
+                                  'spaced', 'empty', 'large', 'binary', 'bom', 'directory'])
 @pytest.mark.parametrize('command', COMMANDS)
 def test_bad_url_file_refuses_before_any_broker_request_without_echoing_it(command, case, broker, tmp_path, capsys):
     if case == 'unreadable' and os.geteuid() == 0:
@@ -197,3 +200,11 @@ def test_help_names_the_file_flags(capsys):
         out = capsys.readouterr().out
         assert '--top-url-file PATH' in out
         assert ('--frame-url-file PATH' in out) == (command in FRAME_COMMANDS)
+
+
+def test_unknown_home_directory_gets_the_fixed_missing_file_error(broker, capsys):
+    calls = broker('pin-password-target')
+    assert cli.main(['pin-password-target', *PIN, '--top-url-file', '~akdbx-no-such-user-7f3a/top-url']) == 2
+    assert calls == []
+    assert capsys.readouterr().err == ('--top-url-file: could not open it (missing, unreadable or a symlink); '
+                                       'request not sent\n')

@@ -51,9 +51,13 @@ Do not ask the user. Use the private file form, which `pin-password-target`,
 `list-password-frames`, `pin-identity-target` and `pin-card-target` accept:
 
 1. Write the exact observed URL, on one line, to a new mode-0600 file in a
-   private directory. Do not print it. Write it with a file tool or a shell
-   redirect from the browser tool's output, never as a command argument
-   (for example not `echo URL > FILE`).
+   private directory. Do not print it. Prefer a direct transfer: redirect
+   the browser tool's URL output into the file (`BROWSER_URL_COMMAND >
+   FILE`), so the URL is in no tool input and no displayed result. Use a
+   file-writing tool only when your browser tool already showed you the URL;
+   it is then in your transcript already, and the file tool adds no new copy
+   for other processes or logs. Never put the URL in a command argument (for
+   example not `echo URL > FILE`), and never repeat it in a reply or note.
 2. Pass `--top-url-file FILE` in place of `--top-url`, and
    `--frame-url-file FILE` in place of `--frame-url`. The plain flag and its
    file form are mutually exclusive. The CLI reads the file and sends the URL
@@ -63,7 +67,7 @@ Do not ask the user. Use the private file form, which `pin-password-target`,
 ```sh
 umask 077
 url_dir=$(mktemp -d)                       # private directory, mode 0700
-# Write the exact URL to "$url_dir/top-url" from the browser tool; do not print it.
+BROWSER_URL_COMMAND > "$url_dir/top-url"   # direct transfer; never print the URL
 akdbx pin-password-target --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
   --top-url-file "$url_dir/top-url" --selector '#password' --mode password
 rm -rf -- "$url_dir"
@@ -72,8 +76,11 @@ rm -rf -- "$url_dir"
 The CLI refuses, before it sends any request, a file that is missing,
 unreadable, a symlink, not a regular file, not owned by you, open to other
 users (group or other mode bits), empty, larger than 4096 bytes, or not one
-URL on one line. On Windows the file must be a private file of the current
-user, as for other akdbx private input files.
+URL on one line, or not UTF-8 without a byte order mark. On Windows the file
+must be a private file of the current user, as for other akdbx private input
+files; Windows PowerShell 5.1 redirects and `-Encoding utf8` add UTF-16 or a
+byte order mark, so write it with `[IO.File]::WriteAllText(FILE, URL)` from a
+variable, never with the URL in the command text.
 
 `fill-generated --target-url` and `fill-totp --target-url` compare only the
 origin. Pass the observed origin there, for example
@@ -296,7 +303,8 @@ an older broker must be upgraded through its owning deployment workflow.
 Some account forms use `autocomplete="off"` even on standard password inputs.
 Require broker 0.14.1 or newer and integer
 `password_autocomplete_off_protocol: 1`. After independently verifying the
-account, exact secret-free HTTPS main-frame URL, password field purpose,
+account, exact HTTPS main-frame URL (with `--top-url-file` if it holds a token),
+password field purpose,
 unique selector and current focus, add `--allow-autocomplete-off` to a
 password-only pin with `--password-purpose current-password` or `new-password`.
 The CLI refuses an older broker before requesting the pin. The new option is
