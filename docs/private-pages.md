@@ -286,10 +286,11 @@ If the saved URL cannot be reached (the relay already closed the old port),
 the broker asks once more at the default relay URL on the same host, and
 `relay enable --relay URL` asks at that URL; the same checks apply.
 
-After the move the origin changes, so links of the old origin and an extension
-built for it stop working at the broker's first start on the new port. If you use the browser extension, run
-`akdbx extension build` again and reload the extension: it opens pairing and
-unlock links only on the origin it was built with. Unset or update an
+After the move the origin changes, so links of the old origin stop working at
+the broker's first start on the new port. A paired browser extension at version
+0.3.0 or later follows the new origin by itself (see
+[Browser extension trust](#browser-extension-trust)); an older extension needs
+`akdbx extension build` again and a reload. Unset or update an
 `AKDBX_UNLOCK_ORIGIN` or `--unlock-origin` that names the old origin.
 
 `serve` then uses the relay by itself: the relay origin, the relay certificate
@@ -326,6 +327,7 @@ another origin, because the other commands still use it.
 akdbx relay status            # name, origin, certificate expiry, running broker's relay state; no secret
 akdbx relay disable           # use no relay from the next broker start; files are kept
 akdbx relay enable            # use it again, with the same name
+akdbx relay rotate            # register a new name and certificate (stop the broker first)
 akdbx relay disable --forget  # also delete the name, secret, key and certificate
 ```
 
@@ -337,9 +339,9 @@ state and the origin of its private page with a separate, peer-checked
 request that holds no private URL, so it also works after `disable`, when the
 CLI already expects another origin. Its `broker.running` is `true`, `false`
 (no broker listens) or `"unknown"` (a socket, peer or answer check failed;
-the broker may still run). The browser extension opens pairing and unlock links
-only on the origin it was built with: run `akdbx extension build` again after
-you enable or disable the relay, and reload the extension.
+the broker may still run). After you enable or disable the relay, a paired
+browser extension at version 0.3.0 or later follows the new origin at its next
+connection; an older extension needs `akdbx extension build` again and a reload.
 
 The relay folder holds `relay.json` (relay URL, name, port, origin and the
 bearer secret that authorizes this broker at the relay) and `tls.pem` (the
@@ -356,7 +358,7 @@ If the folder or a file fails these checks, `serve` refuses to start and names
 what to fix, and the CLI does not use the relay origin. akdbx never repairs the
 permissions itself. `relay disable --forget` is the repair for untrusted or
 malformed files: it checks only the folder, never reads the files, and deletes
-`relay.json`, `tls.pem` and the lock file by name.
+`relay.json`, `tls.pem`, `rotate.json` and the lock file by name.
 
 The broker trusts nothing that the relay sends. It checks the name, the port
 and the certificate the relay returns (exactly the broker's name, and the
@@ -380,9 +382,100 @@ protocol are public: [akdbx-relay](https://github.com/7bgsbm749g-boop/akdbx-rela
 
 Limits: the relay accepts a few registrations per network address each day
 and a few certificates per broker each week. When a limit is reached,
-`relay enable` waits for a short `retry_after` (up to five minutes in total)
-and otherwise says when to try again. A failed renewal keeps the current
+`relay enable` and `relay rotate` wait for a short `retry_after` (up to five
+minutes in total) and otherwise say when to try again. A failed renewal keeps the current
 certificate and tries again later; `relay status` shows the error.
+
+#### Rotate the relay name
+
+`akdbx relay rotate` gives the broker a new public name, for example when the
+old name was shared too widely. Stop the broker first: `rotate` refuses while a
+broker holds `.relay.lock`, because a running broker keeps the name it started
+with.
+
+```sh
+# stop the broker, then:
+akdbx relay rotate
+akdbx serve /absolute/path/to/passwords.kdbx   # unlock the vault on the new origin
+```
+
+`rotate` registers a new name with the saved relay (`POST /api/v1/register`),
+creates a new key and gets a certificate for the new name only (the same code
+and checks as `relay enable`), and then replaces `tls.pem` and `relay.json`.
+It prints the new `origin`, the `previous_origin` and the certificate dates,
+never the secret or the key. It keeps the enabled or disabled state. The old
+name is no longer used; the relay has no call to delete it, and it expires
+unused.
+
+The new registration is saved in `rotate.json` in the relay folder before the
+certificate request. If the request fails or the relay limits it, the current
+name stays in use and `rotate` says when to try again; run `rotate` again to
+finish, without another registration. Until then `relay enable` refuses and
+`relay status` shows `rotation_pending`. Each write is a private temporary file
+and a rename; after an interruption between the two writes, the next `rotate`
+only finishes the switch. `relay disable --forget` also deletes `rotate.json`.
+
+Costs of one rotation:
+
+- one new registration and one new certificate, which count toward the
+  relay's daily registration and weekly certificate limits (see Limits above);
+- a new entry in the public Certificate Transparency logs, which shows the new
+  name to anyone who reads the logs;
+- a broker restart, which locks the vault: unlock it again on the new origin;
+- links of the old origin stop working. A paired extension at 0.3.0 or later
+  follows the new origin by itself; an older extension needs a rebuild and a
+  reload.
+
+## Browser extension trust
+
+The browser extension opens pairing and unlock links only on one trusted
+origin, so a replaced native host cannot send you to a look-alike
+master-password page. From extension version 0.3.0 (akdbx 0.29.0), an origin
+change needs no rebuild, no reload and no approval:
+
+1. **Built origin.** `akdbx extension build` writes the CLI's origin into
+   `config.js`. It is the first trusted origin.
+2. **First pairing (trust on first use).** Each broker has a persistent
+   identity key (ECDSA P-256). At each start it signs a statement with its
+   current origin and a sequence number. When the extension has no stored key,
+   it stores the broker's public key, origin and sequence number in
+   `chrome.storage.local` the first time the popup talks to the broker,
+   normally at the first pairing. It does this only when the signed origin is
+   the built origin (or the extension was built without one). The popup shows
+   the origin next to the pairing code: check it before you open the page.
+3. **Signed changes.** When the origin changes (a relay port move, `relay
+   rotate`, `relay enable` or `disable`, another `--unlock-origin`), the broker
+   adds 1 to the sequence number and signs the new origin. The extension
+   accepts it only when the stored key verified the signature, the key id
+   matches, the sequence number is higher than the stored one, and the origin
+   is an HTTPS origin with no path, query or credentials. The popup then says
+   that the broker moved. Anything else keeps the stored origin and shows why.
+4. **Reset.** The extension never accepts another broker key by itself. If the
+   broker's key changed (a new computer, or deleted akdbx state), or the
+   broker names another origin than the built one before the first pairing, the
+   popup shows **Reset broker trust…**. Click it, read the note, and click
+   **Reset and pair again**. The extension forgets the stored key and the built
+   origin, makes a new pairing key, and learns the broker that answers at the
+   next pairing. Reset only for a broker that you set up yourself.
+
+The broker sends the statement in the `identity` field of its `attached` and
+`state` messages to the extension. The exact encoding is in
+`src/akdbx/broker_identity.py`. `akdbx status` shows `extension_trust` (`key_id`,
+`origin`, `seq`; no key). The identity file is per broker endpoint:
+`${XDG_STATE_HOME:-~/.local/state}/akdbx/broker-identity/identity-<hash>.json`
+on Linux (folder `0700`, file `0600`, the relay folder's checks) and
+`%LOCALAPPDATA%\akdbx\broker-identity\` on Windows (this user and SYSTEM only).
+akdbx never prints the private key. If the file fails a check, `serve` warns
+and starts without a statement; extensions then keep the origin they trust.
+Deleting the file makes a new key, which every paired extension refuses until
+the user resets it.
+
+**Trust point.** The first pairing trusts the broker key that the native host
+delivers. A process that replaced the host before the extension's first
+pairing could deliver its own key for the built origin, and later sign a move
+to another origin. Before 0.3.0 such a host could never move the links off the
+built origin. After the first pairing, a replaced host can no longer change
+the trusted origin or key; the popup shows a key change as a warning.
 
 ## Failed attempts block the link
 

@@ -236,22 +236,40 @@ broker's name, which public Certificate Transparency logs would show.
 4. `akdbx status`: the `relay` object must show `connected: true`, and the
    `unlock_url` must start with the relay origin. Give the user that link and
    continue as in [When the vault is locked](#when-the-vault-is-locked).
-5. If the user uses the browser extension, it trusts only the origin it was
-   built with: run `akdbx extension build` again (same output folder) and ask
-   the user to reload the extension.
+5. If the user uses the browser extension: an extension at version 0.3.0 or
+   later (akdbx 0.29.0+) follows the new origin by itself at its next
+   connection, signed by the broker's identity key; no rebuild, no reload. Only
+   an older extension (`version_status: "outdated"`) needs `akdbx extension
+   build` again (same output folder) and a reload by the user. See the
+   extension reference, section "Origin trust".
 
 The relay moved from port 8443 to 443 (0.28.0): the origin is now
 `https://<id>.akdbx.link` with no port. A broker registered earlier keeps the
 `:8443` origin until its next start; then it asks the relay for the new port,
 saves it and logs `akdbx relay: relay moved the public port from 8443 to 443`
 (`relay enable` shows it in `moved`). Do not edit `relay.json` for this. After
-the move, run step 5 again. If the relay is old or unreachable, the broker
+the move, check step 5 again. If the relay is old or unreachable, the broker
 keeps the saved port and warns once.
+
+`akdbx relay rotate` (0.29.0+) registers a new relay name and gets its
+certificate, for example when the user wants the old name out of use. Run it
+only when the user asks, and tell them the costs first: one new certificate,
+which is a public Certificate Transparency log entry and counts toward the
+relay's weekly certificate budget (and one registration toward its daily
+limit); a broker restart, which locks the vault; and an unlock on the new
+origin. It refuses while a broker runs (`.relay.lock`): stop only a broker
+that this workflow owns, with the user's agreement, then `relay rotate`, then
+start the broker as in step 3 and give the user the new unlock link. With
+`ok: false` and `registered: true`, the new name is saved: run `rotate` again
+(after any `retry_after`) to finish; it registers no other name. Never read or
+print `rotate.json`, `relay.json` or `tls.pem`. The old name simply stops
+being used; the relay has no delete call.
 
 `akdbx relay status` shows the name, origin, certificate dates, and whether a
 running broker is connected (`broker.connected`) or has a `renewal_error`.
 `akdbx relay disable` stops the relay at the next broker start (files kept);
-`--forget` also deletes the name, secret, key and certificate. Do not disable
+`--forget` also deletes the name, secret, key and certificate (and an
+unfinished rotation). Do not disable
 or forget a relay that another workflow's broker uses. Details:
 `docs/private-pages.md`, section "The akdbx relay".
 

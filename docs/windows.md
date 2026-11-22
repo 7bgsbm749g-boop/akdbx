@@ -299,7 +299,14 @@ The relay origin is `https://<id>.akdbx.link`, with no port. A broker that
 registered before 0.28.0 has the old `https://<id>.akdbx.link:8443` origin; it
 moves to the new port by itself at its next start (the broker task's next
 run), as [The relay moved from port 8443 to 443](private-pages.md#the-relay-moved-from-port-8443-to-443)
-describes. Then run `akdbx extension build` again and reload the extension.
+describes. A paired extension at version 0.3.0 or later follows the new origin
+by itself; an older extension needs `akdbx extension build` again and a reload.
+
+To get a new relay name, stop the broker task, run
+`.\.venv\Scripts\akdbx.exe relay rotate`, then start the task again and unlock
+the vault on the new origin. See
+[Rotate the relay name](private-pages.md#rotate-the-relay-name) for what it
+costs and how an interrupted rotation finishes.
 
 ### Authenticator capture native host
 
@@ -381,9 +388,10 @@ for the commands, capabilities and security model.
    already holds this extension. It prints the `extension_version` it wrote. The build writes the unlock origin
    (`AKDBX_UNLOCK_ORIGIN`, or `--unlock-origin` before `extension`; on Windows
    the default is `https://localhost:9443`) into the extension. The popup opens
-   pairing and unlock links only on that origin, so a replaced native host
-   cannot send you to a look-alike master-password page. Rebuild after you
-   change the origin.
+   pairing and unlock links only on a trusted origin, so a replaced native host
+   cannot send you to a look-alike master-password page. The built origin is
+   the first trusted origin. From extension 0.3.0 you do not rebuild after an
+   origin change: see [Extension trust](#extension-trust).
 4. In Helium open `chrome://extensions`, turn on **Developer mode**, choose
    **Load unpacked** and select that folder. The extension ID must be
    `jjoamaejjkldcjcpgncoomoaagdfimhg`; its manifest key keeps it fixed.
@@ -391,7 +399,34 @@ for the commands, capabilities and security model.
    pairing page**, check that the page shows the same code, and enter the
    master password there. If the broker is locked, this also unlocks it.
    Pairing lasts until the browser or the broker restarts. The popup footer
-   shows the extension version, for example **akdbx extension 0.1.0**.
+   shows the extension version, for example **akdbx extension 0.3.0**.
+
+### Extension trust
+
+From extension version 0.3.0 the extension follows the broker's origin by
+itself, with no rebuild, reload or approval. The rules are the same on Linux;
+see [Browser extension trust](private-pages.md#browser-extension-trust).
+
+- **First pairing.** The popup shows the pairing page's origin next to the
+  code. At the first pairing the extension stores the broker's identity key,
+  origin and sequence number in its local storage. It does this only when the
+  broker's signed origin is the built origin.
+- **Signed changes.** After a relay port move, `relay rotate`, `relay enable`
+  or `disable`, or another `--unlock-origin`, the broker signs the new origin
+  with the same key at its next start. The extension accepts it only with the
+  stored key and a higher sequence number. A wrong key, an older or a changed
+  statement, or an invalid origin keeps the stored origin, and the popup says
+  why.
+- **Reset.** A broker with another key (a new computer, or a deleted
+  `%LOCALAPPDATA%\akdbx\broker-identity` folder) is never accepted by itself.
+  The popup shows **Reset broker trust…**; click it, then **Reset and pair
+  again**, and pair on the origin that the popup shows. Reset only for a broker
+  that you set up yourself.
+
+The broker keeps its identity key in
+`%LOCALAPPDATA%\akdbx\broker-identity\identity-<hash>.json`, one file per
+broker pipe, that only this user and SYSTEM can open. `akdbx status` shows its
+`extension_trust` (`key_id`, `origin`, `seq`), never the key.
 
 ### Update the extension
 
@@ -402,6 +437,9 @@ update akdbx:
 2. Run the same `extension build --output` command into the same folder.
 3. In `chrome://extensions`, click the reload button on the akdbx card. Pair
    again if the popup asks.
+
+An origin change alone needs none of these steps for an extension at 0.3.0 or
+later: restart the broker, and the extension follows its signed origin.
 
 `akdbx status` then shows `version_status: "current"` for the browser in
 `extension_browsers`, and `version` equal to `extension_version_expected`.

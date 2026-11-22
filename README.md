@@ -195,6 +195,14 @@ Install steps for Windows and Helium are in
 [Windows setup](docs/windows.md#browser-extension-route). Pairing lasts until the
 browser or the broker restarts; the popup then shows a new code.
 
+From extension 0.3.0 (akdbx 0.29.0), an origin change needs no rebuild, no
+reload and no approval. The broker keeps a persistent identity key and signs
+its current origin with a sequence number at each start. The extension learns
+the key at its first pairing (only for the built origin), then follows only
+origin changes that key signed with a higher sequence number. A changed broker
+key is refused until the user clicks **Reset broker trust…** in the popup. See
+[Browser extension trust](docs/private-pages.md#browser-extension-trust).
+
 ## CDP route: install and run (Linux)
 
 Linux desktop with X11, X-Resource 1.2 local PID support and EWMH window-manager metadata. Set `AKDBX_UNLOCK_ORIGIN` in your private local environment to the private page's HTTPS origin before starting the broker or using the CLI, and create its certificate as [Private HTTPS pages](docs/private-pages.md) describes. `https://localhost:9443` is the default:
@@ -323,6 +331,7 @@ The relay setup:
 akdbx relay enable                     # register, get the certificate, save it privately
 akdbx serve /absolute/path/to/passwords.kdbx   # no --unlock-origin, --tls-cert, --tls-key or --local-port
 akdbx relay status                     # name, origin, certificate expiry, connected; never the secret
+akdbx relay rotate                     # 0.29.0: a new name and certificate; stop the broker first
 akdbx relay disable [--forget]         # stop using it (keep the files, or delete them)
 ```
 
