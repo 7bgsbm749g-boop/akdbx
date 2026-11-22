@@ -438,7 +438,7 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
     replaced host cannot send the user to a look-alike master-password page.
     ``unlock_origin`` comes from local configuration, never from the native
     host: it is the first trusted origin. At the first pairing the extension
-    learns the broker's identity key (for this origin only) and later follows
+    reads the broker's identity key over HTTPS from this origin and later follows
     the origin changes that key signs (``broker_identity``), with no rebuild.
     """
     destination = Path(destination)

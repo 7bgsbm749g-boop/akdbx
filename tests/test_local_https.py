@@ -1,5 +1,6 @@
 """The loopback HTTPS private page on Linux: same flags and checks as Windows."""
 from http.client import HTTPSConnection
+import json
 import os
 import socket
 import ssl
@@ -244,6 +245,71 @@ def test_a_port_443_origin_has_no_port_and_the_page_names_the_computer(given, pr
         # The loopback page shows no login (and never a forged Tailscale header).
         assert b'<p>Unlock AKDBX on <strong>box&lt;&amp;&gt;</strong>.</p>' in body
         assert b'local user' not in body and b'forged' not in body
+    finally:
+        server.shutdown()
+        server.server_close()
+        broker.unlock_notifications.close()
+
+
+def request(port, cafile, method, path, headers):
+    client = HTTPSConnection('127.0.0.1', port, context=ssl.create_default_context(cafile=str(cafile)), timeout=30)
+    try:
+        client.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+        for name, value in headers:
+            client.putheader(name, value)
+        client.endheaders()
+        response = client.getresponse()
+        return response.status, response.headers, response.read()
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize('remote', [False, True])
+def test_the_identity_page_serves_only_the_public_statement_on_the_checked_host(remote, private_pair, tmp_path):
+    from akdbx import broker_identity
+    from akdbx.extension_route import EXTENSION_ID
+    cert, key = private_pair
+    port = free_port()
+    given = 'https://node.tailnet.ts.net' if remote else f'https://localhost:{port}'
+    broker = Broker(None, RecordingTyper())
+    server, url = start_local_unlock_server(broker, tmp_path / 'vault.kdbx', None, given, cert, key,
+                                            local_port=port if remote else None)
+    origin = server.local_origin
+    host = urlsplit(origin).netloc
+    path = '/.well-known/akdbx-identity'
+    extension = 'chrome-extension://' + EXTENSION_ID
+    try:
+        # No identity yet (a broker that could not load its key): nothing to serve.
+        assert request(port, cert, 'GET', path, [('Host', host)])[0] == 404
+        identity = broker_identity.IdentityStore(tmp_path / 'identity').announce(origin)
+        broker.extension.set_identity(identity)
+        for extra in ([], [('Origin', extension)], [('Origin', origin)]):
+            status, headers, body = request(port, cert, 'GET', path, [('Host', host), *extra])
+            assert status == 200, extra
+            assert headers['Content-Type'] == 'application/json'
+            assert headers['Cache-Control'] == 'no-store'
+            assert 'Access-Control-Allow-Origin' not in headers
+            message = json.loads(body)
+            assert message == identity.message()
+            assert broker_identity.verify_message(message)['origin'] == origin
+            assert b'PRIVATE' not in body and set(message) == {'public_key', 'statement', 'signature'}
+        # The Host check stays; a web page on another origin, or another extension, cannot read it.
+        for refused in ([('Host', 'attacker.test')], [],
+                        [('Host', host), ('Origin', 'https://attacker.test')],
+                        [('Host', host), ('Origin', 'chrome-extension://' + 'a' * 32)],
+                        [('Host', host), ('Origin', 'null')],
+                        [('Host', host), ('Host', host)]):
+            assert request(port, cert, 'GET', path, refused)[0] == 404, refused
+        # Only GET.
+        for method in ('POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS', 'PATCH'):
+            status, headers, _ = request(port, cert, method, path, [('Host', host), ('Content-Length', '0')])
+            assert status == 405 and headers['Allow'] == 'GET', method
+        # Other routes are unchanged: the unlock page still refuses the extension's Origin and other methods.
+        token_path = '/?' + urlsplit(url).query
+        assert request(port, cert, 'GET', token_path, [('Host', host), ('Origin', extension)])[0] == 404
+        assert request(port, cert, 'GET', token_path, [('Host', host)])[0] == 200
+        assert request(port, cert, 'PUT', token_path, [('Host', host), ('Content-Length', '0')])[0] == 501
+        assert request(port, cert, 'GET', path + 'x', [('Host', host)])[0] == 404
     finally:
         server.shutdown()
         server.server_close()

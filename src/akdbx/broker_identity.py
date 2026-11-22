@@ -7,8 +7,10 @@ rotate`` registers a new name, or the operator serves another origin. Each
 broker therefore has a persistent ECDSA P-256 identity key. At each start it
 signs a statement that names its current origin and a sequence number that
 increases with every origin change. The extension learns the public key at its
-first pairing and later accepts a new origin only in a statement that this key
-signed with a higher sequence number. A replaced native host can relay these
+first pairing, from the broker's HTTPS page on its trusted origin
+(``/.well-known/akdbx-identity``, ``web_unlock``) and not from the native host
+alone. It later accepts a new origin only in a statement that this key signed
+with a higher sequence number. A replaced native host can relay these
 statements, but cannot make a new one.
 
 Canonical encoding (``fill_extension/trust.js`` makes the same bytes)::
@@ -32,7 +34,9 @@ Python and JavaScript.
 
 The broker sends ``{"public_key": base64url(point), "statement": {...},
 "signature": ...}`` as the ``identity`` field of the extension's ``attached``
-and ``state`` messages and of its answer to the popup's ``state`` request.
+and ``state`` messages and of its answer to the popup's ``state`` request,
+and the private HTTPS page server serves the same object at
+``GET /.well-known/akdbx-identity``.
 
 The private key, the last origin and its sequence number are one private file
 per broker endpoint (``identity-<hash>.json``) in

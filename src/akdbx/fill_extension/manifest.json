@@ -15,6 +15,6 @@
     {"matches": ["https://*/*"], "js": ["content.js"], "all_frames": true, "run_at": "document_start"}
   ],
   "content_security_policy": {
-    "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src https:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
   }
 }

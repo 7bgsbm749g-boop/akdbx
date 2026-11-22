@@ -48,7 +48,8 @@ Security model:
 * Pairing and unlock links open only on the origin that the extension trusts.
   The broker's ``attached`` and ``state`` messages carry its signed origin
   statement (``broker_identity``); the extension learns the signing key at its
-  first pairing and then follows an origin change only in a statement signed
+  first pairing, confirmed by the broker's HTTPS page on the trusted origin
+  (``/.well-known/akdbx-identity``), and then follows an origin change only in a statement signed
   by that key with a higher sequence number.
 """
 from __future__ import annotations

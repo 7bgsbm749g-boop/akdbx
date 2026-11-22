@@ -8,8 +8,8 @@
  * exact document; they are never stored, logged or put on the clipboard.
  *
  * Pairing and unlock links open only on the origin that trust.js decides:
- * the built origin, then the broker identity learned at the first pairing and
- * the origin changes that identity signed.
+ * the built origin, then the broker identity read over HTTPS from that origin
+ * at the first pairing, and the origin changes that identity signed.
  */
 "use strict";
 importScripts("config.js", "trust.js");
@@ -215,8 +215,13 @@ async function decideTrust(current) {
     const key = akdbxTrust.STORAGE_KEY;
     const stored = (await chrome.storage.local.get(key))[key] ?? null;
     const verified = current.identity_received ? await akdbxTrust.verifyIdentity(current.identity) : null;
-    const decision = akdbxTrust.decide(stored, globalThis.AKDBX_TRUSTED_ORIGIN ?? null, verified,
-      current.identity_received === true);
+    const built = globalThis.AKDBX_TRUSTED_ORIGIN ?? null;
+    const received = current.identity_received === true;
+    let decision = akdbxTrust.decide(stored, built, verified, received);
+    if (decision.fetch) {
+      // A first key: read the statement over HTTPS from the trusted origin, once per popup state.
+      decision = akdbxTrust.decide(stored, built, verified, received, await akdbxTrust.fetchIdentity(decision.fetch));
+    }
     if (decision.store) await chrome.storage.local.set({[key]: decision.store});
     return decision;
   });
