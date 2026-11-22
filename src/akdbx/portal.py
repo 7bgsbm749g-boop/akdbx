@@ -209,8 +209,8 @@ SCRIPT = r""""use strict";
   """ + CARD_CHECK + r"""
   const CARD_FIELDS = ["name", "number", "month", "year", "csc"];
   const BRAND_NAMES = {visa: "Visa", mastercard: "Mastercard", amex: "American Express", other: "another brand"};
-  // Final button state for each card save result from the broker.
-  const CARD_RESULTS = {saved: ["Saved", "is-done"], expired: ["Page expired", "is-error"],
+  // Final button state for each save result from the broker.
+  const SAVE_RESULTS = {saved: ["Saved", "is-done"], expired: ["Page expired", "is-error"],
     stale: ["Vault changed", "is-error"], cancelled: ["Cancelled", "is-error"], failed: ["Not confirmed", "is-error"]};
   function concealPasswords() {
     document.querySelectorAll("[data-password-toggle]").forEach(button => {
@@ -281,50 +281,63 @@ SCRIPT = r""""use strict";
       result.brand && digits >= 4 ? "Detected brand: " + BRAND_NAMES[result.brand] + "." : "";
     showCardErrors(form, result.errors, true);
   });
-  async function saveCard(form) {
-    const status = document.getElementById("card-status");
-    const errors = checkCard(cardFields(form), today()).errors;
-    showCardErrors(form, errors, false);
-    const first = CARD_FIELDS.find(name => errors[name]);
-    if (first) {
-      setStatus(status, "Check the marked card details.", "is-error");
-      form.elements.namedItem(first).focus();
-      return;
+  async function save(form) {
+    const status = document.getElementById("save-status");
+    const card = form.matches("[data-card-form]");
+    if (card) {
+      const errors = checkCard(cardFields(form), today()).errors;
+      showCardErrors(form, errors, false);
+      const first = CARD_FIELDS.find(name => errors[name]);
+      if (first) {
+        setStatus(status, "Check the marked card details.", "is-error");
+        form.elements.namedItem(first).focus();
+        return;
+      }
     }
     // Keep the destination that is sent, even if the user edits it while saving.
     const chosen = ["title", "group"].map(name => form.elements.namedItem(name)).filter(Boolean)
       .map(control => [control, control.value]);
     setBusy(form, true);
-    setStatus(status, "Saving the card. Please wait.", "");
-    let result = "", message = "";
+    setStatus(status, "Saving. Please wait.", "");
+    let result = "", message = "", title = "";
     try {
-      const note = (await post(form)).querySelector("[data-card-result]");
+      const page = await post(form);
+      const note = page.querySelector("[data-save-result]");
       if (!note) throw new Error();
-      result = note.getAttribute("data-card-result");
-      message = note.textContent;
+      result = note.getAttribute("data-save-result");
+      message = Array.from(note.querySelectorAll("p"), line => line.textContent).join(" ");
+      title = page.querySelector("#portal-title")?.textContent || "";
     } catch {
       result = "";
     }
     setBusy(form, false);
+    concealPasswords();
     if (result === "rejected") {
       setStatus(status, message, "is-error");
       return;
     }
-    const final = CARD_RESULTS[result];
+    const final = SAVE_RESULTS[result];
     if (!final) {
-      setStatus(status, "Card save result not confirmed. Ask for the save status before you try again.", "is-error");
+      setStatus(status, "Save result not confirmed. Ask for the save status before you try again.", "is-error");
       return;
     }
-    // A final result: clear the card values and stop further submissions.
+    // A final result: clear the entered values and stop further submissions.
     // The non-secret title and group keep what was sent.
     form.reset();
     chosen.forEach(([control, text]) => { control.value = text; });
-    showCardErrors(form, {}, false);
-    document.getElementById("card-brand").textContent = "";
+    if (card) {
+      showCardErrors(form, {}, false);
+      document.getElementById("card-brand").textContent = "";
+    }
     form.querySelectorAll("input, select, button").forEach(control => { control.disabled = true; });
     const button = form.querySelector(".portal-submit");
     button.classList.add(final[1]);
     button.querySelector(".button-label").textContent = final[0];
+    // The heading and tab title show the result page's Success or Failure.
+    if (title) {
+      document.getElementById("portal-title").textContent = title;
+      document.title = "AKDBX: " + title;
+    }
     setStatus(status, message, final[1] === "is-done" ? "is-shown" : "is-error");
   }
   async function unlock(form) {
@@ -353,11 +366,11 @@ SCRIPT = r""""use strict";
   document.addEventListener("submit", event => {
     const form = event.target;
     concealPasswords();
-    const card = form.matches("[data-card-form]");
-    if (!card && !form.matches("[data-unlock-form]")) return;
+    const saving = form.matches("[data-save-form]");
+    if (!saving && !form.matches("[data-unlock-form]")) return;
     event.preventDefault();
     if (form.getAttribute("aria-busy") === "true") return;
-    (card ? saveCard : unlock)(form);
+    (saving ? save : unlock)(form);
   });
   window.addEventListener("pageshow", () => {
     // A history restore must never resume a previous attempt or infer success.
@@ -366,9 +379,9 @@ SCRIPT = r""""use strict";
       setBusy(form, false);
       setStatus(document.getElementById("unlock-status"), "", "");
     });
-    document.querySelectorAll("[data-card-form][aria-busy=true]").forEach(form => {
+    document.querySelectorAll("[data-save-form][aria-busy=true]").forEach(form => {
       setBusy(form, false);
-      setStatus(document.getElementById("card-status"), "", "");
+      setStatus(document.getElementById("save-status"), "", "");
     });
   });
 })();

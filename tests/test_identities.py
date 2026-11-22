@@ -28,9 +28,10 @@ IDENTITY = dict.fromkeys(FIELDS, '') | {
 LABEL = 'Sample shipping'
 
 
-def begin(broker, **metadata):
+def begin(broker, fields=None, **metadata):
+    extra = {} if fields is None else dict(fields=fields)
     return broker.dispatch(dict(action='create-identity', identity_protocol=1,
-                                metadata=dict(title=LABEL, group='Web') | metadata))
+                                metadata=dict(title=LABEL, group='Web') | metadata, **extra))
 
 
 def search(broker, query=LABEL):
@@ -59,7 +60,8 @@ def test_private_save_reopens_protected_and_stays_out_of_login_and_logs(deployed
     assert post(web, pending, injected='unused')[0] == 400
     assert search(broker)['entries'] == []
     code, _, receipt = post(web, pending)
-    assert code == 200 and b'Identity saved to AKDBX' in receipt
+    assert code == 200 and b'Identity saved to vault. You may close this page.' in receipt
+    assert b'<title>AKDBX: Success</title>' in receipt and b'data-save-result="saved"' in receipt
     assert post(web, pending)[0] == 404
     entry = reopened(path).find_entries(title=LABEL, first=True)
     assert entry.get_custom_property(MARKER) == 'v1'
@@ -268,3 +270,85 @@ def test_cli_withholds_ambiguous_search_receipts(second, monkeypatch, capsys):
     assert cli.main(['search-identities', LABEL]) == 2
     captured = capsys.readouterr()
     assert not captured.out and 'response withheld' in captured.err
+
+
+def field_names(page):
+    import re
+    return set(re.findall(rb'<input id="[^"]*" name="([^"]+)"', page)) - {b'confirmed'}
+
+
+def test_field_subset_page_shows_and_stores_only_requested_fields(deployed, capsys):
+    broker, _, path, web = deployed
+    pending = begin(broker, fields=['tel'])
+    assert set(pending) == {'ok', 'state', 'write_handle', 'private_url'}
+    code, _, page = call(web, 'GET', private_path(pending))
+    assert code == 200 and field_names(page) == {b'tel'}
+    assert b'Phone number' in page and b'Email address' not in page
+    assert b'class="portal-submit"' in page and b'data-save-form' in page
+    tel = {'tel': IDENTITY['tel'], 'confirmed': 'yes'}
+    # Exactly the requested fields plus the confirmation are accepted.
+    assert call(web, 'POST', private_path(pending), urlencode(tel | {'email': IDENTITY['email']}))[0] == 400
+    assert call(web, 'POST', private_path(pending), urlencode(IDENTITY | {'confirmed': 'yes'}))[0] == 400
+    assert call(web, 'POST', private_path(pending), urlencode({'confirmed': 'yes'}))[0] == 400
+    code, _, rejected = call(web, 'POST', private_path(pending), urlencode({'tel': ' ', 'confirmed': 'yes'}))
+    assert code == 409 and b'data-save-result="rejected"' in rejected and b'>Failure</h1>' in rejected
+    code, _, receipt = call(web, 'POST', private_path(pending), urlencode(tel))
+    assert code == 200 and b'Identity saved to vault. You may close this page.' in receipt
+    assert broker.dispatch(dict(action='write-status', write_handle=pending['write_handle'])) == dict(ok=True, state='saved')
+    entry = reopened(path).find_entries(title=LABEL, first=True)
+    assert entry.get_custom_property(MARKER) == 'v1'
+    stored = {s.find('Key').text for s in entry._element.findall('./String')}
+    assert {key for key in stored if key.startswith(MARKER + '.')} == {property_key('tel')}
+    node = entry._element.find(f'./String[Key="{property_key("tel")}"]/Value')
+    assert node.get('Protected') == 'True' and entry.get_custom_property(property_key('tel')) == IDENTITY['tel']
+    captured = capsys.readouterr()
+    assert IDENTITY['tel'] not in page.decode() + receipt.decode() + captured.out + captured.err
+
+
+@pytest.mark.parametrize('fields', [[], ['phone'], ['tel', 'tel'], 'tel', [1], ['street-address']])
+def test_invalid_field_subsets_are_refused(deployed, fields):
+    broker = deployed[0]
+    assert begin(broker, fields=fields) == {'ok': False, 'error': 'identity operation refused; check label, group and vault readiness'}
+    assert broker.writes.operations == {}
+
+
+def test_country_subset_uppercases_and_checks_the_code(deployed):
+    broker, _, path, web = deployed
+    pending = begin(broker, fields=['country', 'email'])
+    page = call(web, 'GET', private_path(pending))[2]
+    assert field_names(page) == {b'country', b'email'}
+    form = {'country': 'nz', 'email': '', 'confirmed': 'yes'}
+    assert call(web, 'POST', private_path(pending), urlencode(form | {'country': 'NZL'}))[0] == 409
+    assert call(web, 'POST', private_path(pending), urlencode(form))[0] == 200
+    entry = reopened(path).find_entries(title=LABEL, first=True)
+    assert entry.get_custom_property(property_key('country')) == 'NZ'
+    assert entry.get_custom_property(property_key('email')) is None
+
+
+def test_cli_sends_fields_only_to_a_broker_that_supports_them(monkeypatch, capsys):
+    calls = []
+    caps = dict(ok=True, identity_protocol=1, identity_delivery='cdp-identity-element-v1')
+
+    def broker(_, payload, **kwargs):
+        calls.append(payload)
+        if payload['action'] == 'ping':
+            return caps
+        return dict(ok=True, state='pending', write_handle='a' * 64,
+                    private_url='https://node.example:9443/identity?token=' + 'b' * 43)
+
+    monkeypatch.setattr(cli, 'request', broker)
+    args = ['create-identity', '--title', LABEL, '--group', 'Web', '--fields', 'email,tel']
+    assert cli.main(args) == 1
+    assert calls == [{'action': 'ping'}] and 'identity fields protocol 1' in capsys.readouterr().out
+    caps['identity_fields_protocol'] = 1
+    calls.clear()
+    assert cli.main(args) == 0
+    assert calls[1] == dict(action='create-identity', identity_protocol=1,
+                            metadata=dict(title=LABEL, group='Web'), fields=['email', 'tel'])
+    calls.clear()
+    assert cli.main(args[:-2]) == 0
+    assert 'fields' not in calls[1]
+    for bad in ('phone', 'tel,tel', '', 'tel,'):
+        with pytest.raises(SystemExit) as exit_info:
+            cli.main([*args[:-1], bad])
+        assert exit_info.value.code == 2

@@ -96,7 +96,8 @@ def test_private_forms_results_errors_and_branding(deployed, kind):
         code, headers, page = private_post(socket, op)
     assert code == 200
     check_page(headers, page)
-    assert b'saved to AKDBX' in page
+    assert b'saved to vault. You may close this page.' in page and b'>Success</h1>' in page
+    assert b'AKDBX' not in page.split(b'<section', 1)[1].split(b'</section>', 1)[0]
 
 
 def test_unlock_failed_rate_limit_and_ready_pages(tmp_path):

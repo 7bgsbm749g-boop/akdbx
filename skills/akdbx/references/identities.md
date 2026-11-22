@@ -10,17 +10,29 @@ the broker is locked.
 ## Save
 
 ```bash
-akdbx create-identity --title 'Home shipping' --group 'Personal'
+akdbx create-identity --title 'Home shipping' --group 'Personal' --fields tel
 akdbx write-status -- WRITE_HANDLE
 akdbx cancel-write -- WRITE_HANDLE
 ```
+
+Ask only for the fields the task needs. Pass them with `--fields`, a
+comma-separated list of the field keys in the fill table below (for example
+`--fields tel` or `--fields tel,email`; `street-address` is a fill token, not a
+saved field, so use `address-line1` and the other lines). The private page then
+shows only those fields, and the broker accepts and stores only those fields.
+Without `--fields`, the page shows all fields. `--fields` needs
+`identity_fields_protocol: 1` from `akdbx status` (0.28.2); the CLI refuses
+before sending the request otherwise.
 
 Supply a short non-secret label and an existing group path. Keep personal
 details out of labels, arguments, notes and agent responses. Give the user the
 returned `private_url` within the private task. The user enters and confirms
 the details on that page. The form accepts trimmed, single-line values and
 requires at least one value. Country code uses two letters (for example `DE`).
-The page expires after five minutes. Only `state: "saved"` confirms persistence.
+The save button shows a busy bar while saving, then `Saved` or an error state
+(`Page expired`, `Not confirmed`); a correctable form error keeps the page
+open with the message under the button. The page expires after five minutes.
+Only `state: "saved"` from `write-status` confirms persistence.
 Use `cancel-write` to cancel a pending page. The broker refuses a duplicate
 identity label in the same group. To change an existing record, use KeePass
 and keep the `akdbx.identity=v1` marker and the protection on each

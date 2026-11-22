@@ -373,6 +373,8 @@ class Write:
     import_candidates: tuple = field(default=(), repr=False)
     import_nonce: str | None = field(default=None, repr=False)
     import_source: str = ''
+    # Identity saves: the fields the private page shows and accepts.
+    fields: tuple = ()
 
 
 class WriteManager:

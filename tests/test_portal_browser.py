@@ -15,7 +15,9 @@ from test_cards import CARD, begin as begin_card, post as post_card
 from test_target import isolated_x11
 from test_target_chromium import synthetic_chromium, wait_for
 from test_web_unlock import call
-from test_writes import deployed, template
+from test_identities import begin as begin_identity
+from test_totp import KEY, prepare as prepare_totp
+from test_writes import begin as begin_password, deployed, template
 
 
 def start_bridge(socket):
@@ -277,7 +279,7 @@ def button(cdp, session):
       return {disabled: b.disabled, pending: b.classList.contains('is-pending'), done: b.classList.contains('is-done'),
         error: b.classList.contains('is-error'), label: b.querySelector('.button-label').textContent,
         bar: !b.querySelector('.portal-progress').hidden, busy: b.form.getAttribute('aria-busy'),
-        status: document.getElementById('card-status').textContent}; })()""", session)
+        status: document.getElementById('save-status').textContent}; })()""", session)
 
 
 def test_card_page_checks_details_then_shows_busy_and_saved_states(synthetic_chromium, card_lab):
@@ -311,8 +313,10 @@ def test_card_page_checks_details_then_shows_busy_and_saved_states(synthetic_chr
     wait_for(cdp, session, "document.querySelector('.portal-submit').classList.contains('is-done')")
     saved = button(cdp, session)
     assert saved['disabled'] and saved['label'] == 'Saved' and not saved['bar'] and saved['busy'] is None
-    assert saved['status'] == ('Card saved to AKDBX as \u201cSynthetic travel card\u201d in '
-                               'Top level (no folder). You may close this page.')
+    assert saved['status'] == ('Card saved to vault. You may close this page. Saved as '
+                               '\u201cSynthetic travel card\u201d in Top level (no folder).')
+    assert cdp.evaluate("[document.getElementById('portal-title').textContent, document.title]", session) == [
+        'Success', 'AKDBX: Success']
     assert cdp.evaluate("[...document.querySelectorAll('form input, form select')].every(c => c.disabled)", session)
     assert cdp.evaluate("document.getElementById('number').value === ''", session)
     assert cdp.evaluate("document.getElementById('title').value", session) == 'Synthetic travel card'
@@ -332,7 +336,7 @@ def test_card_page_shows_broker_refusal_and_vault_change(synthetic_chromium, car
     enter(cdp, session, CARD)
     cdp.evaluate("document.querySelector('input[name=confirmed]').click()", session)
     cdp.evaluate("document.querySelector('.portal-submit').click()", session)
-    wait_for(cdp, session, "document.getElementById('card-status').classList.contains('is-error')")
+    wait_for(cdp, session, "document.getElementById('save-status').classList.contains('is-error')")
     refused = button(cdp, session)
     assert not refused['disabled'] and not refused['error'] and refused['label'] == 'Save card to AKDBX'
     assert refused['status'] == 'A card with this title already exists in this group. Choose another title.'
@@ -344,3 +348,101 @@ def test_card_page_shows_broker_refusal_and_vault_change(synthetic_chromium, car
     changed = button(cdp, session)
     assert changed['disabled'] and changed['label'] == 'Vault changed'
     assert changed['status'].startswith('The vault changed after this page opened')
+
+
+SAVES = {
+    # kind: (prepare, gated broker method, page title, idle label, busy label, synthetic input)
+    'identity': (lambda broker: begin_identity(broker, fields=['tel']), ('identities', 'submit'),
+                 'Save AKDBX identity', 'Save identity to AKDBX', 'Saving identity\u2026', {'tel': '+49 000 000001'}),
+    'password': (begin_password, ('writes', 'submit'), 'Confirm AKDBX password', 'Save to AKDBX',
+                 'Saving password\u2026', {'password': 'public-synthetic-pass', 'confirmation': 'public-synthetic-pass'}),
+    'totp': (prepare_totp, ('writes', 'submit_totp'), 'Confirm AKDBX authenticator', 'Save authenticator',
+             'Saving authenticator\u2026', {'setup': KEY}),
+}
+
+
+@pytest.fixture
+def save_lab(deployed, request):
+    broker, _, _, socket = deployed
+    entered, release = threading.Event(), threading.Event()
+    owner, name = SAVES[request.param][1]
+    target = getattr(broker, owner)
+    original = getattr(target, name)
+
+    def gated(*args, **kwargs):
+        # Hold the save so the busy state can be observed; no value is read.
+        entered.set()
+        assert release.wait(8), 'synthetic save gate expired'
+        return original(*args, **kwargs)
+
+    setattr(target, name, gated)
+    bridge, worker = start_bridge(socket)
+    try:
+        yield request.param, broker, socket, f'http://127.0.0.1:{bridge.server_port}', entered, release
+    finally:
+        release.set()
+        bridge.shutdown()
+        bridge.server_close()
+        worker.join(3)
+
+
+def open_save_page(cdp, session, base, prepared, title):
+    parts = urlsplit(prepared['private_url'])
+    cdp.call('Page.navigate', {'url': base + parts.path + '?' + parts.query}, session)
+    wait_for(cdp, session, f"document.readyState === 'complete' && document.title === 'AKDBX: {title}'")
+
+
+@pytest.mark.parametrize('save_lab', list(SAVES), indirect=True)
+def test_save_pages_share_the_busy_and_saved_button(synthetic_chromium, save_lab):
+    _, _, cdp, session, _, _ = synthetic_chromium
+    kind, broker, _, base, entered, release = save_lab
+    prepare, _, title, idle, busy, values = SAVES[kind]
+    prepared = prepare(broker)
+    open_save_page(cdp, session, base, prepared, title)
+    assert button(cdp, session)['label'] == idle
+    if kind == 'identity':
+        # Only the requested field is on the page.
+        assert cdp.evaluate("[...document.querySelectorAll('form input[name]')].map(i => i.name)", session) == [
+            'tel', 'confirmed']
+    enter(cdp, session, values)
+    cdp.evaluate("document.querySelector('input[name=confirmed]').click()", session)
+    cdp.evaluate("document.querySelector('.portal-submit').click()", session)
+    assert entered.wait(3)
+    pending = button(cdp, session)
+    assert pending['disabled'] and pending['pending'] and pending['bar'] and pending['busy'] == 'true'
+    assert pending['label'] == busy and pending['status'] == 'Saving. Please wait.'
+    release.set()
+    wait_for(cdp, session, "document.querySelector('.portal-submit').classList.contains('is-done')")
+    saved = button(cdp, session)
+    assert saved['disabled'] and saved['label'] == 'Saved' and not saved['bar'] and saved['busy'] is None
+    subject = {'identity': 'Identity', 'password': 'Password', 'totp': 'Authenticator'}[kind]
+    assert saved['status'] == f'{subject} saved to vault. You may close this page.'
+    assert cdp.evaluate("[document.getElementById('portal-title').textContent, document.title]", session) == [
+        'Success', 'AKDBX: Success']
+    assert cdp.evaluate("[...document.querySelectorAll('form input')].every(c => c.disabled && !c.value || c.type === 'checkbox')", session)
+    assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle']))['state'] == 'saved'
+
+
+@pytest.mark.parametrize('save_lab', ['password'], indirect=True)
+def test_save_page_keeps_a_correctable_form_and_shows_a_final_error(synthetic_chromium, save_lab):
+    _, _, cdp, session, _, _ = synthetic_chromium
+    kind, broker, socket, base, _, release = save_lab
+    release.set()
+    prepared = begin_password(broker)
+    open_save_page(cdp, session, base, prepared, SAVES[kind][2])
+    enter(cdp, session, {'password': 'public-synthetic-pass', 'confirmation': 'public-synthetic-other'})
+    cdp.evaluate("document.querySelector('input[name=confirmed]').click()", session)
+    cdp.evaluate("document.querySelector('.portal-submit').click()", session)
+    wait_for(cdp, session, "document.getElementById('save-status').classList.contains('is-error')")
+    refused = button(cdp, session)
+    assert not refused['disabled'] and not refused['error'] and refused['label'] == 'Save to AKDBX'
+    assert refused['status'] == 'confirm destination and matching safe nonempty passwords'
+    # The page expires; the next save shows the dashed error state.
+    broker.dispatch(dict(action='cancel-write', write_handle=prepared['write_handle']))
+    enter(cdp, session, {'password': 'public-synthetic-pass', 'confirmation': 'public-synthetic-pass'})
+    cdp.evaluate("document.querySelector('.portal-submit').click()", session)
+    wait_for(cdp, session, "document.querySelector('.portal-submit').classList.contains('is-error')")
+    expired = button(cdp, session)
+    assert expired['disabled'] and expired['label'] == 'Page expired'
+    assert expired['status'] == 'This page has expired or is no longer valid. Ask for a new save page.'
+    assert cdp.evaluate("document.getElementById('portal-title').textContent", session) == 'Failure'

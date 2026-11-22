@@ -313,7 +313,7 @@ def test_page_title_and_group_override_reach_vault_receipt_and_write_status(depl
     prepared = begin(broker)
     code, _, body = post(socket, prepared, title='Synthetic travel card', group='')
     assert code == 200
-    assert 'data-card-result="saved"' in body.decode()
+    assert 'data-save-result="saved"' in body.decode()
     assert '\u201cSynthetic travel card\u201d in Top level (no folder)' in body.decode()
     assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle'])) == dict(
         ok=True, state='saved', title='Synthetic travel card', group='')
@@ -337,7 +337,7 @@ def test_bad_destination_or_card_is_refused_by_broker_and_stays_retryable(deploy
     before = path.read_bytes()
     prepared = begin(broker)
     code, _, body = post(socket, prepared, **changes)
-    assert code == 409 and message in body and b'data-card-result="rejected"' in body
+    assert code == 409 and message in body and b'data-save-result="rejected"' in body
     assert CARD['number'].encode() not in body
     assert path.read_bytes() == before
     assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle'])) == dict(ok=True, state='pending')
@@ -389,6 +389,6 @@ def test_finished_pages_report_why_they_no_longer_save(deployed):
     broker.writes.operations[expired['write_handle']].expires = broker.clock() - 1
     for prepared, reason in ((saved, 'saved'), (cancelled, 'cancelled'), (stale, 'stale'), (expired, 'expired')):
         for code, _, body in (post(socket, prepared), page(socket, prepared)):
-            assert code == 404 and f'data-card-result="{reason}"'.encode() in body, reason
+            assert code == 404 and f'data-save-result="{reason}"'.encode() in body, reason
             assert b'<form' not in body
     assert broker.dispatch(dict(action='write-status', write_handle=stale['write_handle']))['state'] == 'failed'

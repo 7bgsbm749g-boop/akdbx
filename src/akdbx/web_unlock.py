@@ -472,16 +472,61 @@ def _card_gone(reason: str) -> dict:
     return dict(ok=False, gone=True, reason=reason, error=CARD_GONE[reason])
 
 
-def _card_result(result: dict) -> str:
-    """The save result. data-card-result tells the page script the final state."""
+SUBJECTS = {'card': 'Card', 'identity': 'Identity', 'totp': 'Authenticator', 'password': 'Password'}
+# Shown when a save page token no longer opens a form after a POST.
+PAGE_GONE = 'This page has expired or is no longer valid. Ask for a new save page.'
+
+
+def _vault_text(message: str) -> str:
+    """Save results name the vault, not the app."""
+    return message.replace('AKDBX', 'vault')
+
+
+def _save_result(kind: str, result: dict) -> tuple[str, str]:
+    """The save result page title and body.
+
+    ``data-save-result`` tells the page script the final state: saved,
+    rejected (form still open), expired, stale, cancelled or failed.
+    """
     if result['ok']:
-        message = (f'Card saved to AKDBX as \u201c{result["title"]}\u201d in '
-                   f'{_group_label(result["group"])}. You may close this page.')
+        title = 'Success'
+        lines = [f'{SUBJECTS[kind]} saved to vault. You may close this page.']
+        if kind == 'card':
+            lines.append(f'Saved as \u201c{result["title"]}\u201d in {_group_label(result["group"])}.')
     else:
-        message = result['error']
-    role = 'status' if result['reason'] == 'saved' else 'alert'
-    return (f'<p id="card-result" data-card-result="{html.escape(result["reason"], quote=True)}" '
-            f'role="{role}">{html.escape(message)}</p>')
+        title = 'Failure'
+        lines = [_vault_text(result['error'])]
+    reason = result['reason']
+    role = 'status' if reason == 'saved' else 'alert'
+    paragraphs = ''.join(f'<p>{html.escape(line)}</p>' for line in lines)
+    return title, (f'<div id="save-result" data-save-result="{html.escape(reason, quote=True)}" '
+                   f'role="{role}">{paragraphs}</div>')
+
+
+def _result_page(kind: str, result: dict) -> bytes:
+    return _page(*_save_result(kind, result))
+
+
+def _save_reason(op, result: dict) -> dict:
+    """Add the page state to a password, authenticator or identity result."""
+    if result['ok']:
+        return dict(result, reason='saved')
+    # A correctable form error leaves the write pending.
+    return dict(result, reason='rejected' if op.state == 'pending' else 'failed')
+
+
+def _submit(label: str, busy: str) -> str:
+    """The shared save button: busy bar while saving, then a final state."""
+    return (f'<button type="submit" class="portal-submit" data-idle-label="{html.escape(label, quote=True)}" '
+            f'data-busy-label="{html.escape(busy, quote=True)}"><span class="button-label">{html.escape(label)}</span>'
+            f'<span class="portal-progress" role="progressbar" aria-label="{html.escape(busy.rstrip(chr(0x2026)), quote=True)}" hidden></span></button>')
+
+
+def _save_form(action: str, inner: str, label: str, busy: str, *, card: bool = False) -> str:
+    form = 'data-card-form ' if card else ''
+    return (f'<form {form}data-save-form method="post" action="{action}" autocomplete="off">{inner}'
+            f'{_submit(label, busy)}</form>'
+            '<p id="save-status" class="portal-status" role="status" aria-live="polite"></p>')
 
 
 def _card_form(op, action: str, groups: list) -> str:
@@ -520,13 +565,9 @@ def _card_form(op, action: str, groups: list) -> str:
     label = 'Update card in AKDBX' if update else 'Save card to AKDBX'
     intro = ('<p>You are updating a saved card. Enter its current details.</p>' if update else
              '<p>Check the title and group, then enter the card details.</p>')
-    return (f'{intro}<form data-card-form method="post" action="{action}" autocomplete="off">'
-            f'{title}{group}{"".join(fields)}'
-            '<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this card and destination</label>'
-            f'<button type="submit" class="portal-submit" data-idle-label="{label}" data-busy-label="Saving card\u2026">'
-            f'<span class="button-label">{label}</span>'
-            '<span class="portal-progress" role="progressbar" aria-label="Saving card" hidden></span></button>'
-            '</form><p id="card-status" class="portal-status" role="status" aria-live="polite"></p>')
+    inner = (f'{title}{group}{"".join(fields)}'
+             '<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this card and destination</label>')
+    return intro + _save_form(action, inner, label, 'Saving card\u2026', card=True)
 
 
 def computer_name(windows: bool | None = None) -> str:
@@ -620,10 +661,13 @@ def handler_for(state: UnlockState):
                 op = state.broker.writes.by_token(self._token(), kind)
                 if op is None and kind == 'card':
                     gone = _card_gone(state.broker.writes.card_page_state(self._token()))
-                    self._send(HTTPStatus.NOT_FOUND, _page('AKDBX card save', _card_result(gone)))
+                    self._send(HTTPStatus.NOT_FOUND, _page('AKDBX card save', _save_result('card', gone)[1]))
                     return True
                 if op is None or op.password is not None:
-                    self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Invalid or expired password request.</p>'))
+                    # A page script that posted gets a final state for its button.
+                    self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Invalid or expired password request.</p>')
+                               if self.command == 'GET' else
+                               _result_page(kind, dict(ok=False, reason='expired', error=PAGE_GONE)))
                     return True
                 if self.command == 'GET':
                     destination = ''.join(f'<dt>{html.escape(key)}</dt><dd>{html.escape(value)}</dd>' for key, value in op.values.items())
@@ -631,17 +675,24 @@ def handler_for(state: UnlockState):
                     if kind == 'card':
                         body = _card_form(op, action, group_paths(state.broker.vault))
                     elif kind == 'identity':
-                        fields = ''.join(field(label, key, kind='text', maxlength=IDENTITY_FIELD_LIMIT, required=False)
-                                         for key, label in IDENTITY_FIELDS.items())
-                        body = f'<dl>{destination}</dl><p>Enter only the details you want to save.</p><form method="post" action="{action}" autocomplete="off">{fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this identity and destination</label><button>Save identity to AKDBX</button></form>'
+                        # Only the fields the agent asked for; inputs are never prefilled.
+                        fields = ''.join(field(IDENTITY_FIELDS[key], key, kind='text', maxlength=IDENTITY_FIELD_LIMIT,
+                                               required=len(op.fields) == 1) for key in op.fields)
+                        hint = 'Enter the detail you want to save.' if len(op.fields) == 1 else 'Enter only the details you want to save.'
+                        inner = f'{fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this identity and destination</label>'
+                        body = f'<dl>{destination}</dl><p>{hint}</p>' + _save_form(action, inner, 'Save identity to AKDBX', 'Saving identity\u2026')
                     elif kind == 'totp':
                         replacement = '<p>This replaces the saved authenticator key.</p>' if op.replace else ''
                         setup = field('Setup key or otpauth TOTP URI', 'setup', maxlength=4096)
-                        body = f'<dl>{destination}</dl><p>Import the setup key or otpauth URI for this account. This saves an authenticator in AKDBX; it does not change the website. Keep a separate recovery method.</p>{replacement}<form method="post" action="{action}" autocomplete="off">{setup}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this account and authenticator key</label><button>Save authenticator</button></form>'
+                        body = f'<dl>{destination}</dl><p>Import the setup key or otpauth URI for this account. This saves an authenticator in AKDBX; it does not change the website. Keep a separate recovery method.</p>{replacement}' + _save_form(
+                            action, f'{setup}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this account and authenticator key</label>',
+                            'Save authenticator', 'Saving authenticator\u2026')
                         body += '<p><a href="/totp/import?token=' + html.escape(op.token, quote=True) + '">Import QR images / Google export, or review a browser capture</a></p>'
                     else:
                         password_fields = field('Chosen password', 'password', autocomplete='new-password') + field('Repeat password', 'confirmation', autocomplete='new-password')
-                        body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes AKDBX only.</p><form method="post" action="{action}" autocomplete="off">{password_fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label><button>Save to AKDBX</button></form>'
+                        body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes AKDBX only.</p>' + _save_form(
+                            action, f'{password_fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label>',
+                            'Save to AKDBX', 'Saving password\u2026')
                     title = {'card': 'Update AKDBX card' if op.uuid else 'Save AKDBX card', 'identity': 'Save AKDBX identity',
                              'totp': 'Confirm AKDBX authenticator', 'password': 'Confirm AKDBX password'}[kind]
                     self._send(HTTPStatus.OK, _page(title, body))
@@ -664,7 +715,8 @@ def handler_for(state: UnlockState):
                     raise ValueError
                 if kind == 'card' and not CARD_FORM <= set(values) <= CARD_FORM | {'title', 'group'}:
                     raise ValueError
-                if kind == 'identity' and set(values) != IDENTITY_FIELDS.keys() | {'confirmed'}:
+                # The page shows only the fields this save asked for.
+                if kind == 'identity' and set(values) != set(op.fields) | {'confirmed'}:
                     raise ValueError
             except Exception:
                 self._send(HTTPStatus.BAD_REQUEST, _page('Invalid request', '<p>Request rejected.</p>'))
@@ -675,7 +727,7 @@ def handler_for(state: UnlockState):
                 if op is None and kind == 'card' and not self._expired():
                     result = _card_gone(state.broker.writes.card_page_state(self._token()))
                 elif op is None or self._expired():
-                    self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Invalid or expired password request.</p>'))
+                    self._send(HTTPStatus.NOT_FOUND, _result_page(kind, dict(ok=False, reason='expired', error=PAGE_GONE)))
                     return True
                 elif kind == 'card':
                     # The page may change the prepared title and group.
@@ -683,7 +735,7 @@ def handler_for(state: UnlockState):
                     result = state.broker.cards.submit(op, {k: values[k][0] for k in ('name', 'number', 'month', 'year', 'csc')},
                                                        values.get('confirmed') == ['yes'], chosen)
                 elif kind == 'identity':
-                    result = state.broker.identities.submit(op, {key: values[key][0] for key in IDENTITY_FIELDS},
+                    result = state.broker.identities.submit(op, {key: values[key][0] for key in op.fields},
                                                             values['confirmed'] == ['yes'])
                 elif kind == 'totp':
                     result = state.broker.writes.submit_totp(op, values.get('setup', [''])[0], values.get('confirmed') == ['yes'])
@@ -693,12 +745,9 @@ def handler_for(state: UnlockState):
             if kind == 'card':
                 status = (HTTPStatus.OK if result['ok'] else HTTPStatus.NOT_FOUND
                           if result.get('gone') or result['reason'] == 'expired' else HTTPStatus.CONFLICT)
-                self._send(status, _page('AKDBX card save', _card_result(result)))
+                self._send(status, _result_page('card', result))
                 return True
-            subject = {'card': 'Card', 'identity': 'Identity', 'totp': 'Authenticator', 'password': 'Password'}[kind]
-            body = (f'<p>{subject} saved to AKDBX. You may close this page.</p>' if result['ok']
-                    else '<p>' + html.escape(result['error']) + '</p>')
-            self._send(HTTPStatus.OK if result['ok'] else HTTPStatus.CONFLICT, _page('AKDBX save result', body))
+            self._send(HTTPStatus.OK if result['ok'] else HTTPStatus.CONFLICT, _result_page(kind, _save_reason(op, result)))
             return True
 
         def do_GET(self) -> None:
