@@ -168,5 +168,5 @@ def request_field(args, caps, route):
         source = '--browser-slot' if explicit is not None else ENV
         return None, f'{source} is not a slot name such as slot1; request not sent'
     if type(caps.get('browser_slot_protocol')) is not int or caps['browser_slot_protocol'] != PROTOCOL:
-        return None, 'broker lacks browser slot protocol 1; require broker 0.29.0 or newer; request not sent'
+        return None, 'broker lacks browser slot protocol 1; require broker 0.30.0 or newer; request not sent'
     return {FIELD: name}, None

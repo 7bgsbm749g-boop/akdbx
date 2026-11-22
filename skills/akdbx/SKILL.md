@@ -319,7 +319,7 @@ So:
   the popup and enter the master password there. Pairing lasts until the browser
   or broker restarts.
 
-**Agent desktop slots (CDP route, 0.29.0+).** When `status` shows
+**Agent desktop slots (CDP route, 0.30.0+).** When `status` shows
 `browser_profile_root`, the broker serves several agent desktops, each with its
 own Chrome. Every CDP pin must name your slot: `--browser-slot SLOT` on
 `list-password-frames`, `pin-password-target`, `pin-card-target` and

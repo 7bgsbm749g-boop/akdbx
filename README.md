@@ -242,7 +242,7 @@ A host can run several agent desktops at the same time. Each desktop is a *slot*
 
 Each slot `ROOT/slotN` is one Chrome user data directory, started as above (`--user-data-dir=ROOT/slotN --remote-debugging-port=0 --remote-debugging-address=127.0.0.1`, `umask 077`). Slot names match `slot[1-9][0-9]?`. The root replaces `--password-browser-profile` and `--card-browser-profile` for password, card and identity fills; the broker refuses to start with both. The single-profile options work as before when no root is set.
 
-With a root, every CDP pin names its slot: `pin-password-target`, `list-password-frames`, `pin-card-target` and `pin-identity-target` take `--browser-slot SLOT`, and default to the `AGENT_DESKTOP_SLOT` environment variable (sent only to a broker that reports a root, so a single-profile broker keeps working in an agent desktop shell). The request field is `browser_slot`; the broker advertises `browser_slot_protocol: 1` (0.29.0+).
+With a root, every CDP pin names its slot: `pin-password-target`, `list-password-frames`, `pin-card-target` and `pin-identity-target` take `--browser-slot SLOT`, and default to the `AGENT_DESKTOP_SLOT` environment variable (sent only to a broker that reports a root, so a single-profile broker keeps working in an agent desktop shell). The request field is `browser_slot`; the broker advertises `browser_slot_protocol: 1` (0.30.0+).
 
 ```bash
 .venv/bin/akdbx pin-password-target --browser-slot slot2 --page-id PAGE_ID --frame-id MAIN_FRAME_ID \

@@ -407,7 +407,7 @@ def test_cli_shows_the_broker_slot_refusal(monkeypatch, capsys, command):
 @pytest.mark.parametrize('value, caps, error', [
     ('../slot1', CAPS, '--browser-slot is not a slot name such as slot1; request not sent'),
     ('slot1', {**CAPS, 'browser_slot_protocol': None},
-     'broker lacks browser slot protocol 1; require broker 0.29.0 or newer; request not sent'),
+     'broker lacks browser slot protocol 1; require broker 0.30.0 or newer; request not sent'),
 ])
 def test_cli_refuses_a_bad_name_or_an_old_broker_before_sending(monkeypatch, capsys, command, value, caps, error):
     calls = recording(monkeypatch, caps)
