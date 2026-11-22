@@ -64,14 +64,30 @@ Do not ask the user. Use the private file form, which `pin-password-target`,
    to the broker unchanged. No output or error from the CLI contains the URL.
 3. Delete the file after the pin (and after `list-password-frames`).
 
+For the configured password browser profile, Chrome's read-only `/json/list`
+is a direct transfer. Give only the token-free start of the URL (origin, path
+and `?`). The filter writes the tab's exact URL to the file and prints only
+the page ID:
+
 ```sh
 umask 077
 url_dir=$(mktemp -d)                       # private directory, mode 0700
-BROWSER_URL_COMMAND > "$url_dir/top-url"   # direct transfer; never print the URL
+port=$(head -n 1 "$PASSWORD_BROWSER_PROFILE/DevToolsActivePort")
+curl -sf "http://127.0.0.1:$port/json/list" | python3 -I -c '
+import json, sys
+tabs = [t for t in json.load(sys.stdin)
+        if t.get("type") == "page" and t.get("url", "").startswith(sys.argv[1])]
+if len(tabs) != 1:
+    sys.exit("need exactly one tab for this page; no URL written")
+sys.stdout.write(tabs[0]["url"])
+print("page_id", tabs[0]["id"], file=sys.stderr)
+' 'https://site.example/user/activate?' > "$url_dir/top-url"
 akdbx pin-password-target --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
   --top-url-file "$url_dir/top-url" --selector '#password' --mode password
 rm -rf -- "$url_dir"
 ```
+
+If the filter fails, the file stays empty and akdbx refuses it.
 
 The CLI refuses, before it sends any request, a file that is missing,
 unreadable, a symlink, not a regular file, not owned by you, open to other
