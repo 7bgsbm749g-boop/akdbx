@@ -435,6 +435,9 @@ def parser() -> argparse.ArgumentParser:
         if name in ('generate-password', 'generate-entry'):
             command.add_argument('--length', type=int, default=24)
             command.add_argument('--symbols', default='!@#$%*-_+=?', help='allowed ASCII punctuation; empty for letters and digits')
+            command.add_argument('--single-field', action='store_true',
+                                 help='the verified form has one new-password field and no confirmation field: '
+                                      'return only a password fill reference; commit after that one fill')
         if name == 'setup-totp':
             command.add_argument('--replace', action='store_true', help='explicitly permit replacing this entry\'s existing authenticator')
     for name in URL_CHANGES:
@@ -976,6 +979,9 @@ def _command(args) -> int:
             payload['handle'] = args.handle
         if args.command in ('generate-password', 'generate-entry'):
             payload.update(length=args.length, symbols=args.symbols)
+            if args.single_field:
+                # Older brokers never see the option unless they report it.
+                payload['single_field'] = True
         if args.command in IDENTITY_CREATES:
             payload['auth_method'] = args.auth_method
         if args.command == 'setup-totp':
@@ -1057,6 +1063,12 @@ def _command(args) -> int:
             if (capabilities.get('ok') is not True or type(capabilities.get('generated_entry_protocol')) is not int
                     or capabilities.get('generated_entry_protocol') != 1):
                 print(json.dumps({'ok': False, 'error': 'broker lacks generated entry protocol 1; generation not sent'}))
+                return 1
+        if args.command in {'generate-entry', 'generate-password'} and args.single_field:
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if capabilities.get('ok') is not True or capabilities.get('generated_single_field') is not True:
+                print(json.dumps({'ok': False, 'error': 'broker lacks generated single-field support; require broker 0.31.0 or newer; generation not sent'}))
                 return 1
         if args.command == 'list-password-frames' or args.command == 'pin-password-target' and args.frame_origin is not None:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
@@ -1234,6 +1246,18 @@ def _command(args) -> int:
                 response.get('state') != 'pending' or not isinstance(response.get('write_handle'), str)
                 or not response['write_handle'] or urlsplit(response.get('private_url', '')).path != '/totp'):
             print('TOTP setup outcome unconfirmed: receipt rejected; inspect status before any retry', file=sys.stderr)
+            return 2
+    if args.command in {'generate-entry', 'generate-password'} and response.get('ok'):
+        references = response.get('fill_handles')
+        modes = {'password'} if args.single_field else {'password', 'confirmation'}
+        if (not isinstance(references, dict) or set(references) != modes
+                or not all(isinstance(ref, str) and ref for ref in references.values())
+                or len(set(references.values())) != len(modes)
+                or response.get('single_field', False) is not args.single_field
+                or not isinstance(response.get('write_handle'), str) or not response['write_handle']):
+            # The staged write expires unused; a wrong fill count must not start.
+            print('generated password receipt rejected: unexpected fill references; do not fill; '
+                  'the staged write expires unused', file=sys.stderr)
             return 2
     if args.command == 'list-password-frames' and response.get('ok') and not _valid_frame_list(response):
         print('frame list rejected: unexpected broker response', file=sys.stderr)

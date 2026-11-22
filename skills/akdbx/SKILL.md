@@ -541,7 +541,9 @@ capability checks and recovery. In short:
   the password and confirmation fields with `fill-generated` (fresh pin each),
   check that the site accepted the change, then `commit-password --site-accepted
   -- WRITE_HANDLE`. Do not ask the user to choose a password because an entry is
-  new.
+  new. If the form has only one new-password field and no confirmation field,
+  add `--single-field` when you generate (needs `generated_single_field: true`,
+  0.31.0+): you get one `password` reference and the commit needs one fill.
 - **User-chosen password:** `create-entry` or `update-password` return a private
   page where the user types it.
 - **SSO account (Google/GitHub):** `create-sso-entry` saves the metadata with an

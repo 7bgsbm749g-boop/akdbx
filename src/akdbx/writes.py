@@ -73,6 +73,15 @@ def _generated_origin(url):
         raise WriteError('generated resets require a verified ASCII HTTPS site URL without credentials') from None
 
 
+GENERATED_MODES = ('password', 'confirmation')
+GENERATED_SINGLE_MODES = ('password',)
+
+
+def generated_capabilities():
+    """Generated writes may be staged for a form with one new-password field."""
+    return dict(generated_entry_protocol=1, generated_single_field=True)
+
+
 def sso_capabilities():
     return dict(sso_identity_supported=True, sso_identity_protocol=1,
                 sso_auth_methods=list(SSO_AUTH_METHODS))
@@ -375,6 +384,9 @@ class Write:
     import_source: str = ''
     # Identity saves: the fields the private page shows and accepts.
     fields: tuple = ()
+    # Generated writes: set once at staging for a form with one new-password
+    # field and no confirmation field. It never changes afterwards.
+    single_field: bool = False
 
 
 class WriteManager:
@@ -676,8 +688,12 @@ class WriteManager:
         is_totp = request['action'] == 'setup-totp'
         if is_totp and (set(request) - {'action', 'handle', 'metadata', 'replace'} or type(request.get('replace', False)) is not bool):
             raise WriteError('TOTP setup accepts only selected entry metadata and an explicit replace flag')
-        if request['action'] == 'generate-entry' and set(request) - {'action', 'metadata', 'length', 'symbols'}:
+        if request['action'] == 'generate-entry' and set(request) - {'action', 'metadata', 'length', 'symbols', 'single_field'}:
             raise WriteError('generated entry accepts only destination metadata and generation policy')
+        single_field = request.get('single_field', False)
+        if 'single_field' in request and (request['action'] not in {'generate-password', 'generate-entry'}
+                                          or type(single_field) is not bool):
+            raise WriteError('single_field is a boolean generation option for generate-password and generate-entry only')
         if request['action'] in {'update-password', 'generate-password', 'setup-totp'}:
             try:
                 entry = self.broker._resolve(request.get('handle'))
@@ -734,10 +750,14 @@ class WriteManager:
                 if all(any(c in group for c in password) for group in (string.ascii_lowercase, string.ascii_uppercase, string.digits, *([symbols] if symbols else []))):
                     break
             op.password = password
-            op.fill_refs = {secrets.token_hex(32): mode for mode in ('password', 'confirmation')}
+            op.single_field = single_field
+            modes = GENERATED_SINGLE_MODES if single_field else GENERATED_MODES
+            op.fill_refs = {secrets.token_hex(32): mode for mode in modes}
         self.operations[handle] = op
         if op.password is not None:
-            return {'ok': True, 'write_handle': handle, 'state': op.state, 'fill_handles': {mode: ref for ref, mode in op.fill_refs.items()}}
+            return {'ok': True, 'write_handle': handle, 'state': op.state,
+                    'fill_handles': {mode: ref for ref, mode in op.fill_refs.items()},
+                    **({'single_field': True} if op.single_field else {})}
         route = '/totp' if is_totp else '/write'
         return {'ok': True, 'write_handle': handle, 'private_url': self.public_base.rstrip('/') + route + '?token=' + op.token, 'state': op.state}
 
@@ -972,9 +992,16 @@ class WriteManager:
         return response
 
     def commit_generated(self, request):
+        # The fill count is fixed when the write is staged. A commit cannot
+        # carry options, so it cannot switch a write to single-field mode.
+        if set(request) - {'action', 'write_handle', 'site_accepted'}:
+            raise WriteError('commit accepts only a write handle and explicit site acceptance')
         op = self.get(request.get('write_handle'))
         if op is None or op.state != 'pending' or op.password is None:
             raise WriteError('unknown or expired generated password; start again')
-        if request.get('site_accepted') is not True or op.filled != {'password', 'confirmation'}:
+        if op.single_field:
+            if request.get('site_accepted') is not True or op.filled != set(GENERATED_SINGLE_MODES):
+                raise WriteError('the password fill and explicit site acceptance are required')
+        elif request.get('site_accepted') is not True or op.filled != set(GENERATED_MODES):
             raise WriteError('both fills and explicit site acceptance are required')
         return self.submit(op, op.password, op.password, True)

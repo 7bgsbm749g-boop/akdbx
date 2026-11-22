@@ -82,7 +82,8 @@ started with.
 Account creation and password resets use
 [the password-write workflow](password-writes.md) without change:
 `generate-entry`, one fresh pin and `fill-generated` for the new-password
-field, another for the confirmation field, the site's acceptance, then
+field, another for the confirmation field (none for a write staged with
+`--single-field`), the site's acceptance, then
 `commit-password --site-accepted -- WRITE_HANDLE`.
 
 ## Username and TOTP fills in a native application
