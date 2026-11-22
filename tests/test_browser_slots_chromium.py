@@ -31,23 +31,39 @@ HTML = b'''<!doctype html><title>Synthetic slot lab</title>
 <input id="number" autocomplete="cc-number"><input id="tel" type="tel" autocomplete="tel">'''
 
 
-def xvfb():
+def xvfb(log_path):
+    """Start a private X server and hold one client connection open.
+
+    The held connection proves the display accepts clients before Chrome starts
+    and keeps the server from resetting when its last client disconnects.
+    """
+    from Xlib import display as xdisplay
     read_fd, write_fd = os.pipe()
-    process = subprocess.Popen(['Xvfb', '-displayfd', str(write_fd), '-screen', '0', '1000x1000x24', '-nolisten', 'tcp'],
-                               pass_fds=(write_fd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               start_new_session=True)
+    with open(log_path, 'wb') as log:
+        process = subprocess.Popen(['Xvfb', '-displayfd', str(write_fd), '-screen', '0', '1000x1000x24',
+                                    '-nolisten', 'tcp', '-noreset'],
+                                   pass_fds=(write_fd,), stdout=subprocess.DEVNULL, stderr=log, start_new_session=True)
     os.close(write_fd)
     try:
         assert select.select([read_fd], [], [], 10)[0], 'isolated X server startup timed out'
         number = os.read(read_fd, 32).decode().strip()
         assert number.isdecimal() and number != '99'
+        deadline = time.monotonic() + 10
+        while True:
+            assert process.poll() is None, 'isolated X server exited'
+            try:
+                client = xdisplay.Display(':' + number)
+                break
+            except Exception:
+                assert time.monotonic() < deadline, 'isolated X server accepts no client'
+                time.sleep(.05)
     except BaseException:
         process.terminate()
         stop(process)
         raise
     finally:
         os.close(read_fd)
-    return process, ':' + number
+    return process, ':' + number, client
 
 
 def stop(process, timeout=8):
@@ -105,13 +121,14 @@ def slots(tmp_path):
     root = tmp_path / 'profiles'
     root.mkdir(mode=0o700)
     (root / 'slot2').mkdir(mode=0o700)  # A slot with no running Chrome.
-    running, browsers = [], {}
+    running, browsers, clients = [], {}, []
     try:
         for name in ('slot1', 'slot4'):
             profile = root / name
             profile.mkdir(mode=0o700)
-            display_process, display = xvfb()
+            display_process, display, client = xvfb(tmp_path / f'{name}-xvfb.log')
             running.append(display_process)
+            clients.append(client)
             environment = {**os.environ, 'DISPLAY': display, 'NO_AT_BRIDGE': '1',
                            'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/nonexistent/akdbx-slot-test'}
             log = (tmp_path / f'{name}-chrome.log').open('wb')
@@ -124,7 +141,13 @@ def slots(tmp_path):
             log.close()
             running.append(process)
             deadline = time.monotonic() + 60
-            cdp = connect_test_browser(profile, process, deadline)
+            try:
+                cdp = connect_test_browser(profile, process, deadline)
+            except AssertionError:
+                # Synthetic launch diagnostics only; the lab profile holds no user data.
+                for log_name in (f'{name}-chrome.log', f'{name}-xvfb.log'):
+                    print(log_name, (tmp_path / log_name).read_text(errors='replace')[-2000:])
+                raise
             page = session = None
             while time.monotonic() < deadline:
                 pages = [t for t in cdp.call('Target.getTargets')['targetInfos'] if t['type'] == 'page' and t['url'] == url]
@@ -147,6 +170,11 @@ def slots(tmp_path):
             except Exception:
                 pass
             browser.cdp.close()
+        for client in clients:
+            try:
+                client.close()
+            except Exception:
+                pass  # An Xvfb that already exited must not stop the cleanup below.
         for process in reversed(running):
             if process.args[0] == 'Xvfb':
                 process.terminate()
