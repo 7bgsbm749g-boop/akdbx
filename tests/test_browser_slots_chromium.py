@@ -171,7 +171,10 @@ def slots(tmp_path):
                 pass
             browser.cdp.close()
         for client in clients:
-            client.close()
+            try:
+                client.close()
+            except Exception:
+                pass  # An Xvfb that already exited must not stop the cleanup below.
         for process in reversed(running):
             if process.args[0] == 'Xvfb':
                 process.terminate()
