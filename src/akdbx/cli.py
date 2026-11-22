@@ -1251,8 +1251,10 @@ def _command(args) -> int:
         references = response.get('fill_handles')
         modes = {'password'} if args.single_field else {'password', 'confirmation'}
         if (not isinstance(references, dict) or set(references) != modes
+                or not all(isinstance(ref, str) and ref for ref in references.values())
+                or len(set(references.values())) != len(modes)
                 or response.get('single_field', False) is not args.single_field
-                or not isinstance(response.get('write_handle'), str)):
+                or not isinstance(response.get('write_handle'), str) or not response['write_handle']):
             # The staged write expires unused; a wrong fill count must not start.
             print('generated password receipt rejected: unexpected fill references; do not fill; '
                   'the staged write expires unused', file=sys.stderr)

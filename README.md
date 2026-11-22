@@ -821,6 +821,9 @@ reviews metadata and enters/repeats a chosen password; secrets never pass
 through the CLI. Generated reset passwords remain in broker memory: two
 single-use references fill password and confirmation fields on the verified
 broker desktop, then explicit site acceptance permits saving the same secret.
+With `--single-field` (0.31.0+, status `generated_single_field: true`), a form
+with one new-password field and no confirmation field gets one `password`
+reference, and the commit needs that one fill plus site acceptance.
 Generated resets require the entry and asserted target URLs to use ASCII HTTPS
 spelling (punycode for internationalized hosts) and to match in origin.
 No operation exports, shows, logs or copies passwords.

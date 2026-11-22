@@ -62,7 +62,9 @@ refusal. A pin stays in the Chrome it was made in: fill it with the usual
 For a reset, each `fill-generated --target-url VERIFIED_URL --target TOKEN -- REF`
 needs its own fresh pin after independently focusing that field. A failed or
 partial generated fill does not count toward the two successful fills needed
-for `commit-password --site-accepted`. Do not commit until the site accepts it.
+for `commit-password --site-accepted` (one fill for a write staged with
+`--single-field`; see [password writes](password-writes.md#form-with-one-new-password-field-0310)).
+Do not commit until the site accepts it.
 
 Do not restart a live broker, alter its browser/profile, or deploy this source
 repair without the owning workflow's authorization. Existing processes retain

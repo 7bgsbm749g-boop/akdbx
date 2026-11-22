@@ -330,6 +330,19 @@ def test_cli_single_field_flow_and_old_broker_refusal(deployed, capsys, caplog, 
         else {'ok': True, 'write_handle': 'w', 'state': 'pending', 'fill_handles': {'password': 'a', 'confirmation': 'b'}}))
     assert cli.main([*prefix, 'generate-entry', *meta, '--single-field']) == 2
     assert 'unexpected fill references' in capsys.readouterr().err
+    for receipt in ({'write_handle': '', 'fill_handles': {'password': 'a'}},
+                    {'write_handle': 'w', 'fill_handles': {'password': None}},
+                    {'write_handle': 'w', 'fill_handles': {'password': ''}}):
+        monkeypatch.setattr(cli, 'request', lambda _s, payload, receipt=receipt, **k: (
+            {'ok': True, 'generated_entry_protocol': 1, 'generated_single_field': True} if payload['action'] == 'ping'
+            else {'ok': True, 'state': 'pending', 'single_field': True, **receipt}))
+        assert cli.main([*prefix, 'generate-entry', *meta, '--single-field']) == 2
+        assert 'unexpected fill references' in capsys.readouterr().err
+    monkeypatch.setattr(cli, 'request', lambda _s, payload, **k: (
+        {'ok': True, 'generated_entry_protocol': 1} if payload['action'] == 'ping'
+        else {'ok': True, 'write_handle': 'w', 'state': 'pending', 'fill_handles': {'password': 'a', 'confirmation': 'a'}}))
+    assert cli.main([*prefix, 'generate-entry', *meta]) == 2
+    assert 'unexpected fill references' in capsys.readouterr().err
 
 
 @pytest.mark.parametrize('policy', [{'length': 8}, {'length': True}, {'length': 129}, {'symbols': '\n'}, {'symbols': 'abc'}])
