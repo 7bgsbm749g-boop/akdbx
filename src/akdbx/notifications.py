@@ -24,8 +24,12 @@ MAX_DELIVERY_INPUT = 16 * 1024
 
 
 def capabilities() -> dict:
+    # unlock_notifications_blocked_event: a subscription made with
+    # blocked_events: true also gets akdbx.unlock-blocked when the unlock
+    # link is blocked, and stays subscribed for the later akdbx.unlocked
+    # event (0.25.0+). Other subscriptions get only akdbx.unlocked.
     return {"unlock_notifications_supported": True, "unlock_notifications_protocol": 1,
-            "unlock_notifications_until_unlock": True}
+            "unlock_notifications_until_unlock": True, "unlock_notifications_blocked_event": True}
 
 
 def validate_webhook_url(value: object) -> str:
@@ -85,29 +89,60 @@ class Subscription:
     attempts: int = 0
     subject: str | None = None
     result: str | None = None
+    # Opt-in (0.25.0+): also send akdbx.unlock-blocked before the unlock.
+    blocked_events: bool = False
     url_hash: bytes = field(init=False, repr=False)
 
     def __post_init__(self):
         self.url_hash = hashlib.sha256(self.url.encode()).digest()
 
 
+@dataclass
+class Notice:
+    """One extra event for a subscription that keeps waiting.
+
+    A notice never changes its subscription's state: after it, the same
+    subscription still delivers its final event. Notices live in memory only;
+    the block itself is saved, and a broker that restores a saved block sends
+    the notice again to waiting subscriptions that asked for it.
+    """
+    key: str
+    item: Subscription = field(repr=False)
+    event_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    state: str = "pending"
+    attempts: int = 0
+
+
 class UnlockNotifications:
     _label = 'unlock'
-    def __init__(self, *, sender=post_event, clock=time.monotonic, state_path=None):
+    def __init__(self, *, sender=post_event, clock=time.monotonic, state_path=None, blocked_path=None):
         self._sender = sender
         self._clock = clock
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._items: dict[str, Subscription] = {}
+        self._notices: list[Notice] = []
         self._worker: threading.Thread | None = None
         self._state_path = Path(state_path) if state_path is not None else None
+        # Linux only: a separate, persistent file for the unlock-link block.
+        # Without it the block sits next to the notification state.
+        self._blocked_file = Path(blocked_path) if blocked_path is not None else None
         self._restore()
 
-    def _directory(self):
+    def _directory(self, path=None):
         from .runtime import prepare_private_runtime_directory
-        if not self._state_path.is_absolute() or self._state_path.name in {'', '.', '..'}:
+        path = self._state_path if path is None else path
+        if not path.is_absolute() or path.name in {'', '.', '..'}:
             raise ValueError('invalid notification state path')
-        return prepare_private_runtime_directory(self._state_path.parent)[1]
+        if path == self._blocked_file:
+            # A persistent state folder (for example ~/.local/state) may not
+            # exist yet: make each missing folder private (mode 0700).
+            for folder in reversed(path.parent.parents):
+                try:
+                    os.mkdir(folder, 0o700)
+                except FileExistsError:
+                    pass
+        return prepare_private_runtime_directory(path.parent)[1]
 
     def _windows_state(self, *, create):
         """Verify the private state folder; create it only to save a subscription.
@@ -123,21 +158,22 @@ class UnlockNotifications:
         windows_security.ensure_private_directory(self._state_path.parent)
         return windows_security
 
-    def _load(self):
+    def _load(self, path=None):
         """Return the saved rows, or _MISSING when no state file exists."""
+        path = self._state_path if path is None else path
         if os.name == 'nt':
             try:
                 state = self._windows_state(create=False)
-                raw = None if state is None else state.read_private_optional(self._state_path, limit=512 * 1024)
+                raw = None if state is None else state.read_private_optional(path, limit=512 * 1024)
             except ValueError:
                 raise
             except Exception:
                 raise ValueError('invalid notification state') from None
             return _MISSING if raw is None else json.loads(raw)
-        directory = self._directory()
+        directory = self._directory(path)
         try:
             try:
-                fd = os.open(self._state_path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                              dir_fd=directory)
             except FileNotFoundError:
                 return _MISSING
@@ -167,8 +203,12 @@ class UnlockNotifications:
                         or not isinstance(event, str) or len(event) != 32 or any(c not in '0123456789abcdef' for c in event)
                         or type(attempts) is not int or not 0 <= attempts <= MAX_ATTEMPTS):
                     raise ValueError('invalid notification state')
+                blocked_events = row.get('blocked_events', False)
+                if type(blocked_events) is not bool:
+                    raise ValueError('invalid notification state')
+                # A row from before 0.25.0 has no field: it stays unlock-only.
                 item = Subscription(validate_webhook_url(row['url']), None, event_id=event,
-                                    attempts=attempts)
+                                    attempts=attempts, blocked_events=blocked_events)
                 self._restore_item(row, item)
                 if attempts < MAX_ATTEMPTS:
                     self._items[key] = item
@@ -179,7 +219,10 @@ class UnlockNotifications:
         """Unlock waits become ready only after this broker accepts the vault."""
 
     def _row(self, key, item):
-        return {'id': key, 'url': item.url, 'event_id': item.event_id, 'attempts': item.attempts}
+        row = {'id': key, 'url': item.url, 'event_id': item.event_id, 'attempts': item.attempts}
+        if item.blocked_events:
+            row['blocked_events'] = True
+        return row
 
     def _payload(self, key, item):
         return {"event": "akdbx.unlocked", "locked": False,
@@ -193,28 +236,39 @@ class UnlockNotifications:
         rows = [self._row(key, item)
                 for key, item in self._items.items() if item.expires_at is None and
                 item.state in {'subscribed', 'pending', 'sending'}]
+        # Windows writes nothing until a subscription is saved; Linux keeps
+        # its earlier behaviour and always writes the (maybe empty) list.
+        self._write(self._state_path, rows, create=bool(rows) or os.name != 'nt')
+
+    def _write(self, path, data, *, create=True):
+        """Replace one private state file. Without ``create``, a missing file stays missing."""
         if os.name == 'nt':
             # The callback URLs stay in a file that only this user and SYSTEM
             # can open. A failure keeps the previous complete state file.
             try:
-                if not rows and not self._state_path.exists():
+                if not create and not path.exists():
                     return  # Nothing was ever saved: write nothing.
-                self._windows_state(create=True).replace_private(self._state_path, json.dumps(rows).encode())
+                self._windows_state(create=True).replace_private(path, json.dumps(data).encode())
             except OSError:
                 raise
             except Exception:
                 raise OSError('notification state could not be saved') from None
             return
-        directory = self._directory()
+        directory = self._directory(path)
         name = '.unlock-notifications-' + uuid.uuid4().hex
         try:
+            if not create:
+                try:
+                    os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    return  # Nothing was ever saved: write nothing.
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                          0o600, dir_fd=directory)
             with os.fdopen(fd, 'wb') as stream:
-                stream.write(json.dumps(rows).encode())
+                stream.write(json.dumps(data).encode())
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(name, self._state_path.name, src_dir_fd=directory, dst_dir_fd=directory)
+            os.replace(name, path.name, src_dir_fd=directory, dst_dir_fd=directory)
             os.fsync(directory)
         finally:
             try:
@@ -222,6 +276,38 @@ class UnlockNotifications:
             except FileNotFoundError:
                 pass
             os.close(directory)
+
+    def _blocked_path(self):
+        if self._blocked_file is not None:
+            return self._blocked_file
+        return self._state_path.with_name(self._state_path.name + '.unlock-blocked')
+
+    def load_unlock_blocked(self) -> bool:
+        """Return the saved unlock-link block (0.25.0+); False without saved state.
+
+        By default the flag sits next to the notification state; the Linux
+        broker keeps it in a persistent state folder instead (``blocked_path``).
+        The same private file checks apply on Linux and Windows. It holds no
+        token or URL. Raise ValueError for an untrusted or malformed file.
+        """
+        if self._state_path is None and self._blocked_file is None:
+            return False
+        try:
+            data = self._load(self._blocked_path())
+        except (TypeError, json.JSONDecodeError, UnicodeDecodeError):
+            raise ValueError('invalid unlock block state') from None
+        if data is _MISSING:
+            return False
+        if not isinstance(data, dict) or set(data) != {'blocked'} or type(data['blocked']) is not bool:
+            raise ValueError('invalid unlock block state')
+        return data['blocked']
+
+    def save_unlock_blocked(self, blocked: bool) -> None:
+        """Save or clear the unlock-link block so a restart keeps it."""
+        if self._state_path is None and self._blocked_file is None:
+            return
+        with self._lock:
+            self._write(self._blocked_path(), {'blocked': bool(blocked)}, create=bool(blocked))
 
     def _prune(self):
         now = self._clock()
@@ -244,6 +330,9 @@ class UnlockNotifications:
         ttl = request.get("ttl", 0)
         if type(ttl) is not int or not (ttl == 0 or 60 <= ttl <= 3600):
             return {"ok": False, "error": "subscription TTL must be 0 (until unlock/cancel) or 60–3600 seconds"}
+        blocked_events = request.get("blocked_events", False)
+        if type(blocked_events) is not bool or blocked_events and subject is not None:
+            return {"ok": False, "error": "blocked_events must be true or false on an unlock subscription"}
         with self._lock:
             self._prune()
             if self._stop.is_set():
@@ -252,6 +341,14 @@ class UnlockNotifications:
             url_hash = hashlib.sha256(url.encode()).digest()
             for key, item in self._items.items():
                 if item.url_hash == url_hash and item.subject == subject:
+                    if blocked_events and not item.blocked_events and item.state == "subscribed":
+                        # A retry from a newer consumer opts in; it never opts out.
+                        item.blocked_events = True
+                        try:
+                            self._persist()
+                        except OSError:
+                            item.blocked_events = False
+                            return {"ok": False, "error": "notification could not be saved; subscription not changed"}
                     remaining = None if item.expires_at is None else max(0, int(item.expires_at - self._clock()))
                     return {**self._receipt(key, item), "expires_in": remaining}
             if len(self._items) >= MAX_SUBSCRIPTIONS:
@@ -263,7 +360,7 @@ class UnlockNotifications:
             key = uuid.uuid4().hex
             item = Subscription(url, self._clock() + ttl if ttl else None,
                                 state="pending" if unlocked else "subscribed",
-                                subject=subject, result=result)
+                                subject=subject, result=result, blocked_events=blocked_events)
             self._items[key] = item
             try:
                 self._persist()
@@ -289,6 +386,66 @@ class UnlockNotifications:
                         item.state, item.url = 'failed', ''
             self._start_worker()
 
+    @staticmethod
+    def _blocked_payload(notice):
+        # The subscription stays subscribed and later sends akdbx.unlocked.
+        return {"event": "akdbx.unlock-blocked", "locked": True, "unlock_blocked": True,
+                "subscription_id": notice.key, "event_id": notice.event_id,
+                "subscription_state": "subscribed"}
+
+    def publish_blocked(self) -> None:
+        """Alert waiting unlock subscriptions that asked for blocked events.
+
+        Only subscriptions still waiting for unlock and made with
+        ``blocked_events: true`` get the notice: an older consumer may treat
+        any event as the unlock and remove its one-shot trigger. A newer
+        block replaces a notice that was not sent yet.
+        """
+        with self._lock:
+            self._prune()
+            if self._stop.is_set():
+                return
+            waiting = {key: item for key, item in self._items.items()
+                       if item.state == "subscribed" and item.subject is None and item.blocked_events}
+            self._notices = [n for n in self._notices
+                             if n.state == "sending" or n.state == "pending" and n.key not in waiting]
+            self._notices.extend(Notice(key, item) for key, item in waiting.items())
+            self._start_worker()
+
+    def _next_notice(self):
+        """Called under _lock: the next notice that can still be sent."""
+        for notice in self._notices:
+            if notice.state != "pending":
+                continue
+            # A pending unlock waits behind its own earlier blocked notice.
+            if self._items.get(notice.key) is notice.item and notice.item.state in {"subscribed", "pending"}:
+                return notice
+            notice.state = "cancelled"
+        return None
+
+    def _deliver_notice(self, notice):
+        for attempt in range(MAX_ATTEMPTS):
+            with self._lock:
+                if (self._stop.is_set() or self._items.get(notice.key) is not notice.item
+                        or notice.item.state not in {"subscribed", "pending"} or not notice.item.url):
+                    notice.state = "cancelled"
+                    return
+                notice.attempts += 1
+                url = notice.item.url
+                payload = self._blocked_payload(notice)
+            try:
+                self._sender(url, payload)
+            except Exception:
+                # Never log the callback URL, its token, or exception text.
+                if attempt + 1 < MAX_ATTEMPTS and not self._stop.wait(1 << attempt):
+                    continue
+                with self._lock:
+                    notice.state = "failed"
+                return
+            with self._lock:
+                notice.state = "delivered"
+            return
+
     def status(self, key: object, *, cancel=False) -> dict:
         with self._lock:
             self._prune()
@@ -303,7 +460,8 @@ class UnlockNotifications:
 
     def _start_worker(self):
         # Called under _lock. At most one sender, and no idle listener process.
-        if self._worker is not None or not any(i.state == "pending" for i in self._items.values()):
+        if self._worker is not None or not (any(i.state == "pending" for i in self._items.values())
+                                            or any(n.state == "pending" for n in self._notices)):
             return
         try:
             self._worker = threading.Thread(target=self._deliver, name="akdbx-unlock-events", daemon=True)
@@ -313,17 +471,29 @@ class UnlockNotifications:
             for item in self._items.values():
                 if item.state == "pending":
                     item.state, item.url = "failed", ""
+            for notice in self._notices:
+                if notice.state == "pending":
+                    notice.state = "failed"
 
     def _deliver(self):
         while not self._stop.is_set():
             with self._lock:
                 self._prune()
-                next_item = next(((k, i) for k, i in self._items.items() if i.state == "pending"), None)
-                if next_item is None:
-                    self._worker = None
-                    return
-                key, item = next_item
-                item.state = "sending"
+                # Notices first: they report an older event than any unlock.
+                self._notices = [n for n in self._notices if n.state in {"pending", "sending"}]
+                notice = self._next_notice()
+                if notice is not None:
+                    notice.state = "sending"
+                else:
+                    next_item = next(((k, i) for k, i in self._items.items() if i.state == "pending"), None)
+                    if next_item is None:
+                        self._worker = None
+                        return
+                    key, item = next_item
+                    item.state = "sending"
+            if notice is not None:
+                self._deliver_notice(notice)
+                continue
             for attempt in range(item.attempts, MAX_ATTEMPTS):
                 with self._lock:
                     if item.state == "cancelled" or self._stop.is_set():
@@ -365,6 +535,9 @@ class UnlockNotifications:
             for item in self._items.values():
                 if item.state in {"subscribed", "pending", "sending"}:
                     item.state, item.url = "cancelled", ""
+            for notice in self._notices:
+                if notice.state == "pending":
+                    notice.state = "cancelled"
             worker = self._worker
         if worker is not None:
             worker.join(timeout=DELIVERY_TIMEOUT + 0.5)

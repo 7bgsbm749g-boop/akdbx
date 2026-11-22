@@ -11,7 +11,9 @@ live deployment is separate work; keep its current vault and credentials intact.
 
 1. Select the exact existing vault entry with a fresh search. Start the usual
    `setup-totp HANDLE --title ... --username ... --url ... --group ...` request.
-2. Give the user its private URL. On their Tailscale-connected device, they open
+2. Give the user its private URL. They open it where the unlock link opens (the
+   broker's computer for a loopback origin, any tailnet device for a Tailscale
+   origin) and select
    **Import QR images / Google export, or review a browser capture**.
 3. The user can enter a Base32 setup key / standard `otpauth://totp/` URI, select
    QR images, or take a QR photo. The images stay in the browser and are decoded
@@ -70,7 +72,11 @@ Load that directory through **chrome://extensions > Developer mode > Load
 unpacked** in the established main profile. Do not create a new profile to
 work around an error. Copy Chrome's extension ID, then explicitly register the
 native host using the current independently configured unlock origin and the
-broker's **HTTP unlock socket**, not its agent RPC socket:
+broker's **HTTP unlock socket**, not its agent RPC socket. On Linux this
+socket (`akdbx-unlock.sock` beside the broker socket, `agentic-kdbx-unlock.sock`
+beside a legacy `agentic-kdbx.sock`, or `--unlock-socket`)
+exists on both private-page routes: with `--tls-cert` and `--tls-key` (0.23.0+)
+it serves only this capture request, as the capture pipe does on Windows.
 
 ```bash
 /absolute/path/to/.venv/bin/akdbx-browser-import install-host \
@@ -90,13 +96,21 @@ manifest. It refuses to overwrite existing files. Use the same config environmen
 when Chrome starts the host. No database/password/key is stored in this config.
 Neither build nor install reads the vault or restarts the browser/broker.
 
+On Windows (0.22.0+) use `akdbx-browser-import.exe install-host --browser
+chrome|edge|helium --extension-id EXTENSION_ID --origin ORIGIN`. It registers
+the host under `HKEY_CURRENT_USER` and, without `--socket`, uses the default
+broker's capture pipe (the RPC pipe name plus `-capture`), never the agent RPC
+pipe. `uninstall-host --browser NAME` removes one registration. See
+`docs/windows.md`.
+
 For capture, prepare the normal private `setup-totp` URL, verify the website and
 account without reading the setup key, then open the extension on the enrollment
 tab. The user supplies that private URL and clicks **Capture this tab's setup QR**.
 The extension requests temporary `activeTab` access, not blanket site permission.
 It sends data through a Chrome native-messaging host restricted to that extension
 ID. The host validates the configured private origin, protected Unix socket and
-broker UID. The broker separately checks the actual captured source origin
+broker UID (on Windows: the capture named pipe and its same-user, same-session
+server). The broker separately checks the actual captured source origin
 against the selected entry, and rejects duplicate captures. The local capture
 route requires a same-UID Unix peer, rejects Tailscale identity/Origin headers,
 and cannot be used to unlock the vault. Agent RPC never accepts the secret data.

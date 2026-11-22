@@ -438,7 +438,7 @@ def render(title: str, body: str) -> bytes:
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="referrer" content="no-referrer"><meta name="color-scheme" content="dark">
+<meta name="referrer" content="same-origin"><meta name="color-scheme" content="dark">
 <title>{html.escape('AKDBX: ' + title)}</title><style>{STYLE}</style></head>
 <body><div class="atmosphere" aria-hidden="true"><div class="light light-one"></div>
 <div class="light light-two"></div><div class="light-line"></div>

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import html
 import os
+import platform
+import re
 import secrets
 import socket
 import socketserver
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -13,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 
-from .broker import Broker, open_vault_with_password
+from .broker import UNLOCK_LINK_MAX_FAILURES, Broker, is_wrong_credentials, open_vault_with_password
 from .identities import FIELDS as IDENTITY_FIELDS, FIELD_LIMIT as IDENTITY_FIELD_LIMIT
 from . import cards
 from .portal import content_security_policy, field, render
@@ -26,9 +29,19 @@ from .runtime import (
 )
 
 MAX_BODY = 16 * 1024
-MAX_UNLOCK_ATTEMPTS = 5
-ATTEMPT_WINDOW = 60
+# Failed master-password attempts allowed per unlock link, in total.
+MAX_FAILED_ATTEMPTS = UNLOCK_LINK_MAX_FAILURES
 MAX_HTTP_CONNECTIONS = 8
+# A '%' must start a two-digit hex escape. parse_qs keeps any other '%' as
+# text, so such a form would otherwise reach the password check.
+_INVALID_ESCAPE = re.compile(rb'%(?![0-9A-Fa-f]{2})')
+
+
+def parse_form(raw: bytes, **options) -> dict[str, list[str]]:
+    """Strictly parse an urlencoded form; raise ValueError for any malformed byte or escape."""
+    if _INVALID_ESCAPE.search(raw):
+        raise ValueError('invalid percent escape')
+    return parse_qs(raw.decode('utf-8'), strict_parsing=True, errors='strict', **options)
 REQUEST_IO_TIMEOUT = 5.0
 CONNECTION_TIMEOUT = 15.0
 
@@ -50,8 +63,8 @@ class ConnectionDeadline:
 class ThreadingUnixHTTPServer(ThreadingHTTPServer):
     """HTTP over a filesystem-protected Unix socket for Tailscale Serve."""
 
-    # Windows CPython does not expose AF_UNIX. The Windows subclass supplies
-    # AF_INET and its own initializer; keep importing the shared handler safe.
+    # Windows CPython does not expose AF_UNIX. The loopback HTTPS subclass
+    # supplies AF_INET and its own initializer; keep importing it safe.
     address_family = getattr(socket, 'AF_UNIX', None)
     daemon_threads = True
     request_queue_size = MAX_HTTP_CONNECTIONS
@@ -213,80 +226,230 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
 
 
 class UnlockState:
+    """One private unlock link and its total budget of failed attempts.
+
+    A link allows ``MAX_FAILED_ATTEMPTS`` failed master-password attempts in
+    total, not per minute. The failure that reaches the limit blocks the link
+    at once: its token stops working and the broker alerts unlock-notification
+    subscribers that asked for blocked events. Time never expires a link, and
+    the block is saved next to the notification state, so a broker restart
+    keeps it. Only ``new_link`` (the broker's ``new-unlock-link`` action,
+    after the user confirms) makes a new token. Reservations count toward the
+    budget, so parallel requests cannot run more than the limit through the
+    vault opener. Only a wrong password or key file counts as a failure.
+    """
+
     def __init__(
         self,
         broker: Broker,
         database: Path,
         keyfile: Path | None,
         opener: Callable = open_vault_with_password,
+        public_base: str | None = None,
     ) -> None:
         self.broker = broker
         self.database = database
         self.keyfile = keyfile
         self.opener = opener
+        self.public_base = public_base
         self.token = secrets.token_urlsafe(32)
-        self.failures: list[float] = []
-        self.identity_failures: dict[str, list[float]] = {}
-        self.pending: dict[int, str] = {}
+        self.failures = 0
+        self.blocked = False
+        # False while the block holds only in memory (its save failed).
+        self.block_saved = True
+        self.pending: set[int] = set()
         self.next_attempt = 0
         self.lock = threading.Lock()
         self.unlock_lock = threading.Lock()
+        # Restore a block from before a restart before the page serves.
+        if self._saved_block():
+            self.blocked = True
+            self.failures = MAX_FAILED_ATTEMPTS
+
+    def _saved_block(self) -> bool:
+        try:
+            return self.broker.unlock_notifications.load_unlock_blocked()
+        except Exception:
+            # An unreadable or untrusted saved block fails closed: the link
+            # stays blocked until the user confirms a new one.
+            return True
+
+    def _save_block(self, blocked: bool) -> None:
+        """Save the block flag; raise OSError when it cannot be saved."""
+        try:
+            self.broker.unlock_notifications.save_unlock_blocked(blocked)
+        except Exception:
+            raise OSError('unlock block state could not be saved') from None
+
+    @property
+    def url(self) -> str:
+        assert self.public_base is not None
+        return self.public_base.rstrip("/") + "/?token=" + self.token
+
+    @property
+    def origin(self) -> str | None:
+        """The link's non-secret HTTPS origin, without its token."""
+        if self.public_base is None:
+            return None
+        parts = urlsplit(self.public_base)
+        return f"{parts.scheme}://{parts.netloc}"
+
+    def _matches(self, token: object) -> bool:
+        # Called under self.lock. Bytes avoid compare_digest's refusal of
+        # non-ASCII text, so any submitted value is simply invalid.
+        return isinstance(token, str) and secrets.compare_digest(
+            token.encode("utf-8", "surrogatepass"), self.token.encode("ascii"))
 
     def token_matches(self, token: str) -> bool:
         with self.lock:
-            return secrets.compare_digest(token, self.token)
+            return self._matches(token)
 
-    def reserve_attempt(self, identity: str) -> int | None:
-        """Atomically account for an attempt before expensive key derivation."""
-        now = time.monotonic()
+    def request_status(self, token: str) -> str:
+        """Check one request's token, the block and the lock state together.
+
+        The caller builds every response from the token it submitted, never
+        from ``self.token``, so a request authorized by an old token cannot
+        learn a replacement made after this check.
+        """
         with self.lock:
-            self.failures = [stamp for stamp in self.failures if now - stamp < ATTEMPT_WINDOW]
-            for key, stamps in list(self.identity_failures.items()):
-                current = [stamp for stamp in stamps if now - stamp < ATTEMPT_WINDOW]
-                if current:
-                    self.identity_failures[key] = current
-                else:
-                    del self.identity_failures[key]
+            if not self._matches(token):
+                return "invalid"
+            if self.blocked:
+                return "blocked"
+            if not self.broker.locked:
+                return "unlocked"
+            return "ready"
 
-            pending_for_identity = sum(owner == identity for owner in self.pending.values())
-            if len(self.failures) + len(self.pending) >= MAX_UNLOCK_ATTEMPTS:
-                return None
-            if len(self.identity_failures.get(identity, ())) + pending_for_identity >= MAX_UNLOCK_ATTEMPTS:
-                return None
+    def remaining(self) -> int:
+        with self.lock:
+            return max(0, MAX_FAILED_ATTEMPTS - self.failures)
 
+    def reserve_attempt(self, identity: str = "") -> int | None:
+        """Atomically account for an attempt before expensive key derivation.
+
+        The budget belongs to the link, not to an identity, so a stolen link
+        cannot lock its owner out for a time window; it can only block itself.
+        """
+        with self.lock:
+            if self.blocked or self.failures + len(self.pending) >= MAX_FAILED_ATTEMPTS:
+                return None
             self.next_attempt += 1
-            self.pending[self.next_attempt] = identity
+            self.pending.add(self.next_attempt)
             return self.next_attempt
 
     def attempt_status(self, attempt: int, token: str) -> str:
         """Recheck mutable authorization state once this attempt reaches the opener."""
         with self.lock:
             if not self.broker.locked:
-                self.pending.pop(attempt, None)
+                self.pending.discard(attempt)
                 return "unlocked"
-            if not secrets.compare_digest(token, self.token):
-                self.pending.pop(attempt, None)
+            if self.blocked:
+                self.pending.discard(attempt)
+                return "blocked"
+            if not self._matches(token):
+                self.pending.discard(attempt)
                 return "invalid"
             return "ready"
 
-    def record_failure(self, attempt: int) -> None:
+    def pairing_status(self, attempt: int, authorized: Callable[[], bool]) -> str:
+        """Recheck a pairing attempt just before its password check.
+
+        ``authorized`` reports whether the pairing token is still valid. A
+        block revokes every pairing token, and the check runs under this
+        link's lock, so a pairing token from before a block or a new link
+        never gets a fresh budget.
+        """
         with self.lock:
-            identity = self.pending.pop(attempt, None)
-            if identity is None:
-                return
-            now = time.monotonic()
-            self.failures.append(now)
-            self.identity_failures.setdefault(identity, []).append(now)
+            if self.blocked:
+                self.pending.discard(attempt)
+                return "blocked"
+            if attempt not in self.pending or not authorized():
+                self.pending.discard(attempt)
+                return "invalid"
+            return "ready"
+
+    def _revoke_pairings(self) -> None:
+        # Called under self.lock. The hub lock never waits for this lock.
+        extension = getattr(self.broker, "extension", None)
+        if extension is not None:
+            extension.revoke_pairings()
+
+    def record_failure(self, attempt: int) -> bool:
+        """Count one wrong password or key. Return True when it blocked the link."""
+        with self.lock:
+            if attempt not in self.pending:
+                return False
+            self.pending.discard(attempt)
+            self.failures += 1
+            if self.blocked or self.failures < MAX_FAILED_ATTEMPTS:
+                return False
+            # Block and alert under the broker's state lock, which also guards
+            # subscribe-unlock: a subscriber either gets the blocked event or
+            # sees unlock_blocked in its receipt, never neither.
+            with self.broker._state_lock:
+                self.blocked = True
+                try:
+                    self._save_block(True)
+                except OSError:
+                    # The block holds in memory; a restart would lose it.
+                    self.block_saved = False
+                    print("akdbx: the unlock link is blocked, but the block could not be saved; "
+                          "a broker restart would undo it. Check the broker's state folder.",
+                          file=sys.stderr, flush=True)
+                self._revoke_pairings()
+                self.broker.unlock_notifications.publish_blocked()
+            return True
 
     def record_success(self, attempt: int) -> None:
         with self.lock:
-            self.pending.pop(attempt, None)
+            self.pending.discard(attempt)
             self.token = secrets.token_urlsafe(32)
+            self.failures = 0
+            try:
+                self._save_block(False)
+            except OSError:
+                pass  # Only a confirmed new link clears a saved block.
 
     def cancel_attempt(self, attempt: int) -> None:
-        """Release a reservation that did not reach an opener result."""
+        """Release a reservation that did not reach a credential result."""
         with self.lock:
-            self.pending.pop(attempt, None)
+            self.pending.discard(attempt)
+
+    def new_link(self) -> str | None:
+        """Replace a blocked link with a fresh token and budget.
+
+        Return the new private URL, or None when the current link is not
+        blocked. Raise OSError, and keep the link blocked, when the cleared
+        block cannot be saved: a restart must never undo a block silently.
+        The broker cannot verify the user; the agent must have the user's
+        confirmation before it asks for this.
+        """
+        with self.lock:
+            if not self.blocked or self.public_base is None or self.pending:
+                return None
+            self._save_block(False)
+            # Pairing links issued before now must not get the new budget.
+            self._revoke_pairings()
+            self.token = secrets.token_urlsafe(32)
+            self.failures = 0
+            self.block_saved = True
+            with self.broker._state_lock:
+                self.blocked = False
+                self.broker.unlock_url = self.url
+                return self.broker.unlock_url
+
+
+BLOCKED_TITLE = "Unlock link blocked"
+BLOCKED_BODY = (
+    "<p>This unlock link is blocked after three failed master-password attempts. "
+    "It cannot unlock AKDBX any more.</p>"
+    "<p>Ask your agent for a new unlock link. If you did not make these attempts, "
+    "tell your agent: someone else has this link.</p>"
+)
+
+
+OPEN_FAILED = ("AKDBX could not open the vault. This attempt did not count toward the link's limit. "
+               "Check that the database file is available, then try again.")
 
 
 def _page(title: str, body: str) -> bytes:
@@ -366,6 +529,24 @@ def _card_form(op, action: str, groups: list) -> str:
             '</form><p id="card-status" class="portal-status" role="status" aria-live="polite"></p>')
 
 
+def computer_name(windows: bool | None = None) -> str:
+    """The short name of this computer, for the page text only (never for a check).
+
+    Windows: COMPUTERNAME, else ``platform.node()``. Linux: the host name before
+    the first dot. The caller escapes it.
+    """
+    windows = os.name == 'nt' if windows is None else windows
+    try:
+        if windows:
+            name = os.environ.get('COMPUTERNAME', '') or platform.node()
+        else:
+            name = socket.gethostname()
+    except Exception:
+        name = ''
+    name = (name or '').strip().split('.', 1)[0][:63]
+    return name or 'this computer'
+
+
 def handler_for(state: UnlockState):
     class Handler(BaseHTTPRequestHandler):
         server_version = "akdbx"
@@ -378,17 +559,30 @@ def handler_for(state: UnlockState):
             return bool(self._identity())
 
         def _identity(self) -> str:
-            # Linux uses a protected Unix backend and Tailscale's identity
-            # header. Windows terminates trusted HTTPS on loopback itself;
-            # never accept a caller-supplied proxy identity on that listener.
+            # The loopback HTTPS listener (Linux and Windows) terminates TLS
+            # itself; never accept a caller-supplied proxy identity there.
+            # Its configured origin is loopback or, for unlock from another
+            # device, the Tailscale Serve name that proxies to the listener.
+            # Only the Linux Unix-socket backend, which Tailscale Serve alone
+            # can reach, uses Tailscale's identity header.
             origin = getattr(self.server, 'local_origin', None)
             if origin is not None:
                 expected = urlsplit(origin)
                 if (self.headers.get_all('Host', []) != [expected.netloc]
                         or self.headers.get_all('Origin', []) not in ([], [origin])):
                     return ''
-                return 'local Windows user'
+                return 'local user'
             return self.headers.get('Tailscale-User-Login', '')
+
+        def _unlock_line(self) -> str:
+            # Text only: _identity() still decides who may unlock. The loopback
+            # HTTPS listener has no login to show; the legacy Tailscale socket
+            # route shows the Tailscale login too.
+            computer = html.escape(computer_name())
+            if getattr(self.server, 'local_origin', None) is not None:
+                return f'Unlock AKDBX on <strong>{computer}</strong>.'
+            login = html.escape(self._identity())
+            return f'Unlock AKDBX on <strong>{computer}</strong> as <strong>{login}</strong>.'
 
         def _token(self) -> str:
             return parse_qs(urlsplit(self.path).query).get("token", [""])[0]
@@ -403,13 +597,17 @@ def handler_for(state: UnlockState):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Security-Policy", content_security_policy(import_page=import_page))
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
+            # same-origin, not no-referrer: under no-referrer, Chromium sends
+            # Origin: null on a form POST, which the Origin checks refuse.
+            # Cross-origin requests still get no referrer, so the token stays here.
+            self.send_header("Referrer-Policy", "same-origin")
             self.end_headers()
             self.wfile.write(body)
 
         def _write_request(self) -> bool:
             from .import_web import handle_import
-            if handle_import(self, state):
+            from .extension_web import handle_pairing
+            if handle_import(self, state) or handle_pairing(self, state):
                 return True
             route = urlsplit(self.path).path
             kind = {'/write': 'password', '/totp': 'totp', '/card': 'card', '/identity': 'identity'}.get(route)
@@ -506,20 +704,39 @@ def handler_for(state: UnlockState):
         def do_GET(self) -> None:
             if self._write_request():
                 return
-            if not self._identity_ok() or not state.token_matches(self._token()):
-                self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
+            token = self._token()
+            if not self._identity_ok():
+                self._send_invalid()
                 return
-            if not state.broker.locked:
-                self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
+            if self._send_status(state.request_status(token)):
                 return
-            self._send(HTTPStatus.OK, self._unlock_page())
+            self._send(HTTPStatus.OK, self._unlock_page(token))
 
-        def _unlock_page(self, error: str = "") -> bytes:
-            action = "?token=" + html.escape(state.token, quote=True)
-            login = html.escape(self._identity())
+        def _send_invalid(self) -> None:
+            self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
+
+        def _send_blocked(self) -> None:
+            self._send(HTTPStatus.FORBIDDEN, _page(BLOCKED_TITLE, BLOCKED_BODY))
+
+        def _send_status(self, status: str) -> bool:
+            """Answer a request that cannot try a password; False when it can."""
+            if status == "invalid":
+                self._send_invalid()
+            elif status == "blocked":
+                self._send_blocked()
+            elif status == "unlocked":
+                self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
+            else:
+                return False
+            return True
+
+        def _unlock_page(self, token: str, error: str = "") -> bytes:
+            # Always the token that authorized this request, never state.token:
+            # a caller with an old link must not see its replacement.
+            action = "?token=" + html.escape(token, quote=True)
             password_field = field('Master password', 'password', autocomplete='current-password', autofocus=True)
             message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
-            body = (f'{message}<p>Unlocking for <strong>{login}</strong>.</p>'
+            body = (f'{message}<p>{self._unlock_line()}</p>'
                     f'<form data-unlock-form method="post" action="{action}" autocomplete="off">{password_field}'
                     '<button type="submit" class="portal-submit unlock-submit"'
                     ' data-idle-label="Unlock AKDBX" data-busy-label="Unlocking AKDBX\u2026">'
@@ -528,34 +745,54 @@ def handler_for(state: UnlockState):
                     '</form><p id="unlock-status" class="portal-status unlock-status" role="status" aria-live="polite"></p>')
             return _page("Unlock AKDBX", body)
 
+        def _bad_request(self) -> None:
+            self._send(HTTPStatus.BAD_REQUEST, _page("Invalid request", "<p>The request was rejected.</p>"))
+
         def do_POST(self) -> None:
             if self._write_request():
                 return
             identity = self._identity()
             submitted_token = self._token()
-            if not identity or not state.token_matches(submitted_token):
-                self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
+            if not identity:
+                self._send_invalid()
                 return
-            if not state.broker.locked:
-                self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
+            if self._send_status(state.request_status(submitted_token)):
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 length = 0
             if length <= 0 or length > MAX_BODY:
-                self._send(HTTPStatus.BAD_REQUEST, _page("Invalid request", "<p>The request was rejected.</p>"))
+                self._bad_request()
                 return
             raw = self.rfile.read(length)
             if len(raw) != length:
                 if not self._expired():
-                    self._send(HTTPStatus.BAD_REQUEST, _page("Invalid request", "<p>The request was rejected.</p>"))
+                    self._bad_request()
                 return
             if self._expired():
                 return
+            # Parse before reserving: a malformed or empty form is not an attempt.
+            try:
+                values = parse_form(raw)
+                passwords = values.get("password", [])
+                if len(passwords) != 1 or not passwords[0]:
+                    raise ValueError
+                password = passwords[0]
+            except ValueError:
+                self._bad_request()
+                return
+            finally:
+                raw = b""
             attempt = state.reserve_attempt(identity)
             if attempt is None:
-                self._send(HTTPStatus.TOO_MANY_REQUESTS, self._unlock_page("Too many failed attempts. Wait one minute before trying again."))
+                password = ""
+                if state.blocked:
+                    self._send_blocked()
+                else:
+                    # Every remaining attempt of this link is already running.
+                    self._send(HTTPStatus.TOO_MANY_REQUESTS, self._unlock_page(
+                        submitted_token, "Another unlock attempt is in progress. Wait for its result."))
                 return
 
             try:
@@ -567,28 +804,32 @@ def handler_for(state: UnlockState):
                     # for a client whose absolute deadline has passed.
                     if self._expired():
                         return
-                    status = state.attempt_status(attempt, submitted_token)
-                    if status == "unlocked":
-                        self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
-                        return
-                    if status == "invalid":
-                        self._send(HTTPStatus.NOT_FOUND, _page("Not found", "<p>This unlock request is invalid.</p>"))
+                    if self._send_status(state.attempt_status(attempt, submitted_token)):
                         return
                     try:
-                        values = parse_qs(raw.decode("utf-8"), strict_parsing=True, errors='strict')
-                        password = values.get("password", [""])[0]
-                        if not password:
-                            raise ValueError
-                        if self._expired():
-                            return
                         vault = state.opener(state.database, password, state.keyfile)
-                    except Exception:
+                    except Exception as exc:
                         password = ""
-                        state.record_failure(attempt)
-                        self._send(HTTPStatus.UNAUTHORIZED, self._unlock_page("AKDBX could not unlock the database. Check your master password and try again."))
+                        if not is_wrong_credentials(exc):
+                            # A store or I/O error says nothing about the
+                            # password: it never counts toward the block.
+                            state.cancel_attempt(attempt)
+                            self._send(HTTPStatus.SERVICE_UNAVAILABLE, self._unlock_page(
+                                submitted_token, OPEN_FAILED))
+                            return
+                        if state.record_failure(attempt) or state.blocked:
+                            self._send_blocked()
+                            return
+                        left = state.remaining()
+                        self._send(HTTPStatus.UNAUTHORIZED, self._unlock_page(
+                            submitted_token,
+                            "AKDBX could not unlock the database. Check your master password and try again. "
+                            + (f"{left} attempts left for this link." if left != 1 else
+                               "1 attempt left for this link; another failure blocks it.")))
                         return
+                    finally:
+                        password = ""
 
-                    password = ""
                     state.broker.unlock(vault)
                     state.record_success(attempt)  # invalidate the submitted URL
                     self._send(HTTPStatus.OK, _page("Vault unlocked", "<p>The AKDBX broker is ready. You may close this page.</p>"))
@@ -609,10 +850,11 @@ def start_unlock_server(
     socket_path = Path(socket_path).expanduser()
     if not socket_path.is_absolute():
         raise ValueError("unlock socket path must be absolute")
-    state = UnlockState(broker, database, keyfile, opener)
+    state = UnlockState(broker, database, keyfile, opener, public_base=public_base_url)
     server = ThreadingUnixHTTPServer(str(socket_path), handler_for(state))
-    url = public_base_url.rstrip("/") + "/?token=" + state.token
+    url = state.url
     broker.unlock_url = url
+    broker.unlock_link = state
     broker.writes.public_base = public_base_url
     broker.merges.database = database
     server.write_manager = broker.writes

@@ -11,6 +11,7 @@ from .browser_card import DELIVERY, failure
 from .cards import FILL_FIELDS
 from .card_notifications import RESULTS
 from . import card_processor
+from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
 
 NOTIFICATIONS = {'subscribe-card-save', 'card-save-subscription-status', 'unsubscribe-card-save'}
 CARD_BROWSER_REFUSAL = ('broker has no card browser profile (card_browser_configured is false); '
@@ -42,11 +43,13 @@ def add_parsers(commands):
     p = commands.add_parser('search-cards', help='find cards by non-secret label, brand or last four digits')
     p.add_argument('query', nargs='?', default='')
     p = commands.add_parser('pin-card-target', help='pin one exact HTTPS DOM payment field; no keyboard delivery')
-    for name in ('page-id', 'frame-id', 'top-url', 'frame-url', 'selector'):
+    for name in ('page-id', 'frame-id', 'top-url', 'selector'):
         p.add_argument('--' + name, required=True)
+    p.add_argument('--frame-url', help='exact frame URL; required on the cdp route, optional on the extension route')
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
     p.add_argument('--processor', choices=card_processor.PROCESSORS,
                    help='explicitly pin an attested supported production card processor iframe')
+    p.add_argument('--route', choices=ROUTES, help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
     p = commands.add_parser('fill-card', help='fill only the pinned card field; never types keys or submits')
     p.add_argument('handle')
     p.add_argument('--target', required=True)
@@ -57,7 +60,7 @@ def add_parsers(commands):
 def valid_receipt(command, response, args):
     if response.get('ok') is not True:
         return (response.get('ok') is False and response.get('error') in ERRORS
-                and set(response) <= {'ok', 'error', 'unlock_url', 'delivery'}
+                and set(response) <= {'ok', 'error', 'unlock_url', 'unlock_blocked', 'delivery'}
                 and response.get('delivery', 'not-started') in {'not-started', 'uncertain'})
     if command in NOTIFICATIONS:
         keys = {'ok', 'subscription_id', 'state', 'attempts', 'result'}
@@ -76,12 +79,13 @@ def valid_receipt(command, response, args):
                 and urlsplit(response.get('private_url', '')).path == '/card')
     if command == 'fill-card':
         return (set(response) == {'ok', 'filled', 'card_delivery'}
-                and response.get('card_delivery') == DELIVERY and response.get('filled') == args.field)
+                and response.get('card_delivery') in {DELIVERY, EXTENSION_DELIVERY} and response.get('filled') == args.field)
     if command == 'pin-card-target':
+        expected = EXTENSION_DELIVERY if getattr(args, 'resolved_route', 'cdp') == 'extension' else DELIVERY
         return (set(response) == {'ok', 'target', 'expires_in', 'field', 'card_delivery'}
                 and isinstance(response.get('target'), str) and re.fullmatch('[a-f0-9]{64}', response['target'])
                 and type(response.get('expires_in')) is int and response['expires_in'] == 30
-                and response.get('field') == args.field and response.get('card_delivery') == DELIVERY)
+                and response.get('field') == args.field and response.get('card_delivery') == expected)
     if set(response) != {'ok', 'entries'} or not isinstance(response['entries'], list) or len(response['entries']) > 20:
         return False
     for entry in response['entries']:
@@ -120,8 +124,19 @@ def run(args, request):
                 or caps.get('card_delivery') != DELIVERY):
             print(json.dumps(dict(ok=False, error='broker lacks card protocol 1; card request not sent')))
             return 1
+        if args.command == 'pin-card-target':
+            args.resolved_route = args.route or caps.get('default_fill_route') or 'cdp'
+            if args.resolved_route == 'extension' and (type(caps.get('extension_protocol')) is not int
+                                                       or caps['extension_protocol'] != 1):
+                print(json.dumps(dict(ok=False, error='broker lacks extension route protocol 1; pin request not sent')))
+                return 1
+            if args.resolved_route == 'cdp' and not args.frame_url:
+                print(json.dumps(dict(ok=False, error='--frame-url is required on the cdp route; pin request not sent')))
+                return 1
+        extension_ready = (getattr(args, 'resolved_route', None) == 'extension' if args.command == 'pin-card-target'
+                           else caps.get('extension_paired') is True)
         if (os.name == 'nt' and args.command in {'pin-card-target', 'fill-card'}
-                and caps.get('card_browser_configured') is False):
+                and caps.get('card_browser_configured') is False and not extension_ready):
             # Windows only: refuse before dispatch what this broker cannot deliver.
             print(json.dumps(dict(ok=False, error=CARD_BROWSER_REFUSAL)))
             return 1
@@ -133,7 +148,11 @@ def run(args, request):
         elif args.command == 'search-cards':
             payload['query'] = args.query
         elif args.command == 'pin-card-target':
-            payload.update({k: getattr(args, k) for k in ('page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field')})
+            payload.update({k: getattr(args, k) for k in ('page_id', 'frame_id', 'top_url', 'selector', 'field')})
+            if args.frame_url:
+                payload['frame_url'] = args.frame_url
+            if args.route is not None:
+                payload['route'] = args.route
             if args.processor is not None:
                 if (type(caps.get('card_processor_frames_protocol')) is not int
                         or caps['card_processor_frames_protocol'] != card_processor.PROTOCOL
@@ -141,6 +160,18 @@ def run(args, request):
                         or args.processor not in caps.get('card_processors', [])):
                     print(json.dumps(dict(ok=False, error='broker lacks requested card processor frame protocol; pin request not sent')))
                     return 1
+                if args.processor == 'stripe' and caps.get('stripe_card_element') is not True:
+                    # An older broker refuses a Card Element pin only with a
+                    # generic error. Without the frame URL (optional on the
+                    # extension route) the CLI cannot tell the two frames apart.
+                    if not args.frame_url:
+                        print(json.dumps(dict(ok=False, error=(
+                            'broker lacks Stripe Card Element support; give the exact Stripe frame URL with '
+                            '--frame-url so akdbx can check it; pin request not sent'))))
+                        return 1
+                    if card_processor.stripe_element(args.frame_url) == 'card-element':
+                        print(json.dumps(dict(ok=False, error='broker lacks Stripe Card Element support; pin request not sent')))
+                        return 1
                 payload.update(processor=args.processor, processor_protocol=card_processor.PROTOCOL)
         else:
             payload.update(handle=args.handle, target=args.target, field=args.field, start_deadline=time.monotonic() + 4)

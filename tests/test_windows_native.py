@@ -98,6 +98,29 @@ def test_native_pipe_roundtrip_verifies_server_and_refuses_second_broker(monkeyp
         pass
 
 
+def test_missing_pipe_is_not_found_and_a_busy_pipe_is_unknown():
+    from akdbx import relay_cli
+    name = r'\\.\pipe\akdbx-test-' + uuid.uuid4().hex
+    with pytest.raises(FileNotFoundError):
+        rpc.connect(name)
+    # One pipe instance held by another client: the broker exists but is busy.
+    server = rpc.new_pipe(name, first=True)
+    client = None
+    try:
+        client = win32file.CreateFile(name, win32con.GENERIC_READ | win32con.GENERIC_WRITE, 0, None,
+                                      win32con.OPEN_EXISTING, 0, None)
+        with pytest.raises(OSError) as busy:
+            rpc.connect(name)
+        assert type(busy.value) is OSError
+        assert relay_cli._broker_state(lambda: rpc.connect(name)) == {
+            'running': 'unknown', 'error': 'the broker check failed (OSError)'}
+    finally:
+        if client is not None:
+            client.Close()
+        server.Close()
+    assert relay_cli._broker_state(lambda: rpc.connect(name)) == {'running': False}
+
+
 @pytest.mark.parametrize('name', [r'\\server\pipe\akdbx-test', r'\\.\pipe\other',
                                  r'C:\tmp\broker.sock', r'\\.\pipe\akdbx-a\b'])
 def test_remote_or_invalid_pipe_names_rejected(name):
@@ -417,6 +440,128 @@ def test_windows_cli_serves_and_searches_synthetic_vault(synthetic_vault, native
             server.wait(timeout=5)
 
 
+def test_windows_cli_blocks_the_link_after_three_failures_and_makes_a_new_one(synthetic_vault, native_https_config):
+    origin, certificate, key, submit = native_https_config
+    pipe = rpc.PREFIX + 'akdbx-test-' + uuid.uuid4().hex
+    command = [sys.executable, '-m', 'akdbx.cli', '--socket', pipe, '--unlock-origin', origin]
+    state = synthetic_vault.parent / 'state' / 'unlock-notifications.json'
+    flag = state.with_name(state.name + '.unlock-blocked')
+
+    def run(*args):
+        result = subprocess.run([*command, *args], capture_output=True, text=True, timeout=10)
+        return result.returncode, json.loads(result.stdout) if result.stdout.strip() else None
+
+    def start():
+        return subprocess.Popen(
+            [*command, 'serve', str(synthetic_vault), '--tls-cert', str(certificate), '--tls-key', str(key),
+             '--notification-state', str(state)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def restart_on_new_port():
+        # SO_EXCLUSIVEADDRUSE can refuse the old port while its connections
+        # are in TIME_WAIT, so the restarted broker uses another port.
+        nonlocal origin, command, submit
+        with socket.socket() as reservation:
+            reservation.bind(('127.0.0.1', 0))
+            port = reservation.getsockname()[1]
+        origin = f'https://127.0.0.1:{port}'
+        command = [sys.executable, '-m', 'akdbx.cli', '--socket', pipe, '--unlock-origin', origin]
+        context = ssl.create_default_context(cafile=str(certificate))
+
+        def submit(url, values):
+            connection = HTTPSConnection('127.0.0.1', port, context=context, timeout=10)
+            parsed = urlsplit(url)
+            try:
+                connection.request('POST', parsed.path + '?' + parsed.query, urlencode(values),
+                                   {'Content-Type': 'application/x-www-form-urlencoded', 'Origin': origin})
+                response = connection.getresponse()
+                return response.status, response.read()
+            finally:
+                connection.close()
+        return start()
+
+    def ready(server):
+        deadline = time.monotonic() + 10
+        while True:
+            code, status = run('status')
+            if code == 0:
+                return status
+            assert server.poll() is None, 'Windows CLI broker exited during startup'
+            assert time.monotonic() < deadline, 'Windows CLI broker did not become ready'
+            time.sleep(0.05)
+
+    with start() as server:
+        try:
+            locked = ready(server)
+            old = locked['unlock_url']
+            assert locked['unlock_link_protocol'] == 1 and 'unlock_blocked' not in locked
+            # Refused while the link still works: the CLI does not send it.
+            code, refused = run('new-unlock-link', '--user-confirmed')
+            assert code == 1 and 'not blocked' in refused['error']
+
+            statuses = [submit(old, {'password': f'wrong-{index}'})[0] for index in range(3)]
+            assert statuses == [401, 401, 403]
+            status, page = submit(old, {'password': 'synthetic master'})
+            assert status == 403 and b'Ask your agent for a new unlock link' in page
+            code, blocked = run('status')
+            assert code == 0 and blocked['locked'] is True and blocked['unlock_blocked'] is True
+            assert 'unlock_url' not in blocked
+            assert blocked['unlock_origin'] == origin
+            code, search = run('search', 'example.test')
+            assert code == 1 and search == {'ok': False, 'error': 'vault locked', 'unlock_blocked': True}
+        finally:
+            server.terminate()
+            server.wait(timeout=5)
+    # The block is saved privately and survives a broker restart.
+    assert json.loads(security.read_private(flag)[0]) == {'blocked': True}
+    with restart_on_new_port() as server:
+        try:
+            blocked = ready(server)
+            assert blocked['locked'] is True and blocked['unlock_blocked'] is True and 'unlock_url' not in blocked
+            code, receipt = run('new-unlock-link', '--user-confirmed')
+            assert code == 0 and receipt['ok'] is True and receipt['locked'] is True
+            fresh = receipt['unlock_url']
+            assert fresh.startswith(origin + '/?token=') and fresh != old
+            assert submit(origin + '/?' + urlsplit(old).query, {'password': 'synthetic master'})[0] == 404
+            assert submit(fresh, {'password': 'synthetic master'})[0] == 200
+            code, unlocked = run('status')
+            assert code == 0 and unlocked['locked'] is False and 'unlock_blocked' not in unlocked
+            assert json.loads(security.read_private(flag)[0]) == {'blocked': False}
+        finally:
+            server.terminate()
+            server.wait(timeout=5)
+
+
+def test_unlock_block_flag_is_private_and_untrusted_flags_fail_closed(private_dir):
+    from akdbx.broker import Broker
+    from akdbx.notifications import UnlockNotifications
+    from akdbx.web_unlock import UnlockState
+    state = private_dir / 'state' / 'unlock-notifications.json'
+    flag = state.with_name(state.name + '.unlock-blocked')
+    first = UnlockNotifications(state_path=state)
+    assert first.load_unlock_blocked() is False
+    first.save_unlock_blocked(False)
+    assert not state.parent.exists()  # clearing a block that was never saved writes nothing
+    first.save_unlock_blocked(True)
+    with security.checked_handle(state.parent, directory=True):
+        pass
+    assert json.loads(security.read_private(flag)[0]) == {'blocked': True}
+    first.close()
+    assert UnlockNotifications(state_path=state).load_unlock_blocked() is True
+    broker = Broker(None, object(), notification_state_path=state)
+    assert UnlockState(broker, private_dir / 'unused.kdbx', None, public_base='https://127.0.0.1:9').blocked
+    broker.unlock_notifications.close()
+    # A flag that another user can write is refused, so the link stays blocked.
+    public = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor('D:P(A;;FA;;;WD)', 1)
+    security.replace_private(flag, json.dumps({'blocked': False}).encode())
+    win32security.SetFileSecurity(str(flag), win32security.DACL_SECURITY_INFORMATION, public)
+    with pytest.raises((ValueError, PermissionError, pywintypes.error)):
+        UnlockNotifications(state_path=state).load_unlock_blocked()
+    broker = Broker(None, object(), notification_state_path=state)
+    assert UnlockState(broker, private_dir / 'unused.kdbx', None, public_base='https://127.0.0.1:9').blocked
+    broker.unlock_notifications.close()
+
+
 def test_native_https_unlock_password_totp_and_identity_saves(synthetic_vault, native_https_config):
     origin, certificate, key, submit = native_https_config
     broker = Broker(None, object())
@@ -722,3 +867,413 @@ def test_windows_serve_accepts_browser_profiles_and_private_state(synthetic_vaul
     assert broker.unlock_notifications._state_path == state and not state.parent.exists()
     assert str(cli.default_notification_state(Path(rpc.PREFIX + 'akdbx-synthetic'))).endswith(
         r'\akdbx\akdbx-synthetic.unlock-notifications.json')
+
+
+def test_capture_pipe_name_is_the_rpc_pipe_plus_capture():
+    base = rpc.PREFIX + 'akdbx-synthetic'
+    assert str(rpc.capture_pipe(Path(base))) == base + '-capture'
+    with pytest.raises(ValueError):
+        rpc.capture_pipe(Path(base + '-capture'))
+    longest = rpc.PREFIX + 'akdbx-' + 'a' * 160  # still a valid RPC pipe
+    assert str(rpc.capture_pipe(Path(longest))) == longest + '-capture'
+
+
+def test_native_host_capture_through_the_capture_pipe(synthetic_vault, native_https_config):
+    from akdbx import browser_import
+    origin, certificate, key, submit = native_https_config
+    # The longest valid RPC name: its capture pipe exceeds the RPC limit by the suffix.
+    rpc_pipe = Path(rpc.PREFIX + 'akdbx-' + ('test-' + uuid.uuid4().hex).ljust(160, 'x'))
+    capture = rpc.capture_pipe(rpc_pipe)
+    broker = Broker(None, object())
+    server, unlock_url = start_windows_unlock_server(broker, synthetic_vault, None, origin, certificate, key,
+                                                     capture_pipe=capture)
+    try:
+        # A second broker cannot take the capture pipe name.
+        with pytest.raises(pywintypes.error):
+            rpc.new_pipe(str(capture), first=True)
+        assert submit(unlock_url, {'password': 'synthetic master'})[0] == 200
+        selected = broker.dispatch({'action': 'search', 'query': 'Synthetic'})['entries'][0]
+        prepared = broker.dispatch({'action': 'setup-totp', 'handle': selected['handle'],
+                                    'metadata': {k: selected[k] for k in ('title', 'username', 'url', 'group')}})
+        assert prepared['ok']
+        config = {'extension_id': 'a' * 32, 'origin': origin, 'socket': str(capture)}
+        uri = 'otpauth://totp/Example:synthetic-user?secret=JBSWY3DPEHPK3PXP&issuer=Example'
+        message = {'private_url': prepared['private_url'], 'source_url': 'https://example.test/setup', 'payloads': [uri]}
+        with pytest.raises(ValueError):
+            browser_import.capture({**message, 'source_url': 'https://evil.test/setup'}, config)
+        with pytest.raises(ValueError):  # the agent RPC pipe is never a capture endpoint
+            browser_import.capture(message, {**config, 'socket': str(rpc_pipe)})
+        before = synthetic_vault.read_bytes()
+        assert browser_import.capture(message, config) == browser_import.RECEIPT
+        assert synthetic_vault.read_bytes() == before
+        with pytest.raises(ValueError):  # replay
+            browser_import.capture(message, config)
+        assert broker.writes.get(prepared['write_handle']).import_candidates
+    finally:
+        server.shutdown()
+        server.server_close()
+        broker.unlock_notifications.close()
+    # Shutdown released the capture pipe: a new broker can create it.
+    with security.managed_handle(rpc.new_pipe(str(capture), first=True)):
+        pass
+
+
+def test_native_host_install_registers_one_browser_and_uninstalls(private_dir, monkeypatch):
+    import winreg
+    from akdbx import browser_import, extension_host
+    test_key = r'Software\akdbx-test-' + uuid.uuid4().hex
+    monkeypatch.setitem(extension_host.WINDOWS_KEYS, 'chrome', test_key + r'\Chrome')
+    monkeypatch.setitem(extension_host.WINDOWS_KEYS, 'edge', test_key + r'\Edge')
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    pipe = rpc.PREFIX + 'akdbx-synthetic-capture'
+    def args(browser, **extra):
+        return SimpleNamespace(extension_id='a' * 32, origin='https://node.tailnet.ts.net:9443',
+                               browser=browser, socket=extra.get('socket', pipe))
+    try:
+        where = browser_import.install_host_windows(args('chrome'))
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, where['key']) as handle:
+            assert winreg.QueryValueEx(handle, '')[0] == str(where['manifest'])
+        manifest = json.loads(where['manifest'].read_text())
+        # The console script itself, not a batch file that cmd.exe decodes.
+        assert manifest['path'] == str(browser_import.host_executable())
+        assert manifest['path'].endswith('akdbx-browser-import.exe')
+        assert manifest['allowed_origins'] == ['chrome-extension://' + 'a' * 32 + '/']
+        assert browser_import.load_config(browser_import.config_path())['socket'] == pipe
+        with pytest.raises(ValueError):  # never replaces a registration
+            browser_import.install_host_windows(args('chrome'))
+        with pytest.raises(ValueError):  # a second browser must share the configuration
+            browser_import.install_host_windows(args('edge', socket=rpc.PREFIX + 'akdbx-other-capture'))
+        assert browser_import.install_host_windows(args('edge'))['key'].endswith(r'\Edge\org.akdbx.private_import')
+        browser_import.uninstall_host_windows(SimpleNamespace(browser='chrome'))
+        with pytest.raises(OSError):
+            winreg.OpenKey(winreg.HKEY_CURRENT_USER, where['key'])
+        assert not where['manifest'].exists()
+        assert browser_import.config_path().exists()  # Edge still uses it.
+        browser_import.uninstall_host_windows(SimpleNamespace(browser='edge'))
+        assert not browser_import.config_path().exists()
+        # With the last registration gone, a new origin and the default pipe install.
+        moved = browser_import.install_host_windows(SimpleNamespace(
+            extension_id='a' * 32, origin='https://localhost:9443', browser='chrome', socket=None))
+        config = browser_import.load_config(browser_import.config_path())
+        assert config['origin'] == 'https://localhost:9443' and config['socket'] == ''
+        assert moved['key'] == where['key']
+        browser_import.uninstall_host_windows(SimpleNamespace(browser='chrome'))
+        with pytest.raises(ValueError):  # the RPC pipe is refused as a capture endpoint
+            browser_import._check_config({'extension_id': 'a' * 32, 'origin': 'https://x.test',
+                                          'socket': rpc.PREFIX + 'akdbx-synthetic'})
+    finally:
+        for browser in ('chrome', 'edge'):
+            browser_import.uninstall_host_windows(SimpleNamespace(browser=browser))
+        for name in (r'\Edge', r'\Chrome', ''):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, test_key + name)
+            except OSError:
+                pass
+
+
+def _relay_config(enabled=True):
+    from akdbx.relay import RelayConfig
+    return RelayConfig('https://relay.akdbx.link:8443', 'abcdefghijkl.akdbx.link', 'abcdefghijkl', 8443,
+                       enabled, 'S' * 43)
+
+
+def _relay_tls(name):
+    """A key and a self-signed certificate for ``name`` in one PEM, as relay enable saves it."""
+    from datetime import datetime, timedelta, timezone
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from akdbx.relay import new_key_and_csr
+    key_pem, _ = new_key_and_csr(name)
+    key = serialization.load_pem_private_key(key_pem, password=None)
+    now = datetime.now(timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(x509.Name([])).issuer_name(x509.Name([]))
+            .public_key(key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - timedelta(minutes=5)).not_valid_after(now + timedelta(days=90))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(name)]), critical=True)
+            .sign(key, hashes.SHA256()))
+    return key_pem + cert.public_bytes(serialization.Encoding.PEM)
+
+
+def test_relay_directory_is_private_per_user_and_refuses_public_files(private_dir, monkeypatch):
+    from akdbx import relay
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    store = relay.RelayStore()
+    assert store.directory == private_dir / 'akdbx' / 'relay'
+    assert store.load() is None and relay.saved_origin(store) is None
+    config = _relay_config()
+    store.save(config)
+    store.save_tls(_relay_tls(config.name))
+    assert store.load() == config
+    assert relay.saved_origin(store) == 'https://abcdefghijkl.akdbx.link:8443'
+    assert store.certificate(config.name) is not None
+    # Both files open only through the private-file checks.
+    for path in (store.config_path, store.tls_path):
+        security.read_private(path)
+    acl = win32security.ACL()
+    user = win32security.ConvertStringSidToSid(security.current_identity()[0])
+    everyone = win32security.CreateWellKnownSid(win32security.WinWorldSid)
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, user)
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, win32con.GENERIC_READ, everyone)
+    win32security.SetNamedSecurityInfo(str(store.config_path), win32security.SE_FILE_OBJECT,
+                                       win32security.DACL_SECURITY_INFORMATION
+                                       | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+                                       None, None, acl, None)
+    with pytest.raises(relay.RelayStoreError):
+        store.load()
+    assert relay.saved_origin(store) is None
+    store.save(config)  # A replacement gets a private ACL again.
+    assert store.load() == config
+    store.forget()
+    assert not store.directory.exists()
+
+
+def test_relay_lock_admits_one_broker(private_dir, monkeypatch):
+    from akdbx import relay
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    store = relay.RelayStore()
+    held = store.lock()
+    try:
+        with pytest.raises(relay.RelayBusy, match='another akdbx process'):
+            relay.RelayStore().lock()
+    finally:
+        held.release()
+    store.lock().release()
+
+
+def test_relay_lock_is_a_file_that_every_logon_session_sees(private_dir, monkeypatch, capsys):
+    from akdbx import relay
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    monkeypatch.delenv('AKDBX_UNLOCK_ORIGIN', raising=False)
+    store = relay.RelayStore()
+    store.save(_relay_config())
+    lock_path = store.directory / '.relay.lock'
+    held = store.lock()
+    try:
+        # A file held open with share mode 0, not a session-local mutex: any
+        # process in any logon session fails to open it while a broker runs.
+        with pytest.raises(pywintypes.error) as error:
+            win32file.CreateFile(str(lock_path), win32con.GENERIC_READ,
+                                 win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+                                 None, win32con.OPEN_EXISTING, 0, None)
+        assert error.value.winerror == 32  # ERROR_SHARING_VIOLATION
+        with security.checked_handle(store.directory, directory=True):
+            pass  # the folder stays private
+        other = subprocess.run(
+            [sys.executable, '-c', 'from akdbx import relay\n'
+             'try:\n    relay.RelayStore().lock()\nexcept relay.RelayBusy:\n    print("busy")'],
+            capture_output=True, text=True, timeout=60, env={**os.environ, 'LOCALAPPDATA': str(private_dir)})
+        assert other.stdout.strip() == 'busy', other.stderr
+        assert cli.main(['relay', 'disable', '--forget']) == 1
+        assert 'stop it' in json.loads(capsys.readouterr().out)['error']
+        assert store.config_path.exists()
+    finally:
+        held.release()
+    assert cli.main(['relay', 'disable', '--forget']) == 0
+    assert json.loads(capsys.readouterr().out)['forgot'] is True
+    assert not store.directory.exists()
+
+
+def test_relay_tls_file_loads_and_hot_reloads_on_windows(private_dir, monkeypatch):
+    from akdbx import relay
+    from akdbx.local_https import reload_certificate, server_context
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    store = relay.RelayStore()
+    config = _relay_config()
+    store.save(config)
+    store.save_tls(_relay_tls(config.name))
+    # The key and the chain are one private file, given as both certificate and key.
+    server = SimpleNamespace(context=server_context(store.tls_path, store.tls_path))
+    first = server.context
+    store.save_tls(_relay_tls(config.name))
+    reload_certificate(server, store.tls_path, store.tls_path)
+    assert server.context is not first
+
+
+def test_windows_cli_uses_the_relay_origin_and_refuses_conflicts(private_dir, monkeypatch, capsys):
+    from akdbx import relay
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    monkeypatch.delenv('AKDBX_UNLOCK_ORIGIN', raising=False)
+    store = relay.RelayStore()
+    store.save(_relay_config())
+    args = cli.parser().parse_args(['status'])
+    cli.resolve_unlock_origin(args)
+    assert args.unlock_origin == 'https://abcdefghijkl.akdbx.link:8443'
+    pipe = rpc.PREFIX + 'akdbx-test-' + uuid.uuid4().hex
+    vault = str(private_dir / 'unused.kdbx')
+    assert cli.main(['--socket', pipe, 'serve', vault]) == 2
+    assert "no usable certificate yet: run 'akdbx relay enable' again" in capsys.readouterr().err
+    store.save_tls(_relay_tls('abcdefghijkl.akdbx.link'))
+    assert cli.main(['--socket', pipe, 'serve', vault, '--tls-cert', 'c.pem', '--tls-key', 'k.pem']) == 2
+    assert 'the akdbx relay is enabled' in capsys.readouterr().err
+    store.save(_relay_config(enabled=False))
+    cli.resolve_unlock_origin(args := cli.parser().parse_args(['status']))
+    assert args.unlock_origin == 'https://localhost:9443'
+
+
+# ----- akdbx setup on native Windows --------------------------------------------
+
+def _setup_args(*argv):
+    args = cli.parser().parse_args(['setup', *argv])
+    cli.resolve_unlock_origin(args)
+    args.socket_explicit = False
+    args.socket = cli.default_socket()
+    return args
+
+
+def _setup(*argv, runner=None, status=None, **options):
+    from akdbx import setup_cli
+    calls = []
+
+    def run(command, **_):
+        command = [str(part) for part in command]
+        calls.append(command)
+        if runner is not None:
+            return runner(command)
+        return subprocess.CompletedProcess(command, 0, '', '')
+
+    def no_broker(origin):
+        raise FileNotFoundError
+    instance = setup_cli.Setup(_setup_args(*argv), ui=setup_cli.Prompter(False, io.StringIO()), runner=run,
+                               status=status or no_broker, which=lambda name: None, sleep=lambda _: None, **options)
+    return instance, calls
+
+
+def test_setup_checks_a_windows_vault_through_handles_only(synthetic_vault, tmp_path):
+    instance, _ = _setup('--yes')
+    assert instance.check_vault(synthetic_vault, None) is None
+    original = win32file.GetFileAttributes(str(synthetic_vault))
+    try:
+        win32file.SetFileAttributes(str(synthetic_vault), original | win32con.FILE_ATTRIBUTE_READONLY)
+        assert instance.check_vault(synthetic_vault, None) == 'the vault file is read-only'
+    finally:
+        win32file.SetFileAttributes(str(synthetic_vault), original)
+    with pytest.raises(ValueError, match='never creates'):
+        instance.check_vault(synthetic_vault.with_name('missing.kdbx'), None)
+    with pytest.raises(ValueError, match='never creates'):
+        instance.check_vault(synthetic_vault, synthetic_vault.with_name('missing.key'))
+    import _winapi
+    junction = tmp_path / 'setup-junction'
+    _winapi.CreateJunction(str(synthetic_vault.parent), str(junction))
+    try:
+        with pytest.raises(ValueError):
+            instance.check_vault(junction / synthetic_vault.name, None)
+    finally:
+        os.rmdir(junction)
+    link = synthetic_vault.parent / 'setup-hard-link.kdbx'
+    os.link(synthetic_vault, link)
+    with pytest.raises(ValueError, match='private to you'):
+        instance.check_vault(synthetic_vault, None)
+
+
+def test_setup_state_is_a_private_file_in_local_app_data(private_dir, monkeypatch):
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    instance, _ = _setup('--yes')
+    instance.choice.update(vault=r'C:\synthetic.kdbx', access='local', browsers=['edge'])
+    instance.save_state()
+    path = private_dir / 'akdbx' / 'setup.json'
+    assert json.loads(security.read_private(path)[0])['browsers'] == ['edge']
+    again, _ = _setup('--yes')
+    assert again.state['vault'] == r'C:\synthetic.kdbx' and again.state_problem is None
+
+
+def test_setup_links_the_skill_with_a_junction_and_never_replaces_a_folder(tmp_path):
+    from akdbx import setup_cli
+    source = tmp_path / 'skill-source'
+    source.mkdir()
+    (source / 'SKILL.md').write_text('---\nname: akdbx\n---\n')
+    skills, other = tmp_path / 'agent-skills', tmp_path / 'other-skills'
+    other.mkdir()
+    (other / 'akdbx').mkdir()
+    argv = ('--yes', '--link-skill', '--skill-source', str(source), '--skill-dir', str(skills),
+            '--skill-dir', str(other))
+    instance, _ = _setup(*argv)
+    instance.choice.update(link_skill=True, skill_dirs=[str(skills), str(other)])
+    instance.stage_skill()
+    kind, target = setup_cli.link_target(skills / 'akdbx')
+    assert kind == 'link' and setup_cli.same_folder(target, source)
+    assert (skills / 'akdbx' / 'SKILL.md').is_file()
+    assert instance.stages['skill']['links'] == [{'path': str(skills / 'akdbx'), 'state': 'changed'},
+                                                 {'path': str(other / 'akdbx'), 'state': 'failed'}]
+    again, _ = _setup(*argv)
+    again.choice.update(link_skill=True, skill_dirs=[str(skills)])
+    again.stage_skill()
+    assert again.stages['skill']['state'] == 'done'
+    os.rmdir(skills / 'akdbx')
+
+
+def test_setup_creates_a_logon_task_file_and_starts_it_once(synthetic_vault, native_https_config, private_dir,
+                                                            monkeypatch):
+    from akdbx import setup_cli
+    _, certificate, key, _ = native_https_config
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    started = []
+
+    def runner(command):
+        if command[1] == '/Query':
+            return subprocess.CompletedProcess(command, 1, '', 'not found')
+        if command[1] == '/Run':
+            started.append(command)
+        return subprocess.CompletedProcess(command, 0, '', '')
+    instance, calls = _setup('--yes', '--vault', str(synthetic_vault), '--tls-cert', str(certificate),
+                             '--tls-key', str(key), '--start-at-login', runner=runner)
+    result = instance.execute()
+    assert result['stages']['vault']['state'] == 'ok' and result['stages']['page']['state'] == 'ok', result
+    assert result['stages']['login']['state'] == 'changed', result
+    task_file = private_dir / 'akdbx' / 'akdbx-broker.task.xml'
+    xml = security.read_private(task_file)[0].decode('utf-16')
+    marker, command, arguments = setup_cli.task_action(xml)
+    assert marker and command.lower().endswith(('pythonw.exe', 'python.exe'))
+    assert subprocess.list2cmdline(['serve', str(synthetic_vault)]) in arguments
+    # M1: the task output never keeps the unlock link.
+    assert '--no-print-unlock-link' in arguments
+    assert ['schtasks', '/Create', '/TN', 'akdbx-broker', '/XML', str(task_file)] in calls
+    assert len(started) == 1
+
+
+def test_setup_reports_a_failed_windows_call_as_a_clean_failure(private_dir, monkeypatch):
+    # M14: a pywintypes.error inside a change is a reported failure, not a traceback.
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    instance, _ = _setup('--yes')
+
+    def denied():
+        raise pywintypes.error(5, 'CreateFile', 'Access is denied.')
+    assert instance.change('fill', 'write a synthetic file', [], denied, selected=True, key='cdp_profile') is False
+    assert 'Access is denied' in instance.stages['fill']['errors'][0]
+
+
+def test_setup_builds_the_capture_extension_in_a_fresh_private_folder(private_dir, monkeypatch):
+    # M8: on a fresh install %LOCALAPPDATA%\\akdbx does not exist; the builder needs it.
+    from akdbx import setup_cli
+    from akdbx.browser_import import build_extension
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+
+    def runner(command):
+        if command[1] == 'build-extension':
+            try:
+                build_extension(Path(command[2]))
+            except OSError as exc:
+                return subprocess.CompletedProcess(command, 1, '', str(exc))
+        return subprocess.CompletedProcess(command, 0, '', '')
+    folder = private_dir / 'akdbx' / 'capture-extension'
+    assert not folder.parent.exists()
+    instance, calls = _setup('--yes', '--capture-host', runner=runner)
+    instance.choice.update(capture_host=True, capture_browser='chrome', capture_dir=str(folder))
+    instance.origin = setup_cli.DEFAULT_ORIGIN
+    instance.stage_features()
+    assert instance.stages['features']['state'] == 'todo', instance.stages['features']
+    assert (folder / 'manifest.json').is_file()
+    # The parent folder passes the same private-folder check as the setup answers.
+    security.ensure_private_directory(folder.parent)
+
+
+def test_setup_prints_windows_commands_that_powershell_runs_as_shown(tmp_path):
+    # M7: the printed command is valid PowerShell and passes every argument unchanged.
+    from akdbx import setup_cli
+    script = tmp_path / "print it's args.py"
+    script.write_text('import json, sys\nprint(json.dumps(sys.argv[1:]))\n', encoding='utf-8')
+    arguments = ["O'Neil", 'a b', '$env:USERNAME', 'it\u2019s', 'a;b', '--https=9443', '@(1)']
+    command = setup_cli.shell_command([sys.executable, str(script), *arguments], True)
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', command],
+                            capture_output=True, text=True, timeout=120, check=False)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == arguments

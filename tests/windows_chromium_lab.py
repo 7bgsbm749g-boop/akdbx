@@ -138,11 +138,11 @@ class Lab:
 
 
 @contextmanager
-def chromium_lab(directory, certificate, key, *, pages=None):
+def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extension=None, hosts=()):
     """Serve the synthetic pages over loopback TLS and run one private browser."""
     import win32file
     from akdbx import windows_security as security
-    binary = browser_binary()
+    binary = binary or browser_binary()
     assert binary is not None, 'a Chromium browser is required'
     documents = {'/login': FORM, '/signup': FORM, '/card': CARD,
                  '/framed': FRAME.format('https://auth.example.com/login'),
@@ -171,7 +171,12 @@ def chromium_lab(directory, certificate, key, *, pages=None):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     origin = ORIGIN
-    rules = ','.join(f'MAP {host} 127.0.0.1:{server.server_port}' for host in HOSTS)
+    rules = ','.join(f'MAP {host} 127.0.0.1:{server.server_port}' for host in (*HOSTS, *hosts))
+    # A test extension replaces --disable-extensions; Chrome 137+ also needs the
+    # load switch re-enabled for an unpacked extension in a disposable profile.
+    extension_args = (['--disable-extensions'] if extension is None else
+                      ['--load-extension=' + str(extension), '--disable-extensions-except=' + str(extension),
+                       '--disable-features=DisableLoadExtensionCommandLineSwitch'])
     profile = Path(directory) / 'synthetic-profile'
     # Private and inheritable: the browser's own port file gets the same DACL.
     win32file.CreateDirectoryW(str(profile), security.private_attributes(directory=True))
@@ -179,7 +184,7 @@ def chromium_lab(directory, certificate, key, *, pages=None):
     process = subprocess.Popen(
         [str(binary), '--headless=new', '--user-data-dir=' + str(profile), '--remote-debugging-port=0',
          '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
-         '--disable-component-update', '--disable-sync', '--disable-extensions', '--disable-gpu',
+         '--disable-component-update', '--disable-sync', *extension_args, '--disable-gpu',
          '--window-size=1200,900', '--no-proxy-server', '--host-resolver-rules=' + rules,
          '--ignore-certificate-errors', origin + '/login'],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log)

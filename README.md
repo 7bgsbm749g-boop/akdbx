@@ -1,40 +1,137 @@
 # akdbx
 
-`akdbx` is a local KeePass (`.kdbx`) autofill broker designed for AI agents. Agents may search login metadata and choose an opaque, short-lived handle. They never receive the password: the broker sends it to a retained Chromium DOM password input and returns only a success receipt.
+`akdbx` is a local KeePass (`.kdbx`) autofill broker for AI agents. The broker
+holds the unlocked vault. Agents search non-secret metadata, choose an opaque,
+short-lived handle, and tell the broker which exact field to fill. The broker
+puts the password, card number, code or address straight into that field and
+returns only a receipt. The agent never receives the secret.
 
-The **native Windows backend** has the same feature set from 0.17.0: password,
-login and generated-password fills through the same Chromium DOM route,
-password writes, cards, merge and snapshot admission. It uses local named
-pipes, Windows access checks, a loopback HTTPS page, and directed Unicode
-window messages for username and TOTP fills in native applications. A window
-pin never receives a password, because a browser's address bar shares its
-page's window identity. See [Windows setup and validation](docs/windows.md)
-for its browser and engine requirements, its limits and the checks that are
-still pending. The Linux-specific security and Tailscale instructions below do
-not describe the Windows transport.
+It covers logins (including SSO and emailed-code accounts), authenticator
+codes, payment cards, addresses, password changes and generated passwords,
+secrets that a site shows once, and merging encrypted vaults.
 
 Source and issue tracker: [7bgsbm749g-boop/akdbx](https://github.com/7bgsbm749g-boop/akdbx).
+Releases are on [GitHub Releases](https://github.com/7bgsbm749g-boop/akdbx/releases):
+one wheel per version for Linux and Windows, with `SHA256SUMS` and a
+build-provenance attestation. See [Releasing akdbx](docs/releasing.md) to cut a
+release or upgrade a broker.
 
-Releases are published on [GitHub Releases](https://github.com/7bgsbm749g-boop/akdbx/releases).
-Each version is one release for Linux and Windows: the same wheel, with
-`SHA256SUMS` and a build-provenance attestation. See
-[Releasing akdbx](docs/releasing.md) to cut a release or upgrade a broker.
+## Quick start: akdbx setup
 
-## akdbx rebrand (0.9.2)
+Install akdbx (a release wheel or `pip install -e .` in a checkout), then run
+one guided command (0.27.0+; the same on Linux and Windows):
 
-The project, Python distribution, Python package and agent skill are named
-`akdbx`. The command remains `akdbx`; new integrations import `akdbx` and invoke
-`$akdbx`. The old `agentic_kdbx` import remains a compatibility alias.
+```sh
+akdbx setup
+```
 
-New brokers use `akdbx/akdbx.sock` under `XDG_RUNTIME_DIR`, or
-`/tmp/akdbx-UID/akdbx.sock` without it. Without `XDG_RUNTIME_DIR` (for example
-over non-interactive SSH), the CLI first uses an existing broker socket under
-the user's own private `/run/user/UID` directory. When the new socket is absent, the CLI
-can connect to an existing `agentic-kdbx.sock` using the same path, ownership
-and peer checks. This lets an unlocked broker finish its session without a
-restart. Explicit `--socket` remains supported. Existing encrypted vaults,
-recovery directories, admission locators and receipts must retain their paths;
-the rebrand does not migrate or rewrite private vault data.
+It asks a few questions with defaults and takes you from install to a working
+broker. The broker is the only required part; every other stage is optional
+and can be skipped (`--skip STAGE`):
+
+1. **System check**: Python, the desktop (Linux X11 or Windows), and optional
+   tools (KeePassXC CLI for merge, mkcert, Tailscale, Chromium browsers). It
+   reports gaps and installs no system software.
+2. **Vault**: your existing `.kdbx` file and key file, checked with the
+   broker's own path and permission rules. Setup never creates, copies, opens
+   or reads the vault, and never asks for the master password.
+3. **Local page**: the certificate for the private HTTPS page. Setup checks an
+   existing pair, or issues one with mkcert after you ran `mkcert -install`
+   yourself (that command changes which certificates your computer trusts).
+4. **Access**: local only; a private proxy such as Tailscale Serve
+   (recommended for remote use; setup prints the `tailscale serve` command
+   and never inspects or changes Tailscale); the akdbx relay (`akdbx relay enable`);
+   another public tunnel that does not decrypt (instructions only); or a proxy
+   that decrypts HTTPS, which setup warns about and does not configure. See
+   [Unlock from the internet](#unlock-from-the-internet).
+5. **Start at login**: a systemd user service on Linux, a logon task for your
+   user on Windows. Setup never starts a second broker. The service runs
+   `akdbx serve --no-print-unlock-link`, so the journal or task output never
+   keeps the unlock link: run `akdbx status` to get it.
+6. **Fill route**: the browser extension (`akdbx extension install` and
+   `build`) and/or the CDP route.
+7. **Optional features**: the authenticator capture host, unlock notifications
+   and merge.
+8. **Agent skill**: links `~/.claude/skills/akdbx` and `~/.codex/skills/akdbx`
+   to the installed skill (a junction on Windows). It never replaces an
+   existing folder or a different link.
+9. **Final check**: `status`, the private unlock link if the vault is locked,
+   and what remains for you.
+
+Each stage detects what is already done and shows each change before it makes
+it, so you can run setup again at any time. Every answer is also a flag.
+`--yes` never asks, and only the flags of that run select a change: start at
+login, the relay, browsers, a CDP profile, the capture host and the skill link.
+Your earlier answers give only values such as paths and ports. `--dry-run` changes nothing, and `--json` prints a summary for
+scripts and agents:
+
+```sh
+akdbx setup --yes --json --vault ~/vaults/passwords.kdbx --create-cert \
+  --access tailscale --start-at-login --browser chrome --link-skill
+```
+
+Setup saves its answers (paths and choices, never a secret) in a private file:
+`~/.config/akdbx/setup.json` on Linux, `%LOCALAPPDATA%\akdbx\setup.json` on
+Windows. `akdbx setup --help` lists every flag.
+
+## How it works
+
+1. The broker starts **locked**. The user unlocks it on a private HTTPS page,
+   on the broker's computer or from another tailnet device through Tailscale
+   Serve; see [Private HTTPS pages](docs/private-pages.md). The master password
+   never passes through chat, the CLI, arguments or the environment.
+2. The agent runs `akdbx search`, `search-cards` or `search-identities` and gets
+   metadata plus a single-use handle that expires after five minutes.
+3. The agent verifies the page and field, then asks the broker to **pin** that
+   exact element. A pin is bound to the tab, frame, origin and element and lives
+   30 seconds.
+4. `akdbx fill` (or `fill-card`, `fill-identity`, `fill-totp`) delivers the value
+   to the pinned element. The response is a receipt with no value in it.
+
+There is no reveal, export, clipboard or arbitrary-field command.
+
+## Fill routes
+
+Web fills reach the page through one of two routes. Both use the same search,
+pin, fill and receipt model. Agents choose with `--route extension|cdp`, and
+`status` reports `fill_routes` and `default_fill_route`.
+
+| | Extension route (0.21.0+) | CDP route |
+| --- | --- | --- |
+| Browser | The user's everyday Helium, Chrome or Edge, with the akdbx extension | A Chromium profile started with `--remote-debugging-port` |
+| Connection | Native-messaging host; values sealed to the extension (AES-256-GCM) | Chrome DevTools Protocol over loopback |
+| Setup | Install the host, load the extension, pair once per browser session | Configure the profile at broker start |
+| Sites see | The user's normal browser | A browser with a debugging port, which anti-bot checks often flag |
+| Also | The user can click the extension to fill a login, card or address | The only route for capturing shown-once secrets |
+
+**Prefer the extension route.** A debugging port gives every process of the same
+OS user full control of that browser profile, and anti-bot and anti-fraud checks
+often treat such a browser as a bot. In practice, Cloudflare's sign-in check
+failed and Stripe declined a valid card (`generic_decline`) on the CDP route.
+The same sign-in and card save worked first time through the extension in the
+user's own browser. The CDP route stays for setups without the extension and for
+secret capture.
+
+Native applications (username and TOTP fields outside a browser) use window
+pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
+
+## Platforms
+
+- **Linux** (X11 desktop): the original platform. The setup notes in this
+  README and the [VPS setup reference](skills/akdbx/references/vps-setup.md)
+  describe it. The unlock page is the same loopback HTTPS page as on Windows
+  (0.23.0+), optionally reached from other tailnet devices through Tailscale
+  Serve or from any device through the akdbx relay (0.26.0+), or the earlier
+  Tailscale Serve Unix-socket route.
+- **Windows** (0.17.0+): the same features. It uses local named pipes, Windows
+  access checks, a loopback HTTPS page (from 0.22.0 also reachable from other
+  tailnet devices through Tailscale Serve, from 0.26.0 from any device through
+  the akdbx relay) and directed Unicode window messages for
+  native-app username and TOTP fills. See [Windows setup and validation](docs/windows.md)
+  for browser and engine requirements, limits and pending checks. The Linux
+  broker-socket and Unix-socket unlock notes below do not describe the Windows
+  transport. [Private HTTPS pages](docs/private-pages.md) describes the unlock
+  page for both platforms.
 
 ## Security model
 
@@ -46,25 +143,72 @@ the rebrand does not migrate or rewrite private vault data.
 - The Unix socket and its directory are mode `0600` and `0700`. The CLI rejects
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
   peer UID before sending a request.
-- The broker starts locked. The user enters the master password only on the private Tailscale HTTPS unlock page, never in chat, terminal input, arguments, or environment variables.
-- After unlock, password fills use an explicitly configured Chromium CDP connection and a retained DOM password input. They never send password keys or Tab. Unsupported targets refuse delivery without terminal approval.
+- The broker starts locked. The user enters the master password only on the private HTTPS unlock page, never in chat, terminal input, arguments, or environment variables. The page is HTTPS on `127.0.0.1` with the broker's own certificate, or (Linux only) a Unix socket behind Tailscale Serve; it never binds the LAN or tailnet and never serves plain HTTP over TCP. Through the optional akdbx relay, TLS still ends in the broker: the relay forwards only encrypted bytes, and the broker trusts no name, certificate or header from it without checking.
+- After unlock, password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. They never send password keys or Tab. Unsupported targets refuse delivery without terminal approval.
 - Errors are deliberately generic after the typing boundary.
 
 This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Password fills require a short-lived DOM target pin; see [the target contract](skills/akdbx/references/target-fill.md). The broker verifies the exact HTTPS page, main frame and retained editable password input. X11 window pins refuse password/login delivery. Application acceptance remains a caller check; malicious pages and compromised local processes are outside this boundary. Python cannot guarantee memory zeroization.
 
-## Install and run
+## Browser extension route (0.21.0)
 
-Linux desktop with X11, X-Resource 1.2 local PID support and EWMH window-manager metadata. Set `AKDBX_UNLOCK_ORIGIN` in your private local environment to the HTTPS origin configured in Tailscale Serve before starting the broker or using the CLI. For example, `https://node.example:9443` is an illustrative origin, not a deployment address:
+The broker can also fill through the akdbx browser extension in the user's
+everyday Helium, Chrome or Edge, reached through a native-messaging host. The
+browser then needs no remote-debugging port, which would give every process
+of the same user full control of that profile. Agents add `--route extension`
+to `list-password-frames`, `pin-password-target`, `pin-card-target` and
+`pin-identity-target`; the list, single-use pin, fresh handle and receipt model
+of the CDP route is unchanged, with `extension-dom-v1` receipts. The user can
+also click the extension (toolbar button, context menu or Alt+Shift+K) and
+pick a saved login, card or address for the focused field; the popup shows
+metadata only. `status` advertises `extension_protocol: 1`, `fill_routes`,
+`default_fill_route` (`serve --default-fill-route`), `extension_connected`,
+`extension_paired`, and `extension_version_expected`. Each `extension_browsers`
+item shows the `version` that browser loaded and a `version_status`
+(`current`, `outdated` or `newer`).
+
+The extension has its own semantic version, starting at 0.1.0, separate from
+the akdbx version; the popup shows it in its footer. After an akdbx update,
+`version_status: "outdated"` means the unpacked copy is stale: run
+`extension build` into the same folder again, then click reload on the akdbx
+card in `chrome://extensions`. An extension built by akdbx 0.21.2 or earlier
+reports no version; it still works and shows as outdated.
+
+```bash
+akdbx extension install --browser helium   # or chrome, edge; Windows and Linux
+akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" extension build --output /path/to/akdbx-extension   # then Load unpacked
+```
+
+The extension pairs its ECDH public key with the broker once per browser
+session: the popup shows a code computed from that key, and the broker's
+private page shows the same code and asks for the master password. Every value
+is sealed with AES-256-GCM to the extension, so the native host relays only
+ciphertext. This adds `cryptography` as a runtime dependency. Origin
+and frame identity come from the browser, never from page content; cards go
+only to merchant frames or to the supported processor frames below them. On
+Linux the host manifest goes in `~/.config/net.imput.helium`,
+`~/.config/google-chrome` or `~/.config/microsoft-edge` under
+`NativeMessagingHosts`. See [the extension route](skills/akdbx/references/extension.md)
+and [Windows setup](docs/windows.md#browser-extension-route). The Linux host is
+covered by unit tests; the real-browser checks run on Windows.
+
+Install steps for Windows and Helium are in
+[Windows setup](docs/windows.md#browser-extension-route). Pairing lasts until the
+browser or the broker restarts; the popup then shows a new code.
+
+## CDP route: install and run (Linux)
+
+Linux desktop with X11, X-Resource 1.2 local PID support and EWMH window-manager metadata. Set `AKDBX_UNLOCK_ORIGIN` in your private local environment to the private page's HTTPS origin before starting the broker or using the CLI, and create its certificate as [Private HTTPS pages](docs/private-pages.md) describes. `https://localhost:9443` is the default:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e .
 .venv/bin/akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" \
-  serve /absolute/path/to/passwords.kdbx --web-unlock \
+  serve /absolute/path/to/passwords.kdbx \
+  --tls-cert ~/.config/akdbx/tls/localhost.pem --tls-key ~/.config/akdbx/tls/localhost-key.pem \
   --password-browser-profile /absolute/path/to/chrome-user-data
 ```
 
-Keep the broker process running. Open its private unlock page from your Tailscale-connected device and enter the master password there. The broker needs no terminal input and can run in a persistent agent PTY that the user cannot access. After unlocking, use another shell—or an agent—to search, focus the destination, and explicitly fill:
+Keep the broker process running. Open its private unlock page (on this computer for a loopback origin, or from a tailnet device for a Tailscale origin) and enter the master password there. The broker needs no terminal input and can run in a persistent agent PTY that the user cannot access. After unlocking, use another shell—or an agent—to search, focus the destination, and explicitly fill:
 
 ```bash
 .venv/bin/akdbx search github.com
@@ -102,30 +246,97 @@ target and focus checks apply to saved and generated passwords.
 
 There are no per-fill approval prompts. `--yes-on-fill` is a deprecated compatibility no-op; it emits a deprecation warning. All fill commands now require `--target`. Omit `--yes-on-fill` from new commands. `--web-unlock` remains accepted for clarity; private web unlock is now the default and only unlock method, even when the flag is omitted. The former hidden terminal master-password prompt has been removed.
 
-### Unlock remotely over Tailscale
+## Private unlock page
 
-On your host, set the private deployment origin as described above, then start the broker without entering the master password locally:
+Start the broker without entering the master password locally, as above. The
+broker starts locked. `status` and `search` responses provide a one-time
+unlock link under your configured HTTPS origin. Open it, enter the KDBX master
+password, and then use the broker normally. The page and URL are
+non-cacheable, request logging is disabled, and the URL token is replaced
+after a successful unlock.
 
-```bash
-.venv/bin/akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" \
-  serve /absolute/path/to/passwords.kdbx --web-unlock \
-  --password-browser-profile /absolute/path/to/chrome-user-data
-```
+Each link allows three failed master-password attempts in total (0.25.0+).
+The third failure blocks the link at once, and time never expires it. While
+it is blocked, `status` reports `unlock_blocked: true` without a link, and
+waiting unlock notifications that opted in get an `akdbx.unlock-blocked`
+event. A broker restart keeps the block. Only
+`akdbx new-unlock-link --user-confirmed` replaces a blocked link, after the
+user confirms that the failures were theirs; see
+[Failed attempts block the link](docs/private-pages.md#failed-attempts-block-the-link).
 
-The broker starts locked. `status` and `search` responses provide a one-time unlock link under your configured HTTPS origin. Open it from a device signed into the tailnet, enter the KDBX master password, and then use the broker normally. The backend listens only on a Unix-domain socket in the broker's private runtime directory; it does not open a TCP port. Tailscale Serve supplies HTTPS, tailnet access control, and the authenticated identity header. The filesystem boundary prevents another local UID from replacing a stopped backend behind the trusted HTTPS origin. The page and URL are non-cacheable, attempts are rate-limited, request logging is disabled, and the URL token is replaced after a successful unlock.
+Linux and Windows serve the same page. [Private HTTPS pages](docs/private-pages.md)
+describes its setups:
+
+- **Loopback HTTPS page** (`--tls-cert`, `--tls-key`): the broker serves HTTPS
+  on `127.0.0.1` with your certificate. Open the link on the broker's
+  computer. No Tailscale or other proxy is needed.
+- **Unlock from another device** (add a Tailscale origin and `--local-port`):
+  Tailscale Serve proxies the tailnet name to the loopback listener through a
+  verified `https://127.0.0.1:PORT` target.
+- **The akdbx relay** (`akdbx relay enable`, 0.26.0+): the page opens on any
+  device at a random `https://<id>.akdbx.link` name (from 0.28.0 with no port
+  in the address; brokers registered earlier used `:8443` and move by
+  themselves at their next start). The relay forwards the encrypted connection
+  and cannot read it; see [Unlock from the internet](#unlock-from-the-internet).
+- **Tailscale Serve Unix socket** (Linux only, no TLS options): the earlier
+  Linux route. The backend listens only on a Unix-domain socket in the
+  broker's private runtime directory, and Tailscale Serve supplies HTTPS and
+  the authenticated identity header. Windows has no such route, because
+  Tailscale Serve proxies to Unix sockets only on Linux, macOS and BSD.
 
 The CLI independently trusts that HTTPS origin; it rejects broker responses
 containing an HTTP, malformed, credential-bearing, or different-origin unlock
 link. Every deployment must configure the client with the intended origin
 using global `--unlock-origin HTTPS_ORIGIN` (or `AKDBX_UNLOCK_ORIGIN`) before the
-subcommand. The same setting configures the broker's private-page origin at startup; the built-in default is a non-routable example. Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
+subcommand. With neither, the CLI uses the origin of an enabled akdbx relay
+(0.26.0+), then `https://localhost:9443`. The same setting configures the broker's private-page origin at startup; the built-in default is `https://localhost:9443` on both platforms (before 0.23.0, Linux used a non-routable example). Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
 requires global `--broker-uid UID` (or `AKDBX_BROKER_UID`).
 
-The master password travels inside the tailnet HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Unlock remains valid for the lifetime of the broker process.
+The master password travels inside the HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Unlock remains valid for the lifetime of the broker process.
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
-### Shown-once secrets and service sinks (0.20.0)
+## Unlock from the internet
+
+Linux and Windows have the same choices. In order of recommendation:
+
+1. **Local only**: the loopback HTTPS page on the broker's computer.
+2. **A private proxy** such as Tailscale Serve: only your tailnet can reach the
+   page. This is the most secure remote option; use it first.
+3. **The akdbx relay** (0.26.0+): one command and no open port, router change
+   or VPN. The relay forwards the encrypted connection; TLS ends in the broker
+   with a key that never leaves it, so the relay cannot read the master
+   password. Trust point: the relay operator controls the `akdbx.link` DNS
+   and could get a second certificate for your broker's name, which the
+   public Certificate Transparency logs would show.
+4. **Another public tunnel that does not decrypt traffic**, such as Tailscale
+   Funnel: available, but not recommended. On Linux it needs the loopback
+   HTTPS page, not the Unix-socket route.
+5. **A proxy that decrypts HTTPS**, such as Cloudflare Tunnel: STRONGLY
+   DISCOURAGED. The proxy operator can read the master password.
+
+The relay setup:
+
+```sh
+akdbx relay enable                     # register, get the certificate, save it privately
+akdbx serve /absolute/path/to/passwords.kdbx   # no --unlock-origin, --tls-cert, --tls-key or --local-port
+akdbx relay status                     # name, origin, certificate expiry, connected; never the secret
+akdbx relay disable [--forget]         # stop using it (keep the files, or delete them)
+```
+
+`serve` then opens the private pages at the broker's relay origin, keeps one
+connection to the relay, renews the certificate, and loads the new one without
+a restart. Every akdbx command uses the relay origin by itself; an explicit
+`--unlock-origin` or `AKDBX_UNLOCK_ORIGIN` still wins, except for
+`serve --relay`, which ignores `AKDBX_UNLOCK_ORIGIN` and refuses another
+`--unlock-origin`.
+
+On a public route (3, 4 or 5), anyone on the internet can reach the page: the
+secret link and the three-attempt block are the only protections.
+[Unlock from the internet](docs/private-pages.md#unlock-from-the-internet) has
+the details and the relay's files and checks.
+
+## Shown-once secrets and service sinks (0.20.0)
 
 `pin-password-target --mode read` pins one focused element that
 shows a secret, with the same exact HTTPS URL, page, frame and same-site frame
@@ -143,7 +354,7 @@ root-owned, socket-activated helper with its own root-owned allowlist; see
 `secret_capture_protocol: 1`, `secret_sink_protocol: 1` and `secret_sinks`.
 Responses are receipts only.
 
-### Identity and address records (0.18.2)
+## Identity and address records (0.18.2)
 
 `create-identity --title LABEL --group EXISTING_GROUP` returns a private HTTPS
 save page for contact and postal details. The personal fields are protected
@@ -154,7 +365,7 @@ verified and focused Chromium DOM element without using keys or submitting
 the form. See [identity workflows](skills/akdbx/references/identities.md) for
 supported fields, target discovery and example commands.
 
-### Payment cards (0.14.0)
+## Payment cards (0.14.0)
 
 Cards use ordinary KDBX entries with custom fields; no format extension is
 needed. `akdbx.card=v1` identifies a card. Cardholder name, number, expiry month,
@@ -260,6 +471,13 @@ processor action and matching target name.
 Version 0.18.1 supports `--processor stripe` for the Stripe Payment Element
 iframe used by Cloudflare. It accepts only the Stripe card-entry endpoint and
 its exact card number, combined expiry (MM/YY) and security code inputs.
+Version 0.24.0 also accepts Stripe's classic Card Element iframe
+(`js.stripe.com/v3/elements-inner-card-<hash>.html`) under the same
+`--processor stripe`, advertised as `stripe_card_element: true`. The frame path
+selects the input set: only the `cardnumber`, `exp-date` (MM/YY) and `cvc`
+inputs with no id and the matching autocomplete token; decoy inputs refuse.
+The Card Element fills only through `pin-card-target --processor stripe`; the
+extension popup refuses that frame.
 Other cross-origin frames, shadow DOM, unrecognised fields and native
 applications remain unsupported. Merchant verification uses part of the pin's
 lifetime, while the four-second fill deadline starts with the fill request.
@@ -273,7 +491,7 @@ the card values. A malicious page, compromised browser or process with the same
 OS-user privileges remains outside this boundary. Do not read filled card values
 back through browser tools or capture unmasked fields in screenshots.
 
-### Card-save notifications
+## Card-save notifications
 
 Private card forms can resume the same agent task through a one-shot HTTPS
 webhook, with the same bounded sender and private persistent storage used by
@@ -298,7 +516,7 @@ notification-state file plus `.card-saves`; an unfinished form reports
 [card-save notification workflow](skills/akdbx/references/card-save-notifications.md)
 for host registration, verification, duplicate handling and cleanup.
 
-### Unlock notifications (0.11.0)
+## Unlock notifications (0.11.0)
 
 Agents can subscribe to a one-shot unlock webhook and end their turn. In T3,
 create a webhook task bound to the current thread, register its returned URL,
@@ -329,6 +547,16 @@ Require the running broker's `unlock_notifications_supported: true` and integer
 `unlock_notifications_protocol: 1`; source/CLI updates alone do not activate a
 running broker. See [the notification workflow](skills/akdbx/references/unlock-notifications.md)
 for exact T3 registration, cleanup and recovery.
+
+From 0.25.0, a subscription can opt in with `blocked_events: true` (the CLI
+sends it with `subscribe-unlock --blocked-events` when the broker advertises
+`unlock_notifications_blocked_event: true`). When the unlock link is blocked after three failed attempts, each such
+waiting subscription also gets `{"event": "akdbx.unlock-blocked", "locked":
+true, "unlock_blocked": true, ...}` with a new event ID. The subscription stays
+`subscribed` and later sends the normal `akdbx.unlocked` event to the same URL.
+Subscriptions without the opt-in get only `akdbx.unlocked`. The block itself
+is saved, so a restarted or rebooted broker stays blocked and sends the blocked
+event again to waiting opted-in subscriptions.
 
 ## Authenticator codes (0.10.0)
 
@@ -574,20 +802,44 @@ any live interaction ends.
 
 ## Agent contract
 
-The installed agent skill is [skills/akdbx/SKILL.md](skills/akdbx/SKILL.md), which can be installed under your agent's local skills directory. Agents can invoke it as `$akdbx`; automatic selection is enabled for saved-login, KeePass, and autofill tasks. New sessions can discover the installed skill. An existing session whose skill catalog has not refreshed can read the file directly.
-
-The skill covers exact CLI commands, remote unlock, account selection, desktop targeting, explicit fills, and recovery from uncertain fills. Its [setup reference](skills/akdbx/references/vps-setup.md) documents X11 desktop requirements, socket discovery, startup, and Tailscale configuration using portable examples. The skill directory in the repository is the maintained source; a local installation can link to it so updates stay in sync.
+The agent skill is [skills/akdbx/SKILL.md](skills/akdbx/SKILL.md). Install it by
+linking your agent's skills directory to that folder, so it stays in sync with
+the checkout (`akdbx setup --link-skill` does this; a wheel install also ships
+the skill); agents can then invoke it as `$akdbx`. It explains route choice,
+unlock, account selection, pinning, fills, writes and recovery, and links a
+reference file for each workflow. The [setup reference](skills/akdbx/references/vps-setup.md)
+covers the Linux desktop, socket discovery, startup and Tailscale configuration
+with portable examples.
 
 An agent should:
 
-1. Run `akdbx search <site-or-app>` and show the user the non-secret choices.
-2. Verify the destination and focus the intended field, then use exactly one returned handle with `akdbx fill`. No further user approval is required for the authorized login task.
-3. Never ask for the master password or attempt to read, log, copy, or inspect a filled password field.
-4. Search again if a handle expires. An `autofill not started` response guarantees that request sent no keys. A timeout or lost connection can still mean typing had already started, so check non-secret target state and never retry automatically.
+1. Run `akdbx status`, then `akdbx search <site-or-app>`, and pick the right
+   account from the non-secret results.
+2. Verify the destination, pin the exact field (preferably through the extension
+   route), and fill it once with a fresh handle. The user has authorized fills,
+   so no per-fill approval is needed.
+3. Never ask for the master password, and never read, log, copy or inspect a
+   filled field.
+4. Search again if a handle expires. `autofill not started` means nothing was
+   sent. A timeout or lost connection can mean the value was already delivered,
+   so check the page and never retry automatically.
 
-Existing broker processes retain their loaded code until restarted. The originating login workflow should stop its old broker before starting the command above with the same database, key file, socket, and desktop environment, then request a fresh private web unlock. Old handles cannot be reused after restart. See the [VPS setup reference](skills/akdbx/references/vps-setup.md) for the deployment command.
+A running broker keeps its loaded code until it restarts. The workflow that owns
+it stops the old broker, starts the new version with the same database, key
+file, socket and desktop environment, and asks the user for a fresh private
+unlock. Old handles do not survive a restart. See the
+[VPS setup reference](skills/akdbx/references/vps-setup.md) for the deployment
+command.
 
-Remote unlock requires Tailscale Serve to proxy HTTPS to the broker's Unix socket, not to a persistent loopback TCP port. This mapping must be installed by root with Tailscale 1.98.9 or newer; older versions had a Unix-socket Serve authorization flaw. Merely starting the updated broker does not migrate an existing Serve mapping. Follow the setup reference when deployment changes are authorized.
+Remote unlock requires Tailscale Serve to proxy HTTPS either to the broker's
+Unix socket (Linux) or to the broker's own HTTPS listener through a verified
+`https://127.0.0.1:PORT` target (Linux and Windows). Never map it to plain
+HTTP on a loopback TCP port or to an `https+insecure://` target: another local
+user could take that port while the broker is stopped. Root must install a
+Unix-socket mapping with Tailscale 1.98.9 or newer (older versions had a
+Unix-socket Serve authorization flaw). Starting an updated broker does not
+migrate an existing Serve mapping; follow the setup reference when deployment
+changes are authorized.
 
 ## Development
 
@@ -652,7 +904,6 @@ entry moves/recycle deletes and root modification propagation remain conflicts;
 this patch does not prove unrestricted native phone sync. No production or
 native iPhone test is claimed.
 
-
 ## Password destination regression checks
 
 `tests/test_browser_password.py` uses synthetic credentials, temporary Chrome
@@ -666,3 +917,28 @@ Optional browser tests require Xvfb, Chromium, OpenSSL, xdotool and ImageMagick;
 record skips explicitly. Store test output and temporary files outside project
 checkouts, for example with pytest `--basetemp` in a private evidence directory.
 Run heavy batches through the configured resource-manager queue.
+
+## Rename from agentic-kdbx (0.9.2)
+
+The project, Python distribution, Python package and agent skill are named
+`akdbx`. The command remains `akdbx`; new integrations import `akdbx` and invoke
+`$akdbx`. The old `agentic_kdbx` import remains a compatibility alias.
+
+New brokers use `akdbx/akdbx.sock` under `XDG_RUNTIME_DIR`, or
+`/tmp/akdbx-UID/akdbx.sock` without it. Without `XDG_RUNTIME_DIR` (for example
+over non-interactive SSH), the CLI first uses an existing broker socket under
+the user's own private `/run/user/UID` directory. When the new socket is absent, the CLI
+can connect to an existing `agentic-kdbx.sock` using the same path, ownership
+and peer checks. This lets an unlocked broker finish its session without a
+restart. Explicit `--socket` remains supported. Existing encrypted vaults,
+recovery directories, admission locators and receipts must retain their paths;
+the rebrand does not migrate or rewrite private vault data.
+
+## License
+
+akdbx's own code is MIT licensed. See [LICENSE](LICENSE).
+
+The package also bundles third-party files under their own licenses:
+
+- jsQR, Apache-2.0: [src/akdbx/import_assets/jsQR.LICENSE](src/akdbx/import_assets/jsQR.LICENSE) and [VENDOR.txt](src/akdbx/import_assets/VENDOR.txt).
+- The Public Suffix List, MPL-2.0: the notice at the top of [src/akdbx/public_suffix_assets/public_suffix_list.dat](src/akdbx/public_suffix_assets/public_suffix_list.dat), see [VENDOR.txt](src/akdbx/public_suffix_assets/VENDOR.txt).

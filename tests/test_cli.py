@@ -15,7 +15,7 @@ from pykeepass import PyKeePass, create_database
 from akdbx import cli
 from akdbx.broker import Broker
 from akdbx.protocol import ProtocolError, receive_message, send_message
-from test_broker import target_capabilities, Entry, RecordingTyper, target_request, SECRET, running_broker, expected_merge_capabilities, expected_sso_capabilities, expected_passwordless_capabilities
+from test_broker import target_capabilities, Entry, RecordingTyper, target_request, SECRET, running_broker, expected_merge_capabilities, expected_sso_capabilities, expected_passwordless_capabilities, expected_extension_capabilities
 from test_web_unlock import call
 
 
@@ -274,7 +274,7 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
             code, _, page = call(servers[0].server_address, "POST", path, urlencode({"password": MASTER}), timeout=30)
             assert code == 200
             assert MASTER.encode() not in page and SECRET.encode() not in page
-            assert command("status") == {"ok": True, "locked": False, "version": "0.20.1", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities()}
+            assert command("status") == {"ok": True, "locked": False, "version": "0.28.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "unlock_notifications_blocked_event": True, "unlock_link_protocol": 1, "unlock_link_max_failures": 3, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": True, "recovery_required": False, **expected_merge_capabilities(available=True), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "stripe_card_element": True, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities(), **expected_extension_capabilities()}
             search = command("search", "example")
             assert typer.events == []  # Unlock/search must not trigger a fill.
             handle = search["entries"][0]["handle"]
@@ -296,7 +296,6 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
 
 
 @pytest.mark.parametrize(("environment", "global_options", "serve_options", "expected"), [
-    (None, [], [], "https://unlock.example.invalid:9443"),
     ("https://configured.example:9443", [], [], "https://configured.example:9443"),
     ("https://configured.example:9443", ["--unlock-origin", "https://override.example:8443"], [], "https://override.example:8443"),
     ("https://configured.example:9443", [], ["--unlock-url", "https://legacy.example:9443"], "https://legacy.example:9443"),
@@ -500,7 +499,7 @@ def test_fill_connection_timeout_is_reported_as_uncertain_without_retry(monkeypa
     def timed_out(_socket_path, payload, **_kwargs):
         calls.append(payload)
         if payload["action"] == "ping":
-            return {"ok": True, **target_capabilities()}
+            return {"ok": True, **target_capabilities(), **expected_extension_capabilities()}
         _kwargs['before_send']()
         raise TimeoutError
 
@@ -750,10 +749,191 @@ def test_generated_handles_starting_with_hyphen_use_positional_separator(command
     assert getattr(args, field) == '-synthetic-opaque-handle'
 
 
-@pytest.mark.parametrize('option', ['--tls-cert', '--tls-key'])
-def test_linux_serve_rejects_windows_tls_options_cleanly(option, tmp_path, capsys):
-    assert cli.main(['--socket', str(tmp_path / 'unused.sock'), 'serve',
-                     str(tmp_path / 'unused.kdbx'), option, 'unused.pem']) == 2
+@pytest.mark.parametrize('global_options, options', [
+    ([], []),  # the default origin is https://localhost:9443
+    (['--unlock-origin', 'https://localhost:9443'], []),
+    (['--unlock-origin', 'https://node.example:9443'], ['--local-port', '9444']),
+    (['--unlock-origin', 'https://node.example:9443'], ['--unlock-url', 'https://127.0.0.1:9443']),
+    (['--unlock-origin', 'https://localhost:9443'], ['--tls-cert', 'unused.pem', '--tls-key', 'unused.pem',
+                                                     '--unlock-url', 'https://localhost:9443']),
+])
+def test_linux_serve_refuses_a_loopback_route_without_tls_cleanly(global_options, options, tmp_path,
+                                                                 capsys, monkeypatch):
+    monkeypatch.delenv('AKDBX_UNLOCK_ORIGIN', raising=False)
+    monkeypatch.setattr(cli, 'start_unlock_server', lambda *_: pytest.fail('socket route started'))
+    monkeypatch.setattr(cli, 'start_local_unlock_server', lambda *_a, **_k: pytest.fail('HTTPS route started'))
+    assert cli.main(['--socket', str(tmp_path / 'unused.sock'), *global_options, 'serve',
+                     str(tmp_path / 'unused.kdbx'), *options]) == 2
     captured = capsys.readouterr()
-    assert not captured.out and 'Windows options' in captured.err
+    assert not captured.out and ('needs --tls-cert and --tls-key' in captured.err
+                                 or 'belongs to the Tailscale Serve socket route' in captured.err)
     assert 'Traceback' not in captured.err
+
+
+@pytest.mark.parametrize('failure', [ValueError('synthetic private detail'), OSError('synthetic private detail')])
+def test_linux_https_startup_errors_are_clean_and_private(failure, tmp_path, capsys, monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise failure
+    monkeypatch.setattr(cli, 'X11Typer', RecordingTyper)
+    monkeypatch.setattr(cli, 'start_local_unlock_server', fail)
+    assert cli.main(['--socket', str(tmp_path / 'private' / 'unused.sock'), '--unlock-origin', 'https://localhost:9443',
+                     'serve', str(tmp_path / 'unused.kdbx'), '--tls-cert', 'c.pem', '--tls-key', 'k.pem']) == 2
+    captured = capsys.readouterr()
+    assert not captured.out and 'could not start HTTPS unlock' in captured.err
+    assert 'synthetic private detail' not in captured.err and 'Traceback' not in captured.err
+
+
+def _serve_capturing_brokers(monkeypatch, *, restore_link=False):
+    """Run `serve` without listeners; return the brokers it builds."""
+    from akdbx import web_unlock
+    brokers = []
+    listener = SimpleNamespace(shutdown=lambda: None, server_close=lambda: None)
+
+    def start_unlock(broker, database, keyfile, _socket_path, origin):
+        brokers.append(broker)
+        if restore_link:
+            # What start_unlock_server does, without a socket.
+            broker.unlock_link = web_unlock.UnlockState(broker, database, keyfile, public_base=origin)
+            broker.unlock_url = broker.unlock_link.url
+            return listener, broker.unlock_url
+        return listener, origin + "/?token=synthetic"
+
+    monkeypatch.setattr(cli, "X11Typer", RecordingTyper)
+    monkeypatch.setattr(cli, "start_unlock_server", start_unlock)
+    monkeypatch.setattr(cli, "serve", lambda *_: None)
+    return brokers
+
+
+def test_linux_default_unlock_block_survives_a_cleared_runtime_folder(monkeypatch, tmp_path, capsys):
+    # F2: XDG_RUNTIME_DIR is cleared on reboot or logout; the block must not be.
+    import shutil
+    runtime, state_home = tmp_path / "run", tmp_path / "state"
+    runtime.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    brokers = _serve_capturing_brokers(monkeypatch)
+    serve = ["--unlock-origin", "https://node.example:9443", "serve", "synthetic.kdbx"]
+
+    assert cli.main(serve) == 0
+    brokers[-1].unlock_notifications.save_unlock_blocked(True)
+    flag = cli.default_unlock_block_state(runtime / "akdbx" / "akdbx.sock")
+    assert flag.parent == state_home / "akdbx" and json.loads(flag.read_text()) == {"blocked": True}
+    assert flag.stat().st_mode & 0o777 == 0o600 and flag.parent.stat().st_mode & 0o777 == 0o700
+    assert not [path for path in runtime.rglob("*") if "blocked" in path.name]
+
+    shutil.rmtree(runtime)  # a reboot or logout
+    runtime.mkdir(mode=0o700)
+    assert cli.main(serve) == 0
+    assert brokers[-1].unlock_notifications.load_unlock_blocked() is True
+
+    # Another broker endpoint has its own flag.
+    other = runtime / "other" / "broker.sock"
+    assert cli.default_unlock_block_state(other) != flag
+    assert cli.main(["--socket", str(other), *serve]) == 0
+    assert brokers[-1].unlock_notifications.load_unlock_blocked() is False
+
+    # The same trust checks apply: a flag another user could write refuses
+    # start (H6); it neither starts blocked nor silently unblocks.
+    flag.chmod(0o644)
+    count = len(brokers)
+    capsys.readouterr()
+    assert cli.main(serve) == 2 and len(brokers) == count
+    err = capsys.readouterr().err
+    assert f"refusing to start: the saved unlock-link block {flag} cannot be trusted" in err
+    assert "mode 0600" in err and "token=" not in err
+    assert json.loads(flag.read_text()) == {"blocked": True}
+    flag.chmod(0o600)
+
+    # An explicit --notification-state keeps the block beside it.
+    explicit = tmp_path / "explicit" / "notifications.json"
+    assert cli.main([*serve, "--notification-state", str(explicit)]) == 0
+    brokers[-1].unlock_notifications.save_unlock_blocked(True)
+    assert json.loads(explicit.with_name("notifications.json.unlock-blocked").read_text()) == {"blocked": True}
+    capsys.readouterr()
+
+
+def test_serve_with_a_restored_block_prints_no_unlock_url(monkeypatch, tmp_path, capsys):
+    # H2: a blocked link answers 403, so serve must not offer it.
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    brokers = _serve_capturing_brokers(monkeypatch, restore_link=True)
+    state = tmp_path / "state" / "notifications.json"
+    serve = ["--unlock-origin", "https://node.example:9443", "serve", "synthetic.kdbx",
+             "--notification-state", str(state)]
+    assert cli.main(serve) == 0
+    assert "Open the private HTTPS page: https://node.example:9443/?token=" in capsys.readouterr().err
+    brokers[-1].unlock_notifications.save_unlock_blocked(True)
+
+    assert cli.main(serve) == 0
+    err = capsys.readouterr().err
+    assert brokers[-1].unlock_blocked
+    assert "token=" not in err and "https://" not in err
+    assert "unlock link is blocked" in err and "akdbx new-unlock-link --user-confirmed" in err
+    assert "only after the user confirms" in err
+
+
+def test_serve_can_keep_the_unlock_link_out_of_a_service_log(monkeypatch, tmp_path, capsys):
+    # M1: a systemd journal or task output must not keep the link's token; interactive use still prints it.
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    _serve_capturing_brokers(monkeypatch)
+    serve = ["--unlock-origin", "https://node.example:9443", "serve", "synthetic.kdbx",
+             "--notification-state", str(tmp_path / "state" / "notifications.json")]
+    assert cli.main([*serve, "--no-print-unlock-link"]) == 0
+    err = capsys.readouterr().err
+    assert "token=" not in err and "https://" not in err
+    assert "Vault locked" in err and "akdbx status" in err
+    assert cli.main(serve) == 0
+    assert "Open the private HTTPS page: https://node.example:9443/?token=synthetic" in capsys.readouterr().err
+
+
+def test_refusal_message_survives_a_failed_notifier_close(monkeypatch, tmp_path, capsys):
+    # A state write that fails while the notifiers close must not hide which
+    # permissions to fix: the diagnostic is printed first.
+    from akdbx import notifications
+    runtime, state_home = tmp_path / "run", tmp_path / "state"
+    runtime.mkdir(mode=0o700)
+    state_home.mkdir()
+    state_home.chmod(0o775)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    def failing_close(self):
+        raise OSError(28, "synthetic ENOSPC")
+    for name in dir(notifications):
+        cls = getattr(notifications, name)
+        if isinstance(cls, type) and hasattr(cls, "close"):
+            monkeypatch.setattr(cls, "close", failing_close)
+    brokers = _serve_capturing_brokers(monkeypatch, restore_link=True)
+    serve = ["--unlock-origin", "https://node.example:9443", "serve", "synthetic.kdbx"]
+    assert cli.main(serve) == 2 and brokers == []
+    err = capsys.readouterr().err
+    assert "refusing to start" in err and f"chmod 700 {state_home / 'akdbx'}" in err
+
+
+def test_serve_refuses_a_group_writable_unlock_block_folder(monkeypatch, tmp_path, capsys):
+    # H6: a common mode-0775 state folder must not start a broker that is
+    # blocked with no way out: serve refuses and says how to fix it.
+    runtime, state_home = tmp_path / "run", tmp_path / "state"
+    runtime.mkdir(mode=0o700)
+    state_home.mkdir()
+    state_home.chmod(0o775)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    brokers = _serve_capturing_brokers(monkeypatch, restore_link=True)
+    serve = ["--unlock-origin", "https://node.example:9443", "serve", "synthetic.kdbx"]
+
+    assert cli.main(serve) == 2 and brokers == []
+    err = capsys.readouterr().err
+    assert "refusing to start" in err and f"replaceable by another user: {state_home}" in err
+    assert f"chmod 700 {state_home / 'akdbx'}" in err and "--notification-state FILE" in err
+    assert "Broker ready" not in err and "https://" not in err
+
+    # A private folder starts; a missing akdbx folder is made 0700, and the
+    # block survives a restart.
+    state_home.chmod(0o700)
+    assert cli.main(serve) == 0 and not brokers[-1].unlock_blocked
+    assert (state_home / "akdbx").stat().st_mode & 0o777 == 0o700
+    brokers[-1].unlock_notifications.save_unlock_blocked(True)
+    assert cli.main(serve) == 0 and brokers[-1].unlock_blocked
+    assert "unlock link is blocked" in capsys.readouterr().err
+    assert brokers[-1].unlock_link.new_link().startswith("https://node.example:9443/?token=")
+    assert cli.main(serve) == 0 and not brokers[-1].unlock_blocked

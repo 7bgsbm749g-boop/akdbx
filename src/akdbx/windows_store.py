@@ -143,6 +143,41 @@ class WindowsVaultStore:
         except (OSError, SaveError, pywintypes.error, ValueError):
             return False
 
+    def check_location(self, keyfile=None):
+        """`akdbx setup`: the broker's path, ACL and size checks through handles.
+
+        It reads no vault or key-file byte. It raises when the broker could
+        not open the vault or key file, and returns why saves would be
+        refused, or None when they would be allowed.
+        """
+        with security.trusted_directory(self.path.parent):
+            with security.checked_handle(self.path) as handle:
+                info = win32file.GetFileInformationByHandle(handle)
+        if info[5] * 2**32 + info[6] > 128 * 1024 * 1024:
+            raise ValueError('the vault is larger than 128 MiB')
+        if keyfile is not None:
+            key = long_name(Path(os.path.abspath(Path(keyfile).expanduser())))
+            with security.trusted_directory(key.parent):
+                with security.checked_handle(key) as handle:
+                    key_info = win32file.GetFileInformationByHandle(handle)
+            if key_info[5] * 2**32 + key_info[6] > 1024 * 1024:
+                raise ValueError('the key file is larger than 1 MiB')
+        if info[0] & win32con.FILE_ATTRIBUTE_READONLY:
+            return 'the vault file is read-only'
+        try:
+            with security.trusted_directory(self.path.parent):
+                with security.checked_handle(self.path.parent, directory=True, private=False,
+                        access=ntsecuritycon.FILE_ADD_FILE | ntsecuritycon.FILE_TRAVERSE | win32con.READ_CONTROL):
+                    pass
+        except (OSError, pywintypes.error):
+            return 'the vault folder does not let this user add the save files'
+        longest = '.' + self.path.name + '.akdbx-commit-' + '0' * 32 + '.json'
+        if (len(longest.encode('utf-16-le')) // 2 > 255
+                or len(str(self.path.parent / longest).encode('utf-16-le')) // 2 >= 260
+                or not self.merge_names_fit(self.path.parent)):
+            return 'the vault path is too long for the save files'
+        return None
+
     def merge_names_fit(self, directory, *, replacement=True):
         """Check the longest merge artifact against the NTFS and Win32 budgets."""
         bundle = self._write_name('merge', '0' * 32)

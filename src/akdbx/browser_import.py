@@ -1,9 +1,14 @@
 """Chrome native messaging host. Secret payloads never enter the agent RPC.
 
-Linux, on the broker's machine only. Build/install commands are explicit; merely
+On the broker's machine only. Build/install commands are explicit; merely
 importing this module does not touch Chrome, its profile, or the running broker.
-Windows refuses the commands: its private page has no peer-authenticated local
-channel for a helper process, and the HTTPS import page covers the same need.
+
+* Linux: the host posts to the private pages' Unix socket and checks the
+  broker's peer UID.
+* Windows: the host writes one message to the broker's capture named pipe
+  (the RPC pipe name plus ``-capture``). It checks that the pipe server runs as
+  this user in this desktop session, as the CLI does for the RPC pipe. The
+  install registers the host for one browser under ``HKEY_CURRENT_USER``.
 """
 from __future__ import annotations
 
@@ -26,10 +31,30 @@ RECEIPT = {'ok': True, 'state': 'awaiting-private-confirmation'}
 
 
 def config_path():
+    if os.name == 'nt':
+        return Path(os.environ['LOCALAPPDATA']) / 'akdbx' / 'browser-import.json'
     return Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'akdbx' / 'browser-import.json'
 
 
+def _check_config(config):
+    if set(config) != {'extension_id', 'origin', 'socket'} or not all(isinstance(v, str) for v in config.values()):
+        raise ValueError
+    if not re.fullmatch('[a-p]{32}', config['extension_id']):
+        raise ValueError
+    if os.name == 'nt' and config['socket']:
+        # An empty pipe means the default broker's capture pipe, resolved at
+        # run time: its name holds the current desktop session ID.
+        from .windows_rpc import CAPTURE_SUFFIX, pipe_name
+        if not pipe_name(config['socket'], capture=True).endswith(CAPTURE_SUFFIX):
+            raise ValueError
+    return config
+
+
 def load_config(path):
+    if os.name == 'nt':
+        from .windows_security import read_private
+        # Same DACL and parent checks as the broker's own private files.
+        return _check_config(json.loads(read_private(path, limit=4096)[0]))
     from .runtime import open_private_runtime_directory
     _, directory = open_private_runtime_directory(path.parent)
     try:
@@ -40,19 +65,14 @@ def load_config(path):
                     or info.st_mode & 0o077 or info.st_size > 4096):
                 raise ValueError
             config = json.loads(stream.read(4097))
-        if set(config) != {'extension_id', 'origin', 'socket'} or not all(isinstance(v, str) for v in config.values()):
-            raise ValueError
-        if not re.fullmatch('[a-p]{32}', config['extension_id']):
-            raise ValueError
-        return config
+        return _check_config(config)
     finally:
         os.close(directory)
 
 
 def capture(message, config):
     """Only the native host calls this. Do not add an agent-facing equivalent."""
-    from .cli import _validate_socket_path, _validate_unlock_url, _peer_credentials
-    from .runtime import anchored_socket_path
+    from .cli import _validate_unlock_url
     if not isinstance(message, dict) or set(message) != {'private_url', 'source_url', 'payloads'}:
         raise ValueError
     private_url = message['private_url']
@@ -60,6 +80,10 @@ def capture(message, config):
     parsed = urlsplit(private_url)
     if parsed.path != '/totp' or len(private_url) > 4096:
         raise ValueError
+    if os.name == 'nt':
+        return _capture_windows(message, config, parsed)
+    from .cli import _validate_socket_path, _peer_credentials
+    from .runtime import anchored_socket_path
     # HTTP is strictly over the configured UDS, never a URL chosen by a webpage.
     body = json.dumps({'source_url': message['source_url'], 'payloads': message['payloads']}, separators=(',', ':')).encode()
     if len(body) > MAX_NATIVE_MESSAGE:
@@ -83,6 +107,29 @@ def capture(message, config):
     finally:
         client.close()
         os.close(directory)
+
+
+def _capture_windows(message, config, parsed):
+    """Send one capture to the broker's capture pipe, never a URL chosen by a webpage."""
+    import time
+    from urllib.parse import parse_qs
+    from .protocol import receive_message, send_message
+    from .windows_rpc import capture_pipe, connect, default_pipe
+    query = parse_qs(parsed.query, strict_parsing=True)
+    if set(query) != {'token'} or len(query['token']) != 1:
+        raise ValueError
+    request = dict(type='totp-capture', token=query['token'][0], source_url=message['source_url'],
+                   payloads=message['payloads'])
+    if len(json.dumps(request, separators=(',', ':')).encode()) > MAX_NATIVE_MESSAGE:
+        raise ValueError
+    # connect() refuses a pipe server of another user or desktop session.
+    pipe = _check_config(config)['socket'] or capture_pipe(default_pipe())
+    with connect(Path(pipe), capture=True) as connection:
+        connection.settimeout(10)
+        send_message(connection, request)
+        if receive_message(connection, deadline=time.monotonic() + 10) != RECEIPT:
+            raise ValueError
+    return dict(RECEIPT)
 
 
 def _read_exact(stream, size):
@@ -165,21 +212,108 @@ def install_host(args):
         os.close(directory)
 
 
+def windows_paths(browser):
+    from .extension_host import WINDOWS_KEYS
+    home = Path(os.environ['LOCALAPPDATA']) / 'akdbx' / 'browser-import'
+    return dict(manifest=home / f'{HOST_NAME}.{browser}.json', key=WINDOWS_KEYS[browser] + '\\' + HOST_NAME)
+
+
+def _registered(key):
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
+            return winreg.QueryValueEx(handle, '')[0]
+    except OSError:
+        return None
+
+
+def host_executable():
+    """The installed console script of this environment.
+
+    The manifest names it directly: a batch launcher would be read by cmd.exe in
+    the console code page, which breaks a non-ASCII interpreter path.
+    """
+    import sysconfig
+    executable = Path(sysconfig.get_path('scripts')) / 'akdbx-browser-import.exe'
+    if not executable.is_file():
+        raise ValueError('install akdbx into this Python environment first')
+    return executable.absolute()
+
+
+def install_host_windows(args):
+    """Register the host for one browser. Never replace another registration or file."""
+    import winreg
+    from .cli import _validate_unlock_url
+    from .windows_security import ensure_private_directory, read_private_optional, write_new
+    if not re.fullmatch('[a-p]{32}', args.extension_id):
+        raise ValueError('invalid extension ID')
+    _validate_unlock_url(args.origin.rstrip('/') + '/totp?token=configuration-check', args.origin)
+    config = _check_config(dict(extension_id=args.extension_id, origin=args.origin.rstrip('/'),
+                                socket=str(args.socket or '')))
+    executable = host_executable()
+    where = windows_paths(args.browser)
+    manifest, key = where['manifest'], where['key']
+    path = config_path()
+    if _registered(key) is not None or manifest.exists():
+        raise ValueError('a private import host is already registered for this browser')
+    # One configuration serves every browser; a second browser must match it.
+    ensure_private_directory(path.parent)
+    raw = read_private_optional(path, limit=4096)
+    existing = None if raw is None else _check_config(json.loads(raw))
+    if existing is not None and existing != config:
+        raise ValueError('a different private import configuration exists')
+    ensure_private_directory(manifest.parent)
+    created = []
+    try:
+        if existing is None:
+            write_new(path, json.dumps(config).encode())
+            created.append(path)
+        write_new(manifest, json.dumps(dict(name=HOST_NAME, description='Private akdbx authenticator import',
+                                            path=str(executable), type='stdio',
+                                            allowed_origins=['chrome-extension://' + args.extension_id + '/'])).encode())
+        created.append(manifest)
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as handle:
+            winreg.SetValueEx(handle, '', 0, winreg.REG_SZ, str(manifest))
+    except BaseException:
+        for item in reversed(created):
+            try:
+                item.unlink()
+            except OSError:
+                pass
+        raise
+    return where
+
+
+def uninstall_host_windows(args):
+    """Remove this browser's registration and manifest.
+
+    The shared configuration goes with the last registration, so a new install
+    can use another origin, extension ID or pipe.
+    """
+    import winreg
+    from .extension_route import BROWSERS
+    where = windows_paths(args.browser)
+    if _registered(where['key']) == str(where['manifest']):
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, where['key'])
+    where['manifest'].unlink(missing_ok=True)
+    if not any(windows_paths(b)['manifest'].exists() or _registered(windows_paths(b)['key']) is not None
+               for b in BROWSERS):
+        config_path().unlink(missing_ok=True)
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if os.name == 'nt' and argv and not argv[0].startswith('chrome-extension://'):
-        # The capture channel is a Unix socket that proves the peer's user.
-        # The Windows private page has no such channel for a helper process.
-        print('The browser native host is Linux-only. On Windows use the private HTTPS import page of setup-totp.',
-              file=sys.stderr)
-        return 1
     if not argv or argv[0].startswith('chrome-extension://'):
+        # Chrome on Windows appends --parent-window=HWND; it is not used.
+        from .extension_host import _binary_stdio
+        incoming, outgoing = _binary_stdio()
         try:
             config = load_config(config_path())
         except Exception:
             config = {'extension_id': ''}
-        native_session(sys.stdin.buffer, sys.stdout.buffer, config, argv[0] if argv else '')
+        native_session(incoming, outgoing, config, argv[0] if argv else '')
         return 0
+    from .extension_route import BROWSERS
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     build = commands.add_parser('build-extension')
@@ -187,12 +321,22 @@ def main(argv=None):
     install = commands.add_parser('install-host')
     install.add_argument('--extension-id', required=True)
     install.add_argument('--origin', required=True)
-    install.add_argument('--socket', required=True, type=Path)
-    install.add_argument('--manifest-dir', required=True, type=Path)
+    if os.name == 'nt':
+        install.add_argument('--browser', required=True, choices=BROWSERS)
+        install.add_argument('--socket', help='broker capture pipe; default: this user\'s broker pipe plus -capture')
+        uninstall = commands.add_parser('uninstall-host')
+        uninstall.add_argument('--browser', required=True, choices=BROWSERS)
+    else:
+        install.add_argument('--socket', required=True, type=Path)
+        install.add_argument('--manifest-dir', required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == 'build-extension':
             build_extension(args.destination)
+        elif args.command == 'uninstall-host':
+            uninstall_host_windows(args)
+        elif os.name == 'nt':
+            install_host_windows(args)
         else:
             install_host(args)
     except Exception:

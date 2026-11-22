@@ -28,9 +28,9 @@ migration is authorized.
 
 Before connecting, the CLI requires that dedicated directory to be owned by the configured broker UID with mode `0700`, requires the socket to be owned by that UID with mode `0600`, rejects symlinked path components, and verifies the connected process using Unix peer credentials. The expected UID defaults to the caller's UID. If a deployment intentionally runs the broker as another account, configure its numeric identity independently with global `--broker-uid UID` or `AKDBX_BROKER_UID`; do not derive it from a server response.
 
-Broker-provided unlock links are shown only when they use HTTPS and match the independently configured expected origin. The built-in default, `https://unlock.example.invalid:9443`, is deliberately non-routable. Set `AKDBX_UNLOCK_ORIGIN` in the private environment to the real deployment origin, or put global `--unlock-origin https://host[:port]` before the subcommand. This setting also configures the broker's private-page origin at startup. The legacy `serve --unlock-url` override remains supported; clients must still independently configure the same trusted origin. Existing deployments must configure their current origin before updating the CLI or restarting the broker. The configured value must be an origin only, without credentials, path, query, or fragment.
+Broker-provided unlock links are shown only when they use HTTPS and match the independently configured expected origin. The built-in default is `https://localhost:9443` on Linux and Windows (0.23.0+; earlier Linux CLIs used the non-routable `https://unlock.example.invalid:9443`). Set `AKDBX_UNLOCK_ORIGIN` in the private environment to the real deployment origin, or put global `--unlock-origin https://host[:port]` before the subcommand. This setting also configures the broker's private-page origin at startup. The legacy `serve --unlock-url` override remains supported; clients must still independently configure the same trusted origin. Existing deployments must configure their current origin before updating the CLI or restarting the broker. The configured value must be an origin only, without credentials, path, query, or fragment.
 
-This client is a CLI; no MCP server or automatic broker service is supplied. The repository's `.buildtmp` KDBX files were synthetic test fixtures. Do not treat them as the user's database. If the real database path is unknown, ask for its location, never its master password or key-file contents.
+This client is a CLI; no MCP server is supplied. `akdbx setup --start-at-login` (0.27.0+) can write a systemd user unit, `~/.config/systemd/user/akdbx.service`, that runs `akdbx serve --no-print-unlock-link` with the chosen settings, so the journal never keeps the unlock link (get it with `akdbx status`; use the same flag for any broker that you run as a service); setup enables it only after confirmation and starts it only when no broker answers. Do not install it on a host whose broker another workflow manages. The repository's `.buildtmp` KDBX files were synthetic test fixtures. Do not treat them as the user's database. If the real database path is unknown, ask for its location, never its master password or key-file contents.
 
 If the existing virtual environment is missing and installation is part of the task, the repository's `README.md` describes installation. Avoid dependency reinstalls for an ordinary login.
 
@@ -60,6 +60,8 @@ Reuse an existing broker whenever possible. To start a new one, use the real dat
   serve /absolute/path/to/the-users-vault.kdbx --web-unlock
 ```
 
+This starts the [Tailscale Serve Unix-socket route](#tailscale-web-page), which existing deployments use. With an enabled akdbx relay (0.26.0+, `akdbx relay enable`) and no `AKDBX_UNLOCK_ORIGIN`, the same command uses the relay instead: see [akdbx relay](#akdbx-relay). From 0.23.0 Linux can instead serve the same loopback HTTPS page as Windows: add `--tls-cert` and `--tls-key` (and `--local-port` for a Tailscale origin). [Private HTTPS pages](../../../docs/private-pages.md) describes both setups. A loopback origin without `--tls-cert` and `--tls-key` is refused. Do not change the route of a working deployment unless that change is authorized.
+
 For a database requiring a key file, append `--keyfile /absolute/path/to/keyfile`. The key file must already be available on the broker host. Never print its contents. The browser accepts a master password; it does not upload the KDBX or key file, and its current form requires a nonempty password.
 
 Private web unlock is always enabled. `--web-unlock` remains accepted for command compatibility and clarity; omitting it has the same behavior. The former hidden terminal master-password prompt has been removed.
@@ -71,6 +73,12 @@ For a broker started before this change, the originating login workflow must sto
 The database is held in memory for that broker process's lifetime. Successful broker writes and merges replace it with the verified saved vault. External file changes are not automatically reloaded and cause write conflicts. Password workflows are documented in [password writes](password-writes.md); version 0.6.0 adds semantic active verification to explicit equal-time preservation and external-target reconciliation in [encrypted merges](merge.md). After coordinated activation, verify the new process's reviewed build identity through the [activation checklist](merge.md#activation-by-the-originating-workflow). Compare broker status `version` with the deployed CLI invoked by its discovered absolute path (`/absolute/path/to/akdbx/.venv/bin/akdbx --version`), and use that same path for `status` and `serve`; PATH can select another installation. Require `writes_available: true`, `locked: false` and `recovery_required: false`; merges also require `merge_available: true` and `merge_protocol: 1`; external reconciliation also requires `merge_refresh_target_supported: true`; `--preserve-conflicts` requires `merge_preserve_conflicts_supported: true` and exact `merge_preservation_policy: "capsule-v1"`, plus `merge_active_verification: "semantic-v1"` and result `active_verification: "semantic-v1"`. Fixed refusal categories are documented in [active verification](selection-verification.md). CLI help alone does not prove activation. Stopping the broker (Ctrl-C in its own terminal) requires a fresh unlock next time. There is no stored master password or automatic unlock after reboot.
 
 ## Tailscale web page
+
+This section covers the Linux Unix-socket route. For the loopback HTTPS page
+and for Tailscale Serve to a verified `https://127.0.0.1:PORT` target (the
+same setup as Windows), see [Private HTTPS pages](../../../docs/private-pages.md).
+There, the page trusts no identity header and needs the certificate key to be
+private (mode `0600`).
 
 Example runtime-based deployment (substitute your private configuration):
 
@@ -95,7 +103,7 @@ sudo tailscale serve --bg --https=9443 "unix:${XDG_RUNTIME_DIR}/akdbx/akdbx-unlo
 tailscale serve status
 ```
 
-Use Serve and do not enable Funnel/public exposure for the unlock page. Preserve mappings for other applications; do not reset the entire Serve configuration. Do not retain or restore a loopback TCP mapping: a persistent mapping to a reclaimable high TCP port does not authenticate the backend while the broker is stopped. Starting new application code cannot change an existing Tailscale configuration, so remote unlock must remain unavailable until this migration is completed.
+Use Serve. Do not enable Funnel or other public exposure for the unlock page unless the user explicitly chooses it after reading [Unlock from the internet](../../../docs/private-pages.md#unlock-from-the-internet); Funnel works only with the loopback HTTPS page. Preserve mappings for other applications; do not reset the entire Serve configuration. Do not retain or restore a plain-HTTP loopback TCP mapping or an `https+insecure://` target: a persistent mapping to a reclaimable high TCP port does not authenticate the backend while the broker is stopped. A verified `https://127.0.0.1:PORT` target to the broker's own HTTPS listener does authenticate it, by its certificate. Starting new application code cannot change an existing Tailscale configuration, so remote unlock must remain unavailable until this migration is completed.
 
 Tailscale versions before 1.98.9 must not be used for this socket mapping because TS-2026-005 allowed a non-root Tailscale operator to configure privileged Unix-socket proxy targets. Upgrade Tailscale through the host's managed package process before configuring the mapping. The broker's socket mode is `0600`; `tailscaled` normally runs as root and can reach it without making the socket accessible to other users.
 
@@ -106,14 +114,25 @@ If the page fails:
 - `404`: check broker status and the exact current tokenized URL. Successful unlock invalidates the old URL. Missing identity also causes `404`.
 - Proxy/backend unavailable: check that the broker and Unix socket are present and inspect the existing Serve mapping.
 - `Unlock failed`: let the user retry on the page. If needed, check only the configured database/key-file paths and file accessibility; do not solicit or test passwords yourself.
-- `429`: the current server limits failed attempts to five per minute. Wait before another user attempt.
+- `403` "Unlock link blocked": the link used its three failed attempts (0.25.0+). Follow the skill's "Blocked unlock link" steps; never run `new-unlock-link` without the user's two clear yes answers.
+- `429`: another attempt on this link is still running. Let the user wait for its result.
+
+## akdbx relay
+
+The relay (0.26.0+) reaches the private pages from any device with no Tailscale and no open port. Use it only when the user chose it after reading [Unlock from the internet](../../../docs/private-pages.md#unlock-from-the-internet); do not replace a working Tailscale route with it.
+
+- Files: `${XDG_STATE_HOME:-~/.local/state}/akdbx/relay/` (`relay.json` with the relay secret, `tls.pem` with the private key and chain). Folder `0700`, files `0600`, ancestors not group- or world-writable. Never print, copy or commit them. `serve` refuses a folder or file that fails the checks; fix the permissions instead of deleting the files.
+- `serve` with the relay needs no `--tls-cert`, `--tls-key`, `--local-port` or `AKDBX_UNLOCK_ORIGIN`, and refuses `--tls-cert`, `--tls-key` and `--local-port`. An `AKDBX_UNLOCK_ORIGIN` in the broker's environment wins over the relay, except with `serve --relay`, which ignores it and refuses an `--unlock-origin` that is not the relay origin. Only one broker can hold the relay; a second one refuses to start.
+- Checks: `akdbx relay status` (`broker.connected: true`), `akdbx status` (`relay.connected`, and `unlock_url` on the relay origin). The broker logs `akdbx relay: connected`, connection losses and renewals on stderr; it never logs the secret.
+- The relay endpoint is outbound HTTPS and WebSocket to `relay.akdbx.link` (port 443; brokers registered before 0.28.0 use port 8443 until their next start moves them, see the skill's relay section). A firewall that blocks that outbound port stops it: `relay status` then shows `connected: false`, and the broker retries every minute at most.
+- Certificate renewal is automatic. A failed renewal keeps the current certificate and shows `renewal_error`; it is retried with backoff.
 
 ## Sources for implementation-specific questions
 
 - Usage: [`README.md`](../../../README.md)
 - CLI defaults and arguments: [`src/akdbx/cli.py`](../../../src/akdbx/cli.py)
 - Broker and keyboard delivery: [`src/akdbx/broker.py`](../../../src/akdbx/broker.py)
-- Unlock page: [`src/akdbx/web_unlock.py`](../../../src/akdbx/web_unlock.py)
+- Unlock page: [`src/akdbx/web_unlock.py`](../../../src/akdbx/web_unlock.py); loopback HTTPS listener: [`src/akdbx/local_https.py`](../../../src/akdbx/local_https.py); relay client: [`src/akdbx/relay.py`](../../../src/akdbx/relay.py)
 
 Consult source when observed behavior differs from this skill. Reading implementation is fine; using it to extract the user's vault secrets is not part of the login workflow.
 

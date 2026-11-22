@@ -9,9 +9,10 @@ generated-password fills through the Chromium DOM route, the full password-write
 workflow, cards, merge, snapshot admission and durable unlock notifications.
 The checks that prove each of these are in
 [Validation before production use](#validation-before-production-use). Three
-checks still need a person or a second account, and the optional browser native
-host for authenticator capture stays Linux-only; see
-[Limits](#limits).
+checks still need a person or a second account; see [Limits](#limits). From
+0.22.0 Windows also supports
+[unlock from another device](#unlock-from-another-device) through Tailscale
+Serve and the [browser native host for authenticator capture](#authenticator-capture-native-host).
 
 ## Supported operations
 
@@ -38,19 +39,27 @@ host for authenticator capture stays Linux-only; see
 - `merge` (including `--check`, `--refresh-target` and `--preserve-conflicts`),
   `admit` and `merge-status`, with KeePassXC CLI 2.7.10 or newer, below 2.8,
   installed for all users. See [Merge and admission](#merge-and-admission).
+- Fills through the paired akdbx browser extension in Helium, Chrome or Edge,
+  with no debugging port (`extension-dom-v1`). See
+  [Browser extension route](#browser-extension-route).
 - Unlock webhook subscriptions that survive a broker restart.
 - Private password and authenticator imports through the HTTPS page.
+- Unlock and private pages from another tailnet device, through Tailscale Serve
+  (`--local-port`). See [Unlock from another device](#unlock-from-another-device).
+- Unlock and private pages from any device through the akdbx relay (0.26.0+),
+  with no open port. See [Unlock from the internet](#unlock-from-the-internet).
+- Authenticator capture from a website's setup QR through the browser native
+  host (`akdbx-browser-import`). See
+  [Authenticator capture native host](#authenticator-capture-native-host).
 
 ## Limits
 
-- The private pages are served on `127.0.0.1` only. Unlock from another device
-  (the Linux Tailscale Serve route) is not available.
-- The optional browser native host for authenticator capture
-  (`akdbx-browser-import`) is Linux-only. It sends captured setup data to the
-  broker over a Unix socket that proves the peer's user. The Windows private
-  page is a loopback TLS listener that accepts a browser by its `Host` and
-  `Origin`; it has no peer-authenticated local channel for a helper process.
-  Use the private HTTPS import page instead.
+- The HTTPS listener binds `127.0.0.1` only. Other devices reach it only
+  through Tailscale Serve. The broker does not trust the `Tailscale-User-Login`
+  header on the loopback page (Linux or Windows), because any local process can
+  send headers to a loopback port; the one-time URL token and tailnet access
+  control protect the page. Windows has no Unix-socket route like Linux's:
+  Tailscale Serve proxies to Unix sockets only on Linux, macOS and BSD.
 - Use a local NTFS volume with restrictive DACLs. UNC paths, junctions, symlinks,
   other reparse points, hard-linked vaults and alternate data streams are refused.
   OneDrive placeholder paths can be reparse points and are not supported.
@@ -63,7 +72,12 @@ host for authenticator capture stays Linux-only; see
   prompts and apps at a higher integrity level are not supported. Services
   without an interactive desktop cannot fill applications.
 - Card processor iframes (Adyen, Computop, Stripe) use the same code as Linux,
-  where CI tests them. On Windows only main-frame card fields have been tested.
+  where CI tests them. On the CDP route only main-frame card fields have been
+  tested on Windows; the extension route is tested with a Stripe frame.
+- The extension route cannot attest which `<iframe>` element hosts a child
+  frame, has no browser-native hit test, and does not support secret capture.
+  Pairing is held in memory only: a browser or broker restart needs a new
+  pairing with the master password.
 
 ## Install and prepare private files
 
@@ -88,10 +102,48 @@ are suitable. The broker checks existing permissions; it does not silently chang
 permissions on a production vault. Administrators and SYSTEM remain trusted, as
 root is trusted on Linux.
 
+## Guided setup
+
+`akdbx setup` (0.27.0+) runs the steps of this page in order and asks before
+each change: the system check, the vault and key-file checks, the
+certificate, the access method, a logon task, the extension host and build,
+the capture host and the skill junction. It works the same way as on Linux;
+see [Quick start: akdbx setup](../README.md#quick-start-akdbx-setup).
+
+```powershell
+.\.venv\Scripts\akdbx.exe setup
+.\.venv\Scripts\akdbx.exe setup --yes --json --vault "$private\synthetic.kdbx" --create-cert `
+  --start-at-login --browser helium --link-skill
+```
+
+Windows differences:
+
+- Run it as your normal user, without elevation. The system check reports an
+  elevated shell.
+- The vault and key file get the broker's handle, DACL, reparse-point and size
+  checks; setup never reads them.
+- The default certificate pair is `%LOCALAPPDATA%\akdbx\localhost.pem` and
+  `localhost-key.pem`, in a folder private to you and SYSTEM. `mkcert -install`
+  stays your step.
+- **Start at login** writes `%LOCALAPPDATA%\akdbx\akdbx-broker.task.xml` and
+  registers it with `schtasks /Create /TN akdbx-broker /XML FILE`: a logon
+  trigger for your user only, an interactive token and the least privilege.
+  It runs `pythonw.exe -m akdbx.cli serve ... --no-print-unlock-link` from the
+  same environment, so no console window opens and no task output keeps the
+  link; `akdbx status` gives the unlock link. With the relay the task runs
+  `serve --relay`, which ignores an inherited `AKDBX_UNLOCK_ORIGIN`; setup
+  warns when that variable names another origin. Setup starts the
+  task with `schtasks /Run` only when no broker answers on your pipe, and never
+  replaces a task named `akdbx-broker` that it did not create. Remove it with
+  `schtasks /Delete /TN akdbx-broker`.
+- **Agent skill** creates directory junctions, which need no elevation, in
+  `%USERPROFILE%\.claude\skills` and `%USERPROFILE%\.codex\skills`.
+
 ## Configure the private HTTPS page
 
-Windows does not expose the Linux Unix-socket Tailscale Serve backend. It serves
-HTTPS directly on `127.0.0.1`. Use a certificate trusted by the local browser for
+The private HTTPS page works the same way on Linux and Windows; the shared
+rules are in [Private HTTPS pages](private-pages.md). The broker serves HTTPS
+directly on `127.0.0.1`. Use a certificate trusted by the local browser for
 `localhost` (or `127.0.0.1`), plus its unencrypted PEM private key. A local development CA such
 as [mkcert](https://github.com/FiloSottile/mkcert) can issue this certificate:
 
@@ -157,9 +209,214 @@ an administrator. Keep the profile for work that the broker may fill.
 Open the broker-provided one-time HTTPS link in a Windows browser. Enter the
 synthetic master password there. The CLI and agent do not receive it. Host and
 Origin checks reject cross-origin requests. No Tailscale identity header is trusted
-on Windows. The URL token is secret, rate-limited and rotated on successful unlock.
+on the loopback page. The URL token is secret, allows three failed attempts in total
+([Failed attempts block the link](private-pages.md#failed-attempts-block-the-link))
+and is rotated on successful unlock.
 Stopping the broker invalidates its links. TLS protects a stale link if another
 local user later takes the port; keep the certificate key private.
+
+### Unlock from another device
+
+From 0.22.0 the private pages can open on any device in your tailnet. Tailscale
+Serve on the Windows computer proxies its HTTPS name to the broker's loopback
+listener. The listener still binds `127.0.0.1` only. From 0.23.0 Linux uses the
+same steps; see [Private HTTPS pages](private-pages.md#unlock-from-another-device).
+
+1. Install Tailscale on the Windows computer and enable HTTPS certificates for
+   the tailnet. Find the computer's name, for example
+   `node.tailnet.ts.net`.
+2. Make the Tailscale service trust the CA that issued the broker's
+   certificate. Tailscale runs as SYSTEM and does not read your user
+   certificate store, where `mkcert -install` puts the CA. As the broker's
+   user (not elevated), find the CA file:
+
+   ```powershell
+   Join-Path (mkcert -CAROOT) 'rootCA.pem'
+   ```
+
+   Then, in an elevated PowerShell, add that exact path to the computer's
+   trusted roots. Do not run `mkcert -CAROOT` in the elevated shell: with a
+   separate administrator account it names that account's CA.
+
+   ```powershell
+   certutil -addstore -f Root 'C:\Users\YOU\AppData\Local\mkcert\rootCA.pem'
+   ```
+
+   This is a change to the trust of the whole computer. Keep the CA private key
+   (`rootCA-key.pem`) private.
+3. Pick a free loopback port for the broker, for example `9444`, and proxy a
+   tailnet HTTPS port to it with a **verified** `https://` target:
+
+   ```powershell
+   tailscale serve --bg --https=9443 https://127.0.0.1:9444
+   ```
+
+   Tailscale Serve then checks the broker's certificate for `127.0.0.1` on
+   every connection. Never use an `https+insecure://` or `http://` target. The
+   Serve proxy stays configured when the broker stops, and another local user
+   can then take the free port. With a verified target, Serve refuses that
+   listener, because it has no certificate from your CA. With an unverified
+   target, Serve would show that user's fake unlock page at your trusted
+   tailnet name, and could collect the master password.
+4. Start the broker with the Tailscale origin and the loopback port. Use the
+   same origin for every CLI command and for `akdbx extension build`:
+
+   ```powershell
+   $env:AKDBX_UNLOCK_ORIGIN = 'https://node.tailnet.ts.net:9443'
+   .\.venv\Scripts\akdbx.exe serve "$private\synthetic.kdbx" --local-port 9444 `
+     --tls-cert "$private\localhost.pem" --tls-key "$private\localhost-key.pem"
+   ```
+
+The broker then gives links on the Tailscale origin. Open them on any tailnet
+device, including the Windows computer itself. The page accepts a request only
+when its `Host` and `Origin` match the configured origin; Tailscale Serve keeps
+both. A remote origin must be a DNS name, not an IP address, and needs
+`--local-port` from 1024 to 65535. A loopback origin keeps its own port and
+needs no `--local-port`. Limit access to the Serve port with tailnet access
+controls. `tailscale funnel` publishes the page to the internet instead: read
+[Unlock from the internet](private-pages.md#unlock-from-the-internet) first.
+When you stop using remote unlock, remove the proxy with
+`tailscale serve --https=9443 off`.
+
+### Unlock from the internet
+
+The choices and their order are the same as on Linux; see
+[Unlock from the internet](private-pages.md#unlock-from-the-internet). The
+akdbx relay needs no certificate, port or proxy setup:
+
+```powershell
+.\.venv\Scripts\akdbx.exe relay enable
+.\.venv\Scripts\akdbx.exe serve "$private\synthetic.kdbx"
+.\.venv\Scripts\akdbx.exe relay status
+```
+
+The relay folder is `%LOCALAPPDATA%\akdbx\relay`, next to the notification
+state: only this user and SYSTEM can open it and its files. Do not set
+`AKDBX_UNLOCK_ORIGIN`, `--tls-cert`, `--tls-key` or `--local-port` with the
+relay; the CLI finds the relay origin by itself.
+
+The relay origin is `https://<id>.akdbx.link`, with no port. A broker that
+registered before 0.28.0 has the old `https://<id>.akdbx.link:8443` origin; it
+moves to the new port by itself at its next start (the broker task's next
+run), as [The relay moved from port 8443 to 443](private-pages.md#the-relay-moved-from-port-8443-to-443)
+describes. Then run `akdbx extension build` again and reload the extension.
+
+### Authenticator capture native host
+
+From 0.22.0 the browser native host that captures a website's authenticator
+setup QR also runs on Windows. The extension and the review flow are the same
+as on Linux; see the skill's
+[private import reference](../skills/akdbx/references/private-import.md).
+
+The broker serves a separate capture pipe whose name is its RPC pipe name plus
+`-capture` (for example `\\.\pipe\akdbx-SID-SESSION-capture`). The pipe
+accepts one message type, which stages one captured setup for private review.
+It never returns a key, cannot unlock the vault, and is not part of the agent
+RPC. Like the RPC pipe, it accepts only clients of this Windows user and
+desktop session, and the host connects only to a pipe server of the same user
+and session.
+
+Build the extension, load it unpacked, then register the host for one browser
+with its extension ID and the broker's unlock origin:
+
+```powershell
+.\.venv\Scripts\akdbx-browser-import.exe build-extension "$private\capture-extension"
+.\.venv\Scripts\akdbx-browser-import.exe install-host --browser chrome `
+  --extension-id EXTENSION_ID --origin $env:AKDBX_UNLOCK_ORIGIN
+```
+
+`--browser` is `chrome`, `edge` or `helium`. Without `--socket` the host uses
+the capture pipe of this user's default broker; give `--socket` with the
+`-capture` pipe when the broker runs with its own `--socket`. The installer
+writes `%LOCALAPPDATA%\akdbx\browser-import.json` (private to this user, SYSTEM
+and administrators), a manifest under `%LOCALAPPDATA%\akdbx\browser-import`, and
+one `HKEY_CURRENT_USER` registry value. The manifest starts the installed
+`akdbx-browser-import.exe` of this environment directly. Without `--socket`
+the host finds the default pipe of the current desktop session each time it
+starts. It never replaces another registration. A second browser must use the
+same extension ID, origin and pipe. `install-host` reads no vault and starts no
+browser. `uninstall-host --browser NAME` removes that browser's registry value
+and manifest. When it removes the last browser, it also removes the shared
+configuration; to change the origin, extension ID or pipe, uninstall every
+browser and install again.
+
+## Browser extension route
+
+From 0.21.0 the broker can also fill through the akdbx browser extension in
+your everyday Helium, Chrome or Edge, without a remote-debugging port. A
+debugging port gives every process of the same user full control of that
+profile; the extension route removes that need. Agents use it with
+`--route extension`, and you can click the extension yourself to fill a
+focused field. See the skill's [extension route](../skills/akdbx/references/extension.md)
+for the commands, capabilities and security model.
+
+### Install in Helium
+
+1. Start the broker as described above. The extension route needs no
+   `--password-browser-profile` or `--card-browser-profile`. To make it the
+   default for pins that name no route, add `--default-fill-route extension`.
+2. Register the native-messaging host for this user, in a second PowerShell
+   window with the same unlock origin:
+
+   ```powershell
+   .\.venv\Scripts\akdbx.exe extension install --browser helium
+   ```
+
+   This writes a launcher and a host manifest in
+   `%LOCALAPPDATA%\akdbx\extension-host\` and sets
+   `HKEY_CURRENT_USER\Software\Chromium\NativeMessagingHosts\org.akdbx.extension`.
+   Helium is a Chromium-branded build: it reads Chromium's key, then Google
+   Chrome's key, and not `Software\imput\Helium` (Chromium's
+   `launch_context_win.cc`; confirmed with Helium 144.0.7559.109). Use
+   `--browser chrome` (`Software\Google\Chrome\...`) or `--browser edge`
+   (`Software\Microsoft\Edge\...`) for those browsers. Add the global
+   `--socket \\.\pipe\akdbx-NAME` before `extension` only for a custom pipe.
+3. Write the unpacked extension to the folder you load extensions from:
+
+   ```powershell
+   .\.venv\Scripts\akdbx.exe extension build --output "$env:LOCALAPPDATA\HeliumExtensions\akdbx"
+   ```
+
+   Run the same command again after an upgrade; it updates only a folder that
+   already holds this extension. It prints the `extension_version` it wrote. The build writes the unlock origin
+   (`AKDBX_UNLOCK_ORIGIN`, or `--unlock-origin` before `extension`; on Windows
+   the default is `https://localhost:9443`) into the extension. The popup opens
+   pairing and unlock links only on that origin, so a replaced native host
+   cannot send you to a look-alike master-password page. Rebuild after you
+   change the origin.
+4. In Helium open `chrome://extensions`, turn on **Developer mode**, choose
+   **Load unpacked** and select that folder. The extension ID must be
+   `jjoamaejjkldcjcpgncoomoaagdfimhg`; its manifest key keeps it fixed.
+5. Click the akdbx toolbar button. The popup shows a code. Choose **Open the
+   pairing page**, check that the page shows the same code, and enter the
+   master password there. If the broker is locked, this also unlocks it.
+   Pairing lasts until the browser or the broker restarts. The popup footer
+   shows the extension version, for example **akdbx extension 0.1.0**.
+
+### Update the extension
+
+The extension has its own version, separate from the akdbx version. After you
+update akdbx:
+
+1. Restart the broker on the new version, as described above.
+2. Run the same `extension build --output` command into the same folder.
+3. In `chrome://extensions`, click the reload button on the akdbx card. Pair
+   again if the popup asks.
+
+`akdbx status` then shows `version_status: "current"` for the browser in
+`extension_browsers`, and `version` equal to `extension_version_expected`.
+`"outdated"` means the browser still runs the old copy: check that you built
+into the folder Helium loads, then reload again.
+
+To fill, click into a login, card or address field, then click the akdbx
+button, use **Fill with akdbx…** in the context menu, or press Alt+Shift+K, and
+choose an entry. `.\.venv\Scripts\akdbx.exe extension uninstall --browser helium`
+removes the host registration, manifest and launcher; remove the extension in
+`chrome://extensions`.
+
+Google Chrome 137 and later still load an unpacked extension through
+**Load unpacked**, but ignore the `--load-extension` switch. The automated
+checks therefore run in Helium and Edge.
 
 ## Search and fill
 
@@ -350,6 +607,7 @@ the engine installed for all users; hosted Windows CI installs it and runs all
 | Admission | Exact-byte preview and save, external snapshots, locator binding, refusals with fixed diagnostics, unsafe or changed snapshot folder, interruption and restart | Pass |
 | Notifications | Until-unlock subscription across a restart; public folder or file, malformed and oversized state | Restored and delivered; unsafe state refused, not repaired |
 | Saves and pipe | Named pipe, DACL checks, encrypted saves, recovery receipts (unchanged from 0.15.0) | Pass |
+| Extension route (0.21.0) | `test_extension_browser.py` in a disposable Helium 144 and Edge profile: host found through the browser's own registry key, agent list/pin/fill of password and login, Stripe processor frame, user-click popup fill; refusals for wrong origin, cross-site frame, hidden field, processor markup on another host, locked broker. `test_extension_route.py`: pairing, policy, framing and size limits | Pass |
 
 Hosted Windows CI runs the same suites on every pull request and release tag.
 It does not prove that a native application accepts directed window messages.

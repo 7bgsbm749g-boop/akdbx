@@ -15,6 +15,7 @@ import win32pipe
 from .windows_security import current_identity, private_attributes, verify_process
 
 PREFIX = '\\\\.\\pipe\\'
+CAPTURE_SUFFIX = '-capture'
 
 
 def default_pipe():
@@ -22,9 +23,11 @@ def default_pipe():
     return Path(PREFIX + f'akdbx-{sid}-{session}')
 
 
-def pipe_name(path):
+def pipe_name(path, *, capture=False):
     value = str(path)
-    if not re.fullmatch(r'\\\\\.\\pipe\\akdbx-[A-Za-z0-9-]{1,160}', value):
+    # A capture pipe adds CAPTURE_SUFFIX to any valid RPC pipe name.
+    limit = 160 + len(CAPTURE_SUFFIX) if capture else 160
+    if not re.fullmatch(r'\\\\\.\\pipe\\akdbx-[A-Za-z0-9-]{1,%d}' % limit, value):
         raise ValueError('Windows --socket must be a local \\\\.\\pipe\\akdbx-NAME pipe')
     return value
 
@@ -128,16 +131,18 @@ class PipeConnection:
             self.peer = None
 
 
-def connect(path):
-    name = pipe_name(path)
+def connect(path, *, capture=False):
+    name = pipe_name(path, capture=capture)
     try:
         handle = win32file.CreateFile(name, win32con.GENERIC_READ | win32con.GENERIC_WRITE, 0,
                                      None, win32con.OPEN_EXISTING,
                                      win32con.FILE_FLAG_OVERLAPPED | 0x00100000 | 0x00010000, None)
         # SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION prevents a pipe
         # squatter from impersonating the connecting user's primary token.
-    except pywintypes.error:
-        raise OSError('Windows broker pipe unavailable or busy') from None
+    except pywintypes.error as exc:
+        if exc.winerror == 2:  # ERROR_FILE_NOT_FOUND: no broker serves this pipe
+            raise FileNotFoundError('Windows broker pipe not found') from None
+        raise OSError('Windows broker pipe busy or unavailable') from None
     try:
         return PipeConnection(handle, verify_peer(handle, server=True))
     except BaseException:
@@ -151,6 +156,75 @@ def new_pipe(name, *, first=False):
         | (0x00080000 if first else 0),
         win32pipe.PIPE_TYPE_BYTE | win32pipe.PIPE_READMODE_BYTE | win32pipe.PIPE_WAIT | 0x8,
         18, 65540, 65540, 1000, private_attributes())
+
+
+def capture_pipe(path):
+    """The broker's authenticator-capture pipe: the RPC pipe name plus ``-capture``.
+
+    It is a separate endpoint, so a captured key never enters the agent RPC.
+    """
+    name = pipe_name(path)
+    if name.endswith(CAPTURE_SUFFIX):
+        raise ValueError('the broker RPC pipe name must not end with ' + CAPTURE_SUFFIX)
+    return Path(pipe_name(name + CAPTURE_SUFFIX, capture=True))
+
+
+def accept_connections(name, pending, on_connection, stop=None):
+    """Accept verified clients on ``pending`` until ``stop``; then close the open instance.
+
+    ``pending`` is the first instance (created with ``first=True`` by the
+    caller). ``on_connection`` receives each same-user/session connection and
+    owns it; a failure there closes it.
+    """
+    try:
+        while stop is None or not stop.is_set():
+            event = win32event.CreateEvent(None, True, False, None)
+            overlapped = pywintypes.OVERLAPPED()
+            overlapped.hEvent = event
+            connected = False
+            try:
+                try:
+                    status = win32pipe.ConnectNamedPipe(pending, overlapped)
+                    connected = status in {0, 535}
+                except pywintypes.error as exc:
+                    if exc.winerror == 232:
+                        # ERROR_NO_DATA: a client connected and closed before
+                        # this accept. Replace the dead instance and go on.
+                        fresh = new_pipe(name)
+                        pending.Close()
+                        pending = fresh
+                        connected = True  # Nothing is pending to cancel.
+                        continue
+                    if exc.winerror != 535:  # ERROR_PIPE_CONNECTED: raced accept
+                        raise
+                    connected = True
+                while not connected:
+                    if stop is not None and stop.is_set():
+                        break
+                    if win32event.WaitForSingleObject(event, 200) == win32event.WAIT_OBJECT_0:
+                        win32file.GetOverlappedResult(pending, overlapped, False)
+                        connected = True
+                if not connected:
+                    break
+                connection = PipeConnection(pending)
+                # Create the next instance before releasing this one, so the
+                # pipe's name cannot be taken between client connections.
+                pending = new_pipe(name)
+                try:
+                    connection.peer = verify_peer(connection.handle, server=False)
+                    on_connection(connection)
+                except Exception:
+                    connection.close()
+            finally:
+                if not connected:
+                    win32file.CancelIo(pending)
+                    try:
+                        win32file.GetOverlappedResult(pending, overlapped, True)
+                    except pywintypes.error:
+                        pass
+                event.Close()
+    finally:
+        pending.Close()
 
 
 def serve(path, broker, stop=None):
@@ -170,61 +244,31 @@ def serve(path, broker, stop=None):
                 workers.discard(threading.current_thread())
             slots.release()
 
+    def dispatch(connection):
+        if not slots.acquire(blocking=False):
+            connection.close()
+            return
+        worker = threading.Thread(target=run, args=(connection,), daemon=True)
+        with lock:
+            workers.add(worker)
+        try:
+            worker.start()
+        except BaseException:
+            with lock:
+                workers.discard(worker)
+            slots.release()
+            raise
+
     try:
-        # Restored card-save results go out only when the endpoint is ready.
-        broker.card_save_notifications.resume()
-        while stop is None or not stop.is_set():
-            event = win32event.CreateEvent(None, True, False, None)
-            overlapped = pywintypes.OVERLAPPED()
-            overlapped.hEvent = event
-            connected = False
-            try:
-                try:
-                    status = win32pipe.ConnectNamedPipe(pending, overlapped)
-                    connected = status in {0, 535}
-                except pywintypes.error as exc:
-                    if exc.winerror != 535:  # ERROR_PIPE_CONNECTED: raced accept
-                        raise
-                    connected = True
-                while not connected:
-                    if stop is not None and stop.is_set():
-                        break
-                    if win32event.WaitForSingleObject(event, 200) == win32event.WAIT_OBJECT_0:
-                        win32file.GetOverlappedResult(pending, overlapped, False)
-                        connected = True
-                if not connected:
-                    break
-                connection = PipeConnection(pending)
-                # Create the next instance before releasing this one, so the
-                # pipe's name cannot be taken between client connections.
-                pending = new_pipe(name)
-                try:
-                    connection.peer = verify_peer(connection.handle, server=False)
-                    if not slots.acquire(blocking=False):
-                        connection.close()
-                        continue
-                    worker = threading.Thread(target=run, args=(connection,), daemon=True)
-                    with lock:
-                        workers.add(worker)
-                    try:
-                        worker.start()
-                    except BaseException:
-                        with lock:
-                            workers.discard(worker)
-                        slots.release()
-                        raise
-                except Exception:
-                    connection.close()
-            finally:
-                if not connected:
-                    win32file.CancelIo(pending)
-                    try:
-                        win32file.GetOverlappedResult(pending, overlapped, True)
-                    except pywintypes.error:
-                        pass
-                event.Close()
+        try:
+            # Restored card-save results go out only when the endpoint is ready.
+            broker.resume_notifications()
+        except BaseException:
+            pending.Close()
+            raise
+        accept_connections(name, pending, dispatch, stop)
     finally:
-        pending.Close()
+        broker.extension.close()
         broker.unlock_notifications.close()
         broker.card_save_notifications.close()
         with lock:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
@@ -20,8 +21,11 @@ from .browser_password import DELIVERY as PASSWORD_DELIVERY
 from .runtime import anchored_socket_path, open_private_runtime_directory
 from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
+from .local_https import is_loopback_origin, reload_certificate, start_local_unlock_server
 from .notifications import validate_webhook_url
-from . import capture_cli, card_cli, identity_cli, secret_cli
+from . import capture_cli, card_cli, extension_host, identity_cli, relay as relay_module, relay_cli, secret_cli
+from . import setup_cli
+from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
 from .sink_helper import SinkError
 
 
@@ -127,6 +131,22 @@ def _peer_credentials(client: socket.socket) -> tuple[int, int, int]:
     return struct.unpack("3i", client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, size))
 
 
+def _same_origin(first: str, second: str) -> bool:
+    """True when two HTTPS origins name the same host and effective port, as client validation compares them."""
+    def identity(value):
+        parts = urlsplit(value)
+        port = parts.port
+        if (parts.scheme.lower() != 'https' or not parts.hostname or parts.username is not None
+                or parts.password is not None or parts.path not in {'', '/'} or parts.query or parts.fragment):
+            return None
+        return parts.hostname.lower(), 443 if port is None else port
+    try:
+        a, b = identity(first), identity(second)
+    except ValueError:
+        return False
+    return a is not None and a == b
+
+
 def _validate_unlock_url(url: object, expected_origin: str) -> None:
     if not isinstance(url, str):
         raise ProtocolError("invalid unlock URL")
@@ -189,7 +209,7 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         raise ValueError("configured unlock origin must be an HTTPS origin without path, query, or credentials")
     if type(response.get("ok")) is not bool:
         raise ProtocolError("invalid broker response")
-    for capability in ('locked', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'passwordless_identity_supported', 'target_fill_required', 'totp_supported'):
+    for capability in ('locked', 'unlock_blocked', 'unlock_block_saved', 'writes_available', 'recovery_required', 'merge_available', 'merge_same_credentials_only', 'merge_refresh_target_supported', 'merge_preserve_conflicts_supported', 'admission_supported', 'sso_identity_supported', 'passwordless_identity_supported', 'target_fill_required', 'totp_supported'):
         if capability in response and type(response[capability]) is not bool:
             raise ProtocolError("invalid broker response")
     if 'version' in response and not isinstance(response['version'], str):
@@ -204,6 +224,24 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
         _validate_unlock_url(response["private_url"], expected_unlock_origin)
     if "unlock_url" in response:
         _validate_unlock_url(response["unlock_url"], expected_unlock_origin)
+    if "unlock_origin" in response:
+        # A blocked link's status has no URL, only its non-secret origin.
+        origin = response["unlock_origin"]
+        parts = urlsplit(origin) if isinstance(origin, str) else None
+        if parts is None or parts.path or parts.query or parts.fragment:
+            raise ProtocolError("invalid broker response")
+        _validate_unlock_url(origin + "/?token=origin-check", expected_unlock_origin)
+    pairing = response.get("extension_pairing")
+    if pairing is not None:
+        # Pairing links are private broker pages, like the unlock link.
+        if not isinstance(pairing, list) or len(pairing) > 4:
+            raise ProtocolError("invalid broker response")
+        for item in pairing:
+            if not isinstance(item, dict) or set(item) != {"browser", "code", "url"}:
+                raise ProtocolError("invalid broker response")
+            _validate_unlock_url(item["url"], expected_unlock_origin)
+            if urlsplit(item["url"]).path != "/extension/pair":
+                raise ProtocolError("invalid broker response")
     return response
 
 
@@ -214,7 +252,7 @@ def _request_timeout(payload: dict) -> int:
         return 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
     # Frame routes resolve bounded out-of-process iframe targets first.
     slow = action in {'pin-card-target', 'pin-identity-target', 'list-password-frames'} or (
-        action == 'pin-password-target' and 'frame_origin' in payload)
+        action == 'pin-password-target' and ('frame_origin' in payload or payload.get('route') == 'extension'))
     return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password', secret_cli.COMMAND, *capture_cli.COMMANDS) else 15 if slow else 5
 
 
@@ -286,24 +324,35 @@ def _mutation_not_sent(command, error):
     return message
 
 
+def _socket_option(value: str) -> Path:
+    """--socket: a Windows pipe name as given; on Linux one absolute path, with ~ expanded, for the broker
+    connection and for every command that setup writes (they run from another folder)."""
+    return Path(value) if os.name == 'nt' else Path(os.path.abspath(Path(value).expanduser()))
+
+
 def parser() -> argparse.ArgumentParser:
     """Build command parsers for broker, vault, and target operations."""
     result = argparse.ArgumentParser(prog="akdbx", description="Secret-withholding AKDBX autofill broker")
     result.add_argument("--version", action="version", version=__version__)
-    result.add_argument("--socket", type=Path)
+    result.add_argument("--socket", type=_socket_option)
     result.add_argument(
         "--broker-uid", type=int, default=(None if os.name == 'nt' else os.environ.get("AKDBX_BROKER_UID", os.getuid())),
         help="expected operating-system UID of the broker",
     )
     result.add_argument(
-        "--unlock-origin", default=os.environ.get("AKDBX_UNLOCK_ORIGIN", 'https://localhost:9443' if os.name == 'nt' else DEFAULT_UNLOCK_ORIGIN),
-        help="deployment HTTPS origin for private pages (or AKDBX_UNLOCK_ORIGIN); default is a non-routable example",
+        "--unlock-origin",
+        help=("deployment HTTPS origin for private pages. Order: this option, then AKDBX_UNLOCK_ORIGIN, then the "
+              "origin of an enabled akdbx relay ('akdbx relay enable'), then https://localhost:9443. "
+              "'serve --relay' ignores AKDBX_UNLOCK_ORIGIN and refuses this option unless it is the relay origin"),
     )
     commands = result.add_subparsers(dest="command", required=True)
     card_cli.add_parsers(commands)
     identity_cli.add_parsers(commands)
+    extension_host.add_parser(commands)
     secret_cli.add_parser(commands)
     capture_cli.add_parsers(commands)
+    relay_cli.add_parser(commands)
+    setup_cli.add_parser(commands)
     start = commands.add_parser("serve", help="unlock a KDBX and run the local broker")
     start.add_argument("database", type=Path)
     start.add_argument('--card-browser-profile', type=Path, default=os.environ.get('AKDBX_CARD_BROWSER_PROFILE'),
@@ -315,11 +364,23 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--web-unlock", action="store_true", help="compatibility flag: private web unlock is always enabled")
     start.add_argument("--unlock-socket", type=Path, help=argparse.SUPPRESS)
     start.add_argument("--unlock-url", help=argparse.SUPPRESS)
-    start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket")
+    start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket. Linux saves a blocked unlock link beside this file when it is given, otherwise in ${XDG_STATE_HOME:-~/.local/state}/akdbx")
     start.add_argument('--secret-sinks', type=Path, default=os.environ.get('AKDBX_SECRET_SINKS'),
                        help='operator sink configuration for deliver-secret (root- or broker-owned, not group/other writable)')
-    start.add_argument('--tls-cert', type=Path, help='Windows: trusted PEM certificate for the local HTTPS unlock page')
-    start.add_argument('--tls-key', type=Path, help='Windows: private PEM certificate key with a restrictive DACL')
+    start.add_argument('--tls-cert', type=Path, help='trusted PEM certificate for the loopback HTTPS private page')
+    start.add_argument('--tls-key', type=Path, help='private PEM certificate key (Linux: mode 0600; Windows: restrictive DACL)')
+    start.add_argument('--local-port', type=int,
+                       help='loopback HTTPS port when --unlock-origin is a remote (Tailscale Serve) origin')
+    start.add_argument('--relay', action='store_true',
+                       help=('require the saved akdbx relay (akdbx relay enable) and its origin; '
+                             'AKDBX_UNLOCK_ORIGIN is then ignored. Without this flag, serve uses an enabled relay '
+                             'unless --unlock-origin or AKDBX_UNLOCK_ORIGIN is set'))
+    start.add_argument('--no-print-unlock-link', action='store_true',
+                       help=('do not print the private unlock link at start; print only that the vault is locked '
+                             "and to run 'akdbx status'. Recommended for a service or task, whose output a log "
+                             'such as the systemd journal keeps'))
+    start.add_argument('--default-fill-route', choices=FILL_ROUTES, default=os.environ.get('AKDBX_DEFAULT_FILL_ROUTE', 'cdp'),
+                       help='route for pins that name none: cdp (debugging port) or extension (paired browser extension)')
     search = commands.add_parser("search", help="return matching non-secret login metadata")
     search.add_argument("query", nargs="?", default="")
     fill = commands.add_parser("fill", help="autofill using a handle returned by search")
@@ -340,9 +401,12 @@ def parser() -> argparse.ArgumentParser:
                               help='explicitly verified purpose for password-only fields with absent or on autocomplete')
     password_pin.add_argument('--allow-autocomplete-off', action='store_true',
                               help='allow a verified off password field; requires --password-purpose and broker capability')
+    password_pin.add_argument('--route', choices=FILL_ROUTES,
+                              help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
     frames = commands.add_parser('list-password-frames', help='read-only: list frame ids, origins and visible field counts of one exact HTTPS page')
     frames.add_argument('--top-url', required=True, help='exact verified top-level page URL')
     frames.add_argument('--page-id', help='page target id; required only when several tabs show the same exact URL')
+    frames.add_argument('--route', choices=FILL_ROUTES, help="cdp or extension; default: the broker's")
     for name in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password', 'setup-totp'):
         help_text = {
             'create-sso-entry': 'save a Google/GitHub SSO identity (no password form)',
@@ -386,10 +450,21 @@ def parser() -> argparse.ArgumentParser:
     for command in (fill, generated, totp):
         command.add_argument('--target', required=True, help='fresh single-use pin-target token; no global fallback')
     commands.add_parser("status", help="check broker status")
+    new_link = commands.add_parser(
+        "new-unlock-link",
+        help="replace a blocked unlock link; only after the user confirms the failed attempts were theirs",
+        description="Works only while the current unlock link is blocked after three failed attempts. "
+                    "The broker cannot verify the user: ask the user first whether they made the failed "
+                    "attempts and want a new link. Never retry automatically.")
+    new_link.add_argument("--user-confirmed", action="store_true", required=True,
+                          help="the user said yes to both questions")
     subscribe = commands.add_parser("subscribe-unlock", help="register a one-shot HTTPS unlock webhook; no active agent wait")
     subscribe.add_argument("--webhook-url-file", required=True, type=Path,
                            help="owned mode-0600 file containing the private callback URL")
     subscribe.add_argument("--ttl", type=int, default=0, help="0 waits until unlock/cancel (default); 60–3600 seconds only for an explicitly time-limited wait")
+    subscribe.add_argument("--blocked-events", action="store_true",
+                           help="also send akdbx.unlock-blocked when the unlock link is blocked (broker 0.25.0+); "
+                                "only for a consumer that rechecks status on every event")
     for name in ("unlock-subscription-status", "unsubscribe-unlock"):
         command = commands.add_parser(name, help="inspect/cancel a one-shot unlock subscription")
         command.add_argument("subscription_id")
@@ -418,18 +493,20 @@ def _valid_frame_list(response):
     def text(value, limit=128):
         return isinstance(value, str) and 0 < len(value) <= limit
     frames = response.get('frames')
-    if (set(response) != {'ok', 'page_id', 'main_frame_id', 'frame_policy', 'frames', 'truncated'}
+    extension = response.get('route') == 'extension'
+    if (set(response) != {'ok', 'page_id', 'main_frame_id', 'frame_policy', 'frames', 'truncated'} | ({'route'} if extension else set())
             or not text(response['page_id']) or not text(response['main_frame_id'])
             or response['frame_policy'] != 'same-site-chain-v1' or type(response['truncated']) is not bool
             or not isinstance(frames, list) or len(frames) > 64):
         return False
-    keys = {'frame_id', 'parent_frame_id', 'depth', 'origin', 'out_of_process', 'eligible', 'visible_fields'}
+    keys = {'frame_id', 'parent_frame_id', 'depth', 'origin', 'eligible', 'visible_fields'} | (
+        set() if extension else {'out_of_process'})
     for frame in frames:
         fields = frame.get('visible_fields') if isinstance(frame, dict) else None
         if (not isinstance(frame, dict) or set(frame) != keys or not text(frame['frame_id'])
                 or not (frame['parent_frame_id'] is None or text(frame['parent_frame_id']))
                 or type(frame['depth']) is not int or not 0 <= frame['depth'] <= 64 or not text(frame['origin'], 512)
-                or type(frame['out_of_process']) is not bool or type(frame['eligible']) is not bool
+                or not extension and type(frame['out_of_process']) is not bool or type(frame['eligible']) is not bool
                 or not (fields is None or isinstance(fields, dict) and set(fields) == {'password', 'text'}
                         and all(type(v) is int and 0 <= v <= 512 for v in fields.values()))):
             return False
@@ -457,79 +534,313 @@ def default_notification_state(socket_path: Path) -> Path:
     return socket_path.with_name(name)
 
 
+def default_unlock_block_state(socket_path: Path) -> Path:
+    """Linux: where the broker saves a blocked unlock link by default.
+
+    The runtime folder that holds the socket is cleared on reboot or logout,
+    so the block lives in the persistent per-user state folder instead,
+    keyed to the broker endpoint so two brokers never share one flag.
+    """
+    base = os.environ.get('XDG_STATE_HOME', '')
+    root = Path(base) if os.path.isabs(base) else Path.home() / '.local' / 'state'
+    key = hashlib.sha256(os.fsencode(os.path.realpath(socket_path))).hexdigest()
+    return root / 'akdbx' / f'unlock-blocked-{key}.json'
+
+
+def refuse_untrusted_unlock_block(broker) -> bool:
+    """Return True, after it prints why, when `serve` must not start.
+
+    A saved unlock-link block that cannot be trusted never starts a broker
+    blocked with no way out, and never silently unblocks it.
+    """
+    manager = broker.unlock_notifications
+    try:
+        manager.load_unlock_blocked()
+        return False
+    except Exception as exc:
+        path = manager._blocked_path()
+        # A folder failure names the folder; a file failure has no detail.
+        detail = f' ({exc})' if isinstance(exc, RuntimeError) else ''
+    if os.name == 'nt':
+        rules = (f'{path.parent} must be a folder that only this user, SYSTEM and administrators can access, '
+                 'and the file must be private to this user')
+    else:
+        rules = (f'{path.parent} and each folder above it must be owned by you or root and not writable by '
+                 f'group or others (for example: chmod 700 {path.parent}), and the file must be a regular file '
+                 'you own with mode 0600')
+    # Print first: the notifiers have not started work, and a failed state
+    # write while closing them must not hide which permissions to fix.
+    print(f'refusing to start: the saved unlock-link block {path} cannot be trusted{detail}. {rules}. '
+          'Fix the permissions, or start with --notification-state FILE in a private folder.', file=sys.stderr)
+    for notifier in (manager, broker.card_save_notifications):
+        try:
+            notifier.close()
+        except Exception:
+            pass
+    return True
+
+
+def resolve_unlock_origin(args) -> None:
+    """Set ``args.unlock_origin``: the option, AKDBX_UNLOCK_ORIGIN, an enabled relay, then the default.
+
+    `serve` and every other command resolve it the same way, so the CLI
+    trusts the relay origin without the user copying it. A relay directory
+    that fails the private-file checks gives no origin.
+    """
+    relay = args.command == 'serve' and getattr(args, 'relay', False)
+    # `serve --relay` takes the relay origin: an inherited variable must not change it.
+    explicit = args.unlock_origin or (None if relay else os.environ.get('AKDBX_UNLOCK_ORIGIN')) or None
+    if args.command == 'serve' and getattr(args, 'unlock_url', None):
+        explicit = explicit or args.unlock_url
+    args.unlock_origin_explicit = explicit is not None
+    args.unlock_origin = explicit or relay_module.saved_origin() or 'https://localhost:9443'
+
+
+def _relay_for_serve(args):
+    """Return ``(config, store)`` when `serve` uses the relay, ``(None, None)`` when not, or an exit code."""
+    store = relay_module.RelayStore()
+    if args.unlock_origin_explicit and not args.relay:
+        return None, None
+    try:
+        config = store.load()
+        certificate = store.certificate(config.name) if config is not None and config.enabled else None
+    except relay_module.RelayStoreError as exc:
+        if not args.relay and not store.exists():
+            return None, None
+        print(f'refusing to start: the saved relay configuration cannot be trusted ({exc}). Fix it, run '
+              "'akdbx relay disable --forget', or start with --unlock-origin.", file=sys.stderr)
+        return 2
+    if config is None or not config.enabled:
+        if args.relay:
+            print("--relay needs an enabled relay: run 'akdbx relay enable' first", file=sys.stderr)
+            return 2
+        return None, None
+    if args.unlock_origin_explicit and not _same_origin(args.unlock_origin, config.origin):
+        print(f'--relay sets the origin itself ({config.origin}): remove --unlock-origin and --unlock-url',
+              file=sys.stderr)
+        return 2
+    if args.tls_cert is not None or args.tls_key is not None or args.local_port is not None:
+        print('the akdbx relay is enabled: it sets the origin, the certificate and the loopback port itself. '
+              "Remove --tls-cert, --tls-key and --local-port, or run 'akdbx relay disable', or set "
+              '--unlock-origin to serve without the relay', file=sys.stderr)
+        return 2
+    if certificate is None:
+        print("the relay has no usable certificate yet: run 'akdbx relay enable' again", file=sys.stderr)
+        return 2
+    return config, store
+
+
+def _refresh_relay(args, config, store):
+    """With the relay lock held: take the relay's current public port and control URL, then warn.
+
+    A failed check keeps the saved values (one warning); it never stops the
+    start. Return ``(config, changes)``.
+    """
+    result = relay_module.refresh(store, config)
+    if result.warning:
+        print('akdbx relay: warning: ' + result.warning, file=sys.stderr)
+    for change in result.changes:
+        print('akdbx relay: ' + change, file=sys.stderr)
+    config = result.config
+    if result.changes and args.unlock_origin_explicit and not _same_origin(args.unlock_origin, config.origin):
+        print(f'warning: --unlock-origin names the old relay origin {args.unlock_origin}; this broker now '
+              f'serves {config.origin}. Remove --unlock-origin.', file=sys.stderr)
+    if result.changes:
+        print(f'akdbx relay: the private pages moved to {config.origin}. If you use the browser extension, '
+              'run akdbx extension build again and reload it.', file=sys.stderr)
+    inherited = os.environ.get('AKDBX_UNLOCK_ORIGIN', '').strip().rstrip('/')
+    if inherited and not _same_origin(inherited, config.origin):
+        # serve --relay ignores the variable, but other akdbx commands in this environment still use it
+        # and would refuse this broker's links as untrusted.
+        print(f'warning: AKDBX_UNLOCK_ORIGIN is {inherited}, but this broker serves the relay origin '
+              f'{config.origin}. Other akdbx commands with this variable will refuse its links: unset '
+              'AKDBX_UNLOCK_ORIGIN or set it to the relay origin.', file=sys.stderr)
+    return config, result.changes
+
+
+def _free_loopback_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run one CLI command and return its process exit status."""
     args = parser().parse_args(argv)
     if os.name == 'nt' and args.broker_uid is not None:
         print('--broker-uid applies only to Linux; Windows requires the same user/session', file=sys.stderr)
         return 2
+    resolve_unlock_origin(args)
+    if args.command == 'extension':
+        return extension_host.run(args, args.socket, args.unlock_origin)
+    # Setup passes --socket on to the commands it runs only when it was given.
+    args.socket_explicit = args.socket is not None
     if args.socket is None:
         try:
             args.socket = default_socket()
         except OSError:
             print('could not locate default broker socket; use --socket', file=sys.stderr)
             return 2
+    if args.command == setup_cli.COMMAND:
+        return setup_cli.run(args, status=lambda origin: request(
+            args.socket, {'action': 'ping'}, broker_uid=args.broker_uid, expected_unlock_origin=origin))
+    if args.command == relay_cli.COMMAND:
+        return relay_cli.run(args, lambda: request(args.socket, {'action': 'relay-status'},
+                                                   broker_uid=args.broker_uid,
+                                                   expected_unlock_origin=args.unlock_origin))
     if args.command == "serve":
         database = args.database.expanduser()
         keyfile = args.keyfile.expanduser() if args.keyfile else None
-        if args.yes_on_fill:
-            print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
-        if os.name == 'nt':
-            import pywintypes
-            from .windows_target import WindowsTyper
-            from .windows_unlock import start_windows_unlock_server
+        relay_choice = _relay_for_serve(args)
+        if isinstance(relay_choice, int):
+            return relay_choice
+        relay_config, relay_store = relay_choice
+        relay_lock = None
+        if relay_config is not None:
             try:
-                state = (args.notification_state.expanduser() if args.notification_state is not None
-                         else default_notification_state(args.socket))
-                broker = Broker(None, WindowsTyper(), card_browser_profile=args.card_browser_profile,
-                                password_browser_profile=args.password_browser_profile,
-                                notification_state_path=state, secret_sinks_path=args.secret_sinks)
-            except SinkError as exc:
-                print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
+                relay_lock = relay_store.lock()
+            except relay_module.RelayBusy:
+                print('refusing to start: another akdbx broker uses the relay now', file=sys.stderr)
                 return 2
-            except (OSError, ValueError, KeyError, RuntimeError, pywintypes.error):
-                print('could not open the private notification state; use --notification-state with a file in a '
-                      'folder that only this user, SYSTEM and administrators can access', file=sys.stderr)
+            except relay_module.RelayStoreError as exc:
+                print(f'refusing to start: the relay directory cannot be trusted ({exc}). Fix it, run '
+                      "'akdbx relay disable --forget', or start with --unlock-origin.", file=sys.stderr)
                 return 2
             try:
-                unlock_server, unlock_url = start_windows_unlock_server(
-                    broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key)
-            except (OSError, ValueError, pywintypes.error):
-                broker.unlock_notifications.close()
-                broker.card_save_notifications.close()
-                print('could not start Windows HTTPS unlock; check origin, TLS files, permissions and port', file=sys.stderr)
-                return 2
+                relay_config, relay_moved = _refresh_relay(args, relay_config, relay_store)
+            except BaseException:
+                relay_lock.release()
+                raise
+            # The relay origin, the relay certificate and key (one private file),
+            # and a free loopback port: the same loopback page as a Tailscale route.
+            args.unlock_origin = relay_config.origin
+            args.tls_cert = args.tls_key = relay_store.tls_path
+            args.local_port = _free_loopback_port()
         else:
-            if args.tls_cert is not None or args.tls_key is not None:
-                print('--tls-cert and --tls-key are Windows options; Linux uses Tailscale Serve', file=sys.stderr)
-                return 2
-            try:
-                broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
-                                password_browser_profile=args.password_browser_profile,
-                                notification_state_path=args.notification_state or default_notification_state(args.socket),
-                                secret_sinks_path=args.secret_sinks)
-            except SinkError as exc:
-                print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
-                return 2
-        unlock_name = ("agentic-kdbx-unlock.sock"
-                       if args.socket.name == "agentic-kdbx.sock"
-                       else "akdbx-unlock.sock")
-        unlock_socket = args.unlock_socket or args.socket.with_name(unlock_name)
-        if os.name != 'nt':
-            unlock_server, unlock_url = start_unlock_server(
-                broker, database, keyfile, unlock_socket, args.unlock_url or args.unlock_origin,
-            )
-        print(f"Vault locked. Open the private HTTPS page: {unlock_url}", file=sys.stderr)
-        print(f"Broker ready at {args.socket}; Ctrl-C locks it.", file=sys.stderr)
+            relay_moved = ()
         try:
-            serve(args.socket, broker)
-        except KeyboardInterrupt:
-            print("\nBroker locked.", file=sys.stderr)
+            return _serve(args, database, keyfile, relay_config, relay_store, relay_moved)
         finally:
-            broker.passwords.close()
-            unlock_server.shutdown()
-            unlock_server.server_close()
-        return 0
+            if relay_lock is not None:
+                relay_lock.release()
+    return _command(args)
+
+
+def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -> int:
+    if args.yes_on_fill:
+        print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
+    if os.name == 'nt':
+        import pywintypes
+        from .windows_target import WindowsTyper
+        from .windows_unlock import start_windows_unlock_server
+        try:
+            state = (args.notification_state.expanduser() if args.notification_state is not None
+                     else default_notification_state(args.socket))
+            broker = Broker(None, WindowsTyper(), card_browser_profile=args.card_browser_profile,
+                            password_browser_profile=args.password_browser_profile,
+                            notification_state_path=state, secret_sinks_path=args.secret_sinks,
+                            default_fill_route=args.default_fill_route)
+        except SinkError as exc:
+            print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
+            return 2
+        except (OSError, ValueError, KeyError, RuntimeError, pywintypes.error):
+            print('could not open the private notification state; use --notification-state with a file in a '
+                  'folder that only this user, SYSTEM and administrators can access', file=sys.stderr)
+            return 2
+        if refuse_untrusted_unlock_block(broker):
+            return 2
+        try:
+            from .windows_rpc import capture_pipe
+            unlock_server, unlock_url = start_windows_unlock_server(
+                broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key,
+                local_port=args.local_port, capture_pipe=capture_pipe(args.socket))
+        except (OSError, ValueError, pywintypes.error):
+            broker.unlock_notifications.close()
+            broker.card_save_notifications.close()
+            print('could not start Windows HTTPS unlock; check origin, local port, TLS files, permissions, '
+                  'and that no other broker uses this pipe', file=sys.stderr)
+            return 2
+    else:
+        # --tls-cert and --tls-key select the loopback HTTPS page, the same
+        # page as on Windows. Without them, Linux keeps its Tailscale Serve
+        # Unix-socket backend, which a loopback origin cannot reach.
+        local_https = args.tls_cert is not None or args.tls_key is not None
+        if local_https and args.unlock_url is not None:
+            print('--unlock-url belongs to the Tailscale Serve socket route; '
+                  'the HTTPS page uses --unlock-origin', file=sys.stderr)
+            return 2
+        if not local_https and (args.local_port is not None
+                                or is_loopback_origin(args.unlock_url or args.unlock_origin)):
+            print('a loopback unlock origin or --local-port needs --tls-cert and --tls-key', file=sys.stderr)
+            return 2
+        try:
+            broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
+                            password_browser_profile=args.password_browser_profile,
+                            notification_state_path=args.notification_state or default_notification_state(args.socket),
+                            # An explicit --notification-state keeps the block beside it.
+                            unlock_block_path=(None if args.notification_state
+                                               else default_unlock_block_state(args.socket)),
+                            secret_sinks_path=args.secret_sinks, default_fill_route=args.default_fill_route)
+        except SinkError as exc:
+            print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
+            return 2
+        if refuse_untrusted_unlock_block(broker):
+            return 2
+    unlock_name = ("agentic-kdbx-unlock.sock"
+                   if args.socket.name == "agentic-kdbx.sock"
+                   else "akdbx-unlock.sock")
+    unlock_socket = args.unlock_socket or args.socket.with_name(unlock_name)
+    if os.name != 'nt' and local_https:
+        try:
+            # The unlock socket path then serves only the browser native
+            # host's authenticator capture, as the capture pipe does on Windows.
+            unlock_server, unlock_url = start_local_unlock_server(
+                broker, database, keyfile, args.unlock_origin, args.tls_cert, args.tls_key,
+                local_port=args.local_port, capture_socket=unlock_socket)
+        except (OSError, ValueError, RuntimeError):
+            broker.unlock_notifications.close()
+            broker.card_save_notifications.close()
+            print('could not start HTTPS unlock; check origin, local port, TLS files and permissions '
+                  '(key mode 0600), and that no other broker uses this port or socket', file=sys.stderr)
+            return 2
+    elif os.name != 'nt':
+        unlock_server, unlock_url = start_unlock_server(
+            broker, database, keyfile, unlock_socket, args.unlock_url or args.unlock_origin,
+        )
+    if broker.unlock_blocked:
+        # A restored block: the link answers 403, so print no URL.
+        print("Vault locked. The unlock link is blocked after three failed master-password attempts. "
+              "Ask the user whether they made the failed attempts and want a new link; only after the "
+              "user confirms, run: akdbx new-unlock-link --user-confirmed", file=sys.stderr)
+    elif args.no_print_unlock_link:
+        # A service log (journal, task output) must not keep the link's token.
+        print("Vault locked. Run 'akdbx status' to get the private unlock link.", file=sys.stderr)
+    else:
+        print(f"Vault locked. Open the private HTTPS page: {unlock_url}", file=sys.stderr)
+    relay_client = None
+    if relay_config is not None:
+        relay_client = relay_module.RelayClient(
+            relay_module.endpoint(relay_config.relay), relay_config, relay_store, args.local_port,
+            reload_tls=lambda path: reload_certificate(unlock_server, path, path), moved=relay_moved)
+        broker.relay = relay_client.start()
+        print(f"Relay: the private pages open at {relay_config.origin} on any device, through "
+              f"{relay_config.relay}. TLS ends in this broker; the relay cannot read the traffic.",
+              file=sys.stderr)
+    print(f"Broker ready at {args.socket}; Ctrl-C locks it.", file=sys.stderr)
+    try:
+        serve(args.socket, broker)
+    except KeyboardInterrupt:
+        print("\nBroker locked.", file=sys.stderr)
+    finally:
+        if relay_client is not None:
+            relay_client.stop()
+        broker.passwords.close()
+        unlock_server.shutdown()
+        unlock_server.server_close()
+    return 0
+
+
+def _command(args) -> int:
     if args.command in card_cli.COMMANDS:
         return card_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                         expected_unlock_origin=args.unlock_origin))
@@ -545,6 +856,8 @@ def main(argv: list[str] | None = None) -> int:
     payload = {"action": "ping" if args.command == "status" else args.command}
     if args.command in {'unlock-subscription-status', 'unsubscribe-unlock'}:
         payload['subscription_id'] = args.subscription_id
+    elif args.command == 'new-unlock-link':
+        payload['user_confirmed'] = args.user_confirmed is True
     elif args.command == 'pin-password-target':
         if args.mode == 'login' and not args.username_selector:
             print('--mode login requires --username-selector', file=sys.stderr)
@@ -570,10 +883,17 @@ def main(argv: list[str] | None = None) -> int:
             payload['allow_autocomplete_off'] = True
         if args.frame_origin is not None:
             payload.update(frame_protocol=1, frame_origin=args.frame_origin)
+        if args.route is not None:
+            if args.route == 'extension' and args.mode == 'read':
+                print('--mode read (secret capture) uses the cdp route only', file=sys.stderr)
+                return 2
+            payload['route'] = args.route
     elif args.command == 'list-password-frames':
         payload.update(password_protocol=1, frame_protocol=1, top_url=args.top_url)
         if args.page_id is not None:
             payload['page_id'] = args.page_id
+        if args.route is not None:
+            payload['route'] = args.route
     elif args.command == 'pin-target':
         payload.update(pid=args.pid, window=args.window, target_protocol=1)
     elif args.command == "search":
@@ -652,6 +972,27 @@ def main(argv: list[str] | None = None) -> int:
                 print('could not read private webhook URL file; subscription not sent', file=sys.stderr)
                 return 2
             payload.update(webhook_url=webhook_url, ttl=args.ttl, notification_protocol=1)
+            if args.blocked_events and capabilities.get('unlock_notifications_blocked_event') is True:
+                # Opt in only on request: a consumer that removes its one-shot
+                # trigger on any event must get only akdbx.unlocked. Older
+                # brokers keep their unlock-only subscription.
+                payload['blocked_events'] = True
+        if args.command == 'new-unlock-link':
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True or type(capabilities.get('unlock_link_protocol')) is not int
+                    or capabilities['unlock_link_protocol'] != 1):
+                print(json.dumps({'ok': False, 'error': 'broker lacks unlock link protocol 1; require broker 0.25.0 or newer; request not sent'}))
+                return 1
+            if capabilities.get('unlock_blocked') is not True:
+                print(json.dumps({'ok': False, 'error': 'the current unlock link is not blocked; no link created; request not sent'}))
+                return 1
+            # The status request already checked this origin against the
+            # configured one; without it the CLI cannot check before the
+            # broker replaces the link.
+            if not isinstance(capabilities.get('unlock_origin'), str):
+                print(json.dumps({'ok': False, 'error': 'broker did not report its unlock origin; no link created; request not sent'}))
+                return 1
         if args.command in {'setup-totp', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -673,16 +1014,28 @@ def main(argv: list[str] | None = None) -> int:
                     or capabilities['password_frame_protocol'] != 1 or capabilities.get('password_frame_policy') != 'same-site-chain-v1'):
                 print(json.dumps({'ok': False, 'error': 'broker lacks password frame protocol 1; require broker 0.16.0 or newer; frame request not sent'}))
                 return 1
+        if getattr(args, 'route', None) == 'extension':
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True or type(capabilities.get('extension_protocol')) is not int
+                    or capabilities['extension_protocol'] != 1 or capabilities.get('extension_delivery') != EXTENSION_DELIVERY):
+                print(json.dumps({'ok': False, 'error': 'broker lacks extension route protocol 1; require broker 0.21.0 or newer; request not sent'}))
+                return 1
         if args.command in {'pin-password-target', 'pin-target', 'fill', 'fill-generated', 'fill-totp'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
+            # A paired extension can deliver without a debugging-port profile.
+            if args.command == 'pin-password-target':
+                extension_route = (args.route or capabilities.get('default_fill_route')) == 'extension'
+            else:
+                extension_route = capabilities.get('extension_paired') is True
             if args.command in {'pin-password-target', 'fill-generated'} or args.command == 'fill' and args.mode != 'username':
                 if (capabilities.get('ok') is not True or type(capabilities.get('password_fill_protocol')) is not int
                         or capabilities.get('password_fill_protocol') != 1
                         or capabilities.get('password_fill_delivery') != PASSWORD_DELIVERY):
                     print(json.dumps({'ok': False, 'error': 'broker lacks DOM password delivery; target request not sent'}))
                     return 1
-                if os.name == 'nt' and capabilities.get('password_browser_configured') is False:
+                if os.name == 'nt' and capabilities.get('password_browser_configured') is False and not extension_route:
                     print(json.dumps({'ok': False, 'error': PASSWORD_BROWSER_REFUSAL}))
                     return 1
             if args.command == 'pin-password-target' and args.password_purpose is not None:
@@ -808,7 +1161,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.command in {'setup-totp', 'fill-totp'}:
         allowed = ({'ok', 'write_handle', 'private_url', 'state'} if args.command == 'setup-totp'
-                   else {'ok', 'filled', 'target_delivery'}) if response.get('ok') else {'ok', 'error', 'retry_after', 'unlock_url', 'delivery'}
+                   else {'ok', 'filled', 'target_delivery'}) if response.get('ok') else {'ok', 'error', 'retry_after', 'unlock_url', 'unlock_blocked', 'delivery'}
         invalid_delivery = 'delivery' in response and (
             args.command != 'fill-totp' or response['delivery'] not in ('not-started', 'uncertain'))
         invalid_retry = 'retry_after' in response and (
@@ -825,11 +1178,13 @@ def main(argv: list[str] | None = None) -> int:
         print('frame list rejected: unexpected broker response', file=sys.stderr)
         return 2
     if args.command == 'pin-password-target' and response.get('ok'):
+        pin_route = args.route or ('extension' if capabilities.get('default_fill_route') == 'extension'
+                                   and args.mode != 'read' else 'cdp')
         token = response.get('target')
         if (set(response) != {'ok', 'target', 'expires_in', 'target_delivery'} or not isinstance(token, str)
                 or len(token) != 64 or any(c not in '0123456789abcdef' for c in token)
                 or type(response.get('expires_in')) is not int or response['expires_in'] != 30
-                or response.get('target_delivery') != PASSWORD_DELIVERY):
+                or response.get('target_delivery') != (EXTENSION_DELIVERY if pin_route == 'extension' else PASSWORD_DELIVERY)):
             print('password pin outcome unconfirmed: receipt rejected', file=sys.stderr)
             return 2
     if args.command in {'pin-target', 'fill', 'fill-generated', 'fill-totp'} and response.get('ok'):
@@ -844,11 +1199,19 @@ def main(argv: list[str] | None = None) -> int:
         expected_delivery = PASSWORD_DELIVERY if args.command == 'fill-generated' or args.command == 'fill' and args.mode != 'username' else DELIVERY
         if args.command == 'fill' and args.mode == 'username' and response.get('target_delivery') == PASSWORD_DELIVERY:
             expected_delivery = PASSWORD_DELIVERY
+        if args.command in {'fill', 'fill-generated'} and response.get('target_delivery') == EXTENSION_DELIVERY:
+            expected_delivery = EXTENSION_DELIVERY
         if response.get('target_delivery') != expected_delivery or invalid_pin or invalid_fill:
             print('target operation outcome unconfirmed: receipt rejected; do not retry automatically', file=sys.stderr)
             return 2
+    if args.command == 'new-unlock-link' and response.get('ok') and (
+            set(response) != {'ok', 'unlock_url', 'locked'} or type(response['locked']) is not bool):
+        print('new unlock link rejected: unexpected broker response; do not retry automatically', file=sys.stderr)
+        return 2
     if args.command in {'merge', 'admit'} and response.get('error') == 'vault locked':
-        response['continuation'] = 'Open unlock_url privately, then repeat the same command, policy and operation ID.'
+        response['continuation'] = ('The unlock link is blocked: follow the skill before any new-unlock-link, then repeat the same command, policy and operation ID.'
+                                    if response.get('unlock_blocked') else
+                                    'Open unlock_url privately, then repeat the same command, policy and operation ID.')
         response['operation_id'] = payload['operation_id']
     if args.command in URL_CHANGES and response.get('ok') and (
             set(response) != {'ok', 'state', 'metadata', 'additional_urls', 'changed', 'url'}

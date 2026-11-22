@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from pykeepass.exceptions import CredentialsError
 from akdbx.broker import Broker
 from akdbx.web_unlock import start_unlock_server
 from test_broker import Entry, RecordingTyper, Vault
@@ -61,7 +62,7 @@ def portal_lab(tmp_path):
         entered.set()
         assert release.wait(8), 'synthetic request gate expired'
         if len(attempts) == 1:
-            raise ValueError('synthetic failure')
+            raise CredentialsError('synthetic failure')
         return Vault([Entry()])
 
     socket = tmp_path / 'private' / 'portal.sock'

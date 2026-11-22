@@ -20,9 +20,17 @@ there, and callback URLs remain private bearer credentials.
 ## T3
 
 1. Create a native `schedule_task` with `schedule: {"type": "webhook"}`,
-   `bindToCurrentThread: true`, and a prompt to remove this one-shot trigger,
-   recheck broker status and resume the pending authorized task with fresh
-   handles/pins. Include only the pending step and non-secret context. This is
+   `bindToCurrentThread: true`, and a prompt to run broker `status` first and
+   act only on what status shows:
+   - `locked: false`: remove this trigger, then resume the pending authorized
+     task with fresh handles/pins.
+   - `unlock_blocked: true`: keep this trigger and follow the skill's
+     "Blocked unlock link" steps (ask the user the two questions; never create
+     a link without two clear yes answers).
+   - still locked and not blocked: keep this trigger and end the turn.
+
+   Remove the trigger in only one other case: the user cancels the task.
+   Include only the pending step and non-secret context. This is
    an event trigger, not a timed schedule. Use a stable client request ID and
    reuse the same task after an uncertain create result.
 2. Confirm the task is enabled, is bound to this thread, is not blocked by
@@ -35,7 +43,7 @@ there, and callback URLs remain private bearer credentials.
    evidence or user-facing output. Register it through the CLI:
 
    ```bash
-   /absolute/path/to/akdbx/.venv/bin/akdbx subscribe-unlock \
+   /absolute/path/to/akdbx/.venv/bin/akdbx subscribe-unlock --blocked-events \
      --webhook-url-file /private/temporary/url-file
    ```
 
@@ -49,15 +57,27 @@ there, and callback URLs remain private bearer credentials.
    and unlock are atomic at the broker: an unlock before registration also
    queues an immediate event. A racing notification may already be queued in
    T3; treat it as a duplicate and do not repeat a completed fill or save.
+   If the receipt or `status` has `unlock_blocked: true`, the link was blocked
+   before this registration and no blocked event comes for it. Keep the native
+   task and the subscription, and follow the skill's "Blocked unlock link"
+   steps now.
 5. If still locked and the receipt says `subscribed`, tell the user to open the
    exact private unlock link and that the task will resume automatically. End
    the turn. Do not wait for a message or call a sleep/status loop. If the
    subscription reports failure/cancellation, repair or report it first.
-6. On the event, delete the native task before resuming. Recheck broker status
-   rather than trusting event data as current readiness. Cancel the broker
-   subscription when the original task is cancelled or superseded, and remove
-   the native trigger. A delivered receipt proves host acceptance, not that the
-   agent completed its pending task.
+6. On the event, run `status` before anything else rather than trusting event
+   data as current readiness. Delete the native task only after `status`
+   shows `locked: false`, then resume. If status reports
+   `unlock_blocked: true` (after an `akdbx.unlock-blocked` event or any other),
+   keep the native task and the broker subscription: the same subscription
+   later delivers `akdbx.unlocked` to the same URL. Ask the user the two
+   questions in the skill's "Blocked unlock link" before anything else. If it
+   is still locked and not blocked, keep both and end the turn. If T3 removed
+   the one-shot task after it fired, register a new task and subscription the
+   same way before ending the turn. Cancel the broker subscription and remove
+   the native trigger when the user cancels the original task or it is
+   superseded. A delivered receipt proves host acceptance, not that the agent
+   completed its pending task.
 
 If a native event subscription replaces webhooks in a future T3 release, prefer
 that supported tool. Do not use PR watches, completion watches, delegated
@@ -80,6 +100,39 @@ The payload contains only an event name, readiness flag and opaque identifiers:
 ```
 
 It contains no passwords, entry metadata, database paths or unlock tokens.
+
+### Blocked link event (0.25.0)
+
+Blocked events are opt-in. A broker that advertises
+`unlock_notifications_blocked_event: true` accepts `blocked_events: true` in
+`subscribe-unlock`. The CLI sends it only with `--blocked-events`, and only to
+such a broker; without the flag the subscription is unlock-only. Pass the flag
+only when the consumer runs `status` on every event, as this workflow does
+(step 6). The broker
+saves the choice with the subscription. Only those subscriptions, while still
+waiting, get this event when the unlock link is blocked after three failed
+attempts:
+
+```json
+{"event": "akdbx.unlock-blocked", "locked": true, "unlock_blocked": true, "subscription_id": "OPAQUE_ID", "event_id": "OPAQUE_EVENT_ID", "subscription_state": "subscribed"}
+```
+
+It has its own event ID and does not change the subscription: the receipt
+stays `subscribed`, and the later unlock sends the normal `akdbx.unlocked`
+event to the same URL. A blocked event that is queued when the vault unlocks
+still arrives first. A failed blocked event does not affect that later
+delivery. A subscription made without `blocked_events` (without the flag, by
+an older CLI, or restored from before 0.25.0) never gets the blocked event, only
+`akdbx.unlocked`: an older consumer may delete its one-shot trigger on any
+event. The event itself is not persisted, but the block is: a restarted broker
+sends the blocked event again to its waiting opted-in subscriptions (expect a
+duplicate; `status` decides), still reports `unlock_blocked: true` and has no
+link until
+`new-unlock-link --user-confirmed`. A subscription registered while the link
+is already blocked gets no event; its receipt has `unlock_blocked: true`
+instead. Never create a new link because of this event alone; follow the
+skill's "Blocked unlock link" steps.
+
 HTTPS certificate verification is required; redirects and environment proxies
 are disabled. One bounded sender runs only when an event is queued; a slow or
 failed callback does not delay the unlock response. Failed delivery gets at

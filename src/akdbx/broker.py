@@ -35,6 +35,8 @@ from .protocol import ProtocolError, receive_message, send_message
 from .cards import CardManager, is_card
 from .browser_card import BrowserCards
 from .browser_identity import BrowserIdentities
+from .extension_route import (ExtensionHub, ExtensionError, ExtensionPin, RoutedTargets,
+                              DELIVERY as EXTENSION_DELIVERY)
 from .identities import COMMANDS as IDENTITY_COMMANDS, IdentityManager, is_identity
 from .secrets_capture import SecretCaptures, captured_fields, is_secret_record
 from .runtime import (
@@ -54,7 +56,12 @@ MAX_CREDENTIAL_BYTES = 64 * 1024
 MAX_METADATA_BYTES = 4 * 1024
 MAX_SEARCH_RESPONSE = 48 * 1024
 MAX_OUTSTANDING_HANDLES = 1024
+# Failed master-password attempts allowed per unlock link, in total. The
+# failure that reaches it blocks the link; only new-unlock-link replaces it.
+UNLOCK_LINK_MAX_FAILURES = 3
+UNLOCK_LINK_PROTOCOL = 1
 CONNECTION_ERROR = {"ok": False, "error": "request failed"}
+DOM_PINS = (PasswordPin, ExtensionPin)
 
 
 class EntryLike(Protocol):
@@ -94,8 +101,10 @@ class Broker:
         wall_clock: Callable[[], float] = time.time,
         card_browser_profile: Path | None = None,
         notification_state_path=None,
+        unlock_block_path=None,
         password_browser_profile=None,
         secret_sinks_path=None,
+        default_fill_route='cdp',
     ) -> None:
         self.vault = vault
         self.typer = typer
@@ -111,13 +120,21 @@ class Broker:
         self._vault_lock = threading.RLock()
         self.writes = WriteManager(self)
         self.cards = CardManager(self)
-        self.card_targets = BrowserCards(card_browser_profile, clock=clock)
-        self.identity_targets = BrowserIdentities(password_browser_profile or card_browser_profile, clock=clock)
+        # The extension route sits next to CDP; the operator picks the default.
+        self.extension = ExtensionHub(self, default_route=default_fill_route)
+        self.card_targets = RoutedTargets(BrowserCards(card_browser_profile, clock=clock), self.extension, 'card')
+        self.identity_targets = RoutedTargets(
+            BrowserIdentities(password_browser_profile or card_browser_profile, clock=clock), self.extension, 'identity')
         self.identities = IdentityManager(self)
         self.merges = create_merge_manager(self)
         self.secrets = SecretCaptures(self, secret_sinks_path)
         self.unlock_url: str | None = None
-        self.unlock_notifications = UnlockNotifications(state_path=notification_state_path)
+        # The private page's UnlockState, when this broker serves one.
+        self.unlock_link = None
+        # The akdbx relay client, when the private pages are reached through it.
+        self.relay = None
+        self.unlock_notifications = UnlockNotifications(state_path=notification_state_path,
+                                                        blocked_path=unlock_block_path)
         self.card_save_notifications = CardSaveNotifications(
             expire_handler=self._expire_card_save, clock=clock,
             state_path=(Path(str(notification_state_path) + '.card-saves')
@@ -134,13 +151,67 @@ class Broker:
         with self._state_lock:
             return self.vault is None
 
+    @property
+    def unlock_blocked(self) -> bool:
+        """True after the current unlock link used all its failed attempts."""
+        link = self.unlock_link
+        return bool(link is not None and link.blocked)
+
+    def resume_notifications(self) -> None:
+        """Send restored notices; call only after the RPC endpoint listens.
+
+        A blocked notice queued before a restart was lost with it: the waiting
+        subscriptions that asked for it get it again.
+        """
+        self.card_save_notifications.resume()
+        if self.unlock_blocked:
+            self.unlock_notifications.publish_blocked()
+
+    def unlock_fields(self) -> dict:
+        """What a locked response may say about unlocking: never a blocked link."""
+        if self.unlock_blocked:
+            return {"unlock_blocked": True}
+        return {"unlock_url": self.unlock_url} if self.unlock_url else {}
+
+    def _blocked_status(self) -> dict:
+        """Status of a blocked link: no URL, but its non-secret origin.
+
+        The CLI checks the origin against its configuration before it asks
+        for a new link, so a wrong origin leaves the broker blocked.
+        """
+        origin = getattr(self.unlock_link, "origin", None)
+        return {"unlock_blocked": True, **({"unlock_origin": origin} if isinstance(origin, str) else {}),
+                # The block holds only until this broker stops.
+                **({"unlock_block_saved": False} if getattr(self.unlock_link, "block_saved", True) is False else {})}
+
+    def _new_unlock_link(self, request: dict) -> dict:
+        # The broker cannot verify the user. The agent must first ask the user
+        # whether the failed attempts were theirs and whether they want a link.
+        if set(request) != {"action", "user_confirmed"} or request["user_confirmed"] is not True:
+            return {"ok": False, "error": "new unlock link needs user_confirmed: true after the user "
+                                          "confirms; no link created"}
+        link = self.unlock_link
+        if link is None:
+            return {"ok": False, "error": "this broker has no private unlock page; no link created"}
+        try:
+            url = link.new_link()
+        except OSError:
+            # Fail closed: the link stays blocked until the clear is saved.
+            return {"ok": False, "error": "the unlock block could not be cleared in its private saved state; "
+                                          "the link stays blocked; no link created; check the broker's state "
+                                          "folder, then ask again", "unlock_blocked": True}
+        if url is None:
+            return {"ok": False, "error": "the current unlock link is not blocked; no link created"}
+        return {"ok": True, "unlock_url": url, "locked": self.locked}
+
     def unlock(self, vault: VaultLike) -> bool:
         with self._state_lock:
             if self.vault is not None:
                 return False
             self.vault = vault
             self.unlock_notifications.publish()
-            return True
+        self.extension.refresh()
+        return True
 
     def _new_handle(self, entry: EntryLike) -> str:
         nonce = secrets.token_bytes(16)
@@ -203,10 +274,17 @@ class Broker:
         if action in {'card-save-subscription-status', 'unsubscribe-card-save'}:
             return self.card_save_notifications.status(
                 request.get('subscription_id'), cancel=action == 'unsubscribe-card-save')
+        if action == "new-unlock-link":
+            return self._new_unlock_link(request)
         if action == "subscribe-unlock":
-            # Share unlock's lock so registration cannot miss a racing unlock.
+            # Share unlock's lock so registration cannot miss a racing unlock
+            # or a racing block: a block either reaches this subscription as
+            # an event or is reported in this receipt.
             with self._state_lock:
-                return self.unlock_notifications.subscribe(request, unlocked=self.vault is not None)
+                receipt = self.unlock_notifications.subscribe(request, unlocked=self.vault is not None)
+                if receipt.get("ok") and self.vault is None and self.unlock_blocked:
+                    receipt["unlock_blocked"] = True
+                return receipt
         if action in {"unlock-subscription-status", "unsubscribe-unlock"}:
             return self.unlock_notifications.status(
                 request.get("subscription_id"), cancel=action == "unsubscribe-unlock",
@@ -243,21 +321,41 @@ class Broker:
         if delivery_ready is None:
             delivery_ready = lambda: True
         action = request.get("action")
+        if action == "relay-status":
+            # For `akdbx relay status`: the relay state and the origin of the
+            # running private page, and never a private URL. The CLI's own
+            # origin can differ from this broker's after `relay disable`, so
+            # unlike ping this response has nothing that the CLI checks
+            # against its configured origin.
+            origin = getattr(self.unlock_link, "origin", None)
+            return {"ok": True, "version": __version__,
+                    **({"relay": self.relay.status()} if self.relay is not None else {}),
+                    **({"active_origin": origin} if isinstance(origin, str) else {})}
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "locked": self.locked, **({"unlock_url": self.unlock_url} if self.locked and self.unlock_url else {})}
+            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
-                return self.passwords.frames(request)
+                route = request.get('route', self.extension.default_route)
+                if route == 'extension':
+                    return self.extension.frames({**request, 'route': 'extension'})
+                if route != 'cdp':
+                    raise TargetError()
+                return self.passwords.frames({k: v for k, v in request.items() if k != 'route'})
             except Exception:
                 return {'ok': False, 'error': 'frame list unavailable: page missing, ambiguous, changed or unsupported'}
         if self.locked:
-            return {"ok": False, "error": "vault locked", **({"unlock_url": self.unlock_url} if self.unlock_url else {})}
+            return {"ok": False, "error": "vault locked", **self.unlock_fields()}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
             return {"ok": False, "error": "save outcome uncertain; restart and unlock"}
         if action == 'pin-password-target':
             try:
-                return self.passwords.pin(request)
+                route = request.get('route', self.extension.default_route)
+                if route == 'extension' and request.get('mode') != 'read':
+                    return self.extension.pin_password({**request, 'route': 'extension'})
+                if 'route' in request and request['route'] != 'cdp':
+                    raise TargetError()  # Read pins (secret capture) stay on CDP.
+                return self.passwords.pin({k: v for k, v in request.items() if k != 'route'})
             except Exception:
                 return target_failure()
         if action == 'pin-target':
@@ -394,13 +492,15 @@ class Broker:
                 entry = self._resolve(request.get("handle"))
                 token = request.get('target')
                 if isinstance(token, str):
-                    try:
-                        target = self.passwords.consume(token)
-                    except TargetError:
-                        target = self.targets.consume(request)
+                    target = self.extension.take(token, 'password')
+                    if target is None:
+                        try:
+                            target = self.passwords.consume(token)
+                        except TargetError:
+                            target = self.targets.consume(request)
                 else:
                     target = self.targets.consume(request)
-                if isinstance(target, PasswordPin) and (type(request.get('target_protocol')) is not int or request['target_protocol'] != 1):
+                if isinstance(target, DOM_PINS) and (type(request.get('target_protocol')) is not int or request['target_protocol'] != 1):
                     raise TargetError()
                 allowed = {'action', 'handle', 'start_deadline', 'target', 'target_protocol'}
                 allowed.add('target_url' if action == 'fill-totp' else 'mode')
@@ -419,11 +519,11 @@ class Broker:
                 ):
                     raise ValueError("autofill not started: invalid deadline")
             except TargetError:
-                if isinstance(target, PasswordPin):
+                if isinstance(target, DOM_PINS):
                     target.close()
                 return target_failure()
             except ValueError as exc:
-                if isinstance(target, PasswordPin):
+                if isinstance(target, DOM_PINS):
                     target.close()
                 return {"ok": False, "error": str(exc)}
             # Once credentials are accessed, backend errors must never reach RPC
@@ -451,7 +551,7 @@ class Broker:
 
                     # A keyboard backend cannot authorize browser password delivery.
                     # Refuse before reading the password, irrespective of its methods.
-                    if mode in {"login", "password"} and not isinstance(target, PasswordPin):
+                    if mode in {"login", "password"} and not isinstance(target, DOM_PINS):
                         raise DeliveryError(False)
 
                     # Materialize and validate every value needed by this mode
@@ -493,10 +593,10 @@ class Broker:
 
                     steps = [username, None, password] if mode == 'login' else [username if mode == 'username' else password]
                     ready = lambda: self.clock() < start_deadline and delivery_ready() and code_valid()
-                    if isinstance(target, PasswordPin):
+                    if isinstance(target, DOM_PINS):
                         if mode == 'totp':
                             raise DeliveryError(False)
-                        self.passwords.deliver(target, mode, username if mode != 'password' else '',
+                        (self.extension.deliver_password if isinstance(target, ExtensionPin) else self.passwords.deliver)(target, mode, username if mode != 'password' else '',
                                                password if mode != 'username' else '', allowed_origins(entry), ready, start_deadline)
                     elif mode == 'totp':
                         self.typer.deliver(target, steps, ready, guard=code_valid)
@@ -506,7 +606,8 @@ class Broker:
                         self.typer.deliver(target, steps, ready)
                     else:
                         raise DeliveryError(False)
-                    return {"ok": True, "filled": mode, "target_delivery": PASSWORD_DELIVERY if isinstance(target, PasswordPin) else DELIVERY}
+                    return {"ok": True, "filled": mode, "target_delivery": EXTENSION_DELIVERY if isinstance(target, ExtensionPin)
+                            else PASSWORD_DELIVERY if isinstance(target, DOM_PINS) else DELIVERY}
                 finally:
                     self._keyboard_lock.release()
             except DeliveryError as exc:
@@ -516,12 +617,22 @@ class Broker:
             except Exception:
                 return {"ok": False, "error": "autofill failed"}
             finally:
-                if isinstance(target, PasswordPin):
+                if isinstance(target, DOM_PINS):
                     try:
                         target.close()
                     except Exception:
                         pass
         return {"ok": False, "error": "unknown action"}
+
+
+def is_wrong_credentials(exc: BaseException) -> bool:
+    """True only for a wrong master password or key file.
+
+    Store, file and I/O errors say nothing about the password, so they never
+    count toward an unlock link's failed attempts.
+    """
+    from pykeepass.exceptions import CredentialsError
+    return isinstance(exc, CredentialsError)
 
 
 def open_vault_with_password(database: Path, password: str, keyfile: Path | None = None):
@@ -541,6 +652,11 @@ def _serve_connection(connection: socket.socket, broker: Broker) -> None:
                 connection,
                 deadline=time.monotonic() + CONNECTION_TIMEOUT,
             )
+            if request.get('action') == 'extension-attach':
+                # A paired browser extension's native host: one long-lived,
+                # bidirectional channel instead of one request.
+                broker.extension.attach(connection, request)
+                return
             response = broker.dispatch(
                 request,
                 delivery_ready=lambda: _connection_is_alive(connection),
@@ -597,7 +713,7 @@ def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
         socket_identity = (socket_info.st_dev, socket_info.st_ino)
         server.settimeout(0.2 if stop else None)
         admission = threading.BoundedSemaphore(MAX_RPC_WORKERS)
-        broker.card_save_notifications.resume()
+        broker.resume_notifications()
 
         def run_connection(connection: socket.socket) -> None:
             try:
@@ -636,6 +752,7 @@ def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
         try:
             if server is not None:
                 server.close()
+            broker.extension.close()
             broker.unlock_notifications.close()
             broker.card_save_notifications.close()
             with workers_lock:

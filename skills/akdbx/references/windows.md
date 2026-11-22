@@ -11,11 +11,17 @@ validation record; this reference covers operation of an already configured
 broker.
 
 Every instruction in `SKILL.md` and the other references applies on Windows,
-with these replacements:
+with these replacements. The private HTTPS page is the same on both
+platforms: a loopback link opens on the broker's computer, a link on a
+Tailscale Serve origin (`--local-port`) opens on any tailnet device, and a link
+on an akdbx relay origin (`https://<id>.akdbx.link`, 0.26.0+; `:8443` before the
+0.28.0 move) opens on any device. See the repository's `docs/private-pages.md`. The relay commands and
+steps are the same as in `SKILL.md`; its private folder is
+`%LOCALAPPDATA%\akdbx\relay` (this user and SYSTEM only).
 
 | Linux | Windows |
 | --- | --- |
-| Tailscale HTTPS page, opened on any tailnet device | Loopback HTTPS page, opened on the **Windows machine** |
+| Loopback HTTPS page (0.23.0+), or the Tailscale Serve Unix-socket page | Loopback HTTPS page only; Tailscale Serve cannot proxy to a Unix socket on Windows |
 | Unix socket, `--broker-uid` | Local named pipe of this user and session; `--broker-uid` is refused |
 | `pin-target` X11 window, `x11-send-event-v1` | `pin-target` top-level HWND, `win32-char-v1` |
 | `/absolute/path/to/akdbx/.venv/bin/akdbx` | `CHECKOUT\.venv\Scripts\akdbx.exe` |
@@ -25,14 +31,22 @@ with these replacements:
 
 - Use the independently configured `AKDBX_UNLOCK_ORIGIN` (normally
   `https://localhost:9443`), not a hostname learned from a broker response.
+  With an enabled akdbx relay and no `AKDBX_UNLOCK_ORIGIN`, the CLI uses the
+  relay origin from its private folder by itself.
 - Run `status`. Require an unlocked broker with `recovery_required: false`.
   For password, login and generated-password fills also require integer
   `password_fill_protocol: 1`, `password_fill_delivery:
-  "chromium-password-dom-v1"` and `password_browser_configured: true`. For
+  "chromium-password-dom-v1"` and `password_browser_configured: true`, or use
+  the [browser extension route](extension.md) with `extension_paired: true`
+  when the browser has no debugging port (Helium, Chrome or Edge). For
   window pins require `target_fill_delivery: "win32-char-v1"` and target
   protocol 1. `target_fill_modes: ["username"]` describes window pins only.
-- When locked, give the exact returned private HTTPS link to the user. It opens
-  on the **Windows machine**, not a separate Tailscale device. The user enters the
+- When locked, give the exact returned private HTTPS link to the user. A
+  loopback link opens on the **Windows machine** only; a link on the configured
+  Tailscale Serve origin opens on any tailnet device, and a link on the relay
+  origin on any device. Serve must proxy to a
+  verified `https://127.0.0.1:PORT` target, never `https+insecure`; see
+  `docs/private-pages.md`. The user enters the
   master password privately. Never bypass a TLS certificate warning, read the
   master password, submit it for the user, or replace HTTPS with HTTP. Register
   an unlock notification as `SKILL.md` describes and resume on that event. The
@@ -102,8 +116,14 @@ field, another for the confirmation field, the site's acceptance, then
 - `subscribe-unlock` and `subscribe-card-save` read the callback from a file
   that only this user, SYSTEM and administrators can open. Until-unlock
   subscriptions survive a broker restart.
+- The three-attempt unlock link block, `unlock_blocked`, the
+  `akdbx.unlock-blocked` event and `new-unlock-link --user-confirmed` work as
+  on Linux (0.25.0+). Ask the user the skill's two questions first.
 - The browser native host for authenticator capture (`akdbx-browser-import`)
-  is Linux-only. Use the private HTTPS import page of `setup-totp`.
+  works on Windows from 0.22.0. It sends the capture to the broker's
+  `-capture` named pipe, never the agent RPC. Follow
+  [private import](private-import.md); install it with `install-host
+  --browser NAME` as `docs/windows.md` describes.
 
 The broker, browser and target must have the same Windows user and desktop
 session. Do not elevate the broker to fill UAC, secure-desktop, service-session
