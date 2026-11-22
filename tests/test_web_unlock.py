@@ -64,7 +64,7 @@ def test_locked_broker_returns_only_unlock_url_and_types_nothing(action):
     assert SECRET not in json.dumps(response)
     assert broker.dispatch({"action": "ping"}) == {
         "ok": True, "locked": True, "unlock_url": broker.unlock_url,
-        "version": "0.28.4", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "unlock_notifications_blocked_event": True, "unlock_link_protocol": 1, "unlock_link_max_failures": 3, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "stripe_card_element": True, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities(), **expected_extension_capabilities(),
+        "version": "0.29.0", "unlock_notifications_supported": True, "unlock_notifications_protocol": 1, "unlock_notifications_until_unlock": True, "unlock_notifications_blocked_event": True, "unlock_link_protocol": 1, "unlock_link_max_failures": 3, "card_save_notifications_supported": True, "card_save_notifications_protocol": 1, "card_save_notifications_until_result": True, "writes_available": False, "recovery_required": False, **expected_merge_capabilities(), **expected_sso_capabilities(), **expected_passwordless_capabilities(), "cards_supported": True, "card_protocol": 1, "card_delivery": "cdp-card-element-v1", "card_browser_configured": False, "card_processor_frames_protocol": 1, "card_processors": ["adyen", "computop", "stripe"], "stripe_card_element": True, "generated_entry_protocol": 1, "totp_supported": True, "totp_protocol": 1, "totp_import_supported": True, "totp_import_protocol": 1, **target_capabilities(), **expected_extension_capabilities(),
     }
     assert typer.events == []
 
@@ -112,6 +112,40 @@ def test_tailscale_identity_and_one_time_web_unlock(tmp_path):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_tailscale_socket_serves_the_identity_statement_only_to_tailscale_serve(tmp_path):
+    from akdbx import broker_identity
+    from akdbx.extension_route import EXTENSION_ID
+    broker = Broker(None, RecordingTyper())
+    socket_path = tmp_path / "private" / "unlock.sock"
+    server, _ = start_unlock_server(broker, tmp_path / "vault.kdbx", None, socket_path, "https://node.example:9443")
+    path = "/.well-known/akdbx-identity"
+    try:
+        assert call(socket_path, "GET", path)[0] == 404  # No identity yet.
+        identity = broker_identity.IdentityStore(tmp_path / "identity").announce("https://node.example:9443")
+        broker.extension.set_identity(identity)
+        status, headers, body = call(socket_path, "GET", path)
+        assert status == 200 and headers["Content-Type"] == "application/json"
+        assert headers["Cache-Control"] == "no-store"
+        assert json.loads(body) == identity.message()
+        connection = UnixHTTPConnection(socket_path)
+        connection.request("GET", path, headers={"Tailscale-User-Login": "owner@example.test",
+                                                 "Origin": "chrome-extension://" + EXTENSION_ID})
+        assert connection.getresponse().status == 200
+        connection.close()
+        # Without Tailscale Serve's identity header, or from a web page on another origin: refused.
+        assert call(socket_path, "GET", path, identity=False)[0] == 404
+        connection = UnixHTTPConnection(socket_path)
+        connection.request("GET", path, headers={"Tailscale-User-Login": "owner@example.test",
+                                                 "Origin": "https://attacker.test"})
+        assert connection.getresponse().status == 404
+        connection.close()
+        assert call(socket_path, "POST", path, "x=1")[0] == 405
+    finally:
+        server.shutdown()
+        server.server_close()
+        broker.unlock_notifications.close()
 
 
 @pytest.mark.parametrize('encoding', ['%FF', '%C3'])

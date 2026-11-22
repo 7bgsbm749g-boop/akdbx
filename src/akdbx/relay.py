@@ -41,6 +41,8 @@ PROTOCOL = 1
 CONFIG_NAME = 'relay.json'
 TLS_NAME = 'tls.pem'
 LOCK_NAME = '.relay.lock'
+# A new registration that `akdbx relay rotate` saved before its certificate arrived.
+ROTATE_NAME = 'rotate.json'
 API_TIMEOUT = 30
 # The relay answers a certificate request within its 90 s deadline; wait 10 s more.
 CERTIFICATE_TIMEOUT = 120
@@ -525,26 +527,19 @@ def default_directory():
     return root / 'akdbx' / 'relay'
 
 
-class RelayStore:
-    """The private relay directory: ``relay.json`` (with the secret) and ``tls.pem`` (key and chain).
+class PrivateFolder:
+    """A private folder of small files, read and written with the same checks as the relay files.
 
     Linux: a 0700 folder of this user below folders that no other user can
     replace, files mode 0600 opened without following symbolic links.
     Windows: a folder and files that only this user and SYSTEM can open, on a
     trusted local NTFS path. A file that fails these checks is refused, never
-    repaired.
+    repaired. Failures raise ``self.error`` with fixed text and a path.
     """
+    error = RelayStoreError
 
-    def __init__(self, directory=None):
-        self.directory = Path(os.path.abspath(directory or default_directory()))
-
-    @property
-    def config_path(self):
-        return self.directory / CONFIG_NAME
-
-    @property
-    def tls_path(self):
-        return self.directory / TLS_NAME
+    def __init__(self, directory):
+        self.directory = Path(os.path.abspath(directory))
 
     def exists(self):
         try:
@@ -565,9 +560,9 @@ class RelayStore:
             opener = prepare_private_runtime_directory if create else open_private_runtime_directory
             return opener(self.directory)[1]
         except (OSError, RuntimeError) as exc:
-            raise RelayStoreError(f'{self.directory} must be a folder that you own with mode 0700, below '
-                                  'folders owned by you or root that group and others cannot write '
-                                  f'({exc})') from None
+            raise self.error(f'{self.directory} must be a folder that you own with mode 0700, below '
+                             'folders owned by you or root that group and others cannot write '
+                             f'({exc})') from None
 
     def _posix_read(self, name):
         directory = self._posix_directory(create=False)
@@ -577,13 +572,13 @@ class RelayStore:
             except FileNotFoundError:
                 return None
             except OSError:
-                raise RelayStoreError(f'{self.directory / name} must be a regular file') from None
+                raise self.error(f'{self.directory / name} must be a regular file') from None
             try:
                 info = os.fstat(fd)
                 if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                         or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > MAX_FILE):
-                    raise RelayStoreError(f'{self.directory / name} must be a regular file that you own '
-                                          'with mode 0600')
+                    raise self.error(f'{self.directory / name} must be a regular file that you own '
+                                     'with mode 0600')
                 data = b''
                 while len(data) <= MAX_FILE:
                     chunk = os.read(fd, MAX_FILE + 1 - len(data))
@@ -591,7 +586,7 @@ class RelayStore:
                         break
                     data += chunk
                 if len(data) > MAX_FILE:
-                    raise RelayStoreError(f'{self.directory / name} is too large')
+                    raise self.error(f'{self.directory / name} is too large')
                 return data
             finally:
                 os.close(fd)
@@ -626,8 +621,8 @@ class RelayStore:
                 windows_security.ensure_private_directory(self.directory.parent)
             windows_security.ensure_private_directory(self.directory)
         except Exception:
-            raise RelayStoreError(f'{self.directory} must be a folder that only this user, SYSTEM and '
-                                  'administrators can access') from None
+            raise self.error(f'{self.directory} must be a folder that only this user, SYSTEM and '
+                             'administrators can access') from None
         return windows_security
 
     def _windows_read(self, name):
@@ -637,15 +632,15 @@ class RelayStore:
         try:
             return security.read_private_optional(self.directory / name, limit=MAX_FILE)
         except Exception:
-            raise RelayStoreError(f'{self.directory / name} must be a file that only this user and SYSTEM '
-                                  'can open') from None
+            raise self.error(f'{self.directory / name} must be a file that only this user and SYSTEM '
+                             'can open') from None
 
     def _windows_write(self, name, data):
         security = self._windows(create=True)
         try:
             security.replace_private(self.directory / name, data)
         except Exception:
-            raise RelayStoreError(f'{self.directory / name} could not be saved') from None
+            raise self.error(f'{self.directory / name} could not be saved') from None
 
     # Shared
 
@@ -660,6 +655,41 @@ class RelayStore:
         else:
             self._posix_write(name, data)
 
+    def remove(self, name):
+        """Delete one file of this folder by its fixed name; a missing file is fine."""
+        if not self.exists():
+            return
+        if os.name != 'nt':
+            directory = self._posix_directory(create=False)
+            try:
+                with suppress(FileNotFoundError):
+                    os.unlink(name, dir_fd=directory)
+            finally:
+                os.close(directory)
+        else:
+            self._windows(create=False)
+            with suppress(FileNotFoundError):
+                (self.directory / name).unlink()
+
+
+class RelayStore(PrivateFolder):
+    """The private relay directory: ``relay.json`` (with the secret) and ``tls.pem`` (key and chain).
+
+    ``rotate.json`` holds a new registration while ``akdbx relay rotate`` gets
+    its certificate. The folder and file checks are ``PrivateFolder``'s.
+    """
+
+    def __init__(self, directory=None):
+        super().__init__(directory or default_directory())
+
+    @property
+    def config_path(self):
+        return self.directory / CONFIG_NAME
+
+    @property
+    def tls_path(self):
+        return self.directory / TLS_NAME
+
     def load(self):
         """The saved configuration, or None when there is none. Raise RelayStoreError when untrusted."""
         data = self._read(CONFIG_NAME)
@@ -673,6 +703,23 @@ class RelayStore:
 
     def save(self, config):
         self._write(CONFIG_NAME, json.dumps(config.to_json(), indent=2).encode() + b'\n')
+
+    def load_rotation(self):
+        """The new registration of an unfinished ``relay rotate``, or None."""
+        data = self._read(ROTATE_NAME)
+        if data is None:
+            return None
+        try:
+            parsed = json.loads(data)
+        except (ValueError, UnicodeDecodeError):
+            raise RelayStoreError('the saved relay rotation is malformed') from None
+        return RelayConfig.from_json(parsed)
+
+    def save_rotation(self, config):
+        self._write(ROTATE_NAME, json.dumps(config.to_json(), indent=2).encode() + b'\n')
+
+    def clear_rotation(self):
+        self.remove(ROTATE_NAME)
 
     def read_tls(self):
         return self._read(TLS_NAME)
@@ -705,14 +752,14 @@ class RelayStore:
         if os.name != 'nt':
             directory = self._posix_directory(create=False)
             try:
-                for name in (TLS_NAME, CONFIG_NAME, LOCK_NAME):
+                for name in (TLS_NAME, CONFIG_NAME, ROTATE_NAME, LOCK_NAME):
                     with suppress(FileNotFoundError):
                         os.unlink(name, dir_fd=directory)
             finally:
                 os.close(directory)
         else:
             self._windows(create=False)
-            for name in (TLS_NAME, CONFIG_NAME):
+            for name in (TLS_NAME, CONFIG_NAME, ROTATE_NAME):
                 with suppress(FileNotFoundError):
                     (self.directory / name).unlink()
         with suppress(OSError):
@@ -848,6 +895,9 @@ def enable(store, endpoint, *, sleep=time.sleep, notify=None, endpoint_factory=N
     """
     config = store.load()
     created = False
+    if store.load_rotation() is not None:
+        # Its new name may already own tls.pem: a certificate for the old name would replace it.
+        raise RelayError("an earlier 'akdbx relay rotate' did not finish; run 'akdbx relay rotate' again")
     if config is not None and not same_relay(config.relay, endpoint.url):
         raise RelayError(f'this broker is registered with {config.relay}; run '
                          "'akdbx relay disable --forget' before you use another relay")
@@ -874,6 +924,70 @@ def enable(store, endpoint, *, sleep=time.sleep, notify=None, endpoint_factory=N
         config.enabled = True
         store.save(config)
     return config, info, created
+
+
+# Rotate
+
+
+@dataclass(frozen=True)
+class Rotation:
+    """The result of ``rotate``: the configuration before and after, and the new certificate."""
+    previous: 'RelayConfig'
+    config: 'RelayConfig'
+    certificate: CertificateInfo
+    resumed: bool
+
+
+def _same_registration(pending, config):
+    return (same_relay(pending.relay, config.relay) and pending.name == config.name
+            and pending.broker_id == config.broker_id and pending.secret == config.secret)
+
+
+def rotate(store, *, sleep=time.sleep, notify=None, endpoint_factory=None):
+    """Register a new name with the saved relay, get its certificate, then switch the saved files to it.
+
+    The caller holds the relay lock, so no broker uses the files meanwhile.
+    The new registration is saved in ``rotate.json`` before the certificate
+    request: a failed or rate-limited request is resumed by the next call
+    without another registration. The switch writes ``tls.pem`` (new key and
+    chain), then ``relay.json``, then deletes ``rotate.json``; each write is a
+    private temporary file and a rename. After an interruption between the two
+    writes, the next call sees that ``tls.pem`` already holds the new name and
+    only finishes the switch; after one between the ``relay.json`` write and
+    the delete, it only deletes ``rotate.json``. The old name is no longer
+    used; the relay has no call to delete it. Return a ``Rotation``.
+    """
+    config = store.load()
+    if config is None:
+        raise RelayError("this broker has no relay registration; run 'akdbx relay enable' first")
+    endpoint = (endpoint_factory or _endpoint_for)(config.relay)
+    pending = store.load_rotation()
+    if pending is not None and _same_registration(pending, config):
+        # The switch was saved, but rotate.json was not deleted: finish it and never register again.
+        info = store.certificate(config.name)
+        if info is not None and info.renew_at > _utcnow():
+            store.clear_rotation()
+            return Rotation(config, config, info, True)
+    elif pending is not None and (not same_relay(pending.relay, config.relay) or pending.name == config.name):
+        store.clear_rotation()  # Left from another relay, or not this registration: start again.
+        pending = None
+    resumed = pending is not None
+    if pending is None:
+        registration = call_with_retry(lambda: register(endpoint), sleep=sleep, notify=notify)
+        pending = RelayConfig.from_registration(endpoint, registration, enabled=config.enabled)
+        if pending.name == config.name:
+            raise RelayError('the relay sent the current name again')
+        store.save_rotation(pending)
+    info = store.certificate(pending.name)
+    if info is None or info.renew_at <= _utcnow():
+        tls_pem, info = call_with_retry(lambda: request_certificate(endpoint, pending), sleep=sleep,
+                                        notify=notify)
+        store.save_tls(tls_pem)
+    switched = RelayConfig(pending.relay, pending.name, pending.broker_id, pending.public_port, config.enabled,
+                           pending.secret)
+    store.save(switched)
+    store.clear_rotation()
+    return Rotation(config, switched, info, resumed)
 
 
 # Relay client

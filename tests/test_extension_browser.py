@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import socket
 import sys
 import threading
 import time
@@ -22,8 +23,9 @@ import pytest
 if sys.platform != 'win32':
     pytest.skip('native Windows APIs required', allow_module_level=True)
 
-from akdbx import extension_host, extension_route as route
+from akdbx import broker_identity, extension_host, extension_route as route
 from akdbx.broker import Broker, serve
+from akdbx.local_https import start_local_unlock_server
 from akdbx.browser_card import failure as card_failure
 from akdbx.target import failure
 from test_broker import Entry, Vault
@@ -113,8 +115,9 @@ def browser_kind(binary):
 
 
 class Harness:
-    def __init__(self, lab, broker, kind):
+    def __init__(self, lab, broker, kind, unlock_origin=None, identity=None):
         self.lab, self.broker, self.kind = lab, broker, kind
+        self.unlock_origin, self.identity = unlock_origin, identity
 
     @property
     def hub(self):
@@ -161,7 +164,12 @@ def harness(private_dir, certificates, monkeypatch):
     suffix = uuid.uuid4().hex[:10]
     host_name = 'org.akdbx.test_' + suffix
     pipe = Path(r'\\.\pipe\akdbx-test-extension-' + suffix)
-    extension = extension_host.build(Path(private_dir) / 'extension', host_name=host_name)
+    # The broker's own HTTPS page on loopback, as `akdbx serve --tls-cert` runs it: the built origin.
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        unlock_port = probe.getsockname()[1]
+    unlock_origin = f'https://localhost:{unlock_port}'
+    extension = extension_host.build(Path(private_dir) / 'extension', host_name=host_name, unlock_origin=unlock_origin)
     launcher = Path(private_dir) / 'host.cmd'
     launcher.write_text(extension_host._launcher_text(kind, sys.executable, str(pipe)), encoding='utf-8', newline='')
     manifest = Path(private_dir) / (host_name + '.json')
@@ -172,6 +180,9 @@ def harness(private_dir, certificates, monkeypatch):
     entries = [Entry(username=USERNAME, password=PASSWORD, url=ORIGIN + '/login'), CardEntry(title='Synthetic card'),
                Entry(title='Other', username='other@example.test', password=PASSWORD, url='https://other.example.org/')]
     broker = Broker(Vault(entries), NoKeys())
+    unlock, _ = start_local_unlock_server(broker, Path(private_dir) / 'vault.kdbx', None, unlock_origin, *certificates)
+    identity = broker_identity.IdentityStore(Path(private_dir) / 'identity').announce(unlock_origin)
+    broker.extension.set_identity(identity)
     stop = threading.Event()
     server = threading.Thread(target=serve, args=(pipe, broker, stop), daemon=True)
     server.start()
@@ -200,14 +211,35 @@ def harness(private_dir, certificates, monkeypatch):
             assert broker.extension.approve(token)
             # Reload so the declared content script runs in the test page.
             lab.navigate('/login')
-            yield Harness(lab, broker, kind)
+            yield Harness(lab, broker, kind, unlock_origin, identity)
     finally:
         stop.set()
         server.join(5)
+        unlock.shutdown()
+        unlock.server_close()
+        broker.unlock_notifications.close()
         try:
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
         except OSError:
             pass
+
+
+def test_the_service_worker_binds_the_first_broker_key_from_the_https_identity_page(harness):
+    """The MV3 worker itself reads /.well-known/akdbx-identity: CSP connect-src, host permission and the
+    page's Origin allowlist all let it through, and the key is stored only after that read verifies."""
+    statement = harness.identity.message()['statement']
+    read = "chrome.storage.local.get('broker_trust').then(found => found.broker_trust ?? null)"
+    deadline = time.monotonic() + 30
+    record = harness.worker_call(read)
+    while record is None and time.monotonic() < deadline:
+        time.sleep(.2)
+        record = harness.worker_call(read)
+    build = harness.worker_call('globalThis.AKDBX_BUILD_ID')  # The ID that config.js of this build holds.
+    assert isinstance(build, str) and len(build) == 22
+    assert record == {'v': 1, 'public_key': harness.identity.message()['public_key'], 'key_id': statement['key_id'],
+                      'origin': harness.unlock_origin, 'seq': statement['seq'], 'build': build}
+    state = harness.worker_call('popupState()')
+    assert state['origin'] == harness.unlock_origin and state['trust_error'] is None and state['trust_reset'] is False
 
 
 def search(broker):

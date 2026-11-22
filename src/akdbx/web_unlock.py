@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 import os
 import platform
 import re
@@ -19,6 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 from .broker import UNLOCK_LINK_MAX_FAILURES, Broker, is_wrong_credentials, open_vault_with_password
 from .identities import FIELDS as IDENTITY_FIELDS, FIELD_LIMIT as IDENTITY_FIELD_LIMIT
 from . import cards
+from .extension_route import EXTENSION_ORIGIN
 from .portal import content_security_policy, field, render
 from .writes import group_paths
 from .runtime import (
@@ -601,6 +603,11 @@ def computer_name(windows: bool | None = None) -> str:
     return name or 'this computer'
 
 
+IDENTITY_ROUTE = '/.well-known/akdbx-identity'
+# The akdbx extension's service worker sends this Origin; its manifest key fixes the ID.
+EXTENSION_PAGE_ORIGIN = EXTENSION_ORIGIN.rstrip('/')
+
+
 def handler_for(state: UnlockState):
     class Handler(BaseHTTPRequestHandler):
         server_version = "akdbx"
@@ -772,8 +779,51 @@ def handler_for(state: UnlockState):
             self._send(status, _result_page(kind, result))
             return True
 
+        def _identity_route(self) -> bool:
+            """``/.well-known/akdbx-identity``: the broker's public signed origin statement.
+
+            The extension's service worker reads it over HTTPS from its trusted
+            origin before it stores a first broker key, so a replaced native
+            host cannot supply its own key for that origin. It holds only the
+            public key and the signed statement, so it needs no token and also
+            accepts the extension's own Origin. The Host check stays; no other
+            Origin is accepted, so a web page on another origin cannot read it.
+            """
+            if urlsplit(self.path).path != IDENTITY_ROUTE:
+                return False
+            local = getattr(self.server, 'local_origin', None)
+            own = local if local is not None else state.origin
+            if local is not None:
+                allowed = self.headers.get_all('Host', []) == [urlsplit(local).netloc]
+            else:
+                # The legacy Unix-socket route: only Tailscale Serve reaches it.
+                allowed = bool(self.headers.get('Tailscale-User-Login', ''))
+            allowed = allowed and self.headers.get_all('Origin', []) in ([], [own], [EXTENSION_PAGE_ORIGIN])
+            identity = getattr(getattr(state.broker, 'extension', None), 'identity', None)
+            if self.command != 'GET':
+                self.close_connection = True  # Never read a request body here.
+            if not allowed or identity is None:
+                self._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>Not found.</p>'))
+            elif self.command != 'GET':
+                self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
+                self.send_header('Allow', 'GET')
+                self.send_header('Content-Length', '0')
+                self.send_header('Cache-Control', 'no-store')
+                self.end_headers()
+            else:
+                body = json.dumps(identity.message(), sort_keys=True, separators=(',', ':')).encode('ascii')
+                self._send(HTTPStatus.OK, body, content_type='application/json')
+            return True
+
+        def _other_method(self) -> None:
+            if not self._identity_route():
+                # The standard answer for every other route, as before.
+                self.send_error(HTTPStatus.NOT_IMPLEMENTED, f'Unsupported method ({self.command!r})')
+
+        do_HEAD = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _other_method
+
         def do_GET(self) -> None:
-            if self._write_request():
+            if self._identity_route() or self._write_request():
                 return
             token = self._token()
             if not self._identity_ok():
@@ -820,7 +870,7 @@ def handler_for(state: UnlockState):
             self._send(HTTPStatus.BAD_REQUEST, _page("Invalid request", "<p>The request was rejected.</p>"))
 
         def do_POST(self) -> None:
-            if self._write_request():
+            if self._identity_route() or self._write_request():
                 return
             identity = self._identity()
             submitted_token = self._token()

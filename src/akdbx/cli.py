@@ -626,7 +626,12 @@ def _relay_for_serve(args):
               '--unlock-origin to serve without the relay', file=sys.stderr)
         return 2
     if certificate is None:
-        print("the relay has no usable certificate yet: run 'akdbx relay enable' again", file=sys.stderr)
+        try:
+            rotating = store.load_rotation() is not None
+        except relay_module.RelayStoreError:
+            rotating = False
+        print("the relay has no usable certificate yet: run 'akdbx relay "
+              + ("rotate' again to finish the new name" if rotating else "enable' again"), file=sys.stderr)
         return 2
     return config, store
 
@@ -647,8 +652,8 @@ def _refresh_relay(args, config, store):
         print(f'warning: --unlock-origin names the old relay origin {args.unlock_origin}; this broker now '
               f'serves {config.origin}. Remove --unlock-origin.', file=sys.stderr)
     if result.changes:
-        print(f'akdbx relay: the private pages moved to {config.origin}. If you use the browser extension, '
-              'run akdbx extension build again and reload it.', file=sys.stderr)
+        print(f'akdbx relay: the private pages moved to {config.origin}. ' + relay_cli.EXTENSION_FOLLOWS,
+              file=sys.stderr)
     inherited = os.environ.get('AKDBX_UNLOCK_ORIGIN', '').strip().rstrip('/')
     if inherited and not _same_origin(inherited, config.origin):
         # serve --relay ignores the variable, but other akdbx commands in this environment still use it
@@ -657,6 +662,32 @@ def _refresh_relay(args, config, store):
               f'{config.origin}. Other akdbx commands with this variable will refuse its links: unset '
               'AKDBX_UNLOCK_ORIGIN or set it to the relay origin.', file=sys.stderr)
     return config, result.changes
+
+
+def announce_identity(broker, socket_path, directory=None) -> None:
+    """Sign the private pages' origin for the browser extension (see broker_identity).
+
+    A failure never stops the broker: an extension then keeps the origin it
+    trusts and opens no link on another one.
+    """
+    from . import broker_identity
+    base = getattr(broker.writes, 'public_base', None)
+    if not isinstance(base, str):
+        return
+    try:
+        identity = broker_identity.IdentityStore.for_endpoint(socket_path, directory).announce(base)
+    except broker_identity.IdentityError as exc:
+        print(f'warning: the browser extension cannot follow an origin change: {exc}. Extensions keep the '
+              'origin they trust.', file=sys.stderr)
+        return
+    except Exception as exc:
+        print('warning: the browser extension cannot follow an origin change: the broker identity could not be '
+              f'loaded or saved ({type(exc).__name__}). Extensions keep the origin they trust.', file=sys.stderr)
+        return
+    broker.extension.set_identity(identity)
+    if identity.changed:
+        print(f'Browser extension: this broker signed its origin {identity.origin} (sequence {identity.seq}). '
+              'A paired extension at version 0.3.0 or later follows it at its next connection.', file=sys.stderr)
 
 
 def _free_loopback_port() -> int:
@@ -812,6 +843,7 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
         unlock_server, unlock_url = start_unlock_server(
             broker, database, keyfile, unlock_socket, args.unlock_url or args.unlock_origin,
         )
+    announce_identity(broker, args.socket)
     if broker.unlock_blocked:
         # A restored block: the link answers 403, so print no URL.
         print("Vault locked. The unlock link is blocked after three failed master-password attempts. "

@@ -4,6 +4,15 @@
 <body>
 <h1>akdbx</h1>
 <p id="status" role="status">Checking the akdbx broker…</p>
+<p id="trust" hidden></p>
+<div id="reset" hidden>
+  <button id="reset-start" type="button">Reset broker trust…</button>
+  <div id="reset-confirm" hidden>
+    <p>A reset forgets the broker key and keeps the broker address. The extension then accepts a new key only
+      from the broker's HTTPS page at that address. Reset only if you set up this broker again yourself.</p>
+    <button id="reset-yes" type="button">Reset and pair again</button>
+  </div>
+</div>
 <div id="pairing" hidden>
   <p>Pair this browser with akdbx. Check that the pairing page shows this code:</p>
   <p id="origin" class="detail"></p>
@@ -11,9 +20,11 @@
   <button id="pair" type="button">Open the pairing page</button>
 </div>
 <button id="unlock" type="button" hidden>Open the unlock page</button>
+<p id="unlock-origin" class="detail" hidden></p>
 <ul id="entries"></ul>
 <p id="version" class="footer"></p>
 <script src="config.js"></script>
+<script src="trust.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

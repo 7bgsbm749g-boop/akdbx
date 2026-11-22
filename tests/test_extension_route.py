@@ -1141,6 +1141,17 @@ def test_build_stores_the_browser_serialization_of_the_trusted_origin(tmp_path):
     assert 'AKDBX_TRUSTED_ORIGIN = "https://localhost";' in (built / 'config.js').read_text()
 
 
+def test_every_build_writes_a_new_build_id(tmp_path):
+    # The extension drops broker trust saved under another build ID, so each build must write a new one.
+    ids = []
+    for origin in ('https://localhost:9443', 'https://localhost:9443', None):
+        config = (extension_host.build(tmp_path / 'ext', unlock_origin=origin) / 'config.js').read_text()
+        found = extension_host.BUILD_ID.findall(config)
+        assert len(found) == 1 and len(found[0]) == 22
+        ids.append(found[0])
+    assert len(set(ids)) == 3
+
+
 def test_sealed_match_list_stays_within_the_transport_limit():
     title = 'é' * 500  # Escaped as \u00e9 in JSON: six bytes per character.
     broker = make_broker([Entry(title=title + str(i), username=USERNAME, password=PASSWORD, url=LOGIN)

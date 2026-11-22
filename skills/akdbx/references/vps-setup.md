@@ -126,6 +126,7 @@ The relay (0.26.0+) reaches the private pages from any device with no Tailscale 
 - Checks: `akdbx relay status` (`broker.connected: true`), `akdbx status` (`relay.connected`, and `unlock_url` on the relay origin). The broker logs `akdbx relay: connected`, connection losses and renewals on stderr; it never logs the secret.
 - The relay endpoint is outbound HTTPS and WebSocket to `relay.akdbx.link` (port 443; brokers registered before 0.28.0 use port 8443 until their next start moves them, see the skill's relay section). A firewall that blocks that outbound port stops it: `relay status` then shows `connected: false`, and the broker retries every minute at most.
 - Certificate renewal is automatic. A failed renewal keeps the current certificate and shows `renewal_error`; it is retried with backoff.
+- `akdbx relay rotate` (0.29.0+) gives the broker a new name and certificate. Run it only on the user's request, after you stop the broker service; it refuses while the broker holds `.relay.lock`. It costs one public certificate (a Certificate Transparency entry, counted in the relay's weekly budget), a restart and an unlock on the new origin. A paired extension at 0.3.0 or later follows the new origin by itself; see the extension reference, section "Origin trust".
 
 ## Sources for implementation-specific questions
 

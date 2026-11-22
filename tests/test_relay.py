@@ -1110,3 +1110,165 @@ def test_refresh_keeps_the_saved_values_when_the_save_fails(fake, capsys, monkey
     monkeypatch.setattr(store, 'save', full)
     result = relay_module.refresh(store, config, lambda url: fake.endpoint())
     assert result.config is config and result.changes == () and 'OSError' in result.warning
+
+
+# Rotate: a new name and certificate, then the broker signs the new origin
+
+
+def test_rotate_switches_to_a_new_name_and_certificate(fake, capsys):
+    enabled, _ = enable(fake, capsys)
+    old_secret = secret_of()
+    code, result, captured = run_cli(capsys, 'relay', 'rotate')
+    assert code == 0, captured
+    store = RelayStore()
+    config = store.load()
+    assert result['rotated'] and not result['resumed'] and result['name'] == config.name != enabled['name']
+    assert result['origin'] == config.origin and result['previous_origin'] == enabled['origin']
+    assert re.fullmatch(r'[a-z2-7]{12}\.akdbx\.link', config.name) and config.enabled
+    assert 'no rebuild, no reload' in result['next'] and 'akdbx serve VAULT' in result['next']
+    # One new registration and one new certificate for exactly the new name, with a new key.
+    assert fake.register_calls == 2 and len(fake.csrs) == 2
+    names = fake.csrs[1].extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert names.get_values_for_type(x509.DNSName) == [config.name]
+    assert store.certificate(config.name) is not None and store.certificate(enabled['name']) is None
+    assert sorted(p.name for p in store.directory.iterdir()) == ['.relay.lock', 'relay.json', 'tls.pem']
+    for path in (store.config_path, store.tls_path):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    shown = captured.out + captured.err
+    assert old_secret not in shown and config.secret not in shown and 'PRIVATE KEY' not in shown
+    assert relay_module.saved_origin() == config.origin
+
+
+def test_rotate_refuses_while_a_broker_holds_the_relay(fake, capsys):
+    enabled, _ = enable(fake, capsys)
+    before = RelayStore().config_path.read_bytes(), RelayStore().tls_path.read_bytes()
+    held = RelayStore().lock()
+    try:
+        code, result, _ = run_cli(capsys, 'relay', 'rotate')
+    finally:
+        held.release()
+    assert code == 1 and 'stop it' in result['error'] and "'akdbx relay rotate' again" in result['error']
+    assert (RelayStore().config_path.read_bytes(), RelayStore().tls_path.read_bytes()) == before
+    assert fake.register_calls == 1
+
+
+def test_rotate_needs_a_registration(fake, capsys):
+    code, result, _ = run_cli(capsys, 'relay', 'rotate')
+    assert code == 1 and "run 'akdbx relay enable' first" in result['error']
+    assert fake.register_calls == 0
+
+
+def test_rotate_reports_rate_limits_with_fixed_text_and_keeps_the_current_name(fake, capsys):
+    enabled, _ = enable(fake, capsys)
+    fake.register_errors = [(429, 'rate_limited', 7 * 86400)]
+    code, result, _ = run_cli(capsys, 'relay', 'rotate')
+    assert code == 1 and result['retry_after'] == 7 * 86400
+    assert result['error'] == 'the relay limits how often this can be done; try again in about 7 days'
+    assert 'registered' not in result and RelayStore().load().name == enabled['name']
+    assert RelayStore().load_rotation() is None
+    # A relay-supplied error string is never echoed.
+    fake.register_errors = [(400, 'echo ' + secret_of())]
+    code, result, _ = run_cli(capsys, 'relay', 'rotate')
+    assert code == 1 and result['error'] == 'the relay answered HTTP 400' and RelayStore().load().name == enabled['name']
+
+
+def test_a_failed_certificate_request_resumes_without_another_name(fake, capsys, tmp_path, database):
+    enabled, _ = enable(fake, capsys)
+    fake.certificate_errors = [(502, 'acme_failed')]
+    code, result, _ = run_cli(capsys, 'relay', 'rotate')
+    assert code == 1 and result['registered'] and "run 'akdbx relay rotate' again" in result['next']
+    store = RelayStore()
+    pending = store.load_rotation()
+    assert pending.name != enabled['name'] and store.load().name == enabled['name']
+    assert stat.S_IMODE((store.directory / relay_module.ROTATE_NAME).stat().st_mode) == 0o600
+    # Until it finishes, enable refuses (it would replace the new name's certificate) and status says so.
+    code, result, _ = run_cli(capsys, 'relay', 'enable', '--relay', fake.url)
+    assert code == 1 and "run 'akdbx relay rotate' again" in result['error']
+    code, status, _ = run_cli(capsys, 'relay', 'status')
+    assert status['rotation_pending'] is True and 'did not finish' in status['next']
+    code, result, captured = run_cli(capsys, 'relay', 'rotate')
+    assert code == 0 and result['resumed'] and result['name'] == pending.name, captured
+    assert fake.register_calls == 2 and store.load_rotation() is None and store.load().name == pending.name
+
+
+def test_an_interrupted_switch_finishes_without_another_certificate(fake, capsys, monkeypatch):
+    enable(fake, capsys)
+    real_save = RelayStore.save
+
+    def crash(self, config):
+        raise OSError('interrupted after tls.pem')
+    monkeypatch.setattr(RelayStore, 'save', crash)
+    with pytest.raises(OSError):
+        relay_module.rotate(RelayStore(), endpoint_factory=fake.endpoint)
+    monkeypatch.setattr(RelayStore, 'save', real_save)
+    store = RelayStore()
+    pending = store.load_rotation()
+    assert store.certificate(pending.name) is not None and store.certificate(store.load().name) is None
+    rotation = relay_module.rotate(store, endpoint_factory=fake.endpoint)
+    assert rotation.resumed and rotation.config.name == pending.name
+    assert len(fake.csrs) == 2 and fake.register_calls == 2  # enable's and the rotation's, nothing more.
+    assert store.load_rotation() is None
+
+
+def test_a_switch_interrupted_before_the_rotation_file_is_deleted_registers_no_other_name(fake, capsys,
+                                                                                        monkeypatch):
+    enable(fake, capsys)
+    real_clear = RelayStore.clear_rotation
+
+    def crash(self):
+        raise OSError('interrupted after relay.json')
+    monkeypatch.setattr(RelayStore, 'clear_rotation', crash)
+    with pytest.raises(OSError):
+        relay_module.rotate(RelayStore(), endpoint_factory=fake.endpoint)
+    monkeypatch.setattr(RelayStore, 'clear_rotation', real_clear)
+    store = RelayStore()
+    switched = store.load()
+    assert store.load_rotation().name == switched.name and store.certificate(switched.name) is not None
+    code, result, captured = run_cli(capsys, 'relay', 'rotate')
+    assert code == 0 and result['rotated'] and result['resumed'] and result['name'] == switched.name, captured
+    # enable's registration and the rotation's: no third name, no new certificate.
+    assert fake.register_calls == 2 and len(fake.csrs) == 2
+    assert store.load_rotation() is None and store.load() == switched
+    code, status, _ = run_cli(capsys, 'relay', 'status')
+    assert 'rotation_pending' not in status
+
+
+def test_forget_also_deletes_an_unfinished_rotation(fake, capsys):
+    enable(fake, capsys)
+    fake.certificate_errors = [(502, 'acme_failed')]
+    assert run_cli(capsys, 'relay', 'rotate')[0] == 1
+    code, result, _ = run_cli(capsys, 'relay', 'disable', '--forget')
+    assert code == 0 and result['forgot'] and not RelayStore().directory.exists()
+
+
+def test_after_rotate_the_broker_signs_the_new_origin_with_the_same_key(fake, capsys, tmp_path, database,
+                                                                        monkeypatch):
+    from akdbx.broker_identity import verify_message
+    enable(fake, capsys)
+    seen = []
+
+    def exercise(socket_path, broker):
+        identity = broker.extension.identity
+        seen.append((identity.message(), broker.dispatch({'action': 'ping'})['extension_trust'],
+                     broker.unlock_url))
+
+    monkeypatch.setattr(cli, 'X11Typer', RecordingTyper)
+    monkeypatch.setattr(cli, 'serve', exercise)
+    socket_option = ['--socket', str(tmp_path / 'private' / 'broker.sock')]
+    assert cli.main([*socket_option, 'serve', str(database)]) == 0
+    first_err = capsys.readouterr().err
+    assert cli.main([*socket_option, 'serve', str(database)]) == 0
+    assert 'signed its origin' not in capsys.readouterr().err  # Same origin: same statement.
+    code, rotated, _ = run_cli(capsys, 'relay', 'rotate')
+    assert code == 0
+    assert cli.main([*socket_option, 'serve', str(database)]) == 0
+    err = capsys.readouterr().err
+    (first, trust1, url1), (again, _, _), (moved, trust2, url2) = seen
+    assert trust1['origin'] == rotated['previous_origin'] and trust1['seq'] == 1
+    # ECDSA signatures differ each time; the statement and the key stay the same.
+    assert (again['statement'], again['public_key']) == (first['statement'], first['public_key'])
+    assert trust2 == {'key_id': trust1['key_id'], 'origin': rotated['origin'], 'seq': 2}
+    assert url2.startswith(rotated['origin'] + '/?token=') and not url1.startswith(rotated['origin'])
+    assert verify_message(moved, first['public_key'])['origin'] == rotated['origin']
+    assert f"signed its origin {rotated['origin']} (sequence 2)" in err and 'signed its origin' in first_err
+    assert 'PRIVATE KEY' not in first_err + err
