@@ -9,7 +9,8 @@
  *
  * Pairing and unlock links open only on the origin that trust.js decides:
  * the built origin, then the broker identity read over HTTPS from that origin
- * at the first pairing, and the origin changes that identity signed.
+ * when the host first sends it, and the origin changes that identity signed.
+ * Every identity the host sends is checked when it arrives, one at a time.
  */
 "use strict";
 importScripts("config.js", "trust.js");
@@ -182,6 +183,8 @@ function onHost(current, message) {
       if (port === current) sealKey = agreeKey(message.broker_public_key).catch(() => null);
     }
     state = brokerState(message);
+    // Bind a first key or follow a signed move now, not only when the popup opens.
+    if (port === current) observeTrust(state);
   } else if (message.type === "call") {
     handleCall(message).catch(() => ({ok: false})).then(result => {
       if (port === current) current.postMessage({type: "reply", id: message.id, result});
@@ -210,21 +213,32 @@ function withTrust(task) {
   return next;
 }
 
-async function decideTrust(current) {
-  return withTrust(async () => {
-    const key = akdbxTrust.STORAGE_KEY;
-    const stored = (await chrome.storage.local.get(key))[key] ?? null;
-    const verified = current.identity_received ? await akdbxTrust.verifyIdentity(current.identity) : null;
-    const built = globalThis.AKDBX_TRUSTED_ORIGIN ?? null;
-    const received = current.identity_received === true;
-    let decision = akdbxTrust.decide(stored, built, verified, received);
-    if (decision.fetch) {
-      // A first key: read the statement over HTTPS from the trusted origin, once per popup state.
-      decision = akdbxTrust.decide(stored, built, verified, received, await akdbxTrust.fetchIdentity(decision.fetch));
-    }
-    if (decision.store) await chrome.storage.local.set({[key]: decision.store});
-    return decision;
-  });
+function builtOrigin() {
+  return globalThis.AKDBX_TRUSTED_ORIGIN ?? null;
+}
+
+async function storedTrust() {
+  return (await chrome.storage.local.get(akdbxTrust.STORAGE_KEY))[akdbxTrust.STORAGE_KEY] ?? null;
+}
+
+// Run only inside withTrust: decide against the saved record as it is now, so an older
+// statement can never replace a newer saved sequence number.
+async function trustNow(current) {
+  const stored = await storedTrust();
+  const verified = current.identity_received ? await akdbxTrust.verifyIdentity(current.identity) : null;
+  const built = builtOrigin();
+  const received = current.identity_received === true;
+  let decision = akdbxTrust.decide(stored, built, verified, received);
+  if (decision.fetch) {
+    // A first key: read the statement over HTTPS from the trusted origin.
+    decision = akdbxTrust.decide(stored, built, verified, received, await akdbxTrust.fetchIdentity(decision.fetch));
+  }
+  if (decision.store) await chrome.storage.local.set({[akdbxTrust.STORAGE_KEY]: decision.store});
+  return decision;
+}
+
+function observeTrust(current) {
+  if (current.identity_received) withTrust(() => trustNow(current)).catch(() => {});
 }
 
 function brokerRequest(op, payload = {}, timeout = 10000) {
@@ -435,11 +449,14 @@ async function popupState() {
   await connect();
   const fresh = port ? await brokerRequest("state", {}, 5000) : null;
   if (fresh && fresh.ok) state = brokerState(fresh);
-  const current = state;
   // The popup shows the code of this browser's own key, never one from the host.
   const code = await localCode((await pairingKeys()).publicKey);
+  // After the identity work queued before it, on the newest broker state.
+  const {current, trust} = await withTrust(async () => {
+    const latest = state;
+    return {current: latest, trust: latest.connected ? await trustNow(latest) : null};
+  });
   if (!current.connected) return {ok: true, connected: false, code};
-  const trust = await decideTrust(current);
   // Links open only on the trusted origin; the popup checks them again.
   const pairing = !current.paired && current.pairing && akdbxTrust.privateLink(current.pairing.url, "/extension/pair", trust.origin);
   const unlock = current.locked && current.unlock_url && akdbxTrust.privateLink(current.unlock_url, "/", trust.origin);
@@ -449,9 +466,13 @@ async function popupState() {
 }
 
 async function popupReset() {
-  // The user clicked "Reset broker trust": forget the key and the built origin, and pair again with a
-  // new browser key, so the broker asks for the master password on the page whose origin the popup shows.
-  await withTrust(() => chrome.storage.local.set({[akdbxTrust.STORAGE_KEY]: {v: 1, reset: true}}));
+  // The user clicked "Reset broker trust": forget the key and its sequence number, keep the trusted origin,
+  // and pair again with a new browser key. The next key is bound only through that origin's HTTPS page.
+  await withTrust(async () => {
+    const origin = akdbxTrust.trustedOrigin(await storedTrust(), builtOrigin());
+    if (origin) await chrome.storage.local.set({[akdbxTrust.STORAGE_KEY]: {v: 1, reset: true, origin}});
+    else await chrome.storage.local.remove(akdbxTrust.STORAGE_KEY);
+  });
   keysPromise = null;
   await chrome.storage.session.remove("pairing");
   const current = port;
@@ -556,5 +577,5 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 connect();
 if (typeof module !== "undefined") {
   module.exports = {fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys, fill, pin, release,
-    popupState, popupReset, setSealKey: key => { sealKey = Promise.resolve(key); }, state: () => state};
+    popupState, popupReset, trustIdle: () => trustQueue, setSealKey: key => { sealKey = Promise.resolve(key); }, state: () => state};
 }

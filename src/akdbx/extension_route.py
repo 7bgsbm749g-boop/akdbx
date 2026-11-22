@@ -47,8 +47,8 @@ Security model:
   field that receives them. There is no clipboard, no storage and no logging.
 * Pairing and unlock links open only on the origin that the extension trusts.
   The broker's ``attached`` and ``state`` messages carry its signed origin
-  statement (``broker_identity``); the extension learns the signing key at its
-  first pairing, confirmed by the broker's HTTPS page on the trusted origin
+  statement (``broker_identity``); the extension learns the signing key when it
+  first receives it, confirmed by the broker's HTTPS page on the trusted origin
   (``/.well-known/akdbx-identity``), and then follows an origin change only in a statement signed
   by that key with a higher sequence number.
 """
