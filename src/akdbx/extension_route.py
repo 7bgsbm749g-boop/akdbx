@@ -1112,6 +1112,8 @@ class RoutedTargets:
         from .browser_card import CardTargetError
         route = request.get('route', self.hub.default_route)
         if route == 'extension':
+            from . import browser_slots
+            browser_slots.refuse_extension(request)
             try:
                 return self.hub.pin_element(self.kind, {**request, 'route': 'extension'})
             except ExtensionError:

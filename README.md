@@ -231,6 +231,26 @@ Keep the broker process running. Open its private unlock page (on this computer 
 
 Before starting the broker, choose the private Chrome user data directory shown above (or set `AKDBX_PASSWORD_BROWSER_PROFILE`). Configure that browser's startup with `--user-data-dir=/absolute/path/to/chrome-user-data --remote-debugging-port=0` so Chrome writes its selected port and browser endpoint to `DevToolsActivePort`. [Chrome 136 and later require a non-default user data directory](https://developer.chrome.com/blog/remote-debugging-port); explicitly naming Chrome's default directory with `--user-data-dir` does not enable remote debugging there. This concerns the user-data root, not a profile name such as `Default`. A fixed debugging port does not provide `DevToolsActivePort` for this transport. The broker does not start or change Chrome. The profile must be owned, mode 0700, without symlink components; launch Chrome with `umask 077` so `DevToolsActivePort` is not writable by other users. On Linux, the broker also verifies the kernel UID of the connected TCP peer before the WebSocket handshake. An unavailable or ambiguous ownership check refuses; redirects and reconnection are forbidden. No profile means password fills refuse. Treat CDP as a privileged local interface.
 
+### Several agent desktops: one Chrome per slot
+
+A host can run several agent desktops at the same time. Each desktop is a *slot* (`slot1`, `slot2`, …) with its own display and its own Chrome. Start the broker with a profile root instead of a single profile:
+
+```bash
+.venv/bin/akdbx serve /absolute/path/to/passwords.kdbx --browser-profile-root /absolute/path/to/profiles
+# or: AKDBX_BROWSER_PROFILE_ROOT=/absolute/path/to/profiles
+```
+
+Each slot `ROOT/slotN` is one Chrome user data directory, started as above (`--user-data-dir=ROOT/slotN --remote-debugging-port=0 --remote-debugging-address=127.0.0.1`, `umask 077`). Slot names match `slot[1-9][0-9]?`. The root replaces `--password-browser-profile` and `--card-browser-profile` for password, card and identity fills; the broker refuses to start with both. The single-profile options work as before when no root is set.
+
+With a root, every CDP pin names its slot: `pin-password-target`, `list-password-frames`, `pin-card-target` and `pin-identity-target` take `--browser-slot SLOT`, and default to the `AGENT_DESKTOP_SLOT` environment variable (sent only to a broker that reports a root, so a single-profile broker keeps working in an agent desktop shell). The request field is `browser_slot`; the broker advertises `browser_slot_protocol: 1` (0.30.0+).
+
+```bash
+.venv/bin/akdbx pin-password-target --browser-slot slot2 --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
+  --top-url VERIFIED_EXACT_HTTPS_URL --selector '#password' --mode password
+```
+
+The broker takes only the slot name, never a path, and applies every profile check above to that exact directory `ROOT/SLOT`. It refuses an invalid name (including any path), an unknown slot, a slot request when no root is configured, and a pin with no slot when a root is configured; that refusal names the slots that exist. A pin keeps the browser connection it was made with, so a pin made in one slot never fills another slot's Chrome. The extension route takes no slot. `akdbx status` shows `browser_profile_root`, `browser_slots` (slot folders) and `browser_slots_live` (slots with a valid `DevToolsActivePort`; status does not connect, so a Chrome that stopped and left its file still shows here, and a pin then refuses).
+
 `--top-url` is the exact observed URL, query and fragment included. When that URL contains a private token (a reset or activation code), give it with `--top-url-file FILE` instead: a mode-0600 file that holds only the URL. The CLI reads it, sends the URL unchanged and never prints it. `list-password-frames`, `pin-identity-target` and `pin-card-target` accept the same file form, plus `--frame-url-file` where `--frame-url` applies. See [exact URL with a private token](skills/akdbx/references/target-fill.md#exact-url-with-a-private-token).
 
 Focus the password input before pinning. For `login`, pin with `--mode login --selector PASSWORD_SELECTOR --username-selector USERNAME_SELECTOR` and focus the username first. Username inputs require autocomplete field token `username`; password inputs require `current-password` or `new-password`. Valid ordered lists such as `current-password webauthn` and optional section/address prefixes are supported; malformed or conflicting tokens refuse. Delivery never rewrites the page's autocomplete attributes. Login fills both retained nodes with native DOM setters, without Tab or focus changes. Both saved and generated passwords require this path; a legacy X11 pin refuses them. HTTPS main-frame standard inputs are supported. Shadow DOM, custom controls, and ambiguous or changed fields refuse.

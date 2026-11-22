@@ -26,7 +26,9 @@ from .persistence import SaveError
 from .versions import active_entries
 from .totp import (MIN_VALIDITY, TotpError, capabilities as totp_capabilities,
                    configured as totp_configured, read_configuration, code_at, https_origin)
-from .browser_password import BrowserPasswords, PasswordPin, DELIVERY as PASSWORD_DELIVERY
+from .browser_password import BrowserPasswords, PasswordPin, DELIVERY as PASSWORD_DELIVERY, endpoint as browser_endpoint
+from . import browser_slots
+from .browser_slots import BrowserSlots, SlotError
 from .password_frames import PROTOCOL as PASSWORD_FRAME_PROTOCOL, POLICY as PASSWORD_FRAME_POLICY
 from . import __version__
 from .notifications import UnlockNotifications, capabilities as notification_capabilities
@@ -105,11 +107,17 @@ class Broker:
         password_browser_profile=None,
         secret_sinks_path=None,
         default_fill_route='cdp',
+        browser_profile_root=None,
     ) -> None:
         self.vault = vault
         self.typer = typer
         self.targets = TargetPins(typer, clock)
-        self.passwords = BrowserPasswords(password_browser_profile, clock=clock)
+        # A root of agent desktop slots replaces the single profiles: each
+        # pin request then names its slot, for password, card and identity.
+        if browser_profile_root is not None and (password_browser_profile is not None or card_browser_profile is not None):
+            raise ValueError('use either a browser profile root or single browser profiles, not both')
+        self.browser_slots = BrowserSlots(browser_profile_root) if browser_profile_root is not None else None
+        self.passwords = BrowserPasswords(password_browser_profile, clock=clock, slots=self.browser_slots)
         self.handle_ttl = handle_ttl
         self.clock = clock
         self.wall_clock = wall_clock
@@ -122,9 +130,11 @@ class Broker:
         self.cards = CardManager(self)
         # The extension route sits next to CDP; the operator picks the default.
         self.extension = ExtensionHub(self, default_route=default_fill_route)
-        self.card_targets = RoutedTargets(BrowserCards(card_browser_profile, clock=clock), self.extension, 'card')
+        self.card_targets = RoutedTargets(BrowserCards(card_browser_profile, clock=clock, slots=self.browser_slots),
+                                          self.extension, 'card')
         self.identity_targets = RoutedTargets(
-            BrowserIdentities(password_browser_profile or card_browser_profile, clock=clock), self.extension, 'identity')
+            BrowserIdentities(password_browser_profile or card_browser_profile, clock=clock, slots=self.browser_slots),
+            self.extension, 'identity')
         self.identities = IdentityManager(self)
         self.merges = create_merge_manager(self)
         self.secrets = SecretCaptures(self, secret_sinks_path)
@@ -332,16 +342,19 @@ class Broker:
                     **({"relay": self.relay.status()} if self.relay is not None else {}),
                     **({"active_origin": origin} if isinstance(origin, str) else {})}
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.profile is not None, "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
+            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), "generated_entry_protocol": 1, "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
                 route = request.get('route', self.extension.default_route)
                 if route == 'extension':
+                    browser_slots.refuse_extension(request)
                     return self.extension.frames({**request, 'route': 'extension'})
                 if route != 'cdp':
                     raise TargetError()
                 return self.passwords.frames({k: v for k, v in request.items() if k != 'route'})
+            except SlotError as exc:
+                return {'ok': False, 'error': str(exc)}
             except Exception:
                 return {'ok': False, 'error': 'frame list unavailable: page missing, ambiguous, changed or unsupported'}
         if self.locked:
@@ -352,10 +365,13 @@ class Broker:
             try:
                 route = request.get('route', self.extension.default_route)
                 if route == 'extension' and request.get('mode') != 'read':
+                    browser_slots.refuse_extension(request)
                     return self.extension.pin_password({**request, 'route': 'extension'})
                 if 'route' in request and request['route'] != 'cdp':
                     raise TargetError()  # Read pins (secret capture) stay on CDP.
                 return self.passwords.pin({k: v for k, v in request.items() if k != 'route'})
+            except SlotError as exc:
+                return {'ok': False, 'error': str(exc)}
             except Exception:
                 return target_failure()
         if action == 'pin-target':

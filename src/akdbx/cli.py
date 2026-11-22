@@ -24,7 +24,7 @@ from .web_unlock import start_unlock_server
 from .local_https import is_loopback_origin, reload_certificate, start_local_unlock_server
 from .notifications import validate_webhook_url
 from . import capture_cli, card_cli, extension_host, identity_cli, relay as relay_module, relay_cli, secret_cli
-from . import page_url, setup_cli
+from . import browser_slots, page_url, setup_cli
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
 from .sink_helper import SinkError
 
@@ -360,6 +360,11 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--keyfile", type=Path)
     start.add_argument("--password-browser-profile", type=Path, default=os.environ.get("AKDBX_PASSWORD_BROWSER_PROFILE"),
                        help="operator-selected private Chrome user data directory with remote debugging enabled")
+    start.add_argument('--browser-profile-root', type=Path, default=os.environ.get(browser_slots.ROOT_ENV) or None,
+                       help=('private folder of agent desktop slots (env ' + browser_slots.ROOT_ENV + '): each slot '
+                             'ROOT/slotN is one Chrome user-data directory with local CDP enabled. Password, card and '
+                             'identity pins then name their slot (--browser-slot); replaces --password-browser-profile '
+                             'and --card-browser-profile'))
     start.add_argument("--yes-on-fill", action="store_true", help="deprecated no-op: fills no longer require terminal approval")
     start.add_argument("--web-unlock", action="store_true", help="compatibility flag: private web unlock is always enabled")
     start.add_argument("--unlock-socket", type=Path, help=argparse.SUPPRESS)
@@ -404,10 +409,12 @@ def parser() -> argparse.ArgumentParser:
                               help='allow a verified off password field; requires --password-purpose and broker capability')
     password_pin.add_argument('--route', choices=FILL_ROUTES,
                               help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
+    browser_slots.add_argument(password_pin)
     frames = commands.add_parser('list-password-frames', help='read-only: list frame ids, origins and visible field counts of one exact HTTPS page')
     page_url.add(frames, 'top-url', required=True, help='exact verified top-level page URL')
     frames.add_argument('--page-id', help='page target id; required only when several tabs show the same exact URL')
     frames.add_argument('--route', choices=FILL_ROUTES, help="cdp or extension; default: the broker's")
+    browser_slots.add_argument(frames)
     for name in ('create-entry', 'generate-entry', *IDENTITY_CREATES, 'update-password', 'generate-password', 'setup-totp'):
         help_text = {
             'create-sso-entry': 'save a Google/GitHub SSO identity (no password form)',
@@ -763,6 +770,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -> int:
+    if args.browser_profile_root is not None and (args.password_browser_profile is not None
+                                                  or args.card_browser_profile is not None):
+        print('--browser-profile-root replaces --password-browser-profile and --card-browser-profile '
+              '(and their AKDBX_* variables): give only the root', file=sys.stderr)
+        return 2
     if args.yes_on_fill:
         print("Warning: --yes-on-fill is deprecated and has no effect; fills no longer require terminal approval.", file=sys.stderr)
     if os.name == 'nt':
@@ -774,6 +786,7 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
                      else default_notification_state(args.socket))
             broker = Broker(None, WindowsTyper(), card_browser_profile=args.card_browser_profile,
                             password_browser_profile=args.password_browser_profile,
+                            browser_profile_root=args.browser_profile_root,
                             notification_state_path=state, secret_sinks_path=args.secret_sinks,
                             default_fill_route=args.default_fill_route)
         except SinkError as exc:
@@ -812,6 +825,7 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
         try:
             broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
                             password_browser_profile=args.password_browser_profile,
+                            browser_profile_root=args.browser_profile_root,
                             notification_state_path=args.notification_state or default_notification_state(args.socket),
                             # An explicit --notification-state keeps the block beside it.
                             unlock_block_path=(None if args.notification_state
@@ -1051,6 +1065,16 @@ def _command(args) -> int:
                     or capabilities['password_frame_protocol'] != 1 or capabilities.get('password_frame_policy') != 'same-site-chain-v1'):
                 print(json.dumps({'ok': False, 'error': 'broker lacks password frame protocol 1; require broker 0.16.0 or newer; frame request not sent'}))
                 return 1
+        if args.command in {'list-password-frames', 'pin-password-target'} and browser_slots.chosen(args) is not None:
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            slot_route = ('cdp' if args.command == 'pin-password-target' and args.mode == 'read'
+                          else args.route or capabilities.get('default_fill_route') or 'cdp')
+            slot, refusal = browser_slots.request_field(args, capabilities, slot_route)
+            if refusal is not None:
+                print(json.dumps({'ok': False, 'error': refusal}))
+                return 1
+            payload.update(slot)
         if getattr(args, 'route', None) == 'extension':
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)

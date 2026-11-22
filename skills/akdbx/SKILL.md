@@ -319,6 +319,17 @@ So:
   the popup and enter the master password there. Pairing lasts until the browser
   or broker restarts.
 
+**Agent desktop slots (CDP route, 0.30.0+).** When `status` shows
+`browser_profile_root`, the broker serves several agent desktops, each with its
+own Chrome. Every CDP pin must name your slot: `--browser-slot SLOT` on
+`list-password-frames`, `pin-password-target`, `pin-card-target` and
+`pin-identity-target`. Your slot is in the `AGENT_DESKTOP_SLOT` environment
+variable, which the CLI sends by default; if it is not set, run
+`vps-agent-desktop current`. Use only your own slot, never another one from
+`browser_slots_live`. A refusal that starts with `browser slot` names the cause
+and the slots that exist. Fills need no slot: a pin stays in the Chrome it was
+made in. See [agent desktop slots](references/target-fill.md#agent-desktop-slots).
+
 Both routes keep the same model: list frames, a 30-second single-use pin bound
 to one exact element, a fresh search handle per fill, and a receipt with no
 value. The commands are the same; add `--route extension` or `--route cdp` to
@@ -388,6 +399,9 @@ akdbx list-password-frames --top-url 'EXACT_HTTPS_URL'      # page_id, frame ids
 akdbx pin-password-target --page-id PAGE_ID --frame-id FRAME_ID \
   --top-url 'EXACT_HTTPS_URL' --selector '#password' --mode password
 ```
+
+On an agent desktop slot the CLI adds `$AGENT_DESKTOP_SLOT`; give it explicitly
+with `--browser-slot "$(vps-agent-desktop current)"` when the variable is unset.
 
 Modes:
 
@@ -577,6 +591,7 @@ retained encrypted originals.
 | `unknown or expired handle; search again` | Search again. Never reuse or invent a handle. |
 | `autofill not started: ...` | Nothing was sent. Check focus, get a fresh handle and pin. |
 | `autofill outcome uncertain`, `autofill failed`, timeout, disconnect | The value may be in the field. Check the page and broker; do not repeat the fill blindly. |
+| `browser slot required` / `unknown` / `invalid` | Pass your own slot (`$AGENT_DESKTOP_SLOT` or `vps-agent-desktop current`) with `--browser-slot`. Never use another agent's slot. |
 | Pin refused | Read the reason. Fix the target (focus, selector, frame, origin); never edit the page or the entry to force it. |
 | `frame list unavailable` / `target unavailable` on the extension route | Browser closed, extension not loaded, or not paired (`extension_paired: false`). Give the user the pairing link. |
 | Site check or card decline that looks like a false positive on CDP | Stop retrying. Use the extension route ([Choose the fill route](#choose-the-fill-route)). |

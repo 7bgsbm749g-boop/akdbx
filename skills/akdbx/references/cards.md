@@ -208,8 +208,11 @@ Never substitute `fill --mode password`, `pin-target`, X11 typing, clipboard or
 agent-visible JavaScript values if the card transport is unavailable. Report
 the unsupported field/frame or missing browser configuration instead. The
 operator configures the existing browser's private local CDP connection through
-`serve --card-browser-profile USER_DATA_DIR` or `AKDBX_CARD_BROWSER_PROFILE`;
+`serve --card-browser-profile USER_DATA_DIR` or `AKDBX_CARD_BROWSER_PROFILE`,
+or with one Chrome per agent desktop through `serve --browser-profile-root ROOT`;
 this is deployment configuration, not an agent-selected endpoint or new profile.
+With a root, `pin-card-target` names the desktop's slot with `--browser-slot SLOT`
+(default `$AGENT_DESKTOP_SLOT`; see [agent desktop slots](target-fill.md#agent-desktop-slots)).
 Before the WebSocket handshake, the broker checks the connected peer's reciprocal
 TCP tuple and UID in bounded Linux kernel metadata. Missing or ambiguous proof
 refuses the connection. The verified socket is retained and redirects are refused.

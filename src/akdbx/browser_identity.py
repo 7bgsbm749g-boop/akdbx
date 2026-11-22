@@ -11,5 +11,5 @@ class BrowserIdentities(BrowserCards):
     fields = FILL_FIELDS
 
     def capabilities(self):
-        return dict(identity_protocol=1, identity_browser_configured=self.profile is not None,
+        return dict(identity_protocol=1, identity_browser_configured=self.configured,
                     **self._receipt())

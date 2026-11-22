@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from .browser_card import TTL, failure
 from .browser_identity import DELIVERY
-from . import page_url
+from . import browser_slots, page_url
 from .identities import COMMANDS, FAILED, FIELDS, FIELDS_PROTOCOL, FILL_FIELDS, REFUSED, UPDATE_PROTOCOL, label_matches
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
 
@@ -42,6 +42,7 @@ def add_parsers(commands):
                  help='exact frame URL; required on the cdp route, optional on the extension route')
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
     p.add_argument('--route', choices=ROUTES, help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
+    browser_slots.add_argument(p)
     p = commands.add_parser('fill-identity', help='fill the pinned DOM field without sending keys or submitting')
     p.add_argument('handle')
     p.add_argument('--target', required=True)
@@ -67,6 +68,9 @@ def valid_receipt(args, response):
         if response.get('ok') is not False:
             return False
         if args.command in {'pin-identity-target', 'fill-identity'} and response == TARGET_REFUSED:
+            return True
+        if (args.command == 'pin-identity-target' and set(response) == {'ok', 'error'}
+                and browser_slots.valid_message(response['error'])):
             return True
         if args.command == 'fill-identity' and response == TARGET_UNCERTAIN:
             return True
@@ -154,6 +158,11 @@ def run(args, request):
             payload.update({key: getattr(args, key) for key in PIN_ARGS if getattr(args, key) is not None})
             if args.route is not None:
                 payload['route'] = args.route
+            slot, refusal = browser_slots.request_field(args, caps, args.resolved_route)
+            if refusal is not None:
+                print(json.dumps(dict(ok=False, error=refusal)))
+                return 1
+            payload.update(slot)
         else:
             payload.update(handle=args.handle, target=args.target, field=args.field, start_deadline=time.monotonic() + 4)
         response = request(payload)
