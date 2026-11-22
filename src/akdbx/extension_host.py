@@ -434,9 +434,12 @@ def trusted_origin(value):
 def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
     """Write the unpacked extension. An existing folder must already hold this extension.
 
-    The popup opens pairing and unlock links only on ``unlock_origin``. It comes
-    from local configuration, never from the native host, so a replaced host
-    cannot send the user to a look-alike master-password page.
+    The popup opens pairing and unlock links only on a trusted origin, so a
+    replaced host cannot send the user to a look-alike master-password page.
+    ``unlock_origin`` comes from local configuration, never from the native
+    host: it is the first trusted origin. At the first pairing the extension
+    learns the broker's identity key (for this origin only) and later follows
+    the origin changes that key signs (``broker_identity``), with no rebuild.
     """
     destination = Path(destination)
     origin = trusted_origin(unlock_origin) if unlock_origin is not None else None
@@ -468,7 +471,8 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
             data = data.replace(HOST_NAME.encode(), host_name.encode())
         (destination / item.name).write_bytes(data)
     (destination / 'config.js').write_text(
-        '"use strict";\n// Written by `akdbx extension build`: the only origin for pairing and unlock links.\n'
+        '"use strict";\n// Written by `akdbx extension build`: the first trusted origin for pairing and unlock links.\n'
+        '// After the first pairing, origin changes signed by the broker identity key replace it.\n'
         'globalThis.AKDBX_TRUSTED_ORIGIN = ' + json.dumps(origin) + ';\n', encoding='utf-8')
     return destination
 

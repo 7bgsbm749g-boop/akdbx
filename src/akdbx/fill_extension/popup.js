@@ -6,17 +6,10 @@ function userGesture(event, activation) {
   return Boolean(event && event.isTrusted === true && activation && activation.isActive === true);
 }
 
-// Links arrive through the native host, so they open only on the broker origin
-// that `akdbx extension build` wrote into this extension.
-function privateLink(value, path, trusted = globalThis.AKDBX_TRUSTED_ORIGIN) {
-  try {
-    const url = new URL(value);
-    return typeof trusted === "string" && url.origin === new URL(trusted).origin && url.protocol === "https:" &&
-      url.pathname === path && !url.username && !url.password ? url.href : null;
-  } catch {
-    return null;
-  }
-}
+// Links arrive through the native host, so they open only on the origin that the
+// service worker trusts (trust.js): the built origin or one the broker's key signed.
+const trust = globalThis.akdbxTrust || (typeof require === "function" ? require("./trust.js") : null);
+const privateLink = trust.privateLink;
 
 // The extension's own version, so a user can see a stale unpacked copy.
 function versionText(manifest) {
@@ -30,6 +23,31 @@ function label(kind, entry) {
   return [entry.title, "address and contact details"];
 }
 
+// The trust message, and the reset that only a real click in this popup starts.
+function showTrust(state, send) {
+  const note = document.getElementById("trust");
+  const text = state.trust_error || (state.origin_changed && trust.validOrigin(state.origin)
+    ? "The broker signed a move to " + state.origin + "; this extension now trusts it." : "");
+  note.textContent = typeof text === "string" ? text : "";
+  note.hidden = !note.textContent;
+  note.className = state.trust_error ? "warning" : "detail";
+  if (state.trust_reset !== true) return;
+  const reset = document.getElementById("reset");
+  reset.hidden = false;
+  document.getElementById("reset-start").onclick = event => {
+    if (!userGesture(event, navigator.userActivation)) return;
+    document.getElementById("reset-confirm").hidden = false;
+  };
+  document.getElementById("reset-yes").onclick = async event => {
+    if (!userGesture(event, navigator.userActivation)) return;
+    event.target.disabled = true;
+    const done = await send({op: "reset-trust"});
+    note.textContent = done && done.ok ? "Broker trust reset. Open akdbx again to pair this browser." : "Reset failed.";
+    note.className = "detail";
+    reset.hidden = true;
+  };
+}
+
 async function main() {
   const status = document.getElementById("status");
   const list = document.getElementById("entries");
@@ -40,8 +58,9 @@ async function main() {
     status.textContent = "The akdbx broker is not reachable. Start the broker, then run “akdbx extension install” for this browser.";
     return;
   }
+  showTrust(state, send);
   if (!state.paired) {
-    const link = state.pairing && privateLink(state.pairing.url, "/extension/pair");
+    const link = state.pairing_url && privateLink(state.pairing_url, "/extension/pair", state.origin);
     status.textContent = "This browser is not paired with akdbx yet.";
     // The code comes from this browser's own key, never from the host.
     if (link && /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(state.code)) {
@@ -53,12 +72,15 @@ async function main() {
     return;
   }
   if (state.locked) {
-    const link = state.unlock_url && privateLink(state.unlock_url, "/");
+    const link = state.unlock_url && privateLink(state.unlock_url, "/", state.origin);
     status.textContent = "The akdbx vault is locked.";
     if (link) {
       const unlock = document.getElementById("unlock");
       unlock.hidden = false;
       unlock.onclick = () => chrome.tabs.create({url: link});
+      const origin = document.getElementById("unlock-origin");
+      origin.textContent = "Unlock page: " + new URL(link).origin;
+      origin.hidden = false;
     }
     return;
   }

@@ -45,6 +45,11 @@ Security model:
   the agent pin route fills it.
 * Values exist only in the broker, the relay, the extension's memory and the
   field that receives them. There is no clipboard, no storage and no logging.
+* Pairing and unlock links open only on the origin that the extension trusts.
+  The broker's ``attached`` and ``state`` messages carry its signed origin
+  statement (``broker_identity``); the extension learns the signing key at its
+  first pairing and then follows an origin change only in a statement signed
+  by that key with a higher sequence number.
 """
 from __future__ import annotations
 
@@ -415,6 +420,13 @@ class ExtensionHub:
         self.pins = {}
         self.selections = {}
         self._closed = False
+        # The broker's signed origin statement (broker_identity.Identity), once serve announces it.
+        self.identity = None
+
+    def set_identity(self, identity):
+        """Use a new signed origin statement and send it to every attached extension."""
+        self.identity = identity
+        self.refresh()
 
     # ----- capabilities and state ---------------------------------------
     def capabilities(self):
@@ -432,6 +444,8 @@ class ExtensionHub:
                    for info in [self._pairing_info(c.digest)] if info.get('url')]
         if pairing:
             state['extension_pairing'] = pairing
+        if self.identity is not None:
+            state['extension_trust'] = self.identity.summary()
         return state
 
     def _pairing_info(self, digest):
@@ -460,6 +474,10 @@ class ExtensionHub:
         locked = self.broker.locked
         message = dict(type=kind, channel=channel.id, paired=paired, locked=locked, protocol=PROTOCOL,
                        broker_public_key=b64url(channel.broker_public_key))
+        identity = self.identity
+        if identity is not None:
+            # Signed by the broker's identity key: a relaying host cannot change it.
+            message['identity'] = identity.message()
         if not paired:
             message['pairing'] = self._pairing_info(channel.digest)
         # A blocked link is never offered; the agent replaces it after asking the user.
