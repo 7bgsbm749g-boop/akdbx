@@ -26,8 +26,9 @@ function label(kind, entry) {
 // The trust message, and the reset that only a real click in this popup starts.
 function showTrust(state, send) {
   const note = document.getElementById("trust");
-  const text = state.trust_error || (state.origin_changed && trust.validOrigin(state.origin)
-    ? "The broker signed a move to " + state.origin + "; this extension now trusts it." : "");
+  const text = state.trust_error || (state.origin_changed && trust.validOrigin(state.origin) &&
+    trust.validOrigin(state.moved_from) ? "The broker signed a move from " + state.moved_from + " to " +
+    state.origin + "; this extension now trusts " + state.origin + "." : "");
   note.textContent = typeof text === "string" ? text : "";
   note.hidden = !note.textContent;
   note.className = state.trust_error ? "warning" : "detail";

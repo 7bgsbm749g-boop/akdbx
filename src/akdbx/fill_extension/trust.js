@@ -24,6 +24,12 @@
  * - A broker that names another origin than the trusted one, with no
  *   signature by the stored key, gets no reset: only a local
  *   `akdbx extension build` changes the first trusted origin.
+ * - Each saved record keeps the built origin it was made under (`built`).
+ *   When config.js names another built origin (the user ran
+ *   `akdbx extension build` for another address and reloaded), the saved
+ *   record no longer counts and trust starts again from the new built
+ *   origin. The native host cannot write config.js. A record with no
+ *   `built` counts as made under the current build.
  *
  * The signed bytes are the statement's JSON text with sorted keys and no
  * whitespace; src/akdbx/broker_identity.py documents the encoding and signs.
@@ -133,7 +139,15 @@
     }
   }
 
-  function storedKey(record) {
+  // The record without its `built` field, when that field is absent, null or a valid origin; else null.
+  function withoutBuilt(record) {
+    if (!plain(record)) return null;
+    const {built, ...rest} = record;
+    return built === undefined || built === null || validOrigin(built) ? rest : null;
+  }
+
+  function storedKey(stored) {
+    const record = withoutBuilt(stored);
     return hasKeys(record, ["key_id", "origin", "public_key", "seq", "v"]) && record.v === 1 &&
       typeof record.public_key === "string" && PUBLIC_KEY.test(record.public_key) &&
       typeof record.key_id === "string" && KEY_ID.test(record.key_id) && validOrigin(record.origin) &&
@@ -152,31 +166,50 @@
   function elsewhere(named, trusted, built) {
     return `The broker names ${named}, but this extension ${trusted === built ? "was built for" : "trusts"} ` +
       `${trusted}, so akdbx opens no pairing or unlock page on ${named}. If you moved the broker to ${named} ` +
-      "yourself, run “akdbx extension build” again and load the new extension. Otherwise, do not enter your " +
-      "master password.";
+      "yourself, run “akdbx extension build” again on the computer with the broker and reload the extension: " +
+      "a build for a new address replaces the saved broker trust. Otherwise, do not enter your master password.";
   }
 
   // An origin that the user's reset kept: the key is gone, the origin stays.
-  function resetRecord(record) {
+  function resetRecord(stored) {
+    const record = withoutBuilt(stored);
     return hasKeys(record, ["origin", "reset", "v"]) && record.v === 1 && record.reset === true &&
       validOrigin(record.origin);
   }
 
+  // The built origin from config.js, or null.
+  function builtOf(built) {
+    return validOrigin(built) ? built : null;
+  }
+
+  // The saved record when it belongs to the current build, else null: a rebuild for another address starts over.
+  function current(stored, built) {
+    if (!(storedKey(stored) || resetRecord(stored))) return null;
+    return stored.built === undefined || stored.built === builtOf(built) ? stored : null;
+  }
+
   // The origin this extension trusts independently of the native host, or null.
   function trustedOrigin(stored, built) {
-    if (storedKey(stored) || resetRecord(stored)) return stored.origin;
-    return validOrigin(built) ? built : null;
+    const record = current(stored, built);
+    return record ? record.origin : builtOf(built);
+  }
+
+  // A record to save, with the built origin it was made under.
+  function saveRecord(facts, built) {
+    return {v: 1, ...facts, built: builtOf(built)};
   }
 
   /* What to trust now. `stored` is the saved record (or null), `built` the origin from config.js,
    * `verified` the result of verifyIdentity, and `received` whether the host sent an identity at all.
    * `fetched` is the statement read over HTTPS: undefined before the read, null when it failed.
-   * Returns {origin, store?, fetch?, error, reset, changed, learned}: `origin` is the only origin for links
-   * (or null: no link opens), `store` a new record to save, `fetch` the origin whose statement to read before
-   * a first key is stored (then call again with `fetched`), `error` fixed text for the user, and `reset`
-   * whether the popup offers the reset. */
+   * Returns {origin, store?, fetch?, from?, error, reset, changed, learned}: `origin` is the only origin for
+   * links (or null: no link opens), `store` a new record to save, `fetch` the origin whose statement to read
+   * before a first key is stored (then call again with `fetched`), `from` the old origin of a signed move,
+   * `error` fixed text for the user, and `reset` whether the popup offers the reset. A saved record made under
+   * another built origin is ignored, as if nothing were saved. */
   function decide(stored, built, verified, received, fetched) {
-    const known = storedKey(stored) ? stored : null;
+    const saved = current(stored, built);
+    const known = storedKey(saved) ? saved : null;
     const trusted = trustedOrigin(stored, built);
     const keep = (origin, error, reset = false) => ({origin, error, reset, changed: false, learned: false});
     if (!trusted) return keep(null, NOT_BUILT);
@@ -189,8 +222,9 @@
         return keep(null, KEY_CHANGED, true);
       }
       if (verified.seq > known.seq) {
-        return {origin: verified.origin, store: {v: 1, ...verified}, error: null, reset: false,
-          changed: verified.origin !== known.origin, learned: false};
+        const changed = verified.origin !== known.origin;
+        return {origin: verified.origin, store: saveRecord(verified, built), error: null, reset: false, changed,
+          learned: false, ...(changed ? {from: known.origin} : {})};
       }
       if (verified.seq === known.seq && verified.origin === known.origin) return keep(known.origin, null);
       return keep(known.origin, `The broker sent an older origin statement; akdbx keeps ${known.origin}.`);
@@ -206,11 +240,11 @@
         "akdbx learns no broker key. Do not enter your master password until the broker and the akdbx native host " +
         "are the ones you installed.");
     }
-    return {origin: fetched.origin, store: {v: 1, ...fetched}, error: null, reset: false, changed: false, learned: true};
+    return {origin: fetched.origin, store: saveRecord(fetched, built), error: null, reset: false, changed: false, learned: true};
   }
 
   const api = {STORAGE_KEY, IDENTITY_PATH, validOrigin, privateLink, canonical, verifyIdentity, fetchIdentity, decide,
-    storedKey, trustedOrigin};
+    storedKey, trustedOrigin, saveRecord};
   globalThis.akdbxTrust = api;
   if (typeof module !== "undefined") module.exports = api;
 })();

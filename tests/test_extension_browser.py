@@ -235,7 +235,7 @@ def test_the_service_worker_binds_the_first_broker_key_from_the_https_identity_p
         time.sleep(.2)
         record = harness.worker_call(read)
     assert record == {'v': 1, 'public_key': harness.identity.message()['public_key'], 'key_id': statement['key_id'],
-                      'origin': harness.unlock_origin, 'seq': statement['seq']}
+                      'origin': harness.unlock_origin, 'seq': statement['seq'], 'built': harness.unlock_origin}
     state = harness.worker_call('popupState()')
     assert state['origin'] == harness.unlock_origin and state['trust_error'] is None and state['trust_reset'] is False
 

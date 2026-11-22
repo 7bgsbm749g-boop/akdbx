@@ -217,6 +217,9 @@ function builtOrigin() {
   return globalThis.AKDBX_TRUSTED_ORIGIN ?? null;
 }
 
+// A verified signed move (old origin -> new origin), kept until a popup shows it once.
+const MOVE_KEY = "broker_trust_moved";
+
 async function storedTrust() {
   return (await chrome.storage.local.get(akdbxTrust.STORAGE_KEY))[akdbxTrust.STORAGE_KEY] ?? null;
 }
@@ -233,8 +236,22 @@ async function trustNow(current) {
     // A first key: read the statement over HTTPS from the trusted origin.
     decision = akdbxTrust.decide(stored, built, verified, received, await akdbxTrust.fetchIdentity(decision.fetch));
   }
-  if (decision.store) await chrome.storage.local.set({[akdbxTrust.STORAGE_KEY]: decision.store});
+  if (decision.store) {
+    const items = {[akdbxTrust.STORAGE_KEY]: decision.store};
+    if (decision.changed) items[MOVE_KEY] = {from: decision.from, to: decision.origin};
+    await chrome.storage.local.set(items);
+  }
   return decision;
+}
+
+// The move notice to show now, or null. It is cleared once shown, or when it no longer names the trusted origin.
+async function takeMove(trust) {
+  const notice = (await chrome.storage.local.get(MOVE_KEY))[MOVE_KEY];
+  if (!notice) return null;
+  const valid = akdbxTrust.validOrigin(notice.from) && notice.to === trust.origin;
+  if (valid && trust.error) return null;  // The warning comes first; show the move later.
+  await chrome.storage.local.remove(MOVE_KEY);
+  return valid ? notice : null;
 }
 
 function observeTrust(current) {
@@ -452,9 +469,11 @@ async function popupState() {
   // The popup shows the code of this browser's own key, never one from the host.
   const code = await localCode((await pairingKeys()).publicKey);
   // After the identity work queued before it, on the newest broker state.
-  const {current, trust} = await withTrust(async () => {
+  const {current, trust, moved} = await withTrust(async () => {
     const latest = state;
-    return {current: latest, trust: latest.connected ? await trustNow(latest) : null};
+    if (!latest.connected) return {current: latest, trust: null, moved: null};
+    const decision = await trustNow(latest);
+    return {current: latest, trust: decision, moved: await takeMove(decision)};
   });
   if (!current.connected) return {ok: true, connected: false, code};
   // Links open only on the trusted origin; the popup checks them again.
@@ -462,7 +481,7 @@ async function popupState() {
   const unlock = current.locked && current.unlock_url && akdbxTrust.privateLink(current.unlock_url, "/", trust.origin);
   return {ok: true, connected: true, paired: current.paired, locked: current.locked, code, origin: trust.origin,
     pairing_url: pairing || null, unlock_url: unlock || null, trust_error: trust.error, trust_reset: trust.reset,
-    origin_changed: trust.changed, origin_learned: trust.learned};
+    origin_changed: moved !== null, moved_from: moved ? moved.from : null, origin_learned: trust.learned};
 }
 
 async function popupReset() {
@@ -470,7 +489,7 @@ async function popupReset() {
   // and pair again with a new browser key. The next key is bound only through that origin's HTTPS page.
   await withTrust(async () => {
     const origin = akdbxTrust.trustedOrigin(await storedTrust(), builtOrigin());
-    if (origin) await chrome.storage.local.set({[akdbxTrust.STORAGE_KEY]: {v: 1, reset: true, origin}});
+    if (origin) await chrome.storage.local.set({[akdbxTrust.STORAGE_KEY]: akdbxTrust.saveRecord({reset: true, origin}, builtOrigin())});
     else await chrome.storage.local.remove(akdbxTrust.STORAGE_KEY);
   });
   keysPromise = null;
