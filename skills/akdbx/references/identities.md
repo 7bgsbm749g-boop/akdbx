@@ -22,6 +22,10 @@ akdbx search-identities ''
 - Several could fit: ask the user which one to use, or whether to create a
   new one. Give only the titles and groups.
 
+Search leaves out identities that share the same title and group. If the user
+says a matching identity exists but search does not return it, ask the user
+which title to use; do not create another one.
+
 ```bash
 akdbx create-identity --title 'Home shipping' --group 'Personal' --fields tel
 akdbx write-status -- WRITE_HANDLE

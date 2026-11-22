@@ -309,7 +309,7 @@ def test_field_subset_page_shows_and_stores_only_requested_fields(deployed, caps
 def test_invalid_field_subsets_are_refused(deployed, fields):
     broker = deployed[0]
     assert begin(broker, fields=fields) == {'ok': False, 'error': 'identity operation refused; check label, group and vault readiness'}
-    assert all(op.uuid is None for op in broker.writes.operations.values())
+    assert broker.writes.operations == {}
 
 
 def test_country_subset_uppercases_and_checks_the_code(deployed):
@@ -496,3 +496,31 @@ def test_cli_update_identity_needs_the_update_protocol(monkeypatch, capsys):
     with pytest.raises(SystemExit) as exit_info:
         cli.main(['update-identity', '--title', LABEL, '--group', 'Web', '--', 'c' * 64])
     assert exit_info.value.code == 2
+
+
+def test_refused_update_protocol_still_consumes_the_handle(deployed):
+    broker, _, _, web = deployed
+    saved_identity(broker, web, tel=IDENTITY['tel'])
+    handle = search(broker)['entries'][0]['handle']
+    request = dict(action='update-identity', handle=handle, fields=['email'], metadata=dict(title=LABEL, group='Web'))
+    assert broker.dispatch(request) == REFUSED_UPDATE
+    assert broker.dispatch(dict(request, identity_protocol=2)) == REFUSED_UPDATE
+    assert update(broker, handle, ['email']) == REFUSED_UPDATE
+
+
+def test_update_selects_a_unique_identity_under_an_ambiguous_group_path(deployed):
+    broker, _, path, web = deployed
+    vault = broker.vault
+    web_group = vault.find_groups(name='Web', first=True)
+    # A group literally named "Work/Travel" and a "Travel" subgroup of "Work".
+    vault.add_group(web_group, 'Work/Travel')
+    travel = vault.add_group(vault.add_group(web_group, 'Work'), 'Travel')
+    from pykeepass.entry import Entry
+    entry = Entry(title=LABEL, username='', password='', kp=vault)
+    travel.append(entry)
+    entry.set_custom_property(MARKER, 'v1')
+    entry.set_custom_property(property_key('tel'), IDENTITY['tel'], protect=True)
+    found = search(broker)['entries']
+    assert [(e['title'], e['group']) for e in found] == [(LABEL, 'Web/Work/Travel')]
+    pending = update(broker, found[0]['handle'], ['email'], group='Web/Work/Travel')
+    assert pending['ok'] and pending['state'] == 'pending'

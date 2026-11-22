@@ -138,6 +138,12 @@ class IdentityManager:
                 return failure(kind='identity')
         try:
             if not _protocol_ok(request):
+                if action == 'update-identity':
+                    # A search handle is single use, even on a refused request.
+                    try:
+                        self.broker._resolve(request.get('handle'))
+                    except ValueError:
+                        pass
                 raise WriteError()
             if action == 'pin-identity-target':
                 return targets.pin(request)
@@ -205,10 +211,13 @@ class IdentityManager:
         fields = requested_fields(request)
         writes = self.broker.writes
         writes._require_available()
-        group_for(self.broker.vault, values['group'])
         if update:
-            # The exact title and group the agent selected, of a unique identity.
+            # The exact title and group path the agent selected, of a unique
+            # identity. The entry itself is selected by uuid, so a group path
+            # that names two groups does not matter here.
             _selected(self.broker.vault, entry.uuid, values['title'], values['group'])
+        else:
+            group_for(self.broker.vault, values['group'])
         writes._prune()
         if len(writes.operations) >= MAX_WRITES:
             raise WriteError()
