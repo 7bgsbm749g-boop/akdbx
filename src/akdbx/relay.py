@@ -938,6 +938,11 @@ class Rotation:
     resumed: bool
 
 
+def _same_registration(pending, config):
+    return (same_relay(pending.relay, config.relay) and pending.name == config.name
+            and pending.broker_id == config.broker_id and pending.secret == config.secret)
+
+
 def rotate(store, *, sleep=time.sleep, notify=None, endpoint_factory=None):
     """Register a new name with the saved relay, get its certificate, then switch the saved files to it.
 
@@ -948,16 +953,23 @@ def rotate(store, *, sleep=time.sleep, notify=None, endpoint_factory=None):
     chain), then ``relay.json``, then deletes ``rotate.json``; each write is a
     private temporary file and a rename. After an interruption between the two
     writes, the next call sees that ``tls.pem`` already holds the new name and
-    only finishes the switch. The old name is no longer used; the relay has no
-    call to delete it. Return a ``Rotation``.
+    only finishes the switch; after one between the ``relay.json`` write and
+    the delete, it only deletes ``rotate.json``. The old name is no longer
+    used; the relay has no call to delete it. Return a ``Rotation``.
     """
     config = store.load()
     if config is None:
         raise RelayError("this broker has no relay registration; run 'akdbx relay enable' first")
     endpoint = (endpoint_factory or _endpoint_for)(config.relay)
     pending = store.load_rotation()
-    if pending is not None and (not same_relay(pending.relay, config.relay) or pending.name == config.name):
-        store.clear_rotation()  # Left from another relay, or already switched: start again.
+    if pending is not None and _same_registration(pending, config):
+        # The switch was saved, but rotate.json was not deleted: finish it and never register again.
+        info = store.certificate(config.name)
+        if info is not None and info.renew_at > _utcnow():
+            store.clear_rotation()
+            return Rotation(config, config, info, True)
+    elif pending is not None and (not same_relay(pending.relay, config.relay) or pending.name == config.name):
+        store.clear_rotation()  # Left from another relay, or not this registration: start again.
         pending = None
     resumed = pending is not None
     if pending is None:

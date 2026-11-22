@@ -1210,6 +1210,29 @@ def test_an_interrupted_switch_finishes_without_another_certificate(fake, capsys
     assert store.load_rotation() is None
 
 
+def test_a_switch_interrupted_before_the_rotation_file_is_deleted_registers_no_other_name(fake, capsys,
+                                                                                        monkeypatch):
+    enable(fake, capsys)
+    real_clear = RelayStore.clear_rotation
+
+    def crash(self):
+        raise OSError('interrupted after relay.json')
+    monkeypatch.setattr(RelayStore, 'clear_rotation', crash)
+    with pytest.raises(OSError):
+        relay_module.rotate(RelayStore(), endpoint_factory=fake.endpoint)
+    monkeypatch.setattr(RelayStore, 'clear_rotation', real_clear)
+    store = RelayStore()
+    switched = store.load()
+    assert store.load_rotation().name == switched.name and store.certificate(switched.name) is not None
+    code, result, captured = run_cli(capsys, 'relay', 'rotate')
+    assert code == 0 and result['rotated'] and result['resumed'] and result['name'] == switched.name, captured
+    # enable's registration and the rotation's: no third name, no new certificate.
+    assert fake.register_calls == 2 and len(fake.csrs) == 2
+    assert store.load_rotation() is None and store.load() == switched
+    code, status, _ = run_cli(capsys, 'relay', 'status')
+    assert 'rotation_pending' not in status
+
+
 def test_forget_also_deletes_an_unfinished_rotation(fake, capsys):
     enable(fake, capsys)
     fake.certificate_errors = [(502, 'acme_failed')]
