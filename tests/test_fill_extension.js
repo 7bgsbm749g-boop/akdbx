@@ -624,6 +624,27 @@ test("a signed move that arrives while the popup is closed is shown once in the 
   assert.deepEqual([state.origin, state.origin_changed, state.moved_from], [RELAY, false, null]);
 });
 
+test("a move notice waits while the popup shows a trust warning", async () => {
+  const local = {[trust.STORAGE_KEY]: recordOf(signed.first)};
+  let fields = {paired: true, locked: true, unlock_url: RELAY + "/?token=u", identity: signed.moved};
+  const {exports, listeners} = loadBackground({builtOrigin: LOCAL, local, answer: () => brokerAnswer(fields)()});
+  for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  listeners["port.message"]({type: "attached", ...fields});
+  await exports.trustIdle();
+  assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.moved));
+  // The popup opens while the broker sends another key for a moment: only the key warning shows.
+  fields = {...fields, identity: await hostKeyStatement(RELAY, 9)};
+  let state = await exports.popupState();
+  assert.deepEqual([state.origin, state.origin_changed, state.trust_reset], [null, false, true]);
+  assert.match(state.trust_error, /another identity key/);
+  // The broker is back with the trusted key: the move is shown once, then no more.
+  fields = {...fields, identity: signed.moved};
+  state = await exports.popupState();
+  assert.deepEqual([state.origin, state.origin_changed, state.moved_from, state.trust_error], [RELAY, true, LOCAL, null]);
+  state = await exports.popupState();
+  assert.deepEqual([state.origin_changed, state.moved_from], [false, null]);
+});
+
 test("with no built origin, the host's statement opens nothing and reads nothing", async () => {
   const local = {};
   const calls = [];

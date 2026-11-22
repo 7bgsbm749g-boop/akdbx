@@ -245,14 +245,14 @@ async function trustNow(current) {
   return decision;
 }
 
-// The move notice to show now, or null. It is cleared once shown, or when it no longer names the trusted origin.
+// The move notice to show now, or null. While the decision has an error, the popup shows only that warning
+// and the notice waits; the next decision with no error clears it, and shows it if it names the trusted origin.
 async function takeMove(trust) {
+  if (trust.error) return null;
   const notice = (await chrome.storage.local.get(MOVE_KEY))[MOVE_KEY];
   if (!notice) return null;
-  const valid = akdbxTrust.validOrigin(notice.from) && notice.to === trust.origin;
-  if (valid && trust.error) return null;  // The warning comes first; show the move later.
   await chrome.storage.local.remove(MOVE_KEY);
-  return valid ? notice : null;
+  return akdbxTrust.validOrigin(notice.from) && notice.to === trust.origin ? notice : null;
 }
 
 function observeTrust(current) {
