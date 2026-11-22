@@ -381,6 +381,18 @@ the previous entry in KDBX History. `write-status` and `cancel-write` apply to
 these saves. Persistence reopens and verifies every protected field before
 replacing the encrypted vault. A private page expires after five minutes.
 
+The page prefills `--title` and `--group`. The user can change the title, and
+on a new card can choose another existing group (the KeePass folder) from a
+list. The page does not create groups, and an update keeps the card's group.
+Before saving, the page checks the number (Luhn checksum and length for the
+detected Visa, Mastercard or American Express brand), the expiry (month 01 to
+12, not in the past) and the security-code length for the brand. It shows the
+detected brand and an error under each wrong field. The broker repeats the
+same checks, so a request that bypasses the page is refused; a refused form
+stays open for correction. The save button shows a busy state, then `Saved`,
+or `Page expired`, `Vault changed`, `Cancelled` or `Not confirmed`. A saved
+`write-status` includes the final non-secret `title` and `group`.
+
 `search-cards QUERY` returns only title, group, brand, last four digits and a
 single-use handle. Ordinary login search excludes card entries; password
 operations refuse card records. Expired cards cannot be filled.

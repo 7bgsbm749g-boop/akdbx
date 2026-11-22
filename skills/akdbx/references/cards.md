@@ -15,10 +15,21 @@ The user enters name, card number, two-digit expiry month, four-digit year and
 optional security code directly into that page. Do not observe the form or put
 card values in tool arguments, chat, files or screenshots.
 
+The page prefills the title and group. The user can change the title. On a new
+card, the user can choose another existing group (the KeePass folder the entry
+is saved in; the page calls it the vault folder) from a list; the page does not create groups. An update keeps the
+card's group. The page and the broker check the card number (Luhn checksum and
+length for the detected brand), the expiry (01 to 12, not in the past) and the
+security-code length; the broker refuses a bad form even if the page is
+bypassed, and keeps the form open for correction. Do not tell the user a card
+number is valid or invalid yourself; the page shows that.
+
 The fields are protected custom strings in the encrypted KDBX entry, identified
 by `akdbx.card=v1`. Existing cards in other clients need these explicit field
 conventions; do not guess from arbitrary notes or extract the vault to import
-them. `write-status WRITE_HANDLE` confirms `state: saved`. `cancel-write`
+them. `write-status WRITE_HANDLE` confirms `state: saved` and reports the final
+non-secret `title` and `group` the user chose (0.28.1 and later); use those, not the values you
+prepared, for later `search-cards` and `update-card`. `cancel-write`
 cancels a pending page. A save page expires after five minutes; a vault revision
 change invalidates it. A save receipt confirms vault persistence only.
 
