@@ -692,8 +692,13 @@ def handler_for(state: UnlockState):
                         fields = ''.join(field(IDENTITY_FIELDS[key], key, kind='text', maxlength=IDENTITY_FIELD_LIMIT,
                                                required=len(op.fields) == 1) for key in op.fields)
                         hint = 'Enter the detail you want to save.' if len(op.fields) == 1 else 'Enter only the details you want to save.'
+                        if op.uuid is not None:
+                            # Saved values are never shown; empty fields keep them.
+                            hint = ('You are updating a saved identity. Saved values are not shown. ' + hint
+                                    + ('' if len(op.fields) == 1 else ' A field you leave empty keeps its saved value.'))
                         inner = f'{fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this identity and destination</label>'
-                        body = f'<dl>{destination}</dl><p>{hint}</p>' + _save_form(action, inner, 'Save identity to AKDBX', 'Saving identity\u2026')
+                        label = 'Update identity in AKDBX' if op.uuid is not None else 'Save identity to AKDBX'
+                        body = f'<dl>{destination}</dl><p>{hint}</p>' + _save_form(action, inner, label, 'Saving identity\u2026')
                     elif kind == 'totp':
                         replacement = '<p>This replaces the saved authenticator key.</p>' if op.replace else ''
                         setup = field('Setup key or otpauth TOTP URI', 'setup', maxlength=4096)
@@ -706,7 +711,8 @@ def handler_for(state: UnlockState):
                         body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes AKDBX only.</p>' + _save_form(
                             action, f'{password_fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label>',
                             'Save to AKDBX', 'Saving password\u2026')
-                    title = {'card': 'Update AKDBX card' if op.uuid else 'Save AKDBX card', 'identity': 'Save AKDBX identity',
+                    title = {'card': 'Update AKDBX card' if op.uuid else 'Save AKDBX card',
+                             'identity': 'Update AKDBX identity' if op.uuid else 'Save AKDBX identity',
                              'totp': 'Confirm AKDBX authenticator', 'password': 'Confirm AKDBX password'}[kind]
                     self._send(HTTPStatus.OK, _page(title, body))
                     return True

@@ -356,11 +356,24 @@ SAVES = {
     # kind: (prepare, gated broker method, page title, idle label, busy label, synthetic input)
     'identity': (lambda broker: begin_identity(broker, fields=['tel']), ('identities', 'submit'),
                  'Save AKDBX identity', 'Save identity to AKDBX', 'Saving identity\u2026', {'tel': '+49 000 000001'}),
+    'identity-update': (lambda broker: prepare_identity_update(broker), ('identities', 'submit'),
+                        'Update AKDBX identity', 'Update identity in AKDBX', 'Saving identity\u2026', {'tel': '+49 000 000002'}),
     'password': (begin_password, ('writes', 'submit'), 'Confirm AKDBX password', 'Save to AKDBX',
                  'Saving password\u2026', {'password': 'public-synthetic-pass', 'confirmation': 'public-synthetic-pass'}),
     'totp': (prepare_totp, ('writes', 'submit_totp'), 'Confirm AKDBX authenticator', 'Save authenticator',
              'Saving authenticator\u2026', {'setup': KEY}),
 }
+
+
+def prepare_identity_update(broker):
+    from akdbx.identities import IdentityManager
+    saved = begin_identity(broker, fields=['email'])
+    # Save directly (bypassing the test gate), then select it for an update.
+    op = broker.writes.operations[saved['write_handle']]
+    assert IdentityManager.submit(broker.identities, op, {'email': 'synthetic-only@example.test'}, True)['ok']
+    handle = broker.dispatch(dict(action='search-identities', identity_protocol=1, query=''))['entries'][0]['handle']
+    return broker.dispatch(dict(action='update-identity', identity_protocol=1, handle=handle, fields=['tel'],
+                                metadata=dict(title='Sample shipping', group='Web')))
 
 
 @pytest.fixture
@@ -402,7 +415,7 @@ def test_save_pages_share_the_busy_and_saved_button(synthetic_chromium, save_lab
     prepared = prepare(broker)
     open_save_page(cdp, session, base, prepared, title)
     assert button(cdp, session)['label'] == idle
-    if kind == 'identity':
+    if kind.startswith('identity'):
         # Only the requested field is on the page.
         assert cdp.evaluate("[...document.querySelectorAll('form input[name]')].map(i => i.name)", session) == [
             'tel', 'confirmed']
@@ -417,7 +430,7 @@ def test_save_pages_share_the_busy_and_saved_button(synthetic_chromium, save_lab
     wait_for(cdp, session, "document.querySelector('.portal-submit').classList.contains('is-done')")
     saved = button(cdp, session)
     assert saved['disabled'] and saved['label'] == 'Saved' and not saved['bar'] and saved['busy'] is None
-    subject = {'identity': 'Identity', 'password': 'Password', 'totp': 'Authenticator'}[kind]
+    subject = {'identity': 'Identity', 'identity-update': 'Identity', 'password': 'Password', 'totp': 'Authenticator'}[kind]
     assert saved['status'] == f'{subject} saved to vault. You may close this page.'
     assert cdp.evaluate("[document.getElementById('portal-title').textContent, document.title]", session) == [
         'Success', 'AKDBX: Success']

@@ -309,7 +309,7 @@ def test_field_subset_page_shows_and_stores_only_requested_fields(deployed, caps
 def test_invalid_field_subsets_are_refused(deployed, fields):
     broker = deployed[0]
     assert begin(broker, fields=fields) == {'ok': False, 'error': 'identity operation refused; check label, group and vault readiness'}
-    assert broker.writes.operations == {}
+    assert all(op.uuid is None for op in broker.writes.operations.values())
 
 
 def test_country_subset_uppercases_and_checks_the_code(deployed):
@@ -352,3 +352,147 @@ def test_cli_sends_fields_only_to_a_broker_that_supports_them(monkeypatch, capsy
         with pytest.raises(SystemExit) as exit_info:
             cli.main([*args[:-1], bad])
         assert exit_info.value.code == 2
+
+
+def update(broker, handle, fields, **metadata):
+    return broker.dispatch(dict(action='update-identity', identity_protocol=1, handle=handle, fields=fields,
+                                metadata=dict(title=LABEL, group='Web') | metadata))
+
+
+def saved_identity(broker, web, **values):
+    pending = begin(broker, fields=list(values))
+    assert call(web, 'POST', private_path(pending), urlencode(values | {'confirmed': 'yes'}))[0] == 200
+
+
+def stored(entry):
+    return {key[len(MARKER) + 1:]: entry.get_custom_property(key) for key in entry.custom_properties
+            if key.startswith(MARKER + '.')}
+
+
+def protected(entry, field):
+    return entry._element.find(f'./String[Key="{property_key(field)}"]/Value').get('Protected') == 'True'
+
+
+def test_update_adds_or_changes_only_the_chosen_fields_and_keeps_history(deployed, capsys, caplog):
+    broker, _, path, web = deployed
+    saved_identity(broker, web, name=IDENTITY['name'], email=IDENTITY['email'])
+    before = reopened(path).find_entries(title=LABEL, first=True)
+    assert stored(before) == {'name': IDENTITY['name'], 'email': IDENTITY['email']} and before.history == []
+    handle = search(broker)['entries'][0]['handle']
+    pending = update(broker, handle, ['tel'])
+    assert set(pending) == {'ok', 'state', 'write_handle', 'private_url'} and pending['state'] == 'pending'
+    code, _, page = call(web, 'GET', private_path(pending))
+    assert code == 200 and field_names(page) == {b'tel'}
+    assert b'Update AKDBX identity' in page and b'Update identity in AKDBX' in page and b'Saved values are not shown' in page
+    # The page never shows a stored value; the input is empty.
+    assert b'value="' not in page.split(b'<form', 1)[1].replace(b'value="yes"', b'')
+    # Only the chosen field is accepted.
+    assert call(web, 'POST', private_path(pending), urlencode({'tel': IDENTITY['tel'], 'email': 'x@example.test',
+                                                               'confirmed': 'yes'}))[0] == 400
+    assert call(web, 'POST', private_path(pending), urlencode({'name': 'Other', 'confirmed': 'yes'}))[0] == 400
+    code, _, receipt = call(web, 'POST', private_path(pending), urlencode({'tel': IDENTITY['tel'], 'confirmed': 'yes'}))
+    assert code == 200 and b'Identity saved to vault. You may close this page.' in receipt
+    assert broker.dispatch(dict(action='write-status', write_handle=pending['write_handle'])) == dict(ok=True, state='saved')
+    entry = reopened(path).find_entries(title=LABEL, first=True)
+    assert entry.uuid == before.uuid and entry.get_custom_property(MARKER) == 'v1'
+    assert stored(entry) == {'name': IDENTITY['name'], 'email': IDENTITY['email'], 'tel': IDENTITY['tel']}
+    assert all(protected(entry, field) for field in ('name', 'email', 'tel'))
+    # The previous version stays in the entry history, as for password updates.
+    assert len(entry.history) == 1 and stored(entry.history[0]) == stored(before)
+    assert entry.mtime > before.mtime
+    # A second update changes an existing field; an empty field keeps its value.
+    handle = search(broker)['entries'][0]['handle']
+    pending = update(broker, handle, ['email', 'name'])
+    form = {'email': 'changed-synthetic@example.test', 'name': '', 'confirmed': 'yes'}
+    assert call(web, 'POST', private_path(pending), urlencode(form))[0] == 200
+    entry = reopened(path).find_entries(title=LABEL, first=True)
+    assert stored(entry) == {'name': IDENTITY['name'], 'email': 'changed-synthetic@example.test', 'tel': IDENTITY['tel']}
+    assert protected(entry, 'email') and protected(entry, 'name') and len(entry.history) == 2
+    assert len(reopened(path).find_entries(title=LABEL)) == 1
+    captured = capsys.readouterr()
+    output = page.decode() + receipt.decode() + json.dumps(pending) + captured.out + captured.err + caplog.text
+    for value in (IDENTITY['name'], IDENTITY['email'], IDENTITY['tel'], 'changed-synthetic@example.test'):
+        assert value not in output
+
+
+def test_update_with_only_empty_fields_stays_open(deployed):
+    broker, _, path, web = deployed
+    saved_identity(broker, web, tel=IDENTITY['tel'])
+    pending = update(broker, search(broker)['entries'][0]['handle'], ['email', 'name'])
+    code, _, page = call(web, 'POST', private_path(pending), urlencode({'email': '', 'name': '', 'confirmed': 'yes'}))
+    assert code == 409 and b'data-save-result="rejected"' in page
+    assert broker.dispatch(dict(action='write-status', write_handle=pending['write_handle']))['state'] == 'pending'
+    assert reopened(path).find_entries(title=LABEL, first=True).history == []
+
+
+REFUSED_UPDATE = {'ok': False, 'error': 'identity operation refused; check label, group and vault readiness'}
+
+
+def test_update_refuses_stale_wrong_or_duplicate_selection(deployed):
+    broker, _, path, web = deployed
+    saved_identity(broker, web, tel=IDENTITY['tel'])
+    handle = search(broker)['entries'][0]['handle']
+    # A wrong title or group is refused and consumes the handle.
+    assert update(broker, handle, ['email'], title='Sample') == REFUSED_UPDATE
+    assert update(broker, handle, ['email']) == REFUSED_UPDATE
+    assert update(broker, search(broker)['entries'][0]['handle'], ['email'], group='') == REFUSED_UPDATE
+    assert update(broker, 'f' * 64, ['email']) == REFUSED_UPDATE
+    # Fields are required and limited to the identity fields.
+    for fields in (None, [], ['street-address'], ['email', 'email']):
+        request = dict(action='update-identity', identity_protocol=1, handle=search(broker)['entries'][0]['handle'],
+                       metadata=dict(title=LABEL, group='Web'))
+        if fields is not None:
+            request['fields'] = fields
+        assert broker.dispatch(request) == REFUSED_UPDATE
+    # A login entry's handle cannot select an identity.
+    login = broker.dispatch(dict(action='search', query='Synthetic site'))['entries']
+    assert login and update(broker, login[0]['handle'], ['email']) == REFUSED_UPDATE
+    assert update(broker, broker.dispatch(dict(action='search', query='Synthetic site'))['entries'][0]['handle'], ['email'],
+                  title='Synthetic site') == REFUSED_UPDATE
+    # A second identity with the same title and group makes the selection ambiguous.
+    handle = search(broker)['entries'][0]['handle']
+    from pykeepass.entry import Entry
+    vault = broker.vault
+    twin = Entry(title=LABEL, username='', password='', kp=vault)
+    vault.find_groups(name='Web', first=True).append(twin)
+    twin.set_custom_property(MARKER, 'v1')
+    assert update(broker, handle, ['email']) == REFUSED_UPDATE
+    assert all(op.uuid is None for op in broker.writes.operations.values())
+
+
+def test_update_page_refuses_a_changed_vault_and_a_renamed_identity(deployed):
+    broker, _, path, web = deployed
+    saved_identity(broker, web, tel=IDENTITY['tel'])
+    stale = update(broker, search(broker)['entries'][0]['handle'], ['email'])
+    other = begin(broker, title='Other shipping', fields=['tel'])
+    assert call(web, 'POST', private_path(other), urlencode({'tel': IDENTITY['tel'], 'confirmed': 'yes'}))[0] == 200
+    code, _, page = call(web, 'POST', private_path(stale), urlencode({'email': IDENTITY['email'], 'confirmed': 'yes'}))
+    assert code == 404 and b'data-save-result="expired"' in page
+    assert broker.dispatch(dict(action='write-status', write_handle=stale['write_handle']))['state'] == 'failed'
+    entry = reopened(path).find_entries(title=LABEL, first=True)
+    assert stored(entry) == {'tel': IDENTITY['tel']} and entry.history == []
+
+
+def test_cli_update_identity_needs_the_update_protocol(monkeypatch, capsys):
+    calls = []
+    caps = dict(ok=True, identity_protocol=1, identity_delivery='cdp-identity-element-v1', identity_fields_protocol=1)
+
+    def broker(_, payload, **kwargs):
+        calls.append(payload)
+        if payload['action'] == 'ping':
+            return caps
+        return dict(ok=True, state='pending', write_handle='a' * 64,
+                    private_url='https://node.example:9443/identity?token=' + 'b' * 43)
+
+    monkeypatch.setattr(cli, 'request', broker)
+    args = ['update-identity', '--title', LABEL, '--group', 'Web', '--fields', 'tel', '--', 'c' * 64]
+    assert cli.main(args) == 1
+    assert calls == [{'action': 'ping'}] and 'identity update protocol 1' in capsys.readouterr().out
+    caps['identity_update_protocol'] = 1
+    calls.clear()
+    assert cli.main(args) == 0
+    assert calls[1] == dict(action='update-identity', identity_protocol=1, handle='c' * 64,
+                            metadata=dict(title=LABEL, group='Web'), fields=['tel'])
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(['update-identity', '--title', LABEL, '--group', 'Web', '--', 'c' * 64])
+    assert exit_info.value.code == 2
