@@ -118,23 +118,26 @@ button:disabled { cursor: default; opacity: .4; }
   background: linear-gradient(90deg, transparent, #ffffff38, transparent);
 }
 [hidden] { display: none !important; }
-.variant-field { margin-top: 18px; }
-.setup-steps { padding-left: 22px; }
+.setup-steps { padding-left: 22px; margin: 0 0 18px; }
 .setup-steps li + li { margin-top: 14px; }
-.wizard.is-wizard .setup-steps { list-style: none; padding-left: 0; min-height: 120px; }
-.wizard.is-wizard .setup-steps li { font-size: 16px; line-height: 1.6; }
+.wizard-count { margin: 0 0 8px !important; color: #fff; font-size: 20px; font-weight: 500; letter-spacing: -.4px; line-height: 1.3; }
+.wizard.is-wizard .setup-steps { list-style: none; padding: 0; margin: 0; }
+.wizard.is-wizard .setup-steps li { color: #ffffffd9; font-size: 16px; line-height: 1.6; }
 .wizard.is-wizard .setup-steps li + li { margin-top: 0; }
-.wizard-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 18px 0; }
-.wizard-nav .wizard-count { grid-column: 1 / -1; margin: 0 0 4px; color: #ffffffa6; font-size: 12px; }
-.wizard-nav button { min-height: 52px; }
+.wizard.is-wizard .copy-field { margin-top: 18px; }
+.variant-field { margin-top: 12px; }
+.variant-field .field-hint { margin: 6px 0 0; }
+main:has(.wizard.is-wizard) { justify-content: flex-start; }
+.wizard-nav { display: flex; gap: 10px; margin-top: 22px; }
+.wizard-nav button { flex: 1; min-height: 52px; }
 .wizard-nav button.wizard-back { flex-direction: row-reverse; justify-content: flex-end; }
 .wizard-nav button.wizard-back::after { transform: rotate(-135deg); }
 .wizard-nav button.wizard-next {
-  grid-column: 2; color: #fff; border-color: #ffffff32; border-top-color: #ffffff52;
+  color: #fff; border-color: #ffffff32; border-top-color: #ffffff52;
   background: linear-gradient(165deg, #ffffff16, #ffffff06 52%, #ffffff0a), #08080880;
   box-shadow: inset 0 1px 0 #ffffff07, 0 6px 16px #0005;
 }
-.variant-field + .field-hint { margin: 6px 0 12px; }
+.setup-note { margin: 10px 0 0 !important; color: #ffffff8c; font-size: 12px; line-height: 1.55; }
 button.copy-field {
   display: block; text-align: left; min-height: 0; padding: 13px 16px 12px; border: 1px solid #ffffff1a;
   border-top-color: #ffffff20; border-radius: 14px; background: linear-gradient(135deg, #ffffff04, transparent 55%), #00000038;
@@ -145,8 +148,23 @@ button.copy-field::before, button.copy-field::after { display: none; }
 button.copy-field:active { transform: none; border-color: #ffffff5c; }
 .copy-field .copy-label { display: block; margin-bottom: 5px; color: #ffffffb3; font-size: 11px; line-height: 1.5; }
 .copy-field .copy-text { -webkit-user-select: text; user-select: text; display: block; color: #fff; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
-.copy-field.is-copied { border-color: #ffffff70; }
-.copy-field.is-copied .copy-label { color: #fff; }
+.copy-done {
+  position: absolute; inset: 0; display: none; align-items: center; justify-content: center; gap: 9px;
+  border-radius: inherit; background: #0b0b0b; color: #fff; font-size: 17px; font-weight: 500; letter-spacing: -.2px;
+}
+.copy-done svg { flex-shrink: 0; width: 1.25em; height: 1.25em; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.copy-done circle, .copy-done path { stroke-dasharray: 1; stroke-dashoffset: 1; }
+.copy-field.is-copied { border-color: #ffffff52; }
+.copy-field.is-copied .copy-label, .copy-field.is-copied .copy-text { visibility: hidden; }
+/* Drawn once: showing the box again on a later step does not replay it. */
+.copy-field.is-drawn .copy-done, .copy-field.is-drawn .copy-done circle, .copy-field.is-drawn .copy-done path { animation: none; stroke-dashoffset: 0; }
+.copy-field.is-copied .copy-done { display: flex; animation: copy-fade .18s ease-out; }
+.copy-field.is-copied .copy-done circle, .copy-field.is-copied .copy-done path { animation: copy-draw .65s cubic-bezier(.65, 0, .35, 1) .08s forwards; }
+@keyframes copy-draw { to { stroke-dashoffset: 0; } }
+@keyframes copy-fade { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .copy-field.is-copied .copy-done, .copy-field.is-copied .copy-done circle, .copy-field.is-copied .copy-done path { animation: none; stroke-dashoffset: 0; }
+}
 .portal-status.is-error, .portal-status.is-shown {
   position: static; width: auto; height: auto; margin: 18px 0 0 !important;
   overflow: visible; clip-path: none; white-space: normal;
@@ -256,20 +274,24 @@ SCRIPT = r""""use strict";
     input.type = visible ? "text" : "password";
     button.setAttribute("aria-pressed", String(visible));
   });
-  // A wizard shows one step of its visible step list at a time. Without
-  // this script every step stays visible.
+  // A wizard shows one step of its visible step list at a time: a step
+  // count, the step, the URL box on its steps and the step 1 extras.
+  // Without this script every step stays visible.
   function showStep(wizard, index) {
     const steps = Array.from(wizard.querySelectorAll("ol.setup-steps:not([hidden]) > li"));
     const last = steps.length - 1;
     index = Math.max(0, Math.min(index, last));
     wizard.setAttribute("data-step", String(index));
     steps.forEach((step, i) => { step.hidden = i !== index; });
+    document.querySelectorAll("[data-wizard-first]").forEach(part => { part.hidden = index !== 0; });
+    wizard.querySelectorAll("[data-wizard-url]").forEach(box => { box.hidden = !steps[index].hasAttribute("data-url"); });
     wizard.querySelector(".wizard-count").textContent = "Step " + (index + 1) + " of " + steps.length;
-    wizard.querySelector("[data-wizard-back]").disabled = index === 0;
+    wizard.querySelector("[data-wizard-back]").hidden = index === 0;
     wizard.querySelector("[data-wizard-next]").hidden = index === last;
   }
   document.querySelectorAll("[data-wizard]").forEach(wizard => {
     wizard.classList.add("is-wizard");
+    wizard.querySelector(".wizard-count").hidden = false;
     wizard.querySelector(".wizard-nav").hidden = false;
     showStep(wizard, 0);
   });
@@ -279,6 +301,7 @@ SCRIPT = r""""use strict";
     const wizard = button.closest("[data-wizard]");
     const step = Number(wizard.getAttribute("data-step"));
     showStep(wizard, button.hasAttribute("data-wizard-next") ? step + 1 : step - 1);
+    window.scrollTo({top: 0});
   });
   // A version list shows only the step list of the chosen option. It reads
   // the option's data-show attribute, never an input.
@@ -308,14 +331,17 @@ SCRIPT = r""""use strict";
       selection.addRange(range);
       try { copied = document.execCommand("copy"); } catch { copied = false; }
     }
-    // The feedback replaces the box's own label for a moment.
-    label.textContent = copied ? "Link copied to clipboard" : "Copy failed. Press and hold the link, then tap Copy.";
-    box.classList.toggle("is-copied", copied);
-    clearTimeout(box.copyTimer);
-    box.copyTimer = setTimeout(() => {
-      label.textContent = label.getAttribute("data-idle");
-      box.classList.remove("is-copied");
-    }, 2500);
+    if (copied) {
+      // The copied cover stays; another tap copies again and replays it.
+      box.classList.remove("is-copied", "is-drawn");
+      void box.offsetWidth;
+      box.classList.add("is-copied");
+      clearTimeout(box.drawTimer);
+      box.drawTimer = setTimeout(() => box.classList.add("is-drawn"), 900);
+      label.textContent = "Link copied to clipboard";
+    } else {
+      label.textContent = "Copy failed. Press and hold the link, then tap Copy.";
+    }
   });
   function setBusy(form, busy) {
     const button = form.querySelector(".portal-submit");

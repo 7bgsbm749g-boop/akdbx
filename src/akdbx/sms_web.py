@@ -105,9 +105,9 @@ def _inbound(handler, state, token: str) -> None:
         _json(handler, HTTPStatus.OK, ACCEPTED)
 
 
-COPY_STEP = 'Tap the <strong>Webhook URL</strong> box above. It copies the URL.'
-URL_STEP = ('Tap the grey <strong>URL</strong> in the action and paste. The action now shows the '
-            '<code>https://</code> address.')
+# The URL box shows only on this step, so the URL is copied right before it is pasted.
+URL_STEP = ('Tap the <strong>Webhook URL</strong> box below to copy it. Then tap the grey <strong>URL</strong> in '
+            'the action and paste. The action now shows the <code>https://</code> address.')
 TEST_STEP = ('Test it: ask someone to text you <code>Your test code is 482913</code>, or send it to yourself. '
              'The first time, iOS can ask for permission: tap <strong>Allow</strong>, then '
              '<strong>Always Allow</strong>.')
@@ -128,7 +128,6 @@ def _variable_steps(variable: str, where: str) -> tuple:
 # iPhone's iOS version (from the User-Agent) and offers the others in a list.
 SHORTCUT_GROUPS = (
     ('ios27', 'iOS 27 and later', (
-        COPY_STEP,
         'Open the <strong>Shortcuts</strong> app. Tap <strong>+</strong> to make a new shortcut. (If it shows '
         '<strong>Describe a shortcut</strong>, tap <strong>Edit</strong>.)',
         'In the list at the bottom, tap <strong>Automation</strong>, then <strong>Message</strong>. A box '
@@ -148,7 +147,6 @@ SHORTCUT_GROUPS = (
         TEST_STEP,
     )),
     ('ios17', 'iOS 17 to iOS 26', (
-        COPY_STEP,
         'Open the <strong>Shortcuts</strong> app. Tap the <strong>Automation</strong> tab at the bottom, then '
         '<strong>+</strong> (or <strong>New Automation</strong>).',
         'Scroll the list and tap <strong>Message</strong>.',
@@ -169,7 +167,6 @@ SHORTCUT_GROUPS = (
     ('ios16', 'iOS 16 and earlier', (
         'On iOS 16 and earlier, iOS can ask you to confirm each time a message automation runs. Then a text is '
         'forwarded only after you tap the notification. Update to iOS 17 or later if you can.',
-        COPY_STEP,
         'Open the <strong>Shortcuts</strong> app. Tap the <strong>Automation</strong> tab at the bottom, then '
         '<strong>Create Personal Automation</strong> (or <strong>+</strong> first).',
         'Scroll the list and tap <strong>Message</strong>.',
@@ -213,7 +210,7 @@ TWILIO_STEPS = (
     'In the Twilio Console, open <strong>Phone Numbers</strong>, <strong>Manage</strong>, '
     '<strong>Active numbers</strong> and select the number.',
     'Under <strong>Messaging Configuration</strong>, set <strong>A message comes in</strong> to '
-    '<strong>Webhook</strong>, paste the webhook URL below and choose <strong>HTTP POST</strong>.',
+    '<strong>Webhook</strong>, tap the <strong>Webhook URL</strong> box below to copy it, paste it and choose <strong>HTTP POST</strong>.',
     'Save the configuration.',
 )
 WEBHOOK_STEPS = (
@@ -222,36 +219,60 @@ WEBHOOK_STEPS = (
 )
 
 
+# The circle and the tick are drawn at the same time (pathLength 1, dash offset 1 to 0).
+COPIED = ('<span class="copy-done" aria-hidden="true"><span>Link copied to clipboard</span>'
+          '<svg viewBox="0 0 24 24" focusable="false">'
+          '<circle cx="12" cy="12" r="10.5" pathLength="1" transform="rotate(-90 12 12)"/>'
+          '<path d="M7.2 12.4l3.2 3.2 6.4-6.8" pathLength="1"/></svg></span>')
+
+
 def _copy_box(label: str, text: str) -> str:
-    """A tap-to-copy box: the portal script copies data-copy and says so in the box's label."""
+    """A tap-to-copy box: the portal script copies data-copy and covers the box with a copied message."""
     quoted, label = html.escape(text, quote=True), html.escape(label, quote=True)
-    return (f'<button type="button" class="copy-field" data-copy="{quoted}">'
-            f'<span class="copy-label" data-idle="{label}" aria-live="polite">{label}</span>'
-            f'<span class="copy-text">{quoted}</span></button>')
+    return (f'<button type="button" class="copy-field" data-copy="{quoted}" data-wizard-url>'
+            f'<span class="copy-label" aria-live="polite">{label}</span>'
+            f'<span class="copy-text">{quoted}</span>{COPIED}</button>')
 
 
-def _shortcut_steps(major: int | None) -> str:
-    """A version list (opened at the detected iOS version) and one step list per group."""
-    chosen = shortcut_group(major)
+# The steps that show the webhook URL box under the instruction.
+URL_STEPS = frozenset({URL_STEP, TWILIO_STEPS[1], WEBHOOK_STEPS[0]})
+
+
+def _steps(steps, attrs: str = '') -> str:
+    return (f'<ol class="setup-steps"{attrs}>'
+            + ''.join(f'<li{" data-url" if step in URL_STEPS else ""}>{step}</li>' for step in steps) + '</ol>')
+
+
+def _version_list(major: int | None, chosen: str) -> str:
     detected = (f'This iPhone seems to run iOS {major}. ' if major is not None else '') + 'Choose another version if needed.'
     options = ''.join(f'<option data-show="{key}"{" selected" if key == chosen else ""}>{label}</option>'
                       for key, label, _ in SHORTCUT_GROUPS)
-    lists = ''.join(f'<ol class="setup-steps" data-variant="{key}" data-variant-group="ios-steps"{"" if key == chosen else " hidden"}>'
-                    + ''.join(f'<li>{step}</li>' for step in steps) + '</ol>'
-                    for key, _, steps in SHORTCUT_GROUPS)
-    return (f'<div class="field variant-field"><label for="ios-version">iOS version</label>'
+    return (f'<div class="variant-field" data-wizard-first><div class="field"><label for="ios-version">iOS version</label>'
             f'<select id="ios-version" data-variant-select="ios-steps" aria-describedby="ios-detected">{options}'
-            f'</select></div><p id="ios-detected" class="field-hint">{detected}</p>{_wizard(lists)}')
+            f'</select></div><p id="ios-detected" class="field-hint">{detected}</p></div>')
 
 
-# Without the portal script the page shows every step; with it, one step at a time.
-WIZARD_NAV = ('<div class="wizard-nav" hidden><p class="wizard-count" aria-live="polite"></p>'
+def _instructions(kind: str, url: str, major: int | None) -> str:
+    """The step wizard: a step count, the step, the URL box on its steps, the version list on step 1.
+
+    Without the portal script every step shows as a list, followed by the URL box.
+    """
+    if kind == 'shortcut':
+        chosen = shortcut_group(major)
+        lists = ''.join(_steps(steps, f' data-variant="{key}" data-variant-group="ios-steps"'
+                                      + ('' if key == chosen else ' hidden'))
+                        for key, _, steps in SHORTCUT_GROUPS)
+        versions = _version_list(major, chosen)
+    else:
+        lists, versions = _steps(TWILIO_STEPS if kind == 'twilio' else WEBHOOK_STEPS), ''
+    return (f'<div class="wizard" data-wizard><p class="wizard-count" aria-live="polite" hidden></p>{lists}'
+            + _copy_box('Webhook URL (keep it private). Tap to copy.', url)
+            + f'<p class="setup-note" data-wizard-url>Anyone with this URL can send texts to AKDBX. This page closes '
+              f'{SETUP_TTL // 3600} hour after it was made. Ask your agent to replace the source if the URL leaks.</p>'
+            + versions
+            + '<div class="wizard-nav" hidden>'
               '<button type="button" class="wizard-back" data-wizard-back><span>Back</span></button>'
-              '<button type="button" class="wizard-next" data-wizard-next><span>Next</span></button></div>')
-
-
-def _wizard(lists: str) -> str:
-    return f'<div class="wizard" data-wizard>{lists}{WIZARD_NAV}</div>'
+              '<button type="button" class="wizard-next" data-wizard-next><span>Next</span></button></div></div>')
 
 
 def _setup(handler, state) -> None:
@@ -264,15 +285,9 @@ def _setup(handler, state) -> None:
                                                   'Ask your agent for a new one.</p>'))
         return
     url = webhook_url(origin, setup.token)
-    if setup.kind == 'shortcut':
-        instructions = _shortcut_steps(ios_major(handler.headers.get('User-Agent', '')))
-    else:
-        steps = TWILIO_STEPS if setup.kind == 'twilio' else WEBHOOK_STEPS
-        instructions = _wizard('<ol class="setup-steps">' + ''.join(f'<li>{step}</li>' for step in steps) + '</ol>')
-    body = (f'<p>Set up the SMS source <strong>{html.escape(setup.source)}</strong>. Texts it forwards reach only '
-            'this AKDBX broker. AKDBX keeps the verification code for ten minutes and never shows it to the agent.</p>'
-            + _copy_box('Webhook URL (keep it private). Tap to copy.', url)
-            + instructions
-            + f'<p>Anyone with this URL can send texts to AKDBX. This page closes {SETUP_TTL // 3600} hour after it was '
-              'made. Ask your agent to replace the source if the URL leaks.</p>')
+    major = ios_major(handler.headers.get('User-Agent', '')) if setup.kind == 'shortcut' else None
+    # The introduction shows on step 1 only; the URL note shows with the URL box.
+    body = (f'<p data-wizard-first>Set up the SMS source <strong>{html.escape(setup.source)}</strong>. Texts it '
+            'forwards reach only this AKDBX broker. AKDBX keeps the verification code for ten minutes and never shows '
+            'it to the agent.</p>' + _instructions(setup.kind, url, major))
     handler._send(HTTPStatus.OK, _page('Set up SMS verification', body))
