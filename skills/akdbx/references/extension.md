@@ -258,6 +258,67 @@ load the folder as an unpacked extension (`chrome://extensions`,
 **Developer mode**, **Load unpacked**). Run `akdbx extension uninstall
 --browser NAME` to remove the host registration.
 
+## Agent desktop slot without DevTools
+
+Use this when a bot check (seen: DataDome on a SoundCloud sign-up) refuses an
+agent desktop slot even after the CDP route, a clean profile and a residential
+IP. The check detects the open DevTools connection ("use of developer or
+inspection tools"), so every route that needs it fails: the CDP route, the
+`browser_*` tools and `browser_prepare`. Each refused attempt can make the
+next one harder, so change the setup before you try again.
+
+The host commands below exist on the operator's VPS (agent desktop slots); on
+another host, use its equivalent or the user's everyday browser.
+
+1. **Restart Chrome first, pair after.** Pairing lasts only until the browser
+   restarts, and both commands restart the slot's Chrome. Run them before you
+   load or pair the extension:
+
+   ```bash
+   slot-devtools off "$SLOT"     # Chrome without --remote-debugging-port
+   laptop-proxy on "$SLOT"       # optional: the user's home IP, if the IP is also blocked
+   ```
+
+   Both last only until the slot stops. `slot-devtools status` and
+   `laptop-proxy status` show each slot.
+2. **Desktop input only.** From now on use only `vps_computer` desktop
+   actions on the Chrome window (`list_windows` for the new pid and window id,
+   `get_window_state`, `click`, `type_text`, `press_key`, `hotkey`, `drag`),
+   with `delivery_mode: "foreground"`; background input does not reach an
+   unfocused Chromium. Never call `browser_*`, `browser_prepare` or any CDP
+   script on this slot.
+3. **Load the extension once per slot profile.** Build it and register the
+   native host for that profile's own folder (a custom `--user-data-dir` reads
+   `NativeMessagingHosts` inside it):
+
+   ```bash
+   akdbx extension build --output ~/.local/share/akdbx/extension-chrome
+   akdbx extension install --browser chrome \
+     --manifest-dir ~/.local/share/agent-desktops/profiles/"$SLOT"/NativeMessagingHosts
+   ```
+
+   Then, with desktop input: `ctrl+L`, type `chrome://extensions`, Enter;
+   switch on **Developer mode**; **Load unpacked**; in the folder dialog
+   `ctrl+L`, type the build folder, and select it. The extension stays in the
+   slot profile; later runs need only pairing.
+4. **Pair.** Click the akdbx toolbar button. `akdbx status` must show
+   `extension_connected: true`. If it stays `false`, check which akdbx the
+   host launcher (`path` in the profile's `org.akdbx.extension.json`)
+   imports: it must be the release the broker runs. A launcher whose Python
+   imports an older akdbx (for example an old editable checkout) cannot reach
+   the broker. Repair it in akdbx ([repair thread](repair-thread.md)), then
+   run the `install` command again. Give the user the `extension_pairing` link and
+   the code from the popup, then wait for "paired"
+   ([Pairing](#pairing)).
+5. **Do the page by hand.** Type names and emails with `type_text`. For a
+   slider check, drag it once like a person: a slow movement in several
+   uneven steps, then check the result. Fill the password only through the
+   extension: `list-password-frames`, `pin-password-target` and
+   `fill`/`fill-generated` with `--route extension`. Do not look at the field.
+   Dismiss Chrome's own "Save password?" prompt; save the entry in akdbx.
+6. **Clean up.** `laptop-proxy off "$SLOT"`, `slot-devtools on "$SLOT"`
+   (Chrome restarts with DevTools, so the pairing ends), then `end_session`.
+
 ## Errors
 
 | Observed result | Next step |

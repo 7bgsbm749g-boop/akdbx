@@ -330,6 +330,16 @@ variable, which the CLI sends by default; if it is not set, run
 and the slots that exist. Fills need no slot: a pin stays in the Chrome it was
 made in. See [agent desktop slots](references/target-fill.md#agent-desktop-slots).
 
+**Strict bot checks in an agent desktop slot: extension route, no DevTools.**
+Some checks (seen: DataDome on a sign-up) refuse every slot Chrome that has a
+DevTools connection open, also on a residential IP. The CDP route and the
+`browser_*` tools both need that connection, so they cannot pass. What worked:
+the slot's Chrome restarted without its debugging port, desktop (pixel) input
+only, and the akdbx extension for the password. Follow
+[Agent desktop slot without DevTools](references/extension.md#agent-desktop-slot-without-devtools).
+The same limits apply: only the user's own account and data, no CAPTCHA
+solvers, and stop after two failed attempts.
+
 Both routes keep the same model: list frames, a 30-second single-use pin bound
 to one exact element, a fresh search handle per fill, and a receipt with no
 value. The commands are the same; add `--route extension` or `--route cdp` to
