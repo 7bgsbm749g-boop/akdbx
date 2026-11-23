@@ -236,7 +236,7 @@ def _shortcut_steps(major: int | None) -> str:
     detected = (f'This iPhone seems to run iOS {major}. ' if major is not None else '') + 'Choose another version if needed.'
     options = ''.join(f'<option data-show="{key}"{" selected" if key == chosen else ""}>{label}</option>'
                       for key, label, _ in SHORTCUT_GROUPS)
-    lists = ''.join(f'<ol data-variant="{key}" data-variant-group="ios-steps"{"" if key == chosen else " hidden"}>'
+    lists = ''.join(f'<ol class="setup-steps" data-variant="{key}" data-variant-group="ios-steps"{"" if key == chosen else " hidden"}>'
                     + ''.join(f'<li>{step}</li>' for step in steps) + '</ol>'
                     for key, _, steps in SHORTCUT_GROUPS)
     return (f'<div class="field variant-field"><label for="ios-version">iOS version</label>'
@@ -258,7 +258,7 @@ def _setup(handler, state) -> None:
         instructions = _shortcut_steps(ios_major(handler.headers.get('User-Agent', '')))
     else:
         steps = TWILIO_STEPS if setup.kind == 'twilio' else WEBHOOK_STEPS
-        instructions = '<ol>' + ''.join(f'<li>{step}</li>' for step in steps) + '</ol>'
+        instructions = '<ol class="setup-steps">' + ''.join(f'<li>{step}</li>' for step in steps) + '</ol>'
     body = (f'<p>Set up the SMS source <strong>{html.escape(setup.source)}</strong>. Texts it forwards reach only '
             'this AKDBX broker. AKDBX keeps the verification code for ten minutes and never shows it to the agent.</p>'
             + _copy_box('Webhook URL (keep it private). Tap to copy.', url)

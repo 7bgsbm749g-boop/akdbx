@@ -119,6 +119,8 @@ button:disabled { cursor: default; opacity: .4; }
 }
 [hidden] { display: none !important; }
 .variant-field { margin-top: 18px; }
+.setup-steps { padding-left: 22px; }
+.setup-steps li + li { margin-top: 14px; }
 .variant-field + .field-hint { margin: 6px 0 12px; }
 button.copy-field {
   display: block; text-align: left; min-height: 0; padding: 13px 16px 12px; border: 1px solid #ffffff1a;

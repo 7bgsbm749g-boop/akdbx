@@ -420,8 +420,8 @@ def test_setup_page_opens_the_steps_for_the_detected_ios_version(served, agent, 
     status, _, body = https(served.port, served.cert, 'GET', path.path + '?' + path.query, host=served.host,
                             user_agent=agent)
     assert status == 200
-    shown = re.findall(rb'<ol data-variant="(\w+)" data-variant-group="ios-steps">', body)
-    hidden = re.findall(rb'<ol data-variant="(\w+)" data-variant-group="ios-steps" hidden>', body)
+    shown = re.findall(rb'<ol class="setup-steps" data-variant="(\w+)" data-variant-group="ios-steps">', body)
+    hidden = re.findall(rb'<ol class="setup-steps" data-variant="(\w+)" data-variant-group="ios-steps" hidden>', body)
     assert shown == [group.encode()] and len(hidden) == 2
     assert f'<option data-show="{group}" selected>'.encode() in body and body.count(b' selected>') == 1
     assert b'data-variant-select="ios-steps"' in body
