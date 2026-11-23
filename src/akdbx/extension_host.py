@@ -249,14 +249,59 @@ def paths(browser, manifest_dir=None):
     return dict(launcher=home / f'{browser}.sh', manifest=directory / f'{HOST_NAME}.json')
 
 
-def _launcher_text(browser, python, socket_path):
+# A Linux and macOS launcher puts this akdbx's own folder first on sys.path, so the host runs the same akdbx as the
+# CLI that installed it, also when that interpreter's site-packages hold another akdbx (a wrapper deployment).
+# The folder is an argument, never part of the code; -I still ignores PYTHONPATH, the user site and the cwd.
+BOOTSTRAP = 'import sys;sys.path.insert(0,sys.argv.pop(1));from akdbx.extension_host import main;raise SystemExit(main())'
+_CHECK = ('import sys;sys.path.insert(0,sys.argv.pop(1)) if len(sys.argv)>1 else None;'
+          'import akdbx.extension_host as h;print(h.__file__)')
+
+
+def package_root():
+    """The folder that holds the akdbx package this process runs (a release ``src`` or a site-packages)."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _launcher_text(browser, python, socket_path, source=None):
     if os.name == 'nt':
+        if source is not None:
+            raise ValueError('a Windows launcher runs the akdbx of its Python; it takes no source folder')
         if any(c in python + (socket_path or '') for c in '"%\r\n^&|<>'):
             raise ValueError('the Python or socket path contains a character that a Windows launcher cannot quote')
         extra = f' --socket "{socket_path}"' if socket_path else ''
         return f'@echo off\r\n"{python}" -I -m akdbx.extension_host --browser {browser}{extra} %*\r\n'
     extra = ' --socket ' + shlex.quote(socket_path) if socket_path else ''
-    return f'#!/bin/sh\nexec {shlex.quote(python)} -I -m akdbx.extension_host --browser {browser}{extra} "$@"\n'
+    start = f'-I -c {shlex.quote(BOOTSTRAP)} {shlex.quote(source)}' if source is not None else '-I -m akdbx.extension_host'
+    return f'#!/bin/sh\nexec {shlex.quote(python)} {start} --browser {browser}{extra} "$@"\n'
+
+
+def expected_launcher(browser, python, socket_path):
+    """The launcher this akdbx writes now: on Linux and macOS it names this akdbx's own folder."""
+    return _launcher_text(browser, python, socket_path, None if os.name == 'nt' else package_root())
+
+
+def check_python(python, source):
+    """Refuse an interpreter that would run another akdbx (or none) through the launcher.
+
+    The check imports the host exactly as the launcher does, in a new isolated process, and compares the file
+    it found with this module's own file.
+    """
+    import subprocess
+    argv = [python, '-I', '-c', _CHECK] + ([] if source is None else [source])
+    try:
+        result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+                                cwd=tempfile.gettempdir())
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f'{python} cannot start: {exc}') from None
+    lines = (result.stdout or '').strip().splitlines()
+    if result.returncode != 0 or not lines:
+        reason = ((result.stderr or '').strip().splitlines() or ['no output'])[-1][:300]
+        raise ValueError(f'{python} cannot run the akdbx extension host ({reason}); '
+                         'pass --python with the interpreter of this akdbx installation')
+    found, ours = os.path.normcase(os.path.realpath(lines[-1])), os.path.normcase(os.path.realpath(__file__))
+    if found != ours:
+        raise ValueError(f'{python} runs another akdbx ({lines[-1][:300]}), not this one ({__file__}); '
+                         'pass --python with the interpreter of this akdbx installation')
 
 
 def _manifest(launcher, name=HOST_NAME):
@@ -292,27 +337,51 @@ def _read_regular(path, limit):
         return source.read(limit + 1)
 
 
-def _owned_launcher(path, browser):
-    """True only for the exact launcher that this installer writes for these paths; never a link.
+def _parse_launcher(path, browser):
+    """The Python, socket and source folder of the exact launcher that this installer writes; never a link.
 
-    Every release since v0.21.0 writes the same format: the Python path and the optional socket are read
-    back from the file, the launcher is generated again, and only an identical file counts.
+    Every release since v0.21.0 writes the ``-m`` format; Linux and macOS releases from v0.31.1 write the
+    bootstrap format that names a source folder. The values are read back from the file, the launcher is
+    generated again, and only an identical file counts. Anything else is None.
     """
     data = _read_regular(path, LAUNCHER_LIMIT)
     if data is None or len(data) > LAUNCHER_LIMIT:
-        return False
+        return None
     try:
         text = data.decode('utf-8')
+        source = None
         if os.name == 'nt':
             words = text.split('"')  # @echo off, "PYTHON", the arguments, then "SOCKET" when there is one
             python, socket_path = words[1], words[3] if len(words) == 5 else None
         else:
             words = shlex.split(text.split('\n')[1])
             python = words[1]
+            if words[2:5] == ['-I', '-c', BOOTSTRAP]:
+                source = words[5]
             socket_path = words[words.index('--socket') + 1] if '--socket' in words else None
-        return text == _launcher_text(browser, python, socket_path)
+        if text != _launcher_text(browser, python, socket_path, source):
+            return None
+        return dict(python=python, socket=socket_path, source=source)
     except (UnicodeError, ValueError, IndexError):
-        return False
+        return None
+
+
+def _owned_launcher(path, browser):
+    """True only for the exact launcher that this installer writes for these paths; never a link."""
+    return _parse_launcher(path, browser) is not None
+
+
+def launcher_state(browser):
+    """'missing', 'foreign' (not written by akdbx), 'stale' (runs another akdbx folder) or 'current'."""
+    launcher = paths(browser)['launcher']
+    if _file_kind(launcher) == 'missing':
+        return 'missing'
+    current = _parse_launcher(launcher, browser)
+    if current is None:
+        return 'foreign'
+    if os.name != 'nt' and current['source'] != package_root():
+        return 'stale'
+    return 'current' if os.path.exists(current['python']) else 'stale'
 
 
 def _owned_manifest(path, launcher):
@@ -347,6 +416,7 @@ def install(browser, *, socket_path=None, manifest_dir=None, python=None):
         raise ValueError('browser must be helium, chrome or edge')
     python = str(Path(python or sys.executable).absolute())
     socket_path = str(Path(socket_path).absolute()) if socket_path and os.name != 'nt' else socket_path
+    source = None if os.name == 'nt' else package_root()
     where = paths(browser, manifest_dir)
     launcher, manifest = where['launcher'], where['manifest']
     if os.name == 'nt':
@@ -367,7 +437,8 @@ def install(browser, *, socket_path=None, manifest_dir=None, python=None):
         raise ValueError(f'{launcher} is a link or not a regular file; akdbx never writes through it. Remove it first')
     if _file_kind(launcher) == 'file' and not _owned_launcher(launcher, browser):
         raise ValueError(f'{launcher} exists and was not written by akdbx; move it away first')
-    text = _launcher_text(browser, python, socket_path)
+    text = _launcher_text(browser, python, socket_path, source)
+    check_python(python, source)
     launcher.parent.mkdir(parents=True, exist_ok=True)
     manifest.parent.mkdir(parents=True, exist_ok=True)
     _replace_file(launcher, text, 0o700)
@@ -377,6 +448,36 @@ def install(browser, *, socket_path=None, manifest_dir=None, python=None):
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, WINDOWS_KEYS[browser] + '\\' + HOST_NAME) as handle:
             winreg.SetValueEx(handle, '', 0, winreg.REG_SZ, str(manifest))
     return {k: str(v) for k, v in where.items()}
+
+
+def refresh(*, python=None, socket_path=None):
+    """Point every launcher that akdbx wrote for this user at this akdbx; manifests and registrations stay.
+
+    All manifests of one browser (also those in ``--manifest-dir`` folders) name the same launcher, so this
+    covers every profile. Run it after an update that moves akdbx to another folder. The interpreter is this
+    CLI's own unless ``python`` is given; each launcher keeps its socket unless ``socket_path`` is given.
+    """
+    python = str(Path(python or sys.executable).absolute())
+    socket_path = str(Path(socket_path).absolute()) if socket_path and os.name != 'nt' else socket_path
+    source = None if os.name == 'nt' else package_root()
+    found = {}
+    for browser in BROWSERS:
+        launcher = paths(browser)['launcher']
+        kind = _file_kind(launcher)
+        if kind == 'missing':
+            continue
+        current = _parse_launcher(launcher, browser) if kind == 'file' else None
+        if current is None:
+            raise ValueError(f'{launcher} was not written by akdbx; nothing was changed. Move it away first')
+        found[browser] = (launcher, _launcher_text(browser, python, socket_path or current['socket'], source))
+    if found:
+        check_python(python, source)
+    refreshed = []
+    for browser, (launcher, text) in found.items():
+        if _read_regular(launcher, LAUNCHER_LIMIT) != text.encode('utf-8'):
+            _replace_file(launcher, text, 0o700)
+        refreshed.append(dict(browser=browser, launcher=str(launcher)))
+    return refreshed
 
 
 def uninstall(browser, *, manifest_dir=None):
@@ -490,12 +591,20 @@ BUILD_ID = re.compile(r'^globalThis\.AKDBX_BUILD_ID = "([A-Za-z0-9_-]{22})";$', 
 def add_parser(commands):
     extension = commands.add_parser('extension', help='install the akdbx browser extension host, or build the extension')
     actions = extension.add_subparsers(dest='extension_command', required=True)
+    python_help = ('interpreter that the launcher runs; it must import this akdbx (checked). '
+                   'Default: the interpreter of this CLI')
     for name in ('install', 'uninstall'):
         command = actions.add_parser(name, help=f'{name} the native-messaging host for one browser (this user only)')
         command.add_argument('--browser', required=True, choices=BROWSERS)
         if os.name != 'nt':
             command.add_argument('--manifest-dir', type=Path,
-                                 help='NativeMessagingHosts folder of a custom user-data folder')
+                                 help='NativeMessagingHosts folder of a custom user-data folder, for example '
+                                      '<browser_profile_root>/slot1/NativeMessagingHosts for an agent desktop slot')
+        if name == 'install':
+            command.add_argument('--python', type=Path, help=python_help)
+    refresh_command = actions.add_parser(
+        'refresh', help='point every installed host launcher at this akdbx (run after an update moves akdbx)')
+    refresh_command.add_argument('--python', type=Path, help=python_help)
     build_command = actions.add_parser('build', help='write the unpacked extension to a folder (load it unpacked)')
     build_command.add_argument('--output', required=True, type=Path)
     actions.add_parser('info', help='show the extension ID, host name and per-browser host locations')
@@ -504,9 +613,13 @@ def add_parser(commands):
 def run(args, socket_path=None, unlock_origin=None):
     try:
         if args.extension_command == 'install':
-            where = install(args.browser, socket_path=socket_path, manifest_dir=getattr(args, 'manifest_dir', None))
-            print(json.dumps(dict(ok=True, browser=args.browser, extension_id=EXTENSION_ID, host=HOST_NAME, **where),
-                             indent=2))
+            where = install(args.browser, socket_path=socket_path, manifest_dir=getattr(args, 'manifest_dir', None),
+                            python=args.python)
+            print(json.dumps(dict(ok=True, browser=args.browser, extension_id=EXTENSION_ID, host=HOST_NAME,
+                                  akdbx_source=package_root(), **where), indent=2))
+        elif args.extension_command == 'refresh':
+            refreshed = refresh(python=args.python, socket_path=socket_path)
+            print(json.dumps(dict(ok=True, refreshed=refreshed, akdbx_source=package_root()), indent=2))
         elif args.extension_command == 'uninstall':
             removed = uninstall(args.browser, manifest_dir=getattr(args, 'manifest_dir', None))
             print(json.dumps(dict(ok=True, browser=args.browser, removed=removed), indent=2))
@@ -517,7 +630,9 @@ def run(args, socket_path=None, unlock_origin=None):
         else:
             print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, extension_version=EXTENSION_VERSION,
                                   host=HOST_NAME, protocol=PROTOCOL,
-                                  browsers={b: {k: str(v) for k, v in paths(b).items()} for b in BROWSERS}), indent=2))
+                                  akdbx_source=package_root(),
+                                  browsers={b: {**{k: str(v) for k, v in paths(b).items()},
+                                                'launcher_state': launcher_state(b)} for b in BROWSERS}), indent=2))
         return 0
     except (OSError, ValueError, RuntimeError) as exc:
         print(json.dumps(dict(ok=False, error=str(exc))), file=sys.stderr)

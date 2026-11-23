@@ -1449,11 +1449,11 @@ class Setup:
         return max(current, new, key=order.index)
 
     def _install_host(self, browser):
-        from .extension_host import LAUNCHER_LIMIT, _launcher_text, _owned_manifest, _read_regular, paths
+        from .extension_host import LAUNCHER_LIMIT, _owned_manifest, _read_regular, expected_launcher, paths
         where = paths(browser)
         socket_path = str(self.socket) if self.socket_explicit else None
         try:
-            expected = _launcher_text(browser, str(self.executable), socket_path).encode('utf-8')
+            expected = expected_launcher(browser, str(self.executable), socket_path).encode('utf-8')
             # Regular files only: a link at either path is never taken as installed.
             installed = (_read_regular(where['launcher'], LAUNCHER_LIMIT) == expected
                          and _owned_manifest(where['manifest'], where['launcher']))

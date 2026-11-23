@@ -258,6 +258,48 @@ load the folder as an unpacked extension (`chrome://extensions`,
 **Developer mode**, **Load unpacked**). Run `akdbx extension uninstall
 --browser NAME` to remove the host registration.
 
+### Host launcher (0.31.1+)
+
+`extension install` writes one launcher per browser
+(`~/.local/share/akdbx/extension-host/BROWSER.sh` on Linux) and a manifest that
+names it. On Linux and macOS the launcher runs
+`PYTHON -I -c BOOTSTRAP AKDBX_SOURCE --browser NAME`: it puts the folder of the
+akdbx that ran `install` first on `sys.path`, so the host runs that same akdbx
+even when the interpreter's own site-packages hold another akdbx (a wrapper
+deployment that adds a release folder to `sys.path`). Before it writes
+anything, `install` starts the interpreter the same way and refuses one that
+cannot import this akdbx's host (`cannot start`, `cannot run the akdbx
+extension host`, `runs another akdbx`). The install output shows
+`akdbx_source`. On Windows the launcher still runs `python -I -m
+akdbx.extension_host`, so the interpreter must have this akdbx installed.
+
+- `--python PATH` chooses the interpreter; the default is the CLI's own
+  (`sys.executable`). The check above applies to it.
+- `akdbx extension refresh [--python PATH]` rewrites every launcher that akdbx
+  wrote for this user so that it runs the akdbx that runs `refresh`. It keeps
+  each launcher's socket and never touches manifests or registrations, so it
+  also covers every `--manifest-dir` profile. It refuses, and changes nothing,
+  when a launcher there was not written by akdbx. Run it after an update moves
+  akdbx to another folder (a new release folder).
+- `akdbx extension info` shows `launcher_state` per browser: `current`,
+  `stale` (another akdbx folder, an older `-m` launcher on Linux, or a missing
+  interpreter: run `refresh`), `foreign` (not written by akdbx) or `missing`.
+
+**Agent desktop slots.** Each slot's Chrome uses its own user-data folder
+`<browser_profile_root>/<slot>`, and Chrome reads native-messaging manifests
+from that folder. Install the host once per slot whose Chrome loads the
+extension:
+
+```bash
+akdbx extension install --browser chrome \
+  --manifest-dir "$ROOT/$AGENT_DESKTOP_SLOT/NativeMessagingHosts"
+```
+
+`$ROOT` is `browser_profile_root` from `akdbx status`. All slot manifests of one
+browser name the same launcher, so one `refresh` updates every slot.
+`uninstall --manifest-dir` removes that slot's manifest and also the shared
+launcher; reinstall the other slots afterwards.
+
 ## Agent desktop slot without DevTools
 
 Use this when a bot check (seen: DataDome on a SoundCloud sign-up) refuses an
@@ -306,8 +348,10 @@ another host, use its equivalent or the user's everyday browser.
    host launcher (`path` in the profile's `org.akdbx.extension.json`)
    imports: it must be the release the broker runs. A launcher whose Python
    imports an older akdbx (for example an old editable checkout) cannot reach
-   the broker. Repair it in akdbx ([repair thread](repair-thread.md)), then
-   run the `install` command again. Give the user the `extension_pairing` link and
+   the broker. With 0.31.1+, `akdbx extension info` shows
+   `launcher_state: "stale"` for it; run `akdbx extension refresh` (see
+   [Host launcher](#host-launcher-0311)). With an older akdbx, repair it in
+   akdbx ([repair thread](repair-thread.md)), then run the `install` command again. Give the user the `extension_pairing` link and
    the code from the popup, then wait for "paired"
    ([Pairing](#pairing)).
 5. **Do the page by hand.** Type names and emails with `type_text`. For a
@@ -331,3 +375,4 @@ another host, use its equivalent or the user's everyday browser.
 | Popup: "The broker page at … names another identity than the native host sent" | The native host and the broker's HTTPS page disagree about the broker key, so the extension learned nothing. Tell the user not to enter the master password; check that the broker on that origin and the installed native host (`akdbx extension install`) are the user's own. |
 | `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Ask the user to rebuild into the same folder and reload it in `chrome://extensions`. |
 | Right after an update, the popup says the broker is not reachable and `status` shows `extension_connected: false` | The broker, or the Python that the host launcher runs, still has akdbx 0.21.2 or earlier, and it refuses the new extension's hello. Restart the broker on the new version. If the launcher points to another Python, run `akdbx extension install --browser NAME` again from the updated installation. |
+| The popup says the broker is not reachable and the broker is running; `extension info` shows `launcher_state: "stale"`, or the launcher fails with `No module named 'akdbx.extension_host'` | The launcher runs another akdbx than the CLI: an older release folder, or (before 0.31.1) the interpreter's own akdbx. Run `akdbx extension refresh` with the current CLI; with an akdbx before 0.31.1 on Linux, update first. Then reopen the popup. |
