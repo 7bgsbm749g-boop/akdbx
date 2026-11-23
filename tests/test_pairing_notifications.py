@@ -165,7 +165,7 @@ def test_cli_registers_shows_and_cancels_and_refuses_an_old_broker(events, tmp_p
     monkeypatch.setattr(cli, 'request', old)
     assert cli.main(['subscribe-pairing', '--webhook-url-file', '/absent']) == 1
     assert calls == [dict(action='ping')]
-    assert 'require broker 0.32.0 or newer' in capsys.readouterr().out
+    assert 'require broker 0.33.0 or newer' in capsys.readouterr().out
 
 
 # ----- reconnects: the pairing belongs to the key, not to one host connection --------

@@ -576,7 +576,7 @@ notification-state file plus `.card-saves`; an unfinished form reports
 [card-save notification workflow](skills/akdbx/references/card-save-notifications.md)
 for host registration, verification, duplicate handling and cleanup.
 
-## Pairing notifications (0.32.0)
+## Pairing notifications (0.33.0)
 
 An agent that gives the user an extension pairing link can register a one-shot
 webhook and end its turn, instead of asking the user to type "paired":

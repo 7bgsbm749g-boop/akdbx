@@ -1,4 +1,4 @@
-# Resume after an extension pairing (0.32.0)
+# Resume after an extension pairing (0.33.0)
 
 Pairing notifications are one-shot HTTPS webhooks, like
 [unlock notifications](unlock-notifications.md). The broker posts one event

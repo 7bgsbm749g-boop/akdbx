@@ -1,4 +1,4 @@
-"""One-shot extension-pairing webhooks (0.32.0); callbacks carry only the browser name.
+"""One-shot extension-pairing webhooks (0.33.0); callbacks carry only the browser name.
 
 An agent that gives the user a pairing link registers a webhook and ends its
 turn. When a browser is paired and attached (it can fill now), the broker posts

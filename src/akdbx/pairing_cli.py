@@ -1,4 +1,4 @@
-"""Receipt-only CLI for extension-pairing webhooks (0.32.0)."""
+"""Receipt-only CLI for extension-pairing webhooks (0.33.0)."""
 import json
 import re
 import sys
@@ -59,7 +59,7 @@ def run(args, request):
                 or caps['pairing_notifications_protocol'] != 1
                 or caps.get('pairing_notifications_until_paired') is not True):
             print(json.dumps(dict(ok=False, error='broker lacks pairing notification protocol 1; require broker '
-                                                  '0.32.0 or newer; subscription request not sent')))
+                                                  '0.33.0 or newer; subscription request not sent')))
             return 1
         payload = dict(action=args.command)
         if args.command == 'subscribe-pairing':

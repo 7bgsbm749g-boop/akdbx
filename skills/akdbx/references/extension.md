@@ -96,9 +96,9 @@ pairing. Pairing is the user's step:
 You can give the user the `extension_pairing` link from `status`, as you give
 an unlock link. Never ask for the master password, and never open or operate
 the pairing page for the user. After a successful pairing the page heading is
-**Successfully paired** (0.32.0).
+**Successfully paired** (0.33.0).
 
-Do not ask the user to say "paired". From 0.32.0, register a one-shot webhook
+Do not ask the user to say "paired". From 0.33.0, register a one-shot webhook
 with `subscribe-pairing --code CODE` (in T3: a webhook task bound to the
 current thread) and end the turn. The broker posts `akdbx.extension-paired`
 when that browser is paired and connected. Steps:

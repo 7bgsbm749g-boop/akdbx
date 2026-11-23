@@ -320,7 +320,7 @@ So:
   or broker restarts; an idle extension that reconnects keeps its pairing and
   its pending link.
 - Then let an event resume the task instead of asking the user to say
-  "paired" (0.32.0+, `pairing_notifications_supported: true`): create a webhook
+  "paired" (0.33.0+, `pairing_notifications_supported: true`): create a webhook
   task bound to the current thread, register it with
   `subscribe-pairing --code CODE --webhook-url-file FILE`, check
   `expires_in: null`, and end the turn. On the `akdbx.extension-paired` event,
