@@ -148,9 +148,23 @@ without Tab or submit. Both fills use the same secret. Generated resets require
 both the entry URL and asserted target URL to use ASCII HTTPS spelling, with
 punycode for internationalized hosts. Unicode URLs, whitespace and backslashes
 are refused. The broker checks that
-the supplied target origin (scheme, host, effective port) matches the selected
-entry. The broker also checks the actual pinned HTTPS document origin and retained password input. The originating agent must verify the selected account and real form through its browser workflow. Cross-origin reset sites are refused; do
-not falsify the URL to bypass this check. Never inspect password field values,
+the supplied target origin (scheme, host, effective port) is exactly the
+selected entry's main URL origin or one of its exact
+[additional URL](#additional-urls-0180) origins, the same origins a login fill
+accepts. The broker reads these origins from the entry when you fill, so an
+additional URL removed after generation no longer permits a fill. A
+`generate-entry` write has only its main URL. The broker also checks that the
+actual pinned HTTPS document has exactly the asserted target origin, and checks
+the retained password input. The originating agent must verify the selected
+account and real form through its browser workflow. Any other origin is
+refused, including other subdomains, lookalike hosts, other ports and `http`. A
+reset page on another exact origin of the same site, such as
+`https://secure.example.test` for an entry with main URL
+`https://example.test/`, needs that origin as an additional URL on the entry
+(`add-url`, see [additional URLs](#additional-urls-0180)) and a running broker
+whose `status` reports `generated_additional_urls: true` (0.31.2+). Add the URL
+before `generate-password`: a successful `add-url` makes pending writes stale.
+Do not falsify the URL to bypass this check. Never inspect password field values,
 read the clipboard, capture an unmasked secret, or evaluate page input values.
 
 Submit the reset through the authorized website workflow. Verify non-secret
@@ -382,6 +396,9 @@ Rules:
   none exists.
 - Card records refuse. Passwordless records may list additional origins for
   username and TOTP fills.
+- Login, username, TOTP and generated-password fills (`fill-generated`, 0.31.2+
+  with `generated_additional_urls: true`) accept each listed origin exactly, as
+  well as the main URL origin.
 
 The write is metadata-only. It never returns or changes the password, and the
 save verifies that the password is unchanged. Like the passwordless creates,

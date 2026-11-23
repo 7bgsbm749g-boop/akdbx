@@ -556,6 +556,8 @@ capability checks and recovery. In short:
   new. If the form has only one new-password field and no confirmation field,
   add `--single-field` when you generate (needs `generated_single_field: true`,
   0.31.0+): you get one `password` reference and the commit needs one fill.
+  The field's origin must be the entry's main URL origin or one of its
+  `additional_urls` (needs `generated_additional_urls: true`, 0.31.2+).
 - **User-chosen password:** `create-entry` or `update-password` return a private
   page where the user types it.
 - **SSO account (Google/GitHub):** `create-sso-entry` saves the metadata with an

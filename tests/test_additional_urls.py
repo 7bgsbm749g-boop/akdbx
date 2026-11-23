@@ -295,3 +295,240 @@ def test_url_writes_hold_the_vault_lock(action, monkeypatch):
     monkeypatch.setattr(broker.writes, 'change_additional_url', probe)
     broker.dispatch({'action': action, 'handle': 'h', 'url': 'https://a.example.com/', 'additional_urls_protocol': 1})
     assert observed == [False]  # Another request cannot enter while a URL write runs.
+
+
+# --- generated fills (fill-generated) on an additional URL origin --------------------------
+
+from akdbx import browser_password as browser_password_module  # noqa: E402
+from akdbx.totp import https_origin  # noqa: E402
+from akdbx.target import failure as target_failure  # noqa: E402
+from test_writes import begin, commit, reopened as reopened_vault  # noqa: E402
+
+SECURE = 'https://secure.example.test/'
+RESET = 'https://secure.example.test/password-reset/synthetic-reset-token'
+
+
+class OriginCheckingPasswords(browser_password_module.BrowserPasswords):
+    """Applies the real field-origin rule of BrowserPasswords._recheck, then records the typing."""
+    _recording_fixture = True
+
+    def __init__(self, broker, **kwargs):
+        super().__init__(**kwargs)
+        self.broker, self.seen = broker, []
+
+    def deliver(self, pin, mode, username, password, site_origins, ready, start_deadline):
+        self.seen.append((pin.url, frozenset(site_origins)))
+        if mode != pin.mode or https_origin(pin.url) not in site_origins:
+            raise DeliveryError(False)
+        self.broker.typer.deliver(pin, [password], ready)
+
+
+def cdp_pin(broker, frame_url):
+    """A synthetic CDP DOM pin whose field document has frame_url."""
+    import secrets
+    if not isinstance(broker.passwords, OriginCheckingPasswords):
+        broker.passwords = OriginCheckingPasswords(broker, clock=broker.clock)
+
+    class Connection:
+        def call(self, *args, **kwargs):
+            return {}
+
+        def close(self):
+            pass
+    token = secrets.token_hex(32)
+    pin = PasswordPin(Connection(), 'synthetic-session', 'synthetic-node', 'synthetic-page', 'synthetic-frame',
+                      frame_url, 'password')
+    with broker.passwords._lock:
+        broker.passwords.pins[token] = broker.clock() + 30, pin
+    return dict(target=token, target_protocol=1)
+
+
+def add_secure_url(broker, url=SECURE):
+    handle = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]['handle']
+    added = broker.dispatch({'action': 'add-url', 'handle': handle, 'url': url, 'additional_urls_protocol': 1})
+    assert added['ok'] and added['additional_urls'] == [url.rstrip('/')]
+
+
+def generated_fill(broker, ref, target_url, frame_url=None):
+    return broker.dispatch({'action': 'fill-generated', **cdp_pin(broker, frame_url or target_url),
+                            'handle': ref, 'target_url': target_url})
+
+
+def test_status_reports_generated_additional_urls():
+    assert Broker(Vault([]), RecordingTyper()).dispatch({'action': 'ping'})['generated_additional_urls'] is True
+
+
+@pytest.mark.parametrize('target_url', [
+    'https://example.test/reset',                              # main URL origin
+    RESET,                                                     # additional URL origin
+])
+def test_generated_reset_fills_main_or_additional_origin_and_commits(deployed, target_url, capsys, caplog):
+    broker, typer, path, _ = deployed
+    add_secure_url(broker)
+    staged = begin(broker, 'generate-password')
+    assert staged['ok']
+    receipts = [generated_fill(broker, staged['fill_handles'][mode], target_url) for mode in ('password', 'confirmation')]
+    assert all(r == {'ok': True, 'filled': 'password', 'target_delivery': browser_password_module.DELIVERY}
+               for r in receipts), receipts
+    # The delivery route received only the asserted target origin.
+    assert {origins for _, origins in broker.passwords.seen} == {frozenset({https_origin(target_url)})}
+    assert len(typer.events) == 2 and typer.events[0] == typer.events[1]
+    assert commit(broker, staged) == {'ok': True, 'state': 'saved'}
+    saved = reopened_vault(path).find_entries(title='Synthetic site', first=True)
+    assert saved.password == typer.events[0][1] and saved.password != OLD
+    assert saved.get_custom_property('KP2A_URL') == SECURE
+    assert saved.password not in json.dumps(receipts) + capsys.readouterr().out + caplog.text
+
+
+def test_single_field_generated_fill_accepts_additional_origin(deployed):
+    broker, typer, path, _ = deployed
+    add_secure_url(broker)
+    staged = begin(broker, 'generate-password', single_field=True)
+    assert generated_fill(broker, staged['fill_handles']['password'], RESET)['ok']
+    assert commit(broker, staged) == {'ok': True, 'state': 'saved'}
+    assert reopened_vault(path).find_entries(title='Synthetic site', first=True).password == typer.events[0][1]
+
+
+@pytest.mark.parametrize('target_url,error', [
+    ('https://unrelated.test/password-reset', 'target site mismatch; no password filled'),
+    ('https://secure.example.test.evil.test/password-reset', 'target site mismatch; no password filled'),
+    ('https://secure-example.test/password-reset', 'target site mismatch; no password filled'),
+    ('https://secure.example.test:8443/password-reset', 'target site mismatch; no password filled'),
+    ('https://api.example.test/password-reset', 'target site mismatch; no password filled'),  # same site, not listed
+    ('http://secure.example.test/password-reset',
+     'generated resets require a verified ASCII HTTPS site URL without credentials'),
+    ('https://user@secure.example.test/password-reset',
+     'generated resets require a verified ASCII HTTPS site URL without credentials'),
+    ('https://secure.éxample.test/password-reset',
+     'generated resets require a verified ASCII HTTPS site URL without credentials'),
+])
+def test_generated_fill_refuses_other_origins_and_consumes_the_reference(deployed, target_url, error):
+    broker, typer, path, _ = deployed
+    add_secure_url(broker)
+    staged = begin(broker, 'generate-password')
+    ref = staged['fill_handles']['password']
+    assert generated_fill(broker, ref, target_url) == {'ok': False, 'error': error}
+    assert generated_fill(broker, ref, RESET) == {
+        'ok': False, 'error': 'unknown or expired generated fill handle; start again'}
+    assert not typer.events and not broker.passwords.seen
+    assert not commit(broker, staged)['ok']
+    assert reopened_vault(path).find_entries(title='Synthetic site', first=True).password == OLD
+
+
+@pytest.mark.parametrize('target_url,frame_url', [
+    (RESET, 'https://example.test/reset'),                    # asserted additional, pinned on main
+    ('https://example.test/reset', RESET),                    # asserted main, pinned on additional
+    (RESET, 'https://evil.test/password-reset'),              # pinned document on another site
+])
+def test_pinned_document_must_have_the_asserted_target_origin(deployed, target_url, frame_url):
+    broker, typer, path, _ = deployed
+    add_secure_url(broker)
+    staged = begin(broker, 'generate-password')
+    assert generated_fill(broker, staged['fill_handles']['password'], target_url, frame_url) == target_failure(False)
+    assert not typer.events and not broker.writes.get(staged['write_handle']).filled
+
+
+def test_real_cdp_route_refuses_a_pinned_document_on_another_listed_origin(deployed):
+    """Uses the real BrowserPasswords.deliver origin gate; NoBrowser records any browser call."""
+    broker, typer, _, _ = deployed
+    add_secure_url(broker)
+    staged = begin(broker, 'generate-password')
+    browser = NoBrowser()
+    broker.passwords = BrowserPasswords(clock=broker.clock)
+    import secrets
+    for frame_url, reached in (('https://example.test/reset', False), (RESET, True)):
+        token = secrets.token_hex(32)
+        pin = PasswordPin(browser, 'session', 'object', 'page', 'frame', frame_url, 'password')
+        with broker.passwords._lock:
+            broker.passwords.pins[token] = broker.clock() + 30, pin
+        mode = 'password' if not reached else 'confirmation'
+        result = broker.dispatch({'action': 'fill-generated', 'target': token, 'target_protocol': 1,
+                                  'handle': staged['fill_handles'][mode], 'target_url': RESET})
+        assert result['ok'] is False
+        # Only the pin on the asserted origin reaches the browser checks.
+        assert ('Target.getTargetInfo' in browser.calls) is reached
+        browser.calls.clear()
+    assert not typer.events
+
+
+def test_additional_url_removed_after_generation_no_longer_permits_a_fill(deployed):
+    broker, typer, path, _ = deployed
+    add_secure_url(broker)
+    staged = begin(broker, 'generate-password')
+    # A vault change that removes the field without a broker write (for example
+    # a reload of a synchronized file) is read from the entry at fill time.
+    [entry] = [e for e in broker.vault.entries if e.title == 'Synthetic site']
+    entry.delete_custom_property('KP2A_URL')
+    assert generated_fill(broker, staged['fill_handles']['password'], RESET) == {
+        'ok': False, 'error': 'target site mismatch; no password filled'}
+    # The main origin still works for the other reference.
+    assert generated_fill(broker, staged['fill_handles']['confirmation'], 'https://example.test/reset')['ok']
+    assert not commit(broker, staged)['ok'] and len(typer.events) == 1
+
+
+def test_remove_url_or_metadata_change_between_generate_and_fill_refuses(deployed):
+    broker, typer, path, _ = deployed
+    add_secure_url(broker)
+    staged = begin(broker, 'generate-password')
+    handle = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]['handle']
+    assert broker.dispatch({'action': 'remove-url', 'handle': handle, 'url': SECURE,
+                            'additional_urls_protocol': 1})['ok']
+    # A successful vault write retires every pending generated reference.
+    assert generated_fill(broker, staged['fill_handles']['password'], RESET) == {
+        'ok': False, 'error': 'unknown or expired generated fill handle; start again'}
+    # A metadata change (no broker write) refuses as a changed entry.
+    add_secure_url(broker)
+    staged = begin(broker, 'generate-password')
+    [entry] = [e for e in broker.vault.entries if e.title == 'Synthetic site']
+    entry.title = 'Renamed synthetic site'
+    assert generated_fill(broker, staged['fill_handles']['password'], RESET) == {
+        'ok': False, 'error': 'entry changed; search again'}
+    assert not typer.events
+    assert reopened_vault(path).find_entries(title='Synthetic site', first=True).password == OLD
+
+
+def test_generate_entry_has_only_its_main_origin(deployed):
+    broker, typer, _, _ = deployed
+    add_secure_url(broker)  # another entry lists the origin; it grants nothing to a new entry
+    staged = broker.dispatch({'action': 'generate-entry', 'metadata': {
+        'title': 'New synthetic', 'username': 'new-account', 'url': 'https://example.test/signup', 'group': 'Web'}})
+    assert generated_fill(broker, staged['fill_handles']['password'], RESET) == {
+        'ok': False, 'error': 'target site mismatch; no password filled'}
+    assert generated_fill(broker, staged['fill_handles']['confirmation'], 'https://example.test/signup')['ok']
+    assert len(typer.events) == 1
+
+
+def test_extension_route_generated_fill_on_additional_origin(deployed):
+    from akdbx import extension_route as route
+    from test_extension_route import Document, attach, pin_password
+    broker, typer, path, _ = deployed
+    add_secure_url(broker)
+    staged = begin(broker, 'generate-password')
+    channel, extension = attach(broker, {3: [Document('TOP', RESET)], 4: [Document('MAIN', 'https://example.test/reset')]})
+
+    def fill(mode, tab, document, top, target_url):
+        pin = pin_password(broker, channel, tab, document, top)
+        assert pin['ok'], pin
+        return broker.dispatch({'action': 'fill-generated', 'target': pin['target'], 'target_protocol': 1,
+                                'handle': staged['fill_handles'][mode], 'target_url': target_url})
+
+    # The pinned document is on the main origin, the asserted target on the additional one.
+    assert fill('password', 4, 'MAIN', 'https://example.test/reset', RESET) == target_failure(False)
+    assert extension.filled == []
+    staged = begin(broker, 'generate-password')
+    for mode in ('password', 'confirmation'):
+        assert fill(mode, 3, 'TOP', RESET, RESET) == {'ok': True, 'filled': 'password',
+                                                       'target_delivery': route.DELIVERY}
+    assert len(extension.filled) == 2 and extension.filled[0] == extension.filled[1]
+    assert commit(broker, staged) == {'ok': True, 'state': 'saved'}
+    saved = reopened_vault(path).find_entries(title='Synthetic site', first=True)
+    assert saved.password == extension.filled[0]['password'] and not typer.events
+    # An unrelated origin is still refused on this route.
+    staged = begin(broker, 'generate-password')
+    channel2, extension2 = attach(broker, {5: [Document('EVIL', 'https://evil.test/password-reset')]})
+    pin = pin_password(broker, channel2, 5, 'EVIL', 'https://evil.test/password-reset')
+    assert broker.dispatch({'action': 'fill-generated', 'target': pin['target'], 'target_protocol': 1,
+                            'handle': staged['fill_handles']['password'],
+                            'target_url': 'https://evil.test/password-reset'}) == {
+        'ok': False, 'error': 'target site mismatch; no password filled'}
+    assert extension2.filled == []
