@@ -140,8 +140,8 @@ SHORTCUT_GROUPS = (
         'In the <strong>Search</strong> bar at the bottom, type <code>Get Contents of URL</code> and tap it. A second '
         'box <strong>Get contents of URL</strong> appears.',
         URL_STEP,
-        'Tap the round arrow after the address. Set <strong>Method</strong> to <strong>POST</strong> and '
-        '<strong>Request Body</strong> to <strong>JSON</strong>.',
+        'Tap the round arrow after the address. Set <strong>Method</strong> to <strong>POST</strong>. Keep '
+        '<strong>Request Body</strong> as <strong>JSON</strong> (the default).',
         *_variable_steps('Message', 'Above the keyboard, tap <strong>Select Variable</strong>. Then tap the blue '
                                     '<strong>Message</strong> that shows between the two boxes.'),
         'Tap the back arrow at the top left. Shortcuts saves the automation.',
@@ -160,8 +160,8 @@ SHORTCUT_GROUPS = (
         'Tap <strong>Add Action</strong> or the <strong>Search</strong> bar, type <code>Get Contents of URL</code> '
         'and tap it.',
         URL_STEP,
-        'Tap the arrow in the action to show more. Set <strong>Method</strong> to <strong>POST</strong> and '
-        '<strong>Request Body</strong> to <strong>JSON</strong>.',
+        'Tap the arrow in the action to show more. Set <strong>Method</strong> to <strong>POST</strong>. Keep '
+        '<strong>Request Body</strong> as <strong>JSON</strong> (the default).',
         *_variable_steps('Shortcut Input', 'Above the keyboard, tap <strong>Shortcut Input</strong>.'),
         'Tap <strong>Done</strong> at the top right.',
         TEST_STEP,
@@ -177,8 +177,8 @@ SHORTCUT_GROUPS = (
         '<strong>Next</strong>.',
         'Tap <strong>Add Action</strong>, type <code>Get Contents of URL</code> in the search bar and tap it.',
         URL_STEP,
-        'Tap <strong>Show More</strong> in the action. Set <strong>Method</strong> to <strong>POST</strong> and '
-        '<strong>Request Body</strong> to <strong>JSON</strong>.',
+        'Tap <strong>Show More</strong> in the action. Set <strong>Method</strong> to <strong>POST</strong>. Keep '
+        '<strong>Request Body</strong> as <strong>JSON</strong> (the default).',
         *_variable_steps('Shortcut Input', 'Above the keyboard, tap <strong>Shortcut Input</strong>.'),
         'Tap <strong>Next</strong>. Turn off <strong>Ask Before Running</strong> and tap <strong>Don\'t Ask</strong>. '
         'Tap <strong>Done</strong>.',
