@@ -342,8 +342,10 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   permission (the same install warning as `https://*/*`) and allows two
   screenshots each second, so challenges run one at a time, about half a
   second apart: each card or address field costs one challenge at its pin and
-  one at its fill. Colours are compared exactly; on a colour-managed display a
-  mismatch refuses (it never fills). The tab must be the active tab of a window that renders.
+  one at its fill. Colours are compared exactly. Chrome returns tab screenshots
+  in sRGB also when it renders for a colour-managed display: the tests pass with
+  forced Display P3 and scRGB profiles (`--force-color-profile`). A display
+  that still changed the colours would refuse, never fill. The tab must be the active tab of a window that renders.
   Only a script that can read the field's own document can copy the colour
   onto a cover in time, and such a script can read the filled value anyway;
   a parent page cannot see the colour in a cross-origin processor frame. A
