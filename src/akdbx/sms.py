@@ -31,7 +31,7 @@ from pathlib import Path
 PROTOCOL = 1
 KINDS = ('shortcut', 'twilio', 'webhook')
 MESSAGE_TTL = 600
-SETUP_TTL = 900
+SETUP_TTL = 3600  # one hour: setting up the iPhone automation takes a while
 MAX_MESSAGES = 32
 MAX_SOURCES = 16
 MAX_WAIT = 300

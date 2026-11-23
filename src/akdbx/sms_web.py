@@ -170,6 +170,6 @@ def _setup(handler, state) -> None:
             'this AKDBX broker. AKDBX keeps the verification code for ten minutes and never shows it to the agent.</p>'
             f'<ol>{items}</ol>'
             + _copy_box('Webhook URL (keep it private). Tap to copy.', url)
-            + f'<p>Anyone with this URL can send texts to AKDBX. This page closes in {SETUP_TTL // 60} minutes. '
+            + f'<p>Anyone with this URL can send texts to AKDBX. This page closes {SETUP_TTL // 3600} hour after it was made. '
               'Ask your agent to replace the source if the URL leaks.</p>')
     handler._send(HTTPStatus.OK, _page('Set up SMS verification', body))

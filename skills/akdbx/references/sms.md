@@ -28,7 +28,7 @@ their codes.
 akdbx sms-add-source iphone --kind shortcut
 ```
 
-The receipt has a `private_url` setup page (15 minutes). Send it to the user
+The receipt has a `private_url` setup page (one hour). Send it to the user
 privately (`send_to_user`); they open it on the iPhone and follow its steps.
 The page shows the webhook URL (tap to copy) and how to create the automation
 in the Shortcuts app: a new shortcut whose trigger is **Automation > Message**
