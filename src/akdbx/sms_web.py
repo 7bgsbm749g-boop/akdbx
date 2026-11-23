@@ -105,31 +105,33 @@ def _inbound(handler, state, token: str) -> None:
 
 
 SHORTCUT_STEPS = (
-    'Copy the webhook URL: tap the box at the bottom of this page.',
-    'Open the <strong>Shortcuts</strong> app and tap <strong>+</strong> to make a new shortcut. In the list at the '
-    'bottom, tap <strong>Automation</strong>, then choose <strong>Message</strong>. The shortcut now starts with '
-    '<strong>When I receive a message</strong>. (Older iOS: open the <strong>Automation</strong> tab, tap '
-    '<strong>+</strong> and choose <strong>Message</strong>.)',
-    'Tap the arrow next to <strong>where</strong>. Set <strong>Message contains</strong> to <code>code</code>. '
-    'Do not add a sender filter.',
-    'Keep <strong>Automation</strong> on and turn <strong>Confirm Before Run</strong> off. (Older iOS: select '
-    '<strong>Run Immediately</strong>, turn off <strong>Notify When Run</strong>, tap <strong>Next</strong>, then '
-    '<strong>New Blank Automation</strong>.)',
-    'In the <strong>Search</strong> bar at the bottom, type <strong>Get Contents of URL</strong> and tap the action.',
-    'Now paste the webhook URL. The action shows <strong>Get contents of URL</strong> with a grey '
-    '<strong>URL</strong>: tap the grey <strong>URL</strong> and paste. Continue only when the action shows the '
-    'address instead of the grey <strong>URL</strong>.',
-    'Tap the <strong>&gt;</strong> arrow in the action to show more. Set <strong>Method</strong> to '
-    '<strong>POST</strong>. Set <strong>Request Body</strong> to <strong>JSON</strong>.',
-    'Tap <strong>Add new field</strong>, then <strong>Text</strong>. In the key box, type <code>text</code>. Tap '
-    'the value box, press <strong>Select Variable</strong> (the button above the keyboard), then tap the blue '
-    '<strong>Message</strong> word in the <strong>When I receive a message</strong> box. The row now shows '
-    '<code>text</code> and a blue <strong>Message</strong>. That is correct: it sends the text of the message.',
-    'Optional: add a second <strong>Text</strong> field the same way, with the key <code>from</code>. Then tap the '
-    'blue <strong>Message</strong> in that row and choose <strong>Sender</strong>. This lets the agent see who sent '
-    'the text.',
-    'Check that the action still shows the address, not a grey <strong>URL</strong>. Tap the back arrow at the top left to save. The first time the automation runs, iOS can ask to allow the '
-    'connection to this address: tap <strong>Always Allow</strong>.',
+    'Tap the <strong>Webhook URL</strong> box at the bottom of this page. It copies the URL.',
+    'Open the <strong>Shortcuts</strong> app. Tap <strong>+</strong> to make a new shortcut.',
+    'In the list at the bottom, tap <strong>Automation</strong>, then <strong>Message</strong>. A box '
+    '<strong>When I receive a message</strong> appears. (Older iOS: open the <strong>Automation</strong> tab, tap '
+    '<strong>+</strong>, then <strong>Message</strong>.)',
+    'In that box, tap the arrow next to <strong>where</strong>. Set <strong>Message contains</strong> to '
+    '<code>code</code>.',
+    'Keep <strong>Automation</strong> on. Turn <strong>Confirm Before Run</strong> off.',
+    'In the <strong>Search</strong> bar at the bottom, type <code>Get Contents of URL</code> and tap it. A second '
+    'box <strong>Get contents of URL</strong> appears.',
+    'In the second box, tap the grey <strong>URL</strong> and paste. The box now shows the '
+    '<code>https://</code> address.',
+    'Tap the round arrow after the address. Set <strong>Method</strong> to <strong>POST</strong> and '
+    '<strong>Request Body</strong> to <strong>JSON</strong>.',
+    'Tap <strong>Add new field</strong> and choose <strong>Text</strong>. Type <code>text</code> on the left.',
+    'In that row, tap the grey <strong>Text</strong> on the right. Above the keyboard, tap '
+    '<strong>Select Variable</strong>. Then tap the blue <strong>Message</strong> that shows between the two '
+    'boxes. The row now shows <code>text</code> and a blue <strong>Message</strong>.',
+    'Tap <strong>Add new field</strong> and choose <strong>Text</strong>. Type <code>from</code> on the left. Do '
+    'the last step again for this row: grey <strong>Text</strong>, <strong>Select Variable</strong>, blue '
+    '<strong>Message</strong> between the boxes.',
+    'In the <code>from</code> row, tap the blue <strong>Message</strong>. In the menu, choose '
+    '<strong>Sender</strong>. The row now shows <code>from</code> and <strong>Sender</strong>. (If the menu has no '
+    'Sender, remove the <code>from</code> row with the red minus. It is optional.)',
+    'Tap the back arrow at the top left to save.',
+    'Test it: send yourself a text with the word <code>code</code> and six digits, for example '
+    '<code>Your test code is 482913</code>. If iOS asks to allow the connection, tap <strong>Always Allow</strong>.',
 )
 TWILIO_STEPS = (
     'In the Twilio Console, open <strong>Phone Numbers</strong>, <strong>Manage</strong>, '
