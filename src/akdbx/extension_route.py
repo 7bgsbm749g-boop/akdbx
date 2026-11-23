@@ -466,9 +466,7 @@ class ExtensionHub:
         self.channels = {}
         self.approved = []
         self.pairings = {}
-        # The browser that last attached with each key digest, for the pairing event.
-        self.browsers = {}
-        # Orders an approval against a pairing subscription, so neither misses the other.
+        # Orders an approval or a paired attach against a pairing subscription, so neither misses the other.
         self._paired_lock = threading.Lock()
         self.pins = {}
         self.selections = {}
@@ -589,20 +587,28 @@ class ExtensionHub:
                     while len(self.approved) >= MAX_PAIRINGS:
                         self.approved.pop(0)
                     self.approved.append(digest)
-                browser = self._browser_for(digest)
-            notifier = getattr(self.broker, 'pairing_notifications', None)
-            if notifier is not None:
-                try:
-                    notifier.publish_paired(pairing_code(digest), browser)
-                except Exception:
-                    pass  # A notification failure never undoes a pairing.
+            # Without an attached channel the event waits for the key's next attach.
+            self._announce(digest)
         self.refresh()
         return True
 
     def _browser_for(self, digest):
-        """Called under _lock: the browser of an attached channel with this key, else the last one seen."""
-        attached = next((c.browser for c in self.channels.values() if c.digest == digest), None)
-        return attached or self.browsers.get(digest)
+        """Called under _lock: the browser of an attached channel with this key, or None."""
+        return next((c.browser for c in self.channels.values() if c.digest == digest and not c.closed.is_set()), None)
+
+    def _announce(self, digest):
+        """Called under _paired_lock: wake pairing waits when this key is approved and attached.
+
+        The event means the browser can fill now, so status shows it paired.
+        """
+        with self._lock:
+            browser = self._browser_for(digest) if digest in self.approved else None
+        notifier = getattr(self.broker, 'pairing_notifications', None)
+        if browser is not None and notifier is not None:
+            try:
+                notifier.publish_paired(pairing_code(digest), browser)
+            except Exception:
+                pass  # A notification failure never undoes a pairing.
 
     def subscribe_paired(self, request):
         """Register a pairing webhook; an approval cannot fall between the check and the registration."""
@@ -615,7 +621,7 @@ class ExtensionHub:
                              if c.digest in approved and not c.closed.is_set()]
                     return found[0] if found else None
                 found = [d for d in approved if pairing_code(d) == code]
-                return self._browser_for(found[0]) if found else None
+                return self._browser_for(found[0]) if found else None  # Paired, but only if attached now.
         with self._paired_lock:
             return self.broker.pairing_notifications.subscribe_pairing(request, paired=paired)
 
@@ -648,15 +654,14 @@ class ExtensionHub:
                 channel = None
             else:
                 self.channels[channel.id] = channel
-                self.browsers.pop(channel.digest, None)
-                while len(self.browsers) >= 4 * MAX_PAIRINGS:
-                    self.browsers.pop(next(iter(self.browsers)))
-                self.browsers[channel.digest] = channel.browser
         if channel is None:
             send_message(connection, dict(type='error', error='extension attach refused'))
             return
         try:
             channel.send(self._state(channel, 'attached'))
+            # An approved key that attaches (again) is usable now: wake the waits for it.
+            with self._paired_lock:
+                self._announce(channel.digest)
             while not channel.closed.is_set():
                 if not _wait_readable(connection, 1.0):
                     if self._closed:

@@ -19,7 +19,7 @@ ERRORS = {'unknown or expired pairing subscription',
 
 def add_parsers(commands):
     p = commands.add_parser('subscribe-pairing',
-                            help='register a one-shot HTTPS webhook for when a browser extension becomes paired')
+                            help='register a one-shot HTTPS webhook for when a browser extension is paired and connected')
     p.add_argument('--webhook-url-file', required=True, type=Path,
                    help='owned mode-0600 file containing the private callback URL')
     p.add_argument('--code', help="wait for the browser with this pairing code (status 'extension_pairing'); "

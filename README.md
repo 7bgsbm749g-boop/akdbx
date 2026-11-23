@@ -588,10 +588,12 @@ webhook and end its turn, instead of asking the user to type "paired":
 ```
 
 `--code` is the code from `status` (`extension_pairing[].code`); without it,
-any browser that becomes paired fires the event. The event is
+any paired browser fires the event. The event comes when the browser is paired
+and connected, so it can fill: a pairing approved while the extension is not
+connected sends it when that browser reconnects. It is
 `{"event": "akdbx.extension-paired", "browser": "chrome", ...}` with opaque
-subscription and event IDs only. A browser that is already paired at
-registration queues the event at once. Waits have no TTL by default and are
+subscription and event IDs only. A browser that is already paired and
+connected at registration queues the event at once. Waits have no TTL by default and are
 saved in the notification-state file plus `.pairings`. Require
 `pairing_notifications_supported: true`, `pairing_notifications_protocol: 1`
 and `pairing_notifications_until_paired: true`. See the

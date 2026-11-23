@@ -2,9 +2,11 @@
 
 Pairing notifications are one-shot HTTPS webhooks, like
 [unlock notifications](unlock-notifications.md). The broker posts one event
-when a browser extension becomes paired, so the agent can end its turn after it
+when a browser extension is paired and connected, so the agent can end its turn after it
 gives the user the pairing link. Do not ask the user to type "paired", and do
-not poll `status`.
+not poll `status`. The event comes when the browser is paired **and** connected,
+so `status` then shows it with `paired: true`. If the user pairs while the
+extension is not connected, the event waits until that browser reconnects.
 
 Require these values in the running broker's `status`:
 `pairing_notifications_supported: true`, integer
@@ -21,7 +23,7 @@ attached browser that is not paired. The code comes from the extension's key.
 
 - `--code CODE`: wait for that browser key only. Use this when you need one
   browser (for example the Chrome in your agent desktop slot).
-- No `--code`: wait for any browser that becomes paired.
+- No `--code`: wait for any paired, connected browser.
 
 The code does not change when the link changes. If the link expires (after ten
 minutes) and the user opens a new one from the extension popup, the same
@@ -59,8 +61,8 @@ code.
 4. Require `expires_in: null`. Do not add `--ttl` unless the user asks for a
    time limit. If the receipt state is already `pending`, `sending` or
    `delivered`, the browser was paired before you registered: the event is on
-   its way. Registration and approval are atomic at the broker, so a pairing
-   is never missed.
+   its way. Registration, approval and a paired browser's reconnect are
+   ordered at the broker, so a pairing is never missed.
 5. Give the user the `extension_pairing` link and the code, then end the turn.
 
 ## The event

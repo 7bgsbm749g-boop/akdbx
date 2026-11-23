@@ -1,8 +1,9 @@
 """One-shot extension-pairing webhooks (0.32.0); callbacks carry only the browser name.
 
 An agent that gives the user a pairing link registers a webhook and ends its
-turn. When a browser becomes paired, the broker posts one
-``akdbx.extension-paired`` event. A subscription can name the pairing code from
+turn. When a browser is paired and attached (it can fill now), the broker posts
+one ``akdbx.extension-paired`` event. A pairing approved while the extension is
+not connected sends the event when that key attaches again. A subscription can name the pairing code from
 ``status`` (``extension_pairing[].code``) to wait for that one browser key, or
 name no code to wait for any browser. A code is not a secret: the popup and
 the pairing page show it, and ``status`` returns it.

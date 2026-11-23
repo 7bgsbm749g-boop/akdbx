@@ -101,7 +101,7 @@ the pairing page for the user. After a successful pairing the page heading is
 Do not ask the user to say "paired". From 0.32.0, register a one-shot webhook
 with `subscribe-pairing --code CODE` (in T3: a webhook task bound to the
 current thread) and end the turn. The broker posts `akdbx.extension-paired`
-when that browser becomes paired. Steps:
+when that browser is paired and connected. Steps:
 [pairing notifications](pairing-notifications.md).
 
 ### Reconnects and what ends a pairing
@@ -113,7 +113,7 @@ extension's service worker stops and starts again. So:
 | Event | Pending link | Established pairing |
 | --- | --- | --- |
 | The service worker goes idle and restarts, or the host reconnects | Still works, same code and link | Kept: the next connection is paired |
-| The user pairs while the extension is not connected | Works; the extension is paired when it reconnects | - |
+| The user pairs while the extension is not connected | Works; the extension is paired when it reconnects, and the pairing event comes then | - |
 | Ten minutes pass | Expires; the popup gives a new link with the same code | Kept |
 | The broker restarts | Ends | Ends; the code stays the same, the user pairs again |
 | The browser restarts (or a slot's Chrome stops) | Ends | Ends; the popup shows a new code |

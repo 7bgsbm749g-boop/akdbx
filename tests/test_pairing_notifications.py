@@ -221,13 +221,31 @@ def test_a_pending_link_survives_a_reconnect_of_the_same_key(host, events):
     from types import SimpleNamespace
     broker.vault = SimpleNamespace(entries=[], password='synthetic master')
     assert handle_pairing(page, UnlockState(broker, None, None)) and page.sent[0][0] == 200
-    assert terminal(broker, receipt['subscription_id'])['browser'] == 'chrome'
+    # No event yet: the browser cannot fill until it reconnects.
+    assert broker.pairing_notifications.status(receipt['subscription_id'])['state'] == 'subscribed' and not sent
     paired, drop_paired = host(broker)
     assert paired['paired'] is True and 'pairing' not in paired
+    assert terminal(broker, receipt['subscription_id'])['browser'] == 'chrome'
+    assert broker.dispatch(dict(action='ping'))['extension_paired'] is True
     # An established pairing survives the next idle reconnect too.
     drop_paired()
     later, _ = host(broker)
     assert later['paired'] is True and broker.dispatch(dict(action='ping'))['extension_paired'] is True
+
+
+def test_a_wait_made_while_a_paired_browser_is_away_fires_when_it_returns(host, events):
+    broker, sent = events
+    first, drop = host(broker)
+    assert broker.extension.approve(first['pairing']['url'].split('token=')[1]) is True
+    drop()
+    # Paired but not attached: nothing can fill yet, so both waits stay open.
+    any_browser = broker.dispatch(request())
+    own = broker.dispatch(request('https://callback.example/second', code=CODE))
+    assert any_browser['state'] == own['state'] == 'subscribed' and not sent
+    host(broker)
+    for receipt in (any_browser, own):
+        assert terminal(broker, receipt['subscription_id'])['browser'] == 'chrome'
+    assert len(sent) == 2
 
 
 def test_a_new_browser_key_gets_a_new_code_and_link(host, events):
