@@ -196,6 +196,16 @@ PAGES = {
                                         f'<code id="secret" tabindex="0">{SECRET}</code>'),
     '/secret-own-outline': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret{{outline:40px solid '
                             f'currentColor;outline-offset:-40px}}</style><code id="secret" tabindex="0">{SECRET}</code>'),
+    # The secret's own scroll markers in currentColor, over its text.
+    '/secret-own-scroll-markers': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret{{overflow:auto;'
+                                   'scroll-marker-group:after}#secret::scroll-marker-group{position:fixed;left:0;top:0;'
+                                   f'width:900px;height:300px;background:currentColor}}</style>'
+                                   f'<code id="secret" tabindex="0">{SECRET}</code>'),
+    # Generated content that draws nothing: a hidden ::after and a list item without a marker. Both read.
+    '/secret-hidden-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret::after{{content:"x";'
+                              f'display:none}}</style><code id="secret" tabindex="0">{SECRET}</code>'),
+    '/secret-list-item': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<ul style="list-style:none;padding:0;margin:0">'
+                          f'<li id="secret" tabindex="0" style="font:16px monospace">{SECRET}</li></ul>'),
     # A long token that wraps over many lines in a narrow box: visible, so it reads.
     '/secret-wrapped': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0" '
                         'style="width:190px;overflow-wrap:anywhere">' + 'Synth' + 'abcdefghij' * 40 + '</code>'),
@@ -837,7 +847,7 @@ COVERED_SECRETS = ['/secret-covered', '/secret-covered-important', '/secret-shad
                    '/secret-popover-backdrop', '/secret-popover-exit', '/secret-popover-holds-modal',
                    '/secret-details-content', '/secret-scroll-button', '/secret-scroll-marker-group',
                    '/secret-view-transition', '/secret-meter-bar', '/secret-veil', '/secret-own-pseudo',
-                   '/secret-own-pseudo-currentcolor', '/secret-own-outline']
+                   '/secret-own-pseudo-currentcolor', '/secret-own-outline', '/secret-own-scroll-markers']
 CHALLENGE_GONE = "getComputedStyle(document.getElementById('secret')).boxShadow === 'none'"
 
 
@@ -926,7 +936,8 @@ def test_each_cover_check_alone_refuses_every_cover_and_one_of_them_passes_every
         # The secret's own ::after is no occluder for a hit test: only the pixel challenge refuses it.
         assert found is None and page == '/secret-view-transition' or (
             found and found['occlusion'] is (page in ('/secret-own-pseudo', '/secret-own-pseudo-currentcolor',
-                                                      '/secret-own-outline')) and found['pixels'] is False), (page, found)
+                                                      '/secret-own-outline', '/secret-own-scroll-markers'))
+            and found['pixels'] is False), (page, found)
     for page, occlusion in {'/secret': True, '/secret-modal': True, '/secret-inert-background': True,
                             '/card-inert-background': True, '/secret-cookie-popover': False, '/secret-copy-button': False,
                             '/card-label': False, '/card-cookie-popover': False, '/card-clear-layer': False}.items():
@@ -1150,6 +1161,16 @@ def test_an_ancestor_outline_over_a_field_or_a_processor_frame_refuses(harness):
     assert card_pin(harness, lab.navigate('/card-outline')) == card_failure()
     assert lab.digest('number') == EMPTY
     assert processor_pin(harness, '/checkout-outline')[1] == card_failure()
+
+
+@pytest.mark.parametrize('page', ['/secret-hidden-pseudo', '/secret-list-item'])
+def test_generated_content_that_draws_nothing_does_not_refuse(harness, page):
+    lab = harness.lab
+    url = lab.navigate(page)
+    harness.focus('secret')
+    pin = read_pin(harness, url)
+    assert pin['ok'], pin
+    assert read_value(harness, pin) == sha(SECRET)
 
 
 def test_a_long_token_wrapped_over_many_lines_reads(harness):

@@ -500,8 +500,8 @@ async function challenge(tabId, chain, pinId, guardId) {
   if (!tab || !tab.active) return false;
   const rgb = randomColour();
   const colour = `rgb(${rgb.join(", ")})`;
-  // The outline colour differs from the challenge colour in every channel.
-  const css = challengeCSS(spec.path, colour, `rgb(${rgb.map(c => 255 - c).join(", ")})`);
+  // The outline colour is 128 levels away from the challenge colour in every channel.
+  const css = challengeCSS(spec.path, colour, `rgb(${rgb.map(c => (c + 128) % 256).join(", ")})`);
   const target = {tabId, documentIds: [documentId]};
   try {
     await bounded(chrome.scripting.insertCSS({target, css, origin: "USER"}), STEP_MS);

@@ -336,7 +336,7 @@ test("released pins do not evict a live pin's spec record", async () => {
 });
 
 // A card pin and its fill with scripted cover checks: `clear` is the occlusion test's answer.
-async function coveredFill({clear, shown = null, active = true}) {
+async function coveredFill({clear, shown = null, active = true, answer = null}) {
   const {exports, chrome, screen} = loadBackground();
   const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
   exports.setSealKey(key);
@@ -349,6 +349,8 @@ async function coveredFill({clear, shown = null, active = true}) {
     const source = String(details.func);
     calls.push([source, details.args]);
     if (source.includes(".pin(")) return [{result: "c".repeat(32)}];
+    const special = answer && answer(source);
+    if (special) return special;
     return [{result: source.includes(".fill(") ? "filled" : coverAnswer(source, clear) ?? true}];
   };
   screen.shown = shown;
@@ -398,6 +400,45 @@ test("an overlapped field fills only when the screenshot shows the challenge col
   }
   // Each challenge has its own random colour.
   assert.notEqual(screen.css[0].css, screen.css[1].css);
+});
+
+test("a field that moved while the screenshot was taken refuses", async () => {
+  let specs = 0;
+  const {pinned, screen} = await coveredFill({clear: false, answer: source => {
+    if (!source.includes(".challengeSpec(")) return null;
+    specs += 1;
+    // The second measurement, after the screenshot, finds the field elsewhere.
+    const points = specs === 1 ? [[50, 50]] : [[50, 70]];
+    return [{result: {path: ":root>:nth-child(2)>:nth-child(1)", points, view: [100, 100]}}];
+  }});
+  assert.equal(pinned.ok, false);
+  assert.equal(specs, 2);
+  assert.equal(screen.removed.length, 1);  // The challenge rule is removed again.
+});
+
+test("a page that stops answering during a challenge does not hold the queue for the next one", async () => {
+  let hang = true;
+  const {exports, chrome, screen} = loadBackground();
+  const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
+  chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active: true, windowId: 1});
+  chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
+  chrome.scripting.executeScript = async details => {
+    if (details.files) return [{}];
+    const source = String(details.func);
+    if (source.includes(".pin(")) return [{result: "d".repeat(32)}];
+    if (hang && source.includes(".challengeHeld(")) {
+      hang = false;
+      return new Promise(() => {});  // This renderer never answers.
+    }
+    return [{result: coverAnswer(source, false) ?? true}];
+  };
+  const spec = {selector: "#number", field: "cc-number", processor: null};
+  const request = {tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card", spec};
+  const first = await exports.pin(request);
+  assert.equal(first.ok, false);
+  const second = await exports.pin(request);
+  assert.equal(second.ok, true);
+  assert.ok(screen.removed.length >= 1);
 });
 
 test("a cover refuses: the screenshot does not show the challenge colour", async () => {

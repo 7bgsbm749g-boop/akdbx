@@ -426,10 +426,16 @@
   }
 
   function ownPaint(el) {
-    if (getComputedStyle(el).display.includes("list-item")) return true;
+    const style = getComputedStyle(el);
+    const drawn = value => value !== "none" && value !== "normal";
+    if (style.display.includes("list-item") && (style.listStyleType !== "none" || style.listStyleImage !== "none" ||
+        drawn(getComputedStyle(el, "::marker").content))) return true;
+    // A scroll container's own scroll markers are generated boxes too.
+    const markers = style.getPropertyValue("scroll-marker-group");
+    if (markers && markers !== "none") return true;
     return ["::before", "::after"].some(pseudo => {
-      const content = getComputedStyle(el, pseudo).content;
-      return content !== "none" && content !== "normal";
+      const generated = getComputedStyle(el, pseudo);
+      return drawn(generated.content) && generated.display !== "none";
     });
   }
 

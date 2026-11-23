@@ -335,8 +335,8 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
      about a tenth of a second. The screenshot stays in the service worker and
      is dropped after the check. The element's own outline gets another colour,
      so one drawn over its content refuses; a secret element that draws its own
-     `::before`, `::after` or list marker refuses, because that content would
-     take the challenge colour. After the screenshot the points are measured
+     `::before`, `::after`, list marker or scroll markers refuses, because that
+     content would take the challenge colour. After the screenshot the points are measured
      again; a layout shift refuses.
   Costs and limits: `tabs.captureVisibleTab` needs the `<all_urls>` host
   permission (the same install warning as `https://*/*`) and allows two
