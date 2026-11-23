@@ -428,11 +428,16 @@
   function ownPaint(el) {
     const style = getComputedStyle(el);
     const drawn = value => value !== "none" && value !== "normal";
-    if (style.display.includes("list-item") && (style.listStyleType !== "none" || style.listStyleImage !== "none" ||
-        drawn(getComputedStyle(el, "::marker").content))) return true;
-    // A scroll container's own scroll markers are generated boxes too.
+    if (style.display.includes("list-item")) {
+      // ::marker content decides first: none draws nothing, normal draws the list style.
+      const marker = getComputedStyle(el, "::marker").content;
+      if (marker !== "none" && (marker !== "normal" || style.listStyleType !== "none" || style.listStyleImage !== "none")) {
+        return true;
+      }
+    }
+    // A scroll container's own scroll markers are generated boxes too, unless the group has no box.
     const markers = style.getPropertyValue("scroll-marker-group");
-    if (markers && markers !== "none") return true;
+    if (markers && markers !== "none" && getComputedStyle(el, "::scroll-marker-group").display !== "none") return true;
     return ["::before", "::after"].some(pseudo => {
       const generated = getComputedStyle(el, pseudo);
       return drawn(generated.content) && generated.display !== "none";

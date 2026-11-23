@@ -206,6 +206,12 @@ PAGES = {
                               f'display:none}}</style><code id="secret" tabindex="0">{SECRET}</code>'),
     '/secret-list-item': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<ul style="list-style:none;padding:0;margin:0">'
                           f'<li id="secret" tabindex="0" style="font:16px monospace">{SECRET}</li></ul>'),
+    '/secret-list-item-no-marker': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret::marker{{content:none}}'
+                                    '</style><ul style="padding:0;margin:0"><li id="secret" tabindex="0" '
+                                    f'style="font:16px monospace">{SECRET}</li></ul>'),
+    '/secret-hidden-scroll-markers': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret{{overflow:auto;'
+                                      'scroll-marker-group:after}#secret::scroll-marker-group{display:none}</style>'
+                                      f'<code id="secret" tabindex="0">{SECRET}</code>'),
     # A long token that wraps over many lines in a narrow box: visible, so it reads.
     '/secret-wrapped': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0" '
                         'style="width:190px;overflow-wrap:anywhere">' + 'Synth' + 'abcdefghij' * 40 + '</code>'),
@@ -1163,7 +1169,8 @@ def test_an_ancestor_outline_over_a_field_or_a_processor_frame_refuses(harness):
     assert processor_pin(harness, '/checkout-outline')[1] == card_failure()
 
 
-@pytest.mark.parametrize('page', ['/secret-hidden-pseudo', '/secret-list-item'])
+@pytest.mark.parametrize('page', ['/secret-hidden-pseudo', '/secret-list-item', '/secret-list-item-no-marker',
+                                  '/secret-hidden-scroll-markers'])
 def test_generated_content_that_draws_nothing_does_not_refuse(harness, page):
     lab = harness.lab
     url = lab.navigate(page)
