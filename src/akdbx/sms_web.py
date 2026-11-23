@@ -120,10 +120,12 @@ SHORTCUT_STEPS = (
     'Tap the <strong>&gt;</strong> arrow in the action to show more. Set <strong>Method</strong> to '
     '<strong>POST</strong>. Set <strong>Request Body</strong> to <strong>JSON</strong>.',
     'Tap <strong>Add new field</strong>, then <strong>Text</strong>. In <strong>Key</strong>, type <code>text</code>. '
-    'Tap <strong>Value</strong>, then press <strong>Select Variable</strong>, the button above the keyboard, and '
-    'select the message. Tap the blue variable and choose <strong>Content</strong>.',
+    'Tap <strong>Value</strong>, then press <strong>Select Variable</strong>, the button above the keyboard. Tap the '
+    'blue <strong>Message</strong> text between the trigger box and the action box. In the field, tap the '
+    '<strong>Message</strong> variable you added and choose <strong>Content</strong>.',
     'Add a second <strong>Text</strong> field. In <strong>Key</strong>, type <code>from</code>. For its value, press '
-    '<strong>Select Variable</strong> again, select the message, tap it and choose <strong>Sender</strong>.',
+    '<strong>Select Variable</strong> again and tap the blue <strong>Message</strong> text. Tap the variable you '
+    'added and choose <strong>Sender</strong>.',
     'Tap the back arrow at the top left to save. The first time the automation runs, iOS can ask to allow the '
     'connection to this address: tap <strong>Always Allow</strong>.',
 )
