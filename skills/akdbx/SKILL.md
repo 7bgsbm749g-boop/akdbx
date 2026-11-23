@@ -342,12 +342,13 @@ made in. See [agent desktop slots](references/target-fill.md#agent-desktop-slots
 bot check or site block stops you in a slot (Cloudflare "Verifying…" that does
 not finish, DataDome, "You have been blocked", a refused sign-up), do not try
 fixes one at a time. Each refused attempt raises the risk score, and one fix
-alone does not pass: a residential IP alone failed, and the checks also detect
-an open DevTools connection, which the CDP route and the `browser_*` tools
-need. In one go: remove every trace of the refused attempt from the slot
-profile, move the slot's traffic to the user's residential IP, restart its
-Chrome without the debugging port, use desktop (pixel) input only, and fill
-secrets only through the akdbx extension. Follow
+alone does not pass: a home IP alone failed, and the checks also detect an
+open DevTools connection, which the CDP route and the `browser_*` tools need.
+In one go: remove every trace of the refused attempt from the slot profile,
+restart its Chrome without the debugging port, use desktop (pixel) input only,
+and fill secrets only through the akdbx extension. If a home IP proxy is
+available, also send the slot's traffic through it (optional, recommended:
+datacenter IPs score worse). Follow
 [Agent desktop slot without DevTools](references/extension.md#agent-desktop-slot-without-devtools).
 The same limits apply: only the user's own account and data, no CAPTCHA
 solvers, and stop after two failed attempts with the full setup.

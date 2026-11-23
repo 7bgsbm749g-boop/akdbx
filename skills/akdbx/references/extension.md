@@ -435,14 +435,25 @@ launcher; reinstall the other slots afterwards.
 Use this as soon as a bot check or site block stops you in an agent desktop
 slot (seen: DataDome on a SoundCloud sign-up, Cloudflare "Verifying…" that
 does not finish). Apply all the steps below together, in this order, before
-the next attempt. Do not try them one at a time: a residential IP alone did
-not pass, because the check also detects the open DevTools connection ("use
+the next attempt. Do not try them one at a time: a home IP alone did not
+pass, because the check also detects the open DevTools connection ("use
 of developer or inspection tools"). Every route that needs that connection
 fails: the CDP route, the `browser_*` tools and `browser_prepare`. Each
 refused attempt makes the next one harder.
 
-The host commands below exist on the operator's VPS (agent desktop slots); on
-another host, use its equivalent or the user's everyday browser.
+Two parts depend on the host. Use the host's own tools for them; its agent
+guidance names them. Without such tools, use the user's everyday browser.
+
+- **Chrome without DevTools (required):** restart only the slot's Chrome
+  without `--remote-debugging-port`, and keep it so until you finish.
+- **Home IP proxy (optional, recommended):** send only the slot's Chrome
+  traffic out through the user's home (residential) internet connection, for
+  example an SSH SOCKS tunnel (`ssh -N -D 127.0.0.1:PORT HOME_HOST`) and Chrome
+  `--proxy-server=socks5://127.0.0.1:PORT` with
+  `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`. Make it fail
+  closed: if the tunnel stops, Chrome must get no connection, never the
+  datacenter IP. Without a home IP proxy, do all the other steps; a
+  datacenter IP makes a pass less likely.
 
 1. **Remove every trace of the blocked attempt first.** A refused attempt
    leaves the bot check's state in the slot profile: its cookie (for
@@ -453,7 +464,7 @@ another host, use its equivalent or the user's everyday browser.
    partitioned data under the site). Keep the data of every other site,
    also the same vendor's data for other sites. Print only cookie names and
    domains, never values.
-   - While the slot's Chrome still has DevTools (before `slot-devtools off`),
+   - While the slot's Chrome still has DevTools (before you remove it),
      from a page session: find the matching cookies with
      `Storage.getCookies` (also partitioned ones) and remove each with
      `Network.deleteCookies`; run `Storage.clearDataForOrigin` for each site
@@ -473,16 +484,10 @@ another host, use its equivalent or the user's everyday browser.
      cookies. Clean another slot only if it was part of the blocked attempt
      and no other agent uses it.
 2. **Restart Chrome first, pair after.** Pairing lasts only until the browser
-   restarts, and both commands restart the slot's Chrome. Run them before you
-   load or pair the extension:
-
-   ```bash
-   slot-devtools off "$SLOT"     # Chrome without --remote-debugging-port
-   laptop-proxy on "$SLOT"       # the user's home IP; always part of this setup
-   ```
-
-   Both last only until the slot stops. `slot-devtools status` and
-   `laptop-proxy status` show each slot.
+   restarts, and both host changes restart the slot's Chrome. Before you load
+   or pair the extension, restart the slot's Chrome without DevTools and, if
+   available, with the home IP proxy. Check the exit IP (for example
+   `https://api.ipify.org`) with desktop input before the real page.
 3. **Desktop input only.** From now on use only `vps_computer` desktop
    actions on the Chrome window (`list_windows` for the new pid and window id,
    `get_window_state`, `click`, `type_text`, `press_key`, `hotkey`, `drag`),
@@ -520,8 +525,8 @@ another host, use its equivalent or the user's everyday browser.
    extension: `list-password-frames`, `pin-password-target` and
    `fill`/`fill-generated` with `--route extension`. Do not look at the field.
    Dismiss Chrome's own "Save password?" prompt; save the entry in akdbx.
-7. **Clean up.** `laptop-proxy off "$SLOT"`, `slot-devtools on "$SLOT"`
-   (Chrome restarts with DevTools, so the pairing ends), then `end_session`.
+7. **Clean up.** Remove the home IP proxy, restart the slot's Chrome with
+   DevTools again (the pairing ends), then `end_session`.
 
 ## Errors
 
