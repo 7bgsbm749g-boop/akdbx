@@ -253,8 +253,9 @@ def paths(browser, manifest_dir=None):
 # CLI that installed it, also when that interpreter's site-packages hold another akdbx (a wrapper deployment).
 # The folder is an argument, never part of the code; -I still ignores PYTHONPATH, the user site and the cwd.
 BOOTSTRAP = 'import sys;sys.path.insert(0,sys.argv.pop(1));from akdbx.extension_host import main;raise SystemExit(main())'
+# The check also imports akdbx.cli: connect_broker needs it (and its dependencies) at the first connection.
 _CHECK = ('import sys;sys.path.insert(0,sys.argv.pop(1)) if len(sys.argv)>1 else None;'
-          'import akdbx.extension_host as h;print(h.__file__)')
+          'import akdbx.extension_host as h,akdbx.cli;print(h.__file__)')
 
 
 def package_root():
@@ -372,7 +373,7 @@ def _owned_launcher(path, browser):
 
 
 def launcher_state(browser):
-    """'missing', 'foreign' (not written by akdbx), 'stale' (runs another akdbx folder) or 'current'."""
+    """'missing', 'foreign' (not written by akdbx), 'stale' (would not run this akdbx's host) or 'current'."""
     launcher = paths(browser)['launcher']
     if _file_kind(launcher) == 'missing':
         return 'missing'
@@ -381,7 +382,11 @@ def launcher_state(browser):
         return 'foreign'
     if os.name != 'nt' and current['source'] != package_root():
         return 'stale'
-    return 'current' if os.path.exists(current['python']) else 'stale'
+    try:
+        check_python(current['python'], current['source'])
+    except ValueError:
+        return 'stale'  # A missing interpreter, missing dependencies, or (Windows) another akdbx.
+    return 'current'
 
 
 def _owned_manifest(path, launcher):
@@ -415,7 +420,7 @@ def install(browser, *, socket_path=None, manifest_dir=None, python=None):
     if browser not in BROWSERS:
         raise ValueError('browser must be helium, chrome or edge')
     python = str(Path(python or sys.executable).absolute())
-    socket_path = str(Path(socket_path).absolute()) if socket_path and os.name != 'nt' else socket_path
+    socket_path = (str(socket_path) if os.name == 'nt' else str(Path(socket_path).absolute())) if socket_path else None
     source = None if os.name == 'nt' else package_root()
     where = paths(browser, manifest_dir)
     launcher, manifest = where['launcher'], where['manifest']
@@ -458,7 +463,7 @@ def refresh(*, python=None, socket_path=None):
     CLI's own unless ``python`` is given; each launcher keeps its socket unless ``socket_path`` is given.
     """
     python = str(Path(python or sys.executable).absolute())
-    socket_path = str(Path(socket_path).absolute()) if socket_path and os.name != 'nt' else socket_path
+    socket_path = (str(socket_path) if os.name == 'nt' else str(Path(socket_path).absolute())) if socket_path else None
     source = None if os.name == 'nt' else package_root()
     found = {}
     for browser in BROWSERS:
@@ -466,15 +471,19 @@ def refresh(*, python=None, socket_path=None):
         kind = _file_kind(launcher)
         if kind == 'missing':
             continue
+        before = _read_regular(launcher, LAUNCHER_LIMIT)
         current = _parse_launcher(launcher, browser) if kind == 'file' else None
-        if current is None:
+        if current is None or before is None:
             raise ValueError(f'{launcher} was not written by akdbx; nothing was changed. Move it away first')
-        found[browser] = (launcher, _launcher_text(browser, python, socket_path or current['socket'], source))
+        found[browser] = (launcher, before, _launcher_text(browser, python, socket_path or current['socket'], source))
     if found:
         check_python(python, source)
     refreshed = []
-    for browser, (launcher, text) in found.items():
-        if _read_regular(launcher, LAUNCHER_LIMIT) != text.encode('utf-8'):
+    for browser, (launcher, before, text) in found.items():
+        now = _read_regular(launcher, LAUNCHER_LIMIT)
+        if now != before:
+            raise ValueError(f'{launcher} changed during the refresh; run refresh again')
+        if now != text.encode('utf-8'):
             _replace_file(launcher, text, 0o700)
         refreshed.append(dict(browser=browser, launcher=str(launcher)))
     return refreshed

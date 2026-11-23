@@ -11,9 +11,10 @@ import json
 import os
 from pathlib import Path
 import shlex
-import site
+import socket
 import subprocess
 import sys
+import threading
 import venv
 
 import pytest
@@ -42,7 +43,10 @@ def dependency_folders():
 
 
 def wrapper_python(root, *, dependencies=True, old_host=False):
-    """A new virtual environment whose site-packages hold a fake old akdbx before the dependencies."""
+    """A new virtual environment whose site-packages hold a fake old akdbx before the dependencies.
+
+    ``dependencies`` is True (all of them), False (none) or a tuple of top-level package names to link.
+    """
     env = root / 'venv'
     venv.EnvBuilder(with_pip=False, symlinks=True).create(env)
     old = root / 'old-checkout'
@@ -50,10 +54,19 @@ def wrapper_python(root, *, dependencies=True, old_host=False):
     (old / 'akdbx' / '__init__.py').write_text('__version__ = "0.14.1"\n')
     if old_host:
         (old / 'akdbx' / 'extension_host.py').write_text('OLD = True\n')
+        (old / 'akdbx' / 'cli.py').write_text('OLD = True\n')
     python = env / 'bin' / 'python'
     purelib = subprocess.run([str(python), '-I', '-c', 'import sysconfig;print(sysconfig.get_path("purelib"))'],
                              capture_output=True, text=True, timeout=60, check=True).stdout.strip()
-    lines = [str(old)] + (dependency_folders() if dependencies else [])
+    if isinstance(dependencies, tuple):
+        chosen = root / 'some-deps'
+        chosen.mkdir()
+        for name in dependencies:
+            (chosen / name).symlink_to(Path(__import__(name).__file__).parent)
+        folders = [str(chosen)]
+    else:
+        folders = dependency_folders() if dependencies else []
+    lines = [str(old)] + folders
     Path(purelib, '00-synthetic.pth').write_text('\n'.join(lines) + '\n')
     return str(python)
 
@@ -80,18 +93,44 @@ def test_the_old_launcher_imported_the_interpreters_own_akdbx(homes):
     assert status != 0 and frames == [] and "No module named akdbx.extension_host" in error
 
 
-def test_install_pins_this_akdbx_and_the_host_runs_it(homes):
+def fake_broker(socket_path):
+    """A Unix socket with the broker's permissions that records the host's first message, then closes."""
+    from akdbx.protocol import receive_message
+    socket_path.parent.mkdir(mode=0o700)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(socket_path))
+    os.chmod(socket_path, 0o600)
+    server.listen()
+    received = []
+
+    def run():
+        try:
+            server.settimeout(60)
+            connection, _ = server.accept()
+            with connection:
+                received.append(receive_message(connection))
+        finally:
+            server.close()
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, received
+
+
+def test_install_pins_this_akdbx_and_the_host_reaches_the_broker(homes):
     python = wrapper_python(homes)
-    socket_path = str(homes / 'run' / 'none.sock')
+    socket_path = str(homes / 'run' / 'akdbx.sock')
     where = extension_host.install('chrome', socket_path=socket_path, python=python,
                                    manifest_dir=homes / 'profiles' / 'slot1' / 'NativeMessagingHosts')
     launcher = Path(where['launcher'])
     words = shlex.split(launcher.read_text().split('\n')[1])
     assert words[:6] == ['exec', python, '-I', '-c', extension_host.BOOTSTRAP, extension_host.package_root()]
     assert extension_host.launcher_state('chrome') == 'current'
+    thread, received = fake_broker(Path(socket_path))
     status, frames, error = run_launcher(launcher, socket_path)
-    # This akdbx's host answered: it found no broker on the synthetic socket and said so.
-    assert status == 0 and frames == [dict(type='state', connected=False, error='broker unavailable')], error
+    thread.join(60)
+    # This akdbx's host connected with the CLI's peer checks and sent its attach message.
+    assert status == 0 and received and received[0]['action'] == 'extension-attach', (frames, error)
+    assert received[0]['browser'] == 'chrome' and received[0]['public_key'] == KEY
     manifest = json.loads(Path(where['manifest']).read_text())
     assert manifest['path'] == str(launcher)
     # A second slot profile shares the one launcher; uninstall still takes only its own files.
@@ -111,6 +150,18 @@ def test_install_refuses_an_interpreter_that_cannot_run_this_akdbx(homes):
     with pytest.raises(ValueError, match='cannot start'):
         extension_host.install('chrome', python=str(homes / 'missing' / 'python'))
     assert not where['launcher'].exists()
+
+
+def test_install_refuses_an_interpreter_without_the_broker_client_dependencies(homes):
+    # The host itself imports only idna; the broker connection imports akdbx.cli (pykeepass, lxml, ...).
+    python = wrapper_python(homes, dependencies=('idna',))
+    with pytest.raises(ValueError, match='cannot run the akdbx extension host .*No module named'):
+        extension_host.install('chrome', python=python)
+    assert not extension_host.paths('chrome')['launcher'].exists()
+    launcher = extension_host.paths('chrome')['launcher']
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(extension_host._launcher_text('chrome', python, None, extension_host.package_root()))
+    assert extension_host.launcher_state('chrome') == 'stale'
 
 
 def test_the_check_finds_another_akdbx_without_the_pin(homes):
@@ -174,6 +225,22 @@ def test_refresh_changes_nothing_when_a_launcher_is_not_ours(homes):
     assert chrome.read_text() == stale
     edge.unlink()
     assert [item['browser'] for item in extension_host.refresh()] == ['chrome']
+
+
+def test_refresh_never_replaces_a_launcher_that_changed_after_its_check(homes, monkeypatch):
+    chrome = extension_host.paths('chrome')['launcher']
+    chrome.parent.mkdir(parents=True)
+    stale = extension_host._launcher_text('chrome', sys.executable, None, str(homes / 'old'))
+    chrome.write_text(stale)
+    real = extension_host.check_python
+
+    def check_then_replace(python, source):
+        real(python, source)
+        chrome.write_text('#!/bin/sh\necho another program\n')
+    monkeypatch.setattr(extension_host, 'check_python', check_then_replace)
+    with pytest.raises(ValueError, match='changed during the refresh'):
+        extension_host.refresh()
+    assert chrome.read_text() == '#!/bin/sh\necho another program\n'
 
 
 def test_cli_install_python_refresh_and_info(homes, capsys):
