@@ -121,6 +121,7 @@ button:disabled { cursor: default; opacity: .4; }
 .setup-steps { padding-left: 22px; margin: 0 0 18px; }
 .setup-steps li + li { margin-top: 14px; }
 .wizard-count { margin: 0 0 8px !important; color: #fff; font-size: 20px; font-weight: 500; letter-spacing: -.4px; line-height: 1.3; }
+.wizard-count.is-label { margin-bottom: 10px !important; font-size: 14px; letter-spacing: -.1px; }
 .wizard.is-wizard .setup-steps { list-style: none; padding: 0; margin: 0; }
 .wizard.is-wizard .setup-steps li { color: #ffffffd9; font-size: 16px; line-height: 1.6; }
 .wizard.is-wizard .setup-steps li + li { margin-top: 0; }
@@ -288,9 +289,13 @@ SCRIPT = r""""use strict";
     wizard.setAttribute("data-step", String(index));
     steps.forEach((step, i) => { step.hidden = i !== index; });
     document.querySelectorAll("[data-wizard-first]").forEach(part => { part.hidden = index !== first; });
+    // The page title shows on the first screen only; the step heading replaces it.
+    const title = document.getElementById("portal-title");
+    if (title) title.hidden = index !== first;
     wizard.querySelectorAll("[data-wizard-url]").forEach(part => { part.hidden = index < 0 || !steps[index].hasAttribute("data-url"); });
-    wizard.querySelector(".wizard-count").textContent =
-      index < 0 ? "Choose your iOS version" : "Step " + (index + 1) + " of " + steps.length;
+    const count = wizard.querySelector(".wizard-count");
+    count.textContent = index < 0 ? "Choose your iOS version" : "Step " + (index + 1) + " of " + steps.length;
+    count.classList.toggle("is-label", index < 0);
     wizard.querySelector("[data-wizard-back]").hidden = index === first;
     const next = wizard.querySelector("[data-wizard-next]");
     next.hidden = index === last;
