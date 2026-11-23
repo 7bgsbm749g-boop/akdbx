@@ -829,7 +829,10 @@ With `--single-field` (0.31.0+, status `generated_single_field: true`), a form
 with one new-password field and no confirmation field gets one `password`
 reference, and the commit needs that one fill plus site acceptance.
 Generated resets require the entry and asserted target URLs to use ASCII HTTPS
-spelling (punycode for internationalized hosts) and to match in origin.
+spelling (punycode for internationalized hosts). The target origin must be the
+entry's main URL origin or, from 0.31.2 (status `generated_additional_urls:
+true`), one of its exact additional URL origins; a new entry has only its main
+URL. The pinned field document must have exactly the target origin.
 No operation exports, shows, logs or copies passwords.
 
 Writes expire after five minutes and vanish on restart. Site rejection requires

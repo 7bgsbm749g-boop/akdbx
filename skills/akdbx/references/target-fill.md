@@ -307,8 +307,10 @@ one of its KeePassXC/KeePass2Android additional URLs (custom string fields
 "kp2a-exact-origin-v1"`. Search returns the valid ones as `additional_urls`.
 Each value counts only as its exact `(https, host, port)` origin; http values,
 wildcards, unparsable text and credentials in a URL grant nothing. The same
-rule applies to main-frame pins and to `fill-totp --target-url`. Generated
-passwords still use only the staged main URL.
+rule applies to main-frame pins, to `fill-totp --target-url` and, from
+0.31.2 (status `generated_additional_urls: true`), to `fill-generated
+--target-url` for an existing entry. A `generate-entry` write has only its
+main URL.
 
 If the main URL is `https://example.com/` and the login iframe is
 `https://secure.example.com`, the fill refuses until the user authorizes
@@ -372,8 +374,10 @@ and verify non-secret site acceptance before committing a generated password.
 
 Each generated password and confirmation reference needs a fresh password-mode
 DOM pin for its actual input, then `fill-generated --target-url VERIFIED_URL
---target TARGET -- REF`. The saved/generated entry's HTTPS origin must match the pinned
-page. A failed or uncertain fill does not count toward `commit-password`.
+--target TARGET -- REF`. The `--target-url` origin must be the entry's main
+URL origin or one of its exact additional URL origins, and the pinned field
+document must have exactly that origin (for a child-frame pin, pass the
+frame's origin). A failed or uncertain fill does not count toward `commit-password`.
 
 ## Race checks and limits
 
