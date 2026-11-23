@@ -429,3 +429,45 @@ def test_setup_page_opens_the_steps_for_the_detected_ios_version(served, agent, 
     # One step at a time: the portal script runs the wizard; without it every step shows.
     assert body.count(b'<div class="wizard" data-wizard>') == 1 and b'<div class="wizard-nav" hidden>' in body
     assert b'data-wizard-next' in body and b'function showStep(wizard, index)' in body
+
+
+@pytest.mark.parametrize('text, result', [
+    ('Your test code is 482913', 'code'), ('', 'empty'), ('See you at 1930 tomorrow', 'no-code-word'),
+    ('Your code is ready', 'no-code'), ('Code 482913 or code 771122', 'several-codes')])
+def test_each_text_records_why_it_was_kept_or_dropped_without_content(inbox, text, result):
+    from akdbx.sms import extract
+    assert extract(text)[1] == result
+    token = inbox.add_source('iphone', 'shortcut')
+    inbox.receive(token, 'Me', text)
+    row = inbox.list_sources()[0]
+    assert row['last_result'] == result and not any('482913' in str(v) for v in row.values())
+
+
+def test_setup_status_wakes_on_the_next_text_and_reports_no_content(inbox):
+    token = inbox.add_source('iphone', 'shortcut')
+    key = inbox.new_setup('iphone', token)
+    assert inbox.setup_status('B' * 43) is None
+    start = inbox.setup_status(key)
+    assert start == dict(count=0, result=None)
+    assert inbox.setup_status(key, 0, timeout=0) == dict(count=0, result=None)  # nothing new yet
+    inbox.receive(token, 'Me', 'hello')
+    assert inbox.setup_status(key, 0) == dict(count=1, result='no-code-word')
+    inbox.receive(token, 'Me', 'Your test code is 482913')
+    assert inbox.setup_status(key, 1) == dict(count=2, result='code')
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Linux loopback HTTPS fixture')
+def test_setup_page_live_test_route_waits_for_the_test_text(served):
+    receipt = served.broker.dispatch(dict(action='sms-add-source', sms_protocol=1, name='iphone', kind='shortcut'))
+    key = urlsplit(receipt['private_url']).query.split('=', 1)[1]
+    page = urlsplit(receipt['private_url'])
+    status, _, body = https(served.port, served.cert, 'GET', page.path + '?' + page.query, host=served.host)
+    assert status == 200 and f'data-wait="/sms/setup/wait?token={key}" data-count="0"'.encode() in body
+    assert b'data-test>' in body and b'class="wizard-done" hidden' in body and b'data-wizard-skip hidden' in body
+    setup = served.broker.sms.setup(key)
+    threading.Timer(0.3, served.broker.sms.receive, (setup.token, 'Me', 'Your test code is 482913')).start()
+    status, _, body = https(served.port, served.cert, 'GET', f'/sms/setup/wait?token={key}&after=0', host=served.host)
+    assert status == 200 and json.loads(body) == dict(ok=True, count=1, result='code')
+    assert b'482913' not in body
+    for path in (f'/sms/setup/wait?token={"B" * 43}&after=0', f'/sms/setup/wait?token={key}&after=x'):
+        assert https(served.port, served.cert, 'GET', path, host=served.host)[0] == 404

@@ -138,5 +138,8 @@ def test_page_script_reads_card_values_only_for_local_checks():
     assert '["title", "group"].map(name => form.elements.namedItem(name))' in script
     assert script.count('control.value') == 2
     # The form is sent only by the standard same-origin POST to its own action.
-    assert script.count('fetch(') == 1 and 'fetch(form.action, {' in script
+    # The only other request is the SMS setup page's bodiless status GET.
+    assert script.count('fetch(') == 2 and 'fetch(form.action, {' in script
+    status = 'fetch(panel.getAttribute("data-wait") + "&after=" + count,\n          {credentials: "same-origin", cache: "no-store", redirect: "error"});'
+    assert status in script
     assert script.count('new FormData(form)') == 1

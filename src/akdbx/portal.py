@@ -138,10 +138,36 @@ button:disabled { cursor: default; opacity: .4; }
 .wizard-nav button { flex: 1; min-height: 52px; }
 .wizard-nav button.wizard-back { flex-direction: row-reverse; justify-content: flex-end; }
 .wizard-nav button.wizard-back::after { transform: rotate(-135deg); }
-.wizard-nav button.wizard-next {
+.wizard-nav button.wizard-next, .wizard-done button.wizard-next {
   color: #fff; border-color: #ffffff32; border-top-color: #ffffff52;
   background: linear-gradient(165deg, #ffffff16, #ffffff06 52%, #ffffff0a), #08080880;
   box-shadow: inset 0 1px 0 #ffffff07, 0 6px 16px #0005;
+}
+.wizard-nav button.wizard-skip { flex-direction: row; }
+.sms-test {
+  display: flex; align-items: flex-start; gap: 12px; margin-top: 18px; padding: 14px 16px;
+  border: 1px solid #ffffff1a; border-radius: 14px; background: #00000038;
+}
+.sms-test[hidden] { display: none; }
+.sms-test-dot { flex-shrink: 0; width: 8px; height: 8px; margin-top: 7px; border-radius: 50%; background: #fff; }
+.sms-test-text { margin: 0 !important; color: #ffffffd9; font-size: 14px; line-height: 1.55; }
+.sms-test.is-warning { border-color: #ffffff3d; }
+.sms-test.is-warning .sms-test-dot { background: transparent; border: 1px solid #fff; }
+.wizard.is-done > :not(.wizard-done) { display: none !important; }
+.wizard-done { padding: 6px 0 2px; text-align: center; }
+.done-mark { width: 64px; height: 64px; fill: none; stroke: #fff; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.wizard.is-skipped .done-mark { display: none; }
+.wizard.is-passed .done-mark circle, .wizard.is-passed .done-mark path { stroke-dasharray: 1; stroke-dashoffset: 1; animation: copy-draw .8s cubic-bezier(.65, 0, .35, 1) .1s forwards; }
+.wizard-done-title { margin: 14px 0 8px; font-size: 22px; font-weight: 500; letter-spacing: -.4px; outline: 0; }
+.wizard-done-text { margin: 0 0 22px !important; font-size: 15px; }
+.wizard-done.is-closed .wizard-done-text { margin-bottom: 0 !important; }
+.wizard-done button.wizard-next { min-height: 52px; }
+@media (prefers-reduced-motion: no-preference) {
+  .sms-test:not(.is-warning) .sms-test-dot { animation: test-pulse 1.4s ease-in-out infinite; }
+  @keyframes test-pulse { 50% { opacity: .25; transform: scale(.7); } }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wizard.is-passed .done-mark circle, .wizard.is-passed .done-mark path { animation: none; stroke-dashoffset: 0; }
 }
 .setup-note { margin: 10px 0 0 !important; color: #ffffff8c; font-size: 12px; line-height: 1.55; }
 button.copy-field {
@@ -304,7 +330,86 @@ SCRIPT = r""""use strict";
     const next = wizard.querySelector("[data-wizard-next]");
     next.hidden = index === last;
     next.querySelector("span").textContent = index < 0 ? "Start" : "Next";
+    // The test step waits for the test text and offers to skip the test.
+    const testing = index >= 0 && steps[index].hasAttribute("data-test");
+    wizard.querySelector("[data-wizard-skip]").hidden = !testing;
+    const panel = wizard.querySelector("[data-wizard-test]");
+    if (panel) {
+      panel.hidden = !testing;
+      if (testing) watchTest(wizard, panel); else testRun += 1;
+    }
   }
+  // The live test asks the broker for the next text (an 8-second wait per
+  // request). The answer has only a count and a result, never the text.
+  const TEST_RESULTS = {
+    "empty": "A text arrived, but it was empty. Check that the text field in the automation uses Message.",
+    "no-code-word": "A text arrived, but it has no word such as code. Send: Your test code is 482913",
+    "no-code": "A text arrived, but it has no code of 4 to 8 digits. Send: Your test code is 482913",
+    "several-codes": "A text arrived, but it has more than one number. Send: Your test code is 482913",
+    "expired": "This page has expired. Ask your agent for a new one."
+  };
+  let testRun = 0;
+  async function watchTest(wizard, panel) {
+    const run = ++testRun;
+    let count = Number(panel.getAttribute("data-count"));
+    while (run === testRun) {
+      let reply = null;
+      try {
+        const response = await fetch(panel.getAttribute("data-wait") + "&after=" + count,
+          {credentials: "same-origin", cache: "no-store", redirect: "error"});
+        if (response.status === 404) reply = {result: "expired"};
+        else if (response.ok) reply = await response.json();
+      } catch {
+        reply = null;
+      }
+      if (run !== testRun) return;
+      if (reply === null) {
+        // The phone may pause the page in the background; try again soon.
+        await new Promise(resume => setTimeout(resume, 1500));
+        continue;
+      }
+      if (reply.result === "expired") {
+        panel.classList.add("is-warning");
+        panel.querySelector(".sms-test-text").textContent = TEST_RESULTS.expired;
+        return;
+      }
+      if (reply.count > count) {
+        count = reply.count;
+        if (reply.result === "code") {
+          finish(wizard, true);
+          return;
+        }
+        panel.classList.add("is-warning");
+        panel.querySelector(".sms-test-text").textContent = TEST_RESULTS[reply.result] || TEST_RESULTS["no-code"];
+      }
+    }
+  }
+  function finish(wizard, passed) {
+    testRun += 1;
+    const done = wizard.querySelector(".wizard-done");
+    wizard.classList.add("is-done", passed ? "is-passed" : "is-skipped");
+    done.hidden = false;
+    const title = done.querySelector(".wizard-done-title");
+    title.textContent = passed ? "It works" : "Setup finished";
+    const text = done.querySelector(".wizard-done-text");
+    text.textContent = text.getAttribute(passed ? "data-passed" : "data-skipped");
+    title.focus();
+    window.scrollTo({top: 0});
+  }
+  document.addEventListener("click", event => {
+    const skip = event.target.closest("[data-wizard-skip]");
+    if (skip) finish(skip.closest("[data-wizard]"), false);
+    const close = event.target.closest("[data-wizard-close]");
+    if (!close) return;
+    window.close();
+    // A page the user opened from a link cannot close itself.
+    setTimeout(() => {
+      const done = close.closest(".wizard-done");
+      done.classList.add("is-closed");
+      done.querySelector(".wizard-done-text").textContent = "You can close this page now.";
+      close.hidden = true;
+    }, 300);
+  });
   document.querySelectorAll("[data-wizard]").forEach(wizard => {
     wizard.classList.add("is-wizard");
     wizard.querySelector(".wizard-count").hidden = false;

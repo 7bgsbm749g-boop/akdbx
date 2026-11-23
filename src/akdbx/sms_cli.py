@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from . import browser_slots, page_url
 from .browser_card import TTL, failure
 from .browser_code import DELIVERY, FIELDS
-from .sms import KINDS, MAX_WAIT, MESSAGE_ID, NAME, PROTOCOL, ROUTE_SETUP, TOKEN
+from .sms import KINDS, MAX_WAIT, MESSAGE_ID, NAME, PROTOCOL, RESULTS, ROUTE_SETUP, TOKEN
 from .target import DELIVERY as X11_DELIVERY
 
 COMMANDS = {'sms-add-source', 'sms-remove-source', 'sms-sources', 'sms-wait', 'pin-code-target', 'fill-sms-code'}
@@ -107,8 +107,10 @@ def valid_receipt(args, response):
     if args.command == 'sms-sources':
         rows = response.get('sources')
         return (set(response) == {'ok', 'sources'} and isinstance(rows, list) and all(
-            isinstance(r, dict) and {'name', 'kind', 'created'} <= set(r) <= {'name', 'kind', 'created', 'last_received'}
-            and NAME.fullmatch(str(r['name'])) and r['kind'] in KINDS for r in rows))
+            isinstance(r, dict) and {'name', 'kind', 'created'} <= set(r) <= {'name', 'kind', 'created', 'last_received',
+                                                                         'last_result'}
+            and NAME.fullmatch(str(r['name'])) and r['kind'] in KINDS
+            and r.get('last_result', 'code') in RESULTS for r in rows))
     if args.command == 'sms-wait':
         rows = response.get('messages')
         keys = {'id', 'source', 'sender', 'preview', 'code_length', 'received_at', 'age_seconds'}

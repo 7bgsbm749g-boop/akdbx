@@ -43,6 +43,9 @@ MAX_SENDER = 64
 MAX_PREVIEW = 320
 ROUTE_IN = '/sms/in/'
 ROUTE_SETUP = '/sms/setup'
+ROUTE_SETUP_WAIT = '/sms/setup/wait'
+# Why the last text was kept or dropped; never text content.
+RESULTS = ('code', 'empty', 'no-code-word', 'no-code', 'several-codes')
 NAME = re.compile(r'[a-z0-9][a-z0-9-]{0,31}')
 TOKEN = re.compile(r'[A-Za-z0-9_-]{43}')
 MESSAGE_ID = re.compile(r'[0-9a-f]{32}')
@@ -74,19 +77,22 @@ def _normal(text: str) -> str:
     return _CONTROL.sub(' ', unicodedata.normalize('NFKC', text))
 
 
-def extract_code(text: object) -> str | None:
-    """The one verification code in a text, or None when there is not exactly one.
+def extract(text: object) -> tuple[str | None, str]:
+    """The one verification code in a text and why: (code, 'code'), or (None, reason).
+
+    Reasons: 'empty', 'no-code-word', 'no-code' (no 4-8 digit group) and
+    'several-codes' (a tie between digit groups). They hold no text content.
 
     A text needs a verification word (code, OTP, verify ...). Links are
     ignored. With several digit groups, the one nearest a verification word
     wins; a tie is ambiguous and gives None.
     """
     if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
-        return None
+        return None, 'empty'
     text = _LINK.sub(' ', _normal(text))
     keywords = [m.start() for m in KEYWORDS.finditer(text)]
     if not keywords:
-        return None
+        return None, 'no-code-word'
     candidates: dict[str, int] = {}
     taken: list[tuple[int, int]] = []
     for match in _SPLIT.finditer(text):
@@ -105,13 +111,18 @@ def extract_code(text: object) -> str | None:
             for year in years:
                 candidates.pop(year)
     if not candidates:
-        return None
+        return None, 'no-code'
     if len(candidates) == 1:
-        return next(iter(candidates))
+        return next(iter(candidates)), 'code'
     distance = {code: min(abs(position - k) for k in keywords) for code, position in candidates.items()}
     best = min(distance.values())
     winners = [code for code, d in distance.items() if d == best]
-    return winners[0] if len(winners) == 1 else None
+    return (winners[0], 'code') if len(winners) == 1 else (None, 'several-codes')
+
+
+def extract_code(text: object) -> str | None:
+    """The one verification code in a text, or None when there is not exactly one."""
+    return extract(text)[0]
 
 
 def mask(text: str) -> str:
@@ -145,6 +156,10 @@ class Source:
     created: str
     received: list[float] = field(default_factory=list)  # monotonic arrival times, last minute only
     last_received: str | None = None
+    # In memory only: the last text's extraction result (no content) and how
+    # many texts arrived since the broker started.
+    last_result: str | None = None
+    count: int = 0
 
 
 @dataclass
@@ -339,7 +354,8 @@ class SmsInbox:
     def list_sources(self) -> list[dict]:
         with self.condition:
             return [dict(name=s.name, kind=s.kind, created=s.created,
-                         **({'last_received': s.last_received} if s.last_received else {}))
+                         **({'last_received': s.last_received} if s.last_received else {}),
+                         **({'last_result': s.last_result} if s.last_result else {}))
                     for s in self.sources.values()]
 
     def new_setup(self, name: str, token: str) -> str:
@@ -363,6 +379,28 @@ class SmsInbox:
             if setup is None or source is None or source.token_sha256 != setup.token_sha256:
                 return None
             return setup
+
+    def setup_status(self, key: object, after: object = None, timeout: float = 0) -> dict | None:
+        """For a setup page's live test: the source's text count and last result.
+
+        Waits up to ``timeout`` seconds for a text after count ``after``. None
+        when the setup page is not valid. It never returns text content.
+        """
+        if not self.setup(key):
+            return None
+        deadline = self.clock() + max(0.0, min(float(timeout), 10.0))
+        with self.condition:
+            while True:
+                setup = self.setups.get(key)
+                source = self.sources.get(setup.source) if setup is not None else None
+                if source is None or source.token_sha256 != setup.token_sha256:
+                    return None
+                if not isinstance(after, int) or source.count > after:
+                    return dict(count=source.count, result=source.last_result)
+                remaining = deadline - self.clock()
+                if remaining <= 0:
+                    return dict(count=source.count, result=source.last_result)
+                self.condition.wait(remaining)
 
     # Messages ------------------------------------------------------------
 
@@ -389,7 +427,9 @@ class SmsInbox:
                 return 'limited'
             source.received.append(now)
             source.last_received = _iso(self.wall_clock())
-            code = extract_code(text)
+            code, source.last_result = extract(text)
+            source.count += 1
+            self.condition.notify_all()
             if code is None:
                 return 'dropped'
             self._prune()

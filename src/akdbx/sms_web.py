@@ -17,7 +17,7 @@ import re
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlsplit
 
-from .sms import ROUTE_IN, ROUTE_SETUP, SETUP_TTL, webhook_url
+from .sms import ROUTE_IN, ROUTE_SETUP, ROUTE_SETUP_WAIT, SETUP_TTL, webhook_url
 
 MAX_BODY = 16 * 1024
 TWIML = b'<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
@@ -35,7 +35,32 @@ def handle_sms(handler, state) -> bool:
     if path == ROUTE_SETUP:
         _setup(handler, state)
         return True
+    if path == ROUTE_SETUP_WAIT:
+        _setup_wait(handler, state)
+        return True
     return False
+
+
+def _setup_wait(handler, state) -> None:
+    """The setup page's live test: wait up to 8 seconds for the next text.
+
+    The answer has only the text count and the last result (for example
+    'code' or 'no-code-word'), never text content.
+    """
+    handler.close_connection = True
+    query = parse_qs(urlsplit(handler.path).query)
+    key = query.get('token', [''])[0]
+    try:
+        after = int(query.get('after', [''])[0])
+    except ValueError:
+        after = None
+    status = None
+    if handler.command == 'GET' and handler._identity_ok() and after is not None and 0 <= after < 2 ** 31:
+        status = state.broker.sms.setup_status(key, after, timeout=8)
+    if status is None:
+        _json(handler, HTTPStatus.NOT_FOUND)
+        return
+    _json(handler, HTTPStatus.OK, json.dumps(dict(ok=True, **status)).encode())
 
 
 def _json(handler, status, body=NOT_FOUND):
@@ -110,7 +135,7 @@ URL_STEP = ('Tap the <strong>Webhook URL</strong> box below to copy it. Then tap
             'the action and paste. The action now shows the <code>https://</code> address.')
 TEST_STEP = ('Test it: ask someone to text you <code>Your test code is 482913</code>, or send it to yourself. '
              'The first time, iOS can ask for permission: tap <strong>Allow</strong>, then '
-             '<strong>Always Allow</strong>.')
+             '<strong>Always Allow</strong>. This page shows when the code arrives.')
 
 
 def _variable_steps(variable: str, where: str) -> tuple:
@@ -212,10 +237,13 @@ TWILIO_STEPS = (
     'Under <strong>Messaging Configuration</strong>, set <strong>A message comes in</strong> to '
     '<strong>Webhook</strong>, tap the <strong>Webhook URL</strong> box below to copy it, paste it and choose <strong>HTTP POST</strong>.',
     'Save the configuration.',
+    'Test it: text <code>Your test code is 482913</code> to your Twilio number. This page shows when the code '
+    'arrives.',
 )
 WEBHOOK_STEPS = (
     'Configure the service to send an HTTPS POST for each received text to the webhook URL below.',
     'Send JSON <code>{"text": "...", "from": "..."}</code>, or a form with <code>Body</code> and <code>From</code>.',
+    'Test it: text <code>Your test code is 482913</code> to the number. This page shows when the code arrives.',
 )
 
 
@@ -239,8 +267,10 @@ URL_STEPS = frozenset({URL_STEP, TWILIO_STEPS[1], WEBHOOK_STEPS[0]})
 
 
 def _steps(steps, attrs: str = '') -> str:
-    return (f'<ol class="setup-steps"{attrs}>'
-            + ''.join(f'<li{" data-url" if step in URL_STEPS else ""}>{step}</li>' for step in steps) + '</ol>')
+    def marks(step):
+        # The last step is the live test.
+        return (' data-url' if step in URL_STEPS else '') + (' data-test' if step.startswith('Test it:') else '')
+    return (f'<ol class="setup-steps"{attrs}>' + ''.join(f'<li{marks(step)}>{step}</li>' for step in steps) + '</ol>')
 
 
 def _version_list(major: int | None, chosen: str) -> str:
@@ -252,7 +282,27 @@ def _version_list(major: int | None, chosen: str) -> str:
             f'</select></div><p id="ios-detected" class="field-hint">{detected}</p></div>')
 
 
-def _instructions(kind: str, url: str, major: int | None) -> str:
+# The finished screen: a tick that draws itself when the test code arrived.
+DONE_MARK = ('<svg class="done-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
+             '<circle cx="12" cy="12" r="10.5" pathLength="1" transform="rotate(-90 12 12)"/>'
+             '<path d="M7.2 12.4l3.2 3.2 6.4-6.8" pathLength="1"/></svg>')
+TARGET = {'shortcut': 'your iPhone', 'twilio': 'your Twilio number'}
+
+
+def _live_test(kind: str, wait_url: str, count: int) -> str:
+    """The test step's live status and the finished screen (shown by the portal script)."""
+    target = TARGET.get(kind, 'this number')
+    return (f'<div class="sms-test" data-wizard-test data-wait="{html.escape(wait_url, quote=True)}" '
+            f'data-count="{count}" hidden><span class="sms-test-dot" aria-hidden="true"></span>'
+            '<p class="sms-test-text" aria-live="polite">Waiting for your test text…</p></div>'
+            f'<div class="wizard-done" hidden>{DONE_MARK}<h2 class="wizard-done-title" tabindex="-1"></h2>'
+            f'<p class="wizard-done-text" data-passed="AKDBX received your test code. Your agent can now fill in '
+            f'codes that are texted to {target}." data-skipped="Send a test text later. Your agent can check that '
+            f'it arrived."></p>'
+            '<button type="button" class="wizard-next" data-wizard-close><span>Done</span></button></div>')
+
+
+def _instructions(kind: str, url: str, major: int | None, test: str = '') -> str:
     """The step wizard: a step count, the step, the URL box on its steps, the version list on step 1.
 
     Without the portal script every step shows as a list, followed by the URL box.
@@ -269,9 +319,10 @@ def _instructions(kind: str, url: str, major: int | None) -> str:
             + _copy_box('Webhook URL. Tap to copy.', url)
             + '<p class="setup-note" data-wizard-url>Keep this URL private: anyone who has it can send texts to AKDBX. '
               f'If it leaks, ask your agent for a new one. This page closes {SETUP_TTL // 3600} hour after it was made.</p>'
-            + versions
+            + versions + test
             + '<div class="wizard-nav" hidden>'
               '<button type="button" class="wizard-back" data-wizard-back><span>Back</span></button>'
+              '<button type="button" class="wizard-skip" data-wizard-skip hidden><span>Skip test</span></button>'
               '<button type="button" class="wizard-next" data-wizard-next><span>Next</span></button></div></div>')
 
 
@@ -286,9 +337,11 @@ def _setup(handler, state) -> None:
         return
     url = webhook_url(origin, setup.token)
     major = ios_major(handler.headers.get('User-Agent', '')) if setup.kind == 'shortcut' else None
+    status = state.broker.sms.setup_status(token) or {'count': 0}
+    test = _live_test(setup.kind, f'{ROUTE_SETUP_WAIT}?token={token}', status['count'])
     # The introduction shows on step 1 only; the URL note shows with the URL box.
     sender = {'shortcut': 'Your iPhone', 'twilio': 'Your Twilio number'}.get(setup.kind, 'Your SMS service')
     body = (f'<p data-wizard-first>{sender} will send its verification texts to AKDBX, so your agent can fill in the '
             'codes. The agent never sees the codes, and AKDBX deletes each one after ten minutes.</p>'
-            + _instructions(setup.kind, url, major))
+            + _instructions(setup.kind, url, major, test))
     handler._send(HTTPStatus.OK, _page('Set up SMS verification', body))
