@@ -42,6 +42,14 @@ function versionText(manifest) {
   return /^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version) ? "akdbx extension " + version : "akdbx extension";
 }
 
+function unreadable() {
+  const status = document.getElementById("enhanced-status");
+  status.textContent = "The settings could not be read. Close this page and open it again.";
+  status.className = "status warning";
+  status.hidden = false;
+  document.getElementById("enhanced").disabled = true;
+}
+
 async function main() {
   const toggle = document.getElementById("enhanced");
   const status = document.getElementById("enhanced-status");
@@ -59,26 +67,27 @@ async function main() {
     toggle.disabled = true;
     try {
       show(await setEnhanced(chrome, toggle.checked));
-    } catch {
-      await refresh();
-    } finally {
       toggle.disabled = false;
+    } catch {
+      // Show what is saved; if even that cannot be read, keep the switch locked with a warning.
+      try {
+        await refresh();
+        toggle.disabled = false;
+      } catch {
+        unreadable();
+      }
     }
   });
   // Site access can also change on the browser's own extension page.
-  chrome.permissions.onAdded.addListener(refresh);
-  chrome.permissions.onRemoved.addListener(refresh);
-  chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && SETTINGS_KEY in changes) refresh(); });
+  const changed = () => refresh().catch(unreadable);
+  chrome.permissions.onAdded.addListener(changed);
+  chrome.permissions.onRemoved.addListener(changed);
+  chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && SETTINGS_KEY in changes) changed(); });
   await refresh();
   toggle.disabled = false;
 }
 
 if (typeof document !== "undefined" && typeof chrome !== "undefined" && chrome.runtime) {
-  main().catch(() => {
-    const status = document.getElementById("enhanced-status");
-    status.textContent = "The settings could not be read.";
-    status.className = "status warning";
-    status.hidden = false;
-  });
+  main().catch(unreadable);
 }
 if (typeof module !== "undefined") module.exports = {setEnhanced, currentState, statusText, readSettings, SETTINGS_KEY, ALL_SITES};

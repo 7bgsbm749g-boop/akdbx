@@ -431,8 +431,9 @@ class Harness:
 def grant_screenshots(extension):
     """The access that the options page asks for when the user turns enhanced security on.
 
-    A headless browser cannot click its permission prompt, so the test build lists
-    <all_urls> as granted at install; the shipped manifest keeps it optional.
+    A headless browser cannot click its permission prompt, so a test that needs the
+    access (the `enhanced` fixture or the screenshot_access marker) gets a build that
+    lists <all_urls> as granted at install. Every other test runs the shipped manifest.
     """
     path = Path(extension) / 'manifest.json'
     manifest = json.loads(path.read_text(encoding='utf-8'))
@@ -461,7 +462,7 @@ def harness(private_dir, certificates, monkeypatch, request):
         unlock_port = probe.getsockname()[1]
     unlock_origin = f'https://localhost:{unlock_port}'
     extension = extension_host.build(Path(private_dir) / 'extension', host_name=host_name, unlock_origin=unlock_origin)
-    if request.node.get_closest_marker('shipped_permissions') is None:
+    if 'enhanced' in request.fixturenames or request.node.get_closest_marker('screenshot_access') is not None:
         grant_screenshots(extension)
     launcher = Path(private_dir) / ('host.cmd' if sys.platform == 'win32' else 'host.sh')
     launcher.write_text(extension_host._launcher_text(kind, sys.executable, str(pipe)), encoding='utf-8', newline='')
@@ -956,7 +957,6 @@ def test_with_enhanced_security_off_no_screenshot_is_taken_and_the_dom_hit_test_
     assert lab.digest('number') == sha(CARD['number'])
 
 
-@pytest.mark.shipped_permissions
 def test_enhanced_security_without_the_screenshot_access_refuses_every_checked_pin(harness):
     """On, but the browser holds no <all_urls> (not granted, or removed later): nothing is checked, so nothing fills."""
     lab = harness.lab
@@ -1004,6 +1004,7 @@ def click(harness, session, selector):
         observer.call('Input.dispatchMouseEvent', dict(type=kind, x=x, y=y, button='left', clickCount=1), session=session)
 
 
+@pytest.mark.screenshot_access
 def test_the_cog_opens_the_settings_and_the_switch_turns_enhanced_security_on_and_off(harness):
     lab, observer = harness.lab, harness.lab.observer
     observer.call('Target.createTarget', dict(url=route.EXTENSION_ORIGIN.rstrip('/') + '/popup.html'))
@@ -1015,7 +1016,7 @@ def test_the_cog_opens_the_settings_and_the_switch_turns_enhanced_security_on_an
     while observer.evaluate(state, options)['disabled']:
         assert time.monotonic() < deadline
         time.sleep(.05)
-    # Off by default. The test build already holds the access, so the page says that it stays.
+    # Off by default. This test build already holds the access, so the page says that it stays.
     off = observer.evaluate(state, options)
     assert off['checked'] is False and off['status'].startswith('Off: akdbx takes no screenshots'), off
     assert 'Enhanced security' in observer.evaluate("document.querySelector('label[for=enhanced]').textContent", options)
@@ -1072,6 +1073,7 @@ def oracles(harness, page):
                                .replace('SPEC', json.dumps(spec)))
 
 
+@pytest.mark.screenshot_access
 def test_each_cover_check_alone_refuses_every_cover_and_one_of_them_passes_every_ordinary_page(harness):
     """The occlusion test and the pixel challenge are independent: every cover fails both. An ordinary
     page passes the occlusion test, or, when something harmless overlaps the box, the pixel challenge."""

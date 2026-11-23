@@ -749,9 +749,10 @@ async function read(message) {
     try {
       // With "both", content.js still runs its own fresh occlusion test in the task of the read.
       const cover = chain.length !== 1 ? null : await enhancedSecurity() ? await seen(facts.tab_id, chain, facts.pin_id, null) : "off";
-      value = !cover ? null : await bounded(run(facts.tab_id, facts.document_id,
-        (id, maxAge, how) => globalThis.__akdbxContent.read(id, maxAge, how),
-        [facts.pin_id, facts.max_age_ms, cover]), STEP_MS);
+      const reading = cover && run(facts.tab_id, facts.document_id,
+        (id, maxAge, how) => globalThis.__akdbxContent.read(id, maxAge, how), [facts.pin_id, facts.max_age_ms, cover]);
+      // Off: as in 0.4.0, the pin's own deadline bounds the read.
+      value = !cover ? null : cover === "off" ? await reading : await bounded(reading, STEP_MS);
     } catch {
       value = null;
     }
@@ -796,9 +797,10 @@ async function fill(message) {
     if (cover) {
       try {
         // Before this call nothing reached the field; a timeout after it is uncertain.
-        result = await bounded(run(facts.tab_id, facts.document_id,
+        const filling = run(facts.tab_id, facts.document_id,
           (id, kind, value, maxAge, how) => globalThis.__akdbxContent.fill(id, kind, value, maxAge, how),
-          [facts.pin_id, facts.kind, values, facts.max_age_ms, cover]), 9000);
+          [facts.pin_id, facts.kind, values, facts.max_age_ms, cover]);
+        result = cover === "off" ? await filling : await bounded(filling, 9000);
       } catch {
         result = "uncertain";
       }
