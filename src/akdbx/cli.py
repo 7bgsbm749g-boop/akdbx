@@ -23,7 +23,7 @@ from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
 from .local_https import is_loopback_origin, reload_certificate, start_local_unlock_server
 from .notifications import validate_webhook_url
-from . import capture_cli, card_cli, extension_host, identity_cli, pairing_cli, relay as relay_module, relay_cli, secret_cli
+from . import capture_cli, card_cli, extension_host, identity_cli, pairing_cli, relay as relay_module, relay_cli, secret_cli, sms_cli
 from . import browser_slots, page_url, setup_cli
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
 from .sink_helper import SinkError
@@ -273,6 +273,10 @@ def _request_timeout(payload: dict) -> int:
     slow = action in {'pin-card-target', 'pin-identity-target', 'list-password-frames'} or (
         action == 'pin-password-target' and ('frame_origin' in payload or payload.get('route') == 'extension'
                                              or payload.get('mode') == 'read'))
+    if action == 'sms-wait':
+        timeout = payload.get('timeout', 0)
+        return (timeout if type(timeout) is int and 0 <= timeout <= 300 else 0) + 10
+    slow = slow or action in {'pin-code-target', 'sms-add-source'}
     return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password', secret_cli.COMMAND, *capture_cli.COMMANDS) else 15 if slow else 5
 
 
@@ -372,6 +376,7 @@ def parser() -> argparse.ArgumentParser:
     extension_host.add_parser(commands)
     secret_cli.add_parser(commands)
     capture_cli.add_parsers(commands)
+    sms_cli.add_parsers(commands)
     relay_cli.add_parser(commands)
     setup_cli.add_parser(commands)
     start = commands.add_parser("serve", help="unlock a KDBX and run the local broker")
@@ -393,6 +398,9 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket. Linux saves a blocked unlock link beside this file when it is given, otherwise in ${XDG_STATE_HOME:-~/.local/state}/akdbx")
     start.add_argument('--secret-sinks', type=Path, default=os.environ.get('AKDBX_SECRET_SINKS'),
                        help='operator sink configuration for deliver-secret (root- or broker-owned, not group/other writable)')
+    start.add_argument('--sms-sources', type=Path,
+                       help='private file of SMS verification sources (names, kinds and webhook token hashes); '
+                            'default beside --notification-state, or in the per-user state folder')
     start.add_argument('--tls-cert', type=Path, help='trusted PEM certificate for the loopback HTTPS private page')
     start.add_argument('--tls-key', type=Path, help='private PEM certificate key (Linux: mode 0600; Windows: restrictive DACL)')
     start.add_argument('--local-port', type=int,
@@ -577,6 +585,23 @@ def default_unlock_block_state(socket_path: Path) -> Path:
     root = Path(base) if os.path.isabs(base) else Path.home() / '.local' / 'state'
     key = hashlib.sha256(os.fsencode(os.path.realpath(socket_path))).hexdigest()
     return root / 'akdbx' / f'unlock-blocked-{key}.json'
+
+
+def default_sms_sources(args, notification_state: Path | None = None) -> Path:
+    """Where the broker keeps its SMS sources (names, kinds, token hashes).
+
+    --sms-sources wins. Otherwise the file sits beside an explicit (or the
+    Windows) notification state, or, on Linux, in the persistent per-user
+    state folder keyed to the broker endpoint: the runtime folder that holds
+    the socket is cleared on reboot.
+    """
+    if getattr(args, 'sms_sources', None) is not None:
+        return args.sms_sources.expanduser()
+    explicit = args.notification_state.expanduser() if args.notification_state is not None else notification_state
+    if explicit is not None:
+        return Path(str(explicit) + '.sms-sources')
+    block = default_unlock_block_state(args.socket)
+    return block.with_name(block.name.replace('unlock-blocked-', 'sms-sources-', 1))
 
 
 def refuse_untrusted_unlock_block(broker) -> bool:
@@ -812,7 +837,8 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
                             password_browser_profile=args.password_browser_profile,
                             browser_profile_root=args.browser_profile_root,
                             notification_state_path=state, secret_sinks_path=args.secret_sinks,
-                            default_fill_route=args.default_fill_route)
+                            default_fill_route=args.default_fill_route,
+                            sms_sources_path=default_sms_sources(args, state))
         except SinkError as exc:
             print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
             return 2
@@ -855,9 +881,13 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
                             # An explicit --notification-state keeps the block beside it.
                             unlock_block_path=(None if args.notification_state
                                                else default_unlock_block_state(args.socket)),
-                            secret_sinks_path=args.secret_sinks, default_fill_route=args.default_fill_route)
+                            secret_sinks_path=args.secret_sinks, default_fill_route=args.default_fill_route,
+                            sms_sources_path=default_sms_sources(args))
         except SinkError as exc:
             print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
+            return 2
+        except (ValueError, OSError, RuntimeError):
+            print('could not open the private SMS source state; fix or move it, or use --sms-sources', file=sys.stderr)
             return 2
         if refuse_untrusted_unlock_block(broker):
             return 2
@@ -930,6 +960,9 @@ def _command(args) -> int:
     if args.command == secret_cli.COMMAND:
         return secret_cli.run(args, lambda payload, **kwargs: request(
             args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))
+    if args.command in sms_cli.COMMANDS:
+        return sms_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
+                                                      expected_unlock_origin=args.unlock_origin))
     if args.command in capture_cli.COMMANDS:
         return capture_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                           expected_unlock_origin=args.unlock_origin))

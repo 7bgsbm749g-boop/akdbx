@@ -42,6 +42,8 @@ from .extension_route import (ExtensionHub, ExtensionError, ExtensionPin, Routed
                               DELIVERY as EXTENSION_DELIVERY)
 from .identities import COMMANDS as IDENTITY_COMMANDS, IdentityManager, capabilities as identity_capabilities, is_identity
 from .secrets_capture import SecretCaptures, captured_fields, is_secret_record
+from . import sms as sms_module
+from .browser_code import BrowserCodes
 from .runtime import (
     acquire_lifecycle_lock,
     anchored_socket_path,
@@ -109,6 +111,7 @@ class Broker:
         secret_sinks_path=None,
         default_fill_route='cdp',
         browser_profile_root=None,
+        sms_sources_path=None,
     ) -> None:
         self.vault = vault
         self.typer = typer
@@ -137,6 +140,10 @@ class Broker:
             BrowserIdentities(password_browser_profile or card_browser_profile, clock=clock, slots=self.browser_slots),
             self.extension, 'identity')
         self.identities = IdentityManager(self)
+        # Phone verification texts: durable sources, codes in memory only.
+        self.sms = sms_module.SmsInbox(sms_sources_path, clock=clock, wall_clock=wall_clock)
+        self.code_targets = BrowserCodes(password_browser_profile or card_browser_profile, clock=clock,
+                                         slots=self.browser_slots)
         self.merges = create_merge_manager(self)
         self.secrets = SecretCaptures(self, secret_sinks_path)
         self.unlock_url: str | None = None
@@ -321,7 +328,8 @@ class Broker:
                 return {'ok': False, 'error': 'merge operation failed'}
             finally:
                 self._vault_lock.release()
-        if action in {'fill', 'fill-generated', 'fill-totp', 'fill-card', 'fill-identity', 'capture-secret'} and delivery_ready is None and 'start_deadline' not in request:
+        if (action in {'fill', 'fill-generated', 'fill-totp', 'fill-card', 'fill-identity', 'capture-secret', 'fill-sms-code'}
+                or action == 'sms-add-source' and 'target' in request) and delivery_ready is None and 'start_deadline' not in request:
             request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
         # Search and write operations observe a consistent vault/revision.
         if action in {"pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated", "add-url", "remove-url", "save-secret", "capture-secret", "create-card", "update-card", "search-cards", "pin-card-target", "fill-card"} | IDENTITY_COMMANDS:
@@ -351,7 +359,7 @@ class Broker:
                     **({"relay": self.relay.status()} if self.relay is not None else {}),
                     **({"active_origin": origin} if isinstance(origin, str) else {})}
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
+            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **self.secrets.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -405,6 +413,8 @@ class Broker:
             return self.cards.dispatch(request, delivery_ready)
         if action in IDENTITY_COMMANDS:
             return self.identities.dispatch(request, delivery_ready)
+        if action in sms_module.COMMANDS:
+            return sms_module.dispatch(self, request, delivery_ready)
         if action in {'merge', 'admit'}:
             return self.merges.begin(request)
         if action in {'add-url', 'remove-url'}:
