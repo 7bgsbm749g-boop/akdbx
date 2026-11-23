@@ -105,8 +105,7 @@ def _inbound(handler, state, token: str) -> None:
 
 
 SHORTCUT_STEPS = (
-    'Copy the webhook URL at the bottom of this page: tap the box, tap <strong>Select All</strong>, then '
-    '<strong>Copy</strong>.',
+    'Copy the webhook URL: tap the box at the bottom of this page.',
     'Open the <strong>Shortcuts</strong> app. Tap the <strong>Automation</strong> tab at the bottom of the screen '
     '(not the Shortcuts tab: a "New Shortcut" screen is the wrong place). Tap <strong>+</strong> at the top right, '
     'or <strong>New Automation</strong>.',
@@ -141,8 +140,15 @@ WEBHOOK_STEPS = (
 )
 
 
+def _copy_box(label: str, text: str) -> str:
+    """A tap-to-copy box: the portal script copies data-copy and shows a toast."""
+    quoted = html.escape(text, quote=True)
+    return (f'<button type="button" class="copy-field" data-copy="{quoted}" data-copy-toast="copy-toast">'
+            f'<span class="copy-label">{html.escape(label)}</span><span class="copy-text">{quoted}</span></button>'
+            '<p id="copy-toast" class="copy-toast" role="status" aria-live="polite" hidden></p>')
+
+
 def _setup(handler, state) -> None:
-    from .portal import field
     from .web_unlock import _page
     origin = getattr(state, 'origin', None)
     token = parse_qs(urlsplit(handler.path).query).get('token', [''])[0]
@@ -157,8 +163,7 @@ def _setup(handler, state) -> None:
     body = (f'<p>Set up the SMS source <strong>{html.escape(setup.source)}</strong>. Texts it forwards reach only '
             'this AKDBX broker. AKDBX keeps the verification code for ten minutes and never shows it to the agent.</p>'
             f'<ol>{items}</ol>'
-            + field('Webhook URL (keep it private)', 'webhook', kind='text', value=url, submitted=False,
-                    required=False)
+            + _copy_box('Webhook URL (keep it private). Tap to copy.', url)
             + f'<p>Anyone with this URL can send texts to AKDBX. This page closes in {SETUP_TTL // 60} minutes. '
               'Ask your agent to replace the source if the URL leaks.</p>')
     handler._send(HTTPStatus.OK, _page('Set up SMS verification', body))

@@ -346,6 +346,10 @@ def test_setup_page_shows_the_webhook_url_for_its_source_only(served):
     setup = broker.sms.setup(path.query.split('=', 1)[1])
     assert ('https://node.tailnet.ts.net/sms/in/' + setup.token).encode() in body
     assert b'Get Contents of URL' in body
+    # Tapping the box copies the URL: the portal script copies data-copy and shows a toast.
+    assert ('data-copy="https://node.tailnet.ts.net/sms/in/' + setup.token + '"').encode() in body
+    assert b'data-copy-toast="copy-toast"' in body and b'id="copy-toast"' in body
+    assert b'Link copied to clipboard' in body and b'navigator.clipboard.writeText' in body
     status, _, body = https(served.port, served.cert, 'GET', '/sms/setup?token=' + 'B' * 43, host=served.host)
     assert status == 404 and setup.token.encode() not in body
 
