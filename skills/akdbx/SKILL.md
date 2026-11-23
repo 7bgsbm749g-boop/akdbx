@@ -348,7 +348,8 @@ In one go: remove every trace of the refused attempt from the slot profile,
 restart its Chrome without the debugging port, use desktop (pixel) input only,
 and fill secrets only through the akdbx extension. If a home IP proxy is
 available, also send the slot's traffic through it (optional, recommended:
-datacenter IPs score worse). Follow
+datacenter IPs score worse; but if a check hangs on "Verifying…" through it,
+try once on the direct IP, see the reference). Follow
 [Agent desktop slot without DevTools](references/extension.md#agent-desktop-slot-without-devtools).
 The same limits apply: only the user's own account and data, no CAPTCHA
 solvers, and stop after two failed attempts with the full setup.

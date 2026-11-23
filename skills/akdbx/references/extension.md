@@ -454,6 +454,15 @@ guidance names them. Without such tools, use the user's everyday browser.
   closed: if the tunnel stops, Chrome must get no connection, never the
   datacenter IP. Without a home IP proxy, do all the other steps; a
   datacenter IP makes a pass less likely.
+- **Slow, hung or refused:** a home connection is often slow (seen: about
+  100 KB/s), so pages through the proxy can take 10-60 seconds. Measure it
+  before you judge a page. Content that still arrives is slow, not refused.
+  *Refused* means an explicit message ("blocked", "failed", "try again", an
+  error code): stop; it counts as an attempt. *Hung* means a check that still
+  shows "Verifying…" after 90 seconds with no message. Seen: Cloudflare hung
+  through a home IP proxy in every setup and passed at once on the direct IP,
+  while DataDome passed through the proxy. So on a hang with the proxy on,
+  remove the proxy and try once on the direct IP, with every other step kept.
 
 1. **Remove every trace of the blocked attempt first.** A refused attempt
    leaves the bot check's state in the slot profile: its cookie (for
