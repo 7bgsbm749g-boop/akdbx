@@ -52,10 +52,11 @@ Security model:
   (``CAPTURE_INFO``), so the host relays ciphertext in both directions.
 * A child frame's ``<iframe>`` owner is found with a nonce handshake between
   the parent's and the child's isolated worlds, then held by the CDP route's
-  owner guard and checked again before a value moves. Hit tests run with
-  ``pointer-events`` forced on in every document of the chain (a user-origin
-  style sheet and, in shadow roots, an adopted one), so a click-through cover
-  refuses as it does under CDP's ``DOM.getNodeForLocation``.
+  owner guard and checked again before a value moves.
+* Hit tests use ``elementFromPoint`` in the extension's isolated world. Unlike
+  CDP's ``DOM.getNodeForLocation`` it skips click-through covers
+  (``pointer-events: none``, ``inert``, a popover's ``::backdrop``), so only the
+  CDP route refuses a field under such a cover.
 * Pairing and unlock links open only on the origin that the extension trusts.
   The broker's ``attached`` and ``state`` messages carry its signed origin
   statement (``broker_identity``); the extension learns the signing key when it
@@ -945,8 +946,8 @@ class ExtensionHub:
         """Ask the browser to retain one element; return the browser facts and pin id.
 
         ``hardened``: the pin needs fill extension 0.4.0 or newer, which reads
-        secrets, holds child-frame owners and runs unmasked hit tests. An older
-        extension would pin without those checks, so it is refused.
+        secrets and holds child-frame owners. An older extension would pin a
+        child-frame login without the owner check, so it is refused.
         """
         self.prune()
         channels, tab_id = self._channels_for(request)
@@ -1086,7 +1087,7 @@ class ExtensionHub:
             raise ExtensionError()
         _secure(request['top_url'])
         spec = dict(selector=request['selector'], field=request['field'], processor=processor)
-        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, request.get('frame_url'), hardened=True)
+        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, request.get('frame_url'), hardened=False)
         try:
             if kind == 'card':
                 card_route(chain, processor)

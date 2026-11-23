@@ -74,7 +74,7 @@
     if (pins.size >= MAX_PINS) return null;
     if (kind === "read" && (typeof spec.selector !== "string" || spec.selector.length > MAX_READ_SELECTOR ||
         !READ_SELECTOR.test(spec.selector))) return null;
-    let state, el = null;
+    let state;
     try {
       if (kind === "password") {
         state = CAPTURE(spec.selector, spec.username_selector, spec.mode, frameURL, spec.password_purpose,
@@ -84,7 +84,6 @@
         // selection. The extension reads only in the top document.
         if (window !== window.top) return null;
         state = READ_CAPTURE(spec.selector, frameURL, null);
-        el = state && document.querySelector(spec.selector);
       } else if (kind === "card" || kind === "identity") {
         state = CARD_PIN(spec.selector, spec.field, frameURL, topURL, spec.processor || false, kind === "identity");
       }
@@ -92,22 +91,9 @@
       state = null;
     }
     if (!state) return null;
-    // The hit tests again, now with the shadow sheets and the inert-cover check.
-    // A processor field's parents are cross-origin: its merchant-side guard checks them.
-    const scope = kind === "card" && spec.processor ? [] : ancestors();
-    const ok = kind === "read" ? guarded(() => state.check(), el, [])
-      : kind === "card" || kind === "identity" ? scope && guarded(() => state.geometry(), state.node(), scope) : true;
-    if (!ok) {
-      try {
-        if (state.dispose) state.dispose();
-      } catch {
-        // Nothing to clean up.
-      }
-      return null;
-    }
     const id = randomId();
-    pins.set(id, {kind, mode: kind === "password" ? spec.mode : kind === "read" ? "read" : spec.field, state, el,
-      scope, created: performance.now()});
+    pins.set(id, {kind, mode: kind === "password" ? spec.mode : kind === "read" ? "read" : spec.field, state,
+      created: performance.now()});
     return id;
   }
 
@@ -115,7 +101,7 @@
     const item = pins.get(id);
     try {
       if (!item || item.kind === "password" || item.kind === "read") return null;
-      return guarded(() => item.state.geometry(), item.state.node(), item.scope);
+      return item.state.geometry();
     } catch {
       return null;
     }
@@ -150,8 +136,6 @@
         const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
         return PASSWORD_FILL.call(item.state, values.mode, values.username, values.password, deadline) ? "filled" : "refused";
       }
-      // No page code runs between this check and the fill: one synchronous task.
-      if (!guarded(() => item.state.geometry(), item.state.node(), item.scope)) return "refused";
       const state = item.state.fill(values.value, maxAgeMs);
       return state === "filled" || state === "refused" ? state : "uncertain";
     } catch {
@@ -176,7 +160,6 @@
     }
     try {
       const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
-      if (!guarded(() => item.state.check(), item.el, [])) return null;
       const value = READ.call(item.state, deadline);
       return typeof value === "string" ? value : null;
     } catch {
@@ -292,22 +275,7 @@
     }
   }
 
-  // ----- unmasked hit tests ------------------------------------------------
-  // CDP's DOM.getNodeForLocation hit-tests elements with pointer-events: none,
-  // so a click-through cover over a field refuses. elementFromPoint skips them.
-  // The service worker adds a user-origin style sheet that turns pointer-events
-  // back on in this document; user !important rules beat every author rule,
-  // inline !important included. That sheet does not reach shadow trees, so
-  // guarded() adopts the same rule into each open or closed shadow root of every
-  // checked document, checks them and runs the hit test in one synchronous task:
-  // no page code runs between the check and the test. A shadow element or
-  // pseudo-element that stays not hit-testable has an inline or more specific
-  // !important rule: a deliberate cover, and the check refuses.
-  const UNMASK_RULE = "*,*::before,*::after,*::backdrop{pointer-events:auto!important;interactivity:auto!important;" +
-    "transition-behavior:normal!important}";
-  const unhittable = style => style.pointerEvents === "none" || style.getPropertyValue("interactivity") === "inert";
-  const rendered = style => style.content !== "none" && style.content !== "normal";
-
+  // Every open or closed shadow root of a document, for the owner probe; null on a page too large to walk.
   function shadowRoots(doc = document) {
     const found = [];
     const pending = [doc];
@@ -324,83 +292,6 @@
       }
     }
     return found;
-  }
-
-  function shadowCovers(roots, view) {
-    for (const root of roots) {
-      for (const el of root.querySelectorAll("*")) {
-        if (unhittable(view.getComputedStyle(el)) && el.getClientRects().length) return true;
-        for (const pseudo of ["::before", "::after"]) {
-          const style = view.getComputedStyle(el, pseudo);
-          if (rendered(style) && unhittable(style)) return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  // Covers that no hit test sees, so the check refuses whenever one could paint:
-  // any rendered inert content (an inert element's box, overflow, pseudo-elements
-  // and slotted children all paint unseen by elementFromPoint), and any open
-  // top-layer element (popover, modal dialog, fullscreen) outside the checked
-  // element: its ::backdrop is never hit-tested, and a modal dialog makes the
-  // rest of its document inert. A page that marks its background inert, or has
-  // a popover open, refuses these pins; the CDP route fills there.
-  function unseenCovers(doc, roots, target) {
-    for (const root of [doc, ...roots]) {
-      for (const el of root.querySelectorAll("[inert]")) {
-        if (el.checkVisibility() || doc.defaultView.getComputedStyle(el).display === "contents") return true;
-      }
-      for (const el of root.querySelectorAll(":popover-open, :modal, :fullscreen")) {
-        if (!el.contains(target)) return true;
-      }
-    }
-    return false;
-  }
-
-  // The same-origin documents above this one, each with the frame element that
-  // holds the next one down, up to the top; null when one cannot be reached.
-  function ancestors() {
-    const hops = [];
-    for (let view = window; view !== view.top; view = view.parent) {
-      const frame = view.frameElement;
-      if (!frame || hops.length >= 16) return null;
-      hops.push({doc: frame.ownerDocument, target: frame});
-    }
-    return hops;
-  }
-
-  // Run one hit check with every cover visible to it, in this document and the
-  // given ancestor documents, in one synchronous task; returns its result or null.
-  function guarded(check, target, hops) {
-    if (!Array.isArray(hops)) return null;
-    const scope = [{doc: document, target}, ...hops];
-    const adopted = [];
-    try {
-      for (const hop of scope) {
-        const roots = shadowRoots(hop.doc);
-        if (roots === null) return null;
-        // A constructed sheet can be adopted only by the document whose window made it.
-        const sheet = new hop.doc.defaultView.CSSStyleSheet();
-        sheet.replaceSync(UNMASK_RULE);
-        for (const root of roots) {
-          root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
-          adopted.push([root, sheet]);
-        }
-        if (shadowCovers(roots, hop.doc.defaultView) || unseenCovers(hop.doc, roots, hop.target)) return null;
-      }
-      return check() || null;
-    } catch {
-      return null;
-    } finally {
-      for (const [root, sheet] of adopted) {
-        try {
-          root.adoptedStyleSheets = root.adoptedStyleSheets.filter(item => item !== sheet);
-        } catch {
-          // The root is gone.
-        }
-      }
-    }
   }
 
   // Processor frames: retain the merchant's iframe owner and check its chain.
@@ -423,7 +314,7 @@
   function guardCheck(id, point) {
     const item = guards.get(id);
     try {
-      return Boolean(item && point && guarded(() => item.state.check(point), item.frame, ancestors() || null));
+      return Boolean(item && point && item.state.check(point));
     } catch {
       return false;
     }

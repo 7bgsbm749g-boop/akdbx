@@ -417,48 +417,6 @@ async function processorCheck(tabId, chain, pinId, guardId) {
     (id, p) => globalThis.__akdbxContent.guardCheck(id, p), [guardId, point])) === true;
 }
 
-// ----- unmasked hit tests --------------------------------------------------
-// Like CDP's DOM.getNodeForLocation, a hit test must see elements with
-// pointer-events: none: a click-through cover over a field then refuses. While
-// a task runs, every document of the chain gets a user-origin style sheet that
-// turns pointer-events back on (user !important beats all author rules);
-// content.js guarded() adds the same rule to each shadow root in the same
-// synchronous task as each hit test. One task at a time.
-const UNMASK_CSS = "*,*::before,*::after,*::backdrop{pointer-events:auto!important;interactivity:auto!important;" +
-  "transition-behavior:normal!important}";
-// A page that never answers must not hold the queue: each step has a time limit.
-const UNMASK_TASK_MS = 9000, UNMASK_STEP_MS = 3000;
-let unmaskQueue = Promise.resolve();
-
-function bounded(promise, ms) {
-  let timer;
-  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), ms); })])
-    .finally(() => clearTimeout(timer));
-}
-
-function unmasked(tabId, chain, task) {
-  const next = unmaskQueue.then(() => unmaskedNow(tabId, chain, task));
-  unmaskQueue = next.catch(() => {});
-  return next;
-}
-
-async function unmaskedNow(tabId, chain, task) {
-  const target = {tabId, documentIds: chain.map(hop => hop.document_id)};
-  let started = false;
-  try {
-    // Remove the sheet in the end even if the insert itself timed out.
-    await bounded(chrome.scripting.insertCSS({target, css: UNMASK_CSS, origin: "USER"}), UNMASK_STEP_MS);
-    started = true;
-    return await bounded(task(), UNMASK_TASK_MS);
-  } catch (error) {
-    // A task that timed out may still change the field: the caller must say so.
-    if (started && error instanceof Error) error.started = true;
-    throw error;
-  } finally {
-    await bounded(chrome.scripting.removeCSS({target, css: UNMASK_CSS, origin: "USER"}), UNMASK_STEP_MS).catch(() => {});
-  }
-}
-
 // ----- child-frame owners --------------------------------------------------
 const ownerGuards = new Map();
 const OWNER_SETTLE_MS = 50, OWNER_WAIT_MS = 1500;
@@ -545,7 +503,6 @@ async function pin(message) {
     owners = await holdOwners(message.tab_id, chain);
     if (!owners || !(await ownersHold(message.tab_id, owners))) return {ok: false};
   }
-  const hit = message.kind !== "password";
   let pinId = null;
   try {
     await inject(message.tab_id, message.document_id);
@@ -555,7 +512,7 @@ async function pin(message) {
         [message.kind, spec, frameURL, message.top_url]);
       return id;
     };
-    pinId = hit ? await unmasked(message.tab_id, chain, capture) : await capture();
+    pinId = await capture();
   } catch {
     pinId = null;
   }
@@ -572,7 +529,7 @@ async function pin(message) {
       guardId = await run(message.tab_id, parent, (url, top, processor) => globalThis.__akdbxContent.guard(url, top, processor),
         [frameURL, message.top_url, spec.processor]);
       if (typeof guardId !== "string" ||
-          !(await unmasked(message.tab_id, chain, () => processorCheck(message.tab_id, chain, pinId, guardId)))) {
+          !(await processorCheck(message.tab_id, chain, pinId, guardId))) {
         throw new Error();
       }
     } catch {
@@ -621,8 +578,8 @@ async function read(message) {
     if (!chain) return {state: "refused"};
     let value;
     try {
-      value = chain.length !== 1 ? null : await unmasked(facts.tab_id, chain, () => run(facts.tab_id,
-        facts.document_id, (id, maxAge) => globalThis.__akdbxContent.read(id, maxAge), [facts.pin_id, facts.max_age_ms]));
+      value = chain.length !== 1 ? null : await run(facts.tab_id, facts.document_id,
+        (id, maxAge) => globalThis.__akdbxContent.read(id, maxAge), [facts.pin_id, facts.max_age_ms]);
     } catch {
       value = null;
     }
@@ -655,7 +612,6 @@ async function fill(message) {
       return {state: "refused"};
     }
     const guardId = processorGuards.get(facts.pin_id);
-    const hit = facts.kind === "card" || facts.kind === "identity";
     const deliver = async () => {
       if (facts.kind === "card" && guardId && !(await processorCheck(facts.tab_id, chain, facts.pin_id, guardId))) {
         return "refused";
@@ -670,10 +626,10 @@ async function fill(message) {
     };
     let result;
     try {
-      result = hit ? await unmasked(facts.tab_id, chain, deliver) : await deliver();
-    } catch (error) {
-      // Before the fill started nothing reached the field; after, a timeout is uncertain.
-      result = error && error.started ? "uncertain" : "refused";
+      result = await deliver();
+    } catch {
+      // Only the processor check can throw here, before the fill: nothing reached the field.
+      result = "refused";
     }
     if (result === "refused") await release({...message, tab_id: facts.tab_id, document_id: facts.document_id});
     return {state: result === "filled" || result === "refused" ? result : "uncertain"};

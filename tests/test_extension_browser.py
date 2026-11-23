@@ -90,22 +90,10 @@ LOGIN_FRAME = ('<!doctype html><meta charset="utf-8"><h1>Outer page</h1>'
                '</iframe>')
 PAGES = {
     '/secret': f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<p>Copy it now.</p><code id="secret" tabindex="0">{SECRET}</code>',
-    # A click-through cover: elementFromPoint ignores it, CDP's hit test does not.
-    '/secret-covered': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                        f'<div style="{COVER}"></div>'),
-    '/secret-covered-important': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}'
-                                  f'<code id="secret" tabindex="0">{SECRET}</code>'
-                                  f'<div style="{COVER} !important"></div>'),
-    # The same cover inside a closed shadow root: the user style sheet does not reach it.
-    '/secret-shadow-cover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                             '<div id="host"></div><script>host.attachShadow({mode: "closed"}).innerHTML = '
-                             f'`<div style="{COVER}"></div>`;</script>'),
-    '/secret-shadow-important': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                                 '<div id="host"></div><script>host.attachShadow({mode: "closed"}).innerHTML = '
-                                 f'`<div style="{COVER} !important"></div>`;</script>'),
-    '/card-covered': ('<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number" '
-                      f'style="width:200px;height:30px"></form><div style="{COVER}"></div>' + DIGEST),
-    # A floating label above, not over, the field centre: benign, both routes fill it.
+    # An opaque cover that takes pointer events: the extension's DOM hit test refuses it.
+    '/secret-opaque-cover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
+                             f'<div style="{COVER.replace(";pointer-events:none", "")}"></div>'),
+    # A floating label above, not over, the field centre: both routes fill it.
     '/card-label': ('<!doctype html><meta charset="utf-8"><form><div style="position:relative">'
                     '<input id="number" autocomplete="cc-number" style="width:220px;height:44px">'
                     '<label for="number" style="position:absolute;left:8px;top:2px;font-size:10px;pointer-events:none">'
@@ -113,63 +101,14 @@ PAGES = {
     '/framed-visible': LOGIN_FRAME.format(''),
     '/framed-hidden': LOGIN_FRAME.format('opacity:0'),
     '/decoy': '<!doctype html><meta charset="utf-8"><p>decoy</p>',
-    # Covers that elementFromPoint skips even with pointer-events on: the inert attribute, CSS
-    # interactivity, and a pseudo-element in a closed shadow root with a more specific !important rule.
-    '/secret-inert': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                      f'<div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'),
-    '/secret-interactivity': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                              f'<div style="{COVER.replace("pointer-events:none", "interactivity:inert !important")}"></div>'),
-    '/secret-shadow-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                              '<div id="host"></div><script>host.attachShadow({mode: "closed"}).innerHTML = '
-                              '`<style>#c::before{content:"";position:fixed;left:0;top:0;width:900px;height:300px;'
-                              'background:#fff;pointer-events:none !important}</style><div id="c"></div>`;</script>'),
-    '/card-inert': ('<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number" '
-                    f'style="width:200px;height:30px"></form><div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'
-                    + DIGEST),
-    # Inert covers: one styled only while inert, one in the top layer above a modal dialog (inert
-    # because the dialog is modal), and the same dialog without a cover, which reads.
-    '/secret-inert-styled': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>.c{{display:none}}'
-                             f'.c[inert]{{display:block;{COVER.replace(";pointer-events:none", "")}}}</style>'
-                             f'<code id="secret" tabindex="0">{SECRET}</code><div class="c" inert></div>'),
+    # A secret inside a modal dialog reads.
     '/secret-modal': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<dialog id="d"><code id="secret" tabindex="0">'
                       f'{SECRET}</code></dialog><script>d.showModal()</script>'),
-    '/secret-modal-cover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<dialog id="d"><code id="secret" tabindex="0">'
-                            f'{SECRET}</code></dialog><div id="p" popover style="position:fixed;inset:0;margin:0;width:100vw;'
-                            'height:100vh;border:0;background:#fff"></div><script>d.showModal(); p.showPopover()</script>'),
-    # Covers that paint outside the inert element's own box, and a popover's opaque ::backdrop.
-    '/secret-inert-text': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                           '<div inert style="position:fixed;left:0;top:0;width:0;height:0;font:600px/1 monospace;'
-                           'color:#fff">\u2588\u2588</div>'),
-    '/secret-inert-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#c{{position:fixed;left:0;top:0;'
-                             'width:0;height:0}}#c::before{{content:"";display:block;width:900px;height:300px;'
-                             f'background:#fff}}</style><code id="secret" tabindex="0">{SECRET}</code><div id="c" inert></div>'),
-    '/secret-inert-slot': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                           f'<div id="host"><div style="{COVER.replace(";pointer-events:none", "")}"></div></div>'
-                           '<script>host.attachShadow({mode: "closed"}).innerHTML = '
-                           "'<div inert style=\"display:contents\"><slot></slot></div>'</script>"),
-    '/secret-popover-backdrop': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#p::backdrop{{background:#fff}}'
-                                 f'</style><code id="secret" tabindex="0">{SECRET}</code><div id="p" popover="manual" '
-                                 'style="position:fixed;width:0;height:0;border:0;padding:0"></div>'
-                                 '<script>p.showPopover()</script>'),
-    # A card field in a same-origin child frame, with covers in the top page that only the
-    # top page's own checks can see: a click-through cover in a closed shadow root, and an inert one.
+    # A card field in a same-origin child frame.
     '/card-field': ('<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number" '
                     'style="width:200px;height:30px"></form>' + DIGEST),
     '/card-frame': ('<!doctype html><meta charset="utf-8"><iframe id="pay" src="/card-field" '
                     'style="width:400px;height:200px;border:0"></iframe>'),
-    '/card-frame-shadow': ('<!doctype html><meta charset="utf-8"><iframe id="pay" src="/card-field" '
-                           'style="width:400px;height:200px;border:0"></iframe><div id="host"></div>'
-                           '<script>host.attachShadow({mode: "closed"}).innerHTML = '
-                           f'`<div style="{COVER}"></div>`;</script>'),
-    '/card-frame-inert': ('<!doctype html><meta charset="utf-8"><iframe id="pay" src="/card-field" '
-                          'style="width:400px;height:200px;border:0"></iframe>'
-                          f'<div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'),
-    # The Stripe frame with an inert cover in the merchant page over only the number input.
-    '/checkout-inert': f'''<!doctype html><meta charset="utf-8"><h1>Merchant</h1>
-<iframe id="stripe" src="{STRIPE}" style="width:400px;height:200px;border:0"></iframe>
-<div inert id="cover" style="position:absolute;width:150px;height:20px;background:#fff"></div>
-<script>const box = stripe.getBoundingClientRect(); cover.style.left = (box.left + 2) + 'px';
-cover.style.top = (box.top + scrollY + 2) + 'px';</script>''',
     # A hidden middle frame in a closed shadow root (window.frames leaves it out) and a visible
     # about:blank decoy whose owner probe the page reads and forwards to the hidden frame.
     '/framed-shadow-decoy': '''<!doctype html><meta charset="utf-8"><h1>Outer page</h1>
@@ -745,21 +684,13 @@ def test_secret_capture_refuses_unfocused_selected_and_changed_secrets(harness):
     assert read_value(harness, pin) is None
 
 
-@pytest.mark.parametrize('page', ['/secret-covered', '/secret-covered-important', '/secret-shadow-cover',
-                                  '/secret-shadow-important', '/secret-inert', '/secret-interactivity',
-                                  '/secret-shadow-pseudo', '/secret-inert-styled', '/secret-modal-cover',
-                                  '/secret-inert-text', '/secret-inert-pseudo', '/secret-inert-slot',
-                                  '/secret-popover-backdrop'])
-def test_secret_capture_refuses_a_click_through_cover(harness, page):
+def test_secret_capture_refuses_an_opaque_cover(harness):
+    """The DOM hit test refuses an ordinary cover. A click-through one (pointer-events: none, inert, a popover
+    backdrop) only the CDP route's native hit test sees; the extension route documents that limit."""
     lab = harness.lab
-    url = lab.navigate(page)
+    url = lab.navigate('/secret-opaque-cover')
     harness.focus('secret')
     assert read_pin(harness, url) == failure()
-    # The page keeps its own styles: the unmasking ends with the check.
-    assert lab.evaluate("[...document.querySelectorAll('div')].every(d => getComputedStyle(d).pointerEvents === 'none' "
-                        "|| d.id === 'host' || d.id === 'c' || d.parentElement.id === 'host' || d.hasAttribute('inert') "
-                        "|| d.hasAttribute('popover') || getComputedStyle(d).interactivity === 'inert')")
-    assert lab.evaluate("[...document.querySelectorAll('div[inert]')].every(d => d.getAttribute('inert') === '')")
 
 
 def test_a_secret_in_a_modal_dialog_reads(harness):
@@ -778,10 +709,8 @@ def card_pin(harness, url):
                                         field='cc-number', route='extension'))
 
 
-def test_card_pins_refuse_a_click_through_cover_and_keep_a_floating_label(harness):
+def test_card_pins_keep_a_floating_label_and_refuse_a_cover_added_after_the_pin(harness):
     lab, broker = harness.lab, harness.broker
-    assert card_pin(harness, lab.navigate('/card-covered')) == card_failure()
-    assert card_pin(harness, lab.navigate('/card-inert')) == card_failure()
     target = card_pin(harness, lab.navigate('/card-label'))
     assert target['ok'], target
     handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
@@ -791,7 +720,7 @@ def test_card_pins_refuse_a_click_through_cover_and_keep_a_floating_label(harnes
     assert lab.digest('number') == sha(CARD['number'])
     # A cover added after the pin refuses the fill.
     target = card_pin(harness, lab.navigate('/card-label'))
-    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div style=\"{COVER}\"></div>')")
+    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div style=\"{COVER.replace(';pointer-events:none', '')}\"></div>')")
     handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
     assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
                                 field='cc-number')) == card_failure()
@@ -945,7 +874,7 @@ def framed_card_pin(harness, page):
                                      route='extension'))
 
 
-def test_a_card_in_a_same_origin_child_frame_needs_every_parent_clear(harness):
+def test_a_card_fills_in_a_same_origin_child_frame(harness):
     lab, broker = harness.lab, harness.broker
     url, target = framed_card_pin(harness, '/card-frame')
     assert target['ok'], target
@@ -953,19 +882,3 @@ def test_a_card_in_a_same_origin_child_frame_needs_every_parent_clear(harness):
     assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
                                 field='cc-number'))['ok']
     assert lab.evaluate("document.getElementById('pay').contentWindow.digest('number')", await_promise=True) == sha(CARD['number'])
-    for page in ('/card-frame-shadow', '/card-frame-inert'):
-        assert framed_card_pin(harness, page)[1] == card_failure(), page
-
-
-def test_a_processor_field_refuses_an_inert_cover_in_the_merchant_page(harness):
-    lab, broker = harness.lab, harness.broker
-    url = lab.navigate('/checkout-inert')
-    lab.wait("document.readyState === 'complete'")
-    session = harness.frame_session(STRIPE)
-    lab.observer.evaluate("document.getElementById('payment-numberInput').focus()", session)
-    frames = harness.frames(url)
-    stripe = {f['origin']: f for f in frames['frames']}['https://js.stripe.com']
-    target = broker.dispatch(dict(action='pin-card-target', card_protocol=1, page_id=frames['page_id'],
-                                  frame_id=stripe['frame_id'], top_url=url, selector='#payment-numberInput',
-                                  field='cc-number', route='extension', processor='stripe', processor_protocol=1))
-    assert target == card_failure()

@@ -211,8 +211,8 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   `capture_delivery: "extension-dom-read-v1"`.
   Without `--route`, a read pin takes the broker's default route when the
   broker advertises `extension_capture_protocol: 1`, else the CDP route.
-- Card, identity and read pins, and password pins in a child frame, need fill
-  extension 0.4.0 or newer; the broker refuses them from an older one. Build
+- Read pins and password pins in a child frame need fill extension 0.4.0 or
+  newer; the broker refuses them from an older one. Build
   the extension again and reload it. From 0.4.0 both sealing keys bind the
   version the extension reports, so a host that reports another version makes
   every sealed message fail.
@@ -271,25 +271,11 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   then gets the CDP route's owner guard (connected, visible, no `srcdoc`, safe
   `sandbox`, no attribute change), checked at pin and again before the fill or
   read.
-- Hit tests (0.32.0+): CDP's `DOM.getNodeForLocation` sees elements with
-  `pointer-events: none`; `elementFromPoint` skips them, so a click-through
-  cover could hide a field. While a card, identity or read check runs, every
-  document of the chain gets a user-origin style sheet that forces
-  `pointer-events: auto` (user `!important` beats every author rule, inline
-  `!important` too), and each open or closed shadow root gets the same rule as
-  an adopted sheet; both also force `interactivity: auto`. A shadow element or
-  pseudo-element that is still not hit-testable (an inline or more specific
-  `!important` rule) refuses. The shadow sheets, that check and the hit test
-  run in one synchronous task, in the field's document and in each same-origin
-  parent document (a processor frame's parents are checked by its merchant-side
-  guard). Some covers are seen by no hit test, so these pins refuse whenever one
-  could paint: any rendered `inert` content, and any open popover, modal dialog
-  or fullscreen element that does not hold the field (a `::backdrop` is never
-  hit-tested, and a modal dialog makes the rest of its document inert). A page
-  that marks its background `inert` or has a popover open therefore refuses
-  card, address and read pins on this route; the CDP route fills there. Both
-  sheets go when the check ends. A page with more than 50,000 elements refuses
-  these pins.
+- Hit tests: there is no browser-native hit test. The checks use
+  `elementFromPoint` in the isolated world, which skips click-through covers
+  (`pointer-events: none`, `inert` content, a popover's `::backdrop`); CDP's
+  `DOM.getNodeForLocation` sees them. Use the CDP route where a page may cover
+  a field.
 
 ## Setup
 

@@ -112,14 +112,13 @@ The same sign-in and card save worked first time through the extension in the
 user's own browser. The CDP route stays for setups without the extension.
 
 From 0.32.0 (fill extension 0.4.0) the extension route also captures
-shown-once secrets shown in the top document, and it closes the two checks it
-used to lack. A child
-frame's `<iframe>` owner is found with a nonce handshake and held by the CDP
-route's owner guard. Hit tests run with `pointer-events` forced on in every
-document of the frame chain, so a click-through cover refuses as it does under
-CDP's own hit test. Card, identity and read pins, and password pins in a child
-frame, then need fill extension 0.4.0; an older one is refused until it is
-built again.
+shown-once secrets shown in the top document, and it holds a child frame's
+`<iframe>` owner with the CDP route's owner guard (found with a nonce
+handshake). Read pins and password pins in a child frame then need fill
+extension 0.4.0; an older one is refused until it is built again. One check
+stays weaker: the extension has no browser-native hit test, so only the CDP
+route refuses a field under a click-through cover (`pointer-events: none`,
+`inert` or a popover backdrop).
 
 Native applications (username and TOTP fields outside a browser) use window
 pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
