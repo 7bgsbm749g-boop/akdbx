@@ -425,3 +425,6 @@ def test_setup_page_opens_the_steps_for_the_detected_ios_version(served, agent, 
     assert shown == [group.encode()] and len(hidden) == 2
     assert f'<option data-show="{group}" selected>'.encode() in body and body.count(b' selected>') == 1
     assert b'data-variant-select="ios-steps"' in body
+    # One step at a time: the portal script runs the wizard; without it every step shows.
+    assert body.count(b'<div class="wizard" data-wizard>') == 1 and b'<div class="wizard-nav" hidden>' in body
+    assert b'data-wizard-next' in body and b'function showStep(wizard, index)' in body

@@ -121,6 +121,19 @@ button:disabled { cursor: default; opacity: .4; }
 .variant-field { margin-top: 18px; }
 .setup-steps { padding-left: 22px; }
 .setup-steps li + li { margin-top: 14px; }
+.wizard.is-wizard .setup-steps { list-style: none; padding-left: 0; min-height: 120px; }
+.wizard.is-wizard .setup-steps li { font-size: 16px; line-height: 1.6; }
+.wizard.is-wizard .setup-steps li + li { margin-top: 0; }
+.wizard-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 18px 0; }
+.wizard-nav .wizard-count { grid-column: 1 / -1; margin: 0 0 4px; color: #ffffffa6; font-size: 12px; }
+.wizard-nav button { min-height: 52px; }
+.wizard-nav button.wizard-back { flex-direction: row-reverse; justify-content: flex-end; }
+.wizard-nav button.wizard-back::after { transform: rotate(-135deg); }
+.wizard-nav button.wizard-next {
+  grid-column: 2; color: #fff; border-color: #ffffff32; border-top-color: #ffffff52;
+  background: linear-gradient(165deg, #ffffff16, #ffffff06 52%, #ffffff0a), #08080880;
+  box-shadow: inset 0 1px 0 #ffffff07, 0 6px 16px #0005;
+}
 .variant-field + .field-hint { margin: 6px 0 12px; }
 button.copy-field {
   display: block; text-align: left; min-height: 0; padding: 13px 16px 12px; border: 1px solid #ffffff1a;
@@ -243,6 +256,30 @@ SCRIPT = r""""use strict";
     input.type = visible ? "text" : "password";
     button.setAttribute("aria-pressed", String(visible));
   });
+  // A wizard shows one step of its visible step list at a time. Without
+  // this script every step stays visible.
+  function showStep(wizard, index) {
+    const steps = Array.from(wizard.querySelectorAll("ol.setup-steps:not([hidden]) > li"));
+    const last = steps.length - 1;
+    index = Math.max(0, Math.min(index, last));
+    wizard.setAttribute("data-step", String(index));
+    steps.forEach((step, i) => { step.hidden = i !== index; });
+    wizard.querySelector(".wizard-count").textContent = "Step " + (index + 1) + " of " + steps.length;
+    wizard.querySelector("[data-wizard-back]").disabled = index === 0;
+    wizard.querySelector("[data-wizard-next]").hidden = index === last;
+  }
+  document.querySelectorAll("[data-wizard]").forEach(wizard => {
+    wizard.classList.add("is-wizard");
+    wizard.querySelector(".wizard-nav").hidden = false;
+    showStep(wizard, 0);
+  });
+  document.addEventListener("click", event => {
+    const button = event.target.closest("[data-wizard-next], [data-wizard-back]");
+    if (!button) return;
+    const wizard = button.closest("[data-wizard]");
+    const step = Number(wizard.getAttribute("data-step"));
+    showStep(wizard, button.hasAttribute("data-wizard-next") ? step + 1 : step - 1);
+  });
   // A version list shows only the step list of the chosen option. It reads
   // the option's data-show attribute, never an input.
   document.addEventListener("change", event => {
@@ -251,6 +288,7 @@ SCRIPT = r""""use strict";
     const chosen = list.selectedOptions[0]?.getAttribute("data-show");
     document.querySelectorAll('[data-variant-group="' + list.getAttribute("data-variant-select") + '"]')
       .forEach(steps => { steps.hidden = steps.getAttribute("data-variant") !== chosen; });
+    document.querySelectorAll("[data-wizard]").forEach(wizard => showStep(wizard, 0));
   });
   // A copy box carries its text in data-copy (the SMS webhook URL on its
   // private setup page). No input is read.
