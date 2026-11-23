@@ -132,6 +132,10 @@ it on asks the browser for the `<all_urls>` permission; the check needs a
 rendered, active tab and can refuse a safe page. See
 [the extension route](skills/akdbx/references/extension.md).
 
+From 0.35.0 (fill extension 0.6.0) read pins on both routes also accept an
+authenticator setup key printed in space-separated Base32 groups, for
+`capture-totp`. `capture-secret` still refuses any value with a space.
+
 Native applications (username and TOTP fields outside a browser) use window
 pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
 
@@ -728,6 +732,31 @@ passkeys, recovery checks or organization-specific device requirements.
 
 Algorithm references: [RFC 6238](https://www.rfc-editor.org/rfc/rfc6238) and
 [Google's Key URI format](https://github.com/google/google-authenticator/wiki/Key-Uri-Format).
+
+### Automatic enrollment (0.35.0)
+
+When the user authorizes adding an authenticator app to a website account (for
+example GitHub's two-factor setup), the agent can enroll it with no private
+page and no user step. The broker reads the setup key from the site's page
+through a single-use read pin, the same route as
+[secret capture](skills/akdbx/references/secret-capture.md):
+
+```bash
+akdbx pin-password-target --mode read --page-id PAGE --frame-id FRAME --top-url URL --selector '#setup-key'
+akdbx capture-totp --target TARGET --handle HANDLE --title T --username U --url URL --group G
+akdbx fill-totp HANDLE --pending --target-url URL --target X11_PIN   # the site's "verify the code" field
+akdbx commit-totp --handle HANDLE --site-accepted --title T --username U --url URL --group G
+```
+
+`capture-totp` saves the key as the entry's pending authenticator (a protected
+`akdbx.pending-otp` field); the entry's `otp` field does not change until
+`commit-totp --site-accepted`, so a failed or repeated enrollment never removes
+an existing authenticator. An existing `otp` needs `--replace` and stays in the
+entry history; `commit-totp --discard` removes a pending key. The page must be
+on the entry's origin, and the value must be a supported Base32 key (one token
+or space-separated groups) or `otpauth://totp/` URI. Search shows
+`totp_pending: true` while a key is pending. Require `totp_capture_protocol: 1`.
+Details: [automatic authenticator enrollment](skills/akdbx/references/totp-enrollment.md).
 
 ## Encrypted vault merge (0.8.0)
 

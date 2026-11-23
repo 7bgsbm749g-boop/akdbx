@@ -82,6 +82,7 @@ async function digest(id) {
 }
 </script>'''
 SECRET = 'SynthCapture-0123456789abcdefOnly'
+GROUPED_KEY = 'jbsw y3dp ehpk 3pxp jbsw y3dp ehpk 3pxp'  # A synthetic Base32 setup key.
 SECRET_STYLE = '<style>body{margin:0}code,input{display:block;margin:4px;font:16px monospace}</style>'
 COVER = 'position:fixed;left:0;top:0;width:900px;height:300px;background:#fff;pointer-events:none'
 FULL = 'position:fixed;inset:0;margin:0;width:100vw;height:100vh;border:0;background:#fff'
@@ -91,6 +92,9 @@ LOGIN_FRAME = ('<!doctype html><meta charset="utf-8"><h1>Outer page</h1>'
                '</iframe>')
 PAGES = {
     '/secret': f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<p>Copy it now.</p><code id="secret" tabindex="0">{SECRET}</code>',
+    # An authenticator setup key printed in groups, and prose that has only Base32 letters.
+    '/totp-grouped': f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{GROUPED_KEY}</code>',
+    '/totp-prose': f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">you will not see this again</code>',
     # A click-through cover: elementFromPoint ignores it, CDP's hit test does not.
     # An opaque cover that takes pointer events: the DOM hit test refuses it, with enhanced security off too.
     '/secret-opaque-cover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
@@ -1356,3 +1360,16 @@ def test_a_processor_field_fills_when_a_merchant_element_overlaps_another_part_o
     assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
                                 field='cc-number')) == card_failure()
     assert lab.observer.evaluate("digest('payment-numberInput')", session, await_promise=True) == EMPTY
+
+
+def test_a_grouped_authenticator_setup_key_reads_and_prose_refuses(harness):
+    """capture-totp reads a setup key printed in groups; other spaced text still refuses at the pin."""
+    lab = harness.lab
+    url = lab.navigate('/totp-grouped')
+    harness.focus('secret')
+    pin = read_pin(harness, url)
+    assert pin['ok'], pin
+    assert read_value(harness, pin) == sha(GROUPED_KEY)
+    url = lab.navigate('/totp-prose')
+    harness.focus('secret')
+    assert read_pin(harness, url) == failure()

@@ -243,6 +243,10 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   `capture_delivery: "extension-dom-read-v1"`.
   Without `--route`, a read pin takes the broker's default route when the
   broker advertises `extension_capture_protocol: 1`, else the CDP route.
+- Authenticator enrollment (0.35.0+): the same read pin feeds `capture-totp`
+  ([automatic enrollment](totp-enrollment.md)). Fill extension 0.6.0 also reads
+  a setup key printed in space-separated Base32 groups; 0.5.0 and older read
+  only a key printed as one token.
 - Read pins and password pins in a child frame need fill extension 0.4.0 or
   newer; the broker refuses them from an older one. Build
   the extension again and reload it. From 0.4.0 both sealing keys bind the

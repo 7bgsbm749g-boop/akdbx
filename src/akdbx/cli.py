@@ -422,7 +422,7 @@ def parser() -> argparse.ArgumentParser:
     password_pin.add_argument('--frame-origin', help='exact HTTPS origin of the child frame named by --frame-id (from list-password-frames); '
                               'the saved credential must match this origin; requires broker password_frame_protocol 1')
     password_pin.add_argument('--mode', choices=('password', 'username', 'login', 'read'), default='password',
-                              help='read pins a focused element that shows a secret, for capture-secret; never select its text')
+                              help='read pins a focused element that shows a secret, for capture-secret or capture-totp; never select its text')
     password_pin.add_argument('--username-selector', help='required in login mode; no Tab traversal')
     password_pin.add_argument('--password-purpose', choices=('current-password', 'new-password'),
                               help='explicitly verified purpose for password-only fields with absent or on autocomplete')
@@ -479,6 +479,8 @@ def parser() -> argparse.ArgumentParser:
     totp = commands.add_parser('fill-totp', help='generate and directly fill a saved TOTP code; returns no key or code')
     totp.add_argument('handle', help='fresh selected-entry handle from search')
     totp.add_argument('--target-url', required=True, help='independently verified HTTPS challenge URL; must match the entry origin')
+    totp.add_argument('--pending', action='store_true',
+                      help='fill a code of the pending authenticator that capture-totp saved, to confirm a website enrollment')
     for command in (fill, generated, totp):
         command.add_argument('--target', required=True, help='fresh single-use pin-target token; no global fallback')
     commands.add_parser("status", help="check broker status")
@@ -1017,6 +1019,8 @@ def _command(args) -> int:
             payload['site_accepted'] = args.site_accepted
     elif args.command in {'fill-generated', 'fill-totp'}:
         payload.update(handle=args.handle, target_url=args.target_url, start_deadline=time.monotonic() + FILL_START_TIMEOUT)
+        if args.command == 'fill-totp' and args.pending:
+            payload['pending'] = True
     elif args.command == "fill":
         payload.update(
             handle=args.handle,
@@ -1079,6 +1083,10 @@ def _command(args) -> int:
             if (capabilities.get('ok') is not True or capabilities.get('totp_supported') is not True
                     or type(capabilities.get('totp_protocol')) is not int or capabilities.get('totp_protocol') != 1):
                 print(json.dumps({'ok': False, 'error': 'broker lacks TOTP protocol 1; require broker 0.10.0 or newer; TOTP request not sent'}))
+                return 1
+            if args.command == 'fill-totp' and args.pending and (
+                    type(capabilities.get('totp_capture_protocol')) is not int or capabilities['totp_capture_protocol'] != 1):
+                print(json.dumps({'ok': False, 'error': 'broker lacks authenticator capture protocol 1; require broker 0.35.0 or newer; TOTP request not sent'}))
                 return 1
         if args.command == 'generate-entry':
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,

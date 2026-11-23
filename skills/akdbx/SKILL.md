@@ -22,6 +22,7 @@ session.
 | Fill or save a payment card | [Cards](references/cards.md), [card-save notifications](references/card-save-notifications.md) |
 | Fill or save an address or contact | [Identities](references/identities.md) |
 | Authenticator (TOTP) code | [TOTP](references/totp.md), [private key import](references/private-import.md) |
+| Add an authenticator app to a website account (enrollment, such as GitHub 2FA) | [Automatic authenticator enrollment](references/totp-enrollment.md) |
 | Create or change a password, save SSO/email-code accounts, add an origin, store a key file | [Password writes](references/password-writes.md) |
 | Capture a secret a site shows once | [Secret capture](references/secret-capture.md) |
 | Vault locked: wait for unlock | [Unlock notifications](references/unlock-notifications.md) |
@@ -410,6 +411,8 @@ Entry flags in search results:
   one-time code. Use the emailed-code workflow below. Never save the code or
   invent a password.
 - `totp_configured: true`: the entry has an authenticator key.
+- `totp_pending: true`: `capture-totp` saved a new key that `commit-totp` has
+  not yet made the entry's authenticator (an enrollment is in progress).
 - `additional_urls`: extra exact HTTPS origins (KeePassXC "Additional URLs",
   `KP2A_URL*` fields) where this credential may fill, besides the main URL.
 
@@ -501,8 +504,11 @@ do anything else.
 has `totp_configured: true`, fill it with `fill-totp` instead of asking for a
 phone approval. Use a fresh handle, a verified HTTPS challenge URL and a fresh
 pin. Codes and keys never appear in output. If the key is missing, the user
-imports it once through `setup-totp`'s private page. Never reset or replace a
-site's 2FA just to finish a login. Push approvals, SMS, passkeys and device
+imports it once through `setup-totp`'s private page. When the task authorizes
+adding an authenticator app to the account, enroll it yourself with
+`capture-totp` (0.35.0+): the broker reads the setup key from the site's
+enrollment page; see [automatic enrollment](references/totp-enrollment.md).
+Never reset or replace a site's 2FA just to finish a login. Push approvals, SMS, passkeys and device
 checks can still need the user. Details: [TOTP](references/totp.md) and
 [private key import](references/private-import.md).
 
