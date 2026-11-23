@@ -120,9 +120,9 @@ extension 0.4.0; an older one is refused until it is built again.
 From 0.33.0 (fill extension 0.5.0) card, address and read pins on the extension
 route also refuse a field or secret under any cover, click-through and inert
 ones included. The browser's own occlusion test (`IntersectionObserver` v2)
-decides first; when it reports an overlap, a pixel check paints the field in a
-random colour for about a tenth of a second and a tab screenshot must show that
-colour. This needs the `<all_urls>` host permission and a rendered, active tab.
+decides too, and a pixel check paints the field in a random colour for about a
+tenth of a second and a tab screenshot must show that colour (one check at each
+pin and each fill). This needs the `<all_urls>` host permission and a rendered, active tab.
 See [the extension route](skills/akdbx/references/extension.md).
 
 Native applications (username and TOTP fields outside a browser) use window

@@ -427,7 +427,7 @@ async function processorCheck(tabId, chain, pinId, guardId) {
 // the pinned element in a random colour for a moment, and a screenshot of the tab
 // must show that colour at the checked points. Whatever covers a point, in any
 // document, in the top layer or in a parent frame, changes its pixels.
-const STEP_MS = 3000, CAPTURE_GAP_MS = 550, COLOUR_TOLERANCE = 2;
+const STEP_MS = 3000, CAPTURE_GAP_MS = 550, COLOUR_TOLERANCE = 2, MAX_CHALLENGE_POINTS = 600;
 // The screenshot API allows two calls each second: one challenge at a time, spaced.
 let challengeQueue = Promise.resolve();
 let lastCapture = 0;
@@ -438,17 +438,18 @@ function bounded(promise, ms) {
     .finally(() => clearTimeout(timer));
 }
 
-// "clear": nothing overlaps the element. "pixels": something overlaps its box, but
-// the checked points show the element. "both": both proofs. null: covered, or no proof.
-// A read always needs the pixels (`always`): text hidden under its own element's
-// ::before or ::after is not occluded for any hit test, CDP's too, but the
-// screenshot then shows the pseudo-element, not the challenge colour.
-async function seen(tabId, chain, pinId, guardId, always = false) {
+// "pixels": the checked points show the element, though something overlaps its
+// box. "both": the occlusion test is also clear. null: covered, or no proof.
+// Every card, address and read check takes the pixels: the occlusion test misses
+// paint that the element's own ancestors draw over it (a negative-offset outline,
+// also over a processor iframe), and text hidden under its own element's
+// ::before or ::after is not occluded for any hit test, CDP's too.
+async function seen(tabId, chain, pinId, guardId) {
   const documentId = chain[chain.length - 1].document_id;
   try {
     const clear = (await bounded(run(tabId, documentId, id => globalThis.__akdbxContent.clear(id), [pinId]), STEP_MS)) === true;
-    if (clear && !always) return "clear";
-    const next = challengeQueue.then(() => challenge(tabId, chain, pinId, guardId));
+    // A page that stops answering cannot hold the queue for other tabs.
+    const next = challengeQueue.then(() => bounded(challenge(tabId, chain, pinId, guardId), 8 * STEP_MS));
     challengeQueue = next.catch(() => {});
     if ((await next) !== true) return null;
     return clear ? "both" : "pixels";
@@ -463,36 +464,44 @@ function randomColour() {
 }
 
 // Paint the whole padding box and the text in one colour, at once, whatever the page says.
-function challengeCSS(path, colour) {
+function challengeCSS(path, colour, outlineColour) {
   const paint = `color:${colour}!important;-webkit-text-fill-color:${colour}!important;-webkit-text-stroke-color:${colour}!important;` +
     `text-decoration-color:${colour}!important;text-shadow:none!important;`;
+  // An outline paints over the content: give it another colour, so one over a checked point refuses.
   return `${path}{box-shadow:inset 0 0 0 9999px ${colour}!important;caret-color:${colour}!important;` + paint +
+    `outline-color:${outlineColour}!important;` +
     `transition:none!important;forced-color-adjust:none!important}` +
     `${path}::placeholder{${paint}opacity:1!important}${path}::selection{${paint}background-color:${colour}!important}`;
 }
 
 async function challenge(tabId, chain, pinId, guardId) {
   const documentId = chain[chain.length - 1].document_id;
-  const spec = await run(tabId, documentId, id => globalThis.__akdbxContent.challengeSpec(id), [pinId]);
-  if (!spec || typeof spec.path !== "string" || !/^:root(?:>:nth-child\([0-9]{1,6}\)){1,64}$/.test(spec.path)) return false;
-  let placed = spec;
-  if (spec.local) {
-    // A processor frame: the merchant-side guard maps the point into the top viewport.
-    if (!guardId || chain.length < 2) return false;
-    placed = await run(tabId, chain[chain.length - 2].document_id,
-      (id, point) => globalThis.__akdbxContent.guardPoint(id, point), [guardId, spec.local]);
-  }
+  // Where the element is now, in the top viewport; a processor frame's point is
+  // mapped by the merchant-side guard.
+  const locate = async () => {
+    const spec = await bounded(run(tabId, documentId, id => globalThis.__akdbxContent.challengeSpec(id), [pinId]), STEP_MS);
+    if (!spec || typeof spec.path !== "string" || !/^:root(?:>:nth-child\([0-9]{1,6}\)){1,64}$/.test(spec.path)) return null;
+    if (!spec.local) return {spec, placed: spec};
+    if (!guardId || chain.length < 2) return null;
+    const placed = await bounded(run(tabId, chain[chain.length - 2].document_id,
+      (id, point) => globalThis.__akdbxContent.guardPoint(id, point), [guardId, spec.local]), STEP_MS);
+    return {spec, placed};
+  };
+  const found = await locate();
+  if (!found) return false;
+  const {spec, placed} = found;
   const finite = value => typeof value === "number" && Number.isFinite(value);
-  if (!placed || !Array.isArray(placed.points) || !placed.points.length || placed.points.length > 48 ||
+  if (!placed || !Array.isArray(placed.points) || !placed.points.length || placed.points.length > MAX_CHALLENGE_POINTS ||
       !placed.points.every(point => Array.isArray(point) && point.length === 2 && point.every(finite)) ||
       !Array.isArray(placed.view) || placed.view.length !== 2 || !placed.view.every(value => finite(value) && value > 0)) {
     return false;
   }
-  const tab = await chrome.tabs.get(tabId);
+  const tab = await bounded(chrome.tabs.get(tabId), STEP_MS);
   if (!tab || !tab.active) return false;
   const rgb = randomColour();
   const colour = `rgb(${rgb.join(", ")})`;
-  const css = challengeCSS(spec.path, colour);
+  // The outline colour differs from the challenge colour in every channel.
+  const css = challengeCSS(spec.path, colour, `rgb(${rgb.map(c => 255 - c).join(", ")})`);
   const target = {tabId, documentIds: [documentId]};
   try {
     await bounded(chrome.scripting.insertCSS({target, css, origin: "USER"}), STEP_MS);
@@ -504,9 +513,14 @@ async function challenge(tabId, chain, pinId, guardId) {
       lastCapture = Date.now();
       const image = await bounded(chrome.tabs.captureVisibleTab(tab.windowId, {format: "png"}), STEP_MS);
       // The colour in the screenshot counts only if the rule was on the pinned element, still valid, at that time.
-      const held = await run(tabId, documentId, (id, path, value) => globalThis.__akdbxContent.challengeHeld(id, path, value),
-        [pinId, spec.path, colour]);
+      const held = await bounded(run(tabId, documentId,
+        (id, path, value) => globalThis.__akdbxContent.challengeHeld(id, path, value), [pinId, spec.path, colour]), STEP_MS);
       if (held !== true) return false;
+      // The points must still be where the element is: a layout shift while the
+      // screenshot was taken makes the old points meaningless.
+      const again = await locate();
+      if (!again || again.spec.path !== spec.path ||
+          JSON.stringify([again.placed.points, again.placed.view]) !== JSON.stringify([placed.points, placed.view])) return false;
       if (await shows(image, placed.points, placed.view, rgb)) return true;
     }
     return false;
@@ -674,7 +688,7 @@ async function pin(message) {
     processorGuards.set(pinId, guardId);
   }
   // Nothing may be painted over the field or the secret (see seen()).
-  if (hit && !(await seen(message.tab_id, chain, pinId, processorGuards.get(pinId), message.kind === "read"))) {
+  if (hit && !(await seen(message.tab_id, chain, pinId, processorGuards.get(pinId)))) {
     await release({tab_id: message.tab_id, document_id: message.document_id, pin_id: pinId, chain});
     await releaseOwners(message.tab_id, owners);
     return {ok: false};
@@ -720,7 +734,7 @@ async function read(message) {
     let value;
     try {
       // With "both", content.js still runs its own fresh occlusion test in the task of the read.
-      const how = chain.length !== 1 ? null : await seen(facts.tab_id, chain, facts.pin_id, null, true);
+      const how = chain.length !== 1 ? null : await seen(facts.tab_id, chain, facts.pin_id, null);
       value = !how ? null : await bounded(run(facts.tab_id, facts.document_id,
         (id, maxAge, proven) => globalThis.__akdbxContent.read(id, maxAge, proven),
         [facts.pin_id, facts.max_age_ms, how === "pixels"]), STEP_MS);

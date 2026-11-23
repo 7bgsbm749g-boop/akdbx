@@ -319,10 +319,12 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
      "not visible". Opacity below 1, a filter or a distorting transform on the
      element's chain give the same answer. The fill or read runs in the task
      that delivers a fresh "visible" answer. The test needs a rendered tab.
-  2. The pixel challenge, only when step 1 says "not visible" (and always for a
-     read). Step 1 is all-or-nothing for the whole box: a floating label, an
-     icon in the field, an element over another part of a processor frame, or
-     the transparent `::backdrop` of a cookie popover elsewhere also fail it.
+  2. The pixel challenge, for every card, address and read check. Step 1 does
+     not count paint that the element's own ancestors draw over it (a
+     negative-offset outline, also around a processor iframe), and it is
+     all-or-nothing for the whole box: a floating label, an icon in the field,
+     an element over another part of a processor frame, or the transparent
+     `::backdrop` of a cookie popover elsewhere also fail it.
      The service worker then adds one user-origin rule (it beats every author
      rule) that paints only the pinned element in a random colour, takes a
      screenshot of the tab (`tabs.captureVisibleTab`), removes the rule, and
@@ -331,13 +333,17 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
      of any kind, in any document or frame, changes those pixels, so the pin
      refuses; a see-through veil also refuses. The field shows the colour for
      about a tenth of a second. The screenshot stays in the service worker and
-     is dropped after the check. A read always takes this step because text
-     hidden under its own element's `::before` or `::after` is not occluded
-     for any hit test, CDP's too.
+     is dropped after the check. The element's own outline gets another colour,
+     so one drawn over its content refuses; a secret element that draws its own
+     `::before`, `::after` or list marker refuses, because that content would
+     take the challenge colour. After the screenshot the points are measured
+     again; a layout shift refuses.
   Costs and limits: `tabs.captureVisibleTab` needs the `<all_urls>` host
   permission (the same install warning as `https://*/*`) and allows two
   screenshots each second, so challenges run one at a time, about half a
-  second apart. The tab must be the active tab of a window that renders.
+  second apart: each card or address field costs one challenge at its pin and
+  one at its fill. Colours are compared exactly; on a colour-managed display a
+  mismatch refuses (it never fills). The tab must be the active tab of a window that renders.
   Only a script that can read the field's own document can copy the colour
   onto a cover in time, and such a script can read the filled value anyway;
   a parent page cannot see the colour in a cross-origin processor frame. A

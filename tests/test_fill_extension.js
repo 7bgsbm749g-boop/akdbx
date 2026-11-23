@@ -183,7 +183,7 @@ test("agent fill refuses a pin whose field spec differs from the sealed one", as
   const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
   exports.setSealKey(key);
   const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
-  chrome.tabs.get = async () => ({id: 7, url: chain[0].url});
+  chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active: true, windowId: 1});
   chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
   const scripts = [];
   chrome.scripting.executeScript = async details => {
@@ -310,7 +310,7 @@ test("released pins do not evict a live pin's spec record", async () => {
   const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
   exports.setSealKey(key);
   const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
-  chrome.tabs.get = async () => ({id: 7, url: chain[0].url});
+  chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active: true, windowId: 1});
   chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
   let next = 0;
   chrome.scripting.executeScript = async details => {
@@ -366,14 +366,21 @@ async function coveredFill({clear, shown = null, active = true}) {
   return {pinned, result, screen, fills: calls.filter(([source]) => source.includes(".fill("))};
 }
 
-test("a clear occlusion test fills with no screenshot and no challenge rule", async () => {
+test("a clear occlusion test still takes the pixel challenge, and the fill runs its own occlusion test", async () => {
+  // An ancestor's outline over the field is no occluder for the occlusion test: the pixels decide too.
   const {pinned, result, screen, fills} = await coveredFill({clear: true});
   assert.equal(pinned.ok, true);
   assert.equal(result.state, "filled");
-  assert.equal(screen.captures, 0);
-  assert.equal(screen.css.length, 0);
-  // content.js runs its own fresh occlusion test in the fill: not proven by pixels.
+  assert.equal(screen.captures, 2);  // One challenge at the pin, one at the fill.
+  assert.equal(screen.css.length, 2);
+  // Both proofs held: content.js runs its own fresh occlusion test in the fill, not only the pixels.
   assert.equal(fills[0][1][4], false);
+});
+
+test("a clear occlusion test with a covered screenshot refuses", async () => {
+  const {pinned, screen} = await coveredFill({clear: true, shown: [255, 255, 255]});
+  assert.equal(pinned.ok, false);
+  assert.equal(screen.removed.length, 1);
 });
 
 test("an overlapped field fills only when the screenshot shows the challenge colour, and the rule is removed", async () => {

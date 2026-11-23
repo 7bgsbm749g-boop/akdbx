@@ -330,7 +330,7 @@
   //    rule paints this one element in a random colour for a moment, and a
   //    screenshot of the tab must show that colour at the checked points. Only
   //    this element can show it there, and only if nothing is painted over it.
-  const OCCLUSION_MS = 400, PAINT_MS = 1000, MAX_POINTS = 48;
+  const OCCLUSION_MS = 400, PAINT_MS = 1000, MAX_POINTS = 600;
 
   // The same-origin documents above this one, each with the frame element that
   // holds the next one down, up to the top; null when one cannot be reached.
@@ -425,6 +425,14 @@
     return points;
   }
 
+  function ownPaint(el) {
+    if (getComputedStyle(el).display.includes("list-item")) return true;
+    return ["::before", "::after"].some(pseudo => {
+      const content = getComputedStyle(el, pseudo).content;
+      return content !== "none" && content !== "normal";
+    });
+  }
+
   // What the service worker needs for a pixel challenge: the element's selector
   // and the points to look at, in the top document's viewport. A processor frame
   // cannot see its parents: it gives its own point, and the merchant-side guard
@@ -436,6 +444,10 @@
       const path = pathTo(pinned(item));
       if (!path) return null;
       if (item.kind === "read") {
+        // Generated content of the element itself inherits the challenge colour, so
+        // the pixels could not tell it from the text: a secret element that draws a
+        // ::before, ::after or list marker refuses.
+        if (ownPaint(item.el)) return null;
         const points = item.state.check() && textPoints(item.el);
         return points ? {path, points, view: [innerWidth, innerHeight]} : null;
       }

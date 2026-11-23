@@ -189,6 +189,20 @@ PAGES = {
     '/secret-own-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret{{position:relative}}'
                            '#secret::after{content:"";position:absolute;inset:0;background:#fff}</style>'
                            f'<code id="secret" tabindex="0">{SECRET}</code>'),
+    # Paint that a hit test does not see as a cover: the secret element's own ::after painted in
+    # currentColor (it would take the challenge colour), and its own outline drawn over its text.
+    '/secret-own-pseudo-currentcolor': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret{{position:relative}}'
+                                        '#secret::after{content:"";position:absolute;inset:0;background:currentColor}</style>'
+                                        f'<code id="secret" tabindex="0">{SECRET}</code>'),
+    '/secret-own-outline': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret{{outline:40px solid '
+                            f'currentColor;outline-offset:-40px}}</style><code id="secret" tabindex="0">{SECRET}</code>'),
+    # A long token that wraps over many lines in a narrow box: visible, so it reads.
+    '/secret-wrapped': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0" '
+                        'style="width:190px;overflow-wrap:anywhere">' + 'Synth' + 'abcdefghij' * 40 + '</code>'),
+    # An ancestor's negative-offset outline over the field, and over the whole Stripe frame.
+    '/card-outline': ('<!doctype html><meta charset="utf-8"><div style="width:240px;height:60px;outline:60px solid #fff;'
+                      'outline-offset:-60px"><form><input id="number" autocomplete="cc-number" '
+                      'style="width:200px;height:30px"></form></div>' + DIGEST),
     # Benign pages that the selector rules refused: a cookie popover elsewhere on the page (its
     # transparent ::backdrop spans the viewport), an inert background behind a dialog that holds the
     # secret or the field, a copy button over a corner of the secret's box, and a transparent
@@ -239,6 +253,9 @@ chip.style.top = (box.bottom + scrollY - 30) + 'px';</script>''',
 <div inert id="cover" style="position:absolute;width:150px;height:30px;background:#fff"></div>
 <script>const box = stripe.getBoundingClientRect(); cover.style.left = (box.left + 2) + 'px';
 cover.style.top = (box.top + scrollY + 2) + 'px';</script>''',
+    '/checkout-outline': f'''<!doctype html><meta charset="utf-8"><h1>Merchant</h1>
+<div style="width:400px;height:200px;outline:200px solid #f00;outline-offset:-200px">
+<iframe id="stripe" src="{STRIPE}" style="width:400px;height:200px;border:0"></iframe></div>''',
     # A hidden middle frame in a closed shadow root (window.frames leaves it out) and a visible
     # about:blank decoy whose owner probe the page reads and forwards to the hidden frame.
     '/framed-shadow-decoy': '''<!doctype html><meta charset="utf-8"><h1>Outer page</h1>
@@ -819,7 +836,8 @@ COVERED_SECRETS = ['/secret-covered', '/secret-covered-important', '/secret-shad
                    '/secret-modal-cover', '/secret-inert-text', '/secret-inert-pseudo', '/secret-inert-slot',
                    '/secret-popover-backdrop', '/secret-popover-exit', '/secret-popover-holds-modal',
                    '/secret-details-content', '/secret-scroll-button', '/secret-scroll-marker-group',
-                   '/secret-view-transition', '/secret-meter-bar', '/secret-veil', '/secret-own-pseudo']
+                   '/secret-view-transition', '/secret-meter-bar', '/secret-veil', '/secret-own-pseudo',
+                   '/secret-own-pseudo-currentcolor', '/secret-own-outline']
 CHALLENGE_GONE = "getComputedStyle(document.getElementById('secret')).boxShadow === 'none'"
 
 
@@ -907,7 +925,8 @@ def test_each_cover_check_alone_refuses_every_cover_and_one_of_them_passes_every
         # During a view transition the pin's own DOM checks already refuse: no pin to test.
         # The secret's own ::after is no occluder for a hit test: only the pixel challenge refuses it.
         assert found is None and page == '/secret-view-transition' or (
-            found and found['occlusion'] is (page == '/secret-own-pseudo') and found['pixels'] is False), (page, found)
+            found and found['occlusion'] is (page in ('/secret-own-pseudo', '/secret-own-pseudo-currentcolor',
+                                                      '/secret-own-outline')) and found['pixels'] is False), (page, found)
     for page, occlusion in {'/secret': True, '/secret-modal': True, '/secret-inert-background': True,
                             '/card-inert-background': True, '/secret-cookie-popover': False, '/secret-copy-button': False,
                             '/card-label': False, '/card-cookie-popover': False, '/card-clear-layer': False}.items():
@@ -1123,6 +1142,23 @@ def processor_pin(harness, page):
 
 def test_a_processor_field_refuses_an_inert_cover_in_the_merchant_page(harness):
     assert processor_pin(harness, '/checkout-inert')[1] == card_failure()
+
+
+def test_an_ancestor_outline_over_a_field_or_a_processor_frame_refuses(harness):
+    """The occlusion test does not count an ancestor's own paint; the pixel challenge sees it."""
+    lab = harness.lab
+    assert card_pin(harness, lab.navigate('/card-outline')) == card_failure()
+    assert lab.digest('number') == EMPTY
+    assert processor_pin(harness, '/checkout-outline')[1] == card_failure()
+
+
+def test_a_long_token_wrapped_over_many_lines_reads(harness):
+    lab = harness.lab
+    url = lab.navigate('/secret-wrapped')
+    harness.focus('secret')
+    pin = read_pin(harness, url)
+    assert pin['ok'], pin
+    assert read_value(harness, pin) == sha('Synth' + 'abcdefghij' * 40)
 
 
 def test_a_processor_field_fills_when_a_merchant_element_overlaps_another_part_of_the_frame(harness):
