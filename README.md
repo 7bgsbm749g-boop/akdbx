@@ -174,7 +174,8 @@ card in `chrome://extensions`. An extension built by akdbx 0.21.2 or earlier
 reports no version; it still works and shows as outdated.
 
 ```bash
-akdbx extension install --browser helium   # or chrome, edge; Windows and Linux
+akdbx extension install --browser helium   # or chrome, edge; Windows and Linux; --python PATH (0.31.1+)
+akdbx extension refresh                    # 0.31.1+: after an update moves akdbx to another folder
 akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" extension build --output /path/to/akdbx-extension   # then Load unpacked
 ```
 
@@ -187,7 +188,10 @@ and frame identity come from the browser, never from page content; cards go
 only to merchant frames or to the supported processor frames below them. On
 Linux the host manifest goes in `~/.config/net.imput.helium`,
 `~/.config/google-chrome` or `~/.config/microsoft-edge` under
-`NativeMessagingHosts`. See [the extension route](skills/akdbx/references/extension.md)
+`NativeMessagingHosts`. From 0.31.1 the Linux and macOS launcher names the folder
+of the akdbx that installed it, so the host runs that akdbx even when the
+interpreter has another one; see [host launcher](skills/akdbx/references/extension.md#host-launcher-0311).
+See [the extension route](skills/akdbx/references/extension.md)
 and [Windows setup](docs/windows.md#browser-extension-route). The Linux host is
 covered by unit tests; the real-browser checks run on Windows.
 

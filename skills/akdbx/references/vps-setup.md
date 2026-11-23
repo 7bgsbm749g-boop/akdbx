@@ -34,6 +34,12 @@ This client is a CLI; no MCP server is supplied. `akdbx setup --start-at-login` 
 
 If the existing virtual environment is missing and installation is part of the task, the repository's `README.md` describes installation. Avoid dependency reinstalls for an ordinary login.
 
+A deployment may run the CLI through a wrapper script: a virtual environment's Python whose script puts a release folder first on `sys.path` and then imports `akdbx.cli`. That environment's own site-packages can hold an older akdbx. For the browser extension host on such a host (0.31.1+):
+
+- `akdbx extension install --browser chrome [--manifest-dir DIR]` writes a launcher that names the release folder the wrapper loaded (`akdbx_source` in its output) and checks that the interpreter runs it. Use `--python PATH` only when the launcher must use another interpreter that has akdbx's dependencies.
+- A deployment that moves the wrapper to a new release folder must also run `akdbx extension refresh` through the updated wrapper, then check `akdbx extension info` shows `launcher_state: "current"` for each installed browser. A launcher left on the old folder keeps running the old release's host. Restarting the broker does not change the launcher, and a running browser starts the launcher again on its next connection.
+- For agent desktop slots, install one manifest per slot profile with `--manifest-dir <browser_profile_root>/<slot>/NativeMessagingHosts`; see the extension reference, section "Host launcher".
+
 ## Existing X11 desktop
 
 Reuse the host's existing X11 desktop and window manager. Read `DISPLAY`,

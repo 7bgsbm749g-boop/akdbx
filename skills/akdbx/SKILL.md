@@ -606,6 +606,7 @@ retained encrypted originals.
 | `browser slot required` / `unknown` / `invalid` | Pass your own slot (`$AGENT_DESKTOP_SLOT` or `vps-agent-desktop current`) with `--browser-slot`. Never use another agent's slot. |
 | Pin refused | Read the reason. Fix the target (focus, selector, frame, origin); never edit the page or the entry to force it. |
 | `frame list unavailable` / `target unavailable` on the extension route | Browser closed, extension not loaded, or not paired (`extension_paired: false`). Give the user the pairing link. |
+| Extension popup: broker not reachable while the broker runs (`extension_connected: false`) | Run `akdbx extension info`. If a browser shows `launcher_state: "stale"`, run `akdbx extension refresh` (0.31.1+), then reopen the popup ([host launcher](references/extension.md#host-launcher-0311)). |
 | Site check or card decline that looks like a false positive on CDP | Stop retrying. Use the extension route ([Choose the fill route](#choose-the-fill-route)). |
 | `fill denied` or a terminal approval prompt | The running broker is very old. Do not approve the prompt. Its owner must restart it on a current version (private web unlock). |
 
