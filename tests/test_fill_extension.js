@@ -45,11 +45,23 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, 
     action: {openPopup: async () => {}},
     tabs: {get: async () => null, query: async () => []},
     webNavigation: {getAllFrames: async () => []},
-    scripting: {executeScript: async () => []},
+    scripting: {executeScript: async () => [], insertCSS: async details => { screen.css.push(details); },
+      removeCSS: async details => { screen.removed.push(details); }},
   };
+  // The pixel challenge: the fake screenshot shows the colour of the last inserted rule,
+  // unless a test sets screen.shown to another colour (a cover) first.
+  const screen = {css: [], removed: [], captures: 0, shown: null};
+  chrome.tabs.captureVisibleTab = async () => { screen.captures += 1; return "data:image/png;base64,AAAA"; };
+  const painted = () => screen.shown || screen.css[screen.css.length - 1].css.match(/rgb\((\d+), (\d+), (\d+)\)/).slice(1).map(Number);
+  class OffscreenCanvas {
+    getContext() {
+      return {drawImage() {}, getImageData: (x, y, w, h) => ({data: Uint8Array.from({length: w * h * 4},
+        (_, i) => i % 4 === 3 ? 255 : painted()[i % 4])})};
+    }
+  }
   const sandbox = {chrome, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, TextEncoder,
     TextDecoder, Uint8Array, AbortController, module: {exports: {}}, AKDBX_TRUSTED_ORIGIN: builtOrigin ?? null,
-    AKDBX_BUILD_ID: build};
+    AKDBX_BUILD_ID: build, Blob, OffscreenCanvas, createImageBitmap: async () => ({width: 100, height: 100, close() {}})};
   // No network in these tests: the broker's HTTPS statement comes only from a scripted fetch.
   if (fetch) sandbox.fetch = fetch;
   vm.createContext(sandbox);
@@ -59,7 +71,15 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, 
     }
   };
   vm.runInContext(fs.readFileSync(path.join(root, "background.js"), "utf8"), sandbox);
-  return {exports: sandbox.module.exports, listeners, posted, chrome, local, session, port};
+  return {exports: sandbox.module.exports, listeners, posted, chrome, local, session, port, screen};
+}
+
+// What content.js answers to the cover checks of a pin, fill or read (undefined: another call).
+function coverAnswer(source, clear = true) {
+  if (source.includes(".clear(")) return clear;
+  if (source.includes(".challengeSpec(")) return {path: ":root>:nth-child(2)>:nth-child(1)", points: [[50, 50]], view: [100, 100]};
+  if (source.includes(".painted(") || source.includes(".challengeHeld(")) return true;
+  return undefined;
 }
 
 test("popup fills only from a trusted click with user activation", () => {
@@ -168,7 +188,7 @@ test("agent fill refuses a pin whose field spec differs from the sealed one", as
   const scripts = [];
   chrome.scripting.executeScript = async details => {
     scripts.push(details);
-    return [{result: details.files ? undefined : "q".repeat(32)}];
+    return [{result: details.files ? undefined : coverAnswer(String(details.func)) ?? "q".repeat(32)}];
   };
   // The relay asked the browser to pin the name field...
   const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card",
@@ -209,7 +229,7 @@ test("a read answers only a signed broker connection and facts sealed for that p
   exports.setSealKey(key);
   exports.setCaptureKey(key);
   const chain = [{document_id: "DOC", url: "https://keys.example/new"}];
-  chrome.tabs.get = async () => ({id: 7, url: chain[0].url});
+  chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active: true, windowId: 1});
   chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
   const scripts = [];
   chrome.scripting.executeScript = async details => {
@@ -218,7 +238,7 @@ test("a read answers only a signed broker connection and facts sealed for that p
     if (details.files) return [{}];
     if (source.includes(".pin(")) return [{result: "r".repeat(32)}];
     if (source.includes(".read(")) return [{result: "sk_synthetic_value"}];
-    return [{result: true}];
+    return [{result: coverAnswer(source) ?? true}];
   };
   const spec = {selector: "#secret", frame_origin: null};
   const b64 = bytes => Buffer.from(bytes).toString("base64url");
@@ -297,7 +317,7 @@ test("released pins do not evict a live pin's spec record", async () => {
     if (details.files) return [{}];
     const source = String(details.func);
     if (source.includes(".pin(")) return [{result: String(next++).padStart(32, "0")}];
-    return [{result: source.includes(".fill(") ? "filled" : true}];
+    return [{result: source.includes(".fill(") ? "filled" : coverAnswer(source) ?? true}];
   };
   const spec = {selector: "#number", field: "cc-number", processor: null};
   const request = {tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card", spec};
@@ -313,6 +333,78 @@ test("released pins do not evict a live pin's spec record", async () => {
   const b64 = bytes => Buffer.from(bytes).toString("base64url");
   const result = await exports.fill({pin_id: live.pin_id, sealed: {iv: b64(iv), data: b64(data)}});
   assert.equal(result.state, "filled");
+});
+
+// A card pin and its fill with scripted cover checks: `clear` is the occlusion test's answer.
+async function coveredFill({clear, shown = null, active = true}) {
+  const {exports, chrome, screen} = loadBackground();
+  const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
+  exports.setSealKey(key);
+  const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
+  chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active, windowId: 1});
+  chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
+  const calls = [];
+  chrome.scripting.executeScript = async details => {
+    if (details.files) return [{}];
+    const source = String(details.func);
+    calls.push([source, details.args]);
+    if (source.includes(".pin(")) return [{result: "c".repeat(32)}];
+    return [{result: source.includes(".fill(") ? "filled" : coverAnswer(source, clear) ?? true}];
+  };
+  screen.shown = shown;
+  const spec = {selector: "#number", field: "cc-number", processor: null};
+  const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card", spec});
+  let result = null;
+  if (pinned.ok) {
+    const facts = {tab_id: 7, document_id: "DOC", chain, kind: "card", pin_id: pinned.pin_id, max_age_ms: 1000, spec};
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const data = await crypto.subtle.encrypt({name: "AES-GCM", iv, additionalData: new TextEncoder().encode("fill:" + pinned.pin_id)},
+      key, new TextEncoder().encode(JSON.stringify({values: {value: "4111111111111111"}, facts})));
+    const b64 = bytes => Buffer.from(bytes).toString("base64url");
+    result = await exports.fill({pin_id: pinned.pin_id, sealed: {iv: b64(iv), data: b64(data)}});
+  }
+  return {pinned, result, screen, fills: calls.filter(([source]) => source.includes(".fill("))};
+}
+
+test("a clear occlusion test fills with no screenshot and no challenge rule", async () => {
+  const {pinned, result, screen, fills} = await coveredFill({clear: true});
+  assert.equal(pinned.ok, true);
+  assert.equal(result.state, "filled");
+  assert.equal(screen.captures, 0);
+  assert.equal(screen.css.length, 0);
+  // content.js runs its own fresh occlusion test in the fill: not proven by pixels.
+  assert.equal(fills[0][1][4], false);
+});
+
+test("an overlapped field fills only when the screenshot shows the challenge colour, and the rule is removed", async () => {
+  const {pinned, result, screen, fills} = await coveredFill({clear: false});
+  assert.equal(pinned.ok, true);
+  assert.equal(result.state, "filled");
+  assert.equal(fills[0][1][4], true);
+  // One user-origin rule for the pinned element only, at the pin and at the fill, each removed again.
+  assert.equal(screen.css.length, 2);
+  for (const [i, rule] of screen.css.entries()) {
+    assert.equal(rule.origin, "USER");
+    assert.deepEqual(copy(rule.target), {tabId: 7, documentIds: ["DOC"]});
+    assert.match(rule.css, /^:root>:nth-child\(2\)>:nth-child\(1\)\{box-shadow:inset 0 0 0 9999px rgb\(\d+, \d+, \d+\)!important;/);
+    assert.deepEqual(copy(screen.removed[i]), copy(rule));
+  }
+  // Each challenge has its own random colour.
+  assert.notEqual(screen.css[0].css, screen.css[1].css);
+});
+
+test("a cover refuses: the screenshot does not show the challenge colour", async () => {
+  const {pinned, screen} = await coveredFill({clear: false, shown: [255, 255, 255]});
+  assert.equal(pinned.ok, false);
+  assert.equal(screen.captures, 2);  // A screenshot can be one frame late: it looks twice.
+  assert.equal(screen.removed.length, 1);
+});
+
+test("an overlapped field in a tab that is not the active one refuses with no screenshot", async () => {
+  const {pinned, screen} = await coveredFill({clear: false, active: false});
+  assert.equal(pinned.ok, false);
+  assert.equal(screen.captures, 0);
+  assert.equal(screen.css.length, 0);
 });
 
 test("popup footer shows the extension's own version", () => {

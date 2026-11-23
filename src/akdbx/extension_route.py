@@ -94,6 +94,8 @@ CAPTURE_PROTOCOL = 1
 CAPTURE_DELIVERY = 'extension-dom-read-v1'
 # The first fill extension version that reads secrets and holds child-frame owners.
 CAPTURE_VERSION = (0, 4, 0)
+# The first fill extension version that checks card, address and secret targets for covers.
+COVER_VERSION = (0, 5, 0)
 ROUTES = ('cdp', 'extension')
 BROWSERS = ('helium', 'chrome', 'edge')
 TTL = 30
@@ -354,8 +356,11 @@ class Channel:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def supports(self, minimum):
+        return self.version is not None and tuple(int(p) for p in self.version.split('.')) >= minimum
+
     def supports_capture(self):
-        return self.version is not None and tuple(int(p) for p in self.version.split('.')) >= CAPTURE_VERSION
+        return self.supports(CAPTURE_VERSION)
 
     def send(self, message):
         with self.send_lock:
@@ -988,19 +993,20 @@ class ExtensionHub:
                     truncated=len(records) > MAX_FRAMES)
 
     # ----- agent route: pins and delivery ---------------------------------
-    def _pin(self, kind, request, spec, frame_url=None, *, hardened=True):
+    def _pin(self, kind, request, spec, frame_url=None, *, minimum=None):
         """Ask the browser to retain one element; return the browser facts and pin id.
 
-        ``hardened``: the pin needs fill extension 0.4.0 or newer, which reads
-        secrets and holds child-frame owners. An older extension would pin a
-        child-frame login without the owner check, so it is refused.
+        ``minimum``: the fill extension version the pin needs: CAPTURE_VERSION
+        (0.4.0) holds child-frame owners, COVER_VERSION (0.5.0) also checks card,
+        address and secret targets for covers. An older extension would pin
+        without those checks, so it is refused.
         """
         self.prune()
         channels, tab_id = self._channels_for(request)
         if tab_id is None or len(channels) != 1 or not isinstance(request.get('frame_id'), str) \
                 or not DOCUMENT_ID.fullmatch(request['frame_id']) or not _text(request.get('top_url')):
             raise ExtensionError()
-        if hardened and not channels[0].supports_capture():
+        if minimum is not None and not channels[0].supports(minimum):
             raise ExtensionError()
         with self._lock:
             if self._closed or len(self.pins) >= MAX_PINS:
@@ -1065,10 +1071,11 @@ class ExtensionHub:
                     password_purpose=request.get('password_purpose'),
                     allow_autocomplete_off=request.get('allow_autocomplete_off', False), frame_origin=frame_origin)
         # A child-frame pin needs the extension that holds the frame owners.
-        return self._frame_pin('password', mode, request, spec, frame_origin, hardened=frame_origin is not None)
+        return self._frame_pin('password', mode, request, spec, frame_origin,
+                               minimum=CAPTURE_VERSION if frame_origin is not None else None)
 
-    def _frame_pin(self, kind, mode, request, spec, frame_origin, *, hardened):
-        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, hardened=hardened)
+    def _frame_pin(self, kind, mode, request, spec, frame_origin, *, minimum):
+        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, minimum=minimum)
         try:
             if frame_origin is None:
                 # The main frame of the exact top URL, as on the CDP route.
@@ -1108,7 +1115,7 @@ class ExtensionHub:
             raise ExtensionError()
         _origin(request['top_url'])
         spec = dict(selector=selector, frame_origin=None)
-        return self._frame_pin('read', 'read', request, spec, None, hardened=True)
+        return self._frame_pin('read', 'read', request, spec, None, minimum=COVER_VERSION)
 
     def pin_element(self, kind, request):
         """Card or identity field pin; same request shape as the CDP route plus ``route``."""
@@ -1133,7 +1140,8 @@ class ExtensionHub:
             raise ExtensionError()
         _secure(request['top_url'])
         spec = dict(selector=request['selector'], field=request['field'], processor=processor)
-        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, request.get('frame_url'), hardened=False)
+        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, request.get('frame_url'),
+                                                            minimum=COVER_VERSION)
         try:
             if kind == 'card':
                 card_route(chain, processor)

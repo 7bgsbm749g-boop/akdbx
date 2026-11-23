@@ -115,11 +115,15 @@ From 0.32.0 (fill extension 0.4.0) the extension route also captures
 shown-once secrets shown in the top document, and it holds a child frame's
 `<iframe>` owner with the CDP route's owner guard (found with a nonce
 handshake). Read pins and password pins in a child frame then need fill
-extension 0.4.0; an older one is refused until it is built again. One check
-stays weaker: the extension has no browser-native hit test, so only the CDP
-route refuses a card or address field under a click-through cover
-(`pointer-events: none`, `inert` or a popover backdrop). Read pins use the same
-DOM hit test on both routes.
+extension 0.4.0; an older one is refused until it is built again.
+
+From 0.33.0 (fill extension 0.5.0) card, address and read pins on the extension
+route also refuse a field or secret under any cover, click-through and inert
+ones included. The browser's own occlusion test (`IntersectionObserver` v2)
+decides first; when it reports an overlap, a pixel check paints the field in a
+random colour for about a tenth of a second and a tab screenshot must show that
+colour. This needs the `<all_urls>` host permission and a rendered, active tab.
+See [the extension route](skills/akdbx/references/extension.md).
 
 Native applications (username and TOTP fields outside a browser) use window
 pins: X11 on Linux, HWND on Windows. A window pin never receives a password.

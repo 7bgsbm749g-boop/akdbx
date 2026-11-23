@@ -243,8 +243,8 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   `capture_delivery: "extension-dom-read-v1"`.
   Without `--route`, a read pin takes the broker's default route when the
   broker advertises `extension_capture_protocol: 1`, else the CDP route.
-- Read pins and password pins in a child frame need fill extension 0.4.0 or
-  newer; the broker refuses them from an older one. Build
+- Password pins in a child frame need fill extension 0.4.0 or newer; card,
+  address and read pins need 0.5.0 (the cover check); the broker refuses them from an older one. Build
   the extension again and reload it. From 0.4.0 both sealing keys bind the
   version the extension reports, so a host that reports another version makes
   every sealed message fail.
@@ -303,13 +303,46 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   then gets the CDP route's owner guard (connected, visible, no `srcdoc`, safe
   `sandbox`, no attribute change), checked at pin and again before the fill or
   read.
-- Hit tests: there is no browser-native hit test. The checks use
-  `elementFromPoint` in the isolated world, which skips click-through covers
-  (`pointer-events: none`, `inert` content, a popover's `::backdrop`). For card
-  and address fields the CDP route also runs `DOM.getNodeForLocation`, which
-  sees them; use the CDP route where a page may cover such a field. Read pins
-  use the same `elementFromPoint` check on both routes, and password pins have
-  no hit test on either.
+- Covers (0.33.0+, fill extension 0.5.0): a card, address or read pin needs proof that nothing is
+  painted over the field or the secret. `elementFromPoint` cannot give it (it
+  skips click-through and inert covers), and no list of selectors names every
+  cover. The extension asks the browser instead, in two steps, at the pin and
+  again at the fill or read:
+  1. The occlusion test. `IntersectionObserver` with `trackVisibility` runs the
+     browser's own occlusion hit test: the one CDP's `DOM.getNodeForLocation`
+     runs (pointer-events and `inert` ignored, visual overflow included), over
+     the whole box of the element, through every parent frame. A cross-origin
+     parent reports the occlusion of the whole `<iframe>` to its child, so a
+     processor frame also sees a cover in the merchant page. A popover, a
+     `::backdrop`, an exit transition, any pseudo-element, an inert or
+     shadow-root cover: each is a box above the element, so the answer is
+     "not visible". Opacity below 1, a filter or a distorting transform on the
+     element's chain give the same answer. The fill or read runs in the task
+     that delivers a fresh "visible" answer. The test needs a rendered tab.
+  2. The pixel challenge, only when step 1 says "not visible" (and always for a
+     read). Step 1 is all-or-nothing for the whole box: a floating label, an
+     icon in the field, an element over another part of a processor frame, or
+     the transparent `::backdrop` of a cookie popover elsewhere also fail it.
+     The service worker then adds one user-origin rule (it beats every author
+     rule) that paints only the pinned element in a random colour, takes a
+     screenshot of the tab (`tabs.captureVisibleTab`), removes the rule, and
+     checks the colour at the points CDP hit-tests: the centre of a field; for
+     a secret, a point every few pixels along each line of its text. A cover
+     of any kind, in any document or frame, changes those pixels, so the pin
+     refuses; a see-through veil also refuses. The field shows the colour for
+     about a tenth of a second. The screenshot stays in the service worker and
+     is dropped after the check. A read always takes this step because text
+     hidden under its own element's `::before` or `::after` is not occluded
+     for any hit test, CDP's too.
+  Costs and limits: `tabs.captureVisibleTab` needs the `<all_urls>` host
+  permission (the same install warning as `https://*/*`) and allows two
+  screenshots each second, so challenges run one at a time, about half a
+  second apart. The tab must be the active tab of a window that renders.
+  Only a script that can read the field's own document can copy the colour
+  onto a cover in time, and such a script can read the filled value anyway;
+  a parent page cannot see the colour in a cross-origin processor frame. A
+  cover that comes and goes by itself is seen only if it is there at the pin
+  or at the fill.
 
 ## Setup
 
