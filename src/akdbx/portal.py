@@ -62,6 +62,10 @@ input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=hidden])
   width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; border-radius: 0;
   background: transparent; color: #fff; font-size: 16px; line-height: 1.5; letter-spacing: -.2px;
 }
+/* Windows and Linux draw the open list with system colours; white option text
+   on a white list hides every option except the highlighted one. */
+select { color-scheme: dark; }
+select option { background-color: #161616; color: #fff; }
 input::placeholder, textarea::placeholder { color: #ffffff80; opacity: 1; }
 input:disabled, select:disabled, textarea:disabled { opacity: .5; }
 input:-webkit-autofill { -webkit-text-fill-color: #fff; -webkit-box-shadow: 0 0 0 1000px #111 inset; caret-color: #fff; border-radius: 3px; }
