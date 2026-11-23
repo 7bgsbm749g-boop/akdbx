@@ -30,11 +30,13 @@ akdbx sms-add-source iphone --kind shortcut
 
 The receipt has a `private_url` setup page (15 minutes). Send it to the user
 privately (`send_to_user`); they open it on the iPhone and follow its steps.
-The page shows the webhook URL and how to create the automation in the
-Shortcuts app's **Automation** tab (not a new shortcut): **Message** trigger
-(Message Contains `code`), **Run Immediately**, then **Get Contents of URL**
-with Method POST and a JSON body `text` = Shortcut Input (Content), `from` =
-Shortcut Input (Sender). The user must do this step on the phone; you cannot.
+The page shows the webhook URL (tap to copy) and how to create the automation
+in the Shortcuts app: a new shortcut whose trigger is **Automation > Message**
+(When I receive a message where Message contains `code`), Confirm Before Run
+off, then **Get Contents of URL** with Method POST and a JSON body `text` = the
+message (Content), `from` = the message (Sender). Older iOS versions use the
+**Automation** tab and **Run Immediately** instead. The user must do this step
+on the phone; you cannot.
 
 For a virtual number, type the webhook URL straight into the provider's
 console field instead, so the URL never reaches your output:

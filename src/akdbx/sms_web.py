@@ -106,25 +106,26 @@ def _inbound(handler, state, token: str) -> None:
 
 SHORTCUT_STEPS = (
     'Copy the webhook URL: tap the box at the bottom of this page.',
-    'Open the <strong>Shortcuts</strong> app. Tap the <strong>Automation</strong> tab at the bottom of the screen '
-    '(not the Shortcuts tab: a "New Shortcut" screen is the wrong place). Tap <strong>+</strong> at the top right, '
-    'or <strong>New Automation</strong>.',
-    'In the list of triggers, scroll down and tap <strong>Message</strong>.',
-    'On the Message screen, tap <strong>Choose</strong> next to <strong>Message Contains</strong>. Type '
-    '<code>code</code> and tap <strong>Done</strong>. Leave <strong>Sender</strong> as it is (anyone).',
-    'Below, select <strong>Run Immediately</strong> (not Run After Confirmation) and turn off '
-    '<strong>Notify When Run</strong>. Tap <strong>Next</strong>.',
-    'Tap <strong>New Blank Automation</strong>. Tap <strong>Add Action</strong>, search for '
-    '<strong>Get Contents of URL</strong> and tap it.',
+    'Open the <strong>Shortcuts</strong> app and tap <strong>+</strong> to make a new shortcut. In the list at the '
+    'bottom, tap <strong>Automation</strong>, then choose <strong>Message</strong>. The shortcut now starts with '
+    '<strong>When I receive a message</strong>. (Older iOS: open the <strong>Automation</strong> tab, tap '
+    '<strong>+</strong> and choose <strong>Message</strong>.)',
+    'Tap the arrow next to <strong>where</strong>. Set <strong>Message contains</strong> to <code>code</code>. '
+    'Do not add a sender filter.',
+    'Keep <strong>Automation</strong> on and turn <strong>Confirm Before Run</strong> off. (Older iOS: select '
+    '<strong>Run Immediately</strong>, turn off <strong>Notify When Run</strong>, tap <strong>Next</strong>, then '
+    '<strong>New Blank Automation</strong>.)',
+    'In the <strong>Search</strong> bar at the bottom, type <strong>Get Contents of URL</strong> and tap the action.',
     'In the action, tap <strong>URL</strong> and paste the webhook URL.',
     'Tap the <strong>&gt;</strong> arrow in the action to show more. Set <strong>Method</strong> to '
     '<strong>POST</strong>. Set <strong>Request Body</strong> to <strong>JSON</strong>.',
     'Tap <strong>Add new field</strong>, then <strong>Text</strong>. In <strong>Key</strong>, type <code>text</code>. '
-    'Tap <strong>Value</strong>, then tap <strong>Shortcut Input</strong> above the keyboard. Tap the blue '
-    '<strong>Shortcut Input</strong> you just added and choose <strong>Content</strong>.',
-    'Add a second <strong>Text</strong> field. In <strong>Key</strong>, type <code>from</code>. For its value, '
-    'insert <strong>Shortcut Input</strong> again, tap it and choose <strong>Sender</strong>.',
-    'Tap <strong>Done</strong> at the top right. The first time the automation runs, iOS can ask to allow the '
+    'Tap <strong>Value</strong> and insert the message variable from the bar above the keyboard '
+    '(<strong>Shortcut Input</strong> or <strong>Message</strong>). Tap the blue variable and choose '
+    '<strong>Content</strong>.',
+    'Add a second <strong>Text</strong> field. In <strong>Key</strong>, type <code>from</code>. Insert the same '
+    'variable, tap it and choose <strong>Sender</strong>.',
+    'Tap the back arrow at the top left to save. The first time the automation runs, iOS can ask to allow the '
     'connection to this address: tap <strong>Always Allow</strong>.',
 )
 TWILIO_STEPS = (
