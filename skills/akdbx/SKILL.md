@@ -338,17 +338,19 @@ variable, which the CLI sends by default; if it is not set, run
 and the slots that exist. Fills need no slot: a pin stays in the Chrome it was
 made in. See [agent desktop slots](references/target-fill.md#agent-desktop-slots).
 
-**Strict bot checks in an agent desktop slot: extension route, no DevTools.**
-Some checks (seen: DataDome on a sign-up) refuse every slot Chrome that has a
-DevTools connection open, also on a residential IP. The CDP route and the
-`browser_*` tools both need that connection, so they cannot pass. What worked:
-first remove every trace of the refused attempt from the slot profile (the
-check's cookie, storage and cache for that site only), then restart the slot's
-Chrome without its debugging port, use desktop (pixel) input only, and fill
-the password through the akdbx extension. Follow
+**Bot checks in an agent desktop slot: apply every step together.** When a
+bot check or site block stops you in a slot (Cloudflare "Verifying…" that does
+not finish, DataDome, "You have been blocked", a refused sign-up), do not try
+fixes one at a time. Each refused attempt raises the risk score, and one fix
+alone does not pass: a residential IP alone failed, and the checks also detect
+an open DevTools connection, which the CDP route and the `browser_*` tools
+need. In one go: remove every trace of the refused attempt from the slot
+profile, move the slot's traffic to the user's residential IP, restart its
+Chrome without the debugging port, use desktop (pixel) input only, and fill
+secrets only through the akdbx extension. Follow
 [Agent desktop slot without DevTools](references/extension.md#agent-desktop-slot-without-devtools).
 The same limits apply: only the user's own account and data, no CAPTCHA
-solvers, and stop after two failed attempts.
+solvers, and stop after two failed attempts with the full setup.
 
 Both routes keep the same model: list frames, a 30-second single-use pin bound
 to one exact element, a fresh search handle per fill, and a receipt with no
@@ -362,8 +364,10 @@ Try normal, visible verification controls (such as a "Verify you are human"
 checkbox) yourself. The prompt alone is not a blocker. Check the result after
 each attempt. If the first attempt fails, look at the fresh page and try once
 more with a fresh target. Ask the user only after two failed attempts, and
-report both. If the check fails because the browser is a debugging-port
-browser, see [Choose the fill route](#choose-the-fill-route). Do not switch to
+report both. In an agent desktop slot, a check that does not pass goes
+straight to the full setup in
+[Choose the fill route](#choose-the-fill-route) (all steps together, not one
+at a time). Do not switch to
 another browser profile to get around a check.
 
 ## Log in to a website

@@ -432,12 +432,14 @@ launcher; reinstall the other slots afterwards.
 
 ## Agent desktop slot without DevTools
 
-Use this when a bot check (seen: DataDome on a SoundCloud sign-up) refuses an
-agent desktop slot even after the CDP route, a clean profile and a residential
-IP. The check detects the open DevTools connection ("use of developer or
-inspection tools"), so every route that needs it fails: the CDP route, the
-`browser_*` tools and `browser_prepare`. Each refused attempt can make the
-next one harder, so change the setup before you try again.
+Use this as soon as a bot check or site block stops you in an agent desktop
+slot (seen: DataDome on a SoundCloud sign-up, Cloudflare "Verifying…" that
+does not finish). Apply all the steps below together, in this order, before
+the next attempt. Do not try them one at a time: a residential IP alone did
+not pass, because the check also detects the open DevTools connection ("use
+of developer or inspection tools"). Every route that needs that connection
+fails: the CDP route, the `browser_*` tools and `browser_prepare`. Each
+refused attempt makes the next one harder.
 
 The host commands below exist on the operator's VPS (agent desktop slots); on
 another host, use its equivalent or the user's everyday browser.
@@ -476,7 +478,7 @@ another host, use its equivalent or the user's everyday browser.
 
    ```bash
    slot-devtools off "$SLOT"     # Chrome without --remote-debugging-port
-   laptop-proxy on "$SLOT"       # optional: the user's home IP, if the IP is also blocked
+   laptop-proxy on "$SLOT"       # the user's home IP; always part of this setup
    ```
 
    Both last only until the slot stops. `slot-devtools status` and
