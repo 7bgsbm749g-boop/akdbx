@@ -676,7 +676,7 @@ akdbx subscribe-sms --source iphone --recent 120 --webhook-url-file FILE  # one-
 the broker posts `akdbx.sms-received` with only the source and the message id
 when the next text with a code arrives, so an agent can end its turn and
 resume on the text. The setup page also ends with a live test: it waits for a
-test text and shows **It works** when the code arrives, or why AKDBX dropped
+test text and shows **Code received** when the code arrives, or why AKDBX dropped
 the text.
 
 Each source has its own random 256-bit token in its webhook URL

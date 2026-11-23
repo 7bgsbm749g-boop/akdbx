@@ -161,10 +161,16 @@ button:disabled { cursor: default; opacity: .4; }
 .wizard-done-title { margin: 14px 0 8px; font-size: 22px; font-weight: 500; letter-spacing: -.4px; outline: 0; }
 .wizard-done-text { margin: 0 0 22px !important; font-size: 15px; }
 .wizard-done.is-closed .wizard-done-text { margin-bottom: 0 !important; }
+.wizard.is-skipped .wizard-done-title, .wizard-done.is-closed .wizard-done-title { margin-top: 0; }
+.wizard-done.is-closing .done-mark, .wizard-done.is-closing button.wizard-next { opacity: 0; transition: opacity .2s ease; }
+.wizard-done.is-closed .done-mark { display: none; }
+.wizard-done-close { margin: 16px 0 0 !important; color: #ffffff8c; font-size: 14px; }
 .wizard-done button.wizard-next { min-height: 52px; }
 @media (prefers-reduced-motion: no-preference) {
   .sms-test:not(.is-warning) .sms-test-dot { animation: test-pulse 1.4s ease-in-out infinite; }
   @keyframes test-pulse { 50% { opacity: .25; transform: scale(.7); } }
+  .wizard-done-close:not([hidden]) { animation: done-fade .35s ease .2s both; }
+  @keyframes done-fade { from { opacity: 0; } }
 }
 @media (prefers-reduced-motion: reduce) {
   .wizard.is-passed .done-mark circle, .wizard.is-passed .done-mark path { animation: none; stroke-dashoffset: 0; }
@@ -390,7 +396,7 @@ SCRIPT = r""""use strict";
     wizard.classList.add("is-done", passed ? "is-passed" : "is-skipped");
     done.hidden = false;
     const title = done.querySelector(".wizard-done-title");
-    title.textContent = passed ? "It works" : "Setup finished";
+    title.textContent = passed ? "Code received" : "Setup finished";
     const text = done.querySelector(".wizard-done-text");
     text.textContent = text.getAttribute(passed ? "data-passed" : "data-skipped");
     title.focus();
@@ -402,12 +408,33 @@ SCRIPT = r""""use strict";
     const close = event.target.closest("[data-wizard-close]");
     if (!close) return;
     window.close();
-    // A page the user opened from a link cannot close itself.
+    // A page the user opened from a link cannot close itself: fade out the
+    // tick and the button, then ease the card to its new height.
     setTimeout(() => {
       const done = close.closest(".wizard-done");
-      done.classList.add("is-closed");
-      done.querySelector(".wizard-done-text").textContent = "You can close this page now.";
-      close.hidden = true;
+      const sheet = done.closest(".sheet");
+      const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const swap = () => {
+        const start = sheet.offsetHeight;
+        done.classList.add("is-closed");
+        close.hidden = true;
+        done.querySelector(".wizard-done-close").hidden = false;
+        if (calm) return;
+        const end = sheet.offsetHeight;
+        sheet.style.height = start + "px";
+        void sheet.offsetHeight;
+        sheet.style.transition = "height .45s cubic-bezier(.65, 0, .35, 1)";
+        sheet.style.height = end + "px";
+        const reset = event => {
+          if (event.target !== sheet || event.propertyName !== "height") return;
+          sheet.removeEventListener("transitionend", reset);
+          sheet.style.height = sheet.style.transition = "";
+        };
+        sheet.addEventListener("transitionend", reset);
+      };
+      if (calm) return swap();
+      done.classList.add("is-closing");
+      setTimeout(swap, 200);
     }, 300);
   });
   document.querySelectorAll("[data-wizard]").forEach(wizard => {

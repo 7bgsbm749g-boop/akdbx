@@ -300,7 +300,7 @@ def _live_test(kind: str, wait_url: str, count: int) -> str:
             f'<div class="wizard-done" hidden>{DONE_MARK}<h2 class="wizard-done-title" tabindex="-1"></h2>'
             f'<p class="wizard-done-text" data-passed="AKDBX received your test code. Your agent can now fill in '
             f'codes that are texted to {target}." data-skipped="Send a test text later. Your agent can check that '
-            f'it arrived."></p>'
+            f'it arrived."></p><p class="wizard-done-close" hidden>You can close this page now.</p>'
             '<button type="button" class="wizard-next" data-wizard-close><span>Done</span></button></div>')
 
 
