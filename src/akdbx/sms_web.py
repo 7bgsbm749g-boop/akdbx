@@ -105,17 +105,28 @@ def _inbound(handler, state, token: str) -> None:
 
 
 SHORTCUT_STEPS = (
-    'On the iPhone, open <strong>Shortcuts</strong>, then <strong>Automation</strong>, then <strong>+</strong>.',
-    'Choose <strong>Message</strong>. Set <strong>Message Contains</strong> to <code>code</code> '
-    '(or leave it empty to send every text; akdbx keeps only texts with a verification code).',
-    'Select <strong>Run Immediately</strong> and turn off <strong>Notify When Run</strong>. Tap <strong>Next</strong>, '
-    'then <strong>New Blank Automation</strong>.',
-    'Add the action <strong>Get Contents of URL</strong>. Paste the webhook URL below.',
-    'Tap the arrow to show more. Set <strong>Method</strong> to <strong>POST</strong> and <strong>Request Body</strong> '
-    'to <strong>JSON</strong>.',
-    'Add a text field <code>text</code> with the value <strong>Shortcut Input</strong> (tap it and choose '
-    '<strong>Content</strong>). Add a text field <code>from</code> with the value <strong>Shortcut Input</strong> '
-    '(choose <strong>Sender</strong>). Tap <strong>Done</strong>.',
+    'Copy the webhook URL at the bottom of this page: tap the box, tap <strong>Select All</strong>, then '
+    '<strong>Copy</strong>.',
+    'Open the <strong>Shortcuts</strong> app. Tap the <strong>Automation</strong> tab at the bottom of the screen '
+    '(not the Shortcuts tab: a "New Shortcut" screen is the wrong place). Tap <strong>+</strong> at the top right, '
+    'or <strong>New Automation</strong>.',
+    'In the list of triggers, scroll down and tap <strong>Message</strong>.',
+    'On the Message screen, tap <strong>Choose</strong> next to <strong>Message Contains</strong>. Type '
+    '<code>code</code> and tap <strong>Done</strong>. Leave <strong>Sender</strong> as it is (anyone).',
+    'Below, select <strong>Run Immediately</strong> (not Run After Confirmation) and turn off '
+    '<strong>Notify When Run</strong>. Tap <strong>Next</strong>.',
+    'Tap <strong>New Blank Automation</strong>. Tap <strong>Add Action</strong>, search for '
+    '<strong>Get Contents of URL</strong> and tap it.',
+    'In the action, tap <strong>URL</strong> and paste the webhook URL.',
+    'Tap the <strong>&gt;</strong> arrow in the action to show more. Set <strong>Method</strong> to '
+    '<strong>POST</strong>. Set <strong>Request Body</strong> to <strong>JSON</strong>.',
+    'Tap <strong>Add new field</strong>, then <strong>Text</strong>. In <strong>Key</strong>, type <code>text</code>. '
+    'Tap <strong>Value</strong>, then tap <strong>Shortcut Input</strong> above the keyboard. Tap the blue '
+    '<strong>Shortcut Input</strong> you just added and choose <strong>Content</strong>.',
+    'Add a second <strong>Text</strong> field. In <strong>Key</strong>, type <code>from</code>. For its value, '
+    'insert <strong>Shortcut Input</strong> again, tap it and choose <strong>Sender</strong>.',
+    'Tap <strong>Done</strong> at the top right. The first time the automation runs, iOS can ask to allow the '
+    'connection to this address: tap <strong>Always Allow</strong>.',
 )
 TWILIO_STEPS = (
     'In the Twilio Console, open <strong>Phone Numbers</strong>, <strong>Manage</strong>, '
