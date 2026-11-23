@@ -509,7 +509,11 @@ shortcut`), is the recommended source: Google, many banks, WhatsApp and some
 other sites reject VoIP numbers, so a virtual number (`--kind twilio`) does not
 always work. If `sms_sources_configured` is 0, add a source once with
 `sms-add-source` and give the user its private setup link. Codes, webhook URLs
-and setup links never appear in output. Details: [SMS](references/sms.md).
+and setup links never appear in output. To resume when the text arrives
+instead of waiting, register `subscribe-sms --source NAME --recent 120` with a
+webhook task bound to the current thread and end the turn; the
+`akdbx.sms-received` event carries only the source and message id. Details:
+[SMS](references/sms.md), [SMS notifications](references/sms-notifications.md).
 
 **Emailed codes.** The user's standing preference: for an authorized sign-in or
 sign-up, fetch the verification code from the user's mailbox yourself

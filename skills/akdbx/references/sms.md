@@ -52,7 +52,9 @@ In the Twilio Console the field is **Phone Numbers > Active numbers > (number)
 configuration and check that Twilio shows it saved. If the fill does not
 finish, the receipt has a `private_url` fallback page.
 
-`akdbx sms-sources` lists sources (never tokens). `sms-add-source NAME --kind
+`akdbx sms-sources` lists sources (never tokens), with `last_received` and
+`last_result` (why the last text was kept or dropped: `code`, `no-code-word`,
+`no-code`, `several-codes` or `empty`). `sms-add-source NAME --kind
 KIND --replace` issues a new URL (the old one stops working at once);
 `sms-remove-source NAME` removes it. Replace a source if its URL may have leaked.
 
@@ -66,6 +68,10 @@ KIND --replace` issues a new URL (the old one stops working at once);
    ```bash
    akdbx sms-wait --recent 120 --timeout 120
    ```
+
+   If the text can take longer, or the user must act first, register a
+   one-shot webhook instead and end the turn:
+   [SMS notifications](sms-notifications.md) (`subscribe-sms`).
 
    Each row has `id`, `source`, `sender`, `preview` (digits shown as `•`),
    `code_length`, `received_at` and `age_seconds`. Pick the newest row whose

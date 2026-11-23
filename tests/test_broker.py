@@ -75,7 +75,7 @@ def target_capabilities():
                 additional_urls_protocol=1, additional_urls_policy='kp2a-exact-origin-v1',
                 secret_save_protocol=1, secret_save_field='password',
                 secret_capture_protocol=1, secret_capture_delivery='chromium-dom-read-v1', secret_sink_protocol=1, secret_sinks=[],
-                sms_protocol=1, sms_source_kinds=['shortcut', 'twilio', 'webhook'], sms_sources_configured=0,
+                sms_protocol=1, sms_notifications_supported=True, sms_notifications_protocol=1, sms_source_kinds=['shortcut', 'twilio', 'webhook'], sms_sources_configured=0,
                 sms_message_ttl=600, code_protocol=1, code_browser_configured=False, code_delivery='cdp-code-element-v1')
 
 

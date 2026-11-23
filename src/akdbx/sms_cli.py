@@ -3,6 +3,7 @@ import json
 import re
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from . import browser_slots, page_url
@@ -11,7 +12,16 @@ from .browser_code import DELIVERY, FIELDS
 from .sms import KINDS, MAX_WAIT, MESSAGE_ID, NAME, PROTOCOL, RESULTS, ROUTE_SETUP, TOKEN
 from .target import DELIVERY as X11_DELIVERY
 
-COMMANDS = {'sms-add-source', 'sms-remove-source', 'sms-sources', 'sms-wait', 'pin-code-target', 'fill-sms-code'}
+COMMANDS = {'sms-add-source', 'sms-remove-source', 'sms-sources', 'sms-wait', 'pin-code-target', 'fill-sms-code',
+            'subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms'}
+SUBSCRIPTION_STATES = {'subscribed', 'pending', 'sending', 'delivered', 'failed', 'cancelled', 'expired'}
+SUBSCRIPTION_ERRORS = {'unknown or expired sms subscription',
+                       'sms notification protocol 1 and a valid source name or none required',
+                       'unlock notification protocol 1 required',
+                       'webhook must be an HTTPS URL without credentials or fragment',
+                       'subscription TTL must be 0 (until unlock/cancel) or 60–3600 seconds',
+                       'sms notifications stopped', 'sms subscription limit reached',
+                       'notification could not be saved; subscription not registered'}
 PIN_ARGS = ('page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field')
 TARGET_REFUSED = failure(kind='code')
 TARGET_UNCERTAIN = failure(True, kind='code')
@@ -58,6 +68,22 @@ def add_parsers(commands):
     p.add_argument('--target', required=True,
                    help='fresh pin-code-target token, or a pin-target token for X11 keyboard delivery')
     p.add_argument('--target-url', help='independently verified HTTPS challenge URL; required with a pin-target token')
+    p = commands.add_parser('subscribe-sms', help='register a one-shot HTTPS webhook for the next verification text '
+                                                  '(event akdbx.sms-received with the message id; never the code)')
+    p.add_argument('--webhook-url-file', required=True, type=Path,
+                   help='owned mode-0600 file containing the private callback URL')
+    p.add_argument('--source', type=_name, help='only texts from this source; default: any source')
+    since = p.add_mutually_exclusive_group()
+    since.add_argument('--since', type=float, help='a text already received at or after this Unix time sends the '
+                                                   'event at once')
+    since.add_argument('--recent', type=int, metavar='SECONDS',
+                       help='a text already received in the last SECONDS seconds sends the event at once')
+    p.add_argument('--ttl', type=int, default=0,
+                   help='0 waits until a text or cancel (default); 60–3600 seconds only for an explicitly '
+                        'time-limited wait')
+    for name in ('sms-subscription-status', 'unsubscribe-sms'):
+        p = commands.add_parser(name, help='inspect/cancel a one-shot SMS subscription')
+        p.add_argument('subscription_id')
 
 
 def _token(value):
@@ -85,7 +111,27 @@ def _failure_receipt(response):
     return set(response) <= allowed
 
 
+def _subscription_receipt(args, response):
+    if response.get('ok') is not True:
+        return (response.get('ok') is False and set(response) == {'ok', 'error'}
+                and response['error'] in SUBSCRIPTION_ERRORS | {'SMS protocol 1 required', 'invalid SMS request'})
+    keys = {'ok', 'subscription_id', 'state', 'attempts', 'source', 'message_id'}
+    if args.command == 'subscribe-sms':
+        keys.add('expires_in')
+    return (set(response) == keys
+            and isinstance(response['subscription_id'], str) and re.fullmatch('[a-f0-9]{32}', response['subscription_id'])
+            and response['state'] in SUBSCRIPTION_STATES
+            and type(response['attempts']) is int and 0 <= response['attempts'] <= 3
+            and (response['source'] is None or isinstance(response['source'], str) and NAME.fullmatch(response['source']))
+            and (response['message_id'] is None
+                 or isinstance(response['message_id'], str) and MESSAGE_ID.fullmatch(response['message_id']))
+            and (response.get('expires_in') is None
+                 or type(response['expires_in']) is int and 0 <= response['expires_in'] <= 3600))
+
+
 def valid_receipt(args, response):
+    if args.command in {'subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms'}:
+        return _subscription_receipt(args, response)
     if response.get('ok') is not True:
         if response.get('ok') is not False:
             return False
@@ -135,6 +181,12 @@ def run(args, request):
         if caps.get('ok') is not True or type(caps.get('sms_protocol')) is not int or caps['sms_protocol'] != PROTOCOL:
             print(json.dumps(dict(ok=False, error='broker lacks SMS protocol 1; request not sent')))
             return 1
+        if args.command in {'subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms'} and (
+                caps.get('sms_notifications_supported') is not True
+                or type(caps.get('sms_notifications_protocol')) is not int or caps['sms_notifications_protocol'] != 1):
+            print(json.dumps(dict(ok=False, error='broker lacks SMS notification protocol 1; require broker 0.34.0 '
+                                                  'or newer; subscription request not sent')))
+            return 1
         payload = dict(action=args.command, sms_protocol=PROTOCOL)
         if args.command in {'sms-add-source', 'sms-remove-source'}:
             payload['name'] = args.name
@@ -165,6 +217,22 @@ def run(args, request):
                 print(json.dumps(dict(ok=False, error=refusal)))
                 return 1
             payload.update(slot)
+        elif args.command == 'subscribe-sms':
+            from .cli import _read_webhook_url
+            try:
+                url = _read_webhook_url(args.webhook_url_file)
+            except (OSError, ValueError):
+                print('could not read private webhook URL file; subscription not sent', file=sys.stderr)
+                return 2
+            payload.update(notification_protocol=1, webhook_url=url, ttl=args.ttl)
+            if args.source is not None:
+                payload['source'] = args.source
+            since = args.since if args.since is not None else (
+                time.time() - args.recent if args.recent is not None else None)
+            if since is not None:
+                payload['since'] = since
+        elif args.command in {'sms-subscription-status', 'unsubscribe-sms'}:
+            payload['subscription_id'] = args.subscription_id
         elif args.command == 'fill-sms-code':
             if not MESSAGE_ID.fullmatch(args.message):
                 print(json.dumps(dict(ok=False, error='message id must be 32 lowercase hex characters; request not sent')))

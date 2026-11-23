@@ -198,6 +198,9 @@ class SmsInbox:
         self.setups: dict[str, Setup] = {}
         self.waiters = 0
         self.condition = threading.Condition()
+        # Called with (source, message_id) after a text with a code is kept;
+        # the broker sets it to wake SMS webhook subscriptions.
+        self.on_text = None
         self._load()
 
     # Private state file -------------------------------------------------
@@ -433,11 +436,24 @@ class SmsInbox:
             if code is None:
                 return 'dropped'
             self._prune()
-            self.messages.append(Message(secrets.token_hex(16), source.name, clean_sender(sender),
-                                         mask(text), code, now, self.wall_clock()))
+            message = Message(secrets.token_hex(16), source.name, clean_sender(sender), mask(text), code, now,
+                              self.wall_clock())
+            self.messages.append(message)
             del self.messages[:-MAX_MESSAGES]
             self.condition.notify_all()
+        if self.on_text is not None:
+            try:
+                self.on_text(message.source, message.id)
+            except Exception:
+                pass  # A notification failure never drops a received text.
         return 'kept'
+
+    def newest(self, source: str | None, since: float) -> tuple[str, str] | None:
+        """The newest kept text received at or after ``since``: (source, message id), or None."""
+        with self.condition:
+            self._prune()
+            found = self._matching(since, source)
+            return (found[-1].source, found[-1].id) if found else None
 
     def _matching(self, since: float | None, source: str | None) -> list[Message]:
         return [m for m in self.messages
@@ -500,7 +516,8 @@ def webhook_url(origin: str, token: str) -> str:
 
 # Broker actions ----------------------------------------------------------
 
-COMMANDS = ('sms-add-source', 'sms-remove-source', 'sms-sources', 'sms-wait', 'pin-code-target', 'fill-sms-code')
+COMMANDS = ('sms-add-source', 'sms-remove-source', 'sms-sources', 'sms-wait', 'pin-code-target', 'fill-sms-code',
+            'subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms')
 FILL_START_TIMEOUT = 4.0
 
 
@@ -552,6 +569,12 @@ def dispatch(broker, request: dict, delivery_ready) -> dict:
                 return _failure()
         if action == 'fill-sms-code':
             return _fill(broker, request, delivery_ready)
+        if action == 'subscribe-sms':
+            return broker.sms_notifications.subscribe_text(request, received=inbox.newest)
+        if action in {'sms-subscription-status', 'unsubscribe-sms'}:
+            if set(request) != {'action', 'sms_protocol', 'subscription_id'}:
+                raise SmsError('invalid SMS request')
+            return broker.sms_notifications.status(request['subscription_id'], cancel=action == 'unsubscribe-sms')
     except SmsError as exc:
         return dict(ok=False, error=str(exc))
     return dict(ok=False, error='unknown action')

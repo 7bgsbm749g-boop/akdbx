@@ -34,6 +34,7 @@ from . import __version__
 from .notifications import UnlockNotifications, capabilities as notification_capabilities
 from .card_notifications import CardSaveNotifications, capabilities as card_notification_capabilities
 from .pairing_notifications import PairingNotifications, capabilities as pairing_notification_capabilities
+from .sms_notifications import SmsNotifications, capabilities as sms_notification_capabilities
 from .protocol import ProtocolError, receive_message, send_message
 from .cards import CardManager, is_card
 from .browser_card import BrowserCards
@@ -160,6 +161,10 @@ class Broker:
         self.pairing_notifications = PairingNotifications(
             clock=clock, state_path=(Path(str(notification_state_path) + '.pairings')
                                      if notification_state_path is not None else None))
+        self.sms_notifications = SmsNotifications(
+            clock=clock, state_path=(Path(str(notification_state_path) + '.sms')
+                                     if notification_state_path is not None else None))
+        self.sms.on_text = self.sms_notifications.publish_text
 
     def _expire_card_save(self, handle):
         with self._vault_lock:
@@ -359,7 +364,7 @@ class Broker:
                     **({"relay": self.relay.status()} if self.relay is not None else {}),
                     **({"active_origin": origin} if isinstance(origin, str) else {})}
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **self.secrets.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
+            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **sms_notification_capabilities(), **self.secrets.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -794,6 +799,7 @@ def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
             broker.unlock_notifications.close()
             broker.card_save_notifications.close()
             broker.pairing_notifications.close()
+            broker.sms_notifications.close()
             with workers_lock:
                 pending = list(workers)
             join_deadline = time.monotonic() + CONNECTION_TIMEOUT + 0.2

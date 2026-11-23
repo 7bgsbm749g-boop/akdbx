@@ -652,7 +652,7 @@ A **source** is one phone number that forwards its texts to the broker's HTTPS
 origin (the akdbx relay, or another origin the phone or provider can reach):
 
 - `shortcut` (**recommended**): the user's own iPhone number. An iOS Shortcuts
-  automation (Message trigger, Run Immediately, **Get Contents of URL**) posts
+  automation (Message trigger that runs without confirmation, **Get Contents of URL**) posts
   each verification text as JSON `{"text": ..., "from": ...}`. It works with
   every site, because it is a real carrier number.
 - `twilio`: a Twilio virtual number whose "A message comes in" webhook posts
@@ -669,7 +669,15 @@ akdbx sms-wait --recent 120 --timeout 120              # masked previews of rece
 akdbx pin-code-target --page-id P --frame-id F --top-url URL --frame-url URL --selector '#code'
 akdbx fill-sms-code MESSAGE_ID --target PIN            # fills the code; returns no code
 akdbx sms-remove-source iphone
+akdbx subscribe-sms --source iphone --recent 120 --webhook-url-file FILE  # one-shot event for the next code
 ```
+
+`subscribe-sms` registers a one-shot HTTPS webhook, like `subscribe-unlock`:
+the broker posts `akdbx.sms-received` with only the source and the message id
+when the next text with a code arrives, so an agent can end its turn and
+resume on the text. The setup page also ends with a live test: it waits for a
+test text and shows **It works** when the code arrives, or why AKDBX dropped
+the text.
 
 Each source has its own random 256-bit token in its webhook URL
 (`/sms/in/TOKEN`). The broker saves only its SHA-256 hash, in a private mode

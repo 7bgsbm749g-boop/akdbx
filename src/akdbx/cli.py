@@ -629,7 +629,8 @@ def refuse_untrusted_unlock_block(broker) -> bool:
     # write while closing them must not hide which permissions to fix.
     print(f'refusing to start: the saved unlock-link block {path} cannot be trusted{detail}. {rules}. '
           'Fix the permissions, or start with --notification-state FILE in a private folder.', file=sys.stderr)
-    for notifier in (manager, broker.card_save_notifications, broker.pairing_notifications):
+    for notifier in (manager, broker.card_save_notifications, broker.pairing_notifications,
+                     broker.sms_notifications):
         try:
             notifier.close()
         except Exception:
@@ -857,6 +858,7 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
             broker.unlock_notifications.close()
             broker.card_save_notifications.close()
             broker.pairing_notifications.close()
+            broker.sms_notifications.close()
             print('could not start Windows HTTPS unlock; check origin, local port, TLS files, permissions, '
                   'and that no other broker uses this pipe', file=sys.stderr)
             return 2
@@ -906,6 +908,7 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
             broker.unlock_notifications.close()
             broker.card_save_notifications.close()
             broker.pairing_notifications.close()
+            broker.sms_notifications.close()
             print('could not start HTTPS unlock; check origin, local port, TLS files and permissions '
                   '(key mode 0600), and that no other broker uses this port or socket', file=sys.stderr)
             return 2
