@@ -244,7 +244,7 @@ def _steps(steps, attrs: str = '') -> str:
 
 
 def _version_list(major: int | None, chosen: str) -> str:
-    detected = (f'This iPhone seems to run iOS {major}. ' if major is not None else '') + 'Choose another version if needed.'
+    detected = (f'This iPhone seems to run iOS {major}. ' if major is not None else '') + 'The steps match the version you choose.'
     options = ''.join(f'<option data-show="{key}"{" selected" if key == chosen else ""}>{label}</option>'
                       for key, label, _ in SHORTCUT_GROUPS)
     return (f'<div class="variant-field" data-wizard-first><div class="field"><label for="ios-version">iOS version</label>'

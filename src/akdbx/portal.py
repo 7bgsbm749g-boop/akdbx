@@ -125,7 +125,9 @@ button:disabled { cursor: default; opacity: .4; }
 .wizard.is-wizard .setup-steps li { color: #ffffffd9; font-size: 16px; line-height: 1.6; }
 .wizard.is-wizard .setup-steps li + li { margin-top: 0; }
 .wizard.is-wizard .copy-field { margin-top: 18px; }
-.variant-field { margin-top: 12px; }
+.variant-field { margin-top: 0; }
+/* The step heading already names the list; the label stays for screen readers. */
+.wizard.is-wizard .variant-field label { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .variant-field .field-hint { margin: 6px 0 0; }
 main:has(.wizard.is-wizard) { justify-content: flex-start; }
 .wizard-nav { display: flex; gap: 10px; margin-top: 22px; }
@@ -275,25 +277,30 @@ SCRIPT = r""""use strict";
     button.setAttribute("aria-pressed", String(visible));
   });
   // A wizard shows one step of its visible step list at a time: a step
-  // count, the step, the URL box on its steps and the step 1 extras.
+  // count, the step and the URL box on its steps. A page with a version list
+  // starts on a step 0 that shows the introduction and that list.
   // Without this script every step stays visible.
   function showStep(wizard, index) {
     const steps = Array.from(wizard.querySelectorAll("ol.setup-steps:not([hidden]) > li"));
+    const first = wizard.querySelector("[data-variant-select]") ? -1 : 0;
     const last = steps.length - 1;
-    index = Math.max(0, Math.min(index, last));
+    index = Math.max(first, Math.min(index, last));
     wizard.setAttribute("data-step", String(index));
     steps.forEach((step, i) => { step.hidden = i !== index; });
-    document.querySelectorAll("[data-wizard-first]").forEach(part => { part.hidden = index !== 0; });
-    wizard.querySelectorAll("[data-wizard-url]").forEach(box => { box.hidden = !steps[index].hasAttribute("data-url"); });
-    wizard.querySelector(".wizard-count").textContent = "Step " + (index + 1) + " of " + steps.length;
-    wizard.querySelector("[data-wizard-back]").hidden = index === 0;
-    wizard.querySelector("[data-wizard-next]").hidden = index === last;
+    document.querySelectorAll("[data-wizard-first]").forEach(part => { part.hidden = index !== first; });
+    wizard.querySelectorAll("[data-wizard-url]").forEach(part => { part.hidden = index < 0 || !steps[index].hasAttribute("data-url"); });
+    wizard.querySelector(".wizard-count").textContent =
+      index < 0 ? "Choose your iOS version" : "Step " + (index + 1) + " of " + steps.length;
+    wizard.querySelector("[data-wizard-back]").hidden = index === first;
+    const next = wizard.querySelector("[data-wizard-next]");
+    next.hidden = index === last;
+    next.querySelector("span").textContent = index < 0 ? "Start" : "Next";
   }
   document.querySelectorAll("[data-wizard]").forEach(wizard => {
     wizard.classList.add("is-wizard");
     wizard.querySelector(".wizard-count").hidden = false;
     wizard.querySelector(".wizard-nav").hidden = false;
-    showStep(wizard, 0);
+    showStep(wizard, -1);
   });
   document.addEventListener("click", event => {
     const button = event.target.closest("[data-wizard-next], [data-wizard-back]");
@@ -311,7 +318,7 @@ SCRIPT = r""""use strict";
     const chosen = list.selectedOptions[0]?.getAttribute("data-show");
     document.querySelectorAll('[data-variant-group="' + list.getAttribute("data-variant-select") + '"]')
       .forEach(steps => { steps.hidden = steps.getAttribute("data-variant") !== chosen; });
-    document.querySelectorAll("[data-wizard]").forEach(wizard => showStep(wizard, 0));
+    document.querySelectorAll("[data-wizard]").forEach(wizard => showStep(wizard, -1));
   });
   // A copy box carries its text in data-copy (the SMS webhook URL on its
   // private setup page). No input is read.
