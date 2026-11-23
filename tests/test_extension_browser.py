@@ -136,6 +136,40 @@ PAGES = {
     '/secret-modal-cover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<dialog id="d"><code id="secret" tabindex="0">'
                             f'{SECRET}</code></dialog><div id="p" popover style="position:fixed;inset:0;margin:0;width:100vw;'
                             'height:100vh;border:0;background:#fff"></div><script>d.showModal(); p.showPopover()</script>'),
+    # Covers that paint outside the inert element's own box, and a popover's opaque ::backdrop.
+    '/secret-inert-text': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
+                           '<div inert style="position:fixed;left:0;top:0;width:0;height:0;font:600px/1 monospace;'
+                           'color:#fff">\u2588\u2588</div>'),
+    '/secret-inert-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#c{{position:fixed;left:0;top:0;'
+                             'width:0;height:0}}#c::before{{content:"";display:block;width:900px;height:300px;'
+                             f'background:#fff}}</style><code id="secret" tabindex="0">{SECRET}</code><div id="c" inert></div>'),
+    '/secret-inert-slot': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
+                           f'<div id="host"><div style="{COVER.replace(";pointer-events:none", "")}"></div></div>'
+                           '<script>host.attachShadow({mode: "closed"}).innerHTML = '
+                           "'<div inert style=\"display:contents\"><slot></slot></div>'</script>"),
+    '/secret-popover-backdrop': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#p::backdrop{{background:#fff}}'
+                                 f'</style><code id="secret" tabindex="0">{SECRET}</code><div id="p" popover="manual" '
+                                 'style="position:fixed;width:0;height:0;border:0;padding:0"></div>'
+                                 '<script>p.showPopover()</script>'),
+    # A card field in a same-origin child frame, with covers in the top page that only the
+    # top page's own checks can see: a click-through cover in a closed shadow root, and an inert one.
+    '/card-field': ('<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number" '
+                    'style="width:200px;height:30px"></form>' + DIGEST),
+    '/card-frame': ('<!doctype html><meta charset="utf-8"><iframe id="pay" src="/card-field" '
+                    'style="width:400px;height:200px;border:0"></iframe>'),
+    '/card-frame-shadow': ('<!doctype html><meta charset="utf-8"><iframe id="pay" src="/card-field" '
+                           'style="width:400px;height:200px;border:0"></iframe><div id="host"></div>'
+                           '<script>host.attachShadow({mode: "closed"}).innerHTML = '
+                           f'`<div style="{COVER}"></div>`;</script>'),
+    '/card-frame-inert': ('<!doctype html><meta charset="utf-8"><iframe id="pay" src="/card-field" '
+                          'style="width:400px;height:200px;border:0"></iframe>'
+                          f'<div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'),
+    # The Stripe frame with an inert cover in the merchant page over only the number input.
+    '/checkout-inert': f'''<!doctype html><meta charset="utf-8"><h1>Merchant</h1>
+<iframe id="stripe" src="{STRIPE}" style="width:400px;height:200px;border:0"></iframe>
+<div inert id="cover" style="position:absolute;width:150px;height:20px;background:#fff"></div>
+<script>const box = stripe.getBoundingClientRect(); cover.style.left = (box.left + 2) + 'px';
+cover.style.top = (box.top + scrollY + 2) + 'px';</script>''',
     # A hidden middle frame in a closed shadow root (window.frames leaves it out) and a visible
     # about:blank decoy whose owner probe the page reads and forwards to the hidden frame.
     '/framed-shadow-decoy': '''<!doctype html><meta charset="utf-8"><h1>Outer page</h1>
@@ -713,7 +747,9 @@ def test_secret_capture_refuses_unfocused_selected_and_changed_secrets(harness):
 
 @pytest.mark.parametrize('page', ['/secret-covered', '/secret-covered-important', '/secret-shadow-cover',
                                   '/secret-shadow-important', '/secret-inert', '/secret-interactivity',
-                                  '/secret-shadow-pseudo', '/secret-inert-styled', '/secret-modal-cover'])
+                                  '/secret-shadow-pseudo', '/secret-inert-styled', '/secret-modal-cover',
+                                  '/secret-inert-text', '/secret-inert-pseudo', '/secret-inert-slot',
+                                  '/secret-popover-backdrop'])
 def test_secret_capture_refuses_a_click_through_cover(harness, page):
     lab = harness.lab
     url = lab.navigate(page)
@@ -721,7 +757,8 @@ def test_secret_capture_refuses_a_click_through_cover(harness, page):
     assert read_pin(harness, url) == failure()
     # The page keeps its own styles: the unmasking ends with the check.
     assert lab.evaluate("[...document.querySelectorAll('div')].every(d => getComputedStyle(d).pointerEvents === 'none' "
-                        "|| d.id === 'host' || d.hasAttribute('inert') || d.hasAttribute('popover') || getComputedStyle(d).interactivity === 'inert')")
+                        "|| d.id === 'host' || d.id === 'c' || d.parentElement.id === 'host' || d.hasAttribute('inert') "
+                        "|| d.hasAttribute('popover') || getComputedStyle(d).interactivity === 'inert')")
     assert lab.evaluate("[...document.querySelectorAll('div[inert]')].every(d => d.getAttribute('inert') === '')")
 
 
@@ -895,3 +932,40 @@ def test_a_page_cannot_stop_an_owner_probe_to_lend_a_decoy(harness):
                                        frame_id=login['frame_id'], top_url=url, selector='#password', mode='password',
                                        frame_protocol=1, frame_origin='https://auth.example.com', route='extension'))
     assert pin == failure()
+
+
+def framed_card_pin(harness, page):
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate(page)
+    lab.wait("document.getElementById('pay').contentDocument?.readyState === 'complete'")
+    listing = harness.frames(url)
+    child = next(f for f in listing['frames'] if f['depth'] == 1)
+    return url, broker.dispatch(dict(action='pin-card-target', card_protocol=1, page_id=listing['page_id'],
+                                     frame_id=child['frame_id'], top_url=url, selector='#number', field='cc-number',
+                                     route='extension'))
+
+
+def test_a_card_in_a_same_origin_child_frame_needs_every_parent_clear(harness):
+    lab, broker = harness.lab, harness.broker
+    url, target = framed_card_pin(harness, '/card-frame')
+    assert target['ok'], target
+    handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
+    assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
+                                field='cc-number'))['ok']
+    assert lab.evaluate("document.getElementById('pay').contentWindow.digest('number')", await_promise=True) == sha(CARD['number'])
+    for page in ('/card-frame-shadow', '/card-frame-inert'):
+        assert framed_card_pin(harness, page)[1] == card_failure(), page
+
+
+def test_a_processor_field_refuses_an_inert_cover_in_the_merchant_page(harness):
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate('/checkout-inert')
+    lab.wait("document.readyState === 'complete'")
+    session = harness.frame_session(STRIPE)
+    lab.observer.evaluate("document.getElementById('payment-numberInput').focus()", session)
+    frames = harness.frames(url)
+    stripe = {f['origin']: f for f in frames['frames']}['https://js.stripe.com']
+    target = broker.dispatch(dict(action='pin-card-target', card_protocol=1, page_id=frames['page_id'],
+                                  frame_id=stripe['frame_id'], top_url=url, selector='#payment-numberInput',
+                                  field='cc-number', route='extension', processor='stripe', processor_protocol=1))
+    assert target == card_failure()

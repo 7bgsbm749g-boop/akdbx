@@ -34,7 +34,7 @@
   const COMPUTOP_IDS = {"cc-name": "creditCardHolder", "cc-number": "_KKnr", "cc-exp": "expiry_date", "cc-csc": "cccvc"};
   const pins = new Map(), guards = new Map(), probes = new Map();
   const owners = new Map(), listens = new Map(), ownerProbes = new Map();
-  const MAX_NODES = 50000, MAX_FRAMES = 256, MAX_RECTS = 10, LISTEN_MS = 5000;
+  const MAX_NODES = 50000, MAX_FRAMES = 256, LISTEN_MS = 5000;
   let lastFocus = null;
 
   const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
@@ -93,8 +93,10 @@
     }
     if (!state) return null;
     // The hit tests again, now with the shadow sheets and the inert-cover check.
-    const ok = kind === "read" ? guarded(() => state.check(), () => readPoints(el), el)
-      : kind === "card" || kind === "identity" ? guarded(() => state.geometry(), point => [point], state.node()) : true;
+    // A processor field's parents are cross-origin: its merchant-side guard checks them.
+    const scope = kind === "card" && spec.processor ? [] : ancestors();
+    const ok = kind === "read" ? guarded(() => state.check(), el, [])
+      : kind === "card" || kind === "identity" ? scope && guarded(() => state.geometry(), state.node(), scope) : true;
     if (!ok) {
       try {
         if (state.dispose) state.dispose();
@@ -105,7 +107,7 @@
     }
     const id = randomId();
     pins.set(id, {kind, mode: kind === "password" ? spec.mode : kind === "read" ? "read" : spec.field, state, el,
-      created: performance.now()});
+      scope, created: performance.now()});
     return id;
   }
 
@@ -113,7 +115,7 @@
     const item = pins.get(id);
     try {
       if (!item || item.kind === "password" || item.kind === "read") return null;
-      return guarded(() => item.state.geometry(), point => [point], item.state.node());
+      return guarded(() => item.state.geometry(), item.state.node(), item.scope);
     } catch {
       return null;
     }
@@ -149,7 +151,7 @@
         return PASSWORD_FILL.call(item.state, values.mode, values.username, values.password, deadline) ? "filled" : "refused";
       }
       // No page code runs between this check and the fill: one synchronous task.
-      if (!guarded(() => item.state.geometry(), point => [point], item.state.node())) return "refused";
+      if (!guarded(() => item.state.geometry(), item.state.node(), item.scope)) return "refused";
       const state = item.state.fill(values.value, maxAgeMs);
       return state === "filled" || state === "refused" ? state : "uncertain";
     } catch {
@@ -174,7 +176,7 @@
     }
     try {
       const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
-      if (!guarded(() => item.state.check(), () => readPoints(item.el), item.el)) return null;
+      if (!guarded(() => item.state.check(), item.el, [])) return null;
       const value = READ.call(item.state, deadline);
       return typeof value === "string" ? value : null;
     } catch {
@@ -186,19 +188,6 @@
         // Nothing to clean up.
       }
     }
-  }
-
-  // Start, centre and end of each line of a read pin's text, like READ_CAPTURE's own hit test.
-  function readPoints(el) {
-    if (!el) return null;
-    let rects = [el.getBoundingClientRect()];
-    if (!(el instanceof HTMLInputElement)) {
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      rects = [...range.getClientRects()];
-    }
-    if (!rects.length || rects.length > MAX_RECTS) return null;
-    return rects.flatMap(r => [r.left + 1, r.left + r.width / 2, r.right - 1].map(x => ({x, y: r.top + r.height / 2})));
   }
 
   // ----- child-frame owners ----------------------------------------------
@@ -309,19 +298,19 @@
   // The service worker adds a user-origin style sheet that turns pointer-events
   // back on in this document; user !important rules beat every author rule,
   // inline !important included. That sheet does not reach shadow trees, so
-  // guarded() adopts the same rule into each open or closed shadow root, checks
-  // them and runs the hit test in one synchronous task: no page code runs
-  // between the check and the test. A shadow element or pseudo-element that
-  // stays not hit-testable has an inline or more specific !important rule: a
-  // deliberate cover, and the check refuses.
+  // guarded() adopts the same rule into each open or closed shadow root of every
+  // checked document, checks them and runs the hit test in one synchronous task:
+  // no page code runs between the check and the test. A shadow element or
+  // pseudo-element that stays not hit-testable has an inline or more specific
+  // !important rule: a deliberate cover, and the check refuses.
   const UNMASK_RULE = "*,*::before,*::after,*::backdrop{pointer-events:auto!important;interactivity:auto!important;" +
     "transition-behavior:normal!important}";
   const unhittable = style => style.pointerEvents === "none" || style.getPropertyValue("interactivity") === "inert";
   const rendered = style => style.content !== "none" && style.content !== "normal";
 
-  function shadowRoots() {
+  function shadowRoots(doc = document) {
     const found = [];
-    const pending = [document];
+    const pending = [doc];
     let seen = 0;
     while (pending.length) {
       const root = pending.pop();
@@ -337,81 +326,74 @@
     return found;
   }
 
-  function shadowCovers(roots) {
+  function shadowCovers(roots, view) {
     for (const root of roots) {
       for (const el of root.querySelectorAll("*")) {
-        if (unhittable(getComputedStyle(el)) && el.getClientRects().length) return true;
+        if (unhittable(view.getComputedStyle(el)) && el.getClientRects().length) return true;
         for (const pseudo of ["::before", "::after"]) {
-          const style = getComputedStyle(el, pseudo);
+          const style = view.getComputedStyle(el, pseudo);
           if (rendered(style) && unhittable(style)) return true;
         }
-        if (el.matches(":modal, :popover-open") && unhittable(getComputedStyle(el, "::backdrop"))) return true;
       }
     }
     return false;
   }
 
-  // Inert content is skipped by every hit test, and no style sheet changes
-  // that: an inert attribute, or a modal dialog, which makes the rest of its
-  // document inert, top-layer popovers included. So any visible inert element
-  // (light DOM or shadow root) whose box holds a checked point refuses, and so
-  // does a positioned pseudo-element of one, whose box the page cannot report.
-  // This also refuses a field above a page that marks its background inert.
-  function inertCovers(roots, points, target) {
-    const all = [document, ...roots];
-    const starts = [];
-    for (const root of all) starts.push(...root.querySelectorAll("[inert]"));
-    if (all.some(root => root.querySelector(":modal"))) {
-      for (const root of all) {
-        for (const el of root.querySelectorAll(":modal, :popover-open, :fullscreen")) {
-          if (!el.contains(target)) starts.push(el);
-        }
+  // Covers that no hit test sees, so the check refuses whenever one could paint:
+  // any rendered inert content (an inert element's box, overflow, pseudo-elements
+  // and slotted children all paint unseen by elementFromPoint), and any open
+  // top-layer element (popover, modal dialog, fullscreen) outside the checked
+  // element: its ::backdrop is never hit-tested, and a modal dialog makes the
+  // rest of its document inert. A page that marks its background inert, or has
+  // a popover open, refuses these pins; the CDP route fills there.
+  function unseenCovers(doc, roots, target) {
+    for (const root of [doc, ...roots]) {
+      for (const el of root.querySelectorAll("[inert]")) {
+        if (el.checkVisibility() || doc.defaultView.getComputedStyle(el).display === "contents") return true;
       }
-    }
-    const inside = (p, r) => p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
-    const pending = [...starts];
-    let seen = 0;
-    while (pending.length) {
-      const el = pending.pop();
-      if (++seen > MAX_NODES) return true;
-      pending.push(...el.children);
-      const shadow = chrome.dom.openOrClosedShadowRoot(el);
-      if (shadow) pending.push(...shadow.children);
-      if (el === target || el.contains(target) || !el.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})) continue;
-      for (const rect of el.getClientRects()) {
-        if (points.some(p => inside(p, rect))) return true;
-      }
-      for (const pseudo of ["::before", "::after"]) {
-        const style = getComputedStyle(el, pseudo);
-        if (rendered(style) && (style.position === "fixed" || style.position === "absolute")) return true;
+      for (const el of root.querySelectorAll(":popover-open, :modal, :fullscreen")) {
+        if (!el.contains(target)) return true;
       }
     }
     return false;
   }
 
-  // Run one hit check with every cover visible to it; returns its result or null.
-  function guarded(check, pointsOf, target) {
-    const roots = shadowRoots();
-    if (roots === null) return null;
-    const sheet = new CSSStyleSheet();
-    sheet.replaceSync(UNMASK_RULE);
+  // The same-origin documents above this one, each with the frame element that
+  // holds the next one down, up to the top; null when one cannot be reached.
+  function ancestors() {
+    const hops = [];
+    for (let view = window; view !== view.top; view = view.parent) {
+      const frame = view.frameElement;
+      if (!frame || hops.length >= 16) return null;
+      hops.push({doc: frame.ownerDocument, target: frame});
+    }
+    return hops;
+  }
+
+  // Run one hit check with every cover visible to it, in this document and the
+  // given ancestor documents, in one synchronous task; returns its result or null.
+  function guarded(check, target, hops) {
+    if (!Array.isArray(hops)) return null;
+    const scope = [{doc: document, target}, ...hops];
     const adopted = [];
     try {
-      for (const root of roots) {
-        root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
-        adopted.push(root);
+      for (const hop of scope) {
+        const roots = shadowRoots(hop.doc);
+        if (roots === null) return null;
+        // A constructed sheet can be adopted only by the document whose window made it.
+        const sheet = new hop.doc.defaultView.CSSStyleSheet();
+        sheet.replaceSync(UNMASK_RULE);
+        for (const root of roots) {
+          root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
+          adopted.push([root, sheet]);
+        }
+        if (shadowCovers(roots, hop.doc.defaultView) || unseenCovers(hop.doc, roots, hop.target)) return null;
       }
-      if (shadowCovers(roots)) return null;
-      const result = check();
-      if (!result) return null;
-      const points = pointsOf(result);
-      if (!Array.isArray(points) || !points.length || !points.every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y)) ||
-          inertCovers(roots, points, target)) return null;
-      return result;
+      return check() || null;
     } catch {
       return null;
     } finally {
-      for (const root of adopted) {
+      for (const [root, sheet] of adopted) {
         try {
           root.adoptedStyleSheets = root.adoptedStyleSheets.filter(item => item !== sheet);
         } catch {
@@ -419,13 +401,6 @@
         }
       }
     }
-  }
-
-  // The centre and corners of an element's box, just inside it.
-  function boxPoints(el) {
-    const r = el.getBoundingClientRect();
-    return [[r.left + r.width / 2, r.top + r.height / 2], [r.left + 1, r.top + 1], [r.right - 1, r.top + 1],
-      [r.left + 1, r.bottom - 1], [r.right - 1, r.bottom - 1]].map(([x, y]) => ({x, y}));
   }
 
   // Processor frames: retain the merchant's iframe owner and check its chain.
@@ -448,7 +423,7 @@
   function guardCheck(id, point) {
     const item = guards.get(id);
     try {
-      return Boolean(item && point && guarded(() => item.state.check(point), () => boxPoints(item.frame), item.frame));
+      return Boolean(item && point && guarded(() => item.state.check(point), item.frame, ancestors() || null));
     } catch {
       return false;
     }

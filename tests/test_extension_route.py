@@ -1550,6 +1550,8 @@ def test_cli_keeps_read_pins_on_cdp_for_a_broker_without_extension_capture(monke
                                       extension_capture_delivery='extension-dom-read-v1')) == 'extension'
     assert cli._read_route(SimpleNamespace(route='cdp'), dict(old, extension_capture_protocol=1,
                                                               extension_capture_delivery='extension-dom-read-v1')) == 'cdp'
+    new = dict(old, extension_capture_protocol=1, extension_capture_delivery='extension-dom-read-v1')
+    assert cli._read_route(SimpleNamespace(route=None, frame_origin='https://keys.example.com'), new) == 'cdp'
     broker = make_broker()
     real = broker.dispatch
 
@@ -1604,3 +1606,16 @@ def test_a_version_the_extension_did_not_report_breaks_every_sealed_value():
             unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, sealed, 'fill:' + 'a' * 32)
     finally:
         BOUND = bound
+
+
+
+def test_a_child_frame_read_pin_without_a_route_takes_cdp_when_the_extension_is_the_default():
+    broker = make_broker()
+    broker.extension.default_route = 'extension'
+    channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE), Document('SAME', 'https://keys.example.com/f', 'TOP')]})
+    calls = []
+    broker.passwords.pin = lambda request: calls.append(request) or dict(ok=True, target='c' * 64, expires_in=30,
+                                                                       target_delivery='chromium-password-dom-v1')
+    request = dict(action='pin-password-target', password_protocol=1, page_id='CDP-PAGE', frame_id='SAME', top_url=SECRET_SITE,
+                   selector='#secret', mode='read', capture_protocol=1, frame_protocol=1, frame_origin='https://keys.example.com')
+    assert broker.dispatch(request)['ok'] and len(calls) == 1 and 'pin' not in extension.calls

@@ -252,9 +252,14 @@ def _extension_capture(capabilities):
 
 
 def _read_route(args, capabilities):
-    """The route a read pin takes: --route, else the default route; an older broker reads only over CDP."""
+    """The route a read pin takes: --route, else the default route; an older broker reads only over CDP.
+
+    The extension reads only in the top document, so a child-frame read pin without --route takes CDP.
+    """
     if args.route is not None:
         return args.route
+    if getattr(args, 'frame_origin', None) is not None:
+        return 'cdp'
     default = capabilities.get('default_fill_route')
     return 'extension' if default == 'extension' and _extension_capture(capabilities) else 'cdp'
 

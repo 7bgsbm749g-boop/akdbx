@@ -280,12 +280,14 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   an adopted sheet; both also force `interactivity: auto`. A shadow element or
   pseudo-element that is still not hit-testable (an inline or more specific
   `!important` rule) refuses. The shadow sheets, that check and the hit test
-  run in one synchronous task. Inert content is skipped by every hit test, and
-  no style sheet changes that: the `inert` attribute, and the inertness that a
-  modal dialog gives the rest of its document, top-layer popovers included. So
-  any visible inert element whose box holds a checked point refuses, and so
-  does a positioned pseudo-element of one. This also refuses a field above a
-  page that marks its own background `inert` (use the CDP route there). Both
+  run in one synchronous task, in the field's document and in each same-origin
+  parent document (a processor frame's parents are checked by its merchant-side
+  guard). Some covers are seen by no hit test, so these pins refuse whenever one
+  could paint: any rendered `inert` content, and any open popover, modal dialog
+  or fullscreen element that does not hold the field (a `::backdrop` is never
+  hit-tested, and a modal dialog makes the rest of its document inert). A page
+  that marks its background `inert` or has a popover open therefore refuses
+  card, address and read pins on this route; the CDP route fills there. Both
   sheets go when the check ends. A page with more than 50,000 elements refuses
   these pins.
 
