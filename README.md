@@ -117,7 +117,7 @@ shown-once secrets shown in the top document, and it holds a child frame's
 handshake). Read pins and password pins in a child frame then need fill
 extension 0.4.0; an older one is refused until it is built again.
 
-From 0.33.0 (fill extension 0.5.0) card, address and read pins on the extension
+From 0.34.0 (fill extension 0.5.0) card, address and read pins on the extension
 route also refuse a field or secret under any cover, click-through and inert
 ones included. The browser's own occlusion test (`IntersectionObserver` v2)
 decides too, and a pixel check paints the field in a random colour for about a

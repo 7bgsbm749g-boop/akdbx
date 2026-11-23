@@ -76,7 +76,7 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
   tested on Windows; the extension route is tested with a Stripe frame.
 - The extension route (0.32.0+, fill extension 0.4.0) holds child-frame
   `<iframe>` owners and captures secrets in the top document, as the CDP route
-  does. From 0.33.0 (fill extension 0.5.0) it also refuses a card, address or
+  does. From 0.34.0 (fill extension 0.5.0) it also refuses a card, address or
   secret target under any cover, with the browser's occlusion test and a pixel
   check of the active tab. Pairing is held in memory only: a
   browser or broker restart needs a new pairing with the master password.

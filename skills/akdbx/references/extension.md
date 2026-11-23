@@ -303,7 +303,7 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   then gets the CDP route's owner guard (connected, visible, no `srcdoc`, safe
   `sandbox`, no attribute change), checked at pin and again before the fill or
   read.
-- Covers (0.33.0+, fill extension 0.5.0): a card, address or read pin needs proof that nothing is
+- Covers (0.34.0+, fill extension 0.5.0): a card, address or read pin needs proof that nothing is
   painted over the field or the secret. `elementFromPoint` cannot give it (it
   skips click-through and inert covers), and no list of selectors names every
   cover. The extension asks the browser instead, in two steps, at the pin and
