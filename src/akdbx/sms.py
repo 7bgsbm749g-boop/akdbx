@@ -182,7 +182,7 @@ class Message:
 class Setup:
     source: str
     kind: str
-    token: str
+    token: str | None  # None: a test page, which never shows the webhook URL
     token_sha256: str
     expires: float
 
@@ -372,6 +372,17 @@ class SmsInbox:
             self.setups[key] = Setup(name, source.kind, token, source.token_sha256, self.clock() + SETUP_TTL)
         return key
 
+    def new_test_page(self, name: object) -> str:
+        """A private page with only the live test step for a source; it never shows the webhook URL."""
+        key = secrets.token_urlsafe(32)
+        with self.condition:
+            self._prune()
+            source = self.sources.get(name) if isinstance(name, str) else None
+            if source is None:
+                raise SmsError('unknown SMS source')
+            self.setups[key] = Setup(name, source.kind, None, source.token_sha256, self.clock() + SETUP_TTL)
+        return key
+
     def setup(self, key: object) -> Setup | None:
         if not isinstance(key, str) or not TOKEN.fullmatch(key):
             return None
@@ -517,7 +528,7 @@ def webhook_url(origin: str, token: str) -> str:
 # Broker actions ----------------------------------------------------------
 
 COMMANDS = ('sms-add-source', 'sms-remove-source', 'sms-sources', 'sms-wait', 'pin-code-target', 'fill-sms-code',
-            'subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms')
+            'subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms', 'sms-test-page')
 FILL_START_TIMEOUT = 4.0
 
 
@@ -571,6 +582,14 @@ def dispatch(broker, request: dict, delivery_ready) -> dict:
             return _fill(broker, request, delivery_ready)
         if action == 'subscribe-sms':
             return broker.sms_notifications.subscribe_text(request, received=inbox.newest)
+        if action == 'sms-test-page':
+            if set(request) != {'action', 'sms_protocol', 'name'}:
+                raise SmsError('invalid SMS request')
+            origin = getattr(getattr(broker, 'unlock_link', None), 'origin', None)
+            if not isinstance(origin, str) or not origin.startswith('https://'):
+                raise SmsError('this broker has no HTTPS private page origin')
+            key = inbox.new_test_page(request['name'])
+            return dict(ok=True, name=request['name'], private_url=origin + ROUTE_SETUP + '?token=' + key)
         if action in {'sms-subscription-status', 'unsubscribe-sms'}:
             if set(request) != {'action', 'sms_protocol', 'subscription_id'}:
                 raise SmsError('invalid SMS request')

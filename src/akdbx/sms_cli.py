@@ -13,7 +13,7 @@ from .sms import KINDS, MAX_WAIT, MESSAGE_ID, NAME, PROTOCOL, RESULTS, ROUTE_SET
 from .target import DELIVERY as X11_DELIVERY
 
 COMMANDS = {'sms-add-source', 'sms-remove-source', 'sms-sources', 'sms-wait', 'pin-code-target', 'fill-sms-code',
-            'subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms'}
+            'subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms', 'sms-test-page'}
 SUBSCRIPTION_STATES = {'subscribed', 'pending', 'sending', 'delivered', 'failed', 'cancelled', 'expired'}
 SUBSCRIPTION_ERRORS = {'unknown or expired sms subscription',
                        'sms notification protocol 1 and a valid source name or none required',
@@ -44,6 +44,9 @@ def add_parsers(commands):
     p.add_argument('--replace', action='store_true', help='issue a new webhook URL for an existing source')
     p.add_argument('--target', help='fresh pin-code-target token for a webhook-url field: type the URL there '
                                     'instead of returning a setup page (for example the Twilio Console)')
+    p = commands.add_parser('sms-test-page', help='a private page that waits for a test text from a working source '
+                                                  'and shows when its code arrives; the webhook URL stays the same')
+    p.add_argument('name', type=_name)
     p = commands.add_parser('sms-remove-source', help='remove an SMS source; its webhook URL stops working')
     p.add_argument('name', type=_name)
     commands.add_parser('sms-sources', help='list SMS sources (names and kinds; never tokens)')
@@ -148,6 +151,9 @@ def valid_receipt(args, response):
             return set(response) == base | {'private_url'} and _setup_url(response['private_url'])
         return (set(response) == base | {'filled', 'code_delivery'} and response['filled'] == 'webhook-url'
                 and response['code_delivery'] == DELIVERY)
+    if args.command == 'sms-test-page':
+        return (set(response) == {'ok', 'name', 'private_url'} and response['name'] == args.name
+                and _setup_url(response['private_url']))
     if args.command == 'sms-remove-source':
         return set(response) == {'ok', 'removed'} and type(response['removed']) is bool
     if args.command == 'sms-sources':
@@ -188,7 +194,7 @@ def run(args, request):
                                                   'or newer; subscription request not sent')))
             return 1
         payload = dict(action=args.command, sms_protocol=PROTOCOL)
-        if args.command in {'sms-add-source', 'sms-remove-source'}:
+        if args.command in {'sms-add-source', 'sms-remove-source', 'sms-test-page'}:
             payload['name'] = args.name
         if args.command == 'sms-add-source':
             payload['kind'] = args.kind

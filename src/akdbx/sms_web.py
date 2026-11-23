@@ -245,6 +245,8 @@ WEBHOOK_STEPS = (
     'Send JSON <code>{"text": "...", "from": "..."}</code>, or a form with <code>Body</code> and <code>From</code>.',
     'Test it: text <code>Your test code is 482913</code> to the number. This page shows when the code arrives.',
 )
+# The live test step of each kind, for a test-only page.
+TEST_STEPS = {'shortcut': TEST_STEP, 'twilio': TWILIO_STEPS[-1], 'webhook': WEBHOOK_STEPS[-1]}
 
 
 # The circle and the tick are drawn at the same time (pathLength 1, dash offset 1 to 0).
@@ -302,6 +304,12 @@ def _live_test(kind: str, wait_url: str, count: int) -> str:
             '<button type="button" class="wizard-next" data-wizard-close><span>Done</span></button></div>')
 
 
+WIZARD_NAV = ('<div class="wizard-nav" hidden>'
+              '<button type="button" class="wizard-back" data-wizard-back><span>Back</span></button>'
+              '<button type="button" class="wizard-skip" data-wizard-skip hidden><span>Skip test</span></button>'
+              '<button type="button" class="wizard-next" data-wizard-next><span>Next</span></button></div>')
+
+
 def _instructions(kind: str, url: str, major: int | None, test: str = '') -> str:
     """The step wizard: a step count, the step, the URL box on its steps, the version list on step 1.
 
@@ -320,10 +328,7 @@ def _instructions(kind: str, url: str, major: int | None, test: str = '') -> str
             + '<p class="setup-note" data-wizard-url>Keep this URL private: anyone who has it can send texts to AKDBX. '
               f'If it leaks, ask your agent for a new one. This page closes {SETUP_TTL // 3600} hour after it was made.</p>'
             + versions + test
-            + '<div class="wizard-nav" hidden>'
-              '<button type="button" class="wizard-back" data-wizard-back><span>Back</span></button>'
-              '<button type="button" class="wizard-skip" data-wizard-skip hidden><span>Skip test</span></button>'
-              '<button type="button" class="wizard-next" data-wizard-next><span>Next</span></button></div></div>')
+            + WIZARD_NAV + '</div>')
 
 
 def _setup(handler, state) -> None:
@@ -335,10 +340,19 @@ def _setup(handler, state) -> None:
         handler._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>This SMS setup link is not valid any more. '
                                                   'Ask your agent for a new one.</p>'))
         return
-    url = webhook_url(origin, setup.token)
-    major = ios_major(handler.headers.get('User-Agent', '')) if setup.kind == 'shortcut' else None
     status = state.broker.sms.setup_status(token) or {'count': 0}
     test = _live_test(setup.kind, f'{ROUTE_SETUP_WAIT}?token={token}', status['count'])
+    if setup.token is None:
+        # A test page for a working source: only the live test, no webhook URL.
+        step = TEST_STEPS.get(setup.kind, TEST_STEPS['webhook'])
+        body = ('<p data-wizard-first>Check that texts reach AKDBX. Send a test text; this page shows when the code '
+                'arrives. The agent never sees the code.</p>'
+                f'<div class="wizard" data-wizard><p class="wizard-count" aria-live="polite" hidden></p>'
+                f'{_steps((step,))}{test}' + WIZARD_NAV + '</div>')
+        handler._send(HTTPStatus.OK, _page('Test SMS forwarding', body))
+        return
+    url = webhook_url(origin, setup.token)
+    major = ios_major(handler.headers.get('User-Agent', '')) if setup.kind == 'shortcut' else None
     # The introduction shows on step 1 only; the URL note shows with the URL box.
     sender = {'shortcut': 'Your iPhone', 'twilio': 'Your Twilio number'}.get(setup.kind, 'Your SMS service')
     body = (f'<p data-wizard-first>{sender} will send its verification texts to AKDBX, so your agent can fill in the '

@@ -471,3 +471,20 @@ def test_setup_page_live_test_route_waits_for_the_test_text(served):
     assert b'482913' not in body
     for path in (f'/sms/setup/wait?token={"B" * 43}&after=0', f'/sms/setup/wait?token={key}&after=x'):
         assert https(served.port, served.cert, 'GET', path, host=served.host)[0] == 404
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Linux loopback HTTPS fixture')
+def test_test_page_waits_for_a_text_without_showing_or_changing_the_webhook_url(served):
+    broker = served.broker
+    first = broker.dispatch(dict(action='sms-add-source', sms_protocol=1, name='iphone', kind='shortcut'))
+    token = broker.sms.setup(urlsplit(first['private_url']).query.split('=', 1)[1]).token
+    receipt = broker.dispatch(dict(action='sms-test-page', sms_protocol=1, name='iphone'))
+    assert set(receipt) == {'ok', 'name', 'private_url'} and receipt['ok'] is True
+    assert sms_cli.valid_receipt(SimpleNamespace(command='sms-test-page', name='iphone'), receipt)
+    page = urlsplit(receipt['private_url'])
+    status, _, body = https(served.port, served.cert, 'GET', page.path + '?' + page.query, host=served.host)
+    assert status == 200 and b'Test SMS forwarding' in body and b'data-test>' in body and b'data-wizard-test' in body
+    assert token.encode() not in body and b'/sms/in/' not in body and b'class="copy-field"' not in body
+    assert broker.sms.source_for(token).name == 'iphone'  # the webhook URL still works
+    assert broker.dispatch(dict(action='sms-test-page', sms_protocol=1, name='nope')) == dict(
+        ok=False, error='unknown SMS source')
