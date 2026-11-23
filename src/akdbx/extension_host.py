@@ -528,6 +528,8 @@ def _content_script():
         '__READ_CAPTURE__': browser_password.READ_CAPTURE,
         '__READ__': browser_password.READ,
         '__OWNER_GUARD__': password_frames.OWNER_GUARD,
+        '__READ_SELECTOR__': json.dumps(browser_password.READ_SELECTOR.pattern),
+        '__MAX_READ_SELECTOR__': str(browser_password.MAX_READ_SELECTOR),
     }
     for marker, value in replacements.items():
         if text.count(marker) != 1:

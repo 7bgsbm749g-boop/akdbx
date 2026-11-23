@@ -199,12 +199,20 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   selection, one visible single-line text, same-site frame chain). The broker
   seals the read request with the pin's facts; the extension seals the value
   to the broker under a second key (`akdbx-extension-capture-v1`), bound to
-  that pin. The receipt says `capture_delivery: "extension-dom-read-v1"`.
+  that pin. The native host relays the broker's per-connection key, so the
+  broker signs that key and the extension's key with its identity key
+  (`channel_signature`); the extension reads only for a connection that the
+  identity key it learned over HTTPS at its first pairing signed. Before that
+  first binding, read pins refuse. In a child frame the secret's text must also
+  be on top in every parent document. The receipt says
+  `capture_delivery: "extension-dom-read-v1"`.
   Without `--route`, a read pin takes the broker's default route when the
   broker advertises `extension_capture_protocol: 1`, else the CDP route.
 - Card, identity and read pins, and password pins in a child frame, need fill
   extension 0.4.0 or newer; the broker refuses them from an older one. Build
-  the extension again and reload it.
+  the extension again and reload it. From 0.4.0 both sealing keys bind the
+  version the extension reports, so a host that reports another version makes
+  every sealed message fail.
 
 ## User-click workflow
 
@@ -248,9 +256,12 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   checks, which the build step copies in.
 - Frame owners (0.32.0+): the browser names a child frame's parent document
   but not its `<iframe>` element. The parent's isolated world posts a fresh
-  nonce into each of its iframes, and the child's isolated world reports the
-  nonces its parent window sent; exactly one names the owner. A page that
-  repeats a nonce it saw makes the child hear two, which refuses. That owner
+  nonce into each of its child windows, and the child's isolated world reports
+  the nonces its parent window sent; exactly one names the owner. The listener
+  starts at `document_start` and stops every probe, so a page neither sees nor
+  stops one; in a page that was open before the extension loaded, child-frame
+  password and read pins refuse until the page reloads. A page that repeats a
+  nonce makes the child hear two, which refuses. That owner
   then gets the CDP route's owner guard (connected, visible, no `srcdoc`, safe
   `sandbox`, no attribute change), checked at pin and again before the fill or
   read.
@@ -260,9 +271,13 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   document of the chain gets a user-origin style sheet that forces
   `pointer-events: auto` (user `!important` beats every author rule, inline
   `!important` too), and each open or closed shadow root gets the same rule as
-  an adopted sheet. A shadow element that keeps `pointer-events: none` (an
-  inline `!important` rule) refuses. Both sheets go when the check ends. A page
-  with more than 50,000 elements refuses these pins.
+  an adopted sheet; both also force `interactivity: auto`. A shadow element or
+  pseudo-element that is still not hit-testable (an inline or more specific
+  `!important` rule) refuses. The `inert` attribute also hides a cover, and no
+  style sheet changes that, so each check runs once as is and once with every
+  `inert` attribute lifted, in the same synchronous task, and restored before
+  any page code runs. Both sheets go when the check ends. A page with more than
+  50,000 elements or 1,024 `inert` elements refuses these pins.
 
 ## Setup
 

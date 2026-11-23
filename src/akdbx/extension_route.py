@@ -111,6 +111,9 @@ MAX_POPUP_REQUESTS = 4
 PUBLIC_KEY = re.compile(r'[A-Za-z0-9_-]{87}')  # base64url, 65-byte uncompressed P-256 point
 HKDF_INFO = b'akdbx-extension-v1'
 CAPTURE_INFO = b'akdbx-extension-capture-v1'  # Extension -> broker: captured secrets only.
+# A 4096-character value of 3-byte characters plus a nine-hop chain, sealed and base64url-encoded,
+# fits; the host's frames stop at 64 KiB.
+MAX_CAPTURE_SEALED = 48 * 1024
 CODE_PREFIX = b'akdbx-pairing-code\0'
 CHANNEL_ID = re.compile(r'[0-9a-f]{8}')
 PAGE_ID = re.compile(r'([0-9a-f]{8})\.([0-9]{1,10})')
@@ -302,16 +305,20 @@ class Channel:
         from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.hazmat.primitives.kdf.hkdf import HKDF
         self.hub, self.connection, self.browser, self.version = hub, connection, browser, version
+        self.public_key = public_key
         self.digest = hashlib.sha256(public_key).digest()
         own = ec.generate_private_key(ec.SECP256R1())
         self.broker_public_key = own.public_key().public_bytes(serialization.Encoding.X962,
                                                                serialization.PublicFormat.UncompressedPoint)
         shared = own.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), public_key))
+        # From fill extension 0.4.0 both keys bind the version the extension reported:
+        # a host that reports another version makes every sealed message fail.
+        bound = b'/' + version.encode('ascii') if self.supports_capture() else b''
         self._seal_key = HKDF(hashes.SHA256(), 32, salt=bytes(32),
-                              info=HKDF_INFO + public_key + self.broker_public_key).derive(shared)
+                              info=HKDF_INFO + bound + public_key + self.broker_public_key).derive(shared)
         # A separate key for the other direction: a value the broker sealed can never pass as a capture.
         self._capture_key = HKDF(hashes.SHA256(), 32, salt=bytes(32),
-                                 info=CAPTURE_INFO + public_key + self.broker_public_key).derive(shared)
+                                 info=CAPTURE_INFO + bound + public_key + self.broker_public_key).derive(shared)
         self.id = secrets.token_hex(4)
         self.send_lock = threading.Lock()
         self.pending = {}
@@ -333,7 +340,7 @@ class Channel:
         from cryptography.exceptions import InvalidTag
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
         if not isinstance(sealed, dict) or set(sealed) != {'iv', 'data'} or not all(
-                isinstance(sealed[k], str) and 0 < len(sealed[k]) <= 16384 for k in ('iv', 'data')):
+                isinstance(sealed[k], str) and 0 < len(sealed[k]) <= MAX_CAPTURE_SEALED for k in ('iv', 'data')):
             return None
         try:
             nonce = base64.urlsafe_b64decode(sealed['iv'] + '=' * (-len(sealed['iv']) % 4))
@@ -520,6 +527,8 @@ class ExtensionHub:
         if identity is not None:
             # Signed by the broker's identity key: a relaying host cannot change it.
             message['identity'] = identity.message()
+            # The extension seals captured secrets only to a broker key that this signs.
+            message['channel_signature'] = identity.sign_channel(channel.broker_public_key, channel.public_key)
         if not paired:
             message['pairing'] = self._pairing_info(channel.digest)
         # A blocked link is never offered; the agent replaces it after asking the user.

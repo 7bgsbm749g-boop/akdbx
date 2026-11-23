@@ -57,6 +57,7 @@ import re
 from .relay import PrivateFolder
 
 STATEMENT_TYPE = 'akdbx-origin'
+CHANNEL_TYPE = 'akdbx-channel'
 STATEMENT_VERSION = 1
 MAX_SEQ = 2 ** 53 - 1
 FILE_VERSION = 1
@@ -116,9 +117,6 @@ class Identity:
     """One broker identity at one origin: the signed statement the extension receives."""
 
     def __init__(self, private_key, origin, seq, *, changed=False):
-        from cryptography.hazmat.primitives import hashes
-        from cryptography.hazmat.primitives.asymmetric import ec
-        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
         if type(seq) is not int or not 1 <= seq <= MAX_SEQ:
             raise IdentityError('the origin sequence number is out of range')
         self.origin, self.seq, self.changed = canonical_origin(origin), seq, changed
@@ -127,8 +125,26 @@ class Identity:
         self.key_id = key_id(point)
         self.statement = {'type': STATEMENT_TYPE, 'v': STATEMENT_VERSION, 'origin': self.origin, 'seq': seq,
                           'key_id': self.key_id}
-        r, s = decode_dss_signature(private_key.sign(canonical_bytes(self.statement), ec.ECDSA(hashes.SHA256())))
-        self.signature = b64url(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))
+        self._private_key = private_key
+        self.signature = self._sign(self.statement)
+
+    def _sign(self, statement):
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+        r, s = decode_dss_signature(self._private_key.sign(canonical_bytes(statement), ec.ECDSA(hashes.SHA256())))
+        return b64url(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))
+
+    def sign_channel(self, broker_key, extension_key):
+        """Sign one extension connection: the broker's per-connection ECDH key and the extension's key.
+
+        The native host relays the broker's key, so it could offer its own; the
+        extension seals a captured secret only to a key that this signature covers.
+        Signed bytes: ``{"broker_key":B,"extension_key":E,"key_id":K,"type":"akdbx-channel","v":1}``
+        with the same canonical encoding, B and E base64url of the 65-byte points.
+        """
+        return self._sign({'type': CHANNEL_TYPE, 'v': STATEMENT_VERSION, 'key_id': self.key_id,
+                           'broker_key': b64url(broker_key), 'extension_key': b64url(extension_key)})
 
     def __repr__(self):
         return f'Identity(origin={self.origin!r}, seq={self.seq}, key_id={self.key_id!r})'

@@ -36,7 +36,7 @@ from akdbx.cards import FIELDS, MARKER
 from akdbx.target import failure
 from test_broker import Entry, Vault
 from test_windows_unlock import certificates  # noqa: F401
-from windows_chromium_lab import ORIGIN, chromium_lab
+from windows_chromium_lab import FORM, ORIGIN, chromium_lab
 
 CARD = dict(name='Synthetic Cardholder', number='4111111111111111', month='09', year='2031', csc='123')
 
@@ -113,6 +113,46 @@ PAGES = {
     '/framed-visible': LOGIN_FRAME.format(''),
     '/framed-hidden': LOGIN_FRAME.format('opacity:0'),
     '/decoy': '<!doctype html><meta charset="utf-8"><p>decoy</p>',
+    # Covers that elementFromPoint skips even with pointer-events on: the inert attribute, CSS
+    # interactivity, and a pseudo-element in a closed shadow root with a more specific !important rule.
+    '/secret-inert': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
+                      f'<div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'),
+    '/secret-interactivity': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
+                              f'<div style="{COVER.replace("pointer-events:none", "interactivity:inert !important")}"></div>'),
+    '/secret-shadow-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
+                              '<div id="host"></div><script>host.attachShadow({mode: "closed"}).innerHTML = '
+                              '`<style>#c::before{content:"";position:fixed;left:0;top:0;width:900px;height:300px;'
+                              'background:#fff;pointer-events:none !important}</style><div id="c"></div>`;</script>'),
+    '/card-inert': ('<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number" '
+                    f'style="width:200px;height:30px"></form><div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'
+                    + DIGEST),
+    # A secret in a same-site child frame, with and without a cover over the frame in the top page.
+    '/framed-secret': ('<!doctype html><meta charset="utf-8"><iframe id="keys" src="https://auth.example.com/secret" '
+                       'style="width:700px;height:200px;border:0"></iframe>'),
+    '/framed-secret-covered': ('<!doctype html><meta charset="utf-8"><iframe id="keys" src="https://auth.example.com/secret" '
+                               'style="width:700px;height:200px;border:0"></iframe>'
+                               '<div style="position:absolute;left:0;top:0;width:700px;height:200px;background:#fff"></div>'),
+    # An attacker with pages on the login origin: the login page stops the first (genuine) owner
+    # probe, and a visible decoy on the same origin relays its own probe through the top page.
+    '/login-suppress': FORM + '''<script>let first = true;
+addEventListener('message', event => {
+  if (event.data && event.data.akdbx_owner && first) {
+    first = false;
+    event.stopImmediatePropagation();
+  }
+}, true);</script>''',
+    '/decoy-relay': '''<!doctype html><meta charset="utf-8"><p>decoy</p><script>
+addEventListener('message', event => {
+  if (event.data && event.data.akdbx_owner) parent.postMessage({relay: event.data.akdbx_owner}, '*');
+}, true);</script>''',
+    '/framed-suppress': '''<!doctype html><meta charset="utf-8"><h1>Outer page</h1>
+<iframe id="decoy" src="https://auth.example.com/decoy-relay" style="width:600px;height:300px;border:0"></iframe>
+<iframe id="login" src="https://auth.example.com/login-suppress" style="width:600px;height:300px;border:0;opacity:0"></iframe>
+<script>
+addEventListener('message', event => {
+  if (event.data && event.data.relay) login.contentWindow.postMessage({akdbx_owner: event.data.relay}, 'https://auth.example.com');
+});
+</script>''',
     # A hostile page: the real login frame is transparent inside a closed shadow root, and the page
     # forwards the nonce that its own visible decoy frame receives to the login frame.
     '/framed-forward': '''<!doctype html><meta charset="utf-8"><h1>Outer page</h1>
@@ -595,14 +635,24 @@ def read_pin(harness, url, **extra):
     return harness.broker.dispatch(request)
 
 
-def read_value(harness, pin):
+def trusted(harness):
+    """The worker binds the broker identity key over HTTPS; reads need it for the signed connection."""
+    deadline = time.monotonic() + 30
+    read = "chrome.storage.local.get('broker_trust').then(found => found.broker_trust ?? null)"
+    while harness.worker_call(read) is None:
+        assert time.monotonic() < deadline, 'the extension did not bind the broker identity key'
+        time.sleep(.2)
+
+
+def read_value(harness, pin, origin=ORIGIN):
     """Run the broker's own extension read for a pin token; the test compares digests only."""
     from akdbx.totp import https_origin
+    trusted(harness)
     broker = harness.broker
     target = broker.extension.take(pin['target'], 'read')
     assert target is not None
     try:
-        value = broker.extension.read(target, {https_origin(ORIGIN)}, lambda: True, broker.clock() + 4)
+        value = broker.extension.read(target, {https_origin(origin)}, lambda: True, broker.clock() + 4)
     except Exception:
         return None
     finally:
@@ -641,7 +691,8 @@ def test_secret_capture_refuses_unfocused_selected_and_changed_secrets(harness):
 
 
 @pytest.mark.parametrize('page', ['/secret-covered', '/secret-covered-important', '/secret-shadow-cover',
-                                  '/secret-shadow-important'])
+                                  '/secret-shadow-important', '/secret-inert', '/secret-interactivity',
+                                  '/secret-shadow-pseudo'])
 def test_secret_capture_refuses_a_click_through_cover(harness, page):
     lab = harness.lab
     url = lab.navigate(page)
@@ -649,7 +700,8 @@ def test_secret_capture_refuses_a_click_through_cover(harness, page):
     assert read_pin(harness, url) == failure()
     # The page keeps its own styles: the unmasking ends with the check.
     assert lab.evaluate("[...document.querySelectorAll('div')].every(d => getComputedStyle(d).pointerEvents === 'none' "
-                        "|| d.id === 'host')")
+                        "|| d.id === 'host' || d.hasAttribute('inert') || getComputedStyle(d).interactivity === 'inert')")
+    assert lab.evaluate("[...document.querySelectorAll('div[inert]')].every(d => d.getAttribute('inert') === '')")
 
 
 def card_pin(harness, url):
@@ -662,6 +714,7 @@ def card_pin(harness, url):
 def test_card_pins_refuse_a_click_through_cover_and_keep_a_floating_label(harness):
     lab, broker = harness.lab, harness.broker
     assert card_pin(harness, lab.navigate('/card-covered')) == card_failure()
+    assert card_pin(harness, lab.navigate('/card-inert')) == card_failure()
     target = card_pin(harness, lab.navigate('/card-label'))
     assert target['ok'], target
     handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
@@ -678,7 +731,7 @@ def test_card_pins_refuse_a_click_through_cover_and_keep_a_floating_label(harnes
     assert lab.digest('number') == EMPTY
 
 
-def same_site_frame(harness, url):
+def same_site_frame(harness, url, ready='password'):
     """An isolated world in the same-site login frame (same process as the top, so no own target)."""
     lab = harness.lab
     deadline = time.monotonic() + 10
@@ -695,7 +748,7 @@ def same_site_frame(harness, url):
                                              lab.session)
                 assert 'exceptionDetails' not in response, response['exceptionDetails'].get('text')
                 return response['result'].get('value')
-            if evaluate("document.readyState === 'complete' && !!document.getElementById('password')"):
+            if evaluate(f"document.readyState === 'complete' && (!{json.dumps(ready)} || !!document.getElementById({json.dumps(ready)}))"):
                 return evaluate
         time.sleep(.05)
     raise AssertionError('same-site login frame missing')
@@ -750,3 +803,57 @@ def test_a_page_cannot_lend_a_decoy_iframe_to_a_hidden_login_frame(harness):
     frame, pin = frame_password_pin(harness, url)
     assert pin == failure()
     assert frame(FRAME_DIGEST, True) == EMPTY
+
+
+def test_a_read_pin_never_takes_a_selector_that_could_test_the_secret(harness):
+    """The pin call comes through the host unsealed: the extension itself refuses attribute selectors."""
+    lab = harness.lab
+    url = lab.navigate('/secret')
+    harness.focus('secret')
+    listing = harness.frames(url)
+    tab = int(listing['page_id'].split('.')[1])
+    for selector in ('#secret', '#secret:not([id=x])', 'code[id^="se"]', 'body:has(code) #secret'):
+        call = json.dumps(dict(tab_id=tab, document_id=listing['main_frame_id'], top_url=url, frame_url=None,
+                               kind='read', spec=dict(selector=selector, frame_origin=None)))
+        result = harness.worker_call(f'pin({call}).then(r => (r.ok && release({{tab_id: {tab}, document_id: '
+                                     f'{json.dumps(listing["main_frame_id"])}, pin_id: r.pin_id}}), r.ok))')
+        assert result is (selector == '#secret'), selector
+
+
+def framed_read_pin(harness, url):
+    lab = harness.lab
+    lab.wait("document.readyState === 'complete'")
+    frame = same_site_frame(harness, 'https://auth.example.com/secret', ready='secret')
+    frame("window.focus(); document.getElementById('secret').focus()")
+    listing = harness.frames(url)
+    keys = next(f for f in listing['frames'] if f['origin'] == 'https://auth.example.com')
+    return read_pin(harness, url, frame_id=keys['frame_id'], frame_protocol=1, frame_origin='https://auth.example.com')
+
+
+def test_a_child_frame_secret_is_read_only_when_its_frame_is_on_top(harness):
+    lab = harness.lab
+    pin = framed_read_pin(harness, lab.navigate('/framed-secret'))
+    assert pin['ok'], pin
+    assert read_value(harness, pin, 'https://auth.example.com') == sha(SECRET)
+    assert framed_read_pin(harness, lab.navigate('/framed-secret-covered')) == failure()
+    # A cover added after the pin refuses the read.
+    pin = framed_read_pin(harness, lab.navigate('/framed-secret'))
+    assert pin['ok'], pin
+    lab.evaluate("document.body.insertAdjacentHTML('beforeend', '<div style=\"position:absolute;left:0;top:0;"
+                 "width:700px;height:200px;background:#fff\"></div>')")
+    assert read_value(harness, pin, 'https://auth.example.com') is None
+
+
+def test_a_page_cannot_stop_an_owner_probe_to_lend_a_decoy(harness):
+    lab = harness.lab
+    url = lab.navigate('/framed-suppress')
+    same_site_frame(harness, 'https://auth.example.com/decoy-relay', ready='')  # Both frames loaded.
+    frame = same_site_frame(harness, 'https://auth.example.com/login-suppress')
+    frame("window.focus(); document.getElementById('password').focus()")
+    listing = harness.frames(url)
+    login = next(f for f in listing['frames'] if f['origin'] == 'https://auth.example.com' and f['visible_fields']
+                 and f['visible_fields']['password'])
+    pin = harness.broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                                       frame_id=login['frame_id'], top_url=url, selector='#password', mode='password',
+                                       frame_protocol=1, frame_origin='https://auth.example.com', route='extension'))
+    assert pin == failure()

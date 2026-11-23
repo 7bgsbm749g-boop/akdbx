@@ -168,8 +168,24 @@ test("agent fill refuses a pin whose field spec differs from the sealed one", as
   assert.ok(scripts.slice(count).every(s => !String(s.func).includes("__akdbxContent.fill(")));
 });
 
-test("a read answers only facts the broker sealed for that pin, sealed to the broker", async () => {
-  const {exports, chrome} = loadBackground();
+// A broker identity key, its saved trust record (made under BUILD) and a signature over one connection.
+async function signedChannel(extensionKey) {
+  const identity = await crypto.subtle.generateKey({name: "ECDSA", namedCurve: "P-256"}, false, ["sign"]);
+  const point = new Uint8Array(await crypto.subtle.exportKey("raw", identity.publicKey));
+  const b64 = bytes => Buffer.from(bytes).toString("base64url");
+  const keyId = b64(new Uint8Array(await crypto.subtle.digest("SHA-256", point)));
+  const ecdh = await crypto.subtle.generateKey({name: "ECDH", namedCurve: "P-256"}, true, ["deriveBits"]);
+  const brokerKey = b64(new Uint8Array(await crypto.subtle.exportKey("raw", ecdh.publicKey)));
+  const statement = {broker_key: brokerKey, extension_key: extensionKey, key_id: keyId, type: "akdbx-channel", v: 1};
+  const signature = b64(new Uint8Array(await crypto.subtle.sign({name: "ECDSA", hash: "SHA-256"}, identity.privateKey,
+    new TextEncoder().encode(trust.canonical(statement)))));
+  const record = {v: 1, public_key: b64(point), key_id: keyId, origin: "https://localhost:9443", seq: 1, build: BUILD};
+  return {record, brokerKey, signature};
+}
+
+test("a read answers only a signed broker connection and facts sealed for that pin, sealed to the broker", async () => {
+  const local = {};
+  const {exports, chrome} = loadBackground({builtOrigin: "https://localhost:9443", local});
   const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
   exports.setSealKey(key);
   exports.setCaptureKey(key);
@@ -187,8 +203,6 @@ test("a read answers only facts the broker sealed for that pin, sealed to the br
     return [{result: true}];
   };
   const spec = {selector: "#secret", frame_origin: null};
-  const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "read", spec});
-  assert.equal(pinned.ok, true);
   const b64 = bytes => Buffer.from(bytes).toString("base64url");
   const sealFor = async (context, facts) => {
     const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -196,21 +210,36 @@ test("a read answers only facts the broker sealed for that pin, sealed to the br
       new TextEncoder().encode(JSON.stringify({values: {}, facts})));
     return {iv: b64(iv), data: b64(data)};
   };
-  const facts = {tab_id: 7, document_id: "DOC", chain, kind: "read", pin_id: pinned.pin_id, max_age_ms: 1000, spec};
+  const readOnce = async () => {
+    const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "read", spec});
+    assert.equal(pinned.ok, true);
+    const facts = {tab_id: 7, document_id: "DOC", chain, kind: "read", pin_id: pinned.pin_id, max_age_ms: 1000, spec};
+    return [pinned.pin_id, await exports.read({pin_id: pinned.pin_id, sealed: await sealFor("read:" + pinned.pin_id, facts)})];
+  };
+  const extensionKey = (await exports.pairingKeys()).publicKey;
+  const {record, brokerKey, signature} = await signedChannel(extensionKey);
+  // No trusted identity yet, then a signature for another extension key: nothing is read.
+  exports.setChannel({brokerKey, signature});
+  assert.equal((await readOnce())[1].state, "refused");
+  local.broker_trust = record;
+  exports.setChannel({brokerKey, signature: (await signedChannel("A".repeat(87))).signature});
+  assert.equal((await readOnce())[1].state, "refused");
+  assert.ok(scripts.every(s => !String(s.func).includes("__akdbxContent.read(")));
+  exports.setChannel({brokerKey, signature});
   // A fill-sealed message is not a read request.
+  const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "read", spec});
+  const facts = {tab_id: 7, document_id: "DOC", chain, kind: "read", pin_id: pinned.pin_id, max_age_ms: 1000, spec};
   const asFill = await exports.read({pin_id: pinned.pin_id, sealed: await sealFor("fill:" + pinned.pin_id, facts)});
   assert.equal(asFill.state, "refused");
   assert.ok(scripts.every(s => !String(s.func).includes("__akdbxContent.read(")));
-  const again = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "read", spec});
-  const good = await exports.read({pin_id: again.pin_id,
-    sealed: await sealFor("read:" + again.pin_id, {...facts, pin_id: again.pin_id})});
+  const [pinId, good] = await readOnce();
   assert.equal(good.state, "read");
   assert.ok(!JSON.stringify(good).includes("sk_synthetic_value"));
   const iv = Buffer.from(good.sealed.iv, "base64url"), data = Buffer.from(good.sealed.data, "base64url");
   const plain = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name: "AES-GCM", iv,
-    additionalData: new TextEncoder().encode("capture:" + again.pin_id)}, key, data)));
-  assert.deepEqual(plain, {value: "sk_synthetic_value",
-    facts: {tab_id: 7, document_id: "DOC", chain, pin_id: again.pin_id}});
+    additionalData: new TextEncoder().encode("capture:" + pinId)}, key, data)));
+  assert.equal(plain.value, "sk_synthetic_value");
+  assert.equal(JSON.stringify(plain.facts), JSON.stringify({tab_id: 7, document_id: "DOC", chain, pin_id: pinId}));
 });
 
 test("popup compares origins as the browser serializes them", () => {

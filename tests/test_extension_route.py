@@ -28,7 +28,6 @@ from akdbx.identities import MARKER as IDENTITY_MARKER, property_key
 from akdbx.protocol import MAX_MESSAGE, receive_message, send_message
 from akdbx.target import failure
 from test_broker import Entry, RecordingTyper, Vault
-from test_writes import template  # noqa: F401  (fixture)
 
 PASSWORD = 'Synthetic-only password 42!'
 USERNAME = 'synthetic.user@example.test'
@@ -38,6 +37,10 @@ LOGIN = 'https://www.example.com/login'
 STRIPE = 'https://js.stripe.com/v3/elements-inner-accessory-target-' + 'a' * 32 + '.html'
 STRIPE_CARD_ELEMENT = ('https://js.stripe.com/v3/elements-inner-card-' + 'c' * 32 +
                        '.html#__shared_params__[version]=v3&componentName=card')
+
+
+# The fake extension reports the shipped version, which the keys bind (0.4.0+).
+BOUND = b'/' + route.EXTENSION_VERSION.encode()
 
 
 def new_key():
@@ -57,7 +60,7 @@ def unseal(private, raw, broker_raw, sealed, context):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     shared = private.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), broker_raw))
-    key = HKDF(hashes.SHA256(), 32, salt=bytes(32), info=route.HKDF_INFO + raw + broker_raw).derive(shared)
+    key = HKDF(hashes.SHA256(), 32, salt=bytes(32), info=route.HKDF_INFO + BOUND + raw + broker_raw).derive(shared)
     decode = lambda text: base64.urlsafe_b64decode(text + '=' * (-len(text) % 4))
     return json.loads(AESGCM(key).decrypt(decode(sealed['iv']), decode(sealed['data']), context.encode()))
 
@@ -70,7 +73,7 @@ def seal_capture(private, raw, broker_raw, value, facts, context):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     shared = private.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), broker_raw))
-    key = HKDF(hashes.SHA256(), 32, salt=bytes(32), info=route.CAPTURE_INFO + raw + broker_raw).derive(shared)
+    key = HKDF(hashes.SHA256(), 32, salt=bytes(32), info=route.CAPTURE_INFO + BOUND + raw + broker_raw).derive(shared)
     nonce = os.urandom(12)
     data = AESGCM(key).encrypt(nonce, json.dumps(dict(value=value, facts=facts)).encode(), context.encode())
     return dict(iv=route.b64url(nonce), data=route.b64url(data))
@@ -1357,10 +1360,27 @@ def capture(broker, target, **extra):
     return broker.dispatch(request)
 
 
+MASTER = 'synthetic-capture-master-only'
+
+
+@pytest.fixture(scope='module')
+def template(tmp_path_factory):
+    """A synthetic KDBX with a cheap KDF and a 'Web' group; never a real vault."""
+    from pykeepass import create_database
+    path = tmp_path_factory.mktemp('capture-template') / 'synthetic.kdbx'
+    vault = create_database(io.BytesIO(), password=MASTER)
+    params = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
+    params['I'].value, params['M'].value = 1, 1024 * 1024
+    vault.add_group(vault.root_group, 'Web')
+    buffer = io.BytesIO()
+    vault.save(buffer)
+    path.write_bytes(buffer.getvalue())
+    return path
+
+
 def saved_secret(broker):
     """What the saved file holds, read back with its own master password."""
     from pykeepass import PyKeePass
-    from test_writes import MASTER
     entry = PyKeePass(str(broker.capture_path), password=MASTER).find_entries(title='Synthetic API', first=True)
     return None if entry is None else entry.get_custom_property('client_secret')
 
@@ -1369,7 +1389,6 @@ def saved_secret(broker):
 def capture_broker(tmp_path, template):
     import shutil
     from akdbx.broker import open_vault_with_password
-    from test_writes import MASTER
     path = tmp_path / 'synthetic.kdbx'
     shutil.copyfile(template, path)
     broker = Broker(open_vault_with_password(path, MASTER), RecordingTyper())
@@ -1545,3 +1564,43 @@ def test_cli_keeps_read_pins_on_cdp_for_a_broker_without_extension_capture(monke
         'pin-password-target', '--page-id', f'{channel.id}.4', '--frame-id', 'TOP', '--top-url', SECRET_SITE,
         '--selector', '#secret', '--mode', 'read', '--route', 'extension'])
     assert status == 1 and 'extension secret capture' in refused['error']
+
+
+def test_state_messages_sign_the_connection_keys_with_the_broker_identity(tmp_path):
+    """The host relays the broker's per-connection key; only the identity signature shows the broker made it."""
+    import base64
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+    from akdbx import broker_identity
+    broker = make_broker()
+    identity = broker_identity.IdentityStore(tmp_path / 'identity').announce('https://localhost:9443')
+    broker.extension.set_identity(identity)
+    channel, _ = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    message = broker.extension._state(channel, 'attached')
+    statement = dict(type='akdbx-channel', v=1, key_id=identity.key_id, broker_key=route.b64url(channel.broker_public_key),
+                     extension_key=KEY)
+    raw = base64.urlsafe_b64decode(message['channel_signature'] + '==')
+    point = base64.urlsafe_b64decode(identity.public_key + '=')
+    key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), point)
+    key.verify(encode_dss_signature(int.from_bytes(raw[:32], 'big'), int.from_bytes(raw[32:], 'big')),
+               broker_identity.canonical_bytes(statement), ec.ECDSA(hashes.SHA256()))
+    # Another connection key gets another signature: a host cannot reuse one for its own key.
+    other, _ = attach(broker, {5: [Document('TOP', SECRET_SITE)]})
+    assert broker.extension._state(other, 'attached')['channel_signature'] != message['channel_signature']
+
+
+def test_a_version_the_extension_did_not_report_breaks_every_sealed_value():
+    """From 0.4.0 the keys bind the reported version: an older extension behind a host that claims 0.4.0 opens nothing."""
+    from cryptography.exceptions import InvalidTag
+    broker = make_broker()
+    channel, _ = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    sealed = channel.seal(dict(values={}, facts={}), 'fill:' + 'a' * 32)
+    assert unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, sealed, 'fill:' + 'a' * 32)
+    global BOUND
+    bound, BOUND = BOUND, b''  # What extension 0.3.0 derives.
+    try:
+        with pytest.raises(InvalidTag):
+            unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, sealed, 'fill:' + 'a' * 32)
+    finally:
+        BOUND = bound

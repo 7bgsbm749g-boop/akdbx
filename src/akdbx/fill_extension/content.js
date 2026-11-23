@@ -14,6 +14,13 @@
   const READ_CAPTURE = __READ_CAPTURE__;
   const READ = __READ__;
   const OWNER_GUARD = __OWNER_GUARD__;
+  // The broker's read-pin selector grammar: tags, #id, .class and :nth-*(n) only.
+  // Attribute and functional selectors could test a secret, so the extension
+  // refuses them too: the pin call comes through the untrusted native host.
+  const READ_SELECTOR = new RegExp("^(?:" + __READ_SELECTOR__ + ")$");
+  const MAX_READ_SELECTOR = __MAX_READ_SELECTOR__;
+  // True when this script ran at document_start, before any page script.
+  const STARTED_EARLY = document.readyState === "loading";
   const CARD_PIN = __CARD_PIN_SCRIPT__;
   const GUARD = __CARD_GUARD__;
   const STRIPE_ELEMENTS = __STRIPE_ELEMENTS__;
@@ -26,7 +33,7 @@
   const COMPUTOP_IDS = {"cc-name": "creditCardHolder", "cc-number": "_KKnr", "cc-exp": "expiry_date", "cc-csc": "cccvc"};
   const pins = new Map(), guards = new Map(), probes = new Map();
   const owners = new Map(), listens = new Map(), ownerProbes = new Map(), masks = new Map();
-  const MAX_NODES = 50000, MAX_FRAMES = 256, LISTEN_MS = 5000;
+  const MAX_NODES = 50000, MAX_FRAMES = 256, MAX_INERT = 1024, LISTEN_MS = 5000;
   let lastFocus = null;
 
   const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
@@ -45,13 +52,28 @@
     }
   }, true);
 
+  // Owner probes (see ownerListen). This listener is added at document_start,
+  // before any page listener, so a page can neither see a probe nor stop one.
+  window.addEventListener("message", event => {
+    const data = event.data;
+    if (!data || typeof data !== "object" || !Object.prototype.hasOwnProperty.call(data, "akdbx_owner")) return;
+    event.stopImmediatePropagation();
+    if (Object.keys(data).length !== 1 || typeof data.akdbx_owner !== "string" ||
+        !/^[0-9a-f]{32}$/.test(data.akdbx_owner) || event.source !== window.parent) return;
+    for (const item of listens.values()) {
+      if (event.origin === item.parentOrigin && item.heard.size < 8) item.heard.add(data.akdbx_owner);
+    }
+  }, true);
+
   // ----- agent route: retained pins --------------------------------------
   function pin(kind, spec, frameURL, topURL) {
     for (const [id, item] of pins) {
       if (performance.now() - item.created >= PIN_MS) release(id);
     }
     if (pins.size >= MAX_PINS) return null;
-    let state;
+    if (kind === "read" && (typeof spec.selector !== "string" || spec.selector.length > MAX_READ_SELECTOR ||
+        !READ_SELECTOR.test(spec.selector))) return null;
+    let state, el = null;
     try {
       if (kind === "password") {
         state = CAPTURE(spec.selector, spec.username_selector, spec.mode, frameURL, spec.password_purpose,
@@ -59,6 +81,7 @@
       } else if (kind === "read") {
         // The CDP route's read pin: a focused, visible, single-line text, never a selection.
         state = READ_CAPTURE(spec.selector, frameURL, window === window.top ? null : spec.frame_origin);
+        el = state && document.querySelector(spec.selector);
       } else if (kind === "card" || kind === "identity") {
         state = CARD_PIN(spec.selector, spec.field, frameURL, topURL, spec.processor || false, kind === "identity");
       }
@@ -66,8 +89,18 @@
       state = null;
     }
     if (!state) return null;
+    // A cover marked inert is invisible to elementFromPoint: check again without it.
+    const covered = kind === "read" ? () => state.check() : kind === "card" || kind === "identity" ? () => state.geometry() : null;
+    if (covered && !withoutInert(covered)) {
+      try {
+        if (state.dispose) state.dispose();
+      } catch {
+        // Nothing to clean up.
+      }
+      return null;
+    }
     const id = randomId();
-    pins.set(id, {kind, mode: kind === "password" ? spec.mode : kind === "read" ? "read" : spec.field, state,
+    pins.set(id, {kind, mode: kind === "password" ? spec.mode : kind === "read" ? "read" : spec.field, state, el,
       created: performance.now()});
     return id;
   }
@@ -75,7 +108,9 @@
   function geometry(id) {
     const item = pins.get(id);
     try {
-      return item && item.kind !== "password" && item.kind !== "read" ? item.state.geometry() : null;
+      if (!item || item.kind === "password" || item.kind === "read") return null;
+      const point = item.state.geometry();
+      return point && withoutInert(() => item.state.geometry()) ? point : null;
     } catch {
       return null;
     }
@@ -110,6 +145,8 @@
         const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
         return PASSWORD_FILL.call(item.state, values.mode, values.username, values.password, deadline) ? "filled" : "refused";
       }
+      // No page code runs between this check and the fill: one synchronous task.
+      if (!withoutInert(() => item.state.geometry())) return "refused";
       const state = item.state.fill(values.value, maxAgeMs);
       return state === "filled" || state === "refused" ? state : "uncertain";
     } catch {
@@ -134,6 +171,7 @@
     }
     try {
       const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
+      if (!withoutInert(() => item.state.check())) return null;
       const value = READ.call(item.state, deadline);
       return typeof value === "string" ? value : null;
     } catch {
@@ -147,6 +185,27 @@
     }
   }
 
+  // Points of a read pin's text, in this frame's viewport, for the owner hit tests.
+  function readPoints(id) {
+    const item = pins.get(id);
+    if (!item || item.kind !== "read" || !item.el) return null;
+    try {
+      let rects = [item.el.getBoundingClientRect()];
+      if (!(item.el instanceof HTMLInputElement)) {
+        const range = document.createRange();
+        range.selectNodeContents(item.el);
+        rects = [...range.getClientRects()];
+      }
+      if (!rects.length) return null;
+      const first = rects[0], last = rects[rects.length - 1];
+      return [{x: first.left + 1, y: first.top + first.height / 2},
+        {x: first.left + first.width / 2, y: first.top + first.height / 2},
+        {x: last.right - 1, y: last.top + last.height / 2}];
+    } catch {
+      return null;
+    }
+  }
+
   // ----- child-frame owners ----------------------------------------------
   // The browser names a frame's parent document but not its <iframe> element.
   // The parent's isolated world posts a fresh nonce into each of its child
@@ -155,23 +214,11 @@
   // nonce it saw in another frame makes the child hear two, which refuses. The
   // <iframe> that holds that window then gets the CDP route's owner guard.
   function ownerListen(parentOrigin) {
-    if (window === window.top || typeof parentOrigin !== "string") return null;
-    const heard = new Set();
-    const listener = event => {
-      const data = event.data;
-      if (event.source === window.parent && event.origin === parentOrigin && data && typeof data === "object" &&
-          Object.keys(data).length === 1 && typeof data.akdbx_owner === "string" && /^[0-9a-f]{32}$/.test(data.akdbx_owner)) {
-        if (heard.size < 8) heard.add(data.akdbx_owner);
-      }
-    };
-    window.addEventListener("message", listener, true);
+    // A script injected after the page started could be preceded by page listeners.
+    if (!STARTED_EARLY || window === window.top || typeof parentOrigin !== "string") return null;
     const id = randomId();
-    const stop = () => window.removeEventListener("message", listener, true);
-    remember(listens, MAX_PINS, id, {heard, stop});
-    setTimeout(() => {
-      stop();
-      listens.delete(id);
-    }, LISTEN_MS);
+    remember(listens, MAX_PINS, id, {heard: new Set(), parentOrigin});
+    setTimeout(() => listens.delete(id), LISTEN_MS);
     return id;
   }
 
@@ -181,9 +228,7 @@
   }
 
   function ownerDone(id) {
-    const item = listens.get(id);
     listens.delete(id);
-    if (item) item.stop();
   }
 
   function ownerProbe(childOrigin) {
@@ -227,16 +272,36 @@
     if (!guardState) return null;
     const id = randomId();
     while (owners.size >= MAX_PINS) ownerRelease(owners.keys().next().value);
-    owners.set(id, guardState);
+    owners.set(id, {state: guardState, frame: frames[0]});
     return id;
   }
 
   function ownerCheck(id) {
     const item = owners.get(id);
     try {
-      return Boolean(item && item.check());
+      return Boolean(item && item.state.check());
     } catch {
       return false;
+    }
+  }
+
+  // Map points of the child's viewport into this document through the owner
+  // iframe, and require the iframe on top at each one: a cover in this document
+  // over the child refuses. Returns the mapped points for the next parent.
+  function ownerMap(id, points) {
+    const item = owners.get(id);
+    if (!item || !Array.isArray(points) || !points.length || points.length > 8) return null;
+    try {
+      const frame = item.frame;
+      if (!item.state.check() || !frame.offsetWidth || !frame.offsetHeight) return null;
+      const box = frame.getBoundingClientRect();
+      const mapped = points.map(p => ({x: box.left + (frame.clientLeft + Number(p.x)) * box.width / frame.offsetWidth,
+        y: box.top + (frame.clientTop + Number(p.y)) * box.height / frame.offsetHeight}));
+      const onTop = () => mapped.every(p => Number.isFinite(p.x) && Number.isFinite(p.y) &&
+        document.elementFromPoint(p.x, p.y) === frame);
+      return onTop() && withoutInert(onTop) ? mapped : null;
+    } catch {
+      return null;
     }
   }
 
@@ -244,7 +309,7 @@
     const item = owners.get(id);
     owners.delete(id);
     try {
-      if (item) item.dispose();
+      if (item) item.state.dispose();
     } catch {
       // Nothing to clean up.
     }
@@ -259,7 +324,9 @@
   // here each open or closed shadow root gets an adopted sheet. Only an inline
   // !important rule beats that one: a shadow element that still has
   // pointer-events: none is a deliberate cover, and the check refuses.
-  const UNMASK_RULE = "*,*::before,*::after,*::backdrop{pointer-events:auto!important;transition-behavior:normal!important}";
+  const UNMASK_RULE = "*,*::before,*::after,*::backdrop{pointer-events:auto!important;interactivity:auto!important;" +
+    "transition-behavior:normal!important}";
+  const unhittable = style => style.pointerEvents === "none" || style.getPropertyValue("interactivity") === "inert";
 
   function shadowRoots() {
     const found = [];
@@ -290,10 +357,16 @@
         root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
         adopted.push(root);
       }
-      // Pointer-events: none that survives both sheets is an inline !important cover.
+      // An element or pseudo-element that is still not hit-testable after both
+      // sheets has an inline or more specific !important rule: a deliberate cover.
       for (const root of roots) {
         for (const el of root.querySelectorAll("*")) {
-          if (getComputedStyle(el).pointerEvents === "none" && el.getClientRects().length) throw new Error();
+          if (unhittable(getComputedStyle(el)) && el.getClientRects().length) throw new Error();
+          for (const pseudo of ["::before", "::after"]) {
+            const style = getComputedStyle(el, pseudo);
+            if (style.content !== "none" && style.content !== "normal" && unhittable(style)) throw new Error();
+          }
+          if (el.matches(":modal, :popover-open") && unhittable(getComputedStyle(el, "::backdrop"))) throw new Error();
         }
       }
     } catch {
@@ -303,6 +376,31 @@
     const id = randomId();
     remember(masks, MAX_PINS, id, {roots: adopted, sheet});
     return id;
+  }
+
+  // The inert attribute also hides a cover from elementFromPoint, and no style
+  // sheet changes that. Lift it from every element (light DOM and shadow roots),
+  // run the check, and restore it, all in one synchronous task: no page code
+  // runs in between. Callers run the check with inert in place too.
+  function withoutInert(check) {
+    const roots = shadowRoots();
+    if (roots === null) return false;
+    const found = [];
+    for (const root of [document, ...roots]) {
+      for (const el of root.querySelectorAll("[inert]")) {
+        if (found.length >= MAX_INERT) return false;
+        found.push(el);
+      }
+    }
+    const values = found.map(el => el.getAttribute("inert"));
+    try {
+      found.forEach(el => el.removeAttribute("inert"));
+      return check();
+    } catch {
+      return false;
+    } finally {
+      found.forEach((el, i) => el.setAttribute("inert", values[i]));
+    }
   }
 
   function remaskRoots(roots, sheet) {
@@ -340,7 +438,7 @@
   function guardCheck(id, point) {
     const item = guards.get(id);
     try {
-      return Boolean(item && point && item.check(point));
+      return Boolean(item && point && item.check(point) && withoutInert(() => item.check(point)));
     } catch {
       return false;
     }
@@ -524,6 +622,7 @@
   Object.defineProperty(globalThis, "__akdbxContent", {value: Object.freeze({
     pin, geometry, release, fill, read, guard, guardCheck, count, probe, probeFill,
     releaseGuard: id => guards.delete(id),
-    ownerListen, ownerHeard, ownerDone, ownerProbe, ownerGuard, ownerCheck, ownerRelease, unmask, remask,
+    ownerListen, ownerHeard, ownerDone, ownerProbe, ownerGuard, ownerCheck, ownerMap, ownerRelease, readPoints,
+    unmask, remask,
   })});
 })();
