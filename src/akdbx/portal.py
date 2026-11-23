@@ -200,7 +200,8 @@ dd { color: #fff; margin: 0; overflow-wrap: anywhere; }
   .field:nth-of-type(3) { animation-delay: .16s; } .field:nth-of-type(4) { animation-delay: .20s; }
   .field:nth-of-type(5) { animation-delay: .24s; }
   .field, label, button, a { transition: border-color .3s, color .3s, background-color .3s, box-shadow .3s, transform .35s var(--ease), opacity .25s; }
-  button:not([type=button])::before { animation: glint 9s ease-in-out 2s infinite; }
+  /* Call-to-action buttons share the unlock button's shimmer. */
+  button:not([type=button])::before, button.wizard-next::before { animation: glint 9s ease-in-out 2s infinite; }
   .portal-submit.is-pending { animation: unlock-press .16s ease-out; }
   .portal-submit.is-pending .portal-progress::before { animation: unlock-loading 1.3s ease-in-out infinite; }
   @keyframes unlock-press { from { transform: translateY(0); } to { transform: translateY(1px); } }
