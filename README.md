@@ -112,7 +112,8 @@ The same sign-in and card save worked first time through the extension in the
 user's own browser. The CDP route stays for setups without the extension.
 
 From 0.32.0 (fill extension 0.4.0) the extension route also captures
-shown-once secrets, and it closes the two checks it used to lack. A child
+shown-once secrets shown in the top document, and it closes the two checks it
+used to lack. A child
 frame's `<iframe>` owner is found with a nonce handshake and held by the CDP
 route's owner guard. Hit tests run with `pointer-events` forced on in every
 document of the frame chain, so a click-through cover refuses as it does under

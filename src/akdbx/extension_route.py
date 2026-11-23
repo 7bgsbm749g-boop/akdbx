@@ -111,8 +111,8 @@ MAX_POPUP_REQUESTS = 4
 PUBLIC_KEY = re.compile(r'[A-Za-z0-9_-]{87}')  # base64url, 65-byte uncompressed P-256 point
 HKDF_INFO = b'akdbx-extension-v1'
 CAPTURE_INFO = b'akdbx-extension-capture-v1'  # Extension -> broker: captured secrets only.
-# A 4096-character value of 3-byte characters plus a nine-hop chain, sealed and base64url-encoded,
-# fits; the host's frames stop at 64 KiB.
+# A 4096-character value of 3-byte characters and its one-document chain, sealed and
+# base64url-encoded, fits with room; the host's frames stop at 64 KiB.
 MAX_CAPTURE_SEALED = 48 * 1024
 CODE_PREFIX = b'akdbx-pairing-code\0'
 CHANNEL_ID = re.compile(r'[0-9a-f]{8}')
@@ -1040,17 +1040,19 @@ class ExtensionHub:
         return dict(ok=True, target=token, expires_in=TTL, target_delivery=DELIVERY)
 
     def pin_read(self, request):
-        """A read pin for secret capture: the CDP read pin's request shape plus ``route``."""
-        from . import browser_password, password_frames
+        """A read pin for secret capture: the CDP read pin's request shape plus ``route``.
+
+        The extension reads only in the top document: a child frame's text would
+        need its position checked through every parent document, which the
+        extension cannot map exactly for every iframe (padding, transforms), so
+        a frame route (``frame_origin``) is refused. The CDP route reads there.
+        """
+        from . import browser_password
         required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode',
                     'capture_protocol', 'route'}
-        optional = set(request) & {'frame_protocol', 'frame_origin'}
-        if (set(request) != required | optional or request.get('route') != 'extension' or request.get('mode') != 'read'
+        if (set(request) != required or request.get('route') != 'extension' or request.get('mode') != 'read'
                 or type(request.get('password_protocol')) is not int or request['password_protocol'] != 1
-                or type(request.get('capture_protocol')) is not int or request['capture_protocol'] != CAPTURE_PROTOCOL
-                or ('frame_protocol' in request) != ('frame_origin' in request)
-                or ('frame_protocol' in request and (type(request['frame_protocol']) is not int
-                                                     or request['frame_protocol'] != password_frames.PROTOCOL))):
+                or type(request.get('capture_protocol')) is not int or request['capture_protocol'] != CAPTURE_PROTOCOL):
             raise ExtensionError()
         selector = request['selector']
         # No attribute or functional selectors: pin success must not test the secret.
@@ -1058,14 +1060,8 @@ class ExtensionHub:
                 or not browser_password.READ_SELECTOR.fullmatch(selector)):
             raise ExtensionError()
         _origin(request['top_url'])
-        frame_origin = None
-        if 'frame_origin' in request:
-            try:
-                frame_origin = password_frames.canonical_origin(request['frame_origin'])
-            except TargetError:
-                raise ExtensionError() from None
-        spec = dict(selector=selector, frame_origin=frame_origin)
-        return self._frame_pin('read', 'read', request, spec, frame_origin, hardened=True)
+        spec = dict(selector=selector, frame_origin=None)
+        return self._frame_pin('read', 'read', request, spec, None, hardened=True)
 
     def pin_element(self, kind, request):
         """Card or identity field pin; same request shape as the CDP route plus ``route``."""

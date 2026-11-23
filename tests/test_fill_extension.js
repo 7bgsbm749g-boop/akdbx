@@ -242,6 +242,26 @@ test("a read answers only a signed broker connection and facts sealed for that p
   assert.equal(JSON.stringify(plain.facts), JSON.stringify({tab_id: 7, document_id: "DOC", chain, pin_id: pinId}));
 });
 
+test("a port keeps its first broker key: a second attached message cannot swap the keys", async () => {
+  const {exports, port, posted} = loadBackground();
+  for (let i = 0; i < 50 && !posted.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  const b64 = bytes => Buffer.from(bytes).toString("base64url");
+  const brokerKey = async () => {
+    const pair = await crypto.subtle.generateKey({name: "ECDH", namedCurve: "P-256"}, true, ["deriveBits"]);
+    return b64(new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)));
+  };
+  const first = await brokerKey(), second = await brokerKey();
+  exports.onHost(port, {type: "attached", connected: true, broker_public_key: first});
+  const kept = exports.channel();
+  assert.equal(kept.brokerKey, first);
+  exports.onHost(port, {type: "attached", connected: true, broker_public_key: second, channel_signature: "A".repeat(86)});
+  const after = exports.channel();
+  assert.equal(after.brokerKey, first);
+  assert.equal(after.captureKey, kept.captureKey);
+  assert.equal(after.sealKey, kept.sealKey);
+  assert.equal(after.signature, null);  // A signature for another key never attaches to this one.
+});
+
 test("popup compares origins as the browser serializes them", () => {
   assert.equal(privateLink("https://localhost/extension/pair?token=x", "/extension/pair", "https://localhost:443"),
     "https://localhost/extension/pair?token=x");

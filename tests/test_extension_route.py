@@ -1479,21 +1479,21 @@ def test_extension_read_pins_follow_the_cdp_read_rules(capture_broker):
     # Fill-only options are not read options.
     assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE, password_purpose='new-password') == failure()
     assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE, capture_protocol=2) == failure()
-    # A same-site child frame reads; a cross-site one is refused.
-    assert read_pin(broker, channel, 4, 'SAME', SECRET_SITE, frame_protocol=1,
-                    frame_origin='https://keys.example.com')['ok']
-    assert read_pin(broker, channel, 4, 'EVIL', SECRET_SITE, frame_protocol=1,
-                    frame_origin='https://evil.example.net') == failure()
-    # A child frame without the explicit frame route is refused.
+    # The extension reads only in the top document: any frame route is refused before the browser sees it.
+    for frame, origin in (('SAME', 'https://keys.example.com'), ('EVIL', 'https://evil.example.net')):
+        assert read_pin(broker, channel, 4, frame, SECRET_SITE, frame_protocol=1, frame_origin=origin) == failure()
+    assert 'pin' not in extension.calls
+    # A child frame named without a frame route is refused from its browser chain, and released.
     assert read_pin(broker, channel, 4, 'SAME', SECRET_SITE) == failure()
+    assert extension.calls == ['pin', 'release']
 
 
-def test_capture_refuses_a_value_from_a_frame_off_the_record_origin(capture_broker):
+def test_capture_refuses_a_page_off_the_record_origin(capture_broker):
     broker = capture_broker
-    channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE),
-                                             Document('SAME', 'https://keys.example.com/frame', 'TOP')]})
+    channel, extension = attach(broker, {4: [Document('TOP', 'https://keys.example.com/new')]})
     extension.secret = SECRET
-    pin = read_pin(broker, channel, 4, 'SAME', SECRET_SITE, frame_protocol=1, frame_origin='https://keys.example.com')
+    pin = read_pin(broker, channel, 4, 'TOP', 'https://keys.example.com/new')
+    assert pin['ok'], pin
     assert capture(broker, pin['target'])['ok'] is False  # The record's URL is dashboard.example.com.
     assert 'read' not in extension.calls and saved_secret(broker) is None
 

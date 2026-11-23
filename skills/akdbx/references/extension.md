@@ -196,15 +196,18 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
 - Secret capture (0.32.0+, fill extension 0.4.0): `pin-password-target --mode read
   --route extension`, then `capture-secret` as on the CDP route. The read pin
   has the CDP read pin's rules (structural selector only, focus and no
-  selection, one visible single-line text, same-site frame chain). The broker
+  selection, one visible single-line text), and it reads only in the top
+  document: a frame route (`--frame-origin`) refuses. Use the CDP route for a
+  secret shown in a child frame. The broker
   seals the read request with the pin's facts; the extension seals the value
   to the broker under a second key (`akdbx-extension-capture-v1`), bound to
   that pin. The native host relays the broker's per-connection key, so the
   broker signs that key and the extension's key with its identity key
   (`channel_signature`); the extension reads only for a connection that the
   identity key it learned over HTTPS at its first pairing signed. Before that
-  first binding, read pins refuse. In a child frame the secret's text must also
-  be on top in every parent document. The receipt says
+  first binding, read pins refuse. A connection keeps the broker key of its
+  first `attached` message, so a host cannot swap keys during a read. The
+  receipt says
   `capture_delivery: "extension-dom-read-v1"`.
   Without `--route`, a read pin takes the broker's default route when the
   broker advertises `extension_capture_protocol: 1`, else the CDP route.
@@ -256,12 +259,15 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   checks, which the build step copies in.
 - Frame owners (0.32.0+): the browser names a child frame's parent document
   but not its `<iframe>` element. The parent's isolated world posts a fresh
-  nonce into each of its child windows, and the child's isolated world reports
-  the nonces its parent window sent; exactly one names the owner. The listener
-  starts at `document_start` and stops every probe, so a page neither sees nor
-  stops one; in a page that was open before the extension loaded, child-frame
-  password and read pins refuse until the page reloads. A page that repeats a
-  nonce makes the child hear two, which refuses. That owner
+  nonce into each child window: those `window.frames` lists and those of every
+  `iframe`, `frame` and `object` element, also in shadow roots (a document with
+  an `embed` refuses). The child's isolated world reports the nonces its parent
+  window sent; exactly one names the owner, so a page that forwards another
+  frame's nonce makes the child hear two, which refuses. The listener starts at
+  `document_start` (`early.js` marks that start; a script injected later
+  refuses), also in `about:blank` frames, and stops every probe, so a page
+  neither sees nor stops one. In a page that was open before the extension
+  loaded, child-frame password pins refuse until the page reloads. That owner
   then gets the CDP route's owner guard (connected, visible, no `srcdoc`, safe
   `sandbox`, no attribute change), checked at pin and again before the fill or
   read.
@@ -273,11 +279,15 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   `!important` too), and each open or closed shadow root gets the same rule as
   an adopted sheet; both also force `interactivity: auto`. A shadow element or
   pseudo-element that is still not hit-testable (an inline or more specific
-  `!important` rule) refuses. The `inert` attribute also hides a cover, and no
-  style sheet changes that, so each check runs once as is and once with every
-  `inert` attribute lifted, in the same synchronous task, and restored before
-  any page code runs. Both sheets go when the check ends. A page with more than
-  50,000 elements or 1,024 `inert` elements refuses these pins.
+  `!important` rule) refuses. The shadow sheets, that check and the hit test
+  run in one synchronous task. Inert content is skipped by every hit test, and
+  no style sheet changes that: the `inert` attribute, and the inertness that a
+  modal dialog gives the rest of its document, top-layer popovers included. So
+  any visible inert element whose box holds a checked point refuses, and so
+  does a positioned pseudo-element of one. This also refuses a field above a
+  page that marks its own background `inert` (use the CDP route there). Both
+  sheets go when the check ends. A page with more than 50,000 elements refuses
+  these pins.
 
 ## Setup
 

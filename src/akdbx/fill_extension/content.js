@@ -19,8 +19,9 @@
   // refuses them too: the pin call comes through the untrusted native host.
   const READ_SELECTOR = new RegExp("^(?:" + __READ_SELECTOR__ + ")$");
   const MAX_READ_SELECTOR = __MAX_READ_SELECTOR__;
-  // True when this script ran at document_start, before any page script.
-  const STARTED_EARLY = document.readyState === "loading";
+  // True only when the manifest's document_start entry ran early.js first, before
+  // any page script; content.js injected later by the worker finds no flag.
+  const STARTED_EARLY = globalThis.__akdbxEarly === true;
   const CARD_PIN = __CARD_PIN_SCRIPT__;
   const GUARD = __CARD_GUARD__;
   const STRIPE_ELEMENTS = __STRIPE_ELEMENTS__;
@@ -32,8 +33,8 @@
     "street-address"];
   const COMPUTOP_IDS = {"cc-name": "creditCardHolder", "cc-number": "_KKnr", "cc-exp": "expiry_date", "cc-csc": "cccvc"};
   const pins = new Map(), guards = new Map(), probes = new Map();
-  const owners = new Map(), listens = new Map(), ownerProbes = new Map(), masks = new Map();
-  const MAX_NODES = 50000, MAX_FRAMES = 256, MAX_INERT = 1024, LISTEN_MS = 5000;
+  const owners = new Map(), listens = new Map(), ownerProbes = new Map();
+  const MAX_NODES = 50000, MAX_FRAMES = 256, MAX_RECTS = 10, LISTEN_MS = 5000;
   let lastFocus = null;
 
   const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
@@ -79,8 +80,10 @@
         state = CAPTURE(spec.selector, spec.username_selector, spec.mode, frameURL, spec.password_purpose,
           spec.allow_autocomplete_off === true, spec.frame_origin);
       } else if (kind === "read") {
-        // The CDP route's read pin: a focused, visible, single-line text, never a selection.
-        state = READ_CAPTURE(spec.selector, frameURL, window === window.top ? null : spec.frame_origin);
+        // The CDP route's read pin: a focused, visible, single-line text, never a
+        // selection. The extension reads only in the top document.
+        if (window !== window.top) return null;
+        state = READ_CAPTURE(spec.selector, frameURL, null);
         el = state && document.querySelector(spec.selector);
       } else if (kind === "card" || kind === "identity") {
         state = CARD_PIN(spec.selector, spec.field, frameURL, topURL, spec.processor || false, kind === "identity");
@@ -89,9 +92,10 @@
       state = null;
     }
     if (!state) return null;
-    // A cover marked inert is invisible to elementFromPoint: check again without it.
-    const covered = kind === "read" ? () => state.check() : kind === "card" || kind === "identity" ? () => state.geometry() : null;
-    if (covered && !withoutInert(covered)) {
+    // The hit tests again, now with the shadow sheets and the inert-cover check.
+    const ok = kind === "read" ? guarded(() => state.check(), () => readPoints(el), el)
+      : kind === "card" || kind === "identity" ? guarded(() => state.geometry(), point => [point], state.node()) : true;
+    if (!ok) {
       try {
         if (state.dispose) state.dispose();
       } catch {
@@ -109,8 +113,7 @@
     const item = pins.get(id);
     try {
       if (!item || item.kind === "password" || item.kind === "read") return null;
-      const point = item.state.geometry();
-      return point && withoutInert(() => item.state.geometry()) ? point : null;
+      return guarded(() => item.state.geometry(), point => [point], item.state.node());
     } catch {
       return null;
     }
@@ -146,7 +149,7 @@
         return PASSWORD_FILL.call(item.state, values.mode, values.username, values.password, deadline) ? "filled" : "refused";
       }
       // No page code runs between this check and the fill: one synchronous task.
-      if (!withoutInert(() => item.state.geometry())) return "refused";
+      if (!guarded(() => item.state.geometry(), point => [point], item.state.node())) return "refused";
       const state = item.state.fill(values.value, maxAgeMs);
       return state === "filled" || state === "refused" ? state : "uncertain";
     } catch {
@@ -171,7 +174,7 @@
     }
     try {
       const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
-      if (!withoutInert(() => item.state.check())) return null;
+      if (!guarded(() => item.state.check(), () => readPoints(item.el), item.el)) return null;
       const value = READ.call(item.state, deadline);
       return typeof value === "string" ? value : null;
     } catch {
@@ -185,25 +188,17 @@
     }
   }
 
-  // Points of a read pin's text, in this frame's viewport, for the owner hit tests.
-  function readPoints(id) {
-    const item = pins.get(id);
-    if (!item || item.kind !== "read" || !item.el) return null;
-    try {
-      let rects = [item.el.getBoundingClientRect()];
-      if (!(item.el instanceof HTMLInputElement)) {
-        const range = document.createRange();
-        range.selectNodeContents(item.el);
-        rects = [...range.getClientRects()];
-      }
-      if (!rects.length) return null;
-      const first = rects[0], last = rects[rects.length - 1];
-      return [{x: first.left + 1, y: first.top + first.height / 2},
-        {x: first.left + first.width / 2, y: first.top + first.height / 2},
-        {x: last.right - 1, y: last.top + last.height / 2}];
-    } catch {
-      return null;
+  // Start, centre and end of each line of a read pin's text, like READ_CAPTURE's own hit test.
+  function readPoints(el) {
+    if (!el) return null;
+    let rects = [el.getBoundingClientRect()];
+    if (!(el instanceof HTMLInputElement)) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      rects = [...range.getClientRects()];
     }
+    if (!rects.length || rects.length > MAX_RECTS) return null;
+    return rects.flatMap(r => [r.left + 1, r.left + r.width / 2, r.right - 1].map(x => ({x, y: r.top + r.height / 2})));
   }
 
   // ----- child-frame owners ----------------------------------------------
@@ -232,14 +227,27 @@
   }
 
   function ownerProbe(childOrigin) {
-    // Every child window, whatever element holds it (an iframe in a shadow root,
-    // an object or embed): the real child always gets its own nonce, so a page
-    // that forwards another frame's nonce to it makes it hear two.
+    // Every child window: those the window lists and those of every iframe,
+    // frame and object element, also in shadow roots (window.frames leaves
+    // those out). The real child always gets its own nonce, so a page that
+    // forwards another frame's nonce to it makes it hear two. An embed's
+    // window cannot be reached, so a document with one refuses.
     if (typeof childOrigin !== "string" || window.length > MAX_FRAMES) return null;
-    const sent = new Map();
+    const roots = shadowRoots();
+    if (roots === null) return null;
+    const views = new Set();
     for (let i = 0; i < window.length; ++i) {
-      const view = window[i];
-      if (!view) continue;
+      if (window[i]) views.add(window[i]);
+    }
+    for (const root of [document, ...roots]) {
+      if (root.querySelector("embed")) return null;
+      for (const el of root.querySelectorAll("iframe, frame, object")) {
+        if (el.contentWindow) views.add(el.contentWindow);
+      }
+    }
+    if (views.size > MAX_FRAMES) return null;
+    const sent = new Map();
+    for (const view of views) {
       const nonce = randomId();
       try {
         view.postMessage({akdbx_owner: nonce}, childOrigin);
@@ -285,26 +293,6 @@
     }
   }
 
-  // Map points of the child's viewport into this document through the owner
-  // iframe, and require the iframe on top at each one: a cover in this document
-  // over the child refuses. Returns the mapped points for the next parent.
-  function ownerMap(id, points) {
-    const item = owners.get(id);
-    if (!item || !Array.isArray(points) || !points.length || points.length > 8) return null;
-    try {
-      const frame = item.frame;
-      if (!item.state.check() || !frame.offsetWidth || !frame.offsetHeight) return null;
-      const box = frame.getBoundingClientRect();
-      const mapped = points.map(p => ({x: box.left + (frame.clientLeft + Number(p.x)) * box.width / frame.offsetWidth,
-        y: box.top + (frame.clientTop + Number(p.y)) * box.height / frame.offsetHeight}));
-      const onTop = () => mapped.every(p => Number.isFinite(p.x) && Number.isFinite(p.y) &&
-        document.elementFromPoint(p.x, p.y) === frame);
-      return onTop() && withoutInert(onTop) ? mapped : null;
-    } catch {
-      return null;
-    }
-  }
-
   function ownerRelease(id) {
     const item = owners.get(id);
     owners.delete(id);
@@ -321,12 +309,15 @@
   // The service worker adds a user-origin style sheet that turns pointer-events
   // back on in this document; user !important rules beat every author rule,
   // inline !important included. That sheet does not reach shadow trees, so
-  // here each open or closed shadow root gets an adopted sheet. Only an inline
-  // !important rule beats that one: a shadow element that still has
-  // pointer-events: none is a deliberate cover, and the check refuses.
+  // guarded() adopts the same rule into each open or closed shadow root, checks
+  // them and runs the hit test in one synchronous task: no page code runs
+  // between the check and the test. A shadow element or pseudo-element that
+  // stays not hit-testable has an inline or more specific !important rule: a
+  // deliberate cover, and the check refuses.
   const UNMASK_RULE = "*,*::before,*::after,*::backdrop{pointer-events:auto!important;interactivity:auto!important;" +
     "transition-behavior:normal!important}";
   const unhittable = style => style.pointerEvents === "none" || style.getPropertyValue("interactivity") === "inert";
+  const rendered = style => style.content !== "none" && style.content !== "normal";
 
   function shadowRoots() {
     const found = [];
@@ -346,7 +337,60 @@
     return found;
   }
 
-  function unmask() {
+  function shadowCovers(roots) {
+    for (const root of roots) {
+      for (const el of root.querySelectorAll("*")) {
+        if (unhittable(getComputedStyle(el)) && el.getClientRects().length) return true;
+        for (const pseudo of ["::before", "::after"]) {
+          const style = getComputedStyle(el, pseudo);
+          if (rendered(style) && unhittable(style)) return true;
+        }
+        if (el.matches(":modal, :popover-open") && unhittable(getComputedStyle(el, "::backdrop"))) return true;
+      }
+    }
+    return false;
+  }
+
+  // Inert content is skipped by every hit test, and no style sheet changes
+  // that: an inert attribute, or a modal dialog, which makes the rest of its
+  // document inert, top-layer popovers included. So any visible inert element
+  // (light DOM or shadow root) whose box holds a checked point refuses, and so
+  // does a positioned pseudo-element of one, whose box the page cannot report.
+  // This also refuses a field above a page that marks its background inert.
+  function inertCovers(roots, points, target) {
+    const all = [document, ...roots];
+    const starts = [];
+    for (const root of all) starts.push(...root.querySelectorAll("[inert]"));
+    if (all.some(root => root.querySelector(":modal"))) {
+      for (const root of all) {
+        for (const el of root.querySelectorAll(":modal, :popover-open, :fullscreen")) {
+          if (!el.contains(target)) starts.push(el);
+        }
+      }
+    }
+    const inside = (p, r) => p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom;
+    const pending = [...starts];
+    let seen = 0;
+    while (pending.length) {
+      const el = pending.pop();
+      if (++seen > MAX_NODES) return true;
+      pending.push(...el.children);
+      const shadow = chrome.dom.openOrClosedShadowRoot(el);
+      if (shadow) pending.push(...shadow.children);
+      if (el === target || el.contains(target) || !el.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})) continue;
+      for (const rect of el.getClientRects()) {
+        if (points.some(p => inside(p, rect))) return true;
+      }
+      for (const pseudo of ["::before", "::after"]) {
+        const style = getComputedStyle(el, pseudo);
+        if (rendered(style) && (style.position === "fixed" || style.position === "absolute")) return true;
+      }
+    }
+    return false;
+  }
+
+  // Run one hit check with every cover visible to it; returns its result or null.
+  function guarded(check, pointsOf, target) {
     const roots = shadowRoots();
     if (roots === null) return null;
     const sheet = new CSSStyleSheet();
@@ -357,66 +401,31 @@
         root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
         adopted.push(root);
       }
-      // An element or pseudo-element that is still not hit-testable after both
-      // sheets has an inline or more specific !important rule: a deliberate cover.
-      for (const root of roots) {
-        for (const el of root.querySelectorAll("*")) {
-          if (unhittable(getComputedStyle(el)) && el.getClientRects().length) throw new Error();
-          for (const pseudo of ["::before", "::after"]) {
-            const style = getComputedStyle(el, pseudo);
-            if (style.content !== "none" && style.content !== "normal" && unhittable(style)) throw new Error();
-          }
-          if (el.matches(":modal, :popover-open") && unhittable(getComputedStyle(el, "::backdrop"))) throw new Error();
+      if (shadowCovers(roots)) return null;
+      const result = check();
+      if (!result) return null;
+      const points = pointsOf(result);
+      if (!Array.isArray(points) || !points.length || !points.every(p => p && Number.isFinite(p.x) && Number.isFinite(p.y)) ||
+          inertCovers(roots, points, target)) return null;
+      return result;
+    } catch {
+      return null;
+    } finally {
+      for (const root of adopted) {
+        try {
+          root.adoptedStyleSheets = root.adoptedStyleSheets.filter(item => item !== sheet);
+        } catch {
+          // The root is gone.
         }
       }
-    } catch {
-      remaskRoots(adopted, sheet);
-      return null;
-    }
-    const id = randomId();
-    remember(masks, MAX_PINS, id, {roots: adopted, sheet});
-    return id;
-  }
-
-  // The inert attribute also hides a cover from elementFromPoint, and no style
-  // sheet changes that. Lift it from every element (light DOM and shadow roots),
-  // run the check, and restore it, all in one synchronous task: no page code
-  // runs in between. Callers run the check with inert in place too.
-  function withoutInert(check) {
-    const roots = shadowRoots();
-    if (roots === null) return false;
-    const found = [];
-    for (const root of [document, ...roots]) {
-      for (const el of root.querySelectorAll("[inert]")) {
-        if (found.length >= MAX_INERT) return false;
-        found.push(el);
-      }
-    }
-    const values = found.map(el => el.getAttribute("inert"));
-    try {
-      found.forEach(el => el.removeAttribute("inert"));
-      return check();
-    } catch {
-      return false;
-    } finally {
-      found.forEach((el, i) => el.setAttribute("inert", values[i]));
     }
   }
 
-  function remaskRoots(roots, sheet) {
-    for (const root of roots) {
-      try {
-        root.adoptedStyleSheets = root.adoptedStyleSheets.filter(item => item !== sheet);
-      } catch {
-        // The root is gone.
-      }
-    }
-  }
-
-  function remask(id) {
-    const item = masks.get(id);
-    masks.delete(id);
-    if (item) remaskRoots(item.roots, item.sheet);
+  // The centre and corners of an element's box, just inside it.
+  function boxPoints(el) {
+    const r = el.getBoundingClientRect();
+    return [[r.left + r.width / 2, r.top + r.height / 2], [r.left + 1, r.top + 1], [r.right - 1, r.top + 1],
+      [r.left + 1, r.bottom - 1], [r.right - 1, r.bottom - 1]].map(([x, y]) => ({x, y}));
   }
 
   // Processor frames: retain the merchant's iframe owner and check its chain.
@@ -424,7 +433,8 @@
     const frames = Array.from(document.querySelectorAll("iframe")).slice(0, 256);
     const found = frames.map(frame => {
       try {
-        return GUARD.call(frame, frameURL, topURL, processor);
+        const state = GUARD.call(frame, frameURL, topURL, processor);
+        return state ? {state, frame} : null;
       } catch {
         return null;
       }
@@ -438,7 +448,7 @@
   function guardCheck(id, point) {
     const item = guards.get(id);
     try {
-      return Boolean(item && point && item.check(point) && withoutInert(() => item.check(point)));
+      return Boolean(item && point && guarded(() => item.state.check(point), () => boxPoints(item.frame), item.frame));
     } catch {
       return false;
     }
@@ -622,7 +632,6 @@
   Object.defineProperty(globalThis, "__akdbxContent", {value: Object.freeze({
     pin, geometry, release, fill, read, guard, guardCheck, count, probe, probeFill,
     releaseGuard: id => guards.delete(id),
-    ownerListen, ownerHeard, ownerDone, ownerProbe, ownerGuard, ownerCheck, ownerMap, ownerRelease, readPoints,
-    unmask, remask,
+    ownerListen, ownerHeard, ownerDone, ownerProbe, ownerGuard, ownerCheck, ownerRelease,
   })});
 })();

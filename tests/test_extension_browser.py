@@ -126,12 +126,33 @@ PAGES = {
     '/card-inert': ('<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number" '
                     f'style="width:200px;height:30px"></form><div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'
                     + DIGEST),
-    # A secret in a same-site child frame, with and without a cover over the frame in the top page.
+    # Inert covers: one styled only while inert, one in the top layer above a modal dialog (inert
+    # because the dialog is modal), and the same dialog without a cover, which reads.
+    '/secret-inert-styled': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>.c{{display:none}}'
+                             f'.c[inert]{{display:block;{COVER.replace(";pointer-events:none", "")}}}</style>'
+                             f'<code id="secret" tabindex="0">{SECRET}</code><div class="c" inert></div>'),
+    '/secret-modal': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<dialog id="d"><code id="secret" tabindex="0">'
+                      f'{SECRET}</code></dialog><script>d.showModal()</script>'),
+    '/secret-modal-cover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<dialog id="d"><code id="secret" tabindex="0">'
+                            f'{SECRET}</code></dialog><div id="p" popover style="position:fixed;inset:0;margin:0;width:100vw;'
+                            'height:100vh;border:0;background:#fff"></div><script>d.showModal(); p.showPopover()</script>'),
+    # A hidden middle frame in a closed shadow root (window.frames leaves it out) and a visible
+    # about:blank decoy whose owner probe the page reads and forwards to the hidden frame.
+    '/framed-shadow-decoy': '''<!doctype html><meta charset="utf-8"><h1>Outer page</h1>
+<iframe id="decoy" style="width:600px;height:300px;border:0"></iframe><div id="host"></div>
+<script>
+const root = host.attachShadow({mode: 'closed'});
+root.innerHTML = '<iframe src="/middle" style="width:600px;height:300px;border:0;opacity:0"></iframe>';
+const hidden = root.querySelector('iframe');
+decoy.contentWindow.addEventListener('message', event => {
+  if (event.data && event.data.akdbx_owner) hidden.contentWindow.postMessage(event.data, location.origin);
+}, true);
+</script>''',
+    '/middle': ('<!doctype html><meta charset="utf-8"><iframe src="https://auth.example.com/login" '
+                'style="width:580px;height:280px;border:0"></iframe>'),
+    # A secret in a same-site child frame: the extension reads only in the top document.
     '/framed-secret': ('<!doctype html><meta charset="utf-8"><iframe id="keys" src="https://auth.example.com/secret" '
                        'style="width:700px;height:200px;border:0"></iframe>'),
-    '/framed-secret-covered': ('<!doctype html><meta charset="utf-8"><iframe id="keys" src="https://auth.example.com/secret" '
-                               'style="width:700px;height:200px;border:0"></iframe>'
-                               '<div style="position:absolute;left:0;top:0;width:700px;height:200px;background:#fff"></div>'),
     # An attacker with pages on the login origin: the login page stops the first (genuine) owner
     # probe, and a visible decoy on the same origin relays its own probe through the top page.
     '/login-suppress': FORM + '''<script>let first = true;
@@ -692,7 +713,7 @@ def test_secret_capture_refuses_unfocused_selected_and_changed_secrets(harness):
 
 @pytest.mark.parametrize('page', ['/secret-covered', '/secret-covered-important', '/secret-shadow-cover',
                                   '/secret-shadow-important', '/secret-inert', '/secret-interactivity',
-                                  '/secret-shadow-pseudo'])
+                                  '/secret-shadow-pseudo', '/secret-inert-styled', '/secret-modal-cover'])
 def test_secret_capture_refuses_a_click_through_cover(harness, page):
     lab = harness.lab
     url = lab.navigate(page)
@@ -700,8 +721,17 @@ def test_secret_capture_refuses_a_click_through_cover(harness, page):
     assert read_pin(harness, url) == failure()
     # The page keeps its own styles: the unmasking ends with the check.
     assert lab.evaluate("[...document.querySelectorAll('div')].every(d => getComputedStyle(d).pointerEvents === 'none' "
-                        "|| d.id === 'host' || d.hasAttribute('inert') || getComputedStyle(d).interactivity === 'inert')")
+                        "|| d.id === 'host' || d.hasAttribute('inert') || d.hasAttribute('popover') || getComputedStyle(d).interactivity === 'inert')")
     assert lab.evaluate("[...document.querySelectorAll('div[inert]')].every(d => d.getAttribute('inert') === '')")
+
+
+def test_a_secret_in_a_modal_dialog_reads(harness):
+    lab = harness.lab
+    url = lab.navigate('/secret-modal')
+    harness.focus('secret')
+    pin = read_pin(harness, url)
+    assert pin['ok'], pin
+    assert read_value(harness, pin) == sha(SECRET)
 
 
 def card_pin(harness, url):
@@ -736,8 +766,12 @@ def same_site_frame(harness, url, ready='password'):
     lab = harness.lab
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        tree = lab.observer.call('Page.getFrameTree', session=lab.session)['frameTree']
-        found = [c['frame']['id'] for c in tree.get('childFrames', []) if c['frame']['url'] == url]
+        pending, found = [lab.observer.call('Page.getFrameTree', session=lab.session)['frameTree']], []
+        while pending:
+            node = pending.pop()
+            pending.extend(node.get('childFrames', []))
+            if node['frame']['url'] == url:
+                found.append(node['frame']['id'])
         if found:
             world = lab.observer.call('Page.createIsolatedWorld', dict(frameId=found[0], worldName='akdbx-test-observer'),
                                       lab.session)['executionContextId']
@@ -820,28 +854,32 @@ def test_a_read_pin_never_takes_a_selector_that_could_test_the_secret(harness):
         assert result is (selector == '#secret'), selector
 
 
-def framed_read_pin(harness, url):
+def test_the_extension_reads_secrets_only_in_the_top_document(harness):
     lab = harness.lab
+    url = lab.navigate('/framed-secret')
     lab.wait("document.readyState === 'complete'")
     frame = same_site_frame(harness, 'https://auth.example.com/secret', ready='secret')
     frame("window.focus(); document.getElementById('secret').focus()")
     listing = harness.frames(url)
     keys = next(f for f in listing['frames'] if f['origin'] == 'https://auth.example.com')
-    return read_pin(harness, url, frame_id=keys['frame_id'], frame_protocol=1, frame_origin='https://auth.example.com')
+    assert read_pin(harness, url, frame_id=keys['frame_id'], frame_protocol=1,
+                    frame_origin='https://auth.example.com') == failure()
+    assert read_pin(harness, url, frame_id=keys['frame_id']) == failure()
 
 
-def test_a_child_frame_secret_is_read_only_when_its_frame_is_on_top(harness):
+def test_a_hidden_frame_in_a_shadow_root_cannot_borrow_a_decoy_owner(harness):
     lab = harness.lab
-    pin = framed_read_pin(harness, lab.navigate('/framed-secret'))
-    assert pin['ok'], pin
-    assert read_value(harness, pin, 'https://auth.example.com') == sha(SECRET)
-    assert framed_read_pin(harness, lab.navigate('/framed-secret-covered')) == failure()
-    # A cover added after the pin refuses the read.
-    pin = framed_read_pin(harness, lab.navigate('/framed-secret'))
-    assert pin['ok'], pin
-    lab.evaluate("document.body.insertAdjacentHTML('beforeend', '<div style=\"position:absolute;left:0;top:0;"
-                 "width:700px;height:200px;background:#fff\"></div>')")
-    assert read_value(harness, pin, 'https://auth.example.com') is None
+    url = lab.navigate('/framed-shadow-decoy')
+    frame = same_site_frame(harness, 'https://auth.example.com/login')
+    frame("window.focus(); document.getElementById('password').focus()")
+    listing = harness.frames(url)
+    login = next(f for f in listing['frames'] if f['origin'] == 'https://auth.example.com' and f['visible_fields']
+                 and f['visible_fields']['password'])
+    pin = harness.broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                                       frame_id=login['frame_id'], top_url=url, selector='#password', mode='password',
+                                       frame_protocol=1, frame_origin='https://auth.example.com', route='extension'))
+    assert pin == failure()
+    assert frame(FRAME_DIGEST, True) == EMPTY
 
 
 def test_a_page_cannot_stop_an_owner_probe_to_lend_a_decoy(harness):
