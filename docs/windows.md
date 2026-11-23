@@ -74,10 +74,11 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
 - Card processor iframes (Adyen, Computop, Stripe) use the same code as Linux,
   where CI tests them. On the CDP route only main-frame card fields have been
   tested on Windows; the extension route is tested with a Stripe frame.
-- The extension route cannot attest which `<iframe>` element hosts a child
-  frame, has no browser-native hit test, and does not support secret capture.
-  Pairing is held in memory only: a browser or broker restart needs a new
-  pairing with the master password.
+- The extension route (0.32.0+, fill extension 0.4.0) holds child-frame
+  `<iframe>` owners and captures secrets in the top document, as the CDP route
+  does. It has no browser-native hit test: only the CDP route refuses a card or
+  address field under a click-through cover. Pairing is held in memory only: a
+  browser or broker restart needs a new pairing with the master password.
 
 ## Install and prepare private files
 

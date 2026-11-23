@@ -117,6 +117,27 @@
     }
   }
 
+  /* The broker's signature over one connection: its per-connection ECDH key and this extension's key,
+   * signed by the identity key in `trusted` (a saved record). The native host relays that ECDH key, so
+   * only this signature shows that the broker, not the host, made it. */
+  async function verifyChannel(trusted, brokerKey, extensionKey, signature) {
+    try {
+      if (!plain(trusted) || typeof trusted.public_key !== "string" || !PUBLIC_KEY.test(trusted.public_key) ||
+          typeof trusted.key_id !== "string" || !KEY_ID.test(trusted.key_id) ||
+          typeof brokerKey !== "string" || !PUBLIC_KEY.test(brokerKey) ||
+          typeof extensionKey !== "string" || !PUBLIC_KEY.test(extensionKey) ||
+          typeof signature !== "string" || !SIGNATURE.test(signature)) return false;
+      const statement = {broker_key: brokerKey, extension_key: extensionKey, key_id: trusted.key_id,
+        type: "akdbx-channel", v: 1};
+      const key = await crypto.subtle.importKey("raw", decode(trusted.public_key), {name: "ECDSA", namedCurve: "P-256"},
+        false, ["verify"]);
+      return await crypto.subtle.verify({name: "ECDSA", hash: "SHA-256"}, key, decode(signature),
+        new TextEncoder().encode(canonical(statement)));
+    } catch {
+      return false;
+    }
+  }
+
   /* The broker's statement, read over HTTPS from `origin`: the verified facts, or null when the read fails.
    * TLS, the Host check and the exact origin bind it to the page where the user enters the master password. */
   async function fetchIdentity(origin, fetchImpl = typeof fetch === "function" ? fetch.bind(globalThis) : null,
@@ -197,6 +218,12 @@
     return build && stored.build === build ? stored : null;
   }
 
+  // The broker identity key this extension trusts ({public_key, key_id}), or null before the first binding.
+  function trustedKey(stored, config) {
+    const record = current(stored, config);
+    return storedKey(record) ? {public_key: record.public_key, key_id: record.key_id} : null;
+  }
+
   // The origin this extension trusts independently of the native host, or null.
   function trustedOrigin(stored, config) {
     const record = current(stored, config);
@@ -254,7 +281,7 @@
   }
 
   const api = {STORAGE_KEY, IDENTITY_PATH, validOrigin, privateLink, canonical, verifyIdentity, fetchIdentity, decide,
-    storedKey, trustedOrigin, saveRecord};
+    storedKey, trustedOrigin, saveRecord, trustedKey, verifyChannel};
   globalThis.akdbxTrust = api;
   if (typeof module !== "undefined") module.exports = api;
 })();

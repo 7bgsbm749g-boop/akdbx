@@ -3,6 +3,7 @@ import json
 import sys
 import time
 
+from .extension_route import CAPTURE_DELIVERY as EXTENSION_CAPTURE_DELIVERY
 from .secrets_capture import CAPTURE_DELIVERY, CAPTURE_PROTOCOL, valid_field
 from .sink_helper import PROTOCOL as SINK_PROTOCOL, SINK_NAME
 
@@ -45,7 +46,8 @@ def valid_receipt(args, response, payload):
         return (set(response) == {'ok', 'state', 'created', 'field', 'length', 'metadata', 'capture_delivery'}
                 and response['state'] == 'saved' and response['created'] is args.new
                 and response['field'] == args.field and type(response['length']) is int and 0 < response['length'] <= 4096
-                and response['metadata'] == payload['metadata'] and response['capture_delivery'] == CAPTURE_DELIVERY)
+                and response['metadata'] == payload['metadata']
+                and response['capture_delivery'] in (CAPTURE_DELIVERY, EXTENSION_CAPTURE_DELIVERY))
     return (set(response) == {'ok', 'state', 'sink', 'field', 'restarted'}
             and response['state'] == 'delivered' and response['sink'] == args.sink and response['field'] == args.field
             and response['restarted'] in (True, False, None))

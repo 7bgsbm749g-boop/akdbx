@@ -39,6 +39,10 @@ STRIPE_CARD_ELEMENT = ('https://js.stripe.com/v3/elements-inner-card-' + 'c' * 3
                        '.html#__shared_params__[version]=v3&componentName=card')
 
 
+# The fake extension reports the shipped version, which the keys bind (0.4.0+).
+BOUND = b'/' + route.EXTENSION_VERSION.encode()
+
+
 def new_key():
     """A synthetic extension ECDH key pair: private key and raw public point."""
     from cryptography.hazmat.primitives import serialization
@@ -56,9 +60,23 @@ def unseal(private, raw, broker_raw, sealed, context):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     shared = private.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), broker_raw))
-    key = HKDF(hashes.SHA256(), 32, salt=bytes(32), info=route.HKDF_INFO + raw + broker_raw).derive(shared)
+    key = HKDF(hashes.SHA256(), 32, salt=bytes(32), info=route.HKDF_INFO + BOUND + raw + broker_raw).derive(shared)
     decode = lambda text: base64.urlsafe_b64decode(text + '=' * (-len(text) % 4))
     return json.loads(AESGCM(key).decrypt(decode(sealed['iv']), decode(sealed['data']), context.encode()))
+
+
+def seal_capture(private, raw, broker_raw, value, facts, context):
+    """Seal a captured value to the broker the way background.js sealCapture does."""
+    import base64
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    shared = private.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), broker_raw))
+    key = HKDF(hashes.SHA256(), 32, salt=bytes(32), info=route.CAPTURE_INFO + BOUND + raw + broker_raw).derive(shared)
+    nonce = os.urandom(12)
+    data = AESGCM(key).encrypt(nonce, json.dumps(dict(value=value, facts=facts)).encode(), context.encode())
+    return dict(iv=route.b64url(nonce), data=route.b64url(data))
 
 
 EXTENSION_PRIVATE, EXTENSION_PUBLIC = new_key()
@@ -94,6 +112,8 @@ class FakeExtension:
         self.filled = []
         self.calls = []
         self.fill_state = 'filled'
+        self.secret = None         # What a read pin's element shows.
+        self.read_reply = None     # Optional override of the read reply, for forgery tests.
 
     def chain(self, tab, document):
         documents = {d.id: d for d in self.tabs.get(tab, [])}
@@ -133,6 +153,25 @@ class FakeExtension:
             if self.fill_state == 'filled':
                 self.filled.append(values)
             return dict(state=self.fill_state)
+        if op == 'read':
+            if payload['pin_id'] not in self.pins or self.chain(payload['tab_id'], payload['document_id']) != payload['chain']:
+                return dict(state='refused')
+            stored = self.pins.pop(payload['pin_id'])
+            sealed = unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, self.channel.broker_public_key, payload['sealed'],
+                            'read:' + payload['pin_id'])
+            facts = sealed['facts']
+            assert facts == dict(tab_id=payload['tab_id'], document_id=payload['document_id'], chain=payload['chain'],
+                                 kind='read', pin_id=payload['pin_id'], spec=stored['spec'],
+                                 max_age_ms=payload['max_age_ms']) and sealed['values'] == {}
+            if self.read_reply is not None:
+                return self.read_reply(payload)
+            if self.secret is None:
+                return dict(state='refused')
+            bound = dict(tab_id=facts['tab_id'], document_id=facts['document_id'], chain=facts['chain'],
+                         pin_id=facts['pin_id'])
+            return dict(state='read', sealed=seal_capture(EXTENSION_PRIVATE, EXTENSION_PUBLIC,
+                                                          self.channel.broker_public_key, self.secret, bound,
+                                                          'capture:' + facts['pin_id']))
         if op == 'release':
             self.pins.pop(payload['pin_id'], None)
             return dict(ok=True)
@@ -140,8 +179,8 @@ class FakeExtension:
 
 
 class FakeChannel(route.Channel):
-    def __init__(self, hub, extension, browser='helium'):
-        super().__init__(hub, None, browser, EXTENSION_PUBLIC)
+    def __init__(self, hub, extension, browser='helium', version=route.EXTENSION_VERSION):
+        super().__init__(hub, None, browser, EXTENSION_PUBLIC, version)
         self.extension = extension
         extension.channel = self
 
@@ -945,10 +984,7 @@ def test_cli_lists_pins_and_fills_through_the_extension_route(monkeypatch, capsy
                                                                 '--target', pin['target']])
     assert status == 0 and receipt == dict(ok=True, filled='password', target_delivery=route.DELIVERY)
     assert extension.filled[0]['password'] == PASSWORD
-    status, _, error = run_cli(monkeypatch, capsys, broker, [
-        'pin-password-target', '--page-id', listing['page_id'], '--frame-id', 'TOP', '--top-url', LOGIN,
-        '--selector', '#secret', '--mode', 'read', '--route', 'extension'])
-    assert status == 2 and 'cdp route only' in error
+
 
 
 def test_cli_pins_cards_on_the_extension_route_without_a_frame_url(monkeypatch, capsys):
@@ -1301,3 +1337,286 @@ def test_status_shows_each_loaded_extension_version(pair_of_sockets, extra, vers
 def test_status_lists_the_expected_extension_version_without_a_connection():
     status = make_broker().dispatch(dict(action='ping'))
     assert status['extension_version_expected'] == route.EXTENSION_VERSION and status['extension_browsers'] == []
+
+
+# ----- secret capture -----------------------------------------------------------------
+SECRET = 'sk_synthetic_ONLY_0123456789abcdef'
+SECRET_SITE = 'https://dashboard.example.com/keys'
+
+
+def read_pin(broker, channel, tab, document, top, **extra):
+    request = dict(action='pin-password-target', password_protocol=1, page_id=f'{channel.id}.{tab}',
+                   frame_id=document, top_url=top, selector='#secret', mode='read', capture_protocol=1,
+                   route='extension')
+    request.update(extra)
+    return broker.dispatch(request)
+
+
+def capture(broker, target, **extra):
+    request = dict(action='capture-secret', capture_protocol=1, target=target, field='client_secret', create=True,
+                   metadata=dict(title='Synthetic API', username='synthetic-key', url=SECRET_SITE, group='Web'),
+                   start_deadline=broker.clock() + 4)
+    request.update(extra)
+    return broker.dispatch(request)
+
+
+MASTER = 'synthetic-capture-master-only'
+
+
+@pytest.fixture(scope='module')
+def template(tmp_path_factory):
+    """A synthetic KDBX with a cheap KDF and a 'Web' group; never a real vault."""
+    from pykeepass import create_database
+    path = tmp_path_factory.mktemp('capture-template') / 'synthetic.kdbx'
+    vault = create_database(io.BytesIO(), password=MASTER)
+    params = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
+    params['I'].value, params['M'].value = 1, 1024 * 1024
+    vault.add_group(vault.root_group, 'Web')
+    buffer = io.BytesIO()
+    vault.save(buffer)
+    path.write_bytes(buffer.getvalue())
+    return path
+
+
+def saved_secret(broker):
+    """What the saved file holds, read back with its own master password."""
+    from pykeepass import PyKeePass
+    entry = PyKeePass(str(broker.capture_path), password=MASTER).find_entries(title='Synthetic API', first=True)
+    return None if entry is None else entry.get_custom_property('client_secret')
+
+
+@pytest.fixture
+def capture_broker(tmp_path, template):
+    import shutil
+    from akdbx.broker import open_vault_with_password
+    path = tmp_path / 'synthetic.kdbx'
+    shutil.copyfile(template, path)
+    broker = Broker(open_vault_with_password(path, MASTER), RecordingTyper())
+    broker.writes.public_base = 'https://unlock.example.test:9443'
+    broker.capture_path = path
+    return broker
+
+
+def test_status_advertises_extension_secret_capture():
+    status = make_broker().dispatch(dict(action='ping'))
+    assert status['extension_capture_protocol'] == 1
+    assert status['extension_capture_delivery'] == route.CAPTURE_DELIVERY == 'extension-dom-read-v1'
+
+
+def test_extension_read_pin_captures_through_both_sealed_directions(capture_broker):
+    broker = capture_broker
+    channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    extension.secret = SECRET
+    pin = read_pin(broker, channel, 4, 'TOP', SECRET_SITE)
+    assert pin == dict(ok=True, target=pin['target'], expires_in=30, target_delivery=route.DELIVERY)
+    receipt = capture(broker, pin['target'])
+    assert receipt['ok'] and receipt['capture_delivery'] == route.CAPTURE_DELIVERY, receipt
+    assert receipt['length'] == len(SECRET) and SECRET not in json.dumps(receipt)
+    assert saved_secret(broker) == SECRET
+    assert extension.calls.count('read') == 1 and 'release' in extension.calls
+
+
+def test_a_read_pin_never_fills_and_a_fill_pin_never_reads(capture_broker):
+    broker = capture_broker
+    broker.vault.add_entry(broker.vault.root_group, 'Synthetic login', USERNAME, PASSWORD, url=SECRET_SITE)
+    channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    extension.secret = SECRET
+    pin = read_pin(broker, channel, 4, 'TOP', SECRET_SITE)
+    handle = search(broker, 'dashboard.example.com')
+    assert broker.dispatch(dict(action='fill', handle=handle, mode='password', target=pin['target'],
+                                target_protocol=1))['ok'] is False
+    assert extension.filled == []
+    fill_pin = pin_password(broker, channel, 4, 'TOP', SECRET_SITE)
+    assert fill_pin['ok']
+    assert capture(broker, fill_pin['target'])['ok'] is False and saved_secret(broker) is None
+
+
+@pytest.mark.parametrize('forgery', ['other key', 'other pin', 'other facts', 'plain value', 'extra field'])
+def test_a_relayed_read_reply_that_the_extension_did_not_seal_saves_nothing(capture_broker, forgery):
+    broker = capture_broker
+    channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    other_private, other_public = new_key()
+
+    def reply(payload):
+        bound = dict(tab_id=payload['tab_id'], document_id=payload['document_id'], chain=payload['chain'],
+                     pin_id=payload['pin_id'])
+        key, raw, context = EXTENSION_PRIVATE, EXTENSION_PUBLIC, 'capture:' + payload['pin_id']
+        if forgery == 'other key':
+            key, raw = other_private, other_public
+        elif forgery == 'other pin':
+            context = 'capture:' + 'f' * 32
+        elif forgery == 'other facts':
+            bound = dict(bound, document_id='ELSEWHERE')
+        elif forgery == 'plain value':
+            return dict(state='read', sealed=dict(iv='A' * 16, data='B' * 40), value=SECRET)
+        sealed = seal_capture(key, raw, channel.broker_public_key, SECRET, bound, context)
+        return dict(state='read', sealed=sealed, **({'extra': 1} if forgery == 'extra field' else {}))
+    extension.read_reply = reply
+    pin = read_pin(broker, channel, 4, 'TOP', SECRET_SITE)
+    receipt = capture(broker, pin['target'])
+    assert receipt['ok'] is False and SECRET not in json.dumps(receipt)
+    assert saved_secret(broker) is None
+
+
+def test_a_broker_sealed_value_cannot_pass_as_a_capture():
+    """The two directions use different keys: a fill payload replayed as a capture fails authentication."""
+    broker = make_broker()
+    channel, _ = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    sealed = channel.seal(dict(value=SECRET, facts={}), 'capture:' + 'a' * 32)
+    assert channel.open(sealed, 'capture:' + 'a' * 32) is None
+
+
+def test_extension_read_pins_follow_the_cdp_read_rules(capture_broker):
+    broker = capture_broker
+    channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE),
+                                             Document('SAME', 'https://keys.example.com/frame', 'TOP'),
+                                             Document('EVIL', 'https://evil.example.net/frame', 'TOP')]})
+    extension.secret = SECRET
+    # Attribute and functional selectors could test the secret: refused before the browser sees them.
+    for selector in ('input[value^="s"]', '#secret:not(:empty)', 'code:has(b)'):
+        assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE, selector=selector) == failure()
+    assert 'pin' not in extension.calls
+    # Fill-only options are not read options.
+    assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE, password_purpose='new-password') == failure()
+    assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE, capture_protocol=2) == failure()
+    # The extension reads only in the top document: any frame route is refused before the browser sees it.
+    for frame, origin in (('SAME', 'https://keys.example.com'), ('EVIL', 'https://evil.example.net')):
+        assert read_pin(broker, channel, 4, frame, SECRET_SITE, frame_protocol=1, frame_origin=origin) == failure()
+    assert 'pin' not in extension.calls
+    # A child frame named without a frame route is refused from its browser chain, and released.
+    assert read_pin(broker, channel, 4, 'SAME', SECRET_SITE) == failure()
+    assert extension.calls == ['pin', 'release']
+
+
+def test_capture_refuses_a_page_off_the_record_origin(capture_broker):
+    broker = capture_broker
+    channel, extension = attach(broker, {4: [Document('TOP', 'https://keys.example.com/new')]})
+    extension.secret = SECRET
+    pin = read_pin(broker, channel, 4, 'TOP', 'https://keys.example.com/new')
+    assert pin['ok'], pin
+    assert capture(broker, pin['target'])['ok'] is False  # The record's URL is dashboard.example.com.
+    assert 'read' not in extension.calls and saved_secret(broker) is None
+
+
+@pytest.mark.parametrize('value', ['', 'two words', 'line\nbreak', 'x' * 4097])
+def test_capture_refuses_an_invalid_read_value(capture_broker, value):
+    broker = capture_broker
+    channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    extension.secret = value
+    pin = read_pin(broker, channel, 4, 'TOP', SECRET_SITE)
+    assert capture(broker, pin['target'])['ok'] is False and saved_secret(broker) is None
+
+
+def test_an_older_extension_gets_no_read_or_child_frame_login_pins_but_keeps_the_rest(capture_broker):
+    broker = capture_broker
+    extension = FakeExtension({4: [Document('TOP', SECRET_SITE), Document('SAME', 'https://keys.example.com/f', 'TOP')]})
+    channel = FakeChannel(broker.extension, extension, version='0.3.0')
+    broker.extension.channels[channel.id] = channel
+    broker.extension.approved.append(channel.digest)
+    assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE) == failure()
+    assert pin_password(broker, channel, 4, 'SAME', SECRET_SITE, frame_protocol=1,
+                        frame_origin='https://keys.example.com') == failure()
+    assert 'pin' not in extension.calls
+    # Main-frame logins and cards keep working with the older extension.
+    assert pin_password(broker, channel, 4, 'TOP', SECRET_SITE)['ok']
+    card = broker.dispatch(dict(action='pin-card-target', card_protocol=1, page_id=f'{channel.id}.4', frame_id='TOP',
+                                top_url=SECRET_SITE, selector='#number', field='cc-number', route='extension'))
+    assert card['ok'], card
+
+
+def test_cli_reads_through_the_extension_with_route_or_default(monkeypatch, capsys, capture_broker):
+    broker = capture_broker
+    channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    extension.secret = SECRET
+    base = ['pin-password-target', '--page-id', f'{channel.id}.4', '--frame-id', 'TOP', '--top-url', SECRET_SITE,
+            '--selector', '#secret', '--mode', 'read']
+    status, pin, _ = run_cli(monkeypatch, capsys, broker, [*base, '--route', 'extension'])
+    assert status == 0 and pin['target_delivery'] == route.DELIVERY, pin
+    status, receipt, _ = run_cli(monkeypatch, capsys, broker, [
+        'capture-secret', '--target', pin['target'], '--field', 'client_secret', '--new', '--title', 'Synthetic API',
+        '--username', 'synthetic-key', '--url', SECRET_SITE, '--group', 'Web'])
+    assert status == 0 and receipt['capture_delivery'] == route.CAPTURE_DELIVERY and saved_secret(broker) == SECRET
+    # With the extension as the default route, a read pin takes it without --route.
+    broker.extension.default_route = 'extension'
+    status, pin, _ = run_cli(monkeypatch, capsys, broker, base)
+    assert status == 0 and pin['target_delivery'] == route.DELIVERY, pin
+
+
+def test_cli_keeps_read_pins_on_cdp_for_a_broker_without_extension_capture(monkeypatch, capsys):
+    from akdbx import cli
+    args = SimpleNamespace(route=None)
+    old = dict(default_fill_route='extension')
+    assert cli._read_route(args, old) == 'cdp'
+    assert cli._read_route(args, dict(old, extension_capture_protocol=1,
+                                      extension_capture_delivery='extension-dom-read-v1')) == 'extension'
+    assert cli._read_route(SimpleNamespace(route='cdp'), dict(old, extension_capture_protocol=1,
+                                                              extension_capture_delivery='extension-dom-read-v1')) == 'cdp'
+    new = dict(old, extension_capture_protocol=1, extension_capture_delivery='extension-dom-read-v1')
+    assert cli._read_route(SimpleNamespace(route=None, frame_origin='https://keys.example.com'), new) == 'cdp'
+    broker = make_broker()
+    real = broker.dispatch
+
+    def older(request):
+        result = real(request)
+        if request.get('action') == 'ping':
+            result.pop('extension_capture_protocol')
+        return result
+    broker.dispatch = older
+    channel, _ = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    status, refused, _ = run_cli(monkeypatch, capsys, broker, [
+        'pin-password-target', '--page-id', f'{channel.id}.4', '--frame-id', 'TOP', '--top-url', SECRET_SITE,
+        '--selector', '#secret', '--mode', 'read', '--route', 'extension'])
+    assert status == 1 and 'extension secret capture' in refused['error']
+
+
+def test_state_messages_sign_the_connection_keys_with_the_broker_identity(tmp_path):
+    """The host relays the broker's per-connection key; only the identity signature shows the broker made it."""
+    import base64
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+    from akdbx import broker_identity
+    broker = make_broker()
+    identity = broker_identity.IdentityStore(tmp_path / 'identity').announce('https://localhost:9443')
+    broker.extension.set_identity(identity)
+    channel, _ = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    message = broker.extension._state(channel, 'attached')
+    statement = dict(type='akdbx-channel', v=1, key_id=identity.key_id, broker_key=route.b64url(channel.broker_public_key),
+                     extension_key=KEY)
+    raw = base64.urlsafe_b64decode(message['channel_signature'] + '==')
+    point = base64.urlsafe_b64decode(identity.public_key + '=')
+    key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), point)
+    key.verify(encode_dss_signature(int.from_bytes(raw[:32], 'big'), int.from_bytes(raw[32:], 'big')),
+               broker_identity.canonical_bytes(statement), ec.ECDSA(hashes.SHA256()))
+    # Another connection key gets another signature: a host cannot reuse one for its own key.
+    other, _ = attach(broker, {5: [Document('TOP', SECRET_SITE)]})
+    assert broker.extension._state(other, 'attached')['channel_signature'] != message['channel_signature']
+
+
+def test_a_version_the_extension_did_not_report_breaks_every_sealed_value():
+    """From 0.4.0 the keys bind the reported version: an older extension behind a host that claims 0.4.0 opens nothing."""
+    from cryptography.exceptions import InvalidTag
+    broker = make_broker()
+    channel, _ = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    sealed = channel.seal(dict(values={}, facts={}), 'fill:' + 'a' * 32)
+    assert unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, sealed, 'fill:' + 'a' * 32)
+    global BOUND
+    bound, BOUND = BOUND, b''  # What extension 0.3.0 derives.
+    try:
+        with pytest.raises(InvalidTag):
+            unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, sealed, 'fill:' + 'a' * 32)
+    finally:
+        BOUND = bound
+
+
+
+def test_a_child_frame_read_pin_without_a_route_takes_cdp_when_the_extension_is_the_default():
+    broker = make_broker()
+    broker.extension.default_route = 'extension'
+    channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE), Document('SAME', 'https://keys.example.com/f', 'TOP')]})
+    calls = []
+    broker.passwords.pin = lambda request: calls.append(request) or dict(ok=True, target='c' * 64, expires_in=30,
+                                                                       target_delivery='chromium-password-dom-v1')
+    request = dict(action='pin-password-target', password_protocol=1, page_id='CDP-PAGE', frame_id='SAME', top_url=SECRET_SITE,
+                   selector='#secret', mode='read', capture_protocol=1, frame_protocol=1, frame_origin='https://keys.example.com')
+    assert broker.dispatch(request)['ok'] and len(calls) == 1 and 'pin' not in extension.calls

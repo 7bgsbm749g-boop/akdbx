@@ -193,7 +193,30 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   `--frame-url`; without it the CLI refuses a `stripe` pin before it sends it.
 - Identities: `pin-identity-target --route extension`, same rules as the CDP
   route; only frames of the top origin.
-- Secret capture (`--mode read`, `capture-secret`) stays on the CDP route.
+- Secret capture (0.32.0+, fill extension 0.4.0): `pin-password-target --mode read
+  --route extension`, then `capture-secret` as on the CDP route. The read pin
+  has the CDP read pin's rules (structural selector only, focus and no
+  selection, one visible single-line text), and it reads only in the top
+  document: a frame route (`--frame-origin`) refuses. Use the CDP route for a
+  secret shown in a child frame. The broker
+  seals the read request with the pin's facts; the extension seals the value
+  to the broker under a second key (`akdbx-extension-capture-v1`), bound to
+  that pin. The native host relays the broker's per-connection key, so the
+  broker signs that key and the extension's key with its identity key
+  (`channel_signature`); the extension reads only for a connection that the
+  identity key it learned over HTTPS at its first pairing signed. Before that
+  first binding, `capture-secret` refuses and saves nothing (the read pin itself
+  can still succeed). A connection keeps the broker key of its
+  first `attached` message, so a host cannot swap keys during a read. The
+  receipt says
+  `capture_delivery: "extension-dom-read-v1"`.
+  Without `--route`, a read pin takes the broker's default route when the
+  broker advertises `extension_capture_protocol: 1`, else the CDP route.
+- Read pins and password pins in a child frame need fill extension 0.4.0 or
+  newer; the broker refuses them from an older one. Build
+  the extension again and reload it. From 0.4.0 both sealing keys bind the
+  version the extension reports, so a host that reports another version makes
+  every sealed message fail.
 
 ## User-click workflow
 
@@ -235,11 +258,27 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   sequence number); never a value. The content
   script runs in the extension's isolated world; it uses the CDP route's own
   checks, which the build step copies in.
-- Limits compared with the CDP route: the extension cannot attest which
-  `<iframe>` element hosts a child frame, so password child frames have no
-  owner-element guard (the frame chain, focus and in-frame visibility checks
-  remain). Processor card frames keep an owner guard found by the frame's exact
-  URL. There is no browser-native hit test; DOM hit tests remain.
+- Frame owners (0.32.0+): the browser names a child frame's parent document
+  but not its `<iframe>` element. The parent's isolated world posts a fresh
+  nonce into each child window: those `window.frames` lists and those of every
+  `iframe`, `frame` and `object` element, also in shadow roots (a document with
+  an `embed` refuses). The child's isolated world reports the nonces its parent
+  window sent; exactly one names the owner, so a page that forwards another
+  frame's nonce makes the child hear two, which refuses. The listener starts at
+  `document_start` (`early.js` marks that start; a script injected later
+  refuses), also in `about:blank` frames, and stops every probe, so a page
+  neither sees nor stops one. In a page that was open before the extension
+  loaded, child-frame password pins refuse until the page reloads. That owner
+  then gets the CDP route's owner guard (connected, visible, no `srcdoc`, safe
+  `sandbox`, no attribute change), checked at pin and again before the fill or
+  read.
+- Hit tests: there is no browser-native hit test. The checks use
+  `elementFromPoint` in the isolated world, which skips click-through covers
+  (`pointer-events: none`, `inert` content, a popover's `::backdrop`). For card
+  and address fields the CDP route also runs `DOM.getNodeForLocation`, which
+  sees them; use the CDP route where a page may cover such a field. Read pins
+  use the same `elementFromPoint` check on both routes, and password pins have
+  no hit test on either.
 
 ## Setup
 

@@ -364,11 +364,14 @@ class Broker:
         if action == 'pin-password-target':
             try:
                 route = request.get('route', self.extension.default_route)
-                if route == 'extension' and request.get('mode') != 'read':
+                if 'route' not in request and request.get('mode') == 'read' and 'frame_origin' in request:
+                    route = 'cdp'  # The extension reads only in the top document.
+                if route == 'extension':
                     browser_slots.refuse_extension(request)
-                    return self.extension.pin_password({**request, 'route': 'extension'})
-                if 'route' in request and request['route'] != 'cdp':
-                    raise TargetError()  # Read pins (secret capture) stay on CDP.
+                    pin = self.extension.pin_read if request.get('mode') == 'read' else self.extension.pin_password
+                    return pin({**request, 'route': 'extension'})
+                if route != 'cdp':
+                    raise TargetError()
                 return self.passwords.pin({k: v for k, v in request.items() if k != 'route'})
             except SlotError as exc:
                 return {'ok': False, 'error': str(exc)}

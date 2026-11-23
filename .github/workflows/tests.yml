@@ -27,6 +27,43 @@ jobs:
       # KeePassXC engine. This job covers shared core and both delivery contracts.
       - run: python -m pytest -q tests/test_protocol.py tests/test_cli.py tests/test_broker.py tests/test_writes.py tests/test_web_unlock.py tests/test_totp.py tests/test_target.py tests/test_target_guards.py tests/test_password_frames_policy.py tests/test_additional_urls.py tests/test_save_secret.py tests/test_secret_sinks.py tests/test_generated_native_clock.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_local_https.py tests/test_windows_native.py tests/test_extension_route.py tests/test_relay.py tests/test_relay_integration.py tests/test_setup.py tests/test_page_url_file.py tests/test_broker_identity.py tests/test_browser_slots.py tests/test_extension_launcher.py --basetemp="${{ runner.temp }}/akdbx-tests"
       - run: node --test tests/test_fill_extension.js
+  linux-extension-browser:
+    # The extension route in a real browser: secret capture and frame owners.
+    # Google Chrome 137+ ignores --load-extension; Chrome
+    # for Testing still loads the unpacked test extension.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[test]'
+      - name: Install pinned Chrome for Testing
+        run: |
+          curl --fail --location --max-time 300 --max-filesize 268435456 --output "$RUNNER_TEMP/chrome-linux64.zip" \
+            https://storage.googleapis.com/chrome-for-testing-public/153.0.8010.12/linux64/chrome-linux64.zip
+          echo "8aac35011c18f6e2d10696154af89a5728ac2ddd6dc6fad24ffdf243c3fcfd5a  $RUNNER_TEMP/chrome-linux64.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/chrome-linux64.zip" -d "$RUNNER_TEMP/cft"
+      - name: Extension route in Chrome for Testing
+        env:
+          AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
+          AKDBX_TEST_EXTENSION_BROWSER: ${{ runner.temp }}/cft/chrome-linux64/chrome
+          # A disposable synthetic profile only; the runner may not allow Chromium's user-namespace sandbox.
+          AKDBX_TEST_BROWSER_NO_SANDBOX: '1'
+        run: python -m pytest -q -rs tests/test_extension_browser.py --basetemp="${{ runner.temp }}/akdbx-tests" --junitxml="${{ runner.temp }}/extension-browser.xml"
+      - name: Require every extension browser case to run
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          cases = list(ET.parse(os.path.join(os.environ['RUNNER_TEMP'], 'extension-browser.xml')).iter('testcase'))
+          skipped = sum(case.find('skipped') is not None for case in cases)
+          assert len(cases) >= 20 and skipped == 0, f'{len(cases)} cases, {skipped} skipped'
+          print(f'All {len(cases)} extension browser cases ran without skips.')
+          PY
   windows:
     runs-on: windows-latest
     timeout-minutes: 25

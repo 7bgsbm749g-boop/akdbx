@@ -1,12 +1,17 @@
-"""The extension route in a real browser on native Windows; synthetic values only.
+"""The extension route in a real browser on native Windows or Linux; synthetic values only.
 
 A disposable headless profile loads the built extension. A uniquely named test
-host is registered under the browser's own native-messaging registry key for
-the duration of the test, then removed: for Helium that is Chromium's key, so
-the test also proves where Helium looks. The broker runs on a test pipe with a
-synthetic vault. Values reach pages only through the extension route; the
+host is registered for the duration of the test, then removed: on Windows under
+the browser's own native-messaging registry key (for Helium that is Chromium's
+key, so the test also proves where Helium looks), on Linux in the profile's
+NativeMessagingHosts folder. The broker runs on a test pipe or Unix socket with
+a synthetic vault. Values reach pages only through the extension route; the
 pages report SHA-256 digests, so no test reads back a field value. The test
 observer uses the disposable profile's debugging port only to prepare pages.
+
+On Linux, set AKDBX_TEST_EXTENSION_BROWSER to a Chromium that still loads an
+unpacked extension (Chromium or Chrome for Testing; Google Chrome 137+ does
+not), and AKDBX_TEST_BROWSER_NO_SANDBOX=1 on a host without user namespaces.
 """
 import hashlib
 import json
@@ -20,19 +25,45 @@ import uuid
 
 import pytest
 
-if sys.platform != 'win32':
-    pytest.skip('native Windows APIs required', allow_module_level=True)
+if sys.platform != 'win32' and not sys.platform.startswith('linux'):
+    pytest.skip('native Windows or Linux required', allow_module_level=True)
 
 from akdbx import broker_identity, extension_host, extension_route as route
 from akdbx.broker import Broker, serve
 from akdbx.local_https import start_local_unlock_server
 from akdbx.browser_card import failure as card_failure
+from akdbx.cards import FIELDS, MARKER
 from akdbx.target import failure
 from test_broker import Entry, Vault
-from test_windows_chromium import CardEntry, NoKeys, CARD
-from test_windows_native import private_dir  # noqa: F401
 from test_windows_unlock import certificates  # noqa: F401
-from windows_chromium_lab import ORIGIN, chromium_lab
+from windows_chromium_lab import FORM, ORIGIN, chromium_lab
+
+CARD = dict(name='Synthetic Cardholder', number='4111111111111111', month='09', year='2031', csc='123')
+
+
+class NoKeys:
+    """A window backend that fails the test if any keyboard delivery starts."""
+
+    def capture(self, pid, window):
+        return ('synthetic-window', pid, window)
+
+    def deliver(self, *args, **kwargs):
+        pytest.fail('a DOM-only credential reached the keyboard backend')
+
+
+class CardEntry(Entry):
+    def get_custom_property(self, key):
+        return {MARKER: 'v1', **{field: CARD[k] for k, field in FIELDS.items()}}.get(key)
+
+
+if sys.platform == 'win32':
+    from test_windows_native import private_dir  # noqa: F401
+else:
+    @pytest.fixture
+    def private_dir(tmp_path):
+        path = tmp_path / 'private'
+        path.mkdir(mode=0o700)
+        return path
 
 USERNAME = 'Synthetic.User+42@example.test'
 PASSWORD = 'Synthetic-ONLY!$`\\Aa19 Ω'
@@ -50,7 +81,84 @@ async function digest(id) {
   return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
 }
 </script>'''
+SECRET = 'SynthCapture-0123456789abcdefOnly'
+SECRET_STYLE = '<style>body{margin:0}code,input{display:block;margin:4px;font:16px monospace}</style>'
+COVER = 'position:fixed;left:0;top:0;width:900px;height:300px;background:#fff;pointer-events:none'
+LOGIN_FRAME = ('<!doctype html><meta charset="utf-8"><h1>Outer page</h1>'
+               '<iframe id="login-frame" src="https://auth.example.com/login" style="width:600px;height:300px;border:0;{}">'
+               '</iframe><iframe id="decoy" src="https://auth.example.com/decoy" style="width:200px;height:100px;border:0">'
+               '</iframe>')
 PAGES = {
+    '/secret': f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<p>Copy it now.</p><code id="secret" tabindex="0">{SECRET}</code>',
+    # An opaque cover that takes pointer events: the extension's DOM hit test refuses it.
+    '/secret-opaque-cover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
+                             f'<div style="{COVER.replace(";pointer-events:none", "")}"></div>'),
+    # A floating label above, not over, the field centre: both routes fill it.
+    '/card-label': ('<!doctype html><meta charset="utf-8"><form><div style="position:relative">'
+                    '<input id="number" autocomplete="cc-number" style="width:220px;height:44px">'
+                    '<label for="number" style="position:absolute;left:8px;top:2px;font-size:10px;pointer-events:none">'
+                    'Card number</label></div></form>' + DIGEST),
+    '/framed-visible': LOGIN_FRAME.format(''),
+    '/framed-hidden': LOGIN_FRAME.format('opacity:0'),
+    '/decoy': '<!doctype html><meta charset="utf-8"><p>decoy</p>',
+    # A secret inside a modal dialog reads.
+    '/secret-modal': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<dialog id="d"><code id="secret" tabindex="0">'
+                      f'{SECRET}</code></dialog><script>d.showModal()</script>'),
+    # A card field in a same-origin child frame.
+    '/card-field': ('<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number" '
+                    'style="width:200px;height:30px"></form>' + DIGEST),
+    '/card-frame': ('<!doctype html><meta charset="utf-8"><iframe id="pay" src="/card-field" '
+                    'style="width:400px;height:200px;border:0"></iframe>'),
+    # A hidden middle frame in a closed shadow root (window.frames leaves it out) and a visible
+    # about:blank decoy whose owner probe the page reads and forwards to the hidden frame.
+    '/framed-shadow-decoy': '''<!doctype html><meta charset="utf-8"><h1>Outer page</h1>
+<iframe id="decoy" style="width:600px;height:300px;border:0"></iframe><div id="host"></div>
+<script>
+const root = host.attachShadow({mode: 'closed'});
+root.innerHTML = '<iframe src="/middle" style="width:600px;height:300px;border:0;opacity:0"></iframe>';
+const hidden = root.querySelector('iframe');
+decoy.contentWindow.addEventListener('message', event => {
+  if (event.data && event.data.akdbx_owner) hidden.contentWindow.postMessage(event.data, location.origin);
+}, true);
+</script>''',
+    '/middle': ('<!doctype html><meta charset="utf-8"><iframe src="https://auth.example.com/login" '
+                'style="width:580px;height:280px;border:0"></iframe>'),
+    # A secret in a same-site child frame: the extension reads only in the top document.
+    '/framed-secret': ('<!doctype html><meta charset="utf-8"><iframe id="keys" src="https://auth.example.com/secret" '
+                       'style="width:700px;height:200px;border:0"></iframe>'),
+    # An attacker with pages on the login origin: the login page stops the first (genuine) owner
+    # probe, and a visible decoy on the same origin relays its own probe through the top page.
+    '/login-suppress': FORM + '''<script>let first = true;
+addEventListener('message', event => {
+  if (event.data && event.data.akdbx_owner && first) {
+    first = false;
+    event.stopImmediatePropagation();
+  }
+}, true);</script>''',
+    '/decoy-relay': '''<!doctype html><meta charset="utf-8"><p>decoy</p><script>
+addEventListener('message', event => {
+  if (event.data && event.data.akdbx_owner) parent.postMessage({relay: event.data.akdbx_owner}, '*');
+}, true);</script>''',
+    '/framed-suppress': '''<!doctype html><meta charset="utf-8"><h1>Outer page</h1>
+<iframe id="decoy" src="https://auth.example.com/decoy-relay" style="width:600px;height:300px;border:0"></iframe>
+<iframe id="login" src="https://auth.example.com/login-suppress" style="width:600px;height:300px;border:0;opacity:0"></iframe>
+<script>
+addEventListener('message', event => {
+  if (event.data && event.data.relay) login.contentWindow.postMessage({akdbx_owner: event.data.relay}, 'https://auth.example.com');
+});
+</script>''',
+    # A hostile page: the real login frame is transparent inside a closed shadow root, and the page
+    # forwards the nonce that its own visible decoy frame receives to the login frame.
+    '/framed-forward': '''<!doctype html><meta charset="utf-8"><h1>Outer page</h1>
+<iframe id="decoy" src="/decoy" style="width:600px;height:300px;border:0"></iframe><div id="host"></div>
+<script>
+const root = host.attachShadow({mode: 'closed'});
+root.innerHTML = '<iframe src="https://auth.example.com/login" style="width:600px;height:300px;border:0;opacity:0"></iframe>';
+const login = root.querySelector('iframe');
+decoy.addEventListener('load', () => decoy.contentWindow.addEventListener('message', event => {
+  if (event.data && event.data.akdbx_owner) login.contentWindow.postMessage(event.data, 'https://auth.example.com');
+}, true));
+</script>''',
     '/replacing': '''<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number">
 <input id="expiry" autocomplete="cc-exp" maxlength="5"></form>
 <script>number.addEventListener('input', () => { const fresh = expiry.cloneNode(); expiry.replaceWith(fresh); });</script>''' + DIGEST,
@@ -100,6 +208,8 @@ def extension_browser():
     override = os.environ.get('AKDBX_TEST_EXTENSION_BROWSER')
     if override:
         return Path(override)
+    if sys.platform != 'win32':
+        return None
     local, programs = os.environ.get('LOCALAPPDATA', ''), os.environ.get('ProgramFiles', '')
     for candidate in (Path(local) / r'imput\Helium\Application\chrome.exe',
                       Path(os.environ.get('ProgramFiles(x86)', '')) / r'Microsoft\Edge\Application\msedge.exe',
@@ -154,31 +264,40 @@ class Harness:
 
 @pytest.fixture
 def harness(private_dir, certificates, monkeypatch):
+    if sys.platform != 'win32':
+        certificates[1].chmod(0o600)  # The Linux page refuses a key other users could read.
     binary = extension_browser()
     if binary is None:
         if os.environ.get('AKDBX_REQUIRE_EXTENSION_BROWSER') == '1':
             pytest.fail('the extension route tests require Helium, Chrome or Edge')
         pytest.skip('the extension route tests require Helium, Chrome or Edge')
-    import winreg
     kind = browser_kind(binary)
     suffix = uuid.uuid4().hex[:10]
     host_name = 'org.akdbx.test_' + suffix
-    pipe = Path(r'\\.\pipe\akdbx-test-extension-' + suffix)
+    pipe = (Path(r'\\.\pipe\akdbx-test-extension-' + suffix) if sys.platform == 'win32'
+            else Path(private_dir) / 'run' / 'broker.sock')
     # The broker's own HTTPS page on loopback, as `akdbx serve --tls-cert` runs it: the built origin.
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 0))
         unlock_port = probe.getsockname()[1]
     unlock_origin = f'https://localhost:{unlock_port}'
     extension = extension_host.build(Path(private_dir) / 'extension', host_name=host_name, unlock_origin=unlock_origin)
-    launcher = Path(private_dir) / 'host.cmd'
+    launcher = Path(private_dir) / ('host.cmd' if sys.platform == 'win32' else 'host.sh')
     launcher.write_text(extension_host._launcher_text(kind, sys.executable, str(pipe)), encoding='utf-8', newline='')
-    manifest = Path(private_dir) / (host_name + '.json')
-    manifest.write_text(json.dumps(extension_host._manifest(launcher, host_name)), encoding='utf-8')
-    key = extension_host.WINDOWS_KEYS[kind] + '\\' + host_name
-    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as handle:
-        winreg.SetValueEx(handle, '', 0, winreg.REG_SZ, str(manifest))
+    native_hosts = None
+    if sys.platform == 'win32':
+        import winreg
+        manifest = Path(private_dir) / (host_name + '.json')
+        manifest.write_text(json.dumps(extension_host._manifest(launcher, host_name)), encoding='utf-8')
+        key = extension_host.WINDOWS_KEYS[kind] + '\\' + host_name
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as handle:
+            winreg.SetValueEx(handle, '', 0, winreg.REG_SZ, str(manifest))
+    else:
+        launcher.chmod(0o700)
+        native_hosts = {host_name: extension_host._manifest(launcher, host_name)}
     entries = [Entry(username=USERNAME, password=PASSWORD, url=ORIGIN + '/login'), CardEntry(title='Synthetic card'),
-               Entry(title='Other', username='other@example.test', password=PASSWORD, url='https://other.example.org/')]
+               Entry(title='Other', username='other@example.test', password=PASSWORD, url='https://other.example.org/'),
+               Entry(title='Auth', username=USERNAME, password=PASSWORD, url='https://auth.example.com/login')]
     broker = Broker(Vault(entries), NoKeys())
     unlock, _ = start_local_unlock_server(broker, Path(private_dir) / 'vault.kdbx', None, unlock_origin, *certificates)
     identity = broker_identity.IdentityStore(Path(private_dir) / 'identity').announce(unlock_origin)
@@ -188,7 +307,7 @@ def harness(private_dir, certificates, monkeypatch):
     server.start()
     try:
         with chromium_lab(private_dir, *certificates, pages=PAGES, binary=binary, extension=extension,
-                          hosts=('js.stripe.com',)) as lab:
+                          hosts=('js.stripe.com',), native_hosts=native_hosts) as lab:
             deadline = time.monotonic() + 60
             while not broker.extension.channels:
                 assert time.monotonic() < deadline, 'the extension host did not attach to the broker'
@@ -218,10 +337,11 @@ def harness(private_dir, certificates, monkeypatch):
         unlock.shutdown()
         unlock.server_close()
         broker.unlock_notifications.close()
-        try:
-            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
-        except OSError:
-            pass
+        if sys.platform == 'win32':
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
+            except OSError:
+                pass
 
 
 def test_the_service_worker_binds_the_first_broker_key_from_the_https_identity_page(harness):
@@ -497,3 +617,268 @@ def test_pairing_page_form_submit_pairs_the_extension_in_a_real_browser(harness,
     text = lab.evaluate('document.body.innerText')
     assert 'paired with akdbx' in text, text
     assert broker.extension.approved == [channel.digest]
+
+
+# ----- secret capture and frame owners (0.32.0) ---------------------------------------
+def read_pin(harness, url, **extra):
+    listing = harness.frames(url)
+    request = dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                   frame_id=listing['main_frame_id'], top_url=url, selector='#secret', mode='read', capture_protocol=1,
+                   route='extension')
+    request.update(extra)
+    return harness.broker.dispatch(request)
+
+
+def trusted(harness):
+    """The worker binds the broker identity key over HTTPS; reads need it for the signed connection."""
+    deadline = time.monotonic() + 30
+    read = "chrome.storage.local.get('broker_trust').then(found => found.broker_trust ?? null)"
+    while harness.worker_call(read) is None:
+        assert time.monotonic() < deadline, 'the extension did not bind the broker identity key'
+        time.sleep(.2)
+
+
+def read_value(harness, pin, origin=ORIGIN):
+    """Run the broker's own extension read for a pin token; the test compares digests only."""
+    from akdbx.totp import https_origin
+    trusted(harness)
+    broker = harness.broker
+    target = broker.extension.take(pin['target'], 'read')
+    assert target is not None
+    try:
+        value = broker.extension.read(target, {https_origin(origin)}, lambda: True, broker.clock() + 4)
+    except Exception:
+        return None
+    finally:
+        target.close()
+    return sha(value)
+
+
+def test_secret_capture_reads_the_focused_secret_through_the_extension(harness):
+    lab = harness.lab
+    url = lab.navigate('/secret')
+    harness.focus('secret')
+    pin = read_pin(harness, url)
+    assert pin['ok'] and pin['target_delivery'] == route.DELIVERY, pin
+    assert read_value(harness, pin) == sha(SECRET)
+    # A read pin is single-use, and a fill command cannot take it.
+    harness.focus('secret')
+    pin = read_pin(harness, url)
+    assert harness.broker.dispatch(dict(action='fill', handle=search(harness.broker), mode='password',
+                                        target=pin['target'], target_protocol=1))['ok'] is False
+    assert harness.broker.extension.take(pin['target'], 'read') is None
+
+
+def test_secret_capture_refuses_unfocused_selected_and_changed_secrets(harness):
+    lab = harness.lab
+    url = lab.navigate('/secret')
+    assert read_pin(harness, url) == failure()  # Not focused.
+    harness.focus('secret')
+    lab.evaluate("getSelection().selectAllChildren(document.getElementById('secret'))")
+    assert read_pin(harness, url) == failure()  # A selection would reach PRIMARY on X11.
+    lab.evaluate('getSelection().removeAllRanges()')
+    harness.focus('secret')
+    pin = read_pin(harness, url)
+    assert pin['ok'], pin
+    lab.evaluate("document.getElementById('secret').textContent = 'SynthOther-replaced'")
+    assert read_value(harness, pin) is None
+
+
+def test_secret_capture_refuses_an_opaque_cover(harness):
+    """The DOM hit test refuses an ordinary cover. A click-through one (pointer-events: none, inert, a popover
+    backdrop) passes it, as it passes the CDP route's read pin, which uses the same check."""
+    lab = harness.lab
+    url = lab.navigate('/secret-opaque-cover')
+    harness.focus('secret')
+    assert read_pin(harness, url) == failure()
+
+
+def test_a_secret_in_a_modal_dialog_reads(harness):
+    lab = harness.lab
+    url = lab.navigate('/secret-modal')
+    harness.focus('secret')
+    pin = read_pin(harness, url)
+    assert pin['ok'], pin
+    assert read_value(harness, pin) == sha(SECRET)
+
+
+def card_pin(harness, url):
+    listing = harness.frames(url)
+    return harness.broker.dispatch(dict(action='pin-card-target', card_protocol=1, page_id=listing['page_id'],
+                                        frame_id=listing['main_frame_id'], top_url=url, selector='#number',
+                                        field='cc-number', route='extension'))
+
+
+def test_card_pins_keep_a_floating_label_and_refuse_a_cover_added_after_the_pin(harness):
+    lab, broker = harness.lab, harness.broker
+    target = card_pin(harness, lab.navigate('/card-label'))
+    assert target['ok'], target
+    handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
+    receipt = broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
+                                   field='cc-number'))
+    assert receipt == dict(ok=True, filled='cc-number', card_delivery=route.DELIVERY)
+    assert lab.digest('number') == sha(CARD['number'])
+    # A cover added after the pin refuses the fill.
+    target = card_pin(harness, lab.navigate('/card-label'))
+    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div style=\"{COVER.replace(';pointer-events:none', '')}\"></div>')")
+    handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
+    assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
+                                field='cc-number')) == card_failure()
+    assert lab.digest('number') == EMPTY
+
+
+def same_site_frame(harness, url, ready='password'):
+    """An isolated world in the same-site login frame (same process as the top, so no own target)."""
+    lab = harness.lab
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        pending, found = [lab.observer.call('Page.getFrameTree', session=lab.session)['frameTree']], []
+        while pending:
+            node = pending.pop()
+            pending.extend(node.get('childFrames', []))
+            if node['frame']['url'] == url:
+                found.append(node['frame']['id'])
+        if found:
+            world = lab.observer.call('Page.createIsolatedWorld', dict(frameId=found[0], worldName='akdbx-test-observer'),
+                                      lab.session)['executionContextId']
+
+            def evaluate(expression, await_promise=False):
+                response = lab.observer.call('Runtime.evaluate', dict(expression=expression, contextId=world,
+                                                                      returnByValue=True, awaitPromise=await_promise),
+                                             lab.session)
+                assert 'exceptionDetails' not in response, response['exceptionDetails'].get('text')
+                return response['result'].get('value')
+            if evaluate(f"document.readyState === 'complete' && (!{json.dumps(ready)} || !!document.getElementById({json.dumps(ready)}))"):
+                return evaluate
+        time.sleep(.05)
+    raise AssertionError('same-site login frame missing')
+
+
+FRAME_DIGEST = ("crypto.subtle.digest('SHA-256', new TextEncoder().encode(document.getElementById('password').value))"
+                ".then(h => Array.from(new Uint8Array(h), b => b.toString(16).padStart(2, '0')).join(''))")
+
+
+def frame_password_pin(harness, url):
+    lab, broker = harness.lab, harness.broker
+    lab.wait("document.readyState === 'complete'")
+    frame = same_site_frame(harness, 'https://auth.example.com/login')
+    frame("window.focus(); document.getElementById('password').focus()")
+    listing = harness.frames(url)
+    login = next(f for f in listing['frames'] if f['origin'] == 'https://auth.example.com' and f['visible_fields']
+                 and f['visible_fields']['password'])
+    return frame, broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                                         frame_id=login['frame_id'], top_url=url, selector='#password', mode='password',
+                                         frame_protocol=1, frame_origin='https://auth.example.com', route='extension'))
+
+
+def auth_handle(broker):
+    return broker.dispatch(dict(action='search', query='auth.example.com'))['entries'][0]['handle']
+
+
+def test_a_child_frame_login_needs_a_visible_iframe_owner(harness):
+    lab, broker = harness.lab, harness.broker
+    session, pin = frame_password_pin(harness, lab.navigate('/framed-visible'))
+    assert pin['ok'], pin
+    receipt = broker.dispatch(dict(action='fill', handle=auth_handle(broker), mode='password', target=pin['target'],
+                                   target_protocol=1))
+    assert receipt == dict(ok=True, filled='password', target_delivery=route.DELIVERY)
+    assert session(FRAME_DIGEST, True) == sha(PASSWORD)
+    # The owner <iframe> is transparent: the field inside looks visible to its own document only.
+    session, pin = frame_password_pin(harness, lab.navigate('/framed-hidden'))
+    assert pin == failure()
+    assert session(FRAME_DIGEST, True) == EMPTY
+    # The owner is hidden after the pin: the fill refuses.
+    session, pin = frame_password_pin(harness, lab.navigate('/framed-visible'))
+    assert pin['ok'], pin
+    lab.evaluate("document.getElementById('login-frame').style.opacity = '0'")
+    assert broker.dispatch(dict(action='fill', handle=auth_handle(broker), mode='password', target=pin['target'],
+                                target_protocol=1)) == failure()
+    assert session(FRAME_DIGEST, True) == EMPTY
+
+
+def test_a_page_cannot_lend_a_decoy_iframe_to_a_hidden_login_frame(harness):
+    lab = harness.lab
+    url = lab.navigate('/framed-forward')
+    lab.wait("document.getElementById('decoy').contentDocument?.readyState === 'complete'")
+    frame, pin = frame_password_pin(harness, url)
+    assert pin == failure()
+    assert frame(FRAME_DIGEST, True) == EMPTY
+
+
+def test_a_read_pin_never_takes_a_selector_that_could_test_the_secret(harness):
+    """The pin call comes through the host unsealed: the extension itself refuses attribute selectors."""
+    lab = harness.lab
+    url = lab.navigate('/secret')
+    harness.focus('secret')
+    listing = harness.frames(url)
+    tab = int(listing['page_id'].split('.')[1])
+    for selector in ('#secret', '#secret:not([id=x])', 'code[id^="se"]', 'body:has(code) #secret'):
+        call = json.dumps(dict(tab_id=tab, document_id=listing['main_frame_id'], top_url=url, frame_url=None,
+                               kind='read', spec=dict(selector=selector, frame_origin=None)))
+        result = harness.worker_call(f'pin({call}).then(r => (r.ok && release({{tab_id: {tab}, document_id: '
+                                     f'{json.dumps(listing["main_frame_id"])}, pin_id: r.pin_id}}), r.ok))')
+        assert result is (selector == '#secret'), selector
+
+
+def test_the_extension_reads_secrets_only_in_the_top_document(harness):
+    lab = harness.lab
+    url = lab.navigate('/framed-secret')
+    lab.wait("document.readyState === 'complete'")
+    frame = same_site_frame(harness, 'https://auth.example.com/secret', ready='secret')
+    frame("window.focus(); document.getElementById('secret').focus()")
+    listing = harness.frames(url)
+    keys = next(f for f in listing['frames'] if f['origin'] == 'https://auth.example.com')
+    assert read_pin(harness, url, frame_id=keys['frame_id'], frame_protocol=1,
+                    frame_origin='https://auth.example.com') == failure()
+    assert read_pin(harness, url, frame_id=keys['frame_id']) == failure()
+
+
+def test_a_hidden_frame_in_a_shadow_root_cannot_borrow_a_decoy_owner(harness):
+    lab = harness.lab
+    url = lab.navigate('/framed-shadow-decoy')
+    frame = same_site_frame(harness, 'https://auth.example.com/login')
+    frame("window.focus(); document.getElementById('password').focus()")
+    listing = harness.frames(url)
+    login = next(f for f in listing['frames'] if f['origin'] == 'https://auth.example.com' and f['visible_fields']
+                 and f['visible_fields']['password'])
+    pin = harness.broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                                       frame_id=login['frame_id'], top_url=url, selector='#password', mode='password',
+                                       frame_protocol=1, frame_origin='https://auth.example.com', route='extension'))
+    assert pin == failure()
+    assert frame(FRAME_DIGEST, True) == EMPTY
+
+
+def test_a_page_cannot_stop_an_owner_probe_to_lend_a_decoy(harness):
+    lab = harness.lab
+    url = lab.navigate('/framed-suppress')
+    same_site_frame(harness, 'https://auth.example.com/decoy-relay', ready='')  # Both frames loaded.
+    frame = same_site_frame(harness, 'https://auth.example.com/login-suppress')
+    frame("window.focus(); document.getElementById('password').focus()")
+    listing = harness.frames(url)
+    login = next(f for f in listing['frames'] if f['origin'] == 'https://auth.example.com' and f['visible_fields']
+                 and f['visible_fields']['password'])
+    pin = harness.broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                                       frame_id=login['frame_id'], top_url=url, selector='#password', mode='password',
+                                       frame_protocol=1, frame_origin='https://auth.example.com', route='extension'))
+    assert pin == failure()
+
+
+def framed_card_pin(harness, page):
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate(page)
+    lab.wait("document.getElementById('pay').contentDocument?.readyState === 'complete'")
+    listing = harness.frames(url)
+    child = next(f for f in listing['frames'] if f['depth'] == 1)
+    return url, broker.dispatch(dict(action='pin-card-target', card_protocol=1, page_id=listing['page_id'],
+                                     frame_id=child['frame_id'], top_url=url, selector='#number', field='cc-number',
+                                     route='extension'))
+
+
+def test_a_card_fills_in_a_same_origin_child_frame(harness):
+    lab, broker = harness.lab, harness.broker
+    url, target = framed_card_pin(harness, '/card-frame')
+    assert target['ok'], target
+    handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
+    assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
+                                field='cc-number'))['ok']
+    assert lab.evaluate("document.getElementById('pay').contentWindow.digest('number')", await_promise=True) == sha(CARD['number'])

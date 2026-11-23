@@ -2,7 +2,8 @@
 
 `capture-secret` consumes a single-use DOM read pin (`pin-password-target
 --mode read`). The broker reads the pinned element's text itself over its own
-CDP connection and saves it as a protected custom field through the verified
+CDP connection, or through the paired browser extension (`--route extension`,
+sealed in both directions), and saves it as a protected custom field through the verified
 encrypted persistence. `deliver-secret` writes such a field only to a sink
 that the operator configured at broker start (see `sink_helper`). Responses
 are receipts; no value ever crosses RPC, argv, logs or error messages.
@@ -118,9 +119,15 @@ class SecretCaptures:
         pin = None
         try:
             try:
-                pin = broker.passwords.consume(request.get('target'))
+                # An extension read pin, else a CDP one; either way the token is used up.
+                token = request.get('target')
+                pin = broker.extension.take(token, 'read') if hasattr(broker, 'extension') else None
+                if pin is None:
+                    pin = broker.passwords.consume(token)
             except Exception:
                 return dict(ok=False, error=REFUSED)
+            from .extension_route import ExtensionPin, CAPTURE_DELIVERY as EXTENSION_CAPTURE_DELIVERY
+            extension = isinstance(pin, ExtensionPin)
             if pin.mode != 'read':
                 return dict(ok=False, error=REFUSED)
             create = request.get('create') is True
@@ -177,12 +184,13 @@ class SecretCaptures:
                 return dict(ok=False, error='invalid secret record metadata; nothing saved')
             started = lambda: ready() and broker.clock() < deadline
             try:
-                value = broker.passwords.read(pin, origins, started, deadline)
+                value = (broker.extension if extension else broker.passwords).read(pin, origins, started, deadline)
             except Exception:
                 return dict(ok=False, error=REFUSED)
             if not valid_value(value):
                 return dict(ok=False, error=REFUSED)
-            return self._save(entry, values, field, value, create)
+            return self._save(entry, values, field, value, create,
+                              EXTENSION_CAPTURE_DELIVERY if extension else CAPTURE_DELIVERY)
         finally:
             if pin is not None:
                 try:
@@ -190,7 +198,7 @@ class SecretCaptures:
                 except Exception:
                     pass
 
-    def _save(self, entry, values, field, value, create):
+    def _save(self, entry, values, field, value, create, delivery=CAPTURE_DELIVERY):
         broker = self.broker
         uuid = None if create else entry.uuid
         password = None if create else entry.password
@@ -242,7 +250,7 @@ class SecretCaptures:
         saved = selected(broker.vault)
         length = len(saved.get_custom_property(field))
         return dict(ok=True, state='saved', created=create, field=field, length=length,
-                    metadata=dict(values), capture_delivery=CAPTURE_DELIVERY)
+                    metadata=dict(values), capture_delivery=delivery)
 
     # ---- delivery ------------------------------------------------------
     def deliver(self, request):

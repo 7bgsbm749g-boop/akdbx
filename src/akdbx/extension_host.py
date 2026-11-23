@@ -525,6 +525,11 @@ def _content_script():
         '__CARD_GUARD__': card_processor.GUARD,
         '__STRIPE_ELEMENTS__': card_processor.STRIPE_ELEMENTS_JSON,
         '__PASSWORD_COUNT__': password_frames.COUNT,
+        '__READ_CAPTURE__': browser_password.READ_CAPTURE,
+        '__READ__': browser_password.READ,
+        '__OWNER_GUARD__': password_frames.OWNER_GUARD,
+        '__READ_SELECTOR__': json.dumps(browser_password.READ_SELECTOR.pattern),
+        '__MAX_READ_SELECTOR__': str(browser_password.MAX_READ_SELECTOR),
     }
     for marker, value in replacements.items():
         if text.count(marker) != 1:

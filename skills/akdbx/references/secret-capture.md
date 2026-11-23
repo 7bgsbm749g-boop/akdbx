@@ -9,7 +9,8 @@ chat, argv, screenshot, log or evidence file.
 
 Require from `akdbx status`: integer `secret_capture_protocol: 1`,
 `secret_capture_delivery: "chromium-dom-read-v1"`, `password_browser_configured:
-true` for capture, and integer `secret_sink_protocol: 1` with the sink name in
+true` for capture on the CDP route, or (0.32.0+) `extension_capture_protocol: 1`
+and a paired fill extension 0.4.0 for `--route extension`, and integer `secret_sink_protocol: 1` with the sink name in
 `secret_sinks` for delivery. The CLI refuses an older broker before it sends
 anything. A source or CLI update does not activate a running broker.
 
@@ -44,7 +45,11 @@ akdbx pin-password-target --mode read --page-id PAGE_ID --frame-id MAIN_FRAME_ID
   --top-url EXACT_HTTPS_URL --selector '#new-client-secret'
 ```
 
-The receipt is `{"ok": true, "target": "...", "expires_in": 30, "target_delivery": "chromium-password-dom-v1"}`.
+The receipt is `{"ok": true, "target": "...", "expires_in": 30, "target_delivery": "chromium-password-dom-v1"}`
+(`"extension-dom-v1"` with `--route extension`, which reads through the paired
+extension in the user's own browser; take the page and frame IDs from
+`list-password-frames --route extension`). The extension route reads only in
+the top document; for a secret in a child frame use the CDP route.
 The pin is single use and expires after 30 seconds. It refuses unless:
 
 - the page has the exact HTTPS top URL, page ID and frame ID (a same-site child
@@ -90,6 +95,8 @@ change, blur or value change after the pin refuses with
 {"ok": true, "state": "saved", "created": true, "field": "client_secret",
  "length": 40, "metadata": {...}, "capture_delivery": "chromium-dom-read-v1"}
 ```
+
+On the extension route, `capture_delivery` is `"extension-dom-read-v1"`.
 
 The field is a protected custom string. The entry records its name in
 `akdbx.captured-fields`; `search` shows `captured_fields` and, for new records,

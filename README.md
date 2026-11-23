@@ -102,15 +102,24 @@ pin, fill and receipt model. Agents choose with `--route extension|cdp`, and
 | Connection | Native-messaging host; values sealed to the extension (AES-256-GCM) | Chrome DevTools Protocol over loopback |
 | Setup | Install the host, load the extension, pair once per browser session | Configure the profile at broker start |
 | Sites see | The user's normal browser | A browser with a debugging port, which anti-bot checks often flag |
-| Also | The user can click the extension to fill a login, card or address | The only route for capturing shown-once secrets |
+| Also | The user can click the extension to fill a login, card or address; secret capture from 0.32.0 | Secret capture; works without an extension |
 
 **Prefer the extension route.** A debugging port gives every process of the same
 OS user full control of that browser profile, and anti-bot and anti-fraud checks
 often treat such a browser as a bot. In practice, Cloudflare's sign-in check
 failed and Stripe declined a valid card (`generic_decline`) on the CDP route.
 The same sign-in and card save worked first time through the extension in the
-user's own browser. The CDP route stays for setups without the extension and for
-secret capture.
+user's own browser. The CDP route stays for setups without the extension.
+
+From 0.32.0 (fill extension 0.4.0) the extension route also captures
+shown-once secrets shown in the top document, and it holds a child frame's
+`<iframe>` owner with the CDP route's owner guard (found with a nonce
+handshake). Read pins and password pins in a child frame then need fill
+extension 0.4.0; an older one is refused until it is built again. One check
+stays weaker: the extension has no browser-native hit test, so only the CDP
+route refuses a card or address field under a click-through cover
+(`pointer-events: none`, `inert` or a popover backdrop). Read pins use the same
+DOM hit test on both routes.
 
 Native applications (username and TOTP fields outside a browser) use window
 pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
@@ -192,8 +201,10 @@ Linux the host manifest goes in `~/.config/net.imput.helium`,
 of the akdbx that installed it, so the host runs that akdbx even when the
 interpreter has another one; see [host launcher](skills/akdbx/references/extension.md#host-launcher-0311).
 See [the extension route](skills/akdbx/references/extension.md)
-and [Windows setup](docs/windows.md#browser-extension-route). The Linux host is
-covered by unit tests; the real-browser checks run on Windows.
+and [Windows setup](docs/windows.md#browser-extension-route). The real-browser
+checks (`tests/test_extension_browser.py`) run on Windows in CI and on Linux
+with a Chromium that loads unpacked extensions (`AKDBX_TEST_EXTENSION_BROWSER`,
+for example Chrome for Testing).
 
 Install steps for Windows and Helium are in
 [Windows setup](docs/windows.md#browser-extension-route). Pairing lasts until the
@@ -380,7 +391,8 @@ the details and the relay's files and checks.
 `pin-password-target --mode read` pins one focused element that
 shows a secret, with the same exact HTTPS URL, page, frame and same-site frame
 checks as password fills. `capture-secret` makes the broker read that element
-itself over its CDP connection and save it as a protected custom field of a
+itself, over its CDP connection or (0.32.0+, `--route extension`) through the
+paired extension, sealed in both directions, and save it as a protected custom field of a
 new or explicitly selected entry, through the verified encrypted save. The
 pin refuses hidden, duplicated, editable, empty, spaced or multi-line targets,
 and capture refuses if the element, focus, frame or URL changed. Pins accept
@@ -390,7 +402,8 @@ focus only, because X11 Chromium publishes selected text to PRIMARY.
 optional fixed restart command. Files of another account go through a
 root-owned, socket-activated helper with its own root-owned allowlist; see
 [docs/secret-sinks.md](docs/secret-sinks.md). Status advertises
-`secret_capture_protocol: 1`, `secret_sink_protocol: 1` and `secret_sinks`.
+`secret_capture_protocol: 1`, `secret_sink_protocol: 1` and `secret_sinks`, and
+from 0.32.0 `extension_capture_protocol: 1`.
 Responses are receipts only.
 
 ## Identity and address records (0.18.2)

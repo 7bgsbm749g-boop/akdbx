@@ -287,9 +287,9 @@ Sites see ordinary use by the user, which is what it is.
 
 **CDP route (`--route cdp`): the original route.** The broker drives a Chromium
 profile that was started with `--remote-debugging-port` and fills over the
-Chrome DevTools Protocol. It works without any browser extension, and it is
-the only route for secret capture (`--mode read`, `capture-secret`). It has two
-costs:
+Chrome DevTools Protocol. It works without any browser extension. Secret
+capture (`--mode read`, `capture-secret`) works on both routes from 0.32.0. It
+has two costs:
 
 - A debugging port gives every process of the same OS user full control of
   that browser profile.
@@ -540,7 +540,8 @@ must go into a service configuration: `pin-password-target --mode read`, then
 `capture-secret`, then `deliver-secret --sink NAME`. The broker reads the
 element itself and writes only to sinks configured at broker start. Choose the
 selector from page structure only. After the secret is visible, do not
-screenshot, snapshot, read, select or copy that page. CDP route only.
+screenshot, snapshot, read, select or copy that page. Both routes from 0.32.0
+(`--route extension` needs `extension_capture_protocol: 1` and fill extension 0.4.0).
 
 ## Save or change credentials
 

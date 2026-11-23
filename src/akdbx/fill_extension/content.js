@@ -3,13 +3,25 @@
  * Page scripts cannot read this world's variables, retained elements or the
  * values that pass through it. `akdbx extension build` fills the markers below
  * with the CDP route's own DOM checks, so both routes apply the same rules.
- * No value is stored, logged, copied or read back from a field.
+ * No value is stored, logged or copied. A field is read back only by a read
+ * pin (secret capture), and that value goes only to the service worker.
  */
 "use strict";
 (() => {
   if (globalThis.__akdbxContent) return;
   const CAPTURE = __PASSWORD_CAPTURE__;
   const PASSWORD_FILL = __PASSWORD_FILL__;
+  const READ_CAPTURE = __READ_CAPTURE__;
+  const READ = __READ__;
+  const OWNER_GUARD = __OWNER_GUARD__;
+  // The broker's read-pin selector grammar: tags, #id, .class and :nth-*(n) only.
+  // Attribute and functional selectors could test a secret, so the extension
+  // refuses them too: the pin call comes through the untrusted native host.
+  const READ_SELECTOR = new RegExp("^(?:" + __READ_SELECTOR__ + ")$");
+  const MAX_READ_SELECTOR = __MAX_READ_SELECTOR__;
+  // True only when the manifest's document_start entry ran early.js first, before
+  // any page script; content.js injected later by the worker finds no flag.
+  const STARTED_EARLY = globalThis.__akdbxEarly === true;
   const CARD_PIN = __CARD_PIN_SCRIPT__;
   const GUARD = __CARD_GUARD__;
   const STRIPE_ELEMENTS = __STRIPE_ELEMENTS__;
@@ -21,6 +33,8 @@
     "street-address"];
   const COMPUTOP_IDS = {"cc-name": "creditCardHolder", "cc-number": "_KKnr", "cc-exp": "expiry_date", "cc-csc": "cccvc"};
   const pins = new Map(), guards = new Map(), probes = new Map();
+  const owners = new Map(), listens = new Map(), ownerProbes = new Map();
+  const MAX_NODES = 50000, MAX_FRAMES = 256, LISTEN_MS = 5000;
   let lastFocus = null;
 
   const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
@@ -39,17 +53,37 @@
     }
   }, true);
 
+  // Owner probes (see ownerListen). This listener is added at document_start,
+  // before any page listener, so a page can neither see a probe nor stop one.
+  window.addEventListener("message", event => {
+    const data = event.data;
+    if (!data || typeof data !== "object" || !Object.prototype.hasOwnProperty.call(data, "akdbx_owner")) return;
+    event.stopImmediatePropagation();
+    if (Object.keys(data).length !== 1 || typeof data.akdbx_owner !== "string" ||
+        !/^[0-9a-f]{32}$/.test(data.akdbx_owner) || event.source !== window.parent) return;
+    for (const item of listens.values()) {
+      if (event.origin === item.parentOrigin && item.heard.size < 8) item.heard.add(data.akdbx_owner);
+    }
+  }, true);
+
   // ----- agent route: retained pins --------------------------------------
   function pin(kind, spec, frameURL, topURL) {
     for (const [id, item] of pins) {
       if (performance.now() - item.created >= PIN_MS) release(id);
     }
     if (pins.size >= MAX_PINS) return null;
+    if (kind === "read" && (typeof spec.selector !== "string" || spec.selector.length > MAX_READ_SELECTOR ||
+        !READ_SELECTOR.test(spec.selector))) return null;
     let state;
     try {
       if (kind === "password") {
         state = CAPTURE(spec.selector, spec.username_selector, spec.mode, frameURL, spec.password_purpose,
           spec.allow_autocomplete_off === true, spec.frame_origin);
+      } else if (kind === "read") {
+        // The CDP route's read pin: a focused, visible, single-line text, never a
+        // selection. The extension reads only in the top document.
+        if (window !== window.top) return null;
+        state = READ_CAPTURE(spec.selector, frameURL, null);
       } else if (kind === "card" || kind === "identity") {
         state = CARD_PIN(spec.selector, spec.field, frameURL, topURL, spec.processor || false, kind === "identity");
       }
@@ -58,14 +92,16 @@
     }
     if (!state) return null;
     const id = randomId();
-    pins.set(id, {kind, mode: kind === "password" ? spec.mode : spec.field, state, created: performance.now()});
+    pins.set(id, {kind, mode: kind === "password" ? spec.mode : kind === "read" ? "read" : spec.field, state,
+      created: performance.now()});
     return id;
   }
 
   function geometry(id) {
     const item = pins.get(id);
     try {
-      return item && item.kind !== "password" ? item.state.geometry() : null;
+      if (!item || item.kind === "password" || item.kind === "read") return null;
+      return item.state.geometry();
     } catch {
       return null;
     }
@@ -113,12 +149,158 @@
     }
   }
 
+  // Secret capture: the checked value of a read pin, once. It goes back only to the
+  // extension's service worker, which seals it to the broker.
+  function read(id, maxAgeMs) {
+    const item = pins.get(id);
+    pins.delete(id);
+    if (!item || item.kind !== "read" || performance.now() - item.created >= PIN_MS) {
+      if (item && item.state.dispose) item.state.dispose();
+      return null;
+    }
+    try {
+      const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
+      const value = READ.call(item.state, deadline);
+      return typeof value === "string" ? value : null;
+    } catch {
+      return null;
+    } finally {
+      try {
+        item.state.dispose();
+      } catch {
+        // Nothing to clean up.
+      }
+    }
+  }
+
+  // ----- child-frame owners ----------------------------------------------
+  // The browser names a frame's parent document but not its <iframe> element.
+  // The parent's isolated world posts a fresh nonce into each of its child
+  // windows; the child's isolated world reports the nonces that its parent
+  // window sent. Exactly one names the child's window. A page that forwards a
+  // nonce it saw in another frame makes the child hear two, which refuses. The
+  // <iframe> that holds that window then gets the CDP route's owner guard.
+  function ownerListen(parentOrigin) {
+    // A script injected after the page started could be preceded by page listeners.
+    if (!STARTED_EARLY || window === window.top || typeof parentOrigin !== "string") return null;
+    const id = randomId();
+    remember(listens, MAX_PINS, id, {heard: new Set(), parentOrigin});
+    setTimeout(() => listens.delete(id), LISTEN_MS);
+    return id;
+  }
+
+  function ownerHeard(id) {
+    const item = listens.get(id);
+    return item ? Array.from(item.heard) : null;
+  }
+
+  function ownerDone(id) {
+    listens.delete(id);
+  }
+
+  function ownerProbe(childOrigin) {
+    // Every child window: those the window lists and those of every iframe,
+    // frame and object element, also in shadow roots (window.frames leaves
+    // those out). The real child always gets its own nonce, so a page that
+    // forwards another frame's nonce to it makes it hear two. An embed's
+    // window cannot be reached, so a document with one refuses.
+    if (typeof childOrigin !== "string" || window.length > MAX_FRAMES) return null;
+    const roots = shadowRoots();
+    if (roots === null) return null;
+    const views = new Set();
+    for (let i = 0; i < window.length; ++i) {
+      if (window[i]) views.add(window[i]);
+    }
+    for (const root of [document, ...roots]) {
+      if (root.querySelector("embed")) return null;
+      for (const el of root.querySelectorAll("iframe, frame, object")) {
+        if (el.contentWindow) views.add(el.contentWindow);
+      }
+    }
+    if (views.size > MAX_FRAMES) return null;
+    const sent = new Map();
+    for (const view of views) {
+      const nonce = randomId();
+      try {
+        view.postMessage({akdbx_owner: nonce}, childOrigin);
+        sent.set(nonce, view);
+      } catch {
+        // A frame that cannot take the message cannot be the owner.
+      }
+    }
+    const id = randomId();
+    remember(ownerProbes, MAX_PINS, id, sent);
+    return id;
+  }
+
+  function ownerGuard(probeId, nonce) {
+    const sent = ownerProbes.get(probeId);
+    ownerProbes.delete(probeId);
+    const view = sent && sent.get(nonce);
+    if (!view) return null;
+    // Exactly one <iframe> of this document's own tree holds that window; an
+    // owner in a shadow root, an object or an embed refuses, as on the CDP route.
+    const frames = Array.from(document.querySelectorAll("iframe")).slice(0, MAX_FRAMES + 1)
+      .filter(frame => frame.contentWindow === view);
+    if (frames.length !== 1) return null;
+    let guardState;
+    try {
+      guardState = OWNER_GUARD.call(frames[0], true);
+    } catch {
+      guardState = null;
+    }
+    if (!guardState) return null;
+    const id = randomId();
+    while (owners.size >= MAX_PINS) ownerRelease(owners.keys().next().value);
+    owners.set(id, {state: guardState});
+    return id;
+  }
+
+  function ownerCheck(id) {
+    const item = owners.get(id);
+    try {
+      return Boolean(item && item.state.check());
+    } catch {
+      return false;
+    }
+  }
+
+  function ownerRelease(id) {
+    const item = owners.get(id);
+    owners.delete(id);
+    try {
+      if (item) item.state.dispose();
+    } catch {
+      // Nothing to clean up.
+    }
+  }
+
+  // Every open or closed shadow root of a document, for the owner probe; null on a page too large to walk.
+  function shadowRoots() {
+    const found = [];
+    const pending = [document];
+    let seen = 0;
+    while (pending.length) {
+      const root = pending.pop();
+      for (const el of root.querySelectorAll("*")) {
+        if (++seen > MAX_NODES) return null;
+        const shadow = chrome.dom.openOrClosedShadowRoot(el);
+        if (shadow) {
+          found.push(shadow);
+          pending.push(shadow);
+        }
+      }
+    }
+    return found;
+  }
+
   // Processor frames: retain the merchant's iframe owner and check its chain.
   function guard(frameURL, topURL, processor) {
     const frames = Array.from(document.querySelectorAll("iframe")).slice(0, 256);
     const found = frames.map(frame => {
       try {
-        return GUARD.call(frame, frameURL, topURL, processor);
+        const state = GUARD.call(frame, frameURL, topURL, processor);
+        return state ? {state} : null;
       } catch {
         return null;
       }
@@ -132,7 +314,7 @@
   function guardCheck(id, point) {
     const item = guards.get(id);
     try {
-      return Boolean(item && point && item.check(point));
+      return Boolean(item && point && item.state.check(point));
     } catch {
       return false;
     }
@@ -314,7 +496,8 @@
   }
 
   Object.defineProperty(globalThis, "__akdbxContent", {value: Object.freeze({
-    pin, geometry, release, fill, guard, guardCheck, count, probe, probeFill,
+    pin, geometry, release, fill, read, guard, guardCheck, count, probe, probeFill,
     releaseGuard: id => guards.delete(id),
+    ownerListen, ownerHeard, ownerDone, ownerProbe, ownerGuard, ownerCheck, ownerRelease,
   })});
 })();
