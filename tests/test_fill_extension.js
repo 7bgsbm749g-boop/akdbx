@@ -45,7 +45,7 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch} 
     action: {openPopup: async () => {}},
     tabs: {get: async () => null, query: async () => []},
     webNavigation: {getAllFrames: async () => []},
-    scripting: {executeScript: async () => [], insertCSS: async () => {}, removeCSS: async () => {}},
+    scripting: {executeScript: async () => []},
   };
   const sandbox = {chrome, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, TextEncoder,
     TextDecoder, Uint8Array, AbortController, module: {exports: {}}, AKDBX_TRUSTED_ORIGIN: builtOrigin ?? null,
@@ -198,7 +198,6 @@ test("a read answers only a signed broker connection and facts sealed for that p
     const source = String(details.func);
     if (details.files) return [{}];
     if (source.includes(".pin(")) return [{result: "r".repeat(32)}];
-    if (source.includes(".unmask(")) return [{result: "m".repeat(32)}];
     if (source.includes(".read(")) return [{result: "sk_synthetic_value"}];
     return [{result: true}];
   };
@@ -279,7 +278,6 @@ test("released pins do not evict a live pin's spec record", async () => {
     if (details.files) return [{}];
     const source = String(details.func);
     if (source.includes(".pin(")) return [{result: String(next++).padStart(32, "0")}];
-    if (source.includes(".unmask(")) return [{result: "m".repeat(32)}];
     return [{result: source.includes(".fill(") ? "filled" : true}];
   };
   const spec = {selector: "#number", field: "cc-number", processor: null};

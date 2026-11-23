@@ -501,18 +501,23 @@ async function pin(message) {
   let owners = [];
   if (message.kind === "password" && chain.length > 1) {
     owners = await holdOwners(message.tab_id, chain);
-    if (!owners || !(await ownersHold(message.tab_id, owners))) return {ok: false};
+    let held = false;
+    try {
+      held = Boolean(owners) && await ownersHold(message.tab_id, owners);
+    } catch {
+      held = false;
+    }
+    if (!held) {
+      await releaseOwners(message.tab_id, owners);
+      return {ok: false};
+    }
   }
   let pinId = null;
   try {
     await inject(message.tab_id, message.document_id);
-    const capture = async () => {
-      const id = await run(message.tab_id, message.document_id,
-        (kind, value, url, top) => globalThis.__akdbxContent.pin(kind, value, url, top),
-        [message.kind, spec, frameURL, message.top_url]);
-      return id;
-    };
-    pinId = await capture();
+    pinId = await run(message.tab_id, message.document_id,
+      (kind, value, url, top) => globalThis.__akdbxContent.pin(kind, value, url, top),
+      [message.kind, spec, frameURL, message.top_url]);
   } catch {
     pinId = null;
   }

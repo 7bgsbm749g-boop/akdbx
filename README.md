@@ -117,8 +117,9 @@ shown-once secrets shown in the top document, and it holds a child frame's
 handshake). Read pins and password pins in a child frame then need fill
 extension 0.4.0; an older one is refused until it is built again. One check
 stays weaker: the extension has no browser-native hit test, so only the CDP
-route refuses a field under a click-through cover (`pointer-events: none`,
-`inert` or a popover backdrop).
+route refuses a card or address field under a click-through cover
+(`pointer-events: none`, `inert` or a popover backdrop). Read pins use the same
+DOM hit test on both routes.
 
 Native applications (username and TOTP fields outside a browser) use window
 pins: X11 on Linux, HWND on Windows. A window pin never receives a password.

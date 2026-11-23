@@ -92,7 +92,7 @@ PROTOCOL = 1
 DELIVERY = 'extension-dom-v1'
 CAPTURE_PROTOCOL = 1
 CAPTURE_DELIVERY = 'extension-dom-read-v1'
-# The first fill extension version that reads secrets, holds frame owners and unmasks hit tests.
+# The first fill extension version that reads secrets and holds child-frame owners.
 CAPTURE_VERSION = (0, 4, 0)
 ROUTES = ('cdp', 'extension')
 BROWSERS = ('helium', 'chrome', 'edge')

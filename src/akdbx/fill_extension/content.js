@@ -252,7 +252,7 @@
     if (!guardState) return null;
     const id = randomId();
     while (owners.size >= MAX_PINS) ownerRelease(owners.keys().next().value);
-    owners.set(id, {state: guardState, frame: frames[0]});
+    owners.set(id, {state: guardState});
     return id;
   }
 
@@ -276,9 +276,9 @@
   }
 
   // Every open or closed shadow root of a document, for the owner probe; null on a page too large to walk.
-  function shadowRoots(doc = document) {
+  function shadowRoots() {
     const found = [];
-    const pending = [doc];
+    const pending = [document];
     let seen = 0;
     while (pending.length) {
       const root = pending.pop();
@@ -300,7 +300,7 @@
     const found = frames.map(frame => {
       try {
         const state = GUARD.call(frame, frameURL, topURL, processor);
-        return state ? {state, frame} : null;
+        return state ? {state} : null;
       } catch {
         return null;
       }

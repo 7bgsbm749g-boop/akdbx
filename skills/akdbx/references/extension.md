@@ -205,7 +205,8 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   broker signs that key and the extension's key with its identity key
   (`channel_signature`); the extension reads only for a connection that the
   identity key it learned over HTTPS at its first pairing signed. Before that
-  first binding, read pins refuse. A connection keeps the broker key of its
+  first binding, `capture-secret` refuses and saves nothing (the read pin itself
+  can still succeed). A connection keeps the broker key of its
   first `attached` message, so a host cannot swap keys during a read. The
   receipt says
   `capture_delivery: "extension-dom-read-v1"`.
@@ -273,9 +274,11 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   read.
 - Hit tests: there is no browser-native hit test. The checks use
   `elementFromPoint` in the isolated world, which skips click-through covers
-  (`pointer-events: none`, `inert` content, a popover's `::backdrop`); CDP's
-  `DOM.getNodeForLocation` sees them. Use the CDP route where a page may cover
-  a field.
+  (`pointer-events: none`, `inert` content, a popover's `::backdrop`). For card
+  and address fields the CDP route also runs `DOM.getNodeForLocation`, which
+  sees them; use the CDP route where a page may cover such a field. Read pins
+  use the same `elementFromPoint` check on both routes, and password pins have
+  no hit test on either.
 
 ## Setup
 

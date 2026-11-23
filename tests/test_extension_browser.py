@@ -619,7 +619,7 @@ def test_pairing_page_form_submit_pairs_the_extension_in_a_real_browser(harness,
     assert broker.extension.approved == [channel.digest]
 
 
-# ----- secret capture, frame owners and unmasked hit tests (0.32.0) ---------------------
+# ----- secret capture and frame owners (0.32.0) ---------------------------------------
 def read_pin(harness, url, **extra):
     listing = harness.frames(url)
     request = dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
@@ -686,7 +686,7 @@ def test_secret_capture_refuses_unfocused_selected_and_changed_secrets(harness):
 
 def test_secret_capture_refuses_an_opaque_cover(harness):
     """The DOM hit test refuses an ordinary cover. A click-through one (pointer-events: none, inert, a popover
-    backdrop) only the CDP route's native hit test sees; the extension route documents that limit."""
+    backdrop) passes it, as it passes the CDP route's read pin, which uses the same check."""
     lab = harness.lab
     url = lab.navigate('/secret-opaque-cover')
     harness.focus('secret')
