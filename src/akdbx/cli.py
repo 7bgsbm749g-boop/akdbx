@@ -23,7 +23,7 @@ from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
 from .local_https import is_loopback_origin, reload_certificate, start_local_unlock_server
 from .notifications import validate_webhook_url
-from . import capture_cli, card_cli, extension_host, identity_cli, relay as relay_module, relay_cli, secret_cli
+from . import capture_cli, card_cli, extension_host, identity_cli, pairing_cli, relay as relay_module, relay_cli, secret_cli
 from . import browser_slots, page_url, setup_cli
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
 from .sink_helper import SinkError
@@ -367,6 +367,7 @@ def parser() -> argparse.ArgumentParser:
     )
     commands = result.add_subparsers(dest="command", required=True)
     card_cli.add_parsers(commands)
+    pairing_cli.add_parsers(commands)
     identity_cli.add_parsers(commands)
     extension_host.add_parser(commands)
     secret_cli.add_parser(commands)
@@ -603,7 +604,7 @@ def refuse_untrusted_unlock_block(broker) -> bool:
     # write while closing them must not hide which permissions to fix.
     print(f'refusing to start: the saved unlock-link block {path} cannot be trusted{detail}. {rules}. '
           'Fix the permissions, or start with --notification-state FILE in a private folder.', file=sys.stderr)
-    for notifier in (manager, broker.card_save_notifications):
+    for notifier in (manager, broker.card_save_notifications, broker.pairing_notifications):
         try:
             notifier.close()
         except Exception:
@@ -829,6 +830,7 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
         except (OSError, ValueError, pywintypes.error):
             broker.unlock_notifications.close()
             broker.card_save_notifications.close()
+            broker.pairing_notifications.close()
             print('could not start Windows HTTPS unlock; check origin, local port, TLS files, permissions, '
                   'and that no other broker uses this pipe', file=sys.stderr)
             return 2
@@ -873,6 +875,7 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
         except (OSError, ValueError, RuntimeError):
             broker.unlock_notifications.close()
             broker.card_save_notifications.close()
+            broker.pairing_notifications.close()
             print('could not start HTTPS unlock; check origin, local port, TLS files and permissions '
                   '(key mode 0600), and that no other broker uses this port or socket', file=sys.stderr)
             return 2
@@ -918,6 +921,9 @@ def _command(args) -> int:
     if args.command in card_cli.COMMANDS:
         return card_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                         expected_unlock_origin=args.unlock_origin))
+    if args.command in pairing_cli.COMMANDS:
+        return pairing_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
+                                                           expected_unlock_origin=args.unlock_origin))
     if args.command in identity_cli.COMMANDS:
         return identity_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                             expected_unlock_origin=args.unlock_origin))

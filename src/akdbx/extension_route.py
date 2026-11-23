@@ -466,6 +466,10 @@ class ExtensionHub:
         self.channels = {}
         self.approved = []
         self.pairings = {}
+        # The browser that last attached with each key digest, for the pairing event.
+        self.browsers = {}
+        # Orders an approval against a pairing subscription, so neither misses the other.
+        self._paired_lock = threading.Lock()
         self.pins = {}
         self.selections = {}
         self._closed = False
@@ -569,18 +573,51 @@ class ExtensionHub:
             self.pairings.clear()
 
     def approve(self, token):
-        """Mark one pending key as paired, after the page verified the master password."""
-        with self._lock:
-            found = self.pairings.pop(token, None) if isinstance(token, str) else None
-            if found is None or found[1] <= self.clock():
-                return False
-            digest = found[0]
-            if digest not in self.approved:
-                while len(self.approved) >= MAX_PAIRINGS:
-                    self.approved.pop(0)
-                self.approved.append(digest)
+        """Mark one pending key as paired, after the page verified the master password.
+
+        The pending link belongs to the key, not to one host connection: it still
+        works while the extension reconnects (an idle service worker, a host
+        restart), and the key is paired when it attaches again.
+        """
+        with self._paired_lock:
+            with self._lock:
+                found = self.pairings.pop(token, None) if isinstance(token, str) else None
+                if found is None or found[1] <= self.clock():
+                    return False
+                digest = found[0]
+                if digest not in self.approved:
+                    while len(self.approved) >= MAX_PAIRINGS:
+                        self.approved.pop(0)
+                    self.approved.append(digest)
+                browser = self._browser_for(digest)
+            notifier = getattr(self.broker, 'pairing_notifications', None)
+            if notifier is not None:
+                try:
+                    notifier.publish_paired(pairing_code(digest), browser)
+                except Exception:
+                    pass  # A notification failure never undoes a pairing.
         self.refresh()
         return True
+
+    def _browser_for(self, digest):
+        """Called under _lock: the browser of an attached channel with this key, else the last one seen."""
+        attached = next((c.browser for c in self.channels.values() if c.digest == digest), None)
+        return attached or self.browsers.get(digest)
+
+    def subscribe_paired(self, request):
+        """Register a pairing webhook; an approval cannot fall between the check and the registration."""
+        def paired(code):
+            with self._lock:
+                approved = set(self.approved)
+                if code is None:
+                    # Any browser: one that is attached and paired now.
+                    found = [c.browser for c in self.channels.values()
+                             if c.digest in approved and not c.closed.is_set()]
+                    return found[0] if found else None
+                found = [d for d in approved if pairing_code(d) == code]
+                return self._browser_for(found[0]) if found else None
+        with self._paired_lock:
+            return self.broker.pairing_notifications.subscribe_pairing(request, paired=paired)
 
     def _paired_channel(self, channel_id=None):
         with self._lock:
@@ -611,6 +648,10 @@ class ExtensionHub:
                 channel = None
             else:
                 self.channels[channel.id] = channel
+                self.browsers.pop(channel.digest, None)
+                while len(self.browsers) >= 4 * MAX_PAIRINGS:
+                    self.browsers.pop(next(iter(self.browsers)))
+                self.browsers[channel.digest] = channel.browser
         if channel is None:
             send_message(connection, dict(type='error', error='extension attach refused'))
             return

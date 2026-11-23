@@ -271,6 +271,7 @@ def serve(path, broker, stop=None):
         broker.extension.close()
         broker.unlock_notifications.close()
         broker.card_save_notifications.close()
+        broker.pairing_notifications.close()
         with lock:
             active = list(workers)
         deadline = time.monotonic() + CONNECTION_TIMEOUT + 0.2

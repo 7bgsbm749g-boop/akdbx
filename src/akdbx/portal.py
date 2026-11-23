@@ -344,7 +344,8 @@ SCRIPT = r""""use strict";
     form.closest(".sheet").querySelector("[role=alert]")?.remove();
     setBusy(form, true);
     const status = document.getElementById("unlock-status");
-    setStatus(status, "Unlocking AKDBX. Please wait.", "");
+    // The pairing page reuses this form and names its own status lines.
+    setStatus(status, form.getAttribute("data-wait-text") || "Unlocking AKDBX. Please wait.", "");
     try {
       const page = await post(form);
       const sheet = page.querySelector("main > .sheet");
@@ -357,7 +358,8 @@ SCRIPT = r""""use strict";
       focus.setAttribute("tabindex", "-1");
       focus.focus();
     } catch {
-      setStatus(status, "AKDBX unlock result not confirmed. Check its status before trying again.", "is-error");
+      setStatus(status, form.getAttribute("data-unconfirmed-text") ||
+        "AKDBX unlock result not confirmed. Check its status before trying again.", "is-error");
     } finally {
       form.reset();
       setBusy(form, false);
