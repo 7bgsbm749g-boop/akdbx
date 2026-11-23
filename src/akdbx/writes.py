@@ -78,8 +78,12 @@ GENERATED_SINGLE_MODES = ('password',)
 
 
 def generated_capabilities():
-    """Generated writes may be staged for a form with one new-password field."""
-    return dict(generated_entry_protocol=1, generated_single_field=True)
+    """Generated writes may be staged for a form with one new-password field.
+
+    generated_additional_urls: a generated fill accepts the selected entry's
+    exact KP2A_URL* origins as well as its main URL origin (0.31.2+).
+    """
+    return dict(generated_entry_protocol=1, generated_single_field=True, generated_additional_urls=True)
 
 
 def sso_capabilities():
@@ -978,10 +982,17 @@ class WriteManager:
         target = request.get('target_url')
         if not isinstance(target, str):
             raise WriteError('verified target URL required')
-        if _generated_origin(target) != _generated_origin(op.values['url']):
+        target_origin = _generated_origin(target)
+        # Same origins as a login fill: the main URL or one exact KP2A_URL*
+        # origin of the entry as it is now. A new entry has only its main URL.
+        if target_origin not in {_generated_origin(op.values['url']),
+                                 *(additional_origins(entry) if entry is not None else ())}:
             raise WriteError('target site mismatch; no password filled')
         # Reuse the existing keyboard preflight/deadline/dispatch boundary.
-        proxy = SimpleNamespace(uuid=secrets.token_hex(16), password=op.password, username='', url=op.values['url'])
+        # The proxy has only the asserted target origin, so the delivery
+        # route also requires the pinned document to have exactly that origin.
+        proxy = SimpleNamespace(uuid=secrets.token_hex(16), password=op.password, username='',
+                                url=_serialize_origin(target_origin) + '/')
         handle = self.broker._new_handle(proxy)
         response = self.broker._dispatch({'action': 'fill', 'handle': handle, 'mode': 'password', 'start_deadline': request.get('start_deadline'), 'target': request.get('target'), 'target_protocol': request.get('target_protocol')}, delivery_ready=checked_ready)
         if preflight_error is not None and response.get('delivery') != 'uncertain':
