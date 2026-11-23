@@ -130,11 +130,8 @@ button.copy-field::before, button.copy-field::after { display: none; }
 button.copy-field:active { transform: none; border-color: #ffffff5c; }
 .copy-field .copy-label { display: block; margin-bottom: 5px; color: #ffffffb3; font-size: 11px; line-height: 1.5; }
 .copy-field .copy-text { -webkit-user-select: text; user-select: text; display: block; color: #fff; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
-.copy-toast {
-  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: 10; transform: translateX(-50%);
-  margin: 0 !important; padding: 10px 16px; border: 1px solid #ffffff32; border-radius: 999px;
-  background: #111111f0; color: #fff; font-size: 13px; white-space: nowrap; box-shadow: 0 8px 24px #000a;
-}
+.copy-field.is-copied { border-color: #ffffff70; }
+.copy-field.is-copied .copy-label { color: #fff; }
 .portal-status.is-error, .portal-status.is-shown {
   position: static; width: auto; height: auto; margin: 18px 0 0 !important;
   overflow: visible; clip-path: none; white-space: normal;
@@ -255,11 +252,10 @@ SCRIPT = r""""use strict";
   });
   // A copy box carries its text in data-copy (the SMS webhook URL on its
   // private setup page). No input is read.
-  let copyTimer = 0;
   document.addEventListener("click", async event => {
     const box = event.target.closest("[data-copy]");
     if (!box) return;
-    const toast = document.getElementById(box.getAttribute("data-copy-toast"));
+    const label = box.querySelector(".copy-label");
     let copied = false;
     try {
       await navigator.clipboard.writeText(box.getAttribute("data-copy"));
@@ -272,10 +268,14 @@ SCRIPT = r""""use strict";
       selection.addRange(range);
       try { copied = document.execCommand("copy"); } catch { copied = false; }
     }
-    toast.textContent = copied ? "Link copied to clipboard" : "Copy failed. Press and hold the link, then tap Copy.";
-    toast.hidden = false;
-    clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => { toast.hidden = true; }, 2500);
+    // The feedback replaces the box's own label for a moment.
+    label.textContent = copied ? "Link copied to clipboard" : "Copy failed. Press and hold the link, then tap Copy.";
+    box.classList.toggle("is-copied", copied);
+    clearTimeout(box.copyTimer);
+    box.copyTimer = setTimeout(() => {
+      label.textContent = label.getAttribute("data-idle");
+      box.classList.remove("is-copied");
+    }, 2500);
   });
   function setBusy(form, busy) {
     const button = form.querySelector(".portal-submit");

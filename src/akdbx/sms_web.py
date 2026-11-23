@@ -223,11 +223,11 @@ WEBHOOK_STEPS = (
 
 
 def _copy_box(label: str, text: str) -> str:
-    """A tap-to-copy box: the portal script copies data-copy and shows a toast."""
-    quoted = html.escape(text, quote=True)
-    return (f'<button type="button" class="copy-field" data-copy="{quoted}" data-copy-toast="copy-toast">'
-            f'<span class="copy-label">{html.escape(label)}</span><span class="copy-text">{quoted}</span></button>'
-            '<p id="copy-toast" class="copy-toast" role="status" aria-live="polite" hidden></p>')
+    """A tap-to-copy box: the portal script copies data-copy and says so in the box's label."""
+    quoted, label = html.escape(text, quote=True), html.escape(label, quote=True)
+    return (f'<button type="button" class="copy-field" data-copy="{quoted}">'
+            f'<span class="copy-label" data-idle="{label}" aria-live="polite">{label}</span>'
+            f'<span class="copy-text">{quoted}</span></button>')
 
 
 def _shortcut_steps(major: int | None) -> str:
