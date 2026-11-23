@@ -417,6 +417,164 @@ async function processorCheck(tabId, chain, pinId, guardId) {
     (id, p) => globalThis.__akdbxContent.guardCheck(id, p), [guardId, point])) === true;
 }
 
+// ----- settings -------------------------------------------------------------
+// The options page writes them to local storage, which content scripts cannot reach (see above).
+const SETTINGS_KEY = "settings";
+
+// Enhanced security (experimental, off by default): the cover checks below. An
+// unreadable setting counts as on: the check then runs, and refuses where the
+// browser did not grant the screenshot access.
+async function enhancedSecurity() {
+  try {
+    const settings = (await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY];
+    return Boolean(settings && settings.enhanced_security === true);
+  } catch {
+    return true;
+  }
+}
+
+// ----- covers: the browser's occlusion test, then a pixel challenge ------------
+// With enhanced security on, a card, address or read pin needs proof that nothing is painted over the field
+// or the secret. content.js clear() asks the browser itself (IntersectionObserver
+// v2: the occlusion hit test that CDP uses, over the whole element, through every
+// parent frame). That test is all-or-nothing, so a floating label or the
+// transparent backdrop of a popover elsewhere also fails it. Then one pixel
+// challenge decides: a user-origin rule (it beats every author rule) paints only
+// the pinned element in a random colour for a moment, and a screenshot of the tab
+// must show that colour at the checked points. Whatever covers a point, in any
+// document, in the top layer or in a parent frame, changes its pixels. The
+// screenshot needs the optional <all_urls> host access, which the options page
+// requests when the user turns the setting on.
+const STEP_MS = 3000, CAPTURE_GAP_MS = 550, COLOUR_TOLERANCE = 2, MAX_CHALLENGE_POINTS = 600;
+// The screenshot API allows two calls each second: one challenge at a time, spaced.
+let challengeQueue = Promise.resolve();
+let lastCapture = 0;
+
+function bounded(promise, ms) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), ms); })])
+    .finally(() => clearTimeout(timer));
+}
+
+// "pixels": the checked points show the element, though something overlaps its
+// box. "both": the occlusion test is also clear. null: covered, or no proof.
+// Every card, address and read check takes the pixels: the occlusion test misses
+// paint that the element's own ancestors draw over it (a negative-offset outline,
+// also over a processor iframe), and text hidden under its own element's
+// ::before or ::after is not occluded for any hit test, CDP's too.
+async function seen(tabId, chain, pinId, guardId) {
+  const documentId = chain[chain.length - 1].document_id;
+  try {
+    const clear = (await bounded(run(tabId, documentId, id => globalThis.__akdbxContent.clear(id), [pinId]), STEP_MS)) === true;
+    // A page that stops answering cannot hold the queue for other tabs.
+    const next = challengeQueue.then(() => bounded(challenge(tabId, chain, pinId, guardId), 8 * STEP_MS));
+    challengeQueue = next.catch(() => {});
+    if ((await next) !== true) return null;
+    return clear ? "both" : "pixels";
+  } catch {
+    return null;
+  }
+}
+
+// Mid-range channels: no page default, and far from the white and black ends.
+function randomColour() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(3)), b => 40 + b % 176);
+}
+
+// Paint the whole padding box and the text in one colour, at once, whatever the page says.
+function challengeCSS(path, colour, outlineColour) {
+  const paint = `color:${colour}!important;-webkit-text-fill-color:${colour}!important;-webkit-text-stroke-color:${colour}!important;` +
+    `text-decoration-color:${colour}!important;text-shadow:none!important;`;
+  // An outline paints over the content: give it another colour, so one over a checked point refuses.
+  return `${path}{box-shadow:inset 0 0 0 9999px ${colour}!important;caret-color:${colour}!important;` + paint +
+    `outline-color:${outlineColour}!important;` +
+    `transition:none!important;forced-color-adjust:none!important}` +
+    `${path}::placeholder{${paint}opacity:1!important}${path}::selection{${paint}background-color:${colour}!important}`;
+}
+
+async function challenge(tabId, chain, pinId, guardId) {
+  const documentId = chain[chain.length - 1].document_id;
+  // Where the element is now, in the top viewport; a processor frame's point is
+  // mapped by the merchant-side guard.
+  const locate = async () => {
+    const spec = await bounded(run(tabId, documentId, id => globalThis.__akdbxContent.challengeSpec(id), [pinId]), STEP_MS);
+    if (!spec || typeof spec.path !== "string" || !/^:root(?:>:nth-child\([0-9]{1,6}\)){1,64}$/.test(spec.path)) return null;
+    if (!spec.local) return {spec, placed: spec};
+    if (!guardId || chain.length < 2) return null;
+    const placed = await bounded(run(tabId, chain[chain.length - 2].document_id,
+      (id, point) => globalThis.__akdbxContent.guardPoint(id, point), [guardId, spec.local]), STEP_MS);
+    return {spec, placed};
+  };
+  const found = await locate();
+  if (!found) return false;
+  const {spec, placed} = found;
+  const finite = value => typeof value === "number" && Number.isFinite(value);
+  if (!placed || !Array.isArray(placed.points) || !placed.points.length || placed.points.length > MAX_CHALLENGE_POINTS ||
+      !placed.points.every(point => Array.isArray(point) && point.length === 2 && point.every(finite)) ||
+      !Array.isArray(placed.view) || placed.view.length !== 2 || !placed.view.every(value => finite(value) && value > 0)) {
+    return false;
+  }
+  const tab = await bounded(chrome.tabs.get(tabId), STEP_MS);
+  if (!tab || !tab.active) return false;
+  const rgb = randomColour();
+  const colour = `rgb(${rgb.join(", ")})`;
+  // The outline colour is 128 levels away from the challenge colour in every channel.
+  const css = challengeCSS(spec.path, colour, `rgb(${rgb.map(c => (c + 128) % 256).join(", ")})`);
+  const target = {tabId, documentIds: [documentId]};
+  try {
+    await bounded(chrome.scripting.insertCSS({target, css, origin: "USER"}), STEP_MS);
+    // A screenshot can be one frame behind the page: look twice before refusing.
+    for (let attempt = 0; attempt < 2; ++attempt) {
+      if ((await bounded(run(tabId, documentId, () => globalThis.__akdbxContent.painted()), STEP_MS)) !== true) return false;
+      const wait = lastCapture + CAPTURE_GAP_MS - Date.now();
+      if (wait > 0) await pause(wait);
+      lastCapture = Date.now();
+      const image = await bounded(chrome.tabs.captureVisibleTab(tab.windowId, {format: "png"}), STEP_MS);
+      // The colour in the screenshot counts only if the rule was on the pinned element, still valid, at that time.
+      const held = await bounded(run(tabId, documentId,
+        (id, path, value) => globalThis.__akdbxContent.challengeHeld(id, path, value), [pinId, spec.path, colour]), STEP_MS);
+      if (held !== true) return false;
+      // The points must still be where the element is: a layout shift while the
+      // screenshot was taken makes the old points meaningless.
+      const again = await locate();
+      if (!again || again.spec.path !== spec.path ||
+          JSON.stringify([again.placed.points, again.placed.view]) !== JSON.stringify([placed.points, placed.view])) return false;
+      if (await shows(image, placed.points, placed.view, rgb)) return true;
+    }
+    return false;
+  } finally {
+    await bounded(chrome.scripting.removeCSS({target, css, origin: "USER"}), STEP_MS).catch(() => {});
+  }
+}
+
+// True when every point of the screenshot, with its neighbours, has the challenge colour.
+// The image stays in this worker and is dropped here; no pixel is stored or sent.
+async function shows(image, points, view, rgb) {
+  if (typeof image !== "string" || !image.startsWith("data:image/png;base64,")) return false;
+  const bytes = Uint8Array.from(atob(image.slice(image.indexOf(",") + 1)), c => c.charCodeAt(0));
+  const bitmap = await createImageBitmap(new Blob([bytes], {type: "image/png"}));
+  try {
+    // Device pixels for each CSS pixel of the top viewport; both axes must agree.
+    const scale = bitmap.width / view[0];
+    if (!(scale >= 0.25 && scale <= 8) || Math.abs(bitmap.height / view[1] - scale) > 0.05 * scale) return false;
+    const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d", {willReadFrequently: true});
+    context.drawImage(bitmap, 0, 0);
+    const reach = Math.max(1, Math.round(scale));
+    return points.every(([x, y]) => {
+      const left = Math.round(x * scale) - reach, top = Math.round(y * scale) - reach, size = 2 * reach + 1;
+      if (left < 0 || top < 0 || left + size > bitmap.width || top + size > bitmap.height) return false;
+      const data = context.getImageData(left, top, size, size).data;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] !== 255 || Math.abs(data[i] - rgb[0]) > COLOUR_TOLERANCE ||
+            Math.abs(data[i + 1] - rgb[1]) > COLOUR_TOLERANCE || Math.abs(data[i + 2] - rgb[2]) > COLOUR_TOLERANCE) return false;
+      }
+      return true;
+    });
+  } finally {
+    bitmap.close();
+  }
+}
+
 // ----- child-frame owners --------------------------------------------------
 const ownerGuards = new Map();
 const OWNER_SETTLE_MS = 50, OWNER_WAIT_MS = 1500;
@@ -512,6 +670,7 @@ async function pin(message) {
       return {ok: false};
     }
   }
+  const hit = message.kind !== "password" && await enhancedSecurity();
   let pinId = null;
   try {
     await inject(message.tab_id, message.document_id);
@@ -533,8 +692,7 @@ async function pin(message) {
       await inject(message.tab_id, parent);
       guardId = await run(message.tab_id, parent, (url, top, processor) => globalThis.__akdbxContent.guard(url, top, processor),
         [frameURL, message.top_url, spec.processor]);
-      if (typeof guardId !== "string" ||
-          !(await processorCheck(message.tab_id, chain, pinId, guardId))) {
+      if (typeof guardId !== "string" || !(await processorCheck(message.tab_id, chain, pinId, guardId))) {
         throw new Error();
       }
     } catch {
@@ -542,6 +700,12 @@ async function pin(message) {
       return {ok: false};
     }
     processorGuards.set(pinId, guardId);
+  }
+  // With enhanced security, nothing may be painted over the field or the secret (see seen()).
+  if (hit && !(await seen(message.tab_id, chain, pinId, processorGuards.get(pinId)))) {
+    await release({tab_id: message.tab_id, document_id: message.document_id, pin_id: pinId, chain});
+    await releaseOwners(message.tab_id, owners);
+    return {ok: false};
   }
   while (pinSpecs.size >= 32) pinSpecs.delete(pinSpecs.keys().next().value);
   pinSpecs.set(pinId, pinned);
@@ -583,8 +747,12 @@ async function read(message) {
     if (!chain) return {state: "refused"};
     let value;
     try {
-      value = chain.length !== 1 ? null : await run(facts.tab_id, facts.document_id,
-        (id, maxAge) => globalThis.__akdbxContent.read(id, maxAge), [facts.pin_id, facts.max_age_ms]);
+      // With "both", content.js still runs its own fresh occlusion test in the task of the read.
+      const cover = chain.length !== 1 ? null : await enhancedSecurity() ? await seen(facts.tab_id, chain, facts.pin_id, null) : "off";
+      const reading = cover && run(facts.tab_id, facts.document_id,
+        (id, maxAge, how) => globalThis.__akdbxContent.read(id, maxAge, how), [facts.pin_id, facts.max_age_ms, cover]);
+      // Off: as in 0.4.0, the pin's own deadline bounds the read.
+      value = !cover ? null : cover === "off" ? await reading : await bounded(reading, STEP_MS);
     } catch {
       value = null;
     }
@@ -617,24 +785,25 @@ async function fill(message) {
       return {state: "refused"};
     }
     const guardId = processorGuards.get(facts.pin_id);
-    const deliver = async () => {
-      if (facts.kind === "card" && guardId && !(await processorCheck(facts.tab_id, chain, facts.pin_id, guardId))) {
-        return "refused";
-      }
+    const hit = (facts.kind === "card" || facts.kind === "identity") && await enhancedSecurity();
+    let result = "refused";
+    // "off": no cover check; "pixels" or "both": see seen(); null: covered.
+    let cover = "off";
+    if (facts.kind === "card" && guardId && !(await processorCheck(facts.tab_id, chain, facts.pin_id, guardId).catch(() => false))) {
+      cover = null;
+    } else if (hit) {
+      cover = await seen(facts.tab_id, chain, facts.pin_id, guardId);
+    }
+    if (cover) {
       try {
-        return await run(facts.tab_id, facts.document_id,
-          (id, kind, value, maxAge) => globalThis.__akdbxContent.fill(id, kind, value, maxAge),
-          [facts.pin_id, facts.kind, values, facts.max_age_ms]);
+        // Before this call nothing reached the field; a timeout after it is uncertain.
+        const filling = run(facts.tab_id, facts.document_id,
+          (id, kind, value, maxAge, how) => globalThis.__akdbxContent.fill(id, kind, value, maxAge, how),
+          [facts.pin_id, facts.kind, values, facts.max_age_ms, cover]);
+        result = cover === "off" ? await filling : await bounded(filling, 9000);
       } catch {
-        return "uncertain";
+        result = "uncertain";
       }
-    };
-    let result;
-    try {
-      result = await deliver();
-    } catch {
-      // Only the processor check can throw here, before the fill: nothing reached the field.
-      result = "refused";
     }
     if (result === "refused") await release({...message, tab_id: facts.tab_id, document_id: facts.document_id});
     return {state: result === "filled" || result === "refused" ? result : "uncertain"};

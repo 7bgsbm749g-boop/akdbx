@@ -186,6 +186,9 @@ def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extens
     # Linux only: a host without unprivileged user namespaces cannot start
     # Chromium's sandbox; the disposable synthetic profile may then run without it.
     sandbox = ['--no-sandbox'] if os.name != 'nt' and os.environ.get('AKDBX_TEST_BROWSER_NO_SANDBOX') == '1' else []
+    # Optional extra switches for one run, for example --force-color-profile=display-p3-d65 to render as a
+    # colour-managed display would.
+    sandbox += os.environ.get('AKDBX_TEST_BROWSER_EXTRA_ARGS', '').split()
     if native_hosts:
         # Linux Chromium reads user-level native-messaging hosts from the profile folder.
         (profile / 'NativeMessagingHosts').mkdir(mode=0o700)

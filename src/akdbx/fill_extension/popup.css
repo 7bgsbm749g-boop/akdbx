@@ -1,6 +1,9 @@
 :root { color-scheme: light dark; --border: #8886; }
 body { width: 320px; margin: 0; padding: 12px; font: 14px system-ui, sans-serif; }
-h1 { font-size: 16px; margin: 0 0 8px; }
+header { display: flex; align-items: center; justify-content: space-between; margin: 0 0 8px; }
+h1 { font-size: 16px; margin: 0; }
+button.icon { width: auto; padding: 4px; line-height: 0; border-color: transparent; opacity: .75; }
+button.icon:hover, button.icon:focus-visible { opacity: 1; border-color: var(--border); }
 p { margin: 6px 0; }
 .code { font: 600 20px ui-monospace, monospace; letter-spacing: 2px; }
 ul { list-style: none; margin: 8px 0 0; padding: 0; }

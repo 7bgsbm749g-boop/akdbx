@@ -303,13 +303,73 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   then gets the CDP route's owner guard (connected, visible, no `srcdoc`, safe
   `sandbox`, no attribute change), checked at pin and again before the fill or
   read.
-- Hit tests: there is no browser-native hit test. The checks use
+- Hit tests (default): there is no browser-native hit test. The checks use
   `elementFromPoint` in the isolated world, which skips click-through covers
   (`pointer-events: none`, `inert` content, a popover's `::backdrop`). For card
   and address fields the CDP route also runs `DOM.getNodeForLocation`, which
-  sees them; use the CDP route where a page may cover such a field. Read pins
-  use the same `elementFromPoint` check on both routes, and password pins have
-  no hit test on either.
+  sees them; use the CDP route where a page may cover such a field, unless the
+  user turned on Enhanced security. Read pins use the same `elementFromPoint`
+  check on both routes, and password pins have no hit test on either.
+- Covers (Enhanced security: experimental, off by default; 0.34.0+, fill
+  extension 0.5.0). The user turns it on in the extension's settings page (the
+  cog in the popup, or the browser's extension options); an agent does not.
+  The page first asks the browser for the optional `<all_urls>` host access,
+  and stores the setting only when the browser grants it. Turning it off keeps
+  that access: Chrome's `permissions.remove` of `<all_urls>` also withholds the
+  required `https://*/*` access. On, but without that access (not granted, or
+  removed later on the browser's extension page), every card, address and read
+  pin refuses; the settings page shows a warning. The broker does not see the
+  setting: a refused pin looks like any other refused pin, so when the pins of
+  an ordinary page keep refusing on the extension route, the user can turn the
+  setting off or the agent can use the CDP route. With the setting on, a card,
+  address or read pin needs proof that nothing is
+  painted over the field or the secret. `elementFromPoint` cannot give it (it
+  skips click-through and inert covers), and no list of selectors names every
+  cover. The extension asks the browser instead, in two steps, at the pin and
+  again at the fill or read:
+  1. The occlusion test. `IntersectionObserver` with `trackVisibility` runs the
+     browser's own occlusion hit test: the one CDP's `DOM.getNodeForLocation`
+     runs (pointer-events and `inert` ignored, visual overflow included), over
+     the whole box of the element, through every parent frame. A cross-origin
+     parent reports the occlusion of the whole `<iframe>` to its child, so a
+     processor frame also sees a cover in the merchant page. A popover, a
+     `::backdrop`, an exit transition, any pseudo-element, an inert or
+     shadow-root cover: each is a box above the element, so the answer is
+     "not visible". Opacity below 1, a filter or a distorting transform on the
+     element's chain give the same answer. The fill or read runs in the task
+     that delivers a fresh "visible" answer. The test needs a rendered tab.
+  2. The pixel challenge, for every card, address and read check. Step 1 does
+     not count paint that the element's own ancestors draw over it (a
+     negative-offset outline, also around a processor iframe), and it is
+     all-or-nothing for the whole box: a floating label, an icon in the field,
+     an element over another part of a processor frame, or the transparent
+     `::backdrop` of a cookie popover elsewhere also fail it.
+     The service worker then adds one user-origin rule (it beats every author
+     rule) that paints only the pinned element in a random colour, takes a
+     screenshot of the tab (`tabs.captureVisibleTab`), removes the rule, and
+     checks the colour at the points CDP hit-tests: the centre of a field; for
+     a secret, a point every few pixels along each line of its text. A cover
+     of any kind, in any document or frame, changes those pixels, so the pin
+     refuses; a see-through veil also refuses. The field shows the colour for
+     about a tenth of a second. The screenshot stays in the service worker and
+     is dropped after the check. The element's own outline gets another colour,
+     so one drawn over its content refuses; a secret element that draws its own
+     `::before`, `::after`, list marker or scroll markers refuses, because that
+     content would take the challenge colour. After the screenshot the points are measured
+     again; a layout shift refuses.
+  Costs and limits: `tabs.captureVisibleTab` needs the `<all_urls>` host
+  permission (asked for when the setting is turned on) and allows two
+  screenshots each second, so challenges run one at a time, about half a
+  second apart: each card or address field costs one challenge at its pin and
+  one at its fill. Colours are compared exactly. Chrome returns tab screenshots
+  in sRGB also when it renders for a colour-managed display: the tests pass with
+  forced Display P3 and scRGB profiles (`--force-color-profile`). A display
+  that still changed the colours would refuse, never fill. The tab must be the active tab of a window that renders.
+  Only a script that can read the field's own document can copy the colour
+  onto a cover in time, and such a script can read the filled value anyway;
+  a parent page cannot see the colour in a cross-origin processor frame. A
+  cover that comes and goes by itself is seen only if it is there at the pin
+  or at the fill.
 
 ## Setup
 

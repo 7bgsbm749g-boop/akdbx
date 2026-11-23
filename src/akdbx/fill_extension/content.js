@@ -74,7 +74,7 @@
     if (pins.size >= MAX_PINS) return null;
     if (kind === "read" && (typeof spec.selector !== "string" || spec.selector.length > MAX_READ_SELECTOR ||
         !READ_SELECTOR.test(spec.selector))) return null;
-    let state;
+    let state, el = null;
     try {
       if (kind === "password") {
         state = CAPTURE(spec.selector, spec.username_selector, spec.mode, frameURL, spec.password_purpose,
@@ -84,6 +84,7 @@
         // selection. The extension reads only in the top document.
         if (window !== window.top) return null;
         state = READ_CAPTURE(spec.selector, frameURL, null);
+        el = state && document.querySelector(spec.selector);
       } else if (kind === "card" || kind === "identity") {
         state = CARD_PIN(spec.selector, spec.field, frameURL, topURL, spec.processor || false, kind === "identity");
       }
@@ -91,9 +92,11 @@
       state = null;
     }
     if (!state) return null;
+    // The pin's own DOM checks passed. The service worker now asks for the cover check
+    // (clear, then challengeSpec when something overlaps) before it reports the pin.
     const id = randomId();
-    pins.set(id, {kind, mode: kind === "password" ? spec.mode : kind === "read" ? "read" : spec.field, state,
-      created: performance.now()});
+    pins.set(id, {kind, mode: kind === "password" ? spec.mode : kind === "read" ? "read" : spec.field, state, el,
+      processor: kind === "card" && Boolean(spec.processor), created: performance.now()});
     return id;
   }
 
@@ -101,7 +104,7 @@
     const item = pins.get(id);
     try {
       if (!item || item.kind === "password" || item.kind === "read") return null;
-      return item.state.geometry();
+      return item.state.geometry() || null;
     } catch {
       return null;
     }
@@ -117,7 +120,9 @@
     }
   }
 
-  function fill(id, kind, values, maxAgeMs) {
+  // cover: "off" (enhanced security is off), "pixels" (the service worker's pixel
+  // challenge proved the element) or "both" (the occlusion test was also clear).
+  async function fill(id, kind, values, maxAgeMs, cover) {
     const item = pins.get(id);
     pins.delete(id);
     if (!item || item.kind !== kind || performance.now() - item.created >= PIN_MS) {
@@ -136,6 +141,16 @@
         const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
         return PASSWORD_FILL.call(item.state, values.mode, values.username, values.password, deadline) ? "filled" : "refused";
       }
+      // With enhanced security, a fresh occlusion test, unless the service worker just
+      // proved the field with a pixel challenge. Its result arrives in one task; every
+      // DOM check and the fill run in that same task, so no page task runs between them.
+      let seen = cover === "off" || cover === "pixels";
+      try {
+        seen = seen || cover === "both" && await unoccluded(item.state.node());
+      } catch {
+        seen = false;
+      }
+      if (!seen || !item.state.geometry()) return "refused";
       const state = item.state.fill(values.value, maxAgeMs);
       return state === "filled" || state === "refused" ? state : "uncertain";
     } catch {
@@ -151,7 +166,7 @@
 
   // Secret capture: the checked value of a read pin, once. It goes back only to the
   // extension's service worker, which seals it to the broker.
-  function read(id, maxAgeMs) {
+  async function read(id, maxAgeMs, cover) {
     const item = pins.get(id);
     pins.delete(id);
     if (!item || item.kind !== "read" || performance.now() - item.created >= PIN_MS) {
@@ -160,6 +175,9 @@
     }
     try {
       const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
+      // As in fill(): the occlusion result, the checks and the read share one task.
+      if (cover !== "off" && cover !== "pixels" && !(cover === "both" && await unoccluded(item.el))) return null;
+      if (!item.state.check()) return null;
       const value = READ.call(item.state, deadline);
       return typeof value === "string" ? value : null;
     } catch {
@@ -233,6 +251,25 @@
     return id;
   }
 
+  // Every open or closed shadow root of this document; null when the page is too large.
+  function shadowRoots(doc = document) {
+    const found = [];
+    const pending = [doc];
+    let seen = 0;
+    while (pending.length) {
+      const root = pending.pop();
+      for (const el of root.querySelectorAll("*")) {
+        if (++seen > MAX_NODES) return null;
+        const shadow = chrome.dom.openOrClosedShadowRoot(el);
+        if (shadow) {
+          found.push(shadow);
+          pending.push(shadow);
+        }
+      }
+    }
+    return found;
+  }
+
   function ownerGuard(probeId, nonce) {
     const sent = ownerProbes.get(probeId);
     ownerProbes.delete(probeId);
@@ -252,7 +289,7 @@
     if (!guardState) return null;
     const id = randomId();
     while (owners.size >= MAX_PINS) ownerRelease(owners.keys().next().value);
-    owners.set(id, {state: guardState});
+    owners.set(id, {state: guardState, frame: frames[0]});
     return id;
   }
 
@@ -275,23 +312,193 @@
     }
   }
 
-  // Every open or closed shadow root of a document, for the owner probe; null on a page too large to walk.
-  function shadowRoots() {
-    const found = [];
-    const pending = [document];
-    let seen = 0;
-    while (pending.length) {
-      const root = pending.pop();
-      for (const el of root.querySelectorAll("*")) {
-        if (++seen > MAX_NODES) return null;
-        const shadow = chrome.dom.openOrClosedShadowRoot(el);
-        if (shadow) {
-          found.push(shadow);
-          pending.push(shadow);
-        }
+  // ----- covers: the browser's occlusion test, then a pixel challenge --------
+  // A field or a secret must be visible, not hidden under another element.
+  // elementFromPoint cannot prove that: it skips click-through and inert covers,
+  // and no list of selectors or pseudo-elements names every cover.
+  //
+  // 1. IntersectionObserver v2 (trackVisibility) is the browser's own answer. Its
+  //    isVisible runs the occlusion hit test that CDP's DOM.getNodeForLocation
+  //    runs (pointer-events and inert ignored, visual overflow included) over the
+  //    element's whole box, from the top document down: each same-process parent
+  //    document is part of that one hit test, and a cross-origin parent reports
+  //    the occlusion of the whole <iframe> to its child. A popover, a backdrop,
+  //    an exit transition, a pseudo-element, an inert or shadow cover: each is a
+  //    box above the element, so isVisible is false. Opacity below 1, a filter or
+  //    a distorting transform on the element's chain also make it false.
+  // 2. That test is all-or-nothing for the whole box. A floating label, an icon
+  //    in the field or the transparent backdrop of a popover elsewhere also make
+  //    it false. Then the service worker runs a pixel challenge: a user-origin
+  //    rule paints this one element in a random colour for a moment, and a
+  //    screenshot of the tab must show that colour at the checked points. Only
+  //    this element can show it there, and only if nothing is painted over it.
+  const OCCLUSION_MS = 400, PAINT_MS = 1000, MAX_POINTS = 600;
+
+  // The same-origin documents above this one, each with the frame element that
+  // holds the next one down, up to the top; null when one cannot be reached.
+  function ancestors() {
+    const hops = [];
+    for (let view = window; view !== view.top; view = view.parent) {
+      const frame = view.frameElement;
+      if (!frame || hops.length >= 16) return null;
+      hops.push({doc: frame.ownerDocument, target: frame});
+    }
+    return hops;
+  }
+
+  // One fresh result of the browser's occlusion test for this element: true only
+  // when the browser guarantees that nothing is painted over any part of it. No
+  // rendered frame (a hidden tab) gives no result, which is false.
+  function unoccluded(el) {
+    return new Promise(resolve => {
+      let observer = null, timer = null;
+      const finish = value => {
+        clearTimeout(timer);
+        if (observer) observer.disconnect();
+        observer = null;
+        resolve(value);
+      };
+      // Below a cross-origin parent the first result can come before the parent
+      // reported the frame's occlusion, so a later result may still be true.
+      const final = ancestors() !== null;
+      observer = new IntersectionObserver(entries => {
+        const entry = entries[entries.length - 1];
+        if (!observer || entry.target !== el) return;
+        if (entry.isIntersecting && entry.isVisible === true) finish(true);
+        else if (final) finish(false);
+      }, {trackVisibility: true, delay: 100});
+      observer.observe(el);
+      timer = setTimeout(() => finish(false), OCCLUSION_MS);
+    });
+  }
+
+  const pinned = item => item.kind === "read" ? item.el : item.state.node();
+
+  function clear(id) {
+    const item = pins.get(id);
+    try {
+      return item && item.kind !== "password" ? unoccluded(pinned(item)) : false;
+    } catch {
+      return false;
+    }
+  }
+
+  // A structural selector for exactly this element of the document tree. The
+  // challenge rule uses it, so the page's DOM gets no marker attribute.
+  function pathTo(el) {
+    const steps = [];
+    for (let node = el; node !== document.documentElement; node = node.parentElement) {
+      const parent = node.parentElement;
+      if (!parent || steps.length >= 64) return null;
+      steps.unshift(":nth-child(" + (Array.prototype.indexOf.call(parent.children, node) + 1) + ")");
+    }
+    if (!steps.length) return null;
+    const path = ":root>" + steps.join(">");
+    const found = document.querySelectorAll(path);
+    return found.length === 1 && found[0] === el ? path : null;
+  }
+
+  // The points of a read pin, inside the element's padding box and clear of a focus
+  // ring (the challenge colour paints neither the border nor an outline): for a
+  // text input its start, centre and end, as the hit tests; for other text a point
+  // every few pixels along each line, so a narrow cover over the text also refuses.
+  function textPoints(el) {
+    const box = el.getBoundingClientRect(), style = getComputedStyle(el), edge = 4;
+    const inner = {left: box.left + parseFloat(style.borderLeftWidth) + edge, right: box.right - parseFloat(style.borderRightWidth) - edge,
+      top: box.top + parseFloat(style.borderTopWidth) + edge, bottom: box.bottom - parseFloat(style.borderBottomWidth) - edge};
+    if (!(inner.right >= inner.left) || !(inner.bottom >= inner.top)) return null;
+    const input = el instanceof HTMLInputElement;
+    let rects = [box];
+    if (!input) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      rects = Array.from(range.getClientRects());
+    }
+    if (!rects.length || rects.length * 3 > MAX_POINTS) return null;
+    const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
+    const each = Math.floor(MAX_POINTS / rects.length);
+    const points = [];
+    for (const rect of rects) {
+      const y = clamp(rect.top + rect.height / 2, inner.top, inner.bottom);
+      const from = clamp(rect.left + edge, inner.left, inner.right), to = clamp(rect.right - edge, inner.left, inner.right);
+      const count = input ? 3 : clamp(Math.ceil((to - from) / 6) + 1, 3, each);
+      for (let i = 0; i < count; ++i) points.push([from + (to - from) * i / (count - 1), y]);
+    }
+    return points;
+  }
+
+  function ownPaint(el) {
+    const style = getComputedStyle(el);
+    const drawn = value => value !== "none" && value !== "normal";
+    if (style.display.includes("list-item")) {
+      // ::marker content decides first: none draws nothing, normal draws the list style.
+      const marker = getComputedStyle(el, "::marker").content;
+      if (marker !== "none" && (marker !== "normal" || style.listStyleType !== "none" || style.listStyleImage !== "none")) {
+        return true;
       }
     }
-    return found;
+    // A scroll container's own scroll markers are generated boxes too, unless the group has no box.
+    const markers = style.getPropertyValue("scroll-marker-group");
+    if (markers && markers !== "none" && getComputedStyle(el, "::scroll-marker-group").display !== "none") return true;
+    return ["::before", "::after"].some(pseudo => {
+      const generated = getComputedStyle(el, pseudo);
+      return drawn(generated.content) && generated.display !== "none";
+    });
+  }
+
+  // What the service worker needs for a pixel challenge: the element's selector
+  // and the points to look at, in the top document's viewport. A processor frame
+  // cannot see its parents: it gives its own point, and the merchant-side guard
+  // maps it (guardPoint).
+  function challengeSpec(id) {
+    const item = pins.get(id);
+    try {
+      if (!item || item.kind === "password") return null;
+      const path = pathTo(pinned(item));
+      if (!path) return null;
+      if (item.kind === "read") {
+        // Generated content of the element itself inherits the challenge colour, so
+        // the pixels could not tell it from the text: a secret element that draws a
+        // ::before, ::after or list marker refuses.
+        if (ownPaint(item.el)) return null;
+        const points = item.state.check() && textPoints(item.el);
+        return points ? {path, points, view: [innerWidth, innerHeight]} : null;
+      }
+      const point = item.state.geometry();
+      if (!point) return null;
+      if (item.processor) return {path, local: point};
+      const top = window.top;
+      return {path, points: [[point.rootX - top.scrollX, point.rootY - top.scrollY]], view: [top.innerWidth, top.innerHeight]};
+    } catch {
+      return null;
+    }
+  }
+
+  // Two animation frames: the challenge rule is then in a rendered frame.
+  function painted() {
+    return new Promise(resolve => {
+      const timer = setTimeout(() => resolve(false), PAINT_MS);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        clearTimeout(timer);
+        resolve(document.visibilityState === "visible");
+      }));
+    });
+  }
+
+  // After the screenshot: the challenge rule still selects only the pinned element
+  // and that element still has the challenge colour, so the colour in the
+  // screenshot was this element's.
+  function challengeHeld(id, path, colour) {
+    const item = pins.get(id);
+    try {
+      if (!item || item.kind === "password" || typeof path !== "string") return false;
+      const el = pinned(item), found = document.querySelectorAll(path);
+      const shadow = getComputedStyle(el).boxShadow;
+      return found.length === 1 && found[0] === el && shadow.startsWith(colour + " ") && shadow.endsWith(" inset") &&
+        Boolean(item.kind === "read" ? item.state.check() : item.state.geometry());
+    } catch {
+      return false;
+    }
   }
 
   // Processor frames: retain the merchant's iframe owner and check its chain.
@@ -300,7 +507,7 @@
     const found = frames.map(frame => {
       try {
         const state = GUARD.call(frame, frameURL, topURL, processor);
-        return state ? {state} : null;
+        return state ? {state, frame} : null;
       } catch {
         return null;
       }
@@ -317,6 +524,18 @@
       return Boolean(item && point && item.state.check(point));
     } catch {
       return false;
+    }
+  }
+
+  // The processor field's own point, mapped through the retained merchant <iframe>
+  // and its same-origin parents into the top document's viewport.
+  function guardPoint(id, point) {
+    const item = guards.get(id);
+    try {
+      const top = item && point && item.state.check(point);
+      return top ? {points: [[top.x, top.y]], view: [window.top.innerWidth, window.top.innerHeight]} : null;
+    } catch {
+      return null;
     }
   }
 
@@ -496,7 +715,8 @@
   }
 
   Object.defineProperty(globalThis, "__akdbxContent", {value: Object.freeze({
-    pin, geometry, release, fill, read, guard, guardCheck, count, probe, probeFill,
+    pin, geometry, release, fill, read, guard, guardCheck, guardPoint, count, probe, probeFill,
+    clear, challengeSpec, challengeHeld, painted,
     releaseGuard: id => guards.delete(id),
     ownerListen, ownerHeard, ownerDone, ownerProbe, ownerGuard, ownerCheck, ownerRelease,
   })});

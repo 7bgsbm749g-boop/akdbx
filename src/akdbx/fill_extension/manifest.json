@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "akdbx",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Fill saved logins, cards and addresses from your local akdbx broker.",
   "minimum_chrome_version": "127",
   "permissions": ["nativeMessaging", "scripting", "webNavigation", "tabs", "storage", "contextMenus", "alarms"],
   "host_permissions": ["https://*/*"],
+  "optional_host_permissions": ["<all_urls>"],
   "background": {"service_worker": "background.js"},
   "action": {"default_popup": "popup.html", "default_title": "akdbx"},
+  "options_ui": {"page": "options.html", "open_in_tab": true},
   "commands": {
     "_execute_action": {"suggested_key": {"default": "Alt+Shift+K"}, "description": "Fill the focused field with akdbx"}
   },
