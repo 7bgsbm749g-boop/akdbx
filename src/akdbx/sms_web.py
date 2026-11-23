@@ -116,7 +116,9 @@ SHORTCUT_STEPS = (
     '<strong>Run Immediately</strong>, turn off <strong>Notify When Run</strong>, tap <strong>Next</strong>, then '
     '<strong>New Blank Automation</strong>.)',
     'In the <strong>Search</strong> bar at the bottom, type <strong>Get Contents of URL</strong> and tap the action.',
-    'In the action, tap <strong>URL</strong> and paste the webhook URL.',
+    'Now paste the webhook URL. The action shows <strong>Get contents of URL</strong> with a grey '
+    '<strong>URL</strong>: tap the grey <strong>URL</strong> and paste. Continue only when the action shows the '
+    'address instead of the grey <strong>URL</strong>.',
     'Tap the <strong>&gt;</strong> arrow in the action to show more. Set <strong>Method</strong> to '
     '<strong>POST</strong>. Set <strong>Request Body</strong> to <strong>JSON</strong>.',
     'Tap <strong>Add new field</strong>, then <strong>Text</strong>. In the key box, type <code>text</code>. Tap '
@@ -126,7 +128,7 @@ SHORTCUT_STEPS = (
     'Optional: add a second <strong>Text</strong> field the same way, with the key <code>from</code>. Then tap the '
     'blue <strong>Message</strong> in that row and choose <strong>Sender</strong>. This lets the agent see who sent '
     'the text.',
-    'Tap the back arrow at the top left to save. The first time the automation runs, iOS can ask to allow the '
+    'Check that the action still shows the address, not a grey <strong>URL</strong>. Tap the back arrow at the top left to save. The first time the automation runs, iOS can ask to allow the '
     'connection to this address: tap <strong>Always Allow</strong>.',
 )
 TWILIO_STEPS = (
