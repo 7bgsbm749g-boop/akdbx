@@ -20,7 +20,7 @@ from __future__ import annotations
 from .persistence import SaveError
 from .totp import TotpError, configured as totp_configured, parse_setup
 from .versions import active_entries
-from .writes import WriteError, _entry_changed_at, _entry_write_clock, allowed_origins, metadata
+from .writes import WriteError, _entry_changed_at, _entry_write_clock, allowed_origins, metadata, validate_metadata
 
 PROTOCOL = 1
 PENDING_FIELD = 'akdbx.pending-otp'
@@ -96,6 +96,8 @@ class TotpCaptures:
         values = request.get('metadata')
         if not isinstance(values, dict) or metadata(entry) != values:
             raise WriteError('entry metadata mismatch; search again')
+        # As setup-totp: a title, an account (the key's label) and a site URL.
+        validate_metadata(values)
         _entry_write_clock(entry, broker.wall_clock)
         broker.writes._require_available()
         if sum(e.uuid == entry.uuid for e in active_entries(broker.vault)) != 1:
@@ -151,6 +153,8 @@ class TotpCaptures:
             try:
                 value = (broker.extension if extension else broker.passwords).read(pin, origins, started, deadline)
                 uri = parse_setup(value, label=values['username']).uri()
+                if parse_setup(uri).uri() != uri:
+                    raise TotpError('unsupported label')  # The save check reads it back the same way.
             except Exception:
                 return dict(ok=False, error=REFUSED)
             finally:

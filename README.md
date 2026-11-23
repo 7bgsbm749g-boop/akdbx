@@ -744,7 +744,7 @@ through a single-use read pin, the same route as
 ```bash
 akdbx pin-password-target --mode read --page-id PAGE --frame-id FRAME --top-url URL --selector '#setup-key'
 akdbx capture-totp --target TARGET --handle HANDLE --title T --username U --url URL --group G
-akdbx fill-totp HANDLE --pending --target-url URL --target X11_PIN   # the site's "verify the code" field
+akdbx fill-totp HANDLE --pending --target-url URL --target WINDOW_PIN   # the site's "verify the code" field
 akdbx commit-totp --handle HANDLE --site-accepted --title T --username U --url URL --group G
 ```
 

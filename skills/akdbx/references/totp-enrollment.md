@@ -21,7 +21,9 @@ or recovery options to finish it.
   A setup key printed in space-separated groups needs extension 0.6.0 or newer
   (an older one reads only a key printed as one token).
 
-The code fill uses an X11 window pin (`pin-target`), as every `fill-totp` does.
+The code fill uses a window pin (`pin-target`), as every `fill-totp` does: the
+verified X11 client window on Linux, the verified top-level HWND on Windows
+(see [Windows operation](windows.md)).
 
 ## How the key stays safe
 
@@ -31,6 +33,8 @@ The code fill uses an X11 window pin (`pin-target`), as every `fill-totp` does.
   authenticator the entry already has.
 - The page's origin must be the entry's main URL origin or one of its
   additional URLs, and the four metadata values must match the entry exactly.
+- The entry needs a title, a username (the account; it labels a bare key) and
+  an HTTPS URL, as for `setup-totp`.
 - The value must parse as a supported TOTP setup: a Base32 key (one token or
   groups such as `abcd efgh ijkl mnop`) or an `otpauth://totp/` URI. Other text
   refuses with `nothing saved`.
@@ -86,7 +90,7 @@ boxes, never text. Do not select or drag over the text.
    (GitHub: "Verify the code from the app"), and fill a code of the pending key:
 
    ```bash
-   akdbx pin-target --pid VERIFIED_PID --window VERIFIED_X11_CLIENT_WINDOW
+   akdbx pin-target --pid VERIFIED_PID --window VERIFIED_WINDOW  # X11 client window, or HWND on Windows
    akdbx fill-totp FRESH_HANDLE --pending --target-url 'EXACT_HTTPS_URL' --target FRESH_TARGET
    ```
 
@@ -109,6 +113,9 @@ fresh code. If the site starts the enrollment again with a new key, capture
 again (steps 3 to 5): the new capture replaces only the pending key. To stop,
 remove the pending key with `commit-totp --discard` (same handle and metadata
 options); `otp` stays as it was.
+
+Run one enrollment per entry at a time. A commit takes the key that is pending
+now, so a second capture for the same entry replaces the key of the first.
 
 If a capture or commit response is lost, search the entry first
 (`totp_pending`, `totp_configured`) before any retry. If the site accepted the

@@ -276,12 +276,13 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
       isInput && inputType.call(element) !== 'text' || element.isContentEditable || !leaf()) throw 0;
   const text = () => isInput ? inputValue.call(element) : innerText.call(element);
   // An authenticator setup key printed in groups ("abcd efgh ijkl mnop"): only
-  // the Base32 alphabet, one ASCII space between groups, every group as long as
-  // the first (3 to 8) except a shorter last one, and at least 16 characters.
+  // the Base32 alphabet (with "=" padding at the end only), one ASCII space
+  // between groups, every group as long as the first (3 to 8) except a shorter
+  // last one, and at least 16 characters.
   const grouped = value => {
-    const groups = value.split(' '), size = groups[0].length;
-    return groups.length > 1 && size >= 3 && size <= 8 && groups.join('').length >= 16 &&
-      groups.every((g, i) => /^[A-Za-z2-7]+$/.test(g) && (i < groups.length - 1 ? g.length === size : g.length <= size));
+    const groups = value.split(' '), size = groups[0].length, joined = groups.join('');
+    return groups.length > 1 && size >= 3 && size <= 8 && joined.length >= 16 && /^[A-Za-z2-7]+=*$/.test(joined) &&
+      groups.every((g, i) => g.length > 0 && (i < groups.length - 1 ? g.length === size : g.length <= size));
   };
   const clean = raw => {
     if (typeof raw !== 'string') return null;

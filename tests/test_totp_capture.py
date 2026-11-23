@@ -41,6 +41,9 @@ KEY = b32(secrets.token_bytes(20))      # The site's new key (32 Base32 characte
 NEXT_KEY = b32(secrets.token_bytes(20))  # The key a restarted enrollment shows.
 OLD_KEY = b32(secrets.token_bytes(20))   # An authenticator the entry already has.
 GROUPED = ' '.join(KEY[i:i + 4] for i in range(0, len(KEY), 4)).lower()
+# A 16-byte key needs Base32 padding; printed in groups of four.
+PADDED_KEY = base64.b32encode(secrets.token_bytes(16)).decode('ascii')
+PADDED = ' '.join(PADDED_KEY[i:i + 4] for i in range(0, len(PADDED_KEY), 4))
 URI = 'otpauth://totp/Synthetic:synthetic-octocat?secret=' + KEY + '&issuer=Synthetic'
 STYLE = '<style>body{margin:0;font:14px sans-serif}code,input,p{display:block;margin:2px}code{font:14px monospace}</style>'
 
@@ -51,6 +54,7 @@ def enrollment_page(key):
 <code id=setup-key>{key}</code>
 <code id=grouped>{' '.join(key[i:i + 4] for i in range(0, len(key), 4)).lower()}</code>
 <code id=uri>{URI.replace(KEY, key)}</code>
+<code id=padded>{PADDED}</code>
 <code id=prose>you will not see this again</code>
 <code id=notkey>Synth-{secrets.token_hex(8)}</code>
 <label>Verify the code from the app <input id=otp autocomplete=one-time-code inputmode=numeric></label>
@@ -90,7 +94,8 @@ SIGN_IN = 'https://login.example.com/sessions/two-factor'
 SIGN_IN_OLD = 'https://login.example.com/sessions/two-factor-old'
 NEW = dict(title='Synthetic GitHub', username='synthetic-octocat', url='https://login.example.com/login', group='Web')
 HAS = dict(title='Synthetic GitHub with app', username='synthetic-second', url='https://login.example.com/login', group='Web')
-SECRETS = (KEY, NEXT_KEY, OLD_KEY, GROUPED, KEY.lower())
+NOBODY = dict(title='Synthetic GitHub no account', username='', url='https://login.example.com/login', group='Web')
+SECRETS = (KEY, NEXT_KEY, OLD_KEY, GROUPED, KEY.lower(), PADDED_KEY.rstrip('='), PADDED)
 
 
 def old_uri():
@@ -106,6 +111,7 @@ def env(lab, tmp_path, template):  # noqa: F811
     vault.add_entry(web, NEW['title'], NEW['username'], 'synthetic-github-password', url=NEW['url'])
     has = vault.add_entry(web, HAS['title'], HAS['username'], 'synthetic-second-password', url=HAS['url'])
     has.otp = old_uri()
+    vault.add_entry(web, NOBODY['title'], '', 'synthetic-nobody-password', url=NOBODY['url'])
     vault.save()
     broker = Broker(open_vault_with_password(path, MASTER), X11Typer(), password_browser_profile=lab.profile)
     server, _ = start_unlock_server(broker, path, None, tmp_path / 'private' / 'capture.sock', 'https://node.example:9443')
@@ -382,3 +388,21 @@ def test_pending_key_survives_a_broker_restart_and_commits_after_it(env, tmp_pat
         restarted.passwords.close()
         server.shutdown()
         server.server_close()
+
+
+def test_padded_grouped_key_captures(env):
+    fid = open_page(env, SETUP)
+    pinned = read_pin(env, fid, '#padded', SETUP)
+    assert pinned['ok'], pinned
+    assert capture(env, pinned['target']) == receipt()
+    assert 'secret=' + PADDED_KEY.rstrip('=') in stored(env, NEW['title'])[2]
+
+
+def test_entry_without_an_account_refuses_before_the_read(env):
+    """As setup-totp: the username labels a bare key, so a blank one refuses with a fixed reason."""
+    fid = open_page(env, SETUP)
+    before = env.path.read_bytes()
+    pinned = read_pin(env, fid, '#setup-key', SETUP)
+    assert capture(env, pinned['target'], NOBODY) == dict(ok=False, error='title, account and a site URL are required')
+    assert commit(env, NOBODY) == dict(ok=False, error='title, account and a site URL are required')
+    assert env.path.read_bytes() == before
