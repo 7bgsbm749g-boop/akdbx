@@ -1,5 +1,6 @@
 """Phone verification texts: extraction, sources, inbox, HTTPS intake and fills."""
 import json
+import re
 import os
 import stat
 import threading
@@ -257,7 +258,7 @@ def test_add_source_with_a_target_needs_a_webhook_url_dom_pin(tmp_path):
 # HTTPS intake --------------------------------------------------------------
 
 
-def https(port, cafile, method, path, *, host, body=b'', content_type=None, origin=None):
+def https(port, cafile, method, path, *, host, body=b'', content_type=None, origin=None, user_agent=None):
     client = HTTPSConnection('127.0.0.1', port, context=ssl.create_default_context(cafile=str(cafile)), timeout=30)
     try:
         client.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
@@ -266,6 +267,8 @@ def https(port, cafile, method, path, *, host, body=b'', content_type=None, orig
             client.putheader('Origin', origin)
         if content_type is not None:
             client.putheader('Content-Type', content_type)
+        if user_agent is not None:
+            client.putheader('User-Agent', user_agent)
         client.putheader('Content-Length', str(len(body)))
         client.endheaders(body)
         response = client.getresponse()
@@ -390,3 +393,35 @@ def test_cli_prints_metadata_and_refuses_receipts_with_codes(capsys):
 def test_cli_refuses_an_old_broker_before_sending(capsys):
     code, sent, out = run_cli(['sms-sources'], [dict(ok=True)], capsys)
     assert code == 1 and len(sent) == 1 and 'SMS protocol 1' in out.out
+
+
+SAFARI_26 = ('Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) '
+             'Version/26.1 Mobile/15E148 Safari/604.1')
+SAFARI_27 = SAFARI_26.replace('18_6', '18_7').replace('Version/26.1', 'Version/27.0')
+SAFARI_17 = SAFARI_26.replace('18_6', '17_5').replace('Version/26.1', 'Version/17.5')
+CHROME_16 = ('Mozilla/5.0 (iPhone; CPU iPhone OS 16_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) '
+             'CriOS/120.0.6099.119 Mobile/15E148 Safari/604.1')
+DESKTOP = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36'
+
+
+@pytest.mark.parametrize('agent, major, group', [
+    (SAFARI_27, 27, 'ios27'), (SAFARI_26, 26, 'ios17'), (SAFARI_17, 17, 'ios17'),
+    (CHROME_16, 16, 'ios16'), (DESKTOP, None, 'ios27'), ('', None, 'ios27')])
+def test_ios_version_detection_reads_safari_version_not_the_frozen_os_token(agent, major, group):
+    from akdbx.sms_web import ios_major, shortcut_group
+    assert ios_major(agent) == major and shortcut_group(major) == group
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Linux loopback HTTPS fixture')
+@pytest.mark.parametrize('agent, group', [(SAFARI_26, 'ios17'), (SAFARI_27, 'ios27'), (CHROME_16, 'ios16')])
+def test_setup_page_opens_the_steps_for_the_detected_ios_version(served, agent, group):
+    receipt = served.broker.dispatch(dict(action='sms-add-source', sms_protocol=1, name='iphone', kind='shortcut'))
+    path = urlsplit(receipt['private_url'])
+    status, _, body = https(served.port, served.cert, 'GET', path.path + '?' + path.query, host=served.host,
+                            user_agent=agent)
+    assert status == 200
+    shown = re.findall(rb'<ol data-variant="(\w+)" data-variant-group="ios-steps">', body)
+    hidden = re.findall(rb'<ol data-variant="(\w+)" data-variant-group="ios-steps" hidden>', body)
+    assert shown == [group.encode()] and len(hidden) == 2
+    assert f'<option data-show="{group}" selected>'.encode() in body and body.count(b' selected>') == 1
+    assert b'data-variant-select="ios-steps"' in body

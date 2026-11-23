@@ -118,6 +118,8 @@ button:disabled { cursor: default; opacity: .4; }
   background: linear-gradient(90deg, transparent, #ffffff38, transparent);
 }
 [hidden] { display: none !important; }
+.variant-field { margin-top: 18px; }
+.variant-field + .field-hint { margin: 6px 0 12px; }
 button.copy-field {
   display: block; text-align: left; min-height: 0; padding: 13px 16px 12px; border: 1px solid #ffffff1a;
   border-top-color: #ffffff20; border-radius: 14px; background: linear-gradient(135deg, #ffffff04, transparent 55%), #00000038;
@@ -241,6 +243,15 @@ SCRIPT = r""""use strict";
     const visible = input.type === "password";
     input.type = visible ? "text" : "password";
     button.setAttribute("aria-pressed", String(visible));
+  });
+  // A version list shows only the step list of the chosen option. It reads
+  // the option's data-show attribute, never an input.
+  document.addEventListener("change", event => {
+    const list = event.target.closest("[data-variant-select]");
+    if (!list) return;
+    const chosen = list.selectedOptions[0]?.getAttribute("data-show");
+    document.querySelectorAll('[data-variant-group="' + list.getAttribute("data-variant-select") + '"]')
+      .forEach(steps => { steps.hidden = steps.getAttribute("data-variant") !== chosen; });
   });
   // A copy box carries its text in data-copy (the SMS webhook URL on its
   // private setup page). No input is read.

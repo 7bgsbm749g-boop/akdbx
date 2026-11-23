@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from http import HTTPStatus
 from urllib.parse import parse_qs, urlsplit
 
@@ -104,35 +105,110 @@ def _inbound(handler, state, token: str) -> None:
         _json(handler, HTTPStatus.OK, ACCEPTED)
 
 
-SHORTCUT_STEPS = (
-    'Tap the <strong>Webhook URL</strong> box at the bottom of this page. It copies the URL.',
-    'Open the <strong>Shortcuts</strong> app. Tap <strong>+</strong> to make a new shortcut.',
-    'In the list at the bottom, tap <strong>Automation</strong>, then <strong>Message</strong>. A box '
-    '<strong>When I receive a message</strong> appears. (Older iOS: open the <strong>Automation</strong> tab, tap '
-    '<strong>+</strong>, then <strong>Message</strong>.)',
-    'In that box, tap the arrow next to <strong>where</strong>. Set <strong>Message contains</strong> to '
-    '<code>code</code>.',
-    'Keep <strong>Automation</strong> on. Turn <strong>Confirm Before Run</strong> off.',
-    'In the <strong>Search</strong> bar at the bottom, type <code>Get Contents of URL</code> and tap it. A second '
-    'box <strong>Get contents of URL</strong> appears.',
-    'In the second box, tap the grey <strong>URL</strong> and paste. The box now shows the '
-    '<code>https://</code> address.',
-    'Tap the round arrow after the address. Set <strong>Method</strong> to <strong>POST</strong> and '
-    '<strong>Request Body</strong> to <strong>JSON</strong>.',
-    'Tap <strong>Add new field</strong> and choose <strong>Text</strong>. Type <code>text</code> on the left.',
-    'In that row, tap the grey <strong>Text</strong> on the right. Above the keyboard, tap '
-    '<strong>Select Variable</strong>. Then tap the blue <strong>Message</strong> that shows between the two '
-    'boxes. The row now shows <code>text</code> and a blue <strong>Message</strong>.',
-    'Tap <strong>Add new field</strong> and choose <strong>Text</strong>. Type <code>from</code> on the left. Do '
-    'the last step again for this row: grey <strong>Text</strong>, <strong>Select Variable</strong>, blue '
-    '<strong>Message</strong> between the boxes.',
-    'In the <code>from</code> row, tap the blue <strong>Message</strong>. In the menu, choose '
-    '<strong>Sender</strong>. The row now shows <code>from</code> and <strong>Sender</strong>. (If the menu has no '
-    'Sender, remove the <code>from</code> row with the red minus. It is optional.)',
-    'Tap the back arrow at the top left to save.',
-    'Test it: send yourself a text with the word <code>code</code> and six digits, for example '
-    '<code>Your test code is 482913</code>. If iOS asks to allow the connection, tap <strong>Always Allow</strong>.',
+COPY_STEP = 'Tap the <strong>Webhook URL</strong> box above. It copies the URL.'
+URL_STEP = ('Tap the grey <strong>URL</strong> in the action and paste. The action now shows the '
+            '<code>https://</code> address.')
+TEST_STEP = ('Test it: ask someone to text you <code>Your test code is 482913</code>, or send it to yourself. '
+             'The first time, iOS can ask for permission: tap <strong>Allow</strong>, then '
+             '<strong>Always Allow</strong>.')
+
+
+def _variable_steps(variable: str, where: str) -> tuple:
+    return (
+        'Tap <strong>Add new field</strong> and choose <strong>Text</strong>. Type <code>text</code> on the left.',
+        f'In that row, tap the grey <strong>Text</strong> on the right. {where} The row now shows <code>text</code> '
+        f'and a blue <strong>{variable}</strong>. That sends the text of the message.',
+        'Optional, so the agent sees who sent the text: tap <strong>Add new field</strong>, choose '
+        f'<strong>Text</strong> and type <code>from</code>. Fill its value the same way. Then tap the blue '
+        f'<strong>{variable}</strong> in the <code>from</code> row and choose <strong>Sender</strong>.',
+    )
+
+
+# Each group: (id, label, steps). The page opens the group that matches the
+# iPhone's iOS version (from the User-Agent) and offers the others in a list.
+SHORTCUT_GROUPS = (
+    ('ios27', 'iOS 27 and later', (
+        COPY_STEP,
+        'Open the <strong>Shortcuts</strong> app. Tap <strong>+</strong> to make a new shortcut. (If it shows '
+        '<strong>Describe a shortcut</strong>, tap <strong>Edit</strong>.)',
+        'In the list at the bottom, tap <strong>Automation</strong>, then <strong>Message</strong>. A box '
+        '<strong>When I receive a message</strong> appears at the top.',
+        'In that box, tap the arrow next to <strong>where</strong>. Set the filter to <strong>Message</strong> '
+        'contains <code>code</code>. (If the filter starts with <strong>Sender</strong>, tap it and choose '
+        '<strong>Message</strong>.)',
+        'Keep <strong>Automation</strong> on. Turn <strong>Confirm Before Run</strong> off.',
+        'In the <strong>Search</strong> bar at the bottom, type <code>Get Contents of URL</code> and tap it. A second '
+        'box <strong>Get contents of URL</strong> appears.',
+        URL_STEP,
+        'Tap the round arrow after the address. Set <strong>Method</strong> to <strong>POST</strong> and '
+        '<strong>Request Body</strong> to <strong>JSON</strong>.',
+        *_variable_steps('Message', 'Above the keyboard, tap <strong>Select Variable</strong>. Then tap the blue '
+                                    '<strong>Message</strong> that shows between the two boxes.'),
+        'Tap the back arrow at the top left. Shortcuts saves the automation.',
+        TEST_STEP,
+    )),
+    ('ios17', 'iOS 17 to iOS 26', (
+        COPY_STEP,
+        'Open the <strong>Shortcuts</strong> app. Tap the <strong>Automation</strong> tab at the bottom, then '
+        '<strong>+</strong> (or <strong>New Automation</strong>).',
+        'Scroll the list and tap <strong>Message</strong>.',
+        'Tap <strong>Message Contains</strong>, type <code>code</code> and tap <strong>Done</strong>. Do not choose '
+        'a sender.',
+        'Select <strong>Run Immediately</strong>. If you see <strong>Notify When Run</strong>, turn it off. Tap '
+        '<strong>Next</strong>.',
+        'Tap <strong>New Blank Automation</strong> (on some versions: <strong>Create New Shortcut</strong>).',
+        'Tap <strong>Add Action</strong> or the <strong>Search</strong> bar, type <code>Get Contents of URL</code> '
+        'and tap it.',
+        URL_STEP,
+        'Tap the arrow in the action to show more. Set <strong>Method</strong> to <strong>POST</strong> and '
+        '<strong>Request Body</strong> to <strong>JSON</strong>.',
+        *_variable_steps('Shortcut Input', 'Above the keyboard, tap <strong>Shortcut Input</strong>.'),
+        'Tap <strong>Done</strong> at the top right.',
+        TEST_STEP,
+    )),
+    ('ios16', 'iOS 16 and earlier', (
+        'On iOS 16 and earlier, iOS can ask you to confirm each time a message automation runs. Then a text is '
+        'forwarded only after you tap the notification. Update to iOS 17 or later if you can.',
+        COPY_STEP,
+        'Open the <strong>Shortcuts</strong> app. Tap the <strong>Automation</strong> tab at the bottom, then '
+        '<strong>Create Personal Automation</strong> (or <strong>+</strong> first).',
+        'Scroll the list and tap <strong>Message</strong>.',
+        'Tap <strong>Message Contains</strong>, type <code>code</code> and tap <strong>Done</strong>. Tap '
+        '<strong>Next</strong>.',
+        'Tap <strong>Add Action</strong>, type <code>Get Contents of URL</code> in the search bar and tap it.',
+        URL_STEP,
+        'Tap <strong>Show More</strong> in the action. Set <strong>Method</strong> to <strong>POST</strong> and '
+        '<strong>Request Body</strong> to <strong>JSON</strong>.',
+        *_variable_steps('Shortcut Input', 'Above the keyboard, tap <strong>Shortcut Input</strong>.'),
+        'Tap <strong>Next</strong>. Turn off <strong>Ask Before Running</strong> and tap <strong>Don\'t Ask</strong>. '
+        'Tap <strong>Done</strong>.',
+        TEST_STEP,
+    )),
 )
+
+
+def ios_major(user_agent: str) -> int | None:
+    """The iOS major version from a User-Agent, or None if it is not an iPhone or iPad.
+
+    Safari 26 and later freezes the OS token (``iPhone OS 18_6``) but its
+    ``Version/`` token follows iOS. Chrome, Firefox and Edge on iOS have no
+    ``Version/`` token and send the real OS version.
+    """
+    if not re.search(r'\b(iPhone|iPad|iPod)\b', user_agent):
+        return None
+    version = re.search(r'\bVersion/(\d+)', user_agent)
+    if version and not re.search(r'\b(CriOS|FxiOS|EdgiOS)/', user_agent):
+        return int(version.group(1))
+    os_version = re.search(r'\bOS (\d+)_', user_agent)
+    return int(os_version.group(1)) if os_version else None
+
+
+def shortcut_group(major: int | None) -> str:
+    if major is None or major >= 27:
+        return 'ios27'
+    return 'ios17' if major >= 17 else 'ios16'
+
+
 TWILIO_STEPS = (
     'In the Twilio Console, open <strong>Phone Numbers</strong>, <strong>Manage</strong>, '
     '<strong>Active numbers</strong> and select the number.',
@@ -154,6 +230,20 @@ def _copy_box(label: str, text: str) -> str:
             '<p id="copy-toast" class="copy-toast" role="status" aria-live="polite" hidden></p>')
 
 
+def _shortcut_steps(major: int | None) -> str:
+    """A version list (opened at the detected iOS version) and one step list per group."""
+    chosen = shortcut_group(major)
+    detected = (f'This iPhone seems to run iOS {major}. ' if major is not None else '') + 'Choose another version if needed.'
+    options = ''.join(f'<option data-show="{key}"{" selected" if key == chosen else ""}>{label}</option>'
+                      for key, label, _ in SHORTCUT_GROUPS)
+    lists = ''.join(f'<ol data-variant="{key}" data-variant-group="ios-steps"{"" if key == chosen else " hidden"}>'
+                    + ''.join(f'<li>{step}</li>' for step in steps) + '</ol>'
+                    for key, _, steps in SHORTCUT_GROUPS)
+    return (f'<div class="field variant-field"><label for="ios-version">iOS version</label>'
+            f'<select id="ios-version" data-variant-select="ios-steps" aria-describedby="ios-detected">{options}'
+            f'</select></div><p id="ios-detected" class="field-hint">{detected}</p>{lists}')
+
+
 def _setup(handler, state) -> None:
     from .web_unlock import _page
     origin = getattr(state, 'origin', None)
@@ -163,13 +253,16 @@ def _setup(handler, state) -> None:
         handler._send(HTTPStatus.NOT_FOUND, _page('Not found', '<p>This SMS setup link is not valid any more. '
                                                   'Ask your agent for a new one.</p>'))
         return
-    steps = {'shortcut': SHORTCUT_STEPS, 'twilio': TWILIO_STEPS}.get(setup.kind, WEBHOOK_STEPS)
     url = webhook_url(origin, setup.token)
-    items = ''.join(f'<li>{step}</li>' for step in steps)
+    if setup.kind == 'shortcut':
+        instructions = _shortcut_steps(ios_major(handler.headers.get('User-Agent', '')))
+    else:
+        steps = TWILIO_STEPS if setup.kind == 'twilio' else WEBHOOK_STEPS
+        instructions = '<ol>' + ''.join(f'<li>{step}</li>' for step in steps) + '</ol>'
     body = (f'<p>Set up the SMS source <strong>{html.escape(setup.source)}</strong>. Texts it forwards reach only '
             'this AKDBX broker. AKDBX keeps the verification code for ten minutes and never shows it to the agent.</p>'
-            f'<ol>{items}</ol>'
             + _copy_box('Webhook URL (keep it private). Tap to copy.', url)
-            + f'<p>Anyone with this URL can send texts to AKDBX. This page closes {SETUP_TTL // 3600} hour after it was made. '
-              'Ask your agent to replace the source if the URL leaks.</p>')
+            + instructions
+            + f'<p>Anyone with this URL can send texts to AKDBX. This page closes {SETUP_TTL // 3600} hour after it was '
+              'made. Ask your agent to replace the source if the URL leaks.</p>')
     handler._send(HTTPStatus.OK, _page('Set up SMS verification', body))
