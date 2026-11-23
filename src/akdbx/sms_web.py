@@ -136,7 +136,7 @@ SHORTCUT_GROUPS = (
         'In that box, tap the arrow next to <strong>where</strong>. Set the filter to <strong>Message</strong> '
         'contains <code>code</code>. (If the filter starts with <strong>Sender</strong>, tap it and choose '
         '<strong>Message</strong>.)',
-        'Keep <strong>Automation</strong> on. Turn <strong>Confirm Before Run</strong> off.',
+        'Keep <strong>Automation</strong> on and <strong>Confirm Before Run</strong> off.',
         'In the <strong>Search</strong> bar at the bottom, type <code>Get Contents of URL</code> and tap it. A second '
         'box <strong>Get contents of URL</strong> appears.',
         URL_STEP,
