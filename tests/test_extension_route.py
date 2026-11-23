@@ -1507,7 +1507,7 @@ def test_capture_refuses_an_invalid_read_value(capture_broker, value):
     assert capture(broker, pin['target'])['ok'] is False and saved_secret(broker) is None
 
 
-def test_an_older_extension_gets_no_hardened_pins_but_main_frame_password_pins_still_work(capture_broker):
+def test_an_older_extension_gets_no_read_or_child_frame_login_pins_but_keeps_the_rest(capture_broker):
     broker = capture_broker
     extension = FakeExtension({4: [Document('TOP', SECRET_SITE), Document('SAME', 'https://keys.example.com/f', 'TOP')]})
     channel = FakeChannel(broker.extension, extension, version='0.3.0')
@@ -1516,28 +1516,12 @@ def test_an_older_extension_gets_no_hardened_pins_but_main_frame_password_pins_s
     assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE) == failure()
     assert pin_password(broker, channel, 4, 'SAME', SECRET_SITE, frame_protocol=1,
                         frame_origin='https://keys.example.com') == failure()
-    card = broker.dispatch(dict(action='pin-card-target', card_protocol=1, page_id=f'{channel.id}.4', frame_id='TOP',
-                                top_url=SECRET_SITE, selector='#number', field='cc-number', route='extension'))
-    assert card == card_failure()
     assert 'pin' not in extension.calls
-    # Main-frame logins keep working with the older extension.
+    # Main-frame logins and cards keep working with the older extension.
     assert pin_password(broker, channel, 4, 'TOP', SECRET_SITE)['ok']
-
-
-def test_extension_0_4_holds_frame_owners_but_gets_no_cover_checked_pins(capture_broker):
-    """Card, address and read pins need the cover check of fill extension 0.5.0."""
-    broker = capture_broker
-    extension = FakeExtension({4: [Document('TOP', SECRET_SITE), Document('SAME', 'https://keys.example.com/f', 'TOP')]})
-    channel = FakeChannel(broker.extension, extension, version='0.4.0')
-    broker.extension.channels[channel.id] = channel
-    broker.extension.approved.append(channel.digest)
-    assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE) == failure()
     card = broker.dispatch(dict(action='pin-card-target', card_protocol=1, page_id=f'{channel.id}.4', frame_id='TOP',
                                 top_url=SECRET_SITE, selector='#number', field='cc-number', route='extension'))
-    assert card == card_failure()
-    assert 'pin' not in extension.calls
-    assert pin_password(broker, channel, 4, 'SAME', SECRET_SITE, frame_protocol=1,
-                        frame_origin='https://keys.example.com')['ok']
+    assert card['ok'], card
 
 
 def test_cli_reads_through_the_extension_with_route_or_default(monkeypatch, capsys, capture_broker):

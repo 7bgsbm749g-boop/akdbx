@@ -417,8 +417,24 @@ async function processorCheck(tabId, chain, pinId, guardId) {
     (id, p) => globalThis.__akdbxContent.guardCheck(id, p), [guardId, point])) === true;
 }
 
+// ----- settings -------------------------------------------------------------
+// The options page writes them to local storage, which content scripts cannot reach (see above).
+const SETTINGS_KEY = "settings";
+
+// Enhanced security (experimental, off by default): the cover checks below. An
+// unreadable setting counts as on: the check then runs, and refuses where the
+// browser did not grant the screenshot access.
+async function enhancedSecurity() {
+  try {
+    const settings = (await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY];
+    return Boolean(settings && settings.enhanced_security === true);
+  } catch {
+    return true;
+  }
+}
+
 // ----- covers: the browser's occlusion test, then a pixel challenge ------------
-// A card, address or read pin needs proof that nothing is painted over the field
+// With enhanced security on, a card, address or read pin needs proof that nothing is painted over the field
 // or the secret. content.js clear() asks the browser itself (IntersectionObserver
 // v2: the occlusion hit test that CDP uses, over the whole element, through every
 // parent frame). That test is all-or-nothing, so a floating label or the
@@ -426,7 +442,9 @@ async function processorCheck(tabId, chain, pinId, guardId) {
 // challenge decides: a user-origin rule (it beats every author rule) paints only
 // the pinned element in a random colour for a moment, and a screenshot of the tab
 // must show that colour at the checked points. Whatever covers a point, in any
-// document, in the top layer or in a parent frame, changes its pixels.
+// document, in the top layer or in a parent frame, changes its pixels. The
+// screenshot needs the optional <all_urls> host access, which the options page
+// requests when the user turns the setting on.
 const STEP_MS = 3000, CAPTURE_GAP_MS = 550, COLOUR_TOLERANCE = 2, MAX_CHALLENGE_POINTS = 600;
 // The screenshot API allows two calls each second: one challenge at a time, spaced.
 let challengeQueue = Promise.resolve();
@@ -652,17 +670,13 @@ async function pin(message) {
       return {ok: false};
     }
   }
-  const hit = message.kind !== "password";
+  const hit = message.kind !== "password" && await enhancedSecurity();
   let pinId = null;
   try {
     await inject(message.tab_id, message.document_id);
-    const capture = async () => {
-      const id = await run(message.tab_id, message.document_id,
-        (kind, value, url, top) => globalThis.__akdbxContent.pin(kind, value, url, top),
-        [message.kind, spec, frameURL, message.top_url]);
-      return id;
-    };
-    pinId = await capture();
+    pinId = await run(message.tab_id, message.document_id,
+      (kind, value, url, top) => globalThis.__akdbxContent.pin(kind, value, url, top),
+      [message.kind, spec, frameURL, message.top_url]);
   } catch {
     pinId = null;
   }
@@ -687,7 +701,7 @@ async function pin(message) {
     }
     processorGuards.set(pinId, guardId);
   }
-  // Nothing may be painted over the field or the secret (see seen()).
+  // With enhanced security, nothing may be painted over the field or the secret (see seen()).
   if (hit && !(await seen(message.tab_id, chain, pinId, processorGuards.get(pinId)))) {
     await release({tab_id: message.tab_id, document_id: message.document_id, pin_id: pinId, chain});
     await releaseOwners(message.tab_id, owners);
@@ -734,10 +748,10 @@ async function read(message) {
     let value;
     try {
       // With "both", content.js still runs its own fresh occlusion test in the task of the read.
-      const how = chain.length !== 1 ? null : await seen(facts.tab_id, chain, facts.pin_id, null);
-      value = !how ? null : await bounded(run(facts.tab_id, facts.document_id,
-        (id, maxAge, proven) => globalThis.__akdbxContent.read(id, maxAge, proven),
-        [facts.pin_id, facts.max_age_ms, how === "pixels"]), STEP_MS);
+      const cover = chain.length !== 1 ? null : await enhancedSecurity() ? await seen(facts.tab_id, chain, facts.pin_id, null) : "off";
+      value = !cover ? null : await bounded(run(facts.tab_id, facts.document_id,
+        (id, maxAge, how) => globalThis.__akdbxContent.read(id, maxAge, how),
+        [facts.pin_id, facts.max_age_ms, cover]), STEP_MS);
     } catch {
       value = null;
     }
@@ -770,22 +784,21 @@ async function fill(message) {
       return {state: "refused"};
     }
     const guardId = processorGuards.get(facts.pin_id);
-    const hit = facts.kind === "card" || facts.kind === "identity";
+    const hit = (facts.kind === "card" || facts.kind === "identity") && await enhancedSecurity();
     let result = "refused";
-    let proven = false, covered = false;
+    // "off": no cover check; "pixels" or "both": see seen(); null: covered.
+    let cover = "off";
     if (facts.kind === "card" && guardId && !(await processorCheck(facts.tab_id, chain, facts.pin_id, guardId).catch(() => false))) {
-      covered = true;
+      cover = null;
     } else if (hit) {
-      const how = await seen(facts.tab_id, chain, facts.pin_id, guardId);
-      covered = !how;
-      proven = how === "pixels";
+      cover = await seen(facts.tab_id, chain, facts.pin_id, guardId);
     }
-    if (!covered) {
+    if (cover) {
       try {
         // Before this call nothing reached the field; a timeout after it is uncertain.
         result = await bounded(run(facts.tab_id, facts.document_id,
-          (id, kind, value, maxAge, shown) => globalThis.__akdbxContent.fill(id, kind, value, maxAge, shown),
-          [facts.pin_id, facts.kind, values, facts.max_age_ms, proven]), 9000);
+          (id, kind, value, maxAge, how) => globalThis.__akdbxContent.fill(id, kind, value, maxAge, how),
+          [facts.pin_id, facts.kind, values, facts.max_age_ms, cover]), 9000);
       } catch {
         result = "uncertain";
       }

@@ -42,6 +42,7 @@ akdbx = ["import_assets/*", "browser_extension/*", "fill_extension/*", "public_s
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["shipped_permissions: run the extension browser test with the shipped manifest, without the screenshot access"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10", "cryptography>=43,<47"]

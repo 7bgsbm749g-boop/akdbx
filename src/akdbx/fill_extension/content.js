@@ -120,7 +120,9 @@
     }
   }
 
-  async function fill(id, kind, values, maxAgeMs, proven) {
+  // cover: "off" (enhanced security is off), "pixels" (the service worker's pixel
+  // challenge proved the element) or "both" (the occlusion test was also clear).
+  async function fill(id, kind, values, maxAgeMs, cover) {
     const item = pins.get(id);
     pins.delete(id);
     if (!item || item.kind !== kind || performance.now() - item.created >= PIN_MS) {
@@ -139,12 +141,12 @@
         const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
         return PASSWORD_FILL.call(item.state, values.mode, values.username, values.password, deadline) ? "filled" : "refused";
       }
-      // A fresh occlusion test, unless the service worker just proved the field with a
-      // pixel challenge. Its result arrives in one task; every DOM check and the fill
-      // run in that same task, so no page task runs between them.
-      let seen = proven === true;
+      // With enhanced security, a fresh occlusion test, unless the service worker just
+      // proved the field with a pixel challenge. Its result arrives in one task; every
+      // DOM check and the fill run in that same task, so no page task runs between them.
+      let seen = cover === "off" || cover === "pixels";
       try {
-        seen = seen || await unoccluded(item.state.node());
+        seen = seen || cover === "both" && await unoccluded(item.state.node());
       } catch {
         seen = false;
       }
@@ -164,7 +166,7 @@
 
   // Secret capture: the checked value of a read pin, once. It goes back only to the
   // extension's service worker, which seals it to the broker.
-  async function read(id, maxAgeMs, proven) {
+  async function read(id, maxAgeMs, cover) {
     const item = pins.get(id);
     pins.delete(id);
     if (!item || item.kind !== "read" || performance.now() - item.created >= PIN_MS) {
@@ -174,7 +176,7 @@
     try {
       const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
       // As in fill(): the occlusion result, the checks and the read share one task.
-      if (proven !== true && !(await unoccluded(item.el))) return null;
+      if (cover !== "off" && cover !== "pixels" && !(cover === "both" && await unoccluded(item.el))) return null;
       if (!item.state.check()) return null;
       const value = READ.call(item.state, deadline);
       return typeof value === "string" ? value : null;

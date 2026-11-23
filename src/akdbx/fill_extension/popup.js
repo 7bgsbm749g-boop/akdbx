@@ -54,6 +54,7 @@ async function main() {
   const list = document.getElementById("entries");
   const send = message => chrome.runtime.sendMessage(message);
   document.getElementById("version").textContent = versionText(chrome.runtime.getManifest());
+  document.getElementById("settings").onclick = () => chrome.runtime.openOptionsPage().then(() => window.close());
   const state = await send({op: "state"});
   if (!state || !state.connected) {
     status.textContent = "The akdbx broker is not reachable. Start the broker, then run “akdbx extension install” for this browser.";

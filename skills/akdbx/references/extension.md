@@ -243,8 +243,8 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   `capture_delivery: "extension-dom-read-v1"`.
   Without `--route`, a read pin takes the broker's default route when the
   broker advertises `extension_capture_protocol: 1`, else the CDP route.
-- Password pins in a child frame need fill extension 0.4.0 or newer; card,
-  address and read pins need 0.5.0 (the cover check); the broker refuses them from an older one. Build
+- Read pins and password pins in a child frame need fill extension 0.4.0 or
+  newer; the broker refuses them from an older one. Build
   the extension again and reload it. From 0.4.0 both sealing keys bind the
   version the extension reports, so a host that reports another version makes
   every sealed message fail.
@@ -303,7 +303,26 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   then gets the CDP route's owner guard (connected, visible, no `srcdoc`, safe
   `sandbox`, no attribute change), checked at pin and again before the fill or
   read.
-- Covers (0.34.0+, fill extension 0.5.0): a card, address or read pin needs proof that nothing is
+- Hit tests (default): there is no browser-native hit test. The checks use
+  `elementFromPoint` in the isolated world, which skips click-through covers
+  (`pointer-events: none`, `inert` content, a popover's `::backdrop`). For card
+  and address fields the CDP route also runs `DOM.getNodeForLocation`, which
+  sees them; use the CDP route where a page may cover such a field, unless the
+  user turned on Enhanced security. Read pins use the same `elementFromPoint`
+  check on both routes, and password pins have no hit test on either.
+- Covers (Enhanced security: experimental, off by default; 0.34.0+, fill
+  extension 0.5.0). The user turns it on in the extension's settings page (the
+  cog in the popup, or the browser's extension options); an agent does not.
+  The page first asks the browser for the optional `<all_urls>` host access,
+  and stores the setting only when the browser grants it. Turning it off keeps
+  that access: Chrome's `permissions.remove` of `<all_urls>` also withholds the
+  required `https://*/*` access. On, but without that access (not granted, or
+  removed later on the browser's extension page), every card, address and read
+  pin refuses; the settings page shows a warning. The broker does not see the
+  setting: a refused pin looks like any other refused pin, so when the pins of
+  an ordinary page keep refusing on the extension route, the user can turn the
+  setting off or the agent can use the CDP route. With the setting on, a card,
+  address or read pin needs proof that nothing is
   painted over the field or the secret. `elementFromPoint` cannot give it (it
   skips click-through and inert covers), and no list of selectors names every
   cover. The extension asks the browser instead, in two steps, at the pin and
@@ -339,7 +358,7 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
      content would take the challenge colour. After the screenshot the points are measured
      again; a layout shift refuses.
   Costs and limits: `tabs.captureVisibleTab` needs the `<all_urls>` host
-  permission (the same install warning as `https://*/*`) and allows two
+  permission (asked for when the setting is turned on) and allows two
   screenshots each second, so challenges run one at a time, about half a
   second apart: each card or address field costs one challenge at its pin and
   one at its fill. Colours are compared exactly. Chrome returns tab screenshots

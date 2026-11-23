@@ -92,6 +92,9 @@ LOGIN_FRAME = ('<!doctype html><meta charset="utf-8"><h1>Outer page</h1>'
 PAGES = {
     '/secret': f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<p>Copy it now.</p><code id="secret" tabindex="0">{SECRET}</code>',
     # A click-through cover: elementFromPoint ignores it, CDP's hit test does not.
+    # An opaque cover that takes pointer events: the DOM hit test refuses it, with enhanced security off too.
+    '/secret-opaque-cover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
+                             f'<div style="{COVER.replace(";pointer-events:none", "")}"></div>'),
     '/secret-covered': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
                         f'<div style="{COVER}"></div>'),
     '/secret-covered-important': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}'
@@ -425,8 +428,21 @@ class Harness:
         raise AssertionError('processor frame target missing')
 
 
+def grant_screenshots(extension):
+    """The access that the options page asks for when the user turns enhanced security on.
+
+    A headless browser cannot click its permission prompt, so the test build lists
+    <all_urls> as granted at install; the shipped manifest keeps it optional.
+    """
+    path = Path(extension) / 'manifest.json'
+    manifest = json.loads(path.read_text(encoding='utf-8'))
+    assert manifest['optional_host_permissions'] == ['<all_urls>'] and manifest['host_permissions'] == ['https://*/*']
+    manifest['host_permissions'] = ['<all_urls>']
+    path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+
+
 @pytest.fixture
-def harness(private_dir, certificates, monkeypatch):
+def harness(private_dir, certificates, monkeypatch, request):
     if sys.platform != 'win32':
         certificates[1].chmod(0o600)  # The Linux page refuses a key other users could read.
     binary = extension_browser()
@@ -445,6 +461,8 @@ def harness(private_dir, certificates, monkeypatch):
         unlock_port = probe.getsockname()[1]
     unlock_origin = f'https://localhost:{unlock_port}'
     extension = extension_host.build(Path(private_dir) / 'extension', host_name=host_name, unlock_origin=unlock_origin)
+    if request.node.get_closest_marker('shipped_permissions') is None:
+        grant_screenshots(extension)
     launcher = Path(private_dir) / ('host.cmd' if sys.platform == 'win32' else 'host.sh')
     launcher.write_text(extension_host._launcher_text(kind, sys.executable, str(pipe)), encoding='utf-8', newline='')
     native_hosts = None
@@ -505,6 +523,20 @@ def harness(private_dir, certificates, monkeypatch):
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
             except OSError:
                 pass
+
+
+SETTINGS = "chrome.storage.local.get('settings').then(found => found.settings ?? null)"
+
+
+def set_enhanced(harness, on):
+    harness.worker_call(f"chrome.storage.local.set({{settings: {{enhanced_security: {json.dumps(on)}}}}})")
+
+
+@pytest.fixture
+def enhanced(harness):
+    """Enhanced security on, as the options page leaves it after the browser granted the screenshots."""
+    set_enhanced(harness, True)
+    return harness
 
 
 def test_the_service_worker_binds_the_first_broker_key_from_the_https_identity_page(harness):
@@ -865,6 +897,7 @@ def open_page(harness, page):
     return url
 
 
+@pytest.mark.usefixtures('enhanced')
 @pytest.mark.parametrize('page', COVERED_SECRETS)
 def test_secret_capture_refuses_a_cover(harness, page):
     lab = harness.lab
@@ -876,6 +909,7 @@ def test_secret_capture_refuses_a_cover(harness, page):
     assert lab.evaluate("[...document.getElementById('secret').attributes].map(a => a.name).sort().join() === 'id,tabindex'")
 
 
+@pytest.mark.usefixtures('enhanced')
 @pytest.mark.parametrize('page', ['/secret-modal', '/secret-cookie-popover', '/secret-inert-background',
                                   '/secret-copy-button'])
 def test_a_secret_on_an_ordinary_page_reads(harness, page):
@@ -888,6 +922,7 @@ def test_a_secret_on_an_ordinary_page_reads(harness, page):
     assert lab.evaluate(CHALLENGE_GONE)
 
 
+@pytest.mark.usefixtures('enhanced')
 def test_a_cover_added_after_the_pin_refuses_the_read(harness):
     lab = harness.lab
     for cover in (f'<div style="{COVER}"></div>', f'<div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'):
@@ -897,6 +932,111 @@ def test_a_cover_added_after_the_pin_refuses_the_read(harness):
         assert pin['ok'], pin
         lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', {json.dumps(cover)})")
         assert read_value(harness, pin) is None
+
+
+def test_with_enhanced_security_off_no_screenshot_is_taken_and_the_dom_hit_test_still_runs(harness):
+    """The default. Fills and reads work as in fill extension 0.4.0: the DOM hit test refuses an
+    ordinary cover, and a click-through cover passes it, as it passes the CDP route's read pin."""
+    lab, broker = harness.lab, harness.broker
+    assert harness.worker_call(SETTINGS) is None
+    url = lab.navigate('/secret-opaque-cover')
+    harness.focus('secret')
+    assert read_pin(harness, url) == failure()
+    url = lab.navigate('/secret-covered')
+    harness.focus('secret')
+    # With enhanced security on, this click-through cover refuses (test_secret_capture_refuses_a_cover).
+    pin = read_pin(harness, url)
+    assert pin['ok'], pin
+    assert read_value(harness, pin) == sha(SECRET)
+    target = card_pin(harness, lab.navigate('/card-covered'))
+    assert target['ok'], target
+    handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
+    assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
+                                field='cc-number'))['ok']
+    assert lab.digest('number') == sha(CARD['number'])
+
+
+@pytest.mark.shipped_permissions
+def test_enhanced_security_without_the_screenshot_access_refuses_every_checked_pin(harness):
+    """On, but the browser holds no <all_urls> (not granted, or removed later): nothing is checked, so nothing fills."""
+    lab = harness.lab
+    set_enhanced(harness, True)
+    url = lab.navigate('/secret')
+    harness.focus('secret')
+    assert read_pin(harness, url) == failure()
+    assert card_pin(harness, lab.navigate('/card-label')) == card_failure()
+    # Logins keep their own checks only, as before.
+    url = lab.navigate('/login')
+    listing = harness.frames(url)
+    harness.focus('password')
+    assert harness.broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                                        frame_id=listing['main_frame_id'], top_url=url, selector='#password',
+                                        mode='password', route='extension'))['ok']
+    set_enhanced(harness, False)
+    url = lab.navigate('/secret')
+    harness.focus('secret')
+    assert read_pin(harness, url)['ok']
+
+
+def extension_page(harness, path):
+    """A session in the extension page at `path`, opened by the browser or by the test."""
+    observer = harness.lab.observer
+    url = route.EXTENSION_ORIGIN.rstrip('/') + '/' + path
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        found = [t for t in observer.call('Target.getTargets')['targetInfos'] if t['type'] == 'page' and t['url'] == url]
+        if found:
+            session = observer.call('Target.attachToTarget', dict(targetId=found[0]['targetId'], flatten=True))['sessionId']
+            # The new tab's first document is about:blank: wait for the extension page itself.
+            if observer.evaluate(f"location.href === {json.dumps(url)} && document.readyState === 'complete'", session):
+                return session
+        time.sleep(.05)
+    raise AssertionError(path + ' did not open')
+
+
+def click(harness, session, selector):
+    """A trusted mouse click at the centre of an element, as a user's click."""
+    observer = harness.lab.observer
+    observer.call('Page.bringToFront', session=session)
+    x, y = observer.evaluate(f"(r => [r.x + r.width / 2, r.y + r.height / 2])"
+                             f"(document.querySelector({json.dumps(selector)}).getBoundingClientRect())", session)
+    for kind in ('mousePressed', 'mouseReleased'):
+        observer.call('Input.dispatchMouseEvent', dict(type=kind, x=x, y=y, button='left', clickCount=1), session=session)
+
+
+def test_the_cog_opens_the_settings_and_the_switch_turns_enhanced_security_on_and_off(harness):
+    lab, observer = harness.lab, harness.lab.observer
+    observer.call('Target.createTarget', dict(url=route.EXTENSION_ORIGIN.rstrip('/') + '/popup.html'))
+    click(harness, extension_page(harness, 'popup.html'), '#settings')
+    options = extension_page(harness, 'options.html')
+    state = "(() => { const t = document.getElementById('enhanced'), s = document.getElementById('enhanced-status');" \
+            " return {disabled: t.disabled, checked: t.checked, status: s.hidden ? '' : s.textContent}; })()"
+    deadline = time.monotonic() + 5
+    while observer.evaluate(state, options)['disabled']:
+        assert time.monotonic() < deadline
+        time.sleep(.05)
+    # Off by default. The test build already holds the access, so the page says that it stays.
+    off = observer.evaluate(state, options)
+    assert off['checked'] is False and off['status'].startswith('Off: akdbx takes no screenshots'), off
+    assert 'Enhanced security' in observer.evaluate("document.querySelector('label[for=enhanced]').textContent", options)
+    click(harness, options, '#enhanced')
+    deadline = time.monotonic() + 5
+    while harness.worker_call(SETTINGS) != dict(enhanced_security=True):
+        assert time.monotonic() < deadline, harness.worker_call(SETTINGS)
+        time.sleep(.05)
+    assert observer.evaluate(state, options) == dict(disabled=False, checked=True, status='')
+    # The service worker reads the setting: a click-through cover now refuses.
+    observer.call('Page.bringToFront', session=lab.session)
+    url = lab.navigate('/secret-covered')
+    harness.focus('secret')
+    assert read_pin(harness, url) == failure()
+    click(harness, options, '#enhanced')
+    deadline = time.monotonic() + 5
+    while harness.worker_call(SETTINGS) != dict(enhanced_security=False):
+        assert time.monotonic() < deadline
+        time.sleep(.05)
+    found = observer.evaluate(state, options)
+    assert found['checked'] is False and found['status'].startswith('Off: akdbx takes no screenshots'), found
 
 
 ORACLES = """(async () => {
@@ -959,6 +1099,7 @@ def card_pin(harness, url):
                                         field='cc-number', route='extension'))
 
 
+@pytest.mark.usefixtures('enhanced')
 @pytest.mark.parametrize('page', ['/card-label', '/card-cookie-popover', '/card-inert-background', '/card-clear-layer'])
 def test_a_card_field_on_an_ordinary_page_fills(harness, page):
     lab, broker = harness.lab, harness.broker
@@ -972,6 +1113,7 @@ def test_a_card_field_on_an_ordinary_page_fills(harness, page):
     assert lab.evaluate("getComputedStyle(document.getElementById('number')).boxShadow === 'none'")
 
 
+@pytest.mark.usefixtures('enhanced')
 def test_card_pins_refuse_a_click_through_cover_and_keep_a_floating_label(harness):
     lab, broker = harness.lab, harness.broker
     assert card_pin(harness, lab.navigate('/card-covered')) == card_failure()
@@ -1132,6 +1274,7 @@ def framed_card_pin(harness, page):
                                      route='extension'))
 
 
+@pytest.mark.usefixtures('enhanced')
 def test_a_card_in_a_same_origin_child_frame_needs_every_parent_clear(harness):
     lab, broker = harness.lab, harness.broker
     url, target = framed_card_pin(harness, '/card-frame')
@@ -1157,10 +1300,12 @@ def processor_pin(harness, page):
                                          field='cc-number', route='extension', processor='stripe', processor_protocol=1))
 
 
+@pytest.mark.usefixtures('enhanced')
 def test_a_processor_field_refuses_an_inert_cover_in_the_merchant_page(harness):
     assert processor_pin(harness, '/checkout-inert')[1] == card_failure()
 
 
+@pytest.mark.usefixtures('enhanced')
 def test_an_ancestor_outline_over_a_field_or_a_processor_frame_refuses(harness):
     """The occlusion test does not count an ancestor's own paint; the pixel challenge sees it."""
     lab = harness.lab
@@ -1169,6 +1314,7 @@ def test_an_ancestor_outline_over_a_field_or_a_processor_frame_refuses(harness):
     assert processor_pin(harness, '/checkout-outline')[1] == card_failure()
 
 
+@pytest.mark.usefixtures('enhanced')
 @pytest.mark.parametrize('page', ['/secret-hidden-pseudo', '/secret-list-item', '/secret-list-item-no-marker',
                                   '/secret-hidden-scroll-markers'])
 def test_generated_content_that_draws_nothing_does_not_refuse(harness, page):
@@ -1180,6 +1326,7 @@ def test_generated_content_that_draws_nothing_does_not_refuse(harness, page):
     assert read_value(harness, pin) == sha(SECRET)
 
 
+@pytest.mark.usefixtures('enhanced')
 def test_a_long_token_wrapped_over_many_lines_reads(harness):
     lab = harness.lab
     url = lab.navigate('/secret-wrapped')
@@ -1189,6 +1336,7 @@ def test_a_long_token_wrapped_over_many_lines_reads(harness):
     assert read_value(harness, pin) == sha('Synth' + 'abcdefghij' * 40)
 
 
+@pytest.mark.usefixtures('enhanced')
 def test_a_processor_field_fills_when_a_merchant_element_overlaps_another_part_of_the_frame(harness):
     """The browser reports the whole frame as possibly covered; the pixel challenge shows the field itself."""
     lab, broker = harness.lab, harness.broker

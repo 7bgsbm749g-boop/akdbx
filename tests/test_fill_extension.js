@@ -336,8 +336,10 @@ test("released pins do not evict a live pin's spec record", async () => {
 });
 
 // A card pin and its fill with scripted cover checks: `clear` is the occlusion test's answer.
-async function coveredFill({clear, shown = null, active = true, answer = null}) {
-  const {exports, chrome, screen} = loadBackground();
+// Enhanced security is on unless `enhanced` is false (the shipped default).
+const ENHANCED = {settings: {enhanced_security: true}};
+async function coveredFill({clear, shown = null, active = true, answer = null, enhanced = true}) {
+  const {exports, chrome, screen} = loadBackground({local: enhanced ? copy(ENHANCED) : {}});
   const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
   exports.setSealKey(key);
   const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
@@ -376,7 +378,7 @@ test("a clear occlusion test still takes the pixel challenge, and the fill runs 
   assert.equal(screen.captures, 2);  // One challenge at the pin, one at the fill.
   assert.equal(screen.css.length, 2);
   // Both proofs held: content.js runs its own fresh occlusion test in the fill, not only the pixels.
-  assert.equal(fills[0][1][4], false);
+  assert.equal(fills[0][1][4], "both");
 });
 
 test("a clear occlusion test with a covered screenshot refuses", async () => {
@@ -389,7 +391,7 @@ test("an overlapped field fills only when the screenshot shows the challenge col
   const {pinned, result, screen, fills} = await coveredFill({clear: false});
   assert.equal(pinned.ok, true);
   assert.equal(result.state, "filled");
-  assert.equal(fills[0][1][4], true);
+  assert.equal(fills[0][1][4], "pixels");
   // One user-origin rule for the pinned element only, at the pin and at the fill, each removed again.
   assert.equal(screen.css.length, 2);
   for (const [i, rule] of screen.css.entries()) {
@@ -418,7 +420,7 @@ test("a field that moved while the screenshot was taken refuses", async () => {
 
 test("a page that stops answering during a challenge does not hold the queue for the next one", async () => {
   let hang = true;
-  const {exports, chrome, screen} = loadBackground();
+  const {exports, chrome, screen} = loadBackground({local: copy(ENHANCED)});
   const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
   chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active: true, windowId: 1});
   chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
@@ -453,6 +455,104 @@ test("an overlapped field in a tab that is not the active one refuses with no sc
   assert.equal(pinned.ok, false);
   assert.equal(screen.captures, 0);
   assert.equal(screen.css.length, 0);
+});
+
+test("with enhanced security off (the default) a fill takes no screenshot and content.js runs no cover check", async () => {
+  // A covered screenshot would refuse; with the setting off nothing looks at it.
+  const {pinned, result, screen, fills} = await coveredFill({clear: false, shown: [255, 255, 255], enhanced: false});
+  assert.equal(pinned.ok, true);
+  assert.equal(result.state, "filled");
+  assert.equal(screen.captures, 0);
+  assert.equal(screen.css.length, 0);
+  assert.equal(fills[0][1][4], "off");
+});
+
+test("a setting other than exactly true leaves enhanced security off", async () => {
+  for (const settings of [{enhanced_security: "true"}, {enhanced_security: 1}, [], null]) {
+    const {exports, chrome, screen} = loadBackground({local: {settings}});
+    const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
+    chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active: true, windowId: 1});
+    chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
+    chrome.scripting.executeScript = async details => [{result: details.files ? undefined : "e".repeat(32)}];
+    const spec = {selector: "#number", field: "cc-number", processor: null};
+    const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card", spec});
+    assert.equal(pinned.ok, true, JSON.stringify(settings));
+    assert.equal(screen.captures, 0);
+  }
+});
+
+test("an unreadable setting counts as on: the cover check runs", async () => {
+  const {exports, chrome, screen} = loadBackground();
+  chrome.storage.local.get = async () => { throw new Error("storage"); };
+  const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
+  chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active: true, windowId: 1});
+  chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
+  chrome.scripting.executeScript = async details => {
+    if (details.files) return [{}];
+    const source = String(details.func);
+    return [{result: source.includes(".pin(") ? "f".repeat(32) : coverAnswer(source) ?? true}];
+  };
+  screen.shown = [255, 255, 255];
+  const spec = {selector: "#number", field: "cc-number", processor: null};
+  const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card", spec});
+  assert.equal(pinned.ok, false);
+  assert.equal(screen.captures, 2);
+});
+
+// ----- options page ---------------------------------------------------------
+const options = require(path.join(root, "options.js"));
+
+function optionsApi({grant = true, granted = false, local = {}} = {}) {
+  const calls = [];
+  const api = {
+    storage: {local: {get: async key => (key in local ? {[key]: copy(local[key])} : {}),
+      set: async items => { Object.assign(local, copy(items)); }}},
+    permissions: {
+      request: async request => { calls.push(["request", request]); if (grant) granted = true; return grant; },
+      contains: async request => { calls.push(["contains", request]); return granted; },
+      remove: async () => { calls.push(["remove"]); return true; },
+    },
+  };
+  return {api, calls, local};
+}
+
+test("the manifest asks for the screenshot access only when the user turns enhanced security on", () => {
+  assert.deepEqual(manifest.host_permissions, ["https://*/*"]);
+  assert.deepEqual(manifest.optional_host_permissions, ["<all_urls>"]);
+  assert.deepEqual(manifest.options_ui, {page: "options.html", open_in_tab: true});
+  assert.deepEqual(copy(options.ALL_SITES), {origins: ["<all_urls>"]});
+});
+
+test("turning enhanced security on asks the browser first, and stores it only when granted", async () => {
+  const {api, calls, local} = optionsApi({local: {settings: {other: 1}}});
+  assert.deepEqual(await options.setEnhanced(api, true), {on: true, granted: true, denied: false});
+  assert.deepEqual(calls[0], ["request", {origins: ["<all_urls>"]}]);  // First, in the click's activation.
+  assert.deepEqual(local.settings, {other: 1, enhanced_security: true});
+  const denied = optionsApi({grant: false});
+  assert.deepEqual(await options.setEnhanced(denied.api, true), {on: false, granted: false, denied: true});
+  assert.deepEqual(denied.local, {});
+});
+
+test("turning enhanced security off keeps the browser's access: removing <all_urls> also withholds https", async () => {
+  const {api, calls, local} = optionsApi({granted: true, local: {settings: {enhanced_security: true}}});
+  assert.deepEqual(await options.setEnhanced(api, false), {on: false, granted: true, denied: false});
+  assert.deepEqual(local.settings, {enhanced_security: false});
+  assert.ok(!calls.some(([name]) => name === "remove" || name === "request"));
+});
+
+test("the settings page reads the stored state and warns when the access is gone", async () => {
+  assert.deepEqual(await options.currentState(optionsApi().api), {on: false, granted: false, denied: false});
+  const lost = optionsApi({local: {settings: {enhanced_security: true}}});
+  const state = await options.currentState(lost.api);
+  assert.deepEqual(state, {on: true, granted: false, denied: false});
+  assert.equal(options.statusText(state)[0], "warning");
+  assert.deepEqual(options.statusText({on: true, granted: true, denied: false}), ["", ""]);
+  assert.deepEqual(options.statusText({on: false, granted: false, denied: false}), ["", ""]);
+  assert.equal(options.statusText({on: false, granted: false, denied: true})[0], "warning");
+  assert.equal(options.statusText({on: false, granted: true, denied: false})[0], "detail");
+  for (const settings of [null, [], "on"]) {
+    assert.deepEqual(await options.readSettings(optionsApi({local: {settings}}).api.storage.local), {});
+  }
 });
 
 test("popup footer shows the extension's own version", () => {
