@@ -351,7 +351,7 @@ def test_setup_page_shows_the_webhook_url_for_its_source_only(served):
     assert b'Get Contents of URL' in body
     # Tapping the box copies the URL: the portal script copies data-copy and covers the box with a copied message.
     assert ('data-copy="https://node.tailnet.ts.net/sms/in/' + setup.token + '"').encode() in body
-    assert b'<span class="copy-label" aria-live="polite">Webhook URL (keep it private). Tap to copy.</span>' in body
+    assert b'<span class="copy-label" aria-live="polite">Webhook URL. Tap to copy.</span>' in body
     assert b'<span class="copy-done" aria-hidden="true">' in body and b'pathLength="1"' in body
     assert b'Link copied to clipboard' in body and b'navigator.clipboard.writeText' in body
     status, _, body = https(served.port, served.cert, 'GET', '/sms/setup?token=' + 'B' * 43, host=served.host)

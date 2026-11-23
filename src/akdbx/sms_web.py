@@ -266,9 +266,9 @@ def _instructions(kind: str, url: str, major: int | None) -> str:
     else:
         lists, versions = _steps(TWILIO_STEPS if kind == 'twilio' else WEBHOOK_STEPS), ''
     return (f'<div class="wizard" data-wizard><p class="wizard-count" aria-live="polite" hidden></p>{lists}'
-            + _copy_box('Webhook URL (keep it private). Tap to copy.', url)
-            + f'<p class="setup-note" data-wizard-url>Anyone with this URL can send texts to AKDBX. This page closes '
-              f'{SETUP_TTL // 3600} hour after it was made. Ask your agent to replace the source if the URL leaks.</p>'
+            + _copy_box('Webhook URL. Tap to copy.', url)
+            + '<p class="setup-note" data-wizard-url>Keep this URL private: anyone who has it can send texts to AKDBX. '
+              f'If it leaks, ask your agent for a new one. This page closes {SETUP_TTL // 3600} hour after it was made.</p>'
             + versions
             + '<div class="wizard-nav" hidden>'
               '<button type="button" class="wizard-back" data-wizard-back><span>Back</span></button>'
@@ -287,7 +287,8 @@ def _setup(handler, state) -> None:
     url = webhook_url(origin, setup.token)
     major = ios_major(handler.headers.get('User-Agent', '')) if setup.kind == 'shortcut' else None
     # The introduction shows on step 1 only; the URL note shows with the URL box.
-    body = (f'<p data-wizard-first>Set up the SMS source <strong>{html.escape(setup.source)}</strong>. Texts it '
-            'forwards reach only this AKDBX broker. AKDBX keeps the verification code for ten minutes and never shows '
-            'it to the agent.</p>' + _instructions(setup.kind, url, major))
+    sender = {'shortcut': 'Your iPhone', 'twilio': 'Your Twilio number'}.get(setup.kind, 'Your SMS service')
+    body = (f'<p data-wizard-first>{sender} will send its verification texts to AKDBX, so your agent can fill in the '
+            'codes. The agent never sees the codes, and AKDBX deletes each one after ten minutes.</p>'
+            + _instructions(setup.kind, url, major))
     handler._send(HTTPStatus.OK, _page('Set up SMS verification', body))

@@ -130,7 +130,6 @@ button:disabled { cursor: default; opacity: .4; }
 /* The step heading already names the list; the label stays for screen readers. */
 .wizard.is-wizard .variant-field label { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .variant-field .field-hint { margin: 6px 0 0; }
-main:has(.wizard.is-wizard) { justify-content: flex-start; }
 .wizard-nav { display: flex; gap: 10px; margin-top: 22px; }
 .wizard-nav button { flex: 1; min-height: 52px; }
 .wizard-nav button.wizard-back { flex-direction: row-reverse; justify-content: flex-end; }
