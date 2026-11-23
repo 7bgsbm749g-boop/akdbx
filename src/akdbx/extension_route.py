@@ -45,6 +45,17 @@ Security model:
   the agent pin route fills it.
 * Values exist only in the broker, the relay, the extension's memory and the
   field that receives them. There is no clipboard, no storage and no logging.
+* Secret capture (``pin-password-target --mode read`` and ``capture-secret``)
+  uses the CDP route's own read checks in the extension. The broker seals the
+  read request with the pin's facts; the extension seals the value it read to
+  the broker under a second key that only the broker and the extension agree
+  (``CAPTURE_INFO``), so the host relays ciphertext in both directions.
+* A child frame's ``<iframe>`` owner is found with a nonce handshake between
+  the parent's and the child's isolated worlds, then held by the CDP route's
+  owner guard and checked again before a value moves. Hit tests run with
+  ``pointer-events`` forced on in every document of the chain (a user-origin
+  style sheet and, in shadow roots, an adopted one), so a click-through cover
+  refuses as it does under CDP's ``DOM.getNodeForLocation``.
 * Pairing and unlock links open only on the origin that the extension trusts.
   The broker's ``attached`` and ``state`` messages carry its signed origin
   statement (``broker_identity``); the extension learns the signing key when it
@@ -78,6 +89,10 @@ EXTENSION_ORIGIN = 'chrome-extension://' + EXTENSION_ID + '/'
 HOST_NAME = 'org.akdbx.extension'
 PROTOCOL = 1
 DELIVERY = 'extension-dom-v1'
+CAPTURE_PROTOCOL = 1
+CAPTURE_DELIVERY = 'extension-dom-read-v1'
+# The first fill extension version that reads secrets, holds frame owners and unmasks hit tests.
+CAPTURE_VERSION = (0, 4, 0)
 ROUTES = ('cdp', 'extension')
 BROWSERS = ('helium', 'chrome', 'edge')
 TTL = 30
@@ -95,6 +110,7 @@ MATCH_BUDGET = 36 * 1024  # Encoded entries before sealing; leaves room for base
 MAX_POPUP_REQUESTS = 4
 PUBLIC_KEY = re.compile(r'[A-Za-z0-9_-]{87}')  # base64url, 65-byte uncompressed P-256 point
 HKDF_INFO = b'akdbx-extension-v1'
+CAPTURE_INFO = b'akdbx-extension-capture-v1'  # Extension -> broker: captured secrets only.
 CODE_PREFIX = b'akdbx-pairing-code\0'
 CHANNEL_ID = re.compile(r'[0-9a-f]{8}')
 PAGE_ID = re.compile(r'([0-9a-f]{8})\.([0-9]{1,10})')
@@ -293,6 +309,9 @@ class Channel:
         shared = own.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), public_key))
         self._seal_key = HKDF(hashes.SHA256(), 32, salt=bytes(32),
                               info=HKDF_INFO + public_key + self.broker_public_key).derive(shared)
+        # A separate key for the other direction: a value the broker sealed can never pass as a capture.
+        self._capture_key = HKDF(hashes.SHA256(), 32, salt=bytes(32),
+                                 info=CAPTURE_INFO + public_key + self.broker_public_key).derive(shared)
         self.id = secrets.token_hex(4)
         self.send_lock = threading.Lock()
         self.pending = {}
@@ -308,6 +327,27 @@ class Channel:
         data = json.dumps(values, separators=(',', ':')).encode('utf-8')
         sealed = AESGCM(self._seal_key).encrypt(nonce, data, context.encode('utf-8'))
         return dict(iv=b64url(nonce), data=b64url(sealed))
+
+    def open(self, sealed, context):
+        """Decrypt one capture the paired extension sealed to the broker; None if it does not verify."""
+        from cryptography.exceptions import InvalidTag
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        if not isinstance(sealed, dict) or set(sealed) != {'iv', 'data'} or not all(
+                isinstance(sealed[k], str) and 0 < len(sealed[k]) <= 16384 for k in ('iv', 'data')):
+            return None
+        try:
+            nonce = base64.urlsafe_b64decode(sealed['iv'] + '=' * (-len(sealed['iv']) % 4))
+            data = base64.urlsafe_b64decode(sealed['data'] + '=' * (-len(sealed['data']) % 4))
+            if len(nonce) != 12:
+                return None
+            plain = AESGCM(self._capture_key).decrypt(nonce, data, context.encode('utf-8'))
+            payload = json.loads(plain.decode('utf-8'))
+        except (InvalidTag, ValueError, UnicodeError, TypeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def supports_capture(self):
+        return self.version is not None and tuple(int(p) for p in self.version.split('.')) >= CAPTURE_VERSION
 
     def send(self, message):
         with self.send_lock:
@@ -435,6 +475,7 @@ class ExtensionHub:
             channels = list(self.channels.values())
             approved = set(self.approved)
         state = dict(extension_protocol=PROTOCOL, extension_delivery=DELIVERY, extension_id=EXTENSION_ID,
+                     extension_capture_protocol=CAPTURE_PROTOCOL, extension_capture_delivery=CAPTURE_DELIVERY,
                      fill_routes=list(ROUTES), default_fill_route=self.default_route,
                      extension_connected=bool(channels),
                      extension_paired=any(c.digest in approved for c in channels),
@@ -891,12 +932,19 @@ class ExtensionHub:
                     truncated=len(records) > MAX_FRAMES)
 
     # ----- agent route: pins and delivery ---------------------------------
-    def _pin(self, kind, request, spec, frame_url=None):
-        """Ask the browser to retain one element; return the browser facts and pin id."""
+    def _pin(self, kind, request, spec, frame_url=None, *, hardened=True):
+        """Ask the browser to retain one element; return the browser facts and pin id.
+
+        ``hardened``: the pin needs fill extension 0.4.0 or newer, which reads
+        secrets, holds child-frame owners and runs unmasked hit tests. An older
+        extension would pin without those checks, so it is refused.
+        """
         self.prune()
         channels, tab_id = self._channels_for(request)
         if tab_id is None or len(channels) != 1 or not isinstance(request.get('frame_id'), str) \
                 or not DOCUMENT_ID.fullmatch(request['frame_id']) or not _text(request.get('top_url')):
+            raise ExtensionError()
+        if hardened and not channels[0].supports_capture():
             raise ExtensionError()
         with self._lock:
             if self._closed or len(self.pins) >= MAX_PINS:
@@ -960,7 +1008,11 @@ class ExtensionHub:
         spec = dict(selector=request['selector'], username_selector=request.get('username_selector'), mode=mode,
                     password_purpose=request.get('password_purpose'),
                     allow_autocomplete_off=request.get('allow_autocomplete_off', False), frame_origin=frame_origin)
-        channel, tab_id, pin_id, chain, created = self._pin('password', request, spec)
+        # A child-frame pin needs the extension that holds the frame owners.
+        return self._frame_pin('password', mode, request, spec, frame_origin, hardened=frame_origin is not None)
+
+    def _frame_pin(self, kind, mode, request, spec, frame_origin, *, hardened):
+        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, hardened=hardened)
         try:
             if frame_origin is None:
                 # The main frame of the exact top URL, as on the CDP route.
@@ -968,13 +1020,43 @@ class ExtensionHub:
                     raise ExtensionError()
             elif len(chain) < 2 or login_origin(chain) != frame_origin:
                 raise ExtensionError()
+            if self.clock() >= created + TTL:
+                raise ExtensionError()
         except ExtensionError:
             channel.notify('release', tab_id=tab_id, document_id=request['frame_id'], pin_id=pin_id, chain=chain)
             raise
-        pin = ExtensionPin(self, channel, tab_id, request['frame_id'], pin_id, 'password', mode, request['top_url'],
+        pin = ExtensionPin(self, channel, tab_id, request['frame_id'], pin_id, kind, mode, request['top_url'],
                            chain[-1]['url'], chain, created, created + TTL, spec=spec)
         token = self._publish(pin)
         return dict(ok=True, target=token, expires_in=TTL, target_delivery=DELIVERY)
+
+    def pin_read(self, request):
+        """A read pin for secret capture: the CDP read pin's request shape plus ``route``."""
+        from . import browser_password, password_frames
+        required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode',
+                    'capture_protocol', 'route'}
+        optional = set(request) & {'frame_protocol', 'frame_origin'}
+        if (set(request) != required | optional or request.get('route') != 'extension' or request.get('mode') != 'read'
+                or type(request.get('password_protocol')) is not int or request['password_protocol'] != 1
+                or type(request.get('capture_protocol')) is not int or request['capture_protocol'] != CAPTURE_PROTOCOL
+                or ('frame_protocol' in request) != ('frame_origin' in request)
+                or ('frame_protocol' in request and (type(request['frame_protocol']) is not int
+                                                     or request['frame_protocol'] != password_frames.PROTOCOL))):
+            raise ExtensionError()
+        selector = request['selector']
+        # No attribute or functional selectors: pin success must not test the secret.
+        if (not _text(selector) or len(selector) > browser_password.MAX_READ_SELECTOR
+                or not browser_password.READ_SELECTOR.fullmatch(selector)):
+            raise ExtensionError()
+        _origin(request['top_url'])
+        frame_origin = None
+        if 'frame_origin' in request:
+            try:
+                frame_origin = password_frames.canonical_origin(request['frame_origin'])
+            except TargetError:
+                raise ExtensionError() from None
+        spec = dict(selector=selector, frame_origin=frame_origin)
+        return self._frame_pin('read', 'read', request, spec, frame_origin, hardened=True)
 
     def pin_element(self, kind, request):
         """Card or identity field pin; same request shape as the CDP route plus ``route``."""
@@ -999,7 +1081,7 @@ class ExtensionHub:
             raise ExtensionError()
         _secure(request['top_url'])
         spec = dict(selector=request['selector'], field=request['field'], processor=processor)
-        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, request.get('frame_url'))
+        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, request.get('frame_url'), hardened=True)
         try:
             if kind == 'card':
                 card_route(chain, processor)
@@ -1020,14 +1102,18 @@ class ExtensionHub:
         return dict(ok=True, target=token, expires_in=TTL, field=request['field'], **{kind + '_delivery': DELIVERY})
 
     def take(self, token, kind):
-        """Atomically take one extension pin of this kind; None if the token is not ours."""
+        """Atomically take one extension pin of this kind; None if the token is not ours.
+
+        A token of ours for another kind (a read pin given to a fill) is used up
+        and refused, as a CDP pin is: a wrong command never leaves it reusable.
+        """
         if not isinstance(token, str):
             return None
         with self._lock:
-            pin = self.pins.get(token)
-            if pin is None or pin.kind != kind:
-                return None
-            self.pins.pop(token)
+            pin = self.pins.pop(token, None)
+        if pin is not None and pin.kind != kind:
+            pin.close()
+            raise TargetError()
         return pin
 
     def prune(self):
@@ -1055,6 +1141,44 @@ class ExtensionHub:
             return 'uncertain'
         state = result.get('state')
         return state if state in {'filled', 'refused'} else 'uncertain'
+
+    def read(self, pin, site_origins, ready, start_deadline):
+        """Return the read pin's checked value; the caller saves it and never returns it over RPC.
+
+        The broker seals the request with the pin's facts, so a host cannot point
+        it at another element. The extension answers with the value sealed under
+        the capture key and bound to the same pin and facts.
+        """
+        if pin.kind != 'read' or pin.mode != 'read':
+            raise TargetError()
+        try:
+            if https_origin(pin.frame_url) not in site_origins:
+                raise TargetError()
+        except TargetError:
+            raise
+        except Exception:
+            raise TargetError() from None
+        remaining = min(start_deadline - self.clock(), TTL)
+        if pin.closed or pin.expires <= self.clock() or remaining <= 0 or not ready():
+            raise TargetError()
+        max_age_ms = max(0, min(TTL * 1000, (start_deadline - pin.created) * 1000))
+        facts = dict(tab_id=pin.tab_id, document_id=pin.document_id, chain=pin.chain, kind=pin.kind,
+                     pin_id=pin.pin_id, spec=pin.spec, max_age_ms=max_age_ms)
+        try:
+            sealed = pin.channel.seal(dict(values={}, facts=facts), 'read:' + pin.pin_id)
+            result = pin.channel.call('read', remaining + 0.5, tab_id=pin.tab_id, document_id=pin.document_id,
+                                      pin_id=pin.pin_id, top_url=pin.top_url, chain=pin.chain, kind=pin.kind,
+                                      sealed=sealed, max_age_ms=max_age_ms)
+        except ExtensionError:
+            raise TargetError() from None
+        if set(result) != {'state', 'sealed'} or result.get('state') != 'read':
+            raise TargetError()
+        payload = pin.channel.open(result['sealed'], 'capture:' + pin.pin_id)
+        expected = dict(tab_id=pin.tab_id, document_id=pin.document_id, chain=pin.chain, pin_id=pin.pin_id)
+        if (payload is None or set(payload) != {'value', 'facts'} or payload['facts'] != expected
+                or not isinstance(payload['value'], str)):
+            raise TargetError()
+        return payload['value']
 
     def deliver_password(self, pin, mode, username, password, site_origins, ready, start_deadline):
         """The field document's origin must exactly equal one of the credential's origins."""
@@ -1123,7 +1247,11 @@ class RoutedTargets:
         return self.cdp.pin({k: v for k, v in request.items() if k != 'route'})
 
     def consume(self, token):
-        pin = self.hub.take(token, self.kind)
+        from .browser_card import CardTargetError
+        try:
+            pin = self.hub.take(token, self.kind)
+        except TargetError:
+            raise CardTargetError() from None
         return pin if pin is not None else self.cdp.consume(token)
 
     def fill(self, pin, value, field, ready, deadline=None):

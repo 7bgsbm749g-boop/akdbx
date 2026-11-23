@@ -45,7 +45,7 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch} 
     action: {openPopup: async () => {}},
     tabs: {get: async () => null, query: async () => []},
     webNavigation: {getAllFrames: async () => []},
-    scripting: {executeScript: async () => []},
+    scripting: {executeScript: async () => [], insertCSS: async () => {}, removeCSS: async () => {}},
   };
   const sandbox = {chrome, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, TextEncoder,
     TextDecoder, Uint8Array, AbortController, module: {exports: {}}, AKDBX_TRUSTED_ORIGIN: builtOrigin ?? null,
@@ -168,6 +168,51 @@ test("agent fill refuses a pin whose field spec differs from the sealed one", as
   assert.ok(scripts.slice(count).every(s => !String(s.func).includes("__akdbxContent.fill(")));
 });
 
+test("a read answers only facts the broker sealed for that pin, sealed to the broker", async () => {
+  const {exports, chrome} = loadBackground();
+  const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
+  exports.setSealKey(key);
+  exports.setCaptureKey(key);
+  const chain = [{document_id: "DOC", url: "https://keys.example/new"}];
+  chrome.tabs.get = async () => ({id: 7, url: chain[0].url});
+  chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
+  const scripts = [];
+  chrome.scripting.executeScript = async details => {
+    scripts.push(details);
+    const source = String(details.func);
+    if (details.files) return [{}];
+    if (source.includes(".pin(")) return [{result: "r".repeat(32)}];
+    if (source.includes(".unmask(")) return [{result: "m".repeat(32)}];
+    if (source.includes(".read(")) return [{result: "sk_synthetic_value"}];
+    return [{result: true}];
+  };
+  const spec = {selector: "#secret", frame_origin: null};
+  const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "read", spec});
+  assert.equal(pinned.ok, true);
+  const b64 = bytes => Buffer.from(bytes).toString("base64url");
+  const sealFor = async (context, facts) => {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const data = await crypto.subtle.encrypt({name: "AES-GCM", iv, additionalData: new TextEncoder().encode(context)}, key,
+      new TextEncoder().encode(JSON.stringify({values: {}, facts})));
+    return {iv: b64(iv), data: b64(data)};
+  };
+  const facts = {tab_id: 7, document_id: "DOC", chain, kind: "read", pin_id: pinned.pin_id, max_age_ms: 1000, spec};
+  // A fill-sealed message is not a read request.
+  const asFill = await exports.read({pin_id: pinned.pin_id, sealed: await sealFor("fill:" + pinned.pin_id, facts)});
+  assert.equal(asFill.state, "refused");
+  assert.ok(scripts.every(s => !String(s.func).includes("__akdbxContent.read(")));
+  const again = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "read", spec});
+  const good = await exports.read({pin_id: again.pin_id,
+    sealed: await sealFor("read:" + again.pin_id, {...facts, pin_id: again.pin_id})});
+  assert.equal(good.state, "read");
+  assert.ok(!JSON.stringify(good).includes("sk_synthetic_value"));
+  const iv = Buffer.from(good.sealed.iv, "base64url"), data = Buffer.from(good.sealed.data, "base64url");
+  const plain = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name: "AES-GCM", iv,
+    additionalData: new TextEncoder().encode("capture:" + again.pin_id)}, key, data)));
+  assert.deepEqual(plain, {value: "sk_synthetic_value",
+    facts: {tab_id: 7, document_id: "DOC", chain, pin_id: again.pin_id}});
+});
+
 test("popup compares origins as the browser serializes them", () => {
   assert.equal(privateLink("https://localhost/extension/pair?token=x", "/extension/pair", "https://localhost:443"),
     "https://localhost/extension/pair?token=x");
@@ -185,6 +230,7 @@ test("released pins do not evict a live pin's spec record", async () => {
     if (details.files) return [{}];
     const source = String(details.func);
     if (source.includes(".pin(")) return [{result: String(next++).padStart(32, "0")}];
+    if (source.includes(".unmask(")) return [{result: "m".repeat(32)}];
     return [{result: source.includes(".fill(") ? "filled" : true}];
   };
   const spec = {selector: "#number", field: "cc-number", processor: null};

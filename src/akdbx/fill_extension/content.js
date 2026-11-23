@@ -3,13 +3,17 @@
  * Page scripts cannot read this world's variables, retained elements or the
  * values that pass through it. `akdbx extension build` fills the markers below
  * with the CDP route's own DOM checks, so both routes apply the same rules.
- * No value is stored, logged, copied or read back from a field.
+ * No value is stored, logged or copied. A field is read back only by a read
+ * pin (secret capture), and that value goes only to the service worker.
  */
 "use strict";
 (() => {
   if (globalThis.__akdbxContent) return;
   const CAPTURE = __PASSWORD_CAPTURE__;
   const PASSWORD_FILL = __PASSWORD_FILL__;
+  const READ_CAPTURE = __READ_CAPTURE__;
+  const READ = __READ__;
+  const OWNER_GUARD = __OWNER_GUARD__;
   const CARD_PIN = __CARD_PIN_SCRIPT__;
   const GUARD = __CARD_GUARD__;
   const STRIPE_ELEMENTS = __STRIPE_ELEMENTS__;
@@ -21,6 +25,8 @@
     "street-address"];
   const COMPUTOP_IDS = {"cc-name": "creditCardHolder", "cc-number": "_KKnr", "cc-exp": "expiry_date", "cc-csc": "cccvc"};
   const pins = new Map(), guards = new Map(), probes = new Map();
+  const owners = new Map(), listens = new Map(), ownerProbes = new Map(), masks = new Map();
+  const MAX_NODES = 50000, MAX_FRAMES = 256, LISTEN_MS = 5000;
   let lastFocus = null;
 
   const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
@@ -50,6 +56,9 @@
       if (kind === "password") {
         state = CAPTURE(spec.selector, spec.username_selector, spec.mode, frameURL, spec.password_purpose,
           spec.allow_autocomplete_off === true, spec.frame_origin);
+      } else if (kind === "read") {
+        // The CDP route's read pin: a focused, visible, single-line text, never a selection.
+        state = READ_CAPTURE(spec.selector, frameURL, window === window.top ? null : spec.frame_origin);
       } else if (kind === "card" || kind === "identity") {
         state = CARD_PIN(spec.selector, spec.field, frameURL, topURL, spec.processor || false, kind === "identity");
       }
@@ -58,14 +67,15 @@
     }
     if (!state) return null;
     const id = randomId();
-    pins.set(id, {kind, mode: kind === "password" ? spec.mode : spec.field, state, created: performance.now()});
+    pins.set(id, {kind, mode: kind === "password" ? spec.mode : kind === "read" ? "read" : spec.field, state,
+      created: performance.now()});
     return id;
   }
 
   function geometry(id) {
     const item = pins.get(id);
     try {
-      return item && item.kind !== "password" ? item.state.geometry() : null;
+      return item && item.kind !== "password" && item.kind !== "read" ? item.state.geometry() : null;
     } catch {
       return null;
     }
@@ -111,6 +121,204 @@
         // Nothing to clean up.
       }
     }
+  }
+
+  // Secret capture: the checked value of a read pin, once. It goes back only to the
+  // extension's service worker, which seals it to the broker.
+  function read(id, maxAgeMs) {
+    const item = pins.get(id);
+    pins.delete(id);
+    if (!item || item.kind !== "read" || performance.now() - item.created >= PIN_MS) {
+      if (item && item.state.dispose) item.state.dispose();
+      return null;
+    }
+    try {
+      const deadline = item.created + Math.max(0, Math.min(maxAgeMs, PIN_MS));
+      const value = READ.call(item.state, deadline);
+      return typeof value === "string" ? value : null;
+    } catch {
+      return null;
+    } finally {
+      try {
+        item.state.dispose();
+      } catch {
+        // Nothing to clean up.
+      }
+    }
+  }
+
+  // ----- child-frame owners ----------------------------------------------
+  // The browser names a frame's parent document but not its <iframe> element.
+  // The parent's isolated world posts a fresh nonce into each of its child
+  // windows; the child's isolated world reports the nonces that its parent
+  // window sent. Exactly one names the child's window. A page that forwards a
+  // nonce it saw in another frame makes the child hear two, which refuses. The
+  // <iframe> that holds that window then gets the CDP route's owner guard.
+  function ownerListen(parentOrigin) {
+    if (window === window.top || typeof parentOrigin !== "string") return null;
+    const heard = new Set();
+    const listener = event => {
+      const data = event.data;
+      if (event.source === window.parent && event.origin === parentOrigin && data && typeof data === "object" &&
+          Object.keys(data).length === 1 && typeof data.akdbx_owner === "string" && /^[0-9a-f]{32}$/.test(data.akdbx_owner)) {
+        if (heard.size < 8) heard.add(data.akdbx_owner);
+      }
+    };
+    window.addEventListener("message", listener, true);
+    const id = randomId();
+    const stop = () => window.removeEventListener("message", listener, true);
+    remember(listens, MAX_PINS, id, {heard, stop});
+    setTimeout(() => {
+      stop();
+      listens.delete(id);
+    }, LISTEN_MS);
+    return id;
+  }
+
+  function ownerHeard(id) {
+    const item = listens.get(id);
+    return item ? Array.from(item.heard) : null;
+  }
+
+  function ownerDone(id) {
+    const item = listens.get(id);
+    listens.delete(id);
+    if (item) item.stop();
+  }
+
+  function ownerProbe(childOrigin) {
+    // Every child window, whatever element holds it (an iframe in a shadow root,
+    // an object or embed): the real child always gets its own nonce, so a page
+    // that forwards another frame's nonce to it makes it hear two.
+    if (typeof childOrigin !== "string" || window.length > MAX_FRAMES) return null;
+    const sent = new Map();
+    for (let i = 0; i < window.length; ++i) {
+      const view = window[i];
+      if (!view) continue;
+      const nonce = randomId();
+      try {
+        view.postMessage({akdbx_owner: nonce}, childOrigin);
+        sent.set(nonce, view);
+      } catch {
+        // A frame that cannot take the message cannot be the owner.
+      }
+    }
+    const id = randomId();
+    remember(ownerProbes, MAX_PINS, id, sent);
+    return id;
+  }
+
+  function ownerGuard(probeId, nonce) {
+    const sent = ownerProbes.get(probeId);
+    ownerProbes.delete(probeId);
+    const view = sent && sent.get(nonce);
+    if (!view) return null;
+    // Exactly one <iframe> of this document's own tree holds that window; an
+    // owner in a shadow root, an object or an embed refuses, as on the CDP route.
+    const frames = Array.from(document.querySelectorAll("iframe")).slice(0, MAX_FRAMES + 1)
+      .filter(frame => frame.contentWindow === view);
+    if (frames.length !== 1) return null;
+    let guardState;
+    try {
+      guardState = OWNER_GUARD.call(frames[0], true);
+    } catch {
+      guardState = null;
+    }
+    if (!guardState) return null;
+    const id = randomId();
+    while (owners.size >= MAX_PINS) ownerRelease(owners.keys().next().value);
+    owners.set(id, guardState);
+    return id;
+  }
+
+  function ownerCheck(id) {
+    const item = owners.get(id);
+    try {
+      return Boolean(item && item.check());
+    } catch {
+      return false;
+    }
+  }
+
+  function ownerRelease(id) {
+    const item = owners.get(id);
+    owners.delete(id);
+    try {
+      if (item) item.dispose();
+    } catch {
+      // Nothing to clean up.
+    }
+  }
+
+  // ----- unmasked hit tests ------------------------------------------------
+  // CDP's DOM.getNodeForLocation hit-tests elements with pointer-events: none,
+  // so a click-through cover over a field refuses. elementFromPoint skips them.
+  // The service worker adds a user-origin style sheet that turns pointer-events
+  // back on in this document; user !important rules beat every author rule,
+  // inline !important included. That sheet does not reach shadow trees, so
+  // here each open or closed shadow root gets an adopted sheet. Only an inline
+  // !important rule beats that one: a shadow element that still has
+  // pointer-events: none is a deliberate cover, and the check refuses.
+  const UNMASK_RULE = "*,*::before,*::after,*::backdrop{pointer-events:auto!important;transition-behavior:normal!important}";
+
+  function shadowRoots() {
+    const found = [];
+    const pending = [document];
+    let seen = 0;
+    while (pending.length) {
+      const root = pending.pop();
+      for (const el of root.querySelectorAll("*")) {
+        if (++seen > MAX_NODES) return null;
+        const shadow = chrome.dom.openOrClosedShadowRoot(el);
+        if (shadow) {
+          found.push(shadow);
+          pending.push(shadow);
+        }
+      }
+    }
+    return found;
+  }
+
+  function unmask() {
+    const roots = shadowRoots();
+    if (roots === null) return null;
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(UNMASK_RULE);
+    const adopted = [];
+    try {
+      for (const root of roots) {
+        root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
+        adopted.push(root);
+      }
+      // Pointer-events: none that survives both sheets is an inline !important cover.
+      for (const root of roots) {
+        for (const el of root.querySelectorAll("*")) {
+          if (getComputedStyle(el).pointerEvents === "none" && el.getClientRects().length) throw new Error();
+        }
+      }
+    } catch {
+      remaskRoots(adopted, sheet);
+      return null;
+    }
+    const id = randomId();
+    remember(masks, MAX_PINS, id, {roots: adopted, sheet});
+    return id;
+  }
+
+  function remaskRoots(roots, sheet) {
+    for (const root of roots) {
+      try {
+        root.adoptedStyleSheets = root.adoptedStyleSheets.filter(item => item !== sheet);
+      } catch {
+        // The root is gone.
+      }
+    }
+  }
+
+  function remask(id) {
+    const item = masks.get(id);
+    masks.delete(id);
+    if (item) remaskRoots(item.roots, item.sheet);
   }
 
   // Processor frames: retain the merchant's iframe owner and check its chain.
@@ -314,7 +522,8 @@
   }
 
   Object.defineProperty(globalThis, "__akdbxContent", {value: Object.freeze({
-    pin, geometry, release, fill, guard, guardCheck, count, probe, probeFill,
+    pin, geometry, release, fill, read, guard, guardCheck, count, probe, probeFill,
     releaseGuard: id => guards.delete(id),
+    ownerListen, ownerHeard, ownerDone, ownerProbe, ownerGuard, ownerCheck, ownerRelease, unmask, remask,
   })});
 })();

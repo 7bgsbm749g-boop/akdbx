@@ -6,6 +6,8 @@
  * sealed (AES-GCM) to this extension's ECDH key, so the host relays only
  * ciphertext. After decryption they go only to the retained element in the
  * exact document; they are never stored, logged or put on the clipboard.
+ * A secret that a read pin captures goes the other way, sealed to the broker
+ * under a second key (akdbx-extension-capture-v1) and bound to that pin.
  *
  * Pairing and unlock links open only on the origin that trust.js decides:
  * the built origin, then the broker identity read over HTTPS from that origin
@@ -23,6 +25,7 @@ let state = {connected: false};
 let sequence = 0;
 let reconnects = 0;
 let sealKey = null;   // Promise of the AES-GCM key agreed with the broker for the current port.
+let captureKey = null;  // Promise of the AES-GCM key that seals captured secrets to the broker.
 const waiting = new Map();
 const sessions = new Map();
 const processorGuards = new Map();
@@ -98,15 +101,25 @@ async function localCode(publicKey) {
   return letters.slice(0, 4) + "-" + letters.slice(4);
 }
 
-async function agreeKey(brokerPublicKey) {
+async function agreeKey(brokerPublicKey, info = "akdbx-extension-v1", usages = ["decrypt"]) {
   const keys = await pairingKeys();
   const brokerRaw = unbase64url(brokerPublicKey);
   const broker = await crypto.subtle.importKey("raw", brokerRaw, {name: "ECDH", namedCurve: "P-256"}, false, []);
   const shared = await crypto.subtle.deriveBits({name: "ECDH", public: broker}, keys.privateKey, 256);
   const base = await crypto.subtle.importKey("raw", shared, "HKDF", false, ["deriveKey"]);
   return crypto.subtle.deriveKey({name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32),
-    info: concat(encoder.encode("akdbx-extension-v1"), unbase64url(keys.publicKey), brokerRaw)},
-  base, {name: "AES-GCM", length: 256}, false, ["decrypt"]);
+    info: concat(encoder.encode(info), unbase64url(keys.publicKey), brokerRaw)},
+  base, {name: "AES-GCM", length: 256}, false, usages);
+}
+
+async function sealCapture(value, facts, context) {
+  // Only the broker can open this: the host relays ciphertext bound to one read pin.
+  const key = captureKey && await captureKey;
+  if (!key) throw new Error();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({name: "AES-GCM", iv, additionalData: encoder.encode(context)}, key,
+    encoder.encode(JSON.stringify({value, facts})));
+  return {iv: base64url(iv), data: base64url(data)};
 }
 
 async function unseal(sealed, context) {
@@ -140,6 +153,7 @@ async function connect() {
     if (port !== current) return;
     port = null;
     sealKey = null;
+    captureKey = null;
     state = {connected: false};
     for (const resolve of waiting.values()) resolve(null);
     waiting.clear();
@@ -180,7 +194,10 @@ function onHost(current, message) {
     reconnects = 0;
     chrome.alarms.clear("akdbx-reconnect");
     if (message.type === "attached" && typeof message.broker_public_key === "string") {
-      if (port === current) sealKey = agreeKey(message.broker_public_key).catch(() => null);
+      if (port === current) {
+        sealKey = agreeKey(message.broker_public_key).catch(() => null);
+        captureKey = agreeKey(message.broker_public_key, "akdbx-extension-capture-v1", ["encrypt"]).catch(() => null);
+      }
     }
     state = brokerState(message);
     // Bind a first key or follow a signed move now, not only when the popup opens.
@@ -322,6 +339,7 @@ async function handleCall(message) {
   if (message.op === "frames") return frames(message);
   if (message.op === "pin") return pin(message);
   if (message.op === "fill") return fill(message);
+  if (message.op === "read") return read(message);
   if (message.op === "release") return release(message);
   return {ok: false};
 }
@@ -363,6 +381,106 @@ async function processorCheck(tabId, chain, pinId, guardId) {
     (id, p) => globalThis.__akdbxContent.guardCheck(id, p), [guardId, point])) === true;
 }
 
+// ----- unmasked hit tests --------------------------------------------------
+// Like CDP's DOM.getNodeForLocation, a hit test must see elements with
+// pointer-events: none: a click-through cover over a field then refuses. While
+// a task runs, every document of the chain gets a user-origin style sheet that
+// turns pointer-events back on (user !important beats all author rules), and
+// content.js adopts the same rule into each shadow root. One task at a time.
+const UNMASK_CSS = "*,*::before,*::after,*::backdrop{pointer-events:auto!important;transition-behavior:normal!important}";
+let unmaskQueue = Promise.resolve();
+
+function unmasked(tabId, chain, task) {
+  const next = unmaskQueue.then(() => unmaskedNow(tabId, chain, task));
+  unmaskQueue = next.catch(() => {});
+  return next;
+}
+
+async function unmaskedNow(tabId, chain, task) {
+  const documentIds = chain.map(hop => hop.document_id);
+  const target = {tabId, documentIds};
+  const masks = [];
+  let inserted = false;
+  try {
+    await chrome.scripting.insertCSS({target, css: UNMASK_CSS, origin: "USER"});
+    inserted = true;
+    for (const documentId of documentIds) {
+      await inject(tabId, documentId);
+      const id = await run(tabId, documentId, () => globalThis.__akdbxContent.unmask());
+      if (typeof id !== "string") throw new Error("covered");
+      masks.push([documentId, id]);
+    }
+    return await task();
+  } finally {
+    for (const [documentId, id] of masks) {
+      await run(tabId, documentId, mask => globalThis.__akdbxContent.remask(mask), [id]).catch(() => {});
+    }
+    if (inserted) await chrome.scripting.removeCSS({target, css: UNMASK_CSS, origin: "USER"}).catch(() => {});
+  }
+}
+
+// ----- child-frame owners --------------------------------------------------
+const ownerGuards = new Map();
+const OWNER_SETTLE_MS = 50, OWNER_WAIT_MS = 1500;
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// For each hop, find the parent's <iframe> element that holds the child document
+// and retain the CDP route's owner guard on it (see content.js ownerListen).
+async function holdOwners(tabId, chain) {
+  const held = [];
+  try {
+    for (let i = 1; i < chain.length; ++i) {
+      const parent = chain[i - 1].document_id, child = chain[i].document_id;
+      const parentOrigin = new URL(chain[i - 1].url).origin, childOrigin = new URL(chain[i].url).origin;
+      if (parentOrigin === "null" || childOrigin === "null") throw new Error();
+      await inject(tabId, child);
+      await inject(tabId, parent);
+      const listen = await run(tabId, child, origin => globalThis.__akdbxContent.ownerListen(origin), [parentOrigin]);
+      if (typeof listen !== "string") throw new Error();
+      let heard = [];
+      try {
+        const probe = await run(tabId, parent, origin => globalThis.__akdbxContent.ownerProbe(origin), [childOrigin]);
+        if (typeof probe !== "string") throw new Error();
+        const until = Date.now() + OWNER_WAIT_MS;
+        while (Date.now() < until) {
+          heard = await run(tabId, child, id => globalThis.__akdbxContent.ownerHeard(id), [listen]);
+          if (!Array.isArray(heard) || heard.length) break;
+          await pause(10);
+        }
+        // A page that repeats a nonce it saw adds a second one: wait a moment for it.
+        await pause(OWNER_SETTLE_MS);
+        heard = await run(tabId, child, id => globalThis.__akdbxContent.ownerHeard(id), [listen]);
+        if (!Array.isArray(heard) || heard.length !== 1) throw new Error();
+        const guard = await run(tabId, parent, (id, nonce) => globalThis.__akdbxContent.ownerGuard(id, nonce),
+          [probe, heard[0]]);
+        if (typeof guard !== "string") throw new Error();
+        held.push({documentId: parent, guard});
+      } finally {
+        await run(tabId, child, id => globalThis.__akdbxContent.ownerDone(id), [listen]).catch(() => {});
+      }
+    }
+  } catch {
+    await releaseOwners(tabId, held);
+    return null;
+  }
+  return held;
+}
+
+async function ownersHold(tabId, held) {
+  for (const item of held || []) {
+    if ((await run(tabId, item.documentId, id => globalThis.__akdbxContent.ownerCheck(id), [item.guard])) !== true) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function releaseOwners(tabId, held) {
+  for (const item of held || []) {
+    await run(tabId, item.documentId, id => globalThis.__akdbxContent.ownerRelease(id), [item.guard]).catch(() => {});
+  }
+}
+
 async function pin(message) {
   // What this browser pinned, before any local completion of the spec.
   const pinned = canonical({kind: message.kind, spec: message.spec});
@@ -374,16 +492,32 @@ async function pin(message) {
   if (message.frame_url !== null && message.frame_url !== undefined && message.frame_url !== frameURL) return {ok: false};
   if (!frameURL.startsWith("https://")) return {ok: false};
   const spec = {...message.spec};
-  if (message.kind === "password") {
+  if (message.kind === "password" || message.kind === "read") {
     const origin = new URL(frameURL).origin;
     if (spec.frame_origin === null || spec.frame_origin === undefined) spec.frame_origin = origin;
     else if (spec.frame_origin !== origin) return {ok: false};
   }
-  await inject(message.tab_id, message.document_id);
-  const pinId = await run(message.tab_id, message.document_id,
-    (kind, value, url, top) => globalThis.__akdbxContent.pin(kind, value, url, top),
-    [message.kind, spec, frameURL, message.top_url]);
-  if (typeof pinId !== "string") return {ok: false};
+  // Password and read pins in a child frame need the frame owners, as on the CDP route.
+  let owners = [];
+  if ((message.kind === "password" || message.kind === "read") && chain.length > 1) {
+    owners = await holdOwners(message.tab_id, chain);
+    if (!owners || !(await ownersHold(message.tab_id, owners))) return {ok: false};
+  }
+  const hit = message.kind !== "password";
+  let pinId = null;
+  try {
+    await inject(message.tab_id, message.document_id);
+    const capture = () => run(message.tab_id, message.document_id,
+      (kind, value, url, top) => globalThis.__akdbxContent.pin(kind, value, url, top),
+      [message.kind, spec, frameURL, message.top_url]);
+    pinId = hit ? await unmasked(message.tab_id, chain, capture) : await capture();
+  } catch {
+    pinId = null;
+  }
+  if (typeof pinId !== "string") {
+    await releaseOwners(message.tab_id, owners);
+    return {ok: false};
+  }
   if (message.kind === "card" && spec.processor) {
     let guardId = null;
     try {
@@ -392,7 +526,10 @@ async function pin(message) {
       await inject(message.tab_id, parent);
       guardId = await run(message.tab_id, parent, (url, top, processor) => globalThis.__akdbxContent.guard(url, top, processor),
         [frameURL, message.top_url, spec.processor]);
-      if (typeof guardId !== "string" || !(await processorCheck(message.tab_id, chain, pinId, guardId))) throw new Error();
+      if (typeof guardId !== "string" ||
+          !(await unmasked(message.tab_id, chain, () => processorCheck(message.tab_id, chain, pinId, guardId)))) {
+        throw new Error();
+      }
     } catch {
       await release({tab_id: message.tab_id, document_id: message.document_id, pin_id: pinId, chain});
       return {ok: false};
@@ -401,7 +538,49 @@ async function pin(message) {
   }
   while (pinSpecs.size >= 32) pinSpecs.delete(pinSpecs.keys().next().value);
   pinSpecs.set(pinId, pinned);
+  if (owners.length) ownerGuards.set(pinId, {tabId: message.tab_id, held: owners});
   return {ok: true, pin_id: pinId, chain};
+}
+
+// The facts the broker sealed must equal what this browser reports now.
+async function currentFacts(message, facts) {
+  const tab = await chrome.tabs.get(facts.tab_id);
+  const chain = await chainFor(facts.tab_id, facts.document_id);
+  const pinned = pinSpecs.get(facts.pin_id);
+  pinSpecs.delete(facts.pin_id);
+  if (facts.pin_id !== message.pin_id || pinned !== canonical({kind: facts.kind, spec: facts.spec}) ||
+      !Number.isFinite(facts.max_age_ms) || !Array.isArray(facts.chain) || !facts.chain.length || !tab ||
+      tab.url !== facts.chain[0].url || !chain || !sameChain(chain, facts.chain)) return null;
+  const owners = ownerGuards.get(facts.pin_id);
+  if (facts.chain.length > 1 && (facts.kind === "password" || facts.kind === "read") &&
+      (!owners || owners.tabId !== facts.tab_id || !(await ownersHold(facts.tab_id, owners.held)))) return null;
+  return chain;
+}
+
+async function read(message) {
+  let facts;
+  try {
+    ({facts} = await unseal(message.sealed, "read:" + message.pin_id));
+  } catch {
+    await release(message);
+    return {state: "refused"};
+  }
+  try {
+    const chain = facts.kind === "read" ? await currentFacts(message, facts) : null;
+    if (!chain) return {state: "refused"};
+    let value;
+    try {
+      value = await unmasked(facts.tab_id, chain, () => run(facts.tab_id, facts.document_id,
+        (id, maxAge) => globalThis.__akdbxContent.read(id, maxAge), [facts.pin_id, facts.max_age_ms]));
+    } catch {
+      value = null;
+    }
+    if (typeof value !== "string") return {state: "refused"};
+    const bound = {tab_id: facts.tab_id, document_id: facts.document_id, chain: facts.chain, pin_id: facts.pin_id};
+    return {state: "read", sealed: await sealCapture(value, bound, "capture:" + facts.pin_id)};
+  } finally {
+    await release({...message, tab_id: facts.tab_id, document_id: facts.document_id});
+  }
 }
 
 async function fill(message) {
@@ -416,33 +595,40 @@ async function fill(message) {
     }
     // Only the facts the broker authorized and sealed count, never the
     // relayed message: they must equal what this browser reports now.
-    const tab = await chrome.tabs.get(facts.tab_id);
-    const chain = await chainFor(facts.tab_id, facts.document_id);
-    const pinned = pinSpecs.get(facts.pin_id);
-    pinSpecs.delete(facts.pin_id);
-    if (facts.pin_id !== message.pin_id || pinned !== canonical({kind: facts.kind, spec: facts.spec}) ||
-        !Number.isFinite(facts.max_age_ms) || !Array.isArray(facts.chain) || !facts.chain.length || !tab ||
-        tab.url !== facts.chain[0].url || !chain || !sameChain(chain, facts.chain)) {
+    const chain = facts.kind !== "read" ? await currentFacts(message, facts) : null;
+    if (!chain) {
       await release({...message, tab_id: facts.tab_id, document_id: facts.document_id});
       return {state: "refused"};
     }
     const guardId = processorGuards.get(facts.pin_id);
-    if (facts.kind === "card" && guardId && !(await processorCheck(facts.tab_id, chain, facts.pin_id, guardId))) {
-      await release({...message, tab_id: facts.tab_id, document_id: facts.document_id});
-      return {state: "refused"};
-    }
+    const hit = facts.kind === "card" || facts.kind === "identity";
+    const deliver = async () => {
+      if (facts.kind === "card" && guardId && !(await processorCheck(facts.tab_id, chain, facts.pin_id, guardId))) {
+        return "refused";
+      }
+      try {
+        return await run(facts.tab_id, facts.document_id,
+          (id, kind, value, maxAge) => globalThis.__akdbxContent.fill(id, kind, value, maxAge),
+          [facts.pin_id, facts.kind, values, facts.max_age_ms]);
+      } catch {
+        return "uncertain";
+      }
+    };
     let result;
     try {
-      result = await run(facts.tab_id, facts.document_id,
-        (id, kind, value, maxAge) => globalThis.__akdbxContent.fill(id, kind, value, maxAge),
-        [facts.pin_id, facts.kind, values, facts.max_age_ms]);
+      result = hit ? await unmasked(facts.tab_id, chain, deliver) : await deliver();
     } catch {
-      return {state: "uncertain"};
+      // The page could not be unmasked before the fill: nothing reached the field.
+      result = "refused";
     }
+    if (result === "refused") await release({...message, tab_id: facts.tab_id, document_id: facts.document_id});
     return {state: result === "filled" || result === "refused" ? result : "uncertain"};
   } finally {
     for (const key of Object.keys(values)) values[key] = "";
     processorGuards.delete(message.pin_id);
+    const owners = ownerGuards.get(message.pin_id);
+    ownerGuards.delete(message.pin_id);
+    if (owners) await releaseOwners(owners.tabId, owners.held);
   }
 }
 
@@ -454,6 +640,9 @@ async function release(message) {
   }
   processorGuards.delete(message.pin_id);
   pinSpecs.delete(message.pin_id);
+  const owners = ownerGuards.get(message.pin_id);
+  ownerGuards.delete(message.pin_id);
+  if (owners) await releaseOwners(owners.tabId, owners.held);
   return {ok: true};
 }
 
@@ -499,6 +688,7 @@ async function popupReset() {
   if (current) {
     port = null;
     sealKey = null;
+    captureKey = null;
     state = {connected: false};
     for (const resolve of waiting.values()) resolve(null);
     waiting.clear();
@@ -596,6 +786,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 
 connect();
 if (typeof module !== "undefined") {
-  module.exports = {fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys, fill, pin, release,
+  module.exports = {fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys, fill, pin, release, read,
+    sealCapture, holdOwners, setCaptureKey: key => { captureKey = Promise.resolve(key); },
     popupState, popupReset, trustIdle: () => trustQueue, setSealKey: key => { sealKey = Promise.resolve(key); }, state: () => state};
 }

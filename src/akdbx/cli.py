@@ -245,6 +245,20 @@ def _validate_response(response: dict, expected_unlock_origin: str) -> dict:
     return response
 
 
+def _extension_capture(capabilities):
+    """The broker reads secrets through the extension (0.32.0+)."""
+    return (type(capabilities.get('extension_capture_protocol')) is int and capabilities['extension_capture_protocol'] == 1
+            and capabilities.get('extension_capture_delivery') == 'extension-dom-read-v1')
+
+
+def _read_route(args, capabilities):
+    """The route a read pin takes: --route, else the default route; an older broker reads only over CDP."""
+    if args.route is not None:
+        return args.route
+    default = capabilities.get('default_fill_route')
+    return 'extension' if default == 'extension' and _extension_capture(capabilities) else 'cdp'
+
+
 def _request_timeout(payload: dict) -> int:
     """One response budget for both transports; the broker bounds its own work."""
     action = payload.get('action')
@@ -252,7 +266,8 @@ def _request_timeout(payload: dict) -> int:
         return 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
     # Frame routes resolve bounded out-of-process iframe targets first.
     slow = action in {'pin-card-target', 'pin-identity-target', 'list-password-frames'} or (
-        action == 'pin-password-target' and ('frame_origin' in payload or payload.get('route') == 'extension'))
+        action == 'pin-password-target' and ('frame_origin' in payload or payload.get('route') == 'extension'
+                                             or payload.get('mode') == 'read'))
     return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password', secret_cli.COMMAND, *capture_cli.COMMANDS) else 15 if slow else 5
 
 
@@ -938,9 +953,6 @@ def _command(args) -> int:
         if args.frame_origin is not None:
             payload.update(frame_protocol=1, frame_origin=args.frame_origin)
         if args.route is not None:
-            if args.route == 'extension' and args.mode == 'read':
-                print('--mode read (secret capture) uses the cdp route only', file=sys.stderr)
-                return 2
             payload['route'] = args.route
     elif args.command == 'list-password-frames':
         payload.update(password_protocol=1, frame_protocol=1, top_url=args.top_url)
@@ -1080,7 +1092,7 @@ def _command(args) -> int:
         if args.command in {'list-password-frames', 'pin-password-target'} and browser_slots.chosen(args) is not None:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
-            slot_route = ('cdp' if args.command == 'pin-password-target' and args.mode == 'read'
+            slot_route = (_read_route(args, capabilities) if args.command == 'pin-password-target' and args.mode == 'read'
                           else args.route or capabilities.get('default_fill_route') or 'cdp')
             slot, refusal = browser_slots.request_field(args, capabilities, slot_route)
             if refusal is not None:
@@ -1098,7 +1110,9 @@ def _command(args) -> int:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
             # A paired extension can deliver without a debugging-port profile.
-            if args.command == 'pin-password-target':
+            if args.command == 'pin-password-target' and args.mode == 'read':
+                extension_route = _read_route(args, capabilities) == 'extension'
+            elif args.command == 'pin-password-target':
                 extension_route = (args.route or capabilities.get('default_fill_route')) == 'extension'
             else:
                 extension_route = capabilities.get('extension_paired') is True
@@ -1119,6 +1133,10 @@ def _command(args) -> int:
                 if (type(capabilities.get('secret_capture_protocol')) is not int or capabilities['secret_capture_protocol'] != 1
                         or capabilities.get('secret_capture_delivery') != 'chromium-dom-read-v1'):
                     print(json.dumps({'ok': False, 'error': 'broker lacks secret capture protocol 1; require broker 0.20.0 or newer; target request not sent'}))
+                    return 1
+                if args.route == 'extension' and not _extension_capture(capabilities):
+                    print(json.dumps({'ok': False, 'error': 'broker lacks extension secret capture protocol 1; '
+                                      'require broker 0.32.0 or newer; target request not sent'}))
                     return 1
             if args.command == 'pin-password-target' and args.allow_autocomplete_off:
                 if type(capabilities.get('password_autocomplete_off_protocol')) is not int or capabilities['password_autocomplete_off_protocol'] != 1:
@@ -1263,8 +1281,8 @@ def _command(args) -> int:
         print('frame list rejected: unexpected broker response', file=sys.stderr)
         return 2
     if args.command == 'pin-password-target' and response.get('ok'):
-        pin_route = args.route or ('extension' if capabilities.get('default_fill_route') == 'extension'
-                                   and args.mode != 'read' else 'cdp')
+        pin_route = (_read_route(args, capabilities) if args.mode == 'read' else
+                     args.route or ('extension' if capabilities.get('default_fill_route') == 'extension' else 'cdp'))
         token = response.get('target')
         if (set(response) != {'ok', 'target', 'expires_in', 'target_delivery'} or not isinstance(token, str)
                 or len(token) != 64 or any(c not in '0123456789abcdef' for c in token)

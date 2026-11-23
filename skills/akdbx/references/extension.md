@@ -193,7 +193,18 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   `--frame-url`; without it the CLI refuses a `stripe` pin before it sends it.
 - Identities: `pin-identity-target --route extension`, same rules as the CDP
   route; only frames of the top origin.
-- Secret capture (`--mode read`, `capture-secret`) stays on the CDP route.
+- Secret capture (0.32.0+, fill extension 0.4.0): `pin-password-target --mode read
+  --route extension`, then `capture-secret` as on the CDP route. The read pin
+  has the CDP read pin's rules (structural selector only, focus and no
+  selection, one visible single-line text, same-site frame chain). The broker
+  seals the read request with the pin's facts; the extension seals the value
+  to the broker under a second key (`akdbx-extension-capture-v1`), bound to
+  that pin. The receipt says `capture_delivery: "extension-dom-read-v1"`.
+  Without `--route`, a read pin takes the broker's default route when the
+  broker advertises `extension_capture_protocol: 1`, else the CDP route.
+- Card, identity and read pins, and password pins in a child frame, need fill
+  extension 0.4.0 or newer; the broker refuses them from an older one. Build
+  the extension again and reload it.
 
 ## User-click workflow
 
@@ -235,11 +246,23 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   sequence number); never a value. The content
   script runs in the extension's isolated world; it uses the CDP route's own
   checks, which the build step copies in.
-- Limits compared with the CDP route: the extension cannot attest which
-  `<iframe>` element hosts a child frame, so password child frames have no
-  owner-element guard (the frame chain, focus and in-frame visibility checks
-  remain). Processor card frames keep an owner guard found by the frame's exact
-  URL. There is no browser-native hit test; DOM hit tests remain.
+- Frame owners (0.32.0+): the browser names a child frame's parent document
+  but not its `<iframe>` element. The parent's isolated world posts a fresh
+  nonce into each of its iframes, and the child's isolated world reports the
+  nonces its parent window sent; exactly one names the owner. A page that
+  repeats a nonce it saw makes the child hear two, which refuses. That owner
+  then gets the CDP route's owner guard (connected, visible, no `srcdoc`, safe
+  `sandbox`, no attribute change), checked at pin and again before the fill or
+  read.
+- Hit tests (0.32.0+): CDP's `DOM.getNodeForLocation` sees elements with
+  `pointer-events: none`; `elementFromPoint` skips them, so a click-through
+  cover could hide a field. While a card, identity or read check runs, every
+  document of the chain gets a user-origin style sheet that forces
+  `pointer-events: auto` (user `!important` beats every author rule, inline
+  `!important` too), and each open or closed shadow root gets the same rule as
+  an adopted sheet. A shadow element that keeps `pointer-events: none` (an
+  inline `!important` rule) refuses. Both sheets go when the check ends. A page
+  with more than 50,000 elements refuses these pins.
 
 ## Setup
 

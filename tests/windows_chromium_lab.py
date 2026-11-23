@@ -1,4 +1,4 @@
-"""A disposable headless Chromium for native Windows DOM-route tests.
+"""A disposable headless Chromium for native Windows (and Linux extension) DOM-route tests.
 
 Synthetic page, profile, certificate and credentials only. The browser runs
 headless in a new private user-data directory, so it never takes the desktop
@@ -138,10 +138,8 @@ class Lab:
 
 
 @contextmanager
-def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extension=None, hosts=()):
+def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extension=None, hosts=(), native_hosts=None):
     """Serve the synthetic pages over loopback TLS and run one private browser."""
-    import win32file
-    from akdbx import windows_security as security
     binary = binary or browser_binary()
     assert binary is not None, 'a Chromium browser is required'
     documents = {'/login': FORM, '/signup': FORM, '/card': CARD,
@@ -178,16 +176,31 @@ def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extens
                       ['--load-extension=' + str(extension), '--disable-extensions-except=' + str(extension),
                        '--disable-features=DisableLoadExtensionCommandLineSwitch'])
     profile = Path(directory) / 'synthetic-profile'
-    # Private and inheritable: the browser's own port file gets the same DACL.
-    win32file.CreateDirectoryW(str(profile), security.private_attributes(directory=True))
+    if os.name == 'nt':
+        import win32file
+        from akdbx import windows_security as security
+        # Private and inheritable: the browser's own port file gets the same DACL.
+        win32file.CreateDirectoryW(str(profile), security.private_attributes(directory=True))
+    else:
+        profile.mkdir(mode=0o700)
+    # Linux only: a host without unprivileged user namespaces cannot start
+    # Chromium's sandbox; the disposable synthetic profile may then run without it.
+    sandbox = ['--no-sandbox'] if os.name != 'nt' and os.environ.get('AKDBX_TEST_BROWSER_NO_SANDBOX') == '1' else []
+    if native_hosts:
+        # Linux Chromium reads user-level native-messaging hosts from the profile folder.
+        (profile / 'NativeMessagingHosts').mkdir(mode=0o700)
+        for name, manifest in native_hosts.items():
+            (profile / 'NativeMessagingHosts' / (name + '.json')).write_text(json.dumps(manifest), encoding='utf-8')
     log = (Path(directory) / 'synthetic-chromium.log').open('wb')
     process = subprocess.Popen(
         [str(binary), '--headless=new', '--user-data-dir=' + str(profile), '--remote-debugging-port=0',
          '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
-         '--disable-component-update', '--disable-sync', *extension_args, '--disable-gpu',
+         '--disable-component-update', '--disable-sync', *extension_args, *sandbox, '--disable-gpu',
          '--window-size=1200,900', '--no-proxy-server', '--host-resolver-rules=' + rules,
          '--ignore-certificate-errors', origin + '/login'],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log)
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log,
+        # Linux: the production endpoint check refuses a group-writable port file.
+        **({} if os.name == 'nt' else {'umask': 0o077}))
     observer = None
     try:
         # The browser creates its port file before it writes the complete
