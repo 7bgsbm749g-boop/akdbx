@@ -312,7 +312,35 @@ next one harder, so change the setup before you try again.
 The host commands below exist on the operator's VPS (agent desktop slots); on
 another host, use its equivalent or the user's everyday browser.
 
-1. **Restart Chrome first, pair after.** Pairing lasts only until the browser
+1. **Remove every trace of the blocked attempt first.** A refused attempt
+   leaves the bot check's state in the slot profile: its cookie (for
+   DataDome, `datadome`), its storage inside the site's pages, and cached
+   files. With that state, the next attempt starts as a known bot. Remove
+   only the data of the blocked site and of its bot-check vendor (for
+   DataDome: `captcha-delivery.com`, `datado.me`, `datadome.co`, also as
+   partitioned data under the site). Keep the data of every other site,
+   also the same vendor's data for other sites. Print only cookie names and
+   domains, never values.
+   - While the slot's Chrome still has DevTools (before `slot-devtools off`),
+     from a page session: find the matching cookies with
+     `Storage.getCookies` (also partitioned ones) and remove each with
+     `Network.deleteCookies`; run `Storage.clearDataForOrigin` for each site
+     and vendor origin with an explicit list of storage types; run
+     `Network.clearBrowserCache`.
+   - Then stop the slot and make sure that no Chrome uses its profile. Look
+     in the `Local Storage/leveldb` and `Service Worker/Database` stores for
+     keys that name the site, for example the vendor's partitioned keys
+     `https://geo.captcha-delivery.com/^0https://SITE`. Delete them, then
+     copy every live entry into a new store and put it in place of the old
+     one. Compaction can keep deleted-key markers, and `grep` cannot see
+     inside compressed blocks, so check with a LevelDB iterator.
+   - Start Chrome once and check that it opens the rebuilt stores (same
+     entry count, less the removed keys). Then delete every backup you
+     made, because the backups hold the old data.
+   - Other slots seeded from the same master profile can hold the same
+     cookies. Clean another slot only if it was part of the blocked attempt
+     and no other agent uses it.
+2. **Restart Chrome first, pair after.** Pairing lasts only until the browser
    restarts, and both commands restart the slot's Chrome. Run them before you
    load or pair the extension:
 
@@ -323,13 +351,13 @@ another host, use its equivalent or the user's everyday browser.
 
    Both last only until the slot stops. `slot-devtools status` and
    `laptop-proxy status` show each slot.
-2. **Desktop input only.** From now on use only `vps_computer` desktop
+3. **Desktop input only.** From now on use only `vps_computer` desktop
    actions on the Chrome window (`list_windows` for the new pid and window id,
    `get_window_state`, `click`, `type_text`, `press_key`, `hotkey`, `drag`),
    with `delivery_mode: "foreground"`; background input does not reach an
    unfocused Chromium. Never call `browser_*`, `browser_prepare` or any CDP
    script on this slot.
-3. **Load the extension once per slot profile.** Build it and register the
+4. **Load the extension once per slot profile.** Build it and register the
    native host for that profile's own folder (a custom `--user-data-dir` reads
    `NativeMessagingHosts` inside it):
 
@@ -343,7 +371,7 @@ another host, use its equivalent or the user's everyday browser.
    switch on **Developer mode**; **Load unpacked**; in the folder dialog
    `ctrl+L`, type the build folder, and select it. The extension stays in the
    slot profile; later runs need only pairing.
-4. **Pair.** Click the akdbx toolbar button. `akdbx status` must show
+5. **Pair.** Click the akdbx toolbar button. `akdbx status` must show
    `extension_connected: true`. If it stays `false`, check which akdbx the
    host launcher (`path` in the profile's `org.akdbx.extension.json`)
    imports: it must be the release the broker runs. A launcher whose Python
@@ -354,13 +382,13 @@ another host, use its equivalent or the user's everyday browser.
    akdbx ([repair thread](repair-thread.md)), then run the `install` command again. Give the user the `extension_pairing` link and
    the code from the popup, then wait for "paired"
    ([Pairing](#pairing)).
-5. **Do the page by hand.** Type names and emails with `type_text`. For a
+6. **Do the page by hand.** Type names and emails with `type_text`. For a
    slider check, drag it once like a person: a slow movement in several
    uneven steps, then check the result. Fill the password only through the
    extension: `list-password-frames`, `pin-password-target` and
    `fill`/`fill-generated` with `--route extension`. Do not look at the field.
    Dismiss Chrome's own "Save password?" prompt; save the entry in akdbx.
-6. **Clean up.** `laptop-proxy off "$SLOT"`, `slot-devtools on "$SLOT"`
+7. **Clean up.** `laptop-proxy off "$SLOT"`, `slot-devtools on "$SLOT"`
    (Chrome restarts with DevTools, so the pairing ends), then `end_session`.
 
 ## Errors

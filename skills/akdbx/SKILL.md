@@ -334,8 +334,10 @@ made in. See [agent desktop slots](references/target-fill.md#agent-desktop-slots
 Some checks (seen: DataDome on a sign-up) refuse every slot Chrome that has a
 DevTools connection open, also on a residential IP. The CDP route and the
 `browser_*` tools both need that connection, so they cannot pass. What worked:
-the slot's Chrome restarted without its debugging port, desktop (pixel) input
-only, and the akdbx extension for the password. Follow
+first remove every trace of the refused attempt from the slot profile (the
+check's cookie, storage and cache for that site only), then restart the slot's
+Chrome without its debugging port, use desktop (pixel) input only, and fill
+the password through the akdbx extension. Follow
 [Agent desktop slot without DevTools](references/extension.md#agent-desktop-slot-without-devtools).
 The same limits apply: only the user's own account and data, no CAPTCHA
 solvers, and stop after two failed attempts.
