@@ -208,7 +208,10 @@ for example Chrome for Testing).
 
 Install steps for Windows and Helium are in
 [Windows setup](docs/windows.md#browser-extension-route). Pairing lasts until the
-browser or the broker restarts; the popup then shows a new code.
+browser or the broker restarts. After a browser restart the popup shows a new
+code; after a broker restart the code stays the same and the user pairs again.
+The pending link and the pairing belong to the extension's key, so they survive
+an idle service worker or a host reconnect.
 
 From extension 0.3.0 (akdbx 0.29.0), an origin change needs no rebuild, no
 reload and no approval. The broker keeps a persistent identity key and signs
@@ -572,6 +575,29 @@ notification-state file plus `.card-saves`; an unfinished form reports
 `interrupted` because private form contents are never restored. See the
 [card-save notification workflow](skills/akdbx/references/card-save-notifications.md)
 for host registration, verification, duplicate handling and cleanup.
+
+## Pairing notifications (0.33.0)
+
+An agent that gives the user an extension pairing link can register a one-shot
+webhook and end its turn, instead of asking the user to type "paired":
+
+```bash
+.venv/bin/akdbx subscribe-pairing --code ABCD-EFGH --webhook-url-file /private/url-file
+.venv/bin/akdbx pairing-subscription-status SUBSCRIPTION_ID
+.venv/bin/akdbx unsubscribe-pairing SUBSCRIPTION_ID
+```
+
+`--code` is the code from `status` (`extension_pairing[].code`); without it,
+any paired browser fires the event. The event comes when the browser is paired
+and connected, so it can fill: a pairing approved while the extension is not
+connected sends it when that browser reconnects. It is
+`{"event": "akdbx.extension-paired", "browser": "chrome", ...}` with opaque
+subscription and event IDs only. A browser that is already paired and
+connected at registration queues the event at once. Waits have no TTL by default and are
+saved in the notification-state file plus `.pairings`. Require
+`pairing_notifications_supported: true`, `pairing_notifications_protocol: 1`
+and `pairing_notifications_until_paired: true`. See the
+[pairing notification workflow](skills/akdbx/references/pairing-notifications.md).
 
 ## Unlock notifications (0.11.0)
 

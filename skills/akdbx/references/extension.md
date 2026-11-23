@@ -95,7 +95,38 @@ pairing. Pairing is the user's step:
 
 You can give the user the `extension_pairing` link from `status`, as you give
 an unlock link. Never ask for the master password, and never open or operate
-the pairing page for the user. A vault that has only a key file and no master
+the pairing page for the user. After a successful pairing the page heading is
+**Successfully paired** (0.33.0).
+
+Do not ask the user to say "paired". From 0.33.0, register a one-shot webhook
+with `subscribe-pairing --code CODE` (in T3: a webhook task bound to the
+current thread) and end the turn. The broker posts `akdbx.extension-paired`
+when that browser is paired and connected. Steps:
+[pairing notifications](pairing-notifications.md).
+
+### Reconnects and what ends a pairing
+
+The pending link and the pairing belong to the extension's key, not to one
+native-host connection. The key stays in browser session memory while the
+extension's service worker stops and starts again. So:
+
+| Event | Pending link | Established pairing |
+| --- | --- | --- |
+| The service worker goes idle and restarts, or the host reconnects | Still works, same code and link | Kept: the next connection is paired |
+| The user pairs while the extension is not connected | Works; the extension is paired when it reconnects, and the pairing event comes then | - |
+| Ten minutes pass | Expires; the popup gives a new link with the same code | Kept |
+| The broker restarts | Ends | Ends; the code stays the same, the user pairs again |
+| The browser restarts (or a slot's Chrome stops) | Ends | Ends; the popup shows a new code |
+| The unlock link is blocked or replaced | Ends | Kept |
+
+While the native port is open, Chrome keeps the service worker running, so an
+idle extension stays connected. When `status` shows
+`extension_connected: false`, the browser has no host connection at this
+moment: it reconnects by itself (after a broker restart, within about 30
+seconds), or when the user clicks the toolbar button. A missing
+`extension_pairing` entry during that gap does not mean the link stopped
+working. Check whether the broker or the browser restarted before you ask the
+user to use a new link. A vault that has only a key file and no master
 password cannot be paired from an unlocked broker; restart it locked and pair
 with the unlock.
 

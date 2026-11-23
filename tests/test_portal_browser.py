@@ -461,3 +461,101 @@ def test_save_page_keeps_a_correctable_form_and_shows_a_final_error(synthetic_ch
     assert cancelled['disabled'] and cancelled['label'] == 'Cancelled'
     assert cancelled['status'] == 'This page was cancelled. Ask for a new save page.'
     assert cdp.evaluate("document.getElementById('portal-title').textContent", session) == 'Failure'
+
+
+@pytest.fixture
+def pairing_lab(deployed, tmp_path):
+    """The pairing page behind a gated bridge that passes the page's own origin as the broker's public one."""
+    from http.client import HTTPConnection
+    from test_extension_route import attach
+    broker, _, _, socket = deployed
+    channel, _ = attach(broker, {}, paired=False)
+    token = broker.extension._pairing_info(channel.digest)['url'].split('token=')[1]
+    entered, release = threading.Event(), threading.Event()
+
+    class UnixConnection(HTTPConnection):
+        def connect(self):
+            import socket as socket_module
+            self.sock = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+            self.sock.settimeout(12)
+            self.sock.connect(str(socket))
+
+    class Bridge(BaseHTTPRequestHandler):
+        def route(self):
+            length = int(self.headers.get('Content-Length', 0))
+            assert 0 <= length <= 4096
+            body = self.rfile.read(length) if length else None
+            headers = {'Tailscale-User-Login': 'owner@example.test'}
+            if self.command == 'POST':
+                # Hold the request so the busy state can be observed; no value is read.
+                entered.set()
+                assert release.wait(8), 'synthetic pairing gate expired'
+                bridge_origin = f'http://127.0.0.1:{self.server.server_port}'
+                # Like a TLS front end: the browser's origin here is the broker's public origin.
+                if self.headers.get('Origin') == bridge_origin:
+                    headers['Origin'] = broker.writes.public_base
+                headers['Content-Type'] = self.headers.get('Content-Type', '')
+            connection = UnixConnection('localhost')
+            connection.request(self.command, self.path, body=body, headers=headers)
+            response = connection.getresponse()
+            page = response.read()
+            self.send_response(response.status)
+            for key, value in response.getheaders():
+                if key.lower() not in {'server', 'date'}:
+                    self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(page)
+            connection.close()
+
+        do_GET = do_POST = route
+
+        def log_message(self, *_args):
+            pass
+
+    bridge = ThreadingHTTPServer(('127.0.0.1', 0), Bridge)
+    worker = threading.Thread(target=bridge.serve_forever, daemon=True)
+    worker.start()
+    try:
+        yield (broker, channel, f'http://127.0.0.1:{bridge.server_port}/extension/pair?token={token}',
+               entered, release)
+    finally:
+        release.set()
+        bridge.shutdown()
+        bridge.server_close()
+        worker.join(3)
+
+
+def pairing_button(cdp, session):
+    return cdp.evaluate("""(() => { const b = document.querySelector('.portal-submit');
+      return {disabled: b.disabled, pending: b.classList.contains('is-pending'), label: b.querySelector('.button-label').textContent,
+        bar: !b.querySelector('.portal-progress').hidden, busy: b.form.getAttribute('aria-busy'),
+        status: document.getElementById('unlock-status').textContent}; })()""", session)
+
+
+def test_pairing_page_shows_the_unlock_busy_state_then_successfully_paired(synthetic_chromium, pairing_lab, tmp_path):
+    from test_writes import MASTER
+    _, _, cdp, session, _, _ = synthetic_chromium
+    broker, channel, address, entered, release = pairing_lab
+    cdp.call('Page.navigate', {'url': address}, session)
+    wait_for(cdp, session, "document.readyState === 'complete' && document.title === 'AKDBX: Pair the akdbx extension'")
+    assert cdp.evaluate("document.getElementById('portal-title').textContent", session) == 'Pair the akdbx extension'
+    idle = pairing_button(cdp, session)
+    assert not idle['disabled'] and not idle['pending'] and not idle['bar'] and idle['label'] == 'Pair the extension'
+    # The synthetic master password of the test vault; it is never read back.
+    cdp.evaluate("document.querySelector('#password').focus()", session)
+    cdp.call('Input.insertText', {'text': MASTER}, session)
+    cdp.evaluate("document.querySelector('input[name=confirmed]').click()", session)
+    cdp.evaluate("document.querySelector('.portal-submit').click()", session)
+    assert entered.wait(3)
+    pending = pairing_button(cdp, session)
+    assert pending['disabled'] and pending['pending'] and pending['bar'] and pending['busy'] == 'true'
+    assert pending['label'] == 'Pairing the extension…' and pending['status'] == 'Pairing the extension. Please wait.'
+    shot = cdp.call('Page.captureScreenshot', {'format': 'png'}, session)
+    (tmp_path / 'pairing-pending.png').write_bytes(base64.b64decode(shot['data']))
+    release.set()
+    wait_for(cdp, session, "document.getElementById('portal-title').textContent === 'Successfully paired'")
+    assert cdp.evaluate("document.title", session) == 'AKDBX: Successfully paired'
+    assert cdp.evaluate("document.querySelector('.sheet').textContent.includes("
+                        "'The extension is paired with akdbx until the browser or the broker restarts.')", session)
+    assert cdp.evaluate("document.querySelector('form') === null", session)
+    assert broker.extension.approved == [channel.digest]

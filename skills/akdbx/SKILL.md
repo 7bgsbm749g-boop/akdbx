@@ -18,7 +18,7 @@ session.
 | Task | Read |
 | --- | --- |
 | Log in to a website | This file, then [password field delivery](references/target-fill.md) |
-| Fill through the browser extension | [Extension route](references/extension.md) |
+| Fill through the browser extension | [Extension route](references/extension.md), [pairing notifications](references/pairing-notifications.md) |
 | Fill or save a payment card | [Cards](references/cards.md), [card-save notifications](references/card-save-notifications.md) |
 | Fill or save an address or contact | [Identities](references/identities.md) |
 | Authenticator (TOTP) code | [TOTP](references/totp.md), [private key import](references/private-import.md) |
@@ -317,7 +317,15 @@ So:
 - If the extension is not paired, `status` gives `extension_pairing` with a code
   and a private link. Give the user the link; they check that the code matches
   the popup and enter the master password there. Pairing lasts until the browser
-  or broker restarts.
+  or broker restarts; an idle extension that reconnects keeps its pairing and
+  its pending link.
+- Then let an event resume the task instead of asking the user to say
+  "paired" (0.33.0+, `pairing_notifications_supported: true`): create a webhook
+  task bound to the current thread, register it with
+  `subscribe-pairing --code CODE --webhook-url-file FILE`, check
+  `expires_in: null`, and end the turn. On the `akdbx.extension-paired` event,
+  run `status` first, then delete the trigger and continue. Details:
+  [pairing notifications](references/pairing-notifications.md).
 
 **Agent desktop slots (CDP route, 0.30.0+).** When `status` shows
 `browser_profile_root`, the broker serves several agent desktops, each with its

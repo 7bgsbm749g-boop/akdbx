@@ -21,15 +21,15 @@ const at = (origin, build = BUILD) => ({origin, build});
 const recordOf = (message, build = BUILD) => ({v: 1, public_key: message.public_key, key_id: message.statement.key_id,
   origin: message.statement.origin, seq: message.statement.seq, ...(build === null ? {} : {build})});
 
-function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch} = {}) {
+function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, session} = {}) {
   const posted = [];
   const listeners = {};
   const event = name => ({addListener: fn => { listeners[name] = fn; }});
   const area = store => ({get: async key => (key in store ? {[key]: copy(store[key])} : {}),
     set: async items => { Object.assign(store, copy(items)); }, remove: async key => { delete store[key]; },
     setAccessLevel: async () => {}});
-  const session = {pairing: undefined};
-  delete session.pairing;
+  // Session storage outlives one service worker: pass the same object to model a restart.
+  session = session ?? {};
   const port = {postMessage: m => {
     posted.push(m);
     // A scripted broker answers the popup's state request through the port.
@@ -130,6 +130,25 @@ test("service worker sends only its public key and version, and refuses unsealed
   const other = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
   exports.setSealKey(other);
   await assert.rejects(exports.unseal({iv: "AAAAAAAAAAAAAAAA", data: "AAAAAAAAAAAAAAAAAAAAAAAA"}, "fill:x"));
+});
+
+test("a restarted service worker keeps its pairing key, so its code and pending link stay the same", async () => {
+  const hello = async posted => {
+    for (let i = 0; i < 50 && !posted.length; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    return posted[0];
+  };
+  const session = {};
+  const first = loadBackground({session});
+  const before = await hello(first.posted);
+  assert.ok(session.pairing && session.pairing.publicKey === before.public_key);
+  // Chrome stopped the idle worker; the next event starts a new one with the same session storage.
+  const second = loadBackground({session});
+  const after = await hello(second.posted);
+  assert.equal(after.public_key, before.public_key);
+  assert.equal(await second.exports.localCode(after.public_key), await first.exports.localCode(before.public_key));
+  // A browser restart clears session storage: a new key, so a new code and a new pairing.
+  const restarted = await hello(loadBackground({session: {}}).posted);
+  assert.notEqual(restarted.public_key, before.public_key);
 });
 
 test("frame chains compare exactly", () => {

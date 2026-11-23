@@ -19,19 +19,24 @@ from .portal import field
 
 ROUTE = '/extension/pair'
 MAX_BODY = 4096
+FORM_TITLE = 'Pair the akdbx extension'
+SUCCESS_TITLE = 'Successfully paired'
+# Status lines while the shared script posts the form (the unlock page has its own).
+WAIT = 'Pairing the extension. Please wait.'
+UNCONFIRMED = 'Pairing result not confirmed. Open the pairing page again from the akdbx extension.'
 
 
 def handle_pairing(handler, state):
     from .broker import is_wrong_credentials
     from .totp import https_origin
-    from .web_unlock import OPEN_FAILED, _page, parse_form
+    from .web_unlock import OPEN_FAILED, _page, _submit, parse_form
     if urlsplit(handler.path).path != ROUTE:
         return False
     broker = state.broker
     hub = broker.extension
 
-    def send(status, body):
-        handler._send(status, _page('Pair the akdbx extension', body))
+    def send(status, body, title=FORM_TITLE):
+        handler._send(status, _page(title, body))
 
     identity = handler._identity()
     token = handler._token()
@@ -46,12 +51,16 @@ def handle_pairing(handler, state):
         action = ROUTE + '?token=' + html.escape(token, quote=True)
         message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
         unlock = '<p>The vault is locked: this also unlocks it.</p>' if broker.locked else ''
+        # The unlock page's form and button: the shared script posts it, shows the busy
+        # state and then replaces the sheet with the result page (success or error).
         return (f'{message}<p>A browser extension asks to fill from akdbx. Continue only if the akdbx '
                 f'extension popup on this computer shows this code:</p><p><strong>{html.escape(code)}</strong></p>'
-                f'{unlock}<form method="post" action="{action}" autocomplete="off">'
+                f'{unlock}<form data-unlock-form data-wait-text="{WAIT}" data-unconfirmed-text="{UNCONFIRMED}" '
+                f'method="post" action="{action}" autocomplete="off">'
                 + field('Master password', 'password', autocomplete='current-password', autofocus=True) +
                 '<label><input type="checkbox" name="confirmed" value="yes" required>'
-                'The extension shows this code</label><button>Pair the extension</button></form>')
+                'The extension shows this code</label>' + _submit('Pair the extension', 'Pairing the extension\u2026') +
+                '</form><p id="unlock-status" class="portal-status unlock-status" role="status" aria-live="polite"></p>')
 
     blocked = ('<p>Master-password attempts are blocked after three failures. Ask your agent for a new '
                'unlock link, then open the pairing page again. If you did not make these attempts, tell your '
@@ -136,7 +145,7 @@ def handle_pairing(handler, state):
             send(HTTPStatus.NOT_FOUND, '<p>This pairing request expired. Open akdbx in the browser again.</p>')
             return True
         send(HTTPStatus.OK, '<p>The extension is paired with akdbx until the browser or the broker restarts. '
-                            'You may close this page.</p>')
+                            'You may close this page.</p>', SUCCESS_TITLE)
         return True
     finally:
         state.cancel_attempt(attempt)
