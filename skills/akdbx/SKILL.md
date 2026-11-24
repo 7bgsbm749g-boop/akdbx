@@ -24,7 +24,7 @@ session.
 | Authenticator (TOTP) code | [TOTP](references/totp.md), [private key import](references/private-import.md) |
 | Phone (SMS) verification code, or set up a phone number for codes | [SMS](references/sms.md) |
 | Add an authenticator app to a website account (enrollment, such as GitHub 2FA) | [Automatic authenticator enrollment](references/totp-enrollment.md) |
-| Create or change a password, save SSO/email-code accounts, add an origin, move or delete an entry, store a key file | [Password writes](references/password-writes.md) |
+| Create or change a password, save SSO/email-code accounts, add an origin, edit, move or delete an entry, create a group, store a key file | [Password writes](references/password-writes.md) |
 | Capture a secret a site shows once | [Secret capture](references/secret-capture.md) |
 | Vault locked: wait for unlock | [Unlock notifications](references/unlock-notifications.md) |
 | Unlock link blocked (`unlock_blocked: true` or `akdbx.unlock-blocked`) | [Blocked unlock link](#blocked-unlock-link) |
@@ -621,6 +621,10 @@ capability checks and recovery. In short:
   `delete-entry` (to the recycle bin only), with a fresh handle from a checked
   search result (0.38.0, `entry_organize_protocol: 1`; see
   [move or delete](references/password-writes.md#move-or-delete-an-entry-0380)).
+- **Rename an entry, change its username or same-site URL, or make a group:**
+  `edit-entry --title/--username/--url` and `create-group --parent --name`
+  (0.39.0, `entry_edit_protocol: 1`, `group_create_protocol: 1`; see
+  [edit or create](references/password-writes.md#edit-an-entry-or-create-a-group-0390)).
 - **A secret that already exists in a file** (for example a service key):
   `sudo cat FILE | akdbx save-secret --stdin --title ... --username ... --url ...
   --group ...`. Never read, print or copy the file yourself.

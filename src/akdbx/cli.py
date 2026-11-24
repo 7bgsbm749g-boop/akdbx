@@ -34,6 +34,7 @@ DEFAULT_UNLOCK_ORIGIN = "https://unlock.example.invalid:9443"
 IDENTITY_CREATES = ('create-sso-entry', 'create-passwordless-entry')
 URL_CHANGES = ('add-url', 'remove-url')
 ENTRY_MOVES = ('move-entry', 'delete-entry')
+ENTRY_EDITS = ('edit-entry', 'create-group')
 
 
 # Where systemd-logind puts per-user runtime directories. A non-interactive
@@ -278,7 +279,7 @@ def _request_timeout(payload: dict) -> int:
         timeout = payload.get('timeout', 0)
         return (timeout if type(timeout) is int and 0 <= timeout <= 300 else 0) + 10
     slow = slow or action in {'pin-code-target', 'sms-add-source'}
-    return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, *ENTRY_MOVES, 'commit-password', secret_cli.COMMAND, *capture_cli.COMMANDS) else 15 if slow else 5
+    return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, *ENTRY_MOVES, *ENTRY_EDITS, 'commit-password', secret_cli.COMMAND, *capture_cli.COMMANDS) else 15 if slow else 5
 
 
 def request(
@@ -495,6 +496,17 @@ def parser() -> argparse.ArgumentParser:
         if name == 'move-entry':
             command.add_argument('--to-group', required=True, help="exact existing destination group path; '' is the top level")
         command.add_argument('handle', help='fresh selected-entry handle from search')
+    edit_help = ("metadata-only: change a selected login entry's title, username or main URL "
+                 "(a new URL must be HTTPS on the same site); never the password")
+    command = commands.add_parser('edit-entry', help=edit_help, description=edit_help)
+    command.add_argument('--title', help='new title (at most 256 bytes)')
+    command.add_argument('--username', help='new username')
+    command.add_argument('--url', help='new main URL: HTTPS on the same site (registrable domain) as the saved URL')
+    command.add_argument('handle', help='fresh selected-entry handle from search')
+    group_help = 'create one empty group under an existing group'
+    command = commands.add_parser('create-group', help=group_help, description=group_help)
+    command.add_argument('--name', required=True, help='new group name (no /, at most 256 bytes)')
+    command.add_argument('--parent', default='', help="exact existing parent group path; '' (default) is the top level")
     for name in ('write-status', 'cancel-write', 'commit-password'):
         command = commands.add_parser(name, help='check/cancel a staged write' if name != 'commit-password' else 'save staged password after verified website acceptance')
         command.add_argument('write_handle')
@@ -1077,6 +1089,14 @@ def _command(args) -> int:
         payload.update(handle=args.handle, entry_organize_protocol=1)
         if args.command == 'move-entry':
             payload['to_group'] = args.to_group
+    elif args.command == 'edit-entry':
+        changes = {key: getattr(args, key) for key in ('title', 'username', 'url') if getattr(args, key) is not None}
+        if not changes:
+            print(json.dumps({'ok': False, 'error': 'give --title, --username or --url; change not sent'}))
+            return 1
+        payload.update(handle=args.handle, changes=changes, entry_edit_protocol=1)
+    elif args.command == 'create-group':
+        payload.update(parent=args.parent, name=args.name, group_create_protocol=1)
     elif args.command in {'write-status', 'cancel-write', 'commit-password'}:
         payload['write_handle'] = args.write_handle
         if args.command == 'commit-password':
@@ -1268,6 +1288,13 @@ def _command(args) -> int:
                     or capabilities['entry_organize_protocol'] != 1):
                 print(json.dumps({'ok': False, 'error': 'broker lacks entry organize protocol 1; require broker 0.38.0 or newer; change not sent'}))
                 return 1
+        if args.command in ENTRY_EDITS:
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            key = 'entry_edit_protocol' if args.command == 'edit-entry' else 'group_create_protocol'
+            if capabilities.get('ok') is not True or type(capabilities.get(key)) is not int or capabilities[key] != 1:
+                print(json.dumps({'ok': False, 'error': f'broker lacks {args.command} protocol 1; require broker 0.39.0 or newer; change not sent'}))
+                return 1
         if os.name == 'nt' and args.command in {'merge', 'admit'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -1318,8 +1345,8 @@ def _command(args) -> int:
             print('merge outcome unconfirmed: broker response rejected; use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
         elif args.command in URL_CHANGES:
             print('additional URL save outcome unconfirmed: broker response rejected; search before any retry', file=sys.stderr)
-        elif args.command in ENTRY_MOVES:
-            print('entry move outcome unconfirmed: broker response rejected; search before any retry', file=sys.stderr)
+        elif args.command in (*ENTRY_MOVES, *ENTRY_EDITS):
+            print('entry change outcome unconfirmed: broker response rejected; search before any retry', file=sys.stderr)
         elif args.command in IDENTITY_CREATES:
             print(f'{identity_kind} save outcome unconfirmed: broker response rejected; check status and search before any retry', file=sys.stderr)
         elif args.command in {'fill', 'fill-generated', 'fill-totp'}:
@@ -1341,8 +1368,8 @@ def _command(args) -> int:
             print('save outcome uncertain: check write-status before any retry; do not reset the site again', file=sys.stderr)
         elif args.command in URL_CHANGES:
             print('additional URL save outcome uncertain: search to check the entry before any retry', file=sys.stderr)
-        elif args.command in ENTRY_MOVES:
-            print('entry move outcome uncertain: search to check the entry before any retry', file=sys.stderr)
+        elif args.command in (*ENTRY_MOVES, *ENTRY_EDITS):
+            print('entry change outcome uncertain: search to check the entry before any retry', file=sys.stderr)
         elif args.command in IDENTITY_CREATES:
             print(f'{identity_kind} save outcome uncertain: check status and search before any retry; do not create another record automatically', file=sys.stderr)
         elif args.command in {'merge', 'admit'}:
@@ -1437,6 +1464,22 @@ def _command(args) -> int:
             or not isinstance(response.get('group'), str)
             or (args.command == 'move-entry' and response['group'] != args.to_group)):
         print('entry move outcome unconfirmed: receipt rejected; search before any retry', file=sys.stderr)
+        return 2
+    def _metadata(value):
+        return (isinstance(value, dict) and set(value) == {'title', 'username', 'url', 'group'}
+                and all(isinstance(item, str) for item in value.values()))
+    if args.command == 'edit-entry' and response.get('ok') and (
+            set(response) != {'ok', 'state', 'changed', 'previous', 'metadata'}
+            or response.get('state') != 'saved' or response.get('changed') != 'edited'
+            or not _metadata(response.get('previous')) or not _metadata(response.get('metadata'))
+            or any(response['metadata'][key] != value for key, value in payload['changes'].items())):
+        print('entry edit outcome unconfirmed: receipt rejected; search before any retry', file=sys.stderr)
+        return 2
+    if args.command == 'create-group' and response.get('ok') and (
+            set(response) != {'ok', 'state', 'changed', 'group'} or response.get('state') != 'saved'
+            or response.get('changed') != 'created'
+            or response.get('group') != (f'{args.parent}/{args.name}' if args.parent else args.name)):
+        print('group creation outcome unconfirmed: receipt rejected; search before any retry', file=sys.stderr)
         return 2
     if args.command in IDENTITY_CREATES and response.get('ok') and (
             response.get('state') != 'saved' or response.get('passwordless') is not True
