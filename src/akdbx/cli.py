@@ -415,6 +415,10 @@ def parser() -> argparse.ArgumentParser:
     pin = commands.add_parser('pin-target', help='pin an independently verified local foreground PID/window and current input-focus window for 30 seconds')
     pin.add_argument('--pid', type=int, required=True)
     pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID or Windows top-level HWND, decimal or 0x hex')
+    pin.add_argument('--browser-slot', metavar='SLOT',
+                     help='agent desktop slot whose Chrome owns the window (Linux): the broker pins it on that '
+                          'slot\'s X display; --pid must be that Chrome. Default: $AGENT_DESKTOP_SLOT when the broker '
+                          'runs with --browser-profile-root')
     password_pin = commands.add_parser('pin-password-target', help='pin an exact HTTPS main-frame or same-site child-frame password field; no keyboard fallback')
     for flag in ('page-id', 'frame-id', 'selector'):
         password_pin.add_argument('--' + flag, required=True)
@@ -1108,12 +1112,16 @@ def _command(args) -> int:
                     or capabilities['password_frame_protocol'] != 1 or capabilities.get('password_frame_policy') != 'same-site-chain-v1'):
                 print(json.dumps({'ok': False, 'error': 'broker lacks password frame protocol 1; require broker 0.16.0 or newer; frame request not sent'}))
                 return 1
-        if args.command in {'list-password-frames', 'pin-password-target'} and browser_slots.chosen(args) is not None:
+        if args.command in {'list-password-frames', 'pin-password-target', 'pin-target'} and browser_slots.chosen(args) is not None:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
-            slot_route = (_read_route(args, capabilities) if args.command == 'pin-password-target' and args.mode == 'read'
+            slot_route = ('cdp' if args.command == 'pin-target' else
+                          _read_route(args, capabilities) if args.command == 'pin-password-target' and args.mode == 'read'
                           else args.route or capabilities.get('default_fill_route') or 'cdp')
             slot, refusal = browser_slots.request_field(args, capabilities, slot_route)
+            if refusal is None and slot and args.command == 'pin-target' and (
+                    type(capabilities.get('target_slot_protocol')) is not int or capabilities['target_slot_protocol'] != 1):
+                refusal = 'broker lacks slot window pins (target_slot_protocol 1); require broker 0.35.1 or newer; request not sent'
             if refusal is not None:
                 print(json.dumps({'ok': False, 'error': refusal}))
                 return 1
@@ -1315,7 +1323,8 @@ def _command(args) -> int:
             or any(c not in '0123456789abcdef' for c in response['target'])
             or type(response.get('pid')) is not int or response['pid'] != args.pid
             or type(response.get('window')) is not int or response['window'] != args.window
-            or type(response.get('expires_in')) is not int or response['expires_in'] != 30)
+            or type(response.get('expires_in')) is not int or response['expires_in'] != 30
+            or response.get(browser_slots.FIELD) != payload.get(browser_slots.FIELD))
         invalid_fill = args.command in {'fill', 'fill-generated', 'fill-totp'} and (
             response.get('filled') != (args.mode if args.command == 'fill' else 'totp' if args.command == 'fill-totp' else 'password'))
         expected_delivery = PASSWORD_DELIVERY if args.command == 'fill-generated' or args.command == 'fill' and args.mode != 'username' else DELIVERY

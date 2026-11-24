@@ -25,6 +25,14 @@ The code fill uses a window pin (`pin-target`), as every `fill-totp` does: the
 verified X11 client window on Linux, the verified top-level HWND on Windows
 (see [Windows operation](windows.md)).
 
+On an agent desktop slot (`status` shows `browser_profile_root`), the slot's
+Chrome runs on the slot's own X display, not the broker's. Pin its window with
+`--browser-slot SLOT` (0.35.1+, `target_slot_protocol: 1`; the CLI sends
+`$AGENT_DESKTOP_SLOT` by default): the broker finds that slot's Chrome from its
+profile lock and the X display where that Chrome is connected, and `--pid` must
+be that Chrome's browser PID. Without it the pin opens the broker's display and
+refuses with `target unavailable`.
+
 ## How the key stays safe
 
 - `capture-totp` saves the key as the entry's **pending** authenticator, a
@@ -90,7 +98,7 @@ boxes, never text. Do not select or drag over the text.
    (GitHub: "Verify the code from the app"), and fill a code of the pending key:
 
    ```bash
-   akdbx pin-target --pid VERIFIED_PID --window VERIFIED_WINDOW  # X11 client window, or HWND on Windows
+   akdbx pin-target --pid VERIFIED_PID --window VERIFIED_WINDOW [--browser-slot SLOT]  # X11 client window, or HWND on Windows
    akdbx fill-totp FRESH_HANDLE --pending --target-url 'EXACT_HTTPS_URL' --target FRESH_TARGET
    ```
 

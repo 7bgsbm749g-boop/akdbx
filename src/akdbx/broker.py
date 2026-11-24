@@ -119,6 +119,7 @@ class Broker:
         if browser_profile_root is not None and (password_browser_profile is not None or card_browser_profile is not None):
             raise ValueError('use either a browser profile root or single browser profiles, not both')
         self.browser_slots = BrowserSlots(browser_profile_root) if browser_profile_root is not None else None
+        self.targets.slots = self.browser_slots  # pin-target --browser-slot: that slot's Chrome and X display.
         self.passwords = BrowserPasswords(password_browser_profile, clock=clock, slots=self.browser_slots)
         self.handle_ttl = handle_ttl
         self.clock = clock
@@ -391,6 +392,8 @@ class Broker:
         if action == 'pin-target':
             try:
                 return self.targets.pin(request)
+            except SlotError as exc:
+                return {'ok': False, 'error': str(exc)}
             except Exception:
                 return target_failure()
         if action == 'capture-secret':

@@ -26,6 +26,9 @@ without gaining password fill or password generation privileges.
    client window. Focus the code field and keep the foreground stable.
 2. Search for a fresh single-use account handle, then obtain a fresh
    `pin-target --pid VERIFIED_PID --window VERIFIED_X11_CLIENT_WINDOW` token.
+   In an agent desktop slot, add `--browser-slot SLOT` (0.35.1+; the CLI sends
+   `$AGENT_DESKTOP_SLOT` by default): see
+   [agent desktop slots](target-fill.md#agent-desktop-slots).
 3. Fill the current code directly:
 
    ```bash
