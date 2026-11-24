@@ -40,6 +40,7 @@ from .browser_card import BrowserCards
 from .browser_identity import BrowserIdentities
 from .extension_route import (ExtensionHub, ExtensionError, ExtensionPin, RoutedTargets,
                               DELIVERY as EXTENSION_DELIVERY)
+from .android_route import AndroidTargets, AndroidPin, AndroidError, AndroidMismatch, ORIGIN_MISMATCH
 from .identities import COMMANDS as IDENTITY_COMMANDS, IdentityManager, capabilities as identity_capabilities, is_identity
 from .secrets_capture import SecretCaptures, captured_fields, is_secret_record
 from .totp_capture import TotpCaptures, pending as totp_pending, read_pending
@@ -65,7 +66,8 @@ MAX_OUTSTANDING_HANDLES = 1024
 UNLOCK_LINK_MAX_FAILURES = 3
 UNLOCK_LINK_PROTOCOL = 1
 CONNECTION_ERROR = {"ok": False, "error": "request failed"}
-DOM_PINS = (PasswordPin, ExtensionPin)
+# Pins bound to one exact field; only these may receive a password.
+DOM_PINS = (PasswordPin, ExtensionPin, AndroidPin)
 
 
 class EntryLike(Protocol):
@@ -110,6 +112,7 @@ class Broker:
         secret_sinks_path=None,
         default_fill_route='cdp',
         browser_profile_root=None,
+        android_devices_path=None,
     ) -> None:
         self.vault = vault
         self.typer = typer
@@ -142,6 +145,7 @@ class Broker:
         self.merges = create_merge_manager(self)
         self.secrets = SecretCaptures(self, secret_sinks_path)
         self.totp_captures = TotpCaptures(self)
+        self.android = AndroidTargets(android_devices_path, clock=clock, passwords=self.passwords)
         self.unlock_url: str | None = None
         # The private page's UnlockState, when this broker serves one.
         self.unlock_link = None
@@ -354,7 +358,7 @@ class Broker:
                     **({"relay": self.relay.status()} if self.relay is not None else {}),
                     **({"active_origin": origin} if isinstance(origin, str) else {})}
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **self.secrets.capabilities(), **self.totp_captures.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
+            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **self.secrets.capabilities(), **self.android.capabilities(), **self.totp_captures.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -369,6 +373,15 @@ class Broker:
                 return {'ok': False, 'error': str(exc)}
             except Exception:
                 return {'ok': False, 'error': 'frame list unavailable: page missing, ambiguous, changed or unsupported'}
+        if action in {'android-devices', 'android-inspect'}:
+            # Read-only device discovery: no vault access, credential or pin.
+            try:
+                return (self.android.list_devices(request) if action == 'android-devices'
+                        else self.android.inspect(request))
+            except AndroidError as exc:
+                return {'ok': False, 'error': exc.message}
+            except Exception:
+                return {'ok': False, 'error': 'Android device unavailable'}
         if self.locked:
             return {"ok": False, "error": "vault locked", **self.unlock_fields()}
         if getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False):
@@ -387,6 +400,13 @@ class Broker:
                 return self.passwords.pin({k: v for k, v in request.items() if k != 'route'})
             except SlotError as exc:
                 return {'ok': False, 'error': str(exc)}
+            except Exception:
+                return target_failure()
+        if action == 'android-pin':
+            try:
+                return self.android.pin(request)
+            except AndroidError as exc:
+                return {'ok': False, 'error': exc.message}
             except Exception:
                 return target_failure()
         if action == 'pin-target':
@@ -537,7 +557,7 @@ class Broker:
                 entry = self._resolve(request.get("handle"))
                 token = request.get('target')
                 if isinstance(token, str):
-                    target = self.extension.take(token, 'password')
+                    target = self.android.take(token) or self.extension.take(token, 'password')
                     if target is None:
                         try:
                             target = self.passwords.consume(token)
@@ -603,7 +623,22 @@ class Broker:
                     # before emitting any event. Entry access and validation
                     # may take time, so neither is itself the delivery boundary.
                     code_valid = lambda: True
-                    if mode == 'totp':
+                    if isinstance(target, AndroidPin):
+                        # The pin verified its site; the entry must name it.
+                        if 'target_url' in request:
+                            raise DeliveryError(False)
+                        self.android.check_entry(target, allowed_origins(entry))
+                    if mode == 'totp' and isinstance(target, AndroidPin):
+                        configuration = read_configuration(entry)
+                        now = self.wall_clock()
+                        password = code_at(configuration, now)
+                        valid_from = int(now // configuration.period) * configuration.period
+                        valid_until = valid_from + configuration.period
+                        if valid_until - now < MIN_VALIDITY:
+                            return {'ok': False, 'error': 'autofill not started: TOTP code near expiry; wait and use fresh handles',
+                                    'retry_after': math.ceil(valid_until - now)}
+                        code_valid = lambda: valid_from <= self.wall_clock() < valid_until - 2
+                    elif mode == 'totp':
                         # Main URL or an exact KP2A_URL* origin; nothing broader.
                         target_origin = https_origin(request.get('target_url'))
                         if target_origin not in additional_origins(entry) and target_origin != https_origin(entry.url):
@@ -639,7 +674,16 @@ class Broker:
 
                     steps = [username, None, password] if mode == 'login' else [username if mode == 'username' else password]
                     ready = lambda: self.clock() < start_deadline and delivery_ready() and code_valid()
-                    if isinstance(target, DOM_PINS):
+                    if isinstance(target, AndroidPin):
+                        values = ([username, password] if mode == 'login' else [username] if mode == 'username'
+                                  else [password])
+                        try:
+                            self.android.deliver(target, mode, values, ready, start_deadline)
+                        finally:
+                            values = None
+                        if mode == 'totp' and not code_valid():
+                            return target_failure(True)
+                    elif isinstance(target, DOM_PINS):
                         if mode == 'totp':
                             raise DeliveryError(False)
                         (self.extension.deliver_password if isinstance(target, ExtensionPin) else self.passwords.deliver)(target, mode, username if mode != 'password' else '',
@@ -652,10 +696,13 @@ class Broker:
                         self.typer.deliver(target, steps, ready)
                     else:
                         raise DeliveryError(False)
-                    return {"ok": True, "filled": mode, "target_delivery": EXTENSION_DELIVERY if isinstance(target, ExtensionPin)
+                    return {"ok": True, "filled": mode, "target_delivery": self.android.delivery(target) if isinstance(target, AndroidPin)
+                            else EXTENSION_DELIVERY if isinstance(target, ExtensionPin)
                             else PASSWORD_DELIVERY if isinstance(target, DOM_PINS) else DELIVERY}
                 finally:
                     self._keyboard_lock.release()
+            except AndroidMismatch:
+                return {'ok': False, 'error': ORIGIN_MISMATCH, 'delivery': 'not-started'}
             except DeliveryError as exc:
                 return target_failure(exc.started)
             except TotpError as exc:

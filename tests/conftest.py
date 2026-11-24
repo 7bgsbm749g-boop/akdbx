@@ -36,3 +36,9 @@ def no_agent_desktop_slot(monkeypatch):
     """An agent desktop's slot variable must not reach the tests' CLI requests."""
     monkeypatch.delenv("AGENT_DESKTOP_SLOT", raising=False)
     monkeypatch.delenv("AKDBX_BROWSER_PROFILE_ROOT", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_android_devices(tmp_path_factory, monkeypatch):
+    """The host's own Android device file must not reach a test broker."""
+    monkeypatch.setenv("AKDBX_ANDROID_DEVICES", str(tmp_path_factory.mktemp("android") / "android-devices.json"))

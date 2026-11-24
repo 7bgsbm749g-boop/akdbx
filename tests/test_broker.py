@@ -74,7 +74,10 @@ def target_capabilities():
                 password_fill_delivery='chromium-password-dom-v1', password_browser_configured=False, browser_slot_protocol=1,
                 additional_urls_protocol=1, additional_urls_policy='kp2a-exact-origin-v1',
                 secret_save_protocol=1, secret_save_field='password',
-                secret_capture_protocol=1, secret_capture_delivery='chromium-dom-read-v1', secret_sink_protocol=1, secret_sinks=[], totp_capture_protocol=1)
+                secret_capture_protocol=1, secret_capture_delivery='chromium-dom-read-v1', secret_sink_protocol=1, secret_sinks=[],
+                totp_capture_protocol=1, android_fill_protocol=1, android_fill_delivery='android-accessibility-set-text-v1',
+                android_page_code_delivery='android-chrome-dom-code-v1',
+                android_fill_modes=['login', 'username', 'password', 'totp'], android_devices_configured=False)
 
 
 def x11_target_request(broker):

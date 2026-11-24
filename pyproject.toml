@@ -32,7 +32,7 @@ Issues = "https://github.com/7bgsbm749g-boop/akdbx/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-akdbx = ["import_assets/*", "browser_extension/*", "fill_extension/*", "public_suffix_assets/*"]
+akdbx = ["import_assets/*", "browser_extension/*", "fill_extension/*", "public_suffix_assets/*", "android_assets/*"]
 
 # The agent skill, for `akdbx setup` to link from a wheel install (a checkout links skills/akdbx).
 [tool.setuptools.data-files]

@@ -1,0 +1,122 @@
+"""`akdbx android`: fill a verified field on a configured Android device.
+
+Commands take no secret argument. Fill commands print only a receipt.
+"""
+import json
+import re
+import sys
+import time
+
+from .android_route import CHROME_CODE_DELIVERY, DELIVERY, MODES, PROTOCOL
+from .browser_password import DELIVERY as PAGE_DELIVERY
+
+DELIVERIES = {DELIVERY, CHROME_CODE_DELIVERY, PAGE_DELIVERY}
+
+COMMAND = 'android'
+FILL_ERROR = re.compile(r"(autofill (not started|outcome uncertain|failed)|vault locked|identity record|card record"
+                        r"|passwordless record|captured secret record|save outcome uncertain|request failed"
+                        r"|mode must)[^\n]{0,300}")
+TOKEN = re.compile(r'[0-9a-f]{64}')
+
+
+def add_parser(commands):
+    android = commands.add_parser(
+        COMMAND, help='Android devices: inspect the focused app, pin a verified field, fill it (no secret output)',
+        description=('Fill a login, password, username or authenticator code into one verified field of the '
+                     'focused app on an Android device that the operator configured for the broker. '
+                     'The value goes from the broker to an akdbx helper on the device over adb standard input; '
+                     'it is never an argument, typed key, clipboard content or output.'))
+    sub = android.add_subparsers(dest='android_command', required=True)
+    sub.add_parser('devices', help='list configured devices and whether each is reachable')
+    inspect = sub.add_parser('inspect', help='read-only: the focused app, its verified site and its text fields')
+    inspect.add_argument('--device', required=True, help='device name from android devices')
+    pin = sub.add_parser('pin', help='pin one field (two in login mode) for 30 seconds')
+    pin.add_argument('--device', required=True)
+    pin.add_argument('--mode', required=True, choices=MODES)
+    pin.add_argument('--field', required=True,
+                     help='a field value from android inspect: the password field (login, password), the username '
+                          'field (username) or the code field (totp). A page field must be focused (tap it first)')
+    pin.add_argument('--username-field', help='field value of the username field; login mode only')
+    pin.add_argument('--password-purpose', choices=('current-password', 'new-password'),
+                     help='Chrome page, password mode: the verified purpose of a field without an autocomplete hint')
+    pin.add_argument('--app-site', help=('exact HTTPS origin whose Digital Asset Links name this app; needed for '
+                                         'apps other than Chrome and Google account sign-in'))
+    for name in ('fill', 'fill-totp'):
+        fill = sub.add_parser(name, help=('fill the entry\'s login, username or password into the pinned field(s)'
+                                          if name == 'fill' else 'fill the entry\'s current authenticator code'))
+        fill.add_argument('handle', help='fresh handle from akdbx search')
+        fill.add_argument('--target', required=True, help='token from android pin')
+        if name == 'fill':
+            fill.add_argument('--mode', required=True, choices=('login', 'username', 'password'),
+                              help='must be the mode of the pin')
+
+
+def _short(value, limit=300):
+    return isinstance(value, str) and 0 < len(value) <= limit and '\n' not in value
+
+
+def valid(command, response):
+    if not isinstance(response, dict) or not isinstance(response.get('ok'), bool):
+        return False
+    if response['ok'] is False:
+        keys = {'ok', 'error', 'delivery', 'retry_after', 'unlock_url', 'unlock_blocked'}
+        if not set(response) <= keys or not _short(response.get('error')):
+            return False
+        if command in {'fill', 'fill-totp'}:
+            return (FILL_ERROR.fullmatch(response['error']) is not None
+                    and response.get('delivery', 'not-started') in {'not-started', 'uncertain'})
+        return 'delivery' not in response
+    if command == 'devices':
+        return set(response) == {'ok', 'devices'} and isinstance(response['devices'], list)
+    if command == 'inspect':
+        return set(response) <= {'ok', 'device', 'app', 'speak_password', 'site', 'site_note', 'page_url', 'fields'}
+    if command == 'pin':
+        return (set(response) == {'ok', 'target', 'expires_in', 'android_delivery', 'mode', 'origin', 'site_source', 'package'}
+                and isinstance(response['target'], str) and TOKEN.fullmatch(response['target']) is not None
+                and response['android_delivery'] in DELIVERIES and response['expires_in'] == 30
+                and response['mode'] in MODES and _short(response['origin']) and _short(response['package']))
+    return (set(response) == {'ok', 'filled', 'target_delivery'} and response['target_delivery'] in DELIVERIES
+            and response['filled'] in MODES)
+
+
+def run(args, request):
+    command = args.android_command
+    try:
+        caps = request({'action': 'ping'})
+        if (caps.get('ok') is not True or type(caps.get('android_fill_protocol')) is not int
+                or caps['android_fill_protocol'] != PROTOCOL or caps.get('android_fill_delivery') != DELIVERY):
+            print(json.dumps({'ok': False, 'error': 'broker lacks Android fill protocol 1; update akdbx; request not sent'}))
+            return 1
+        if command == 'devices':
+            payload = {'action': 'android-devices'}
+        elif command == 'inspect':
+            payload = {'action': 'android-inspect', 'device': args.device}
+        elif command == 'pin':
+            if (args.username_field is None) == (args.mode == 'login'):
+                print(json.dumps({'ok': False, 'error': '--username-field is required in login mode and only there; '
+                                                        'request not sent'}))
+                return 1
+            payload = {'action': 'android-pin', 'android_protocol': PROTOCOL, 'device': args.device,
+                       'mode': args.mode, 'field': args.field}
+            if args.username_field is not None:
+                payload['username_field'] = args.username_field
+            if args.app_site is not None:
+                payload['app_site'] = args.app_site
+            if args.password_purpose is not None:
+                payload['password_purpose'] = args.password_purpose
+        else:
+            payload = {'action': command, 'handle': args.handle, 'target': args.target, 'target_protocol': 1,
+                       'start_deadline': time.monotonic() + 4}
+            if command == 'fill':
+                payload['mode'] = args.mode
+        response = request(payload)
+        if not valid(command, response):
+            raise ValueError
+    except Exception:
+        if command in {'fill', 'fill-totp'}:
+            print('autofill outcome unconfirmed: broker response rejected; do not retry automatically', file=sys.stderr)
+        else:
+            print('Android request failed; response withheld', file=sys.stderr)
+        return 2
+    print(json.dumps(response, indent=2))
+    return 0 if response['ok'] else 1
