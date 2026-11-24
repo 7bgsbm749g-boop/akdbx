@@ -46,6 +46,11 @@ ORIGIN = 'https://box.example.test'
     ('Your code for 123 456 EUR is 482913.', '482913'),           # a spaced amount
     ('Reference 123456. Your code is 123456.', '123456'),          # same digits as a reference
     ('Use these numbers 482913 as your verification code.', '482913'),  # "rs" inside a word
+    ('Use 482913 to approve the payment to Mastercard 1234. Verification code required.', '482913'),
+    ('123456 is for your current request. For device 7890 use code 123456.', '123456'),
+    ('OTP for card VisaXXXX1234 is 482913', '482913'),
+    ('Type 482913 to continue. Secure authentication since 2025.', '482913'),
+    ('482913\nYour request ID is 7950. Your verification code is 482 913.', '482913'),
 ])
 def test_extract_code_finds_the_one_verification_code(text, code):
     assert extract_code(text) == code
@@ -59,7 +64,8 @@ def test_extract_code_finds_the_one_verification_code(text, code):
     None,
     'Your code is 12.50 GBP',              # not 4-8 digits alone
     'code ' + '1' * 3000,                   # too long
-    'Code 123456 or code 654321',          # ambiguous: two equally near
+    'Code 123456 or code 654321',          # ambiguous: two labelled values
+    'Use 4821 or 9934 to sign in',          # ambiguous: two values, neither labelled
 ])
 def test_extract_code_drops_texts_without_one_code(text):
     assert extract_code(text) is None
@@ -75,7 +81,8 @@ def test_mask_hides_links_without_a_scheme():
     # A sign-in link written as host/path can hold a bearer token in letters.
     preview = mask('Code 482913, or sign in at example.test/t/SyntheticTokenAbc')
     assert preview == 'Code ••••••, or sign in at [link]' and 'SyntheticTokenAbc' not in preview
-    for link in ('example.test?token=SyntheticToken', 'example.test:8443/t/SyntheticToken'):
+    for link in ('example.test?token=SyntheticToken', 'example.test:8443/t/SyntheticToken',
+                 'example.xn--p1ai/t/SyntheticToken', '192.0.2.4/t/SyntheticToken'):
         assert mask('OTP 482913 ' + link) == 'OTP •••••• [link]'
 
 

@@ -66,22 +66,27 @@ _SPLIT = re.compile(r'(?<![0-9A-Za-z+])(\d{3,4})[ -](\d{3,4})(?![0-9A-Za-z])')
 _SINGLE = re.compile(r'(?<![0-9+])(?<![0-9][.,:/-])(\d{4,8})(?![0-9])(?![.,:/-][0-9])(?!\s?%)')
 # A link, also one written without a scheme ("example.com/t/AbC"): its digits
 # are not a code and its letters can be a sign-in token.
-_LINK = re.compile(r'(?:https?://|www\.)\S+|(?<![\w@.-])[a-z0-9](?:[a-z0-9-]*[a-z0-9])?'
-                   r'(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}(?::\d+)?[/?#]\S*', re.IGNORECASE)
+_LINK = re.compile(r'(?:https?://|www\.)\S+|(?<![\w@.-])(?:[a-z0-9-]+\.)+[a-z0-9-]+(?::\d+)?[/?#]\S*',
+                   re.IGNORECASE)
 # A digit group right after these is a card or account suffix, a reference or
 # an order number, not the code ("card ending 4321", "acct ****1234", "Ref: 5678").
 _NOT_CODE_BEFORE = re.compile(
-    r'(?<![a-z])(?:ending(?:\s+(?:in|with))?|ends?\s+(?:in|with)|last\s+(?:\d+\s+)?(?:digits?)?|card|account|acct|a/c|'
-    r'ref(?:erence)?|order|booking|invoice|ticket|[*x•#]{2,}|\*)\s*(?:no\.?|number|#)?\s*[:#.]?\s*$',
+    r'(?:card|[*x•#]{2,}|\*|(?<![a-z])(?:ending(?:\s+(?:in|with))?|ends?\s+(?:in|with)|last\s+(?:\d+\s+)?(?:digits?)?|'
+    r'account|acct|a/c|ref(?:erence)?|order|booking|invoice|ticket))\s*(?:no\.?|number|#)?\s*[:#.]?\s*$',
     re.IGNORECASE)
 _CURRENCY = r'(?:€|\$|£|¥|₹|(?<![a-z])(?:eur|usd|gbp|chf|inr|rs\.?|kr|sek|nok|dkk|pln|zł|aud|cad))'
 _AMOUNT_BEFORE = re.compile(_CURRENCY + r'\s?$', re.IGNORECASE)
 _AMOUNT_AFTER = re.compile(r'^\s?' + _CURRENCY + r'(?![a-z])', re.IGNORECASE)
-# A four-digit year only in date context ("(c) 2026", "May 2025").
+# A four-digit year only in date context ("(c) 2026", "May 2025", "since 2025").
 _YEAR_BEFORE = re.compile(
     r'(?:©|\(c\)|(?<![a-z])(?:copyright|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|'
-    r'sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|year))\.?\s*\d{0,2}(?:st|nd|rd|th)?,?\s*$',
+    r'sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|year|since))\.?\s*\d{0,2}(?:st|nd|rd|th)?,?\s*$',
     re.IGNORECASE)
+# A verification word right before the value ("code: 482913", "OTP is 482913",
+# "Bestätigungscode lautet 664422"), or "is your ... code" right after it.
+_LABEL_BEFORE = re.compile(r'(?:' + KEYWORDS.pattern + r')\w*\W{0,3}(?:(?:is|was|ist|lautet|es|est|è|é)\W{1,3})?$',
+                           re.IGNORECASE)
+_LABEL_AFTER = re.compile(r'\W{0,3}(?:is|was|ist|es|est)\s', re.IGNORECASE)
 _CONTROL = re.compile(r'[\x00-\x08\x0b-\x1f\x7f​-‏ -‮⁦-⁩]')
 
 
@@ -106,14 +111,13 @@ def extract(text: object) -> tuple[str | None, str]:
 
     A text needs a verification word (code, OTP, verify ...). Links are
     ignored, and so are card or account suffixes, references, amounts and
-    dated years. With several digit groups left, the one nearest a
-    verification word wins; a tie is ambiguous and gives None.
+    dated years. A value right next to a verification word wins; otherwise
+    the text must hold exactly one value. Anything else gives None.
     """
     if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
         return None, 'empty'
     text = _LINK.sub(' ', _normal(text))
-    keywords = [m.start() for m in KEYWORDS.finditer(text)]
-    if not keywords:
+    if not KEYWORDS.search(text):
         return None, 'no-code-word'
     found: list[tuple[str, int, int]] = []  # every digit group: (digits, start, end)
     for match in _SPLIT.finditer(text):
@@ -123,23 +127,27 @@ def extract(text: object) -> tuple[str | None, str]:
     for match in _SINGLE.finditer(text):
         if not any(start <= match.start() < end for _, start, end in found):
             found.append((match.group(1), *match.span()))
-    candidates: dict[str, int] = {}
-    for digits, start, end in sorted(found, key=lambda group: group[1]):
-        # Judge each occurrence on its own context, so a reference with the
+    values, labelled = set(), set()
+    for digits, start, end in found:
+        # Each occurrence is judged on its own context: a reference with the
         # same digits as the labelled code does not remove the code.
-        before, after = text[max(0, start - 32):start], text[end:end + 6]
+        before, after = text[max(0, start - 32):start], text[end:end + 48]
         year = len(digits) == 4 and digits[:2] in {'19', '20'} and _YEAR_BEFORE.search(before)
-        if not (year or _NOT_CODE_BEFORE.search(before) or _AMOUNT_BEFORE.search(before)
+        if (year or _NOT_CODE_BEFORE.search(before) or _AMOUNT_BEFORE.search(before)
                 or _AMOUNT_AFTER.search(after)):
-            candidates.setdefault(digits, start)
-    if not candidates:
-        return None, 'no-code'
-    if len(candidates) == 1:
-        return next(iter(candidates)), 'code'
-    distance = {code: min(abs(position - k) for k in keywords) for code, position in candidates.items()}
-    best = min(distance.values())
-    winners = [code for code, d in distance.items() if d == best]
-    return (winners[0], 'code') if len(winners) == 1 else (None, 'several-codes')
+            continue
+        values.add(digits)
+        if _LABEL_BEFORE.search(before) or _LABEL_AFTER.match(after) and KEYWORDS.search(after):
+            labelled.add(digits)
+    # A value next to a verification word ("code is 482913", "482913 is your
+    # code") wins; otherwise the text must hold exactly one value. Anything
+    # else is ambiguous and dropped rather than guessed.
+    for choice in (labelled, values):
+        if len(choice) == 1:
+            return next(iter(choice)), 'code'
+        if choice:
+            return None, 'several-codes'
+    return None, 'no-code'
 
 
 def extract_code(text: object) -> str | None:

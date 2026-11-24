@@ -28,7 +28,7 @@ other texts at once; `sms-sources` shows the last result per source
 ## T3
 
 1. Create a native `schedule_task` with `schedule: {"type": "webhook"}`,
-   `bindToCurrentThread: true`, and a prompt to note `T=$(date +%s)`, then run
+   `bindToCurrentThread: true`, and a prompt to note `T=$(date +%s.%N)`, then run
    `sms-wait --recent 600` and act only on what it shows:
    - a row from the expected source whose sender and preview match the site:
      remove this trigger, then pin the code field and run `fill-sms-code` with
