@@ -727,6 +727,11 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
         assert notify_phone(code=1)['delivery'] == 'uncertain'
 
         evaluate(chrome, """phoneEvents.length = 0;
+          phone.addEventListener('input', () => { phone.value = ''; }, {once:true})""")
+        assert notify_phone(code=1)['delivery'] == 'uncertain'
+        assert evaluate(chrome, 'JSON.stringify(phoneEvents)') == '[["input",false]]'
+
+        evaluate(chrome, """phoneEvents.length = 0;
           phone.addEventListener('input', () => { password.focus(); }, {once:true})""")
         assert notify_phone(code=1)['delivery'] == 'uncertain'
         assert evaluate(chrome, 'JSON.stringify(phoneEvents)') == '[["input",true]]'

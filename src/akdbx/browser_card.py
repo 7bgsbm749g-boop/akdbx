@@ -312,14 +312,14 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
       setter.call(el, actual);
     }
     if (identity) {
+      const retained = () => getter.call(el) === actual && (!selectIndex || el.options[el.selectedIndex] === option);
       if (notifyPage === true) {
         el.dispatchEvent(new Event('input', {bubbles:true}));
-        if (!valid()) return 'uncertain';
+        if (!valid() || !retained()) return 'uncertain';
         el.dispatchEvent(new Event('change', {bubbles:true}));
         if (!valid()) return 'uncertain';
       }
-      const retained = getter.call(el) === actual && (!selectIndex || el.options[el.selectedIndex] === option);
-      return retained ? 'filled' : 'uncertain';
+      return retained() ? 'filled' : 'uncertain';
     }
     el.dispatchEvent(new Event('input', {bubbles:true}));
     el.dispatchEvent(new Event('change', {bubbles:true}));
