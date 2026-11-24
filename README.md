@@ -278,6 +278,8 @@ Each slot `ROOT/slotN` is one Chrome user data directory, started as above (`--u
 
 With a root, every CDP pin names its slot: `pin-password-target`, `list-password-frames`, `pin-card-target` and `pin-identity-target` take `--browser-slot SLOT`, and default to the `AGENT_DESKTOP_SLOT` environment variable (sent only to a broker that reports a root, so a single-profile broker keeps working in an agent desktop shell). The request field is `browser_slot`; the broker advertises `browser_slot_protocol: 1` (0.30.0+).
 
+A window pin of a slot's Chrome (`pin-target`, for username and TOTP fills) needs `--browser-slot SLOT` too (0.35.3+, `target_slot_protocol: 1`), because that Chrome runs on the slot's own X display. Pass it explicitly; a window pin does not take `AGENT_DESKTOP_SLOT`, so a native app on the broker's display keeps a plain pin. The broker takes the slot Chrome's PID from its profile lock, finds the X display where that PID is a client, and sends that X server's cookie only to a Unix-socket peer of the same user. `--pid` must be that Chrome.
+
 ```bash
 .venv/bin/akdbx pin-password-target --browser-slot slot2 --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
   --top-url VERIFIED_EXACT_HTTPS_URL --selector '#password' --mode password
@@ -752,6 +754,7 @@ through a single-use read pin, the same route as
 ```bash
 akdbx pin-password-target --mode read --page-id PAGE --frame-id FRAME --top-url URL --selector '#setup-key'
 akdbx capture-totp --target TARGET --handle HANDLE --title T --username U --url URL --group G
+akdbx pin-target --pid CHROME_PID --window CHROME_WINDOW [--browser-slot SLOT]   # 0.35.3+: a slot's own X display
 akdbx fill-totp HANDLE --pending --target-url URL --target WINDOW_PIN   # the site's "verify the code" field
 akdbx commit-totp --handle HANDLE --site-accepted --title T --username U --url URL --group G
 ```

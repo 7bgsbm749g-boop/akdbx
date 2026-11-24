@@ -28,7 +28,9 @@ MESSAGES = re.compile(
     r'|browser slot invalid: use a slot name such as slot1'
     r'|browser slot unknown: slot[1-9][0-9]? \(slots: ' + _LIST + r'\)'
     r'|browser slot not supported: this broker has no --browser-profile-root; omit --browser-slot'
-    r'|browser slot applies only to the cdp route; omit --browser-slot with --route extension')
+    r'|browser slot applies only to the cdp route; omit --browser-slot with --route extension'
+    r'|browser slot not running: slot[1-9][0-9]? has no verified Chrome on a local X display; start the slot and pin again'
+    r'|browser slot window pins need Linux X11')
 
 
 class SlotError(Exception):
@@ -96,6 +98,76 @@ class BrowserSlots:
     def required(self) -> SlotError:
         return SlotError('browser slot required: this broker fills the Chrome of one agent desktop slot; '
                          f'pass --browser-slot SLOT or set AGENT_DESKTOP_SLOT (slots: {self._listing()})')
+
+    def chrome(self, name) -> int:
+        """The PID of the Chrome that runs this slot's profile, checked from that process itself.
+
+        Chrome's profile lock (`SingletonLock`, a symlink to `HOST-PID`) names
+        the browser process. That process must be ours, on this host, and run
+        with exactly this profile directory. Chrome rewrites its command line
+        as its process title (arguments joined by spaces), so the argument is
+        matched as a whole, followed by a space or the end.
+        """
+        import socket as socket_module
+        path = self.profile(name)
+        if os.name == 'nt':
+            raise SlotError('browser slot window pins need Linux X11')
+        try:
+            host, _, pid_text = os.readlink(path / 'SingletonLock').rpartition('-')
+            if host not in {socket_module.gethostname(), os.uname().nodename} or not pid_text.isdigit():
+                raise ValueError
+            pid = int(pid_text)
+            proc = Path('/proc') / str(pid)
+            profiles = {os.fsencode(os.path.realpath(path)), os.fsencode(path)}
+            if pid <= 1 or proc.stat().st_uid != os.getuid():
+                raise ValueError
+            title = b' ' + (proc / 'cmdline').read_bytes().rstrip(b'\0').replace(b'\0', b' ') + b' '
+            if not any(b' --user-data-dir=' + profile + b' ' in title for profile in profiles):
+                raise ValueError
+            return pid
+        except (OSError, ValueError, UnicodeError):
+            raise self.not_running(name) from None
+
+    @staticmethod
+    def not_running(name) -> SlotError:
+        return SlotError(f'browser slot not running: {name} has no verified Chrome on a local X display; '
+                         'start the slot and pin again')
+
+
+def x11_servers() -> list[str]:
+    """Local X displays of this user: ':N' for each Unix socket /tmp/.X11-unix/XN that this user owns."""
+    found = []
+    try:
+        with os.scandir('/tmp/.X11-unix') as entries:
+            for entry in entries:
+                match = re.fullmatch(r'X([0-9]{1,5})', entry.name)
+                if match:
+                    info = entry.stat(follow_symlinks=False)
+                    if stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid():
+                        found.append(int(match.group(1)))
+    except OSError:
+        return []
+    return [':' + str(number) for number in sorted(found)]
+
+
+def x11_cookie_file(server_pid: int):
+    """The `-auth FILE` of this user's X server process (X servers keep their argv), or None.
+
+    Raises ValueError for a process of another user or an unsafe file: a
+    regular file of this user that others cannot write, by absolute path.
+    """
+    proc = Path('/proc') / str(server_pid)
+    if proc.stat().st_uid != os.getuid():
+        raise ValueError
+    argv = (proc / 'cmdline').read_bytes().split(b'\0')
+    if b'-auth' not in argv:
+        return None
+    index = argv.index(b'-auth')
+    path = os.fsdecode(argv[index + 1]) if index + 1 < len(argv) else ''
+    info = os.lstat(path)
+    if not os.path.isabs(path) or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise ValueError
+    return path
 
 
 def select(request: dict, profile, slots: BrowserSlots | None):

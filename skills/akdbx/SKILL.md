@@ -469,7 +469,9 @@ Rules (full detail in [password field delivery](references/target-fill.md)):
 - Native apps and username or TOTP fields outside a browser use window pins:
   `pin-target --pid PID --window WINDOW` (X11 on Linux, HWND on Windows). A
   window pin never accepts a password or login fill, because a browser's
-  address bar shares its window.
+  address bar shares its window. In an agent desktop slot, a window of the
+  slot's Chrome needs `--browser-slot "$AGENT_DESKTOP_SLOT"` (0.35.3+, pass it
+  explicitly), because that Chrome is on the slot's own X display.
 - For a multi-step sign-in, fill the username and password separately, with a
   new search and pin for each step.
 - Do not move focus or navigate while a pin or fill is pending.
