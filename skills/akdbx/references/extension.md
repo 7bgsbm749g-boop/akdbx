@@ -126,10 +126,10 @@ From 0.35.1:
   disk (stale build); restart the browser, or reload akdbx on
   chrome://extensions, then pair it again`. A mismatched one gets `…the
   browser runs akdbx extension X, another build than this broker's Y; rebuild
-  the folder the browser loads with this akdbx (\`akdbx extension build
-  --output FOLDER\`, with the broker's --unlock-origin if it has one), or
-  restart the broker if akdbx was updated; then reload akdbx on
-  chrome://extensions and pair it again`.
+  the folder the browser loads with this akdbx and the broker's private-page
+  origin (the origin of its unlock link): \`akdbx --unlock-origin ORIGIN
+  extension build --output FOLDER\`, or restart the broker if akdbx was
+  updated; then reload akdbx on chrome://extensions and pair it again`.
 
 Fix: restart the browser, or click reload on the akdbx card in
 `chrome://extensions`. Keep Developer mode on there: with it off, Chromium
@@ -619,7 +619,7 @@ guidance names them. Without such tools, use the user's everyday browser.
 | Popup: "…this extension was built for…", "…this extension trusts…" or "no trusted broker address" | The broker names another origin than the trusted one, or the extension has none. No reset is offered: you run `akdbx extension build` again with the broker's current origin and the user reloads the extension. Any local build (also one for the same origin) replaces the saved broker trust; the extension then binds the broker key from the built origin's HTTPS page. A reload without a build changes nothing. |
 | Popup: "The broker page at … names another identity than the native host sent" | The native host and the broker's HTTPS page disagree about the broker key, so the extension learned nothing. Tell the user not to enter the master password; check that the broker on that origin and the installed native host (`akdbx extension install`) are the user's own. |
 | `version_status: "stale"` in `extension_browsers`, or a pin or frame list fails with `…older akdbx extension service worker…` | The browser runs an old worker beside newer files ([stale service worker](#stale-service-worker-0351)). Restart the browser, or reload akdbx in `chrome://extensions`, then pair again. |
-| `version_status: "mismatch"`, or a pin or frame list fails with `…another build than this broker's…` | The loaded folder holds another build than this broker's. Run `akdbx extension build --output FOLDER` with the broker's akdbx into the loaded folder (with the global `--unlock-origin` the broker uses, if any; the build replaces the saved broker trust), or restart the broker if akdbx was updated in place. Then reload akdbx in `chrome://extensions` and pair again. |
+| `version_status: "mismatch"`, or a pin or frame list fails with `…another build than this broker's…` | The loaded folder holds another build than this broker's. Run `akdbx --unlock-origin ORIGIN extension build --output FOLDER` with the broker's akdbx, where ORIGIN is the broker's private-page origin (the origin of its unlock link; the build replaces the saved broker trust), or restart the broker if akdbx was updated in place. Then reload akdbx in `chrome://extensions` and pair again. |
 | `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Ask the user to rebuild into the same folder and reload it in `chrome://extensions`. |
 | Right after an update, the popup says the broker is not reachable and `status` shows `extension_connected: false` | The broker, or the Python that the host launcher runs, is older than the extension and refuses its hello: akdbx 0.21.2 or earlier for any versioned extension, akdbx 0.35.0 or earlier for an extension built by 0.35.1 or later (four-part version). Restart the broker on the new version. If the launcher points to another Python, run `akdbx extension install --browser NAME` again from the updated installation. |
 | The popup says the broker is not reachable and the broker is running; `extension info` shows `launcher_state: "stale"`, or the launcher fails with `No module named 'akdbx.extension_host'` | The launcher runs another akdbx than the CLI: an older release folder, or (before 0.31.1) the interpreter's own akdbx. Run `akdbx extension refresh` with the current CLI; with an akdbx before 0.31.1 on Linux, update first. Then reopen the popup. |

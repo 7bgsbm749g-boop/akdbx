@@ -1329,7 +1329,7 @@ def test_a_stale_or_mismatched_worker_gets_no_frame_list_and_no_pin_and_the_erro
         assert result == dict(ok=False, error=error)
     assert 'chrome://extensions' in error and 'pair it again' in error
     assert ('restart the browser' in error) == (status == 'stale')
-    assert ('akdbx extension build' in error and version in error) == (status == 'mismatch')
+    assert ('akdbx --unlock-origin ORIGIN extension build' in error and version in error) == (status == 'mismatch')
     # Only the frame list reached the worker (it counts the browser's tabs with the URL); never a pin.
     assert extension.calls == ['frames'] and broker.extension.pins == {}
 
@@ -1384,12 +1384,26 @@ def test_a_refused_browser_neither_hides_nor_borrows_a_page_in_another_paired_br
     assert len(extension.calls) == calls
 
 
+def test_the_frame_list_names_the_fix_of_the_refused_browser_that_has_the_page():
+    broker = make_broker()
+    mismatched, _ = paired(broker, {}, 'chrome', version=OTHER_BUILD)
+    _, extension = paired(broker, {t: [Document('TOP', LOGIN)] for t in range(1, 6)}, 'edge')
+    worker_says_stale(extension)  # Five tabs show the URL: more than one frame list may name.
+    request = dict(action='list-password-frames', password_protocol=1, frame_protocol=1, top_url=LOGIN,
+                   route='extension')
+    assert broker.dispatch(request) == dict(ok=False, error=route.STALE)
+    # Nowhere open: the first refusal.
+    assert broker.dispatch({**request, 'top_url': 'https://missing.example.net/'}) == dict(
+        ok=False, error=route.MISMATCH.format(loaded=OTHER_BUILD, expected=BUILT))
+    assert mismatched.stale is False
+
+
 def test_a_stale_frame_answer_without_a_valid_tab_count_is_refused():
     broker = make_broker()
     channel, extension = paired(broker, {3: [Document('TOP', LOGIN)]}, 'helium')
     request = dict(action='list-password-frames', password_protocol=1, frame_protocol=1, top_url=LOGIN,
                    route='extension')
-    for reply in (dict(ok=False, error='stale'), dict(ok=False, error='stale', tabs=99),
+    for reply in (dict(ok=False, error='stale'), dict(ok=False, error='stale', tabs=-1),
                   dict(ok=False, error='stale', tabs=True), dict(ok=False, error='stale', tabs=1, x=1)):
         channel.stale = False
         extension.handle = lambda op, payload, reply=reply: reply

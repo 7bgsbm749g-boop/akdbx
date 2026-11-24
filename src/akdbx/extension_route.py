@@ -140,9 +140,9 @@ STALE = ('extension route unavailable: the browser runs an older akdbx extension
          'extension files on disk (stale build); restart the browser, or reload akdbx on chrome://extensions, '
          'then pair it again')
 MISMATCH = ('extension route unavailable: the browser runs akdbx extension {loaded}, another build than this '
-            "broker's {expected}; rebuild the folder the browser loads with this akdbx (`akdbx extension build "
-            "--output FOLDER`, with the broker's --unlock-origin if it has one), or restart the broker if akdbx was "
-            'updated; then reload akdbx on chrome://extensions and pair it again')
+            "broker's {expected}; rebuild the folder the browser loads with this akdbx and the broker's private-page "
+            'origin (the origin of its unlock link): `akdbx --unlock-origin ORIGIN extension build --output FOLDER`, '
+            'or restart the broker if akdbx was updated; then reload akdbx on chrome://extensions and pair it again')
 
 
 def valid_extension_version(value):
@@ -1011,7 +1011,7 @@ class ExtensionHub:
             if result.get('ok') is False and result.get('error') == 'stale':
                 channel.stale = True
                 refusal, matching = channel.refusal(), result.get('tabs')
-                if set(result) != {'ok', 'error', 'tabs'} or type(matching) is not int or not 0 <= matching <= MAX_TABS:
+                if set(result) != {'ok', 'error', 'tabs'} or type(matching) is not int or matching < 0:
                     raise ExtensionError()
             else:
                 tabs = result.get('tabs')
@@ -1021,7 +1021,10 @@ class ExtensionHub:
                 if refusal is None:
                     found.extend((channel, tab) for tab in tabs)
             if refusal is not None:
-                refused, hidden = refused or refusal, hidden or matching > 0
+                # The refusal of a browser that has the URL open names the fix that applies.
+                if matching > 0 and not hidden:
+                    refused, hidden = refusal, True
+                refused = refused or refusal
         # A URL also open in a refused browser does not name one tab: refuse with the fix, never pick the other.
         if refused is not None and (hidden or not found):
             raise refused
