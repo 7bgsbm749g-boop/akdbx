@@ -473,8 +473,12 @@ akdbx move-entry --to-group 'Work' -- FRESH_HANDLE
 Rules:
 
 - Give one or more of `--title`, `--username` and `--url`, with a fresh handle
-  from a search result you checked. Values have no surrounding spaces or
-  control characters; a title has at most 256 bytes.
+  from a search result you checked. Only the values you give are checked:
+  they are not empty, have no surrounding spaces or control characters, and a
+  title has at most 256 bytes. Saved fields you do not change stay as they are.
+- An edit that would give the entry the same title, username, URL and group
+  as another entry refuses, because password writes select entries by those
+  four fields.
 - A new `--url` must be HTTPS on the same site (registrable domain) as the
   saved HTTPS URL, the `add-url` rule, because fills trust the entry's
   origins. An entry whose saved URL is not an HTTPS site URL cannot get a new

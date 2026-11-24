@@ -780,10 +780,17 @@ class WriteManager:
         updated = {**values, **changes}
         if updated == values:
             raise WriteError('entry already has those values')
-        if any(value != value.strip() for value in changes.values()):
-            raise WriteError('invalid title, username or URL')
-        if 'title' in changes and len(changes['title'].encode('utf-8')) > MAX_TITLE_BYTES:
-            raise WriteError('invalid title, username or URL')
+        from lxml import etree
+        for key, value in changes.items():
+            try:
+                # Check only the supplied values: saved fields stay as they are.
+                if (not value or value != value.strip()
+                        or len(value.encode('utf-8')) > (MAX_TITLE_BYTES if key == 'title' else 4096)
+                        or any(unicodedata.category(c) == 'Cc' for c in value)):
+                    raise ValueError
+                etree.Element('Value').text = value
+            except (ValueError, TypeError):
+                raise WriteError('invalid title, username or URL') from None
         if 'url' in changes and changes['url'] != values['url']:
             old = _optional_origin(values['url'])
             new = _optional_origin(changes['url'])
@@ -791,16 +798,18 @@ class WriteManager:
                 raise WriteError('entry has no HTTPS site URL to keep; change its URL in KeePassXC')
             if new is None or not _same_owner_host(old, new):
                 raise WriteError('new URL must be HTTPS on the same site as the saved URL; change other sites in KeePassXC')
-        try:
-            # Check only what changes: a title or username edit keeps any saved URL.
-            validate_metadata({**updated, 'url': updated['url'] if 'url' in changes else 'https://example.invalid/'})
-        except WriteError:
-            raise WriteError('invalid title, username or URL') from None
         self._require_available()
         vault = self.broker.vault
         uuid = entry.uuid
         if sum(e.uuid == uuid for e in active_entries(vault)) != 1:
             raise WriteError('entry metadata mismatch; search again')
+
+        def unique(candidate):
+            # Password writes select an entry by these four fields; keep them distinct.
+            if any(e.uuid != uuid and metadata(e) == updated for e in active_entries(candidate)):
+                raise WriteError('another entry already has that title, username, URL and group')
+
+        unique(vault)
         changed_at = _entry_changed_at(entry, self.broker.wall_clock)
 
         def selected(candidate):
@@ -813,6 +822,7 @@ class WriteManager:
 
         def mutate(candidate):
             current = selected(candidate)
+            unique(candidate)
             current.save_history()
             for key, value in changes.items():
                 setattr(current, key, value)

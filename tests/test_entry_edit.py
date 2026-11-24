@@ -66,6 +66,8 @@ def test_edit_changes_title_username_and_same_site_url_only(deployed):
     ({'title': ' padded'}, 'invalid'),
     ({'title': 'x' * 300}, 'invalid'),
     ({'username': 'bad\nname'}, 'invalid'),
+    ({'title': 'New\u0085title'}, 'invalid'),
+    ({'username': ''}, 'invalid'),
     ({'title': 'Synthetic site'}, 'already has'),
 ])
 def test_edit_refuses_cross_site_urls_and_bad_values(deployed, changes, error):
@@ -98,6 +100,10 @@ def test_title_edit_keeps_an_entry_whose_url_is_not_https(tmp_path):
     params = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
     params['I'].value, params['M'].value = 1, 1024 * 1024
     vault.add_entry(vault.root_group, 'Old title', 'someone@example.test', SECRET, url='accounts.example.test')
+    vault.add_entry(vault.root_group, 'No username', '', SECRET, url='https://example.test/')
+    vault.add_entry(vault.root_group, 'Tab\ttitle', 'tab-user', SECRET, url='https://example.test/')
+    vault.add_entry(vault.root_group, 'Dup A', 'dup-user', SECRET, url='https://dup.example.test/')
+    vault.add_entry(vault.root_group, 'Dup B', 'dup-user', SECRET, url='https://dup.example.test/')
     buffer = io.BytesIO()
     vault.save(buffer)
     template.write_bytes(buffer.getvalue())
@@ -110,6 +116,17 @@ def test_title_edit_keeps_an_entry_whose_url_is_not_https(tmp_path):
         assert entry.url == 'accounts.example.test' and entry.password == SECRET
         refused = edit(broker, entry=selected(broker, 'New title'), url='https://accounts.example.test/')
         assert 'no HTTPS site URL' in refused['error']
+        # Saved fields that are not changing are kept as they are, even when unusual.
+        assert edit(broker, entry=selected(broker, 'No username'), title='Renamed no user')['ok']
+        assert edit(broker, entry=selected(broker, 'Renamed no user'), url='https://login.example.test/')['ok']
+        assert edit(broker, entry=selected(broker, 'tab-user'), username='tab-user-2')['ok']
+        vault = reopened(path)
+        assert vault.find_entries(title='Renamed no user', first=True).username in (None, '')
+        assert vault.find_entries(username='tab-user-2', first=True).title == 'Tab\ttitle'
+        # Password writes select by all four fields: an edit may not create an exact duplicate.
+        before = path.read_bytes()
+        assert 'another entry already has' in edit(broker, entry=selected(broker, 'Dup B'), title='Dup A')['error']
+        assert path.read_bytes() == before
     finally:
         server.shutdown()
         server.server_close()
