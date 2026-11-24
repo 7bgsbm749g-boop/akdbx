@@ -527,15 +527,15 @@ def test_update_selects_a_unique_identity_under_an_ambiguous_group_path(deployed
 
 
 @pytest.mark.parametrize('saved, national, code', [
-    ('+44 7700 900123', '7700900123', '44'),
-    ('+44 (0)7700-900123', '7700900123', '44'),
-    ('0044 20 7946 0958', '2079460958', '44'),
-    ('+1 (555) 010-0199', '5550100199', '1'),
-    ('+7 912 345 67 89', '9123456789', '7'),
-    ('+358 40 1234567', '401234567', '358'),
+    ('+44 7000 000000', '7000000000', '44'),
+    ('+44 (0)7000-000000', '7000000000', '44'),
+    ('0044 20 0000 0000', '2000000000', '44'),
+    ('+1 (000) 000-0000', '0000000000', '1'),
+    ('+7 900 000 00 00', '9000000000', '7'),
+    ('+358 40 0000000', '400000000', '358'),
     ('+49 000 000000', '000000000', '49'),
-    ('+39 06 1234 5678', '0612345678', '39'),
-    ('+852 1234 5678', '12345678', '852'),
+    ('+39 06 0000 0000', '0600000000', '39'),
+    ('+852 0000 0000', '00000000', '852'),
 ])
 def test_national_format_removes_only_the_country_calling_code(saved, national, code):
     from akdbx.identities import national_number
@@ -545,8 +545,8 @@ def test_national_format_removes_only_the_country_calling_code(saved, national, 
         national_number(saved, '999')
 
 
-@pytest.mark.parametrize('saved', ['07700 900123', '7700900123', '+44 7700 900123 ext 2', '+44', '+44 7700 (900123',
-                                   '+44 77OO 900123', '++44 7700 900123', '+44 7700 900123 4567 8901'])
+@pytest.mark.parametrize('saved', ['07000 000000', '7000000000', '+44 7000 000000 ext 2', '+44', '+44 7000 (000000',
+                                   '+44 70OO 000000', '++44 7000 000000', '+44 7000 000000 0000 0000'])
 def test_national_format_refuses_a_number_it_cannot_split_safely(saved):
     from akdbx.identities import national_number
     with pytest.raises(Exception):

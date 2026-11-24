@@ -171,7 +171,7 @@ akdbx fill-identity --field tel --format national --calling-code 44 \
 
 - The broker removes the leading `+` (or `00`) and the country calling code,
   a `(0)` trunk marker, and spaces, hyphens, dots, slashes and brackets. The
-  field receives only digits, for example `7700900123`. The saved value does
+  field receives only the digits of the national number. The saved value does
   not change.
 - `--calling-code DIGITS` (no `+`) refuses unless the saved number has that
   country calling code. Give the code the page's picker shows, so a number of
