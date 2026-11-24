@@ -142,6 +142,16 @@ def entry_organize_capabilities():
     return dict(entry_organize_protocol=ENTRY_ORGANIZE_PROTOCOL)
 
 
+ENTRY_EDIT_PROTOCOL = 1
+GROUP_CREATE_PROTOCOL = 1
+MAX_TITLE_BYTES = 256
+
+
+def entry_edit_capabilities():
+    """edit-entry: title, username or same-site main URL. create-group: one empty group."""
+    return dict(entry_edit_protocol=ENTRY_EDIT_PROTOCOL, group_create_protocol=GROUP_CREATE_PROTOCOL)
+
+
 def _recycle_bin(vault):
     """The vault's configured recycle bin group and whether recycling is on."""
     try:
@@ -743,6 +753,129 @@ class WriteManager:
         saved = selected(self.broker.vault)
         return dict(ok=True, state='saved', metadata=values, additional_urls=additional_urls(saved),
                     changed='added' if adding else 'removed', url=serialized + '/')
+
+    def edit_entry(self, request):
+        """Change one selected login entry's title, username or main URL; never the password.
+
+        A new URL must stay on the same site (registrable domain) as the saved
+        HTTPS URL, the add-url rule, because fills trust the entry's origins.
+        """
+        if (set(request) != {'action', 'handle', 'changes', 'entry_edit_protocol'}
+                or type(request.get('entry_edit_protocol')) is not int
+                or request['entry_edit_protocol'] != ENTRY_EDIT_PROTOCOL
+                or not isinstance(request.get('changes'), dict) or not request['changes']
+                or not set(request['changes']) <= {'title', 'username', 'url'}
+                or not all(isinstance(value, str) for value in request['changes'].values())):
+            raise WriteError('entry edits accept only a fresh handle and a new title, username or URL')
+        changes = dict(request['changes'])
+        try:
+            entry = self.broker._resolve(request.get('handle'))
+        except ValueError:
+            raise WriteError('unknown or expired handle; search again') from None
+        from .cards import is_card
+        from .identities import is_identity
+        if is_card(entry) or is_identity(entry):
+            raise WriteError('only login entries can be edited here; use KeePassXC for cards and identities')
+        values = metadata(entry)
+        updated = {**values, **changes}
+        if updated == values:
+            raise WriteError('entry already has those values')
+        if any(value != value.strip() for value in changes.values()):
+            raise WriteError('invalid title, username or URL')
+        if 'title' in changes and len(changes['title'].encode('utf-8')) > MAX_TITLE_BYTES:
+            raise WriteError('invalid title, username or URL')
+        if 'url' in changes and changes['url'] != values['url']:
+            old = _optional_origin(values['url'])
+            new = _optional_origin(changes['url'])
+            if old is None:
+                raise WriteError('entry has no HTTPS site URL to keep; change its URL in KeePassXC')
+            if new is None or not _same_owner_host(old, new):
+                raise WriteError('new URL must be HTTPS on the same site as the saved URL; change other sites in KeePassXC')
+        try:
+            # Check only what changes: a title or username edit keeps any saved URL.
+            validate_metadata({**updated, 'url': updated['url'] if 'url' in changes else 'https://example.invalid/'})
+        except WriteError:
+            raise WriteError('invalid title, username or URL') from None
+        self._require_available()
+        vault = self.broker.vault
+        uuid = entry.uuid
+        if sum(e.uuid == uuid for e in active_entries(vault)) != 1:
+            raise WriteError('entry metadata mismatch; search again')
+        changed_at = _entry_changed_at(entry, self.broker.wall_clock)
+
+        def selected(candidate):
+            entries = [e for e in active_entries(candidate) if e.uuid == uuid]
+            if len(entries) != 1 or metadata(entries[0]) != values:
+                raise WriteError('entry changed; search again')
+            return entries[0]
+
+        password = entry.password
+
+        def mutate(candidate):
+            current = selected(candidate)
+            current.save_history()
+            for key, value in changes.items():
+                setattr(current, key, value)
+            current.mtime = changed_at
+
+        def verify_saved(candidate):
+            entries = [e for e in active_entries(candidate) if e.uuid == uuid]
+            if (len(entries) != 1 or entries[0].password != password or entries[0].mtime != changed_at
+                    or metadata(entries[0]) != updated):
+                raise WriteError('entry edit verification failed; vault update not confirmed')
+
+        try:
+            self.broker.vault = vault._akdbx_store.commit(vault, mutate, verify_candidate=verify_saved)
+        except (SaveError, WriteError):
+            raise
+        except Exception:
+            raise WriteError('save failed; vault update not confirmed') from None
+        finally:
+            password = None
+        self.invalidate_revision()
+        return dict(ok=True, state='saved', changed='edited', previous=values, metadata=updated)
+
+    def create_group(self, request):
+        """Create one empty group under an existing group."""
+        if (set(request) != {'action', 'parent', 'name', 'group_create_protocol'}
+                or type(request.get('group_create_protocol')) is not int
+                or request['group_create_protocol'] != GROUP_CREATE_PROTOCOL
+                or not isinstance(request.get('parent'), str) or not isinstance(request.get('name'), str)):
+            raise WriteError('group creation accepts only an existing parent path and a new name')
+        name = request['name']
+        if (not name.strip() or name != name.strip() or '/' in name or len(name.encode('utf-8')) > MAX_TITLE_BYTES
+                or any(unicodedata.category(c) == 'Cc' for c in name)):
+            raise WriteError('invalid group name')
+        self._require_available()
+        vault = self.broker.vault
+        path = f"{request['parent']}/{name}" if request['parent'] else name
+
+        def parent(candidate):
+            group = group_for(candidate, request['parent'])
+            bin_group, _ = _recycle_bin(candidate)
+            if bin_group is not None and (group.uuid == bin_group.uuid or _inside(group, bin_group)):
+                raise WriteError('cannot create a group inside the recycle bin')
+            if any(_group_path(g) == path or (g.name or '').casefold() == name.casefold()
+                   for g in group.subgroups):
+                raise WriteError('a group with that name already exists there')
+            return group
+
+        parent(vault)
+
+        def mutate(candidate):
+            candidate.add_group(parent(candidate), name)
+
+        def verify_saved(candidate):
+            group_for(candidate, path)
+
+        try:
+            self.broker.vault = vault._akdbx_store.commit(vault, mutate, verify_candidate=verify_saved)
+        except (SaveError, WriteError):
+            raise
+        except Exception:
+            raise WriteError('save failed; vault update not confirmed') from None
+        self.invalidate_revision()
+        return dict(ok=True, state='saved', changed='created', group=path)
 
     def organize_entry(self, request):
         """Move one selected entry to an existing group, or into the existing recycle bin.

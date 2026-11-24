@@ -454,6 +454,40 @@ Rules:
   "metadata": {...}, "group": "NEW_GROUP"}`. Every handle and pending write is
   stale afterwards: search again.
 
+## Edit an entry or create a group (0.39.0)
+
+`edit-entry` changes a login entry's title, username or main URL; it never
+changes the password. `create-group` makes one empty group under an existing
+group. Require integer `entry_edit_protocol: 1` or `group_create_protocol: 1`
+in `status`; the CLI refuses an older broker before it sends. Make only the
+change the user asked for.
+
+```bash
+akdbx search 'example.com'
+akdbx edit-entry --title 'Main example account' -- HANDLE_FROM_SEARCH
+akdbx edit-entry --username new@example.com --url https://login.example.com/ -- FRESH_HANDLE
+akdbx create-group --parent '' --name 'Work'
+akdbx move-entry --to-group 'Work' -- FRESH_HANDLE
+```
+
+Rules:
+
+- Give one or more of `--title`, `--username` and `--url`, with a fresh handle
+  from a search result you checked. Values have no surrounding spaces or
+  control characters; a title has at most 256 bytes.
+- A new `--url` must be HTTPS on the same site (registrable domain) as the
+  saved HTTPS URL, the `add-url` rule, because fills trust the entry's
+  origins. An entry whose saved URL is not an HTTPS site URL cannot get a new
+  URL here: the user changes it in KeePassXC. Title and username edits work
+  for any login entry.
+- Like the other writes, an edit saves the previous version to the entry's
+  history and gives it a new modification time. The receipt has `previous`
+  and the new `metadata`. Every handle is stale afterwards.
+- `create-group` refuses a name with `/`, a name that already exists under
+  that parent (ignoring case), a missing parent and a parent inside the
+  recycle bin. Its receipt gives the new group's path.
+- Card and identity records refuse.
+
 ## Cancellation and recovery
 
 ```bash
