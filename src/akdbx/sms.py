@@ -69,7 +69,7 @@ def capabilities(configured: int) -> dict:
 KEYWORDS = re.compile(
     r'code|codice|c[oó]digo|kod|otp|pin\b|passcode|password|verif|confirm|'
     r'authenticat|sign[ -]?in|log[ -]?in|one[ -]time|security|2fa|token|'
-    r'best[äa]tigung|verifica|v[ée]rification|pr[üu]f', re.IGNORECASE)
+    r'best[äa]tigung|verifica|v[ée]rification|pr[üu]f|\b(?:m|sms-?|push|chip|photo)tan\b', re.IGNORECASE)
 
 # Reading a text ------------------------------------------------------------
 #
@@ -78,12 +78,13 @@ KEYWORDS = re.compile(
 # things that are not a code (card, reference, year, ZIP, currency). It works
 # the other way round, from what is known to be safe:
 #
-# * A WORD is what stands between spaces, tabs and line breaks; no link, in any
-#   notation, can cross one. The preview shows a word only when it is PLAIN:
-#   letters only, with ordinary punctuation at its ends. A number shows as
-#   bullets, the chosen code as "[code]", every other word as a placeholder. A
-#   link is hidden because it is not a plain word, not because it was
-#   recognised as a link.
+# * A WORD is what stands between spaces and line breaks; no link, in any
+#   notation, can cross a space. The preview shows a word only when it is
+#   PLAIN: letters only, with ordinary punctuation at its ends, and nothing
+#   else in its spaced word (a tab, an odd space or a pictograph does not cut
+#   a link). A number shows as bullets, the chosen code as "[code]", every
+#   other word as a placeholder. A link is hidden because it is not a plain
+#   word, not because it was recognised as a link.
 # * A CANDIDATE is a number written the way codes are written: one group of 4
 #   to 8 digits, or 3+3 / 4+4, alone in its word or glued to one word
 #   ("Code:482913", "G-482913"). A text whose only candidate it is gives that
@@ -91,8 +92,13 @@ KEYWORDS = re.compile(
 #   not codes. One of them must stand in a STRICT label position ("code is N",
 #   "N is your ... code", "Use N to", "Your code for ... is N") and no other may
 #   stand in any label position, however loose. Everything else is dropped.
+# * A label's VALUE POSITION holds the code. When it holds something else that
+#   is not known to be ordinary (a word such as "HXKQWP", "AB12CD", "123",
+#   "12 34 56"), the text has a code that the broker cannot type: the text is
+#   dropped, and that word is never shown.
 # * Every word list below is an allow-list. A wording it lacks costs one
-#   dropped text. It cannot make the broker choose a number.
+#   dropped text or one hidden word. It cannot make the broker choose a number
+#   or show a word.
 
 _OPEN = '([{<"\'“‘«¿¡【（「『《〈'
 _CLOSE = '.,;:!?)]}>"\'”’»。，！？：；、】）」』》〉'
@@ -101,8 +107,11 @@ _STOP = '.!?;|。！？；'           # ends a sentence
 _END = _STOP + ',，、'           # ends a clause
 _LINK = '/@?=&%\\'
 _DIGITS = '0123456789'
+_CUTS = frozenset(map(chr, (0x09, 0x0B, 0x0C, 0x1C, 0x1D, 0x1E, 0x1F, 0x85)))  # a tab and other gaps inside a word
+_OVERRIDES = (chr(0x202D), chr(0x202E))                                       # they reverse what a screen shows
 MAX_WORD = 40                   # a longer "word" is not shown
 MAX_LETTERS = 24                # nor is one with a longer run of letters
+MAX_CLAUSE = 40                 # "Your code for ... is N" spans at most this many words
 _o, _c, _j = (re.escape(s) for s in (_OPEN, _CLOSE, _JOIN))
 # Patterns over a word's SHAPE: L letter, M mark, 0 digit, 9 other numeral,
 # and each punctuation character as itself.
@@ -118,11 +127,13 @@ _LINKISH = re.compile(f'[{re.escape(_LINK)}]|[LM09][.:#][LM09]')
 _GLUED = re.compile(f'[{_o}]*({_W})[.!?;,]({_W})([{_c}]*)')  # "out.Use": a full stop without its space
 _ALONE = re.compile('(?<![LM09])0{4,8}(?![LM09])')  # a code-sized digit group that stands free inside a word
 _PHONE = re.compile(r'\+?[0-9]+(?:-[0-9]+)*')  # a number that can run on into the next word
+_SPAN = re.compile('[0-9]{1,3}(?:min|mins|m|h|hr|hrs|s|sec|secs|d|std)')  # "10min": a time, not a code
 
 # Label words, case-folded. Every list is an allow-list.
-_SELF = frozenset('otp passcode tan mtan'.split())                    # a code whatever stands before it
+_SELF = frozenset('otp passcode mtan pushtan chiptan phototan'.split())  # a code whatever stands before it ("TAN" too)
 _CODE = frozenset('code codes código codigo codice kod kode kód cod код'.split())  # a code unless modified
-_WEAK = frozenset('password pin passwort kennwort contraseña senha clave token'.split())  # only after a strong word
+_WEAK = frozenset('password pin passwort kennwort contraseña senha clave token passphrase wachtwoord'.split())
+_PHRASED = _WEAK - {'pin', 'token'}                                    # their value can be several words
 _COMPOUND = ('code', 'kode', 'kod', 'passwort', 'kennwort', 'tan')   # Bestätigungscode, Einmalpasswort, smsTAN
 _STRONG = ('verif', 'vérif', 'authenti', 'autenti', 'authori', 'autori', 'secur', 'sécur', 'segur', 'sicher',
            'sicur', 'säkerhet', 'sikker', 'beveilig', 'login', 'log-in', 'logon', 'signin', 'sign-in', 'anmeld',
@@ -141,7 +152,7 @@ _FUNCTION = frozenset(
     'neue hier für zum zur el la los las un una tu su este esta con y o es para de le les une votre ton ce cet '
     'cette avec et ou est pour du il lo tuo suo questo e è per di um uma seu sua com é do da het een uw je jouw '
     'met en of voor'.split())
-_COPULA = frozenset('is was are ist war lautet es est è é er är jest'.split())
+_COPULA = frozenset('is was are be ist war lautet es est è é er är jest'.split())
 _IMPERATIVE = frozenset(
     'use enter type input submit insert provide verwenden verwende nutze nutzen benutze benutzen usa utiliza '
     'utilice ingresa ingrese introduce introduzca utilisez utilise saisissez saisis entrez tapez inserisci digita '
@@ -150,10 +161,104 @@ _VERIFY = frozenset('verify confirm authenticate approve authorize authorise con
                     'bestätige verifizieren verifica confirma vérifiez confirmez'.split())
 _WITH = frozenset('with using via mit con avec met'.split())
 _PARTICLE = frozenset('to as for in on when if within um zum zur als für para como pour comme per come om'.split())
-_PREPOSITION = frozenset('for to on of at für zur zum zu para de pour per di voor'.split())
 _OF = frozenset("de di da do du del della des".split())               # "código de verificación"
 _AND = frozenset('and or und oder y o et ou e en of'.split())
+_BUT = _AND | frozenset('but aber pero mais ma mas maar'.split())
 _NEGATION = frozenset('not no never nicht kein keine non ne pas nunca nie'.split())
+# "Your code for <phrase> <phrase> is N": each phrase is a preposition, its determiners and one to six other words.
+_PREPOSITION = frozenset(
+    'for to on of at in with from by via using für zur zum zu mit bei von auf an im am vom beim über para de del con '
+    'en por al pour du à au aux avec sur dans chez per di da su della voor met op van bij naar'.split())
+_DETERMINER = frozenset(
+    'the a an this that these those your my our his her its their der die das den dem des ein eine einen einem einer '
+    'ihr ihre ihren ihrem ihrer dein deine mein unser el la los las un una tu su mi este esta le les une votre ton '
+    'ce cet cette il lo gli tuo tua suo sua questo questa os as um uma seu teu het een uw je jouw'.split())
+# A new clause inside a clause: a conjunction, a subject, a verb form, a negation.
+_BREAK = frozenset(
+    'and or but nor so if then because while when where that which who whose what why how it they we you i he she '
+    'is are was were be been will would can could may might must shall should has have had does do did not no never '
+    'und oder aber wenn weil dass ob ist sind war wird wurde kann muss nicht kein y o pero si cuando que porque es '
+    'son está et ou mais quand est sont ne pas e ma se quando che è sono non mas é são não of maar als dat zijn '
+    'niet'.split())
+# Numbers in three known places are not codes: "Reply STOP to 89203", "(c) 2026", "Expires at 1845".
+_OPTOUT = frozenset('stop help end quit cancel unsubscribe stopall info baja alto ayuda arret arrêt aide'.split())
+_TO = frozenset('to an au al a'.split())
+_EXPIRY = frozenset('expires expire expiring expired valid gültig caduca expira vence scade verloopt'.split())
+_UNTIL = frozenset('at until till by um bis'.split())
+# A small number before one of these is a time or a size, not a code: "valid 10 minutes", "6 digits".
+_UNITS = frozenset(
+    'minutes minute min mins hours hour hrs hr seconds second secs sec days day digits digit characters chars '
+    'minuten stunden stunde sekunden tage tag ziffern stellen minutos minuto horas hora segundos días día dígitos '
+    'heures heure secondes jours jour chiffres minuti ore ora secondi giorni cifre dias uur uren seconden dagen '
+    'cijfers times attempts mal veces fois volte vezes keer'.split())
+# Ordinary words: what a text says next to a code noun when it does not give the code there. First the closed
+# classes (articles, pronouns, prepositions, conjunctions, auxiliaries, common adverbs), then what texts say
+# about a code ("valid", "expires", "share"), then the few of those that also follow "password is".
+_CLOSED = frozenset('''
+a an the this that these those my your yours his her hers its our ours their theirs me you him us them i we he she it
+they myself yourself itself themselves someone anyone everyone nobody anybody everybody something anything everything
+nothing is are was were be been being am do does did done doing have has had having will would shall should can could
+may might must isn't aren't wasn't weren't don't doesn't didn't won't wouldn't can't cannot couldn't shouldn't hasn't
+haven't it's that's you're we're we'll you'll i'm let's not no never none neither nor and or but if then else so
+because as while when where whether than though although unless until till since once before after of in on at by for
+from to into onto with without within via per over under above below between among across around about against
+through during toward towards upon off out up down near here there now today tonight tomorrow soon later again always
+already also just only even still yet too very much more most less least quite really ever often anywhere anytime
+all any both each every few many some several other others another such same own next last first second new old
+please thanks thank hello hi hey dear sorry yes ok okay who whom whose which what why how one two three four five six
+seven eight nine ten fifteen twenty thirty sixty
+der die das den dem des ein eine einen einem einer eines ihr ihre ihren ihrem ihrer dein deine deinen mein meine
+unser unsere euer sie er wir ich du man sich ihnen uns dich dir mich mir ist sind war waren sein wird werden wurde
+wurden hat haben hatte kann können konnte muss müssen soll sollen darf dürfen will wollen lautet nicht kein keine
+keinen keinem nie niemals niemand niemandem niemanden nichts und oder aber wenn dann weil als wie dass ob falls bis
+seit bevor nachdem sobald von auf bei für mit ohne nach zu zum zur aus über unter vor hinter zwischen durch gegen um
+innerhalb im am vom beim hier dort jetzt heute bald später wieder immer schon auch nur noch sehr mehr bitte danke
+hallo ab
+el la los las un una unos unas tu su mi sus tus nuestro este esta estos estas ese esa esto eso yo tú usted él ella
+nosotros se lo le te nos es son era fue ser está están estar ha han hay puede pueden debe deben será nunca nadie nada
+ni y o pero si cuando porque como que mientras hasta desde antes después de en al del con sin para por sobre entre
+hacia durante aquí ahora hoy pronto siempre ya también solo sólo muy más favor gracias hola
+les une des ton ta tes votre vos mon ma notre ce cet cette ces je il elle nous vous ils elles est sont était sera
+être ont peut peuvent doit doivent ne pas jamais personne rien et ou mais quand parce comme pendant jusqu depuis
+avant après du à au aux dans sur sous avec sans pour par chez vers ici maintenant bientôt toujours déjà aussi
+seulement très plus merci bonjour
+i gli uno tuo tua suo sua mio nostro questo questa io lei lui noi voi è sono sarà essere hanno può possono deve
+devono non mai nessuno niente né e ma se perché che mentre fino da prima dopo di su tra fra senza qui ora oggi presto
+sempre già anche molto più grazie ciao
+os as um uma seu teu meu nosso isso isto eu você ele nós são estão tem têm pode podem devem não ninguém nem mas
+enquanto até depois em do no na com sem aqui agora hoje só muito mais obrigado olá
+het een uw je jouw mijn onze dit dat deze ik u hij zij wij ze zijn wordt worden heeft hebben kunnen moet moeten zal
+niet geen nooit niets of maar dan omdat tot sinds voor na van op aan met zonder naar uit onder tussen door om binnen
+nu vandaag altijd al ook alleen nog zeer meer bedankt like unlike
+'''.split()) | _FUNCTION | _COPULA | _PREPOSITION | _DETERMINER | _BREAK | _AND | _NEGATION | _PARTICLE | _WITH | _OF
+_SAID = frozenset('''
+valid invalid required needed necessary ready expired incorrect wrong correct right confidential secret private
+personal unique safe secure important sensitive active inactive available unavailable usable used unused sent
+generated requested entered provided received shown displayed listed given attached enclosed following follows
+temporary permanent single multiple good bad free true false different able unable sure certain long short case
+strictly highly absolutely completely currently immediately automatically shortly directly successfully securely
+publicly online verification verified security login access confirmation authentication authorization time
+expire share give tell disclose reveal provide send receive request get take make need want keep ignore delete call
+contact reply text message verify confirm sign log continue complete finish reset change update create set add
+remove check try see look come go work last remain stay arrive help allow let protect authorize authorise
+authenticate unlock open link connect activate deactivate register apply approve decline deny cancel stop start begin
+end wait return show display appear contain include follow visit click tap press scan copy paste forward ask answer
+know think believe find read write save store pay charge transfer withdraw deposit book order ship deliver pick
+collect redeem claim join leave unsubscribe subscribe enter type input submit insert use
+gültig ungültig erforderlich nötig abgelaufen falsch richtig geheim vertraulich persönlich einmalig sicher wichtig
+aktiv läuft verfällt gilt weitergeben teilen eingeben verwenden nutzen benutzen senden erhalten bestätigen anmelden
+lang válido inválido requerido necesario caducado incorrecto correcto confidencial secreto único seguro importante
+caduca vence expira compartas compartir comparta ingresa usa utiliza valable valide invalide requis nécessaire
+expiré confidentiel personnel sûr partagez partager utilisez saisissez valido invalido richiesto necessario scaduto
+errato corretto riservato segreto personale unico sicuro scade condividere obrigatório necessário expirado incorreto
+correto pessoal compartilhe compartilhar insira digite geldig ongeldig vereist nodig verlopen onjuist juist
+vertrouwelijk persoonlijk uniek veilig belangrijk verloopt deel delen gebruik voer
+'''.split())
+_SAID_OF_SECRET = frozenset(
+    'valid invalid required needed expired expire expires expiring incorrect wrong changed reset updated set used '
+    'entered shared safe secure confidential secret private personal temporary strictly case sensitive gültig '
+    'ungültig erforderlich abgelaufen falsch geheim vertraulich confidencial secreto confidentiel riservato segreto '
+    'vertrouwelijk'.split()) | _UNITS
 
 
 @dataclass
@@ -182,16 +287,16 @@ class Reading:
 
 
 def _clean(raw: str) -> list[tuple[str, bool]]:
-    """One spaced word, NFKC, cut at odd spaces and pictographs; invisible characters removed, never made gaps.
+    """One spaced word, NFKC, cut at tabs, odd spaces and pictographs; invisible characters removed, never made gaps.
 
     Each part has a flag: an invisible character stood between two digits, or the word holds a direction
     override. A number in such a part may not read on a screen as its characters say.
     """
-    override = '\u202d' in raw or '\u202e' in raw
+    override = any(mark in raw for mark in _OVERRIDES)
     parts, part, odd, gap = [], [], False, False
     for ch in unicodedata.normalize('NFKC', raw):
         category = unicodedata.category(ch)
-        if category[0] == 'Z' or category in {'So', 'Sk'} or ch in '\x0b\x0c\x1c\x1d\x1e\x1f\x85':
+        if category[0] == 'Z' or category in {'So', 'Sk'} or ch in _CUTS:
             if part:
                 parts.append((''.join(part), odd or override))
             part, odd, gap = [], False, False
@@ -249,8 +354,10 @@ def _classify(text: str) -> _Word:
         lead, glue, a, b, trail = (text[match.start(n):match.end(n)] if match.group(n) else ''
                                    for n in (2, 3, 5, 6, 8))
         before, close = match.group(4) or '', match.group(7) or match.group(10) or ''
-        if lead and not glue and _tier(lead.casefold()) is None:
-            return _hidden(text, shape)  # "Visa1234", "INR2500": only a code noun may touch its number ("OTP482913")
+        if lead and _tier(lead.casefold()) is None and (not glue or glue in '-‐' and len(lead) > 3):
+            # "Visa1234", "INR2500", "ABCD-482913": only a code noun may touch its number ("OTP482913"), and
+            # only a short prefix may take a hyphen ("G-482913").
+            return _hidden(text, shape)
         if not lead and not trail and (before.endswith('+') or '%' in close or any(
                 unicodedata.category(ch) == 'Sc' for ch in before + close)):
             return _Word('number', text, bullets, digits=True, after=close)  # a phone number or an amount by its sign
@@ -267,13 +374,15 @@ def _classify(text: str) -> _Word:
 def _words(text: str) -> list[list[_Word]]:
     """The text as lines of words.
 
-    A spaced word can hold an odd space or a pictograph ("code\u00a0482913"). Its parts are read one by one, but
-    its plain parts show only when every part is plain: nothing glued to a link or a number is ever shown.
+    Only a space ends a spaced word. A tab, an odd space or a pictograph inside it cuts it into parts, which
+    are read one by one; but its plain parts show only when every part is plain. So nothing glued to a link, a
+    number or loose punctuation is ever shown. A link can also run on across a line break (programs that open
+    links drop tabs and line breaks), so the word that starts the line after a link is not shown.
     """
     lines = []
     for line in re.split(r'[\n\r]+', text):
         words = []
-        for raw in re.split(r'[ \t]+', line):
+        for raw in line.split(' '):
             parts = []
             for part, odd in _clean(raw):
                 parts.append(_classify(part))
@@ -285,13 +394,21 @@ def _words(text: str) -> list[list[_Word]]:
                 number = any(part.kind in {'bare', 'number'} or part.doubt for part in parts)
                 parts = [_Word('hidden', joined, '[link]' if link else '[hidden]', after=parts[-1].after,
                                digits=any(part.digits for part in parts), doubt='no-code' if number else '')]
-            elif len(parts) > 1 and any(part.kind in {'bare', 'number'} for part in parts):
+            elif len(parts) > 1 and not all(part.kind == 'plain' for part in parts):
                 for part in parts:
                     if part.kind == 'plain':
                         part.shown = '[hidden]'
             words.extend(parts)
         if words:
             lines.append(words)
+    runs_on = False
+    for upper, lower in zip(lines, lines[1:]):
+        # After a link, or a link sign, at the end of a line; and on through a line that is one such word.
+        last = upper[-1]
+        runs_on = (last.shown == '[link]' or last.kind != 'plain' and last.text[-1] in _LINK + '#:'
+                   or runs_on and len(upper) == 1 and last.kind == 'plain')
+        if runs_on and lower[0].kind == 'plain':
+            lower[0].shown = '[hidden]'
     return lines
 
 
@@ -324,10 +441,9 @@ def _numbers(line: list[_Word]) -> None:
 def _stream(lines: list[list[_Word]]) -> list[tuple]:
     """The words as label grammar tokens.
 
-    ('w', word) and, for a plain word, its spelling; ('n', word) for a candidate or a number in doubt,
-    ('n', None) for any other number; (':',) for
-    "Label: N"; ('|', 'stop' / 'comma' / 'line') where a clause ends; ('h',) a word the broker does not
-    read; ('x',) other punctuation.
+    ('w', word) and, for a plain word, the word itself; ('n', word) for a number; ('h', word) for a word the
+    broker does not read; (':',) for "Label: N"; ('|', 'stop' / 'comma' / 'line') where a clause ends; ('x',)
+    other punctuation.
     """
     out: list[tuple] = []
 
@@ -340,7 +456,8 @@ def _stream(lines: list[list[_Word]]) -> list[tuple]:
     for line in lines:
         for word in line:
             if word.kind == 'plain':
-                out.append(('w', word.core, word.text))
+                # "TAN" in capitals is the German code noun; "tan" is a Spanish word.
+                out.append(('w', 'mtan' if word.core == 'tan' and word.text.isupper() else word.core, word))
                 marks(word.after)
             elif word.kind == 'punct':
                 if all(ch in ':-‐–—=>' for ch in word.text):
@@ -350,7 +467,9 @@ def _stream(lines: list[list[_Word]]) -> list[tuple]:
                 else:
                     out.append(('x',))
             elif word.kind == 'bare':
-                if word.lead:
+                if word.lead and not (word.value or _tier(word.lead) is not None):
+                    pass  # "XK-48": one written word, and no number the broker types
+                elif word.lead:
                     out.append(('w', word.lead))
                     if any(ch in _END for ch in word.front):
                         out.append(('|', 'stop'))
@@ -359,7 +478,7 @@ def _stream(lines: list[list[_Word]]) -> list[tuple]:
                 else:
                     marks(word.front)
                 if not word.part:
-                    out.append(('n', word if word.value or word.doubt else None))
+                    out.append(('n', word))
                 marks(word.close)
                 if word.trail:
                     out.append(('w', word.trail))
@@ -373,7 +492,7 @@ def _stream(lines: list[list[_Word]]) -> list[tuple]:
                             ('w', word.text[match.start(2):match.end(2)].casefold())))
                 marks(match.group(3))
             else:
-                out.append(('n', word if word.doubt else None) if word.digits else ('h',))
+                out.append(('n' if word.digits else 'h', word))
                 marks(word.after)
         out.append(('|', 'line'))
     return out
@@ -397,22 +516,48 @@ def _tier(core: str) -> str | None:
     return 'self' if _strong('-'.join(modifiers)) or all(_strong(m) for m in modifiers) else None
 
 
+def _ordinary(core: str, secret: bool = False) -> bool:
+    """A word that texts put next to a code noun without it being the code: "valid", "with", "expires".
+
+    After "password is" (``secret``) only the closed classes and a few words count: a password can be any word.
+    """
+    parts = [part.strip("'") for part in core.split('-') if part.strip("'")]
+    if len(parts) != 1:
+        return bool(parts) and all(_ordinary(part, secret) for part in parts)
+    core = parts[0]
+    if core in _CLOSED or core in _SAID_OF_SECRET:
+        return True
+    if secret:
+        return False
+    if core in _SAID or core in _UNITS or _tier(core) is not None:
+        return True
+    for ending in ('ing', 'ed', 'es', 's', 'd'):  # "expires", "shared", "entering"
+        base = core[:-len(ending)]
+        if core.endswith(ending) and len(base) > 2 and (
+                base in _SAID or base + 'e' in _SAID or base.endswith('i') and base[:-1] + 'y' in _SAID):
+            return True
+    return False
+
+
 class _Labels:
-    """Which numbers of a token stream stand in a code label position.
+    """Where the labels of a token stream point.
 
-    Strict: the label is a verification code noun that no unknown word
-    modifies, a "use/enter N to" order or "verify with N". Unknown wording
-    points at nothing. Only a strict label can select a code among several.
+    A label is a code noun with what goes with it ("Your Google verification code is", "OTP:"), or an order
+    ("Use ... to", "verify with ..."). ``slot`` tells whether a token stands in a label's value position.
 
-    Loose: any code noun in the same positions ("ZIP code 90210", "Your PIN is
-    1234", "1234 is your Example code"), a verification word or an unreadable
-    word right before the number ("Verification: 482913"), a number listed
-    after another number and a number alone in its clause. A loose label never
-    selects a code. It stops another number from being selected.
+    'strict': the noun is a verification code noun that no unknown word modifies, in a fixed sentence form.
+    Only a strict label can select a code among several numbers.
+
+    'named': any code noun or secret noun in the same forms ("ZIP code 90210", "Your PIN is", "Your Lyft code
+    is"). What stands in such a position is taken for the code that the text gives.
+
+    'loose': also a code noun anywhere before "is N" in the clause, a verification word or an unreadable word
+    right before the number, a number listed after another number and a number alone in its sentence. A named
+    or loose label never selects a code. It stops another number from being selected.
     """
 
-    def __init__(self, stream: list[tuple], loose: bool = False) -> None:
-        self.stream, self.loose = stream, loose
+    def __init__(self, stream: list[tuple], mode: str = 'strict') -> None:
+        self.stream, self.mode = stream, mode
 
     def token(self, i: int) -> tuple:
         return self.stream[i] if 0 <= i < len(self.stream) else ('|', 'line')
@@ -425,24 +570,44 @@ class _Labels:
 
     def rival(self, i: int) -> bool:
         """Token ``i`` is a candidate or a number in doubt."""
-        return self.kind(i) == 'n' and self.token(i)[1] is not None
+        return self.kind(i) == 'n' and bool(self.token(i)[1].value or self.token(i)[1].doubt)
 
     def edge(self, i: int) -> bool:
+        """Token ``i`` ends a sentence or a line (or the text)."""
         return self.token(i) in (('|', 'stop'), ('|', 'line'))
+
+    def end(self, p: int) -> int:
+        """The token that ends the sentence of token ``p``."""
+        while not self.edge(p):
+            p += 1
+        return p
+
+    def back(self, i: int) -> int:
+        """The token before ``i``. A line break or a comma is no new start: "postal" still modifies "code"."""
+        return i - 2 if self.token(i - 1) in (('|', 'line'), ('|', 'comma')) else i - 1
+
+    def stage(self, i: int) -> int:
+        """0 for a function word, 2 for a verification word, 1 for any other word (a name)."""
+        word = self.word(i)
+        if _strong(word) or (word, self.word(i + 1)) in _STRONG_PAIRS or (self.word(i - 1), word) in _STRONG_PAIRS:
+            return 2
+        return 0 if word in _FUNCTION else 1
 
     def strong_before(self, i: int) -> bool:
         """A verification word right before token ``i`` ("verification", "one time")."""
-        return self.kind(i - 1) == 'w' and (_strong(self.word(i - 1)) or _tier(self.word(i - 1)) == 'self'
-                                            or (self.word(i - 2), self.word(i - 1)) in _STRONG_PAIRS)
+        j = self.back(i)
+        return self.kind(j) == 'w' and (_strong(self.word(j)) or _tier(self.word(j)) == 'self'
+                                        or (self.word(self.back(j)), self.word(j)) in _STRONG_PAIRS)
 
     def noun(self, i: int) -> bool:
-        """Token ``i`` is a code noun that an unknown word does not modify ("ZIP code" is not one)."""
+        """Token ``i`` is a label noun; in strict mode one that an unknown word does not modify ("ZIP code")."""
         tier = _tier(self.word(i))
-        if tier is None or tier == 'self' or self.loose:
-            return tier is not None and (tier == 'self' or self.loose)
-        if self.strong_before(i):
+        if tier is None:
+            return False
+        if self.mode != 'strict' or tier == 'self' or self.strong_before(i):
             return True
-        return tier == 'code' and (self.kind(i - 1) in '|:' or self.word(i - 1) in _FUNCTION)
+        j = self.back(i)
+        return tier == 'code' and (self.kind(j) in '|:' or self.word(j) in _FUNCTION)
 
     def phrase(self, i: int) -> int:
         """The last token of the noun phrase that starts with noun ``i`` ("código de verificación")."""
@@ -450,76 +615,182 @@ class _Labels:
             return i + 2
         return i
 
-    def ends_phrase(self, i: int) -> bool:
-        """Token ``i`` ends a code noun phrase."""
-        if self.noun(i) or self.loose and _strong(self.word(i)):
-            return True
-        return _strong(self.word(i)) and self.word(i - 1) in _OF and _tier(self.word(i - 2)) is not None
+    def head(self, i: int) -> int:
+        """The noun of the label phrase that ends at token ``i``, or -1."""
+        if self.noun(i):
+            return i
+        if _strong(self.word(i)) and self.word(i - 1) in _OF and _tier(self.word(i - 2)) is not None:
+            return i - 2
+        if self.mode != 'strict' and self.named(i):
+            return i - 1  # "Votre code Example est 482913": the name stands after the noun
+        return i if self.mode == 'loose' and _strong(self.word(i)) else -1  # "Verification: 482913"
 
-    def before(self, p: int) -> bool:
-        """"code 482913", "code: 482913", "code is 482913", "code is: 482913"."""
-        i = p - 1
+    def named(self, i: int) -> bool:
+        """Token ``i`` is one unknown word right after a label noun, such as a service name."""
+        return (self.kind(i) == 'w' and not _ordinary(self.word(i)) and _tier(self.word(i - 1)) is not None
+                and self.stage(i) == 1)
+
+    def before(self, p: int) -> tuple | None:
+        """("weak" or "strong", noun) when a label ends right before token ``p``.
+
+        Weak: "code 482913". Strong: "code is 482913", "code: 482913", and the same with the value on the next
+        line. Ordinary words can stand between the noun and the colon or "is": "code is in this message: 482913",
+        "the code you requested is 482913".
+        """
+        i, strong, colon = p - 1, False, False
         if i > 0 and self.token(i) == ('|', 'line') and (self.kind(i - 1) == ':' or self.word(i - 1) in _COPULA):
             i -= 1  # "Your code is:" and the code on the next line
         if self.kind(i) == ':':
-            i -= 1
-        if self.loose and (self.kind(i) == 'h' or self.rival(i) or self.rival(i - 1) and (
+            i, strong, colon = i - 1, True, True
+        if self.mode == 'loose' and (self.kind(i) == 'h' or self.rival(i) or self.rival(i - 1) and (
                 self.word(i) in _AND or self.token(i) == ('|', 'comma'))):
-            return True  # after a word the broker cannot read, or listed after another possible code
-        if self.word(i) in _COPULA:
-            i -= 1
-        return self.ends_phrase(i)
+            return 'weak', -1  # after a word the broker cannot read, or listed after another possible code
+        if colon and self.mode == 'named' and _strong(self.word(i)) and self.head(i) < 0:
+            return 'strong', i  # "Verification: HXKQWP": a verification word and a colon make a label
+        reach, far, name = 0, 6, self.mode != 'strict'  # outside strict mode one unknown word may stand between
+        if not colon and self.word(i) in _COPULA:
+            i, strong, far = i - 1, True, 3
+        while strong and reach < far and self.kind(i) == 'w' and self.head(i) < 0 and (
+                _ordinary(self.word(i)) or name) and (colon or self.word(i) not in _BUT):
+            i, reach, name = i - 1, reach + 1, name and _ordinary(self.word(i))
+        noun = self.head(i)
+        return ('strong' if strong else 'weak', noun) if noun >= 0 else None
 
-    def after(self, p: int) -> bool:
-        """"482913 is your Google verification code"."""
-        if self.word(p + 1) not in _COPULA:
-            return False
+    def direct(self, p: int) -> bool:
+        """Token ``p`` stands right after "<label> is" or "<label>:", with no word between."""
+        i = p - 1 - (self.kind(p - 1) == ':')
+        return i < p - 1 and self.head(i - (self.word(i) in _COPULA)) >= 0 or (
+            self.word(p - 1) in _COPULA and self.head(p - 2) >= 0)
+
+    def after(self, p: int) -> int:
+        """The noun when token ``p`` is the subject of "... is your Google verification code", else -1.
+
+        Also "482913 - your Example verification code" when the noun ends the sentence.
+        """
+        dash = self.kind(p + 1) == ':' and self.mode != 'loose'
+        if self.word(p + 1) not in _COPULA and not dash:
+            return -1
         stage = 0  # the words up to the noun, in this order: function words, one name, verification words
         for i in range(p + 2, p + 8):
             word = self.word(i)
             if self.kind(i) != 'w' or word in _NEGATION:
-                return False
+                return -1
             if _tier(word) is not None and not (_strong(word) and _tier(self.word(i + 1)) is not None):
+                if self.mode == 'loose':
+                    return i
                 rest = self.phrase(i) + 1
-                return self.noun(i) and (self.loose or self.kind(rest) != 'w' or self.word(rest) in _FUNCTION)
-            now = 2 if _strong(word) or (word, self.word(i + 1)) in _STRONG_PAIRS or (
-                self.word(i - 1), word) in _STRONG_PAIRS else 0 if word in _FUNCTION else 1
-            if not self.loose and (now < stage or now == stage == 1):
-                return False
+                if dash and not (self.edge(rest) and not self.rival(rest + 1)):
+                    return -1  # "Example: your code is 482913", "EXAMPLE - your code" and the code on the next line
+                return i if self.noun(i) and (self.kind(rest) != 'w' or self.word(rest) in _FUNCTION) else -1
+            now = self.stage(i)
+            if self.mode != 'loose' and (now < stage or now == stage == 1):
+                return -1
             stage = now
-        return False
+        return -1
 
     def order(self, p: int) -> bool:
         """"Use 482913 to sign in", "Enter 482913.", "Verify with 482913"."""
-        i = p - 2 if self.kind(p - 1) == ':' else p - 1
+        first = last = p
+        while self.kind(p) == 'n' and self.kind(first - 1) == 'n':
+            first -= 1  # "Use 12 34 56 to verify": the order has the whole run of numbers as its object
+        while self.kind(p) == 'n' and self.kind(last + 1) == 'n':
+            last += 1
+        i = first - 2 if self.kind(first - 1) == ':' else first - 1
         if self.word(i) in _IMPERATIVE:
-            return self.loose or self.kind(p + 1) == '|' or self.word(p + 1) in _PARTICLE
+            return self.mode == 'loose' or self.kind(last + 1) == '|' or self.word(last + 1) in _PARTICLE
         return self.word(i) in _WITH and (self.word(i - 1) in _VERIFY
                                           or (self.word(i - 2), self.word(i - 1)) in _STRONG_PAIRS)
 
-    def predicate(self, p: int) -> bool:
-        """"Your OTP for card ending 4321 is 482913": the clause starts with the code noun and ends in "is N"."""
+    def phrases(self, k: int, end: int) -> bool:
+        """Tokens ``k`` to ``end`` are prepositional phrases and nothing else: "for card ending 4321"."""
+        if k >= end:
+            return False
+        while k < end:
+            if self.word(k) not in _PREPOSITION:
+                return False
+            k += 1
+            while k < end and self.word(k) in _DETERMINER:
+                k += 1
+            content = 0
+            while k < end and self.word(k) not in _PREPOSITION:
+                if self.word(k) in _DETERMINER or self.word(k) in _BREAK or self.word(k) in _UNITS:
+                    return False  # "... and your reference is 1234", "expires in five minutes": a new clause
+                k, content = k + 1, content + 1
+            if not 1 <= content <= 6:
+                return False
+        return True
+
+    def predicate(self, p: int) -> int:
+        """The noun when the clause is "<label> for ... is <p>" ("Your OTP for card ending 4321 is 482913")."""
         i = p - 2 if self.kind(p - 1) == ':' else p - 1
         if self.word(i) not in _COPULA:
-            return False
+            return -1
         start = i
         while self.kind(start - 1) not in '|:':
             start -= 1
-        if self.loose:
-            return any(_tier(self.word(j)) is not None for j in range(start, i))
+            if i - start > MAX_CLAUSE:
+                return -1  # no label reaches that far; and the reading time stays linear
+        if self.mode == 'loose':
+            return next((j for j in range(start, i) if _tier(self.word(j)) is not None), -1)
+        stage = 0
         for j in range(start, i):
-            if self.kind(j) != 'w':
-                return False
-            if _tier(self.word(j)) is not None:
-                rest = self.phrase(j) + 1
-                return self.noun(j) and rest < i and self.word(rest) in _PREPOSITION
-            if self.word(j) not in _FUNCTION and not _strong(self.word(j)) and self.word(j) not in {'one', 'time'}:
-                return False
-        return False
+            word = self.word(j)
+            if self.kind(j) != 'w' or word in _NEGATION:
+                return -1
+            if _tier(word) is not None and not (_strong(word) and _tier(self.word(j + 1)) is not None):
+                return j if self.noun(j) and self.phrases(self.phrase(j) + 1, i) else -1
+            now = self.stage(j)
+            if now < stage or now == stage == 1:
+                return -1
+            stage = now
+        return -1
+
+    def nextline(self, p: int) -> int:
+        """The noun when token ``p`` starts a line and the line before it is a label and nothing else."""
+        if self.token(p - 1) != ('|', 'line'):
+            return -1
+        noun = self.head(p - 2)
+        k, stage = noun - 1, 2
+        while noun >= 0 and self.kind(k) == 'w':
+            now = self.stage(k)
+            if self.word(k) in _NEGATION or now > stage or now == stage == 1:
+                return -1
+            k, stage = k - 1, now
+        return noun if noun >= 0 and self.kind(k) == '|' else -1
+
+    def slot(self, p: int) -> tuple | None:
+        """(form, strength, noun) when token ``p`` stands in a label's value position."""
+        found = self.before(p)
+        if found:
+            return ('before', *found)
+        for form in (self.after, self.predicate, self.nextline):
+            noun = form(p)
+            if noun >= 0:
+                return form.__name__, 'strong', noun
+        return ('order', 'order', -1) if self.order(p) else None
 
     def labelled(self, p: int) -> bool:
-        alone = self.loose and self.edge(p - 1) and self.edge(p + 1)  # the only thing in its sentence or line
-        return alone or self.before(p) or self.after(p) or self.order(p) or self.predicate(p)
+        """Number ``p`` has a label of this mode."""
+        if self.slot(p):
+            return True
+        # Loose also: the only thing in its sentence, or what "It is ..." gives.
+        return self.mode == 'loose' and (self.edge(p - 1) and self.edge(p + 1) or self.anaphor(p))
+
+    def anaphor(self, p: int) -> bool:
+        """"It is <p>", in a text that names a code elsewhere."""
+        return self.word(p - 1) in _COPULA and self.word(p - 2) == 'it' or self.word(p - 1) == "it's"
+
+    def explained(self, p: int) -> bool:
+        """Candidate ``p`` stands in a known place that is not a code's place."""
+        value, before, earlier = self.token(p)[1].value, self.word(p - 1), self.word(p - 2)
+        if before in _TO and (earlier in _OPTOUT or earlier == 'all' and self.word(p - 3) in _OPTOUT):
+            return True  # "Reply STOP to 89203"
+        sign = self.token(p - 1)[2].text if len(self.token(p - 1)) == 3 else '(c)'
+        if (before == 'copyright' or before == 'c' and sign.casefold() == '(c)') and re.fullmatch(
+                '(?:19|20)[0-9]{2}', value):
+            return True  # "(c) 2026 Example Ltd"
+        return (before in _UNTIL and earlier in _EXPIRY
+                and re.fullmatch('(?:[01][0-9]|2[0-3])[0-5][0-9]', value) is not None)  # "Expires at 1845"
 
 
 def _fit(text: str, characters: int, encoded: int) -> str:
@@ -554,15 +825,17 @@ def read(text: object) -> Reading:
 
     The code is None unless the text has a verification word and either one
     candidate number, or one candidate with a strict label and no other number
-    in any label position. Two labelled numbers, a code noun that points at
-    something the broker cannot type ("code is AB12CD", "code is HXKQWP",
-    "code is 12 34 56"), a labelled number of unclear extent ("code is 1234
-    5678") and an unlabelled code among other numbers all give None: the text
-    is dropped, never guessed.
+    in any label position. Two labelled numbers, a labelled number of unclear
+    extent ("code is 1234 5678") and an unlabelled code among other numbers
+    give None. So does any label, strict or not, whose value position holds
+    something the broker cannot type: "code is HXKQWP", "Your Lyft code is
+    AB12CD", "PIN is 123", "Use AB12CD to verify", "password is MapleRiver".
+    The text is dropped, never guessed.
 
     The preview holds plain words, bullets, "[code]" where the chosen code
     stands, and placeholders. It never holds a numeral, nor any character of
-    a spaced word that is more than letters and ordinary punctuation.
+    a spaced word that is more than letters and ordinary punctuation, nor an
+    unknown word in a label's value position.
     """
     if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
         return Reading(None, 'empty', '')
@@ -573,7 +846,7 @@ def read(text: object) -> Reading:
 
 
 def _read(text: str) -> Reading:
-    lines = _words(text.lstrip('\ufeff'))
+    lines = _words(text.lstrip(chr(0xFEFF)).replace('©', ' (c) '))
     for line in lines:
         _numbers(line)
     stream = _stream(lines)
@@ -582,37 +855,103 @@ def _read(text: str) -> Reading:
     return Reading(code, result, _preview(lines, code))
 
 
+def _harmless(labels: _Labels, p: int, strength: str) -> bool:
+    """Number ``p`` stands in a value position but is clearly no code: a link, a time span, a menu choice."""
+    word = labels.token(p)[1]
+    if word.kind == 'hidden':
+        link = any(ch in _LINK for ch in word.text) and not labels.direct(p)  # "Your code: https://...": no code
+        return link or bool(_SPAN.fullmatch(word.text.casefold().strip(_OPEN + _CLOSE)))
+    if word.kind != 'bare' or word.lead or word.trail or len(word.groups) != 1:
+        return False
+    size = len(word.groups[0])
+    return size <= 3 and labels.word(p + 1) in _UNITS or (
+        strength == 'order' and size <= 2 and labels.kind(p + 1) != 'n')  # "Enter 1 to confirm"
+
+
+def _letters(labels: _Labels, p: int, form: str, strength: str, noun: int, lower: bool) -> str:
+    """Grade the word in value position ``p``, and hide it unless it is ordinary.
+
+    '' for an ordinary word ("valid", "with"): the label gives no value there. Otherwise the word may be a code
+    in letters. 'marked': written as a value ("HXKQWP", "MapleRiver"); the text gives it as the code. 'firm':
+    after "is" or a colon ("code is hxkqwp"); only a number with a strict label stands against it. 'soft':
+    right after the noun or an order ("code hxkqwp expires"); a number with no label does not stand against it.
+    After "password is" a value can be a phrase ("the quick brown fox"), so the first word that is not a function
+    word counts.
+    """
+    secret = strength == 'strong' and noun >= 0 and _tier(labels.word(noun)) == 'weak'
+    phrased = secret and labels.word(noun).split('-')[-1] in _PHRASED
+    end = labels.end(p)
+    for q in range(p, end if phrased else p + 1):
+        token = labels.token(q)
+        if token[0] == 'h' and not (any(ch in _LINK for ch in token[1].text) and not labels.direct(q)):
+            break  # a link after other words is not a code; any other unread word may be one
+        if token[0] == 'w' and not _ordinary(token[1], secret):
+            break
+        if token[0] == 'w' and token[1] not in _CLOSED:
+            return ''  # "password is valid ...": the text says something about it and does not give it
+    else:
+        return ''
+    if q == p and token[0] == 'w' and form == 'before':
+        k = p + 1 + (labels.word(p + 1) in _COPULA)
+        k += labels.kind(k) == ':'
+        if labels.rival(k) and (strength == 'weak' or k > p + 1):
+            # "Votre code Example est 482913", "OTP HDFC 482913", "Votre code est prêt : 482913": a name or a
+            # word that the lists lack, inside the label; the number that follows is the value.
+            return ''
+    raw = token[2].text if len(token) == 3 else token[1].text if token[0] == 'h' else token[1]
+    capitals = raw.isupper() and sum(ch.isalpha() for ch in raw) > 1
+    marked = lower and (capitals or form != 'order' and any(ch.isupper() for ch in raw.lstrip(_OPEN)[1:]))
+    if q == p and form == 'after' and not marked and labels.kind(p - 1) not in '|:':
+        return ''  # "The following number is your code": the end of a longer subject, not a value
+    grade = 'marked' if marked else 'firm' if strength == 'strong' else 'soft'
+    for k in range(q, q + 1 if grade == 'soft' else end):
+        if len(labels.token(k)) == 3:
+            labels.token(k)[2].shown = '[hidden]'  # the value may be several words: none of them is shown
+    return grade
+
+
 def _choose(words: list[_Word], stream: list[tuple]) -> tuple[str | None, str]:
-    # The gate reads the words the labels read: plain words, "Code" in "Code:482913", "2FA". Never a link.
-    if not KEYWORDS.search(' '.join(token[1] for token in stream if token[0] == 'w')):
-        return None, 'no-code-word'
-    strict, loose = _Labels(stream), _Labels(stream, loose=True)
+    strict, named, loose = (_Labels(stream, mode) for mode in ('strict', 'named', 'loose'))
+    lower = any(len(token) == 3 and token[2].text != token[2].text.upper() for token in stream)
     values: set = set()      # each different number that could be the code
     selected: set = set()    # those with a strict label
     claimed: set = set()     # those with any label
-    lower = any(len(token) == 3 and token[2] != token[2].upper() for token in stream)
+    grades: set = set()      # what stands in value positions and is not a number the broker can type
     for p, token in enumerate(stream):
-        if len(token) == 3 and lower and token[2].isupper() and 4 <= sum(ch.isalpha() for ch in token[2]) <= 10 and (
-                strict.kind(p - 1) == ':' or strict.word(p - 1) in _COPULA) and strict.before(p):
-            return None, 'no-code'  # "Your code is HXKQWP": a code in letters; the broker types digits only
-        if token[0] != 'n':
+        kind = token[0]
+        if kind not in 'nwh':
             continue
-        word = token[1]
-        if word is None:
-            if strict.before(p) or strict.after(p) or strict.predicate(p):
-                return None, 'no-code'  # "code is AB12CD", "12 34 56 is your code": not a number the broker types
-            continue
-        # A number in doubt ("1234 5678", foreign numerals) competes like a candidate but can never be chosen.
-        value = word.value or id(word)
-        values.add(value)
-        if strict.labelled(p):
-            selected.add(value)
-        if loose.labelled(p):
-            claimed.add(value)
+        where = named.slot(p)
+        if kind == 'n' and (token[1].value or token[1].doubt):
+            claim = bool(where) or loose.labelled(p)
+            if not claim and token[1].value and named.explained(p):
+                continue  # an opt-out number, a copyright year, an expiry time
+            # A number in doubt ("1234 5678", foreign numerals) competes like a candidate but can never be chosen.
+            value = token[1].value or id(token[1])
+            values.add(value)
+            if strict.slot(p):
+                selected.add(value)
+            if claim:
+                claimed.add(value)
+        elif kind == 'n':
+            # "code is AB12CD", "PIN is 123", "Use AB12CD to verify", "code is 12 34 56": not typed by the broker.
+            if where and not _harmless(named, p, where[1]):
+                grades.add('marked')
+            elif not where and named.anaphor(p) and not _harmless(named, p, 'weak'):
+                grades.add('soft')  # "It is AB12CD"
+        elif where or named.anaphor(p):
+            grades.add(_letters(named, p, *(where or ('it', 'weak', -1)), lower))
     codes = {value for value in values if isinstance(value, str)}
+    # The gate reads the words the labels read: plain words, "Code" in "Code:482913", "2FA". Never a link.
+    if not KEYWORDS.search(' '.join(token[1] for token in stream if token[0] == 'w')):
+        return None, 'no-code-word'
+    if 'marked' in grades or 'firm' in grades and not selected & codes:
+        return None, 'no-code'
     if not codes:
         return None, next((word.doubt for word in words if word.doubt), 'no-code')
     if len(values) == 1:
+        if 'soft' in grades and not claimed:
+            return None, 'no-code'
         return next(iter(codes)), 'code'
     # Several numbers: one must carry a strict label, and no other may stand in any label position.
     if len(selected) == 1 and selected <= codes and not claimed - selected:

@@ -92,8 +92,9 @@ KIND --replace` issues a new URL (the old one stops working at once);
    Each row has `id`, `source`, `sender`, `preview`, `code_length`,
    `received_at` and `age_seconds`. The preview shows only plain words.
    `[code]` stands in the place of the code that akdbx will fill. Each digit
-   of any other number is `•`. `[link]` and `[hidden]` stand for links and
-   for words that are not only letters.
+   of any other number is `•`. `[link]` and `[hidden]` stand for links, for
+   words that are not only letters, and for a word in the place of a code
+   that akdbx does not know as an ordinary word.
 
    Pick the newest row whose sender and preview match this site and this
    attempt. Then make these two checks before you fill:
@@ -102,8 +103,10 @@ KIND --replace` issues a new URL (the old one stops working at once);
    - `code_length` is the number of digits that the page asks for.
 
    If a check fails, do not fill that row. If no row matches, the text has
-   not arrived, was not forwarded, or had more than one possible code and was
-   dropped (`sms-sources` shows `several-codes`); do not guess.
+   not arrived, was not forwarded, or was dropped; do not guess. `sms-sources`
+   shows why the last text was dropped: `several-codes` (more than one
+   possible code) or `no-code` (no code of 4 to 8 digits; this includes a
+   code in letters, which akdbx cannot type: ask the user for that code).
 3. Focus the code field, pin it and fill once:
 
    ```bash
@@ -134,6 +137,8 @@ site rejects the code, request one new text; stop after two rejected fresh codes
   `--notification-state` or in the per-user state folder).
 - The broker keeps only texts with exactly one verification code, in memory.
   When two numbers can be the code, it does not choose: it drops the text.
+  It also drops a text that gives its code in letters or in a form other
+  than 4 to 8 digits, even when the text has another number.
   It drops all other texts at once and never stores message bodies.
 - Inbound texts need an HTTPS origin that the phone or provider can reach:
   the akdbx relay (or another public origin). Tailscale-only origins work
