@@ -492,7 +492,7 @@ and the national number, and both formats accept a saved national number
 with a trunk `0` (`07...`) when `--calling-code` names a country whose trunk
 `0` is never part of the number (`TRUNK_ZERO`, from Google libphonenumber
 metadata; `tools/trunk_zero_table.py` prints it). Other countries, such as
-Italy, refuse instead of guessing. From 0.36.2 (fill extension 0.7.2), card
+Italy, refuse instead of guessing. From 0.36.3 (fill extension 0.7.2), card
 and identity pins on the extension route accept an ancestor `clip-path: inset(...)` (only `px` or
 `%` lengths, no `round`) when the field's whole border box lies inside the
 inset rectangle and nothing from that ancestor up scales, rotates, zooms,
@@ -594,7 +594,7 @@ Only production HTTPS `checkoutshopper-live.adyen.com` secured-field iframes
 attested by Chrome to the selected merchant tab are accepted. All intermediate
 merchant frames must be same-origin with the top page. The broker retains
 the input and iframe-owner elements in isolated worlds, refuses unsupported CSS
-transforms, motion paths, filters, masks (including Chromium mask-box images) and clip shapes (from 0.36.2 the extension route accepts an
+transforms, motion paths, filters, masks (including Chromium mask-box images) and clip shapes (from 0.36.3 the extension route accepts an
 ancestor `clip-path: inset(...)` that holds the whole input), and checks exact URLs,
 frame ancestry, identity and occlusion before and after dispatch, and preserves
 the single-use pin, deadline and receipt-only contract. Child input checks run

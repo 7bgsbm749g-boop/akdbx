@@ -128,11 +128,11 @@ field. It uses the retained DOM element and sends no keys, focus changes,
 clipboard data or form submission. Identity fills do not dispatch input or
 change events. A site that requires those events can need manual entry.
 
-### Field inside a clipped drawer or modal (0.36.2)
+### Field inside a clipped drawer or modal (0.36.3)
 
 Card and identity pins refuse a field when the field or an ancestor has CSS
 that can hide part of it: `clip`, masks, filters, `backdrop-filter`, a blend
-mode, and `clip-path`. From 0.36.2, the extension route (fill extension 0.7.2)
+mode, and `clip-path`. From 0.36.3, the extension route (fill extension 0.7.2)
 accepts one `clip-path`: `inset(...)` with only `px` or `%` lengths, on an HTML
 block or atomic inline element with one box, when the field's whole border box
 lies inside the inset rectangle of that element's border box (each inset
