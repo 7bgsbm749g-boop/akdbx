@@ -292,7 +292,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
   }
   if (!valid()) return null;
   const pinnedAt = performance.now();
-  return {node() { return el; },geometry() { return valid() || null; },fill(value, maxAgeMs) {
+  return {node() { return el; },geometry() { return valid() || null; },fill(value, maxAgeMs, notifyPage) {
     if (performance.now() - pinnedAt >= Math.min(30000, maxAgeMs) || !valid()) return 'refused';
     if ((computop || stripe) && field === 'cc-exp' && !/^[0-9]{2}\/[0-9]{2}$/.test(value)) return 'refused';
     if (identity && input && value.includes('\n')) return 'refused';
@@ -308,10 +308,19 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
     if (performance.now() - pinnedAt >= Math.min(30000, maxAgeMs)) return 'refused';
     if (selectIndex) {
       selectIndex.set.call(el, option.index);
-      return selectIndex.get.call(el) === option.index ? 'filled' : 'uncertain';
+    } else {
+      setter.call(el, actual);
     }
-    setter.call(el, actual);
-    if (identity) return getter.call(el) === actual ? 'filled' : 'uncertain';
+    if (identity) {
+      if (notifyPage === true) {
+        el.dispatchEvent(new Event('input', {bubbles:true}));
+        if (!valid()) return 'uncertain';
+        el.dispatchEvent(new Event('change', {bubbles:true}));
+        if (!valid()) return 'uncertain';
+      }
+      const retained = getter.call(el) === actual && (!selectIndex || el.options[el.selectedIndex] === option);
+      return retained ? 'filled' : 'uncertain';
+    }
     el.dispatchEvent(new Event('input', {bubbles:true}));
     el.dispatchEvent(new Event('change', {bubbles:true}));
     const accepted=getter.call(el);
@@ -480,7 +489,7 @@ class BrowserCards:
             raise CardTargetError()
         return pin
 
-    def fill(self, pin, value, field, ready, deadline=None):
+    def fill(self, pin, value, field, ready, deadline=None, *, notify_page=False):
         started = False
         try:
             if field != pin['field'] or not ready() or pin['expires'] <= self.clock():
@@ -499,8 +508,8 @@ class BrowserCards:
             max_age_ms = max(0, min(30000, (deadline - pin['created']) * 1000))
             started = True  # An unanswered RPC may already have changed the field.
             result = pin['cdp'].call('Runtime.callFunctionOn', dict(objectId=pin['obj'],
-                functionDeclaration='function(value, maxAgeMs) { return this.fill(value, maxAgeMs); }',
-                arguments=[dict(value=value), dict(value=max_age_ms)], returnByValue=True, silent=True), pin['session'])
+                functionDeclaration='function(value, maxAgeMs, notify) { return this.fill(value, maxAgeMs, notify); }',
+                arguments=[dict(value=value), dict(value=max_age_ms), dict(value=notify_page)], returnByValue=True, silent=True), pin['session'])
             state = result.get('result', {}).get('value') if 'exceptionDetails' not in result else None
             if state == 'refused':
                 return self._failure()

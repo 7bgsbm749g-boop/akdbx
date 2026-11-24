@@ -125,8 +125,12 @@ An absent saved value or missing or conflicting autocomplete token refuses,
 unless you give an explicit field purpose (below).
 The broker also refuses a hidden, unfocused, covered, ambiguous, or changed
 field. It uses the retained DOM element and sends no keys, focus changes,
-clipboard data or form submission. Identity fills do not dispatch input or
-change events. A site that requires those events can need manual entry.
+clipboard data or form submission. By default the fill sends no events.
+For a form that tracks edits, use
+`fill-identity --notify-page` to send bubbling `input` and `change` events
+on the pinned field after setting its value. The page can validate, advance,
+or submit the form in response. Check its non-secret state before continuing.
+This option requires fill extension 0.9.0 or newer on the extension route.
 
 ### Field inside a clipped drawer or modal (0.36.3)
 
