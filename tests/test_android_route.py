@@ -9,14 +9,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
-import stat
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
