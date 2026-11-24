@@ -536,6 +536,9 @@ def test_update_selects_a_unique_identity_under_an_ambiguous_group_path(deployed
     ('+49 000 000000', '000000000', '49'),
     ('+39 06 0000 0000', '0600000000', '39'),
     ('+852 0000 0000', '00000000', '852'),
+    ('+39 (0)6 0000 0000', '0600000000', '39'),
+    ('+33\u202f6\u202f00\u202f00\u202f00\u202f00', '600000000', '33'),
+    ('+44\u00a07000\u2009000000', '7000000000', '44'),
 ])
 def test_national_format_removes_only_the_country_calling_code(saved, national, code):
     from akdbx.identities import national_number
@@ -546,7 +549,8 @@ def test_national_format_removes_only_the_country_calling_code(saved, national, 
 
 
 @pytest.mark.parametrize('saved', ['07000 000000', '7000000000', '+44 7000 000000 ext 2', '+44', '+44 7000 (000000',
-                                   '+44 70OO 000000', '++44 7000 000000', '+44 7000 000000 0000 0000'])
+                                   '+44 70OO 000000', '++44 7000 000000', '+44 7000 000000 0000 0000',
+                                   '+44 20 7000 (0)000', '+44 (0)20 (0)7000 0000', '+0044 20 0000 0000', '+44 7000 000000\u200b'])
 def test_national_format_refuses_a_number_it_cannot_split_safely(saved):
     from akdbx.identities import national_number
     with pytest.raises(Exception):
