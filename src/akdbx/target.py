@@ -17,6 +17,10 @@ DELIVERY_TIMEOUT = 3.0
 
 SLOT_PROTOCOL = 1
 SLOT_X_TIMEOUT = 5.0
+# python-xlib waits for replies in select() with no timeout, so a socket
+# timeout cannot end a wait on a frozen server. Every slot connection is shut
+# down at this deadline; pins and fills finish well before it.
+SLOT_X_DEADLINE = 10.0
 
 
 def capabilities():
@@ -104,6 +108,14 @@ _SLOT = threading.local()
 _AUTH_HOOK = threading.Lock()
 
 
+def _shutdown(sock):
+    """End a slot connection's waits: select() returns, recv sees EOF, python-xlib raises."""
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass  # Already closed: a closed socket object has no descriptor left to touch.
+
+
 def _slot_auth(sock, dno):
     """Credentials for a slot display, only for a server of this user on a Unix socket.
 
@@ -122,6 +134,9 @@ def _slot_auth(sock, dno):
         raise error.XauthError('slot display server is not this user')
     # A frozen server must not hold a pin (and the broker's vault lock) for long.
     sock.settimeout(SLOT_X_TIMEOUT)
+    watchdog = threading.Timer(SLOT_X_DEADLINE, _shutdown, args=(sock,))
+    watchdog.daemon = True
+    watchdog.start()
     try:
         path = x11_cookie_file(pid)
     except (OSError, ValueError):

@@ -84,14 +84,41 @@ def uri(key):
     return parse_setup(key, label='synthetic-octocat').uri()
 
 
-def xauthority(path):
-    """One MIT-MAGIC-COOKIE-1 entry for this host and any display number (the Xauthority file format)."""
+def xauthority(path, number=None):
+    """One MIT-MAGIC-COOKIE-1 entry for this host and display `number` (any display if None)."""
     def field(data):
         return struct.pack('>H', len(data)) + data
-    entry = (struct.pack('>H', 256) + field(socket.gethostname().encode()) + field(b'')
+    entry = (struct.pack('>H', 256) + field(socket.gethostname().encode())
+             + field(b'' if number is None else str(number).encode())
              + field(b'MIT-MAGIC-COOKIE-1') + field(secrets.token_bytes(16)))
     path.write_bytes(entry)
     path.chmod(0o600)
+
+
+def free_display():
+    for number in range(180, 260):
+        if not os.path.exists(f'/tmp/.X11-unix/X{number}') and not os.path.exists(f'/tmp/.X{number}-lock'):
+            return number
+    pytest.skip('no free X display number for the synthetic slot display')
+
+
+def wait_for_cookie_server(xvfb, number, auth, monkeypatch):
+    """Return once the server takes a connection with the cookie; else stop it and fail."""
+    from Xlib import display as xdisplay
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            with monkeypatch.context() as patch:
+                patch.setenv('XAUTHORITY', str(auth))
+                xdisplay.Display(f':{number}').close()
+            return
+        except Exception:
+            if xvfb.poll() is not None or time.monotonic() > deadline:
+                if xvfb.poll() is None:
+                    os.killpg(xvfb.pid, signal.SIGKILL)  # This test's own disposable X server.
+                xvfb.wait(timeout=5)
+                raise AssertionError('synthetic slot X server did not accept its cookie')
+            time.sleep(.05)
 
 
 @pytest.fixture
@@ -100,19 +127,13 @@ def slot_lab(isolated_x11, tmp_path, template, monkeypatch):  # noqa: F811
     if not binary or not shutil.which('openssl'):
         pytest.skip('slot window pins need Chrome/Chromium, Xvfb and openssl')
     broker_display = os.environ['DISPLAY']
-    # The slot's own X server, which requires its cookie (as agent desktops run Xvfb -auth).
-    # It picks its own number (-displayfd), so only the server's -auth argument names the cookie.
+    # The slot's own X server, which requires its cookie (as agent desktops run Xvfb :N -auth FILE).
+    number = free_display()
     auth = tmp_path / 'slot-Xauthority'
-    xauthority(auth)
-    read_fd, write_fd = os.pipe()
-    xvfb = subprocess.Popen(['Xvfb', '-displayfd', str(write_fd), '-screen', '0', '800x600x24', '-nolisten', 'tcp',
-                             '-auth', str(auth)], pass_fds=(write_fd,), stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, start_new_session=True)
-    os.close(write_fd)
-    import select
-    assert select.select([read_fd], [], [], 10)[0], 'synthetic slot X server did not start'
-    number = int(os.read(read_fd, 32).decode().strip())
-    os.close(read_fd)
+    xauthority(auth, number)
+    xvfb = subprocess.Popen(['Xvfb', f':{number}', '-screen', '0', '800x600x24', '-nolisten', 'tcp', '-auth', str(auth)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    wait_for_cookie_server(xvfb, number, auth, monkeypatch)
     # Discovery sees only this test's two displays, never a real desktop of the host.
     from akdbx import browser_slots
     real_servers = browser_slots.x11_servers
@@ -151,7 +172,7 @@ def slot_lab(isolated_x11, tmp_path, template, monkeypatch):  # noqa: F811
     server = TLSServer(('127.0.0.1', 0), Handler)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
-    root = tmp_path / 'slots'
+    root = tmp_path / 'slot profiles'  # An operator root with a space (Chrome's title joins its arguments).
     root.mkdir(mode=0o700)
     profile = root / 'slot2'
     profile.mkdir(mode=0o700)
@@ -172,7 +193,6 @@ def slot_lab(isolated_x11, tmp_path, template, monkeypatch):  # noqa: F811
     try:
         from Xlib import X, Xatom
         from Xlib.error import XError
-        from akdbx.target import _connect
         deadline = time.monotonic() + 60
         while cdp is None and time.monotonic() < deadline:
             assert chrome.poll() is None, 'synthetic slot Chrome exited'
@@ -188,8 +208,12 @@ def slot_lab(isolated_x11, tmp_path, template, monkeypatch):  # noqa: F811
             page = pages[0]['targetId'] if pages else None
             time.sleep(.05)
         session = cdp.call('Target.attachToTarget', dict(targetId=page, flatten=True))['sessionId']
-        # The test's own view of the slot display, with the slot's cookie.
-        slot_x = _connect(f':{number}')
+        # The test's own long-lived view of the slot display, with the slot's cookie (not the broker's
+        # deadline-bound slot connection).
+        from Xlib import display as xdisplay
+        with monkeypatch.context() as patch:
+            patch.setenv('XAUTHORITY', str(auth))
+            slot_x = xdisplay.Display(f':{number}')
         xroot = slot_x.screen().root
         pid_atom = slot_x.intern_atom('_NET_WM_PID')
         window = None
@@ -382,11 +406,15 @@ def test_wrong_slot_pid_window_and_display_refuse_before_any_key(slot_lab):
 def test_a_focus_change_after_the_pin_refuses_the_fill(slot_lab):
     lab = slot_lab
     open_page(lab, VERIFY)
-    focus_code_field(lab)
-    pinned = pin(lab)
-    assert pinned['ok']
-    lab.activate(lab.other)  # Another window takes the slot display's focus.
-    response = fill(lab, pinned['target'], VERIFY, pending=True)
+    for _ in range(2):
+        focus_code_field(lab)
+        pinned = pin(lab)
+        assert pinned['ok']
+        lab.activate(lab.other)  # Another window takes the slot display's focus.
+        response = fill(lab, pinned['target'], VERIFY, pending=True)
+        if 'retry_after' not in response:
+            break
+        time.sleep(response['retry_after'] + .2)  # A code near expiry refuses first; try with a fresh one.
     assert response['ok'] is False and response['delivery'] == 'not-started'
     lab.activate(lab.window)
     assert field_empty(lab)
@@ -446,3 +474,81 @@ def test_a_slot_display_needs_its_cookie_and_a_local_peer_of_this_user(slot_lab)
             _slot_auth(tcp, lab.number)  # No cookie for anything but a local Unix peer of this user.
     finally:
         tcp.close()
+
+
+def test_a_unix_peer_of_another_user_gets_no_cookie(monkeypatch):
+    """The SO_PEERCRED user is checked before any cookie file is looked up."""
+    from Xlib import error
+    from akdbx import browser_slots, target
+
+    class ForeignPeer:
+        family = socket.AF_UNIX
+
+        def getsockopt(self, *_):
+            return struct.pack('3i', 4242, os.getuid() + 1, 0)
+
+    def no_lookup(_):
+        raise AssertionError('cookie file looked up for a foreign peer')
+    monkeypatch.setattr(browser_slots, 'x11_cookie_file', no_lookup)
+    with pytest.raises(error.XauthError):
+        target._slot_auth(ForeignPeer(), 101)
+
+
+def test_a_silent_x_server_ends_at_the_deadline(monkeypatch):
+    """A server that accepts and never answers cannot hold a slot connection (and the vault lock)."""
+    from akdbx import target
+    monkeypatch.setattr(target, 'SLOT_X_DEADLINE', 1.0)
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    for number in range(900, 1000):
+        if os.path.exists(f'/tmp/.X11-unix/X{number}'):
+            continue
+        try:
+            listener.bind(f'\0/tmp/.X11-unix/X{number}')  # python-xlib's abstract fallback name.
+            break
+        except OSError:
+            continue
+    else:
+        pytest.skip('no free abstract X socket name')
+    listener.listen(1)
+    accepted = []
+    worker = threading.Thread(target=lambda: accepted.append(listener.accept()[0]), daemon=True)
+    worker.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(Exception):
+            target._connect(f':{number}').close()
+        assert time.monotonic() - started < 5
+    finally:
+        listener.close()
+        for connection in accepted:
+            connection.close()
+
+
+def test_the_cookie_comes_from_the_connected_server_also_with_displayfd(tmp_path, monkeypatch):
+    """An Xvfb that picks its own number (-displayfd) has no :N in argv; its -auth still gives the cookie."""
+    import select
+    from akdbx import target
+    auth = tmp_path / 'displayfd-Xauthority'
+    xauthority(auth)
+    read_fd, write_fd = os.pipe()
+    xvfb = subprocess.Popen(['Xvfb', '-displayfd', str(write_fd), '-screen', '0', '320x240x24', '-nolisten', 'tcp',
+                             '-auth', str(auth)], pass_fds=(write_fd,), stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, start_new_session=True)
+    os.close(write_fd)
+    try:
+        try:
+            assert select.select([read_fd], [], [], 10)[0], 'synthetic X server did not start'
+            number = int(os.read(read_fd, 32).decode().strip())
+        finally:
+            os.close(read_fd)
+        wait_for_cookie_server(xvfb, number, auth, monkeypatch)
+        monkeypatch.delenv('XAUTHORITY', raising=False)  # Only the server's own -auth can give the cookie.
+        connection = target._connect(f':{number}')
+        try:
+            assert connection.screen().root.id > 0
+        finally:
+            connection.close()
+    finally:
+        if xvfb.poll() is None:
+            os.killpg(xvfb.pid, signal.SIGKILL)
+        xvfb.wait(timeout=5)
