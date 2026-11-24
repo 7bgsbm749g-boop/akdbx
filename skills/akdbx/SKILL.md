@@ -550,7 +550,13 @@ ask the user which one to use. Both give the user a private save page. Ask
 only for the fields the task needs: pass them with `--fields` (for example
 `--fields tel` for a phone number) so the page shows only those fields.
 `search-identities`,
-`pin-identity-target` and `fill-identity` fill one field at a time. Names,
+`pin-identity-target` and `fill-identity` fill one field at a time. A field
+with no autocomplete hint (or only `on`) needs `--field-purpose FIELD` after
+you verify its purpose on the page (`autocomplete="off"` also needs
+`--allow-autocomplete-off`); a hint for another detail still refuses. A phone
+input next to a separate country picker takes `fill-identity --format national
+--calling-code CODE`, which removes the `+` and country code (0.35.1;
+[identities](references/identities.md#field-without-an-autocomplete-hint-0351)). Names,
 addresses, phone numbers and emails never go in CLI arguments, output, logs or
 evidence. Fill does not submit the form.
 

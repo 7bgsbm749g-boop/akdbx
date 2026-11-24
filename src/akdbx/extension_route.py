@@ -94,6 +94,8 @@ CAPTURE_PROTOCOL = 1
 CAPTURE_DELIVERY = 'extension-dom-read-v1'
 # The first fill extension version that reads secrets and holds child-frame owners.
 CAPTURE_VERSION = (0, 4, 0)
+# Identity pins with an explicit field purpose (pin-identity-target --field-purpose).
+FIELD_PURPOSE_VERSION = (0, 7, 0)
 ROUTES = ('cdp', 'extension')
 BROWSERS = ('helium', 'chrome', 'edge')
 TTL = 30
@@ -354,8 +356,11 @@ class Channel:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def supports(self, version):
+        return self.version is not None and tuple(int(p) for p in self.version.split('.')) >= version
+
     def supports_capture(self):
-        return self.version is not None and tuple(int(p) for p in self.version.split('.')) >= CAPTURE_VERSION
+        return self.supports(CAPTURE_VERSION)
 
     def send(self, message):
         with self.send_lock:
@@ -988,12 +993,13 @@ class ExtensionHub:
                     truncated=len(records) > MAX_FRAMES)
 
     # ----- agent route: pins and delivery ---------------------------------
-    def _pin(self, kind, request, spec, frame_url=None, *, hardened=True):
+    def _pin(self, kind, request, spec, frame_url=None, *, hardened=True, needs=None):
         """Ask the browser to retain one element; return the browser facts and pin id.
 
         ``hardened``: the pin needs fill extension 0.4.0 or newer, which reads
         secrets and holds child-frame owners. An older extension would pin a
         child-frame login without the owner check, so it is refused.
+        ``needs``: the lowest fill extension version that applies this spec.
         """
         self.prune()
         channels, tab_id = self._channels_for(request)
@@ -1001,6 +1007,8 @@ class ExtensionHub:
                 or not DOCUMENT_ID.fullmatch(request['frame_id']) or not _text(request.get('top_url')):
             raise ExtensionError()
         if hardened and not channels[0].supports_capture():
+            raise ExtensionError()
+        if needs is not None and not channels[0].supports(needs):
             raise ExtensionError()
         with self._lock:
             if self._closed or len(self.pins) >= MAX_PINS:
@@ -1122,6 +1130,12 @@ class ExtensionHub:
         if kind == 'card' and 'processor' in request:
             allowed |= {'processor', 'processor_protocol'}
         fields = CARD_FIELDS if kind == 'card' else IDENTITY_FIELDS
+        from .browser_card import CardTargetError, field_purpose
+        try:
+            purpose, allow_off = field_purpose(kind, request)
+        except CardTargetError:
+            raise ExtensionError() from None
+        allowed |= set(request) & {'field_purpose', 'allow_autocomplete_off'}
         if (set(request) != allowed or request.get('route') != 'extension'
                 or type(request.get(protocol)) is not int or request[protocol] != 1
                 or request.get('field') not in fields or not _text(request.get('selector'))
@@ -1133,7 +1147,11 @@ class ExtensionHub:
             raise ExtensionError()
         _secure(request['top_url'])
         spec = dict(selector=request['selector'], field=request['field'], processor=processor)
-        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, request.get('frame_url'), hardened=False)
+        if purpose is not False:
+            # Fill extension 0.7.0 and newer apply the field purpose; an older one ignores it.
+            spec.update(field_purpose=purpose, allow_autocomplete_off=allow_off)
+        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, request.get('frame_url'), hardened=False,
+                                                            needs=FIELD_PURPOSE_VERSION if purpose is not False else None)
         try:
             if kind == 'card':
                 card_route(chain, processor)

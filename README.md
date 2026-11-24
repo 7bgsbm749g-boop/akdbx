@@ -437,7 +437,14 @@ the previous version stays in the entry history. `search-identities LABEL` retur
 only labels, group paths and single-use handles. Login search excludes these
 records. `pin-identity-target` and `fill-identity` deliver one field to a
 verified and focused Chromium DOM element without using keys or submitting
-the form. See [identity workflows](skills/akdbx/references/identities.md) for
+the form. From 0.35.1, `pin-identity-target --field-purpose FIELD` (with
+`--allow-autocomplete-off` for `off`) pins a field that has no autocomplete
+token after the agent verified its purpose; a token for another detail still
+refuses (`identity_field_purpose_protocol: 1`, fill extension 0.7.0 on the
+extension route). `fill-identity --field tel --format national
+[--calling-code CODE]` removes the `+` and country calling code for a phone
+input next to a separate country picker (`identity_tel_formats`). See
+[identity workflows](skills/akdbx/references/identities.md) for
 supported fields, target discovery and example commands.
 
 ## Payment cards (0.14.0)

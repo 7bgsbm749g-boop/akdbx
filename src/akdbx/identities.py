@@ -37,10 +37,68 @@ FIELDS_PROTOCOL = 1
 # update-identity: add or change chosen fields of one selected identity.
 UPDATE_PROTOCOL = 1
 FAILED = 'identity operation failed'
+# pin-identity-target ``field_purpose`` (and ``allow_autocomplete_off``): the agent
+# verified the field's purpose on a field without a matching autocomplete token.
+FIELD_PURPOSE_PROTOCOL = 1
+# fill-identity ``format`` for tel: ``national`` removes the country calling code.
+TEL_FORMATS = ('national',)
+# Two-digit country calling codes (ITU-T E.164). Codes that start with 1 or 7
+# have one digit; every other code has three. The set of codes is prefix-free,
+# so these rules split any international number without a full table.
+TWO_DIGIT_CODES = frozenset(
+    '20 27 30 31 32 33 34 36 39 40 41 43 44 45 46 47 48 49 51 52 53 54 55 56 57 58 '
+    '60 61 62 63 64 65 66 81 82 84 86 90 91 92 93 94 95 98'.split())
 
 
 def capabilities():
-    return dict(identity_fields_protocol=FIELDS_PROTOCOL, identity_update_protocol=UPDATE_PROTOCOL)
+    return dict(identity_fields_protocol=FIELDS_PROTOCOL, identity_update_protocol=UPDATE_PROTOCOL,
+                identity_field_purpose_protocol=FIELD_PURPOSE_PROTOCOL, identity_tel_formats=list(TEL_FORMATS))
+
+
+def calling_code(digits):
+    """The country calling code at the start of an international number's digits."""
+    if digits[:1] in {'1', '7'}:
+        return digits[:1]
+    return digits[:2] if digits[:2] in TWO_DIGIT_CODES else digits[:3]
+
+
+def national_number(value, expected_code=None):
+    """The national number of a saved international phone number, digits only.
+
+    The saved value must start with ``+`` or ``00`` and the country calling code.
+    Spaces, hyphens, dots, slashes and brackets are dropped, and so is a ``(0)``
+    trunk prefix (as in ``+44 (0)20 ...``). Anything else refuses, so a value
+    with an extension or letters is never cut short. ``expected_code`` (digits)
+    must equal the number's calling code, for a separate country picker that
+    already shows it.
+    """
+    text = value.strip()
+    if text.startswith('+'):
+        text = text[1:]
+    elif text.startswith('00'):
+        text = text[2:]
+    else:
+        raise WriteError()
+    text = re.sub(r'\(\s*0\s*\)', '', text, count=1)
+    if not re.fullmatch(r'[0-9 ().\-/\u00a0]+', text) or text.count('(') != text.count(')'):
+        raise WriteError()
+    digits = re.sub(r'[^0-9]', '', text)
+    code = calling_code(digits)
+    national = digits[len(code):]
+    if (len(code) < 1 or not 4 <= len(national) <= 14 or len(digits) > 15
+            or expected_code is not None and expected_code != code):
+        raise WriteError()
+    return national
+
+
+def formatted(value, field, formatting, expected_code):
+    if formatting is None:
+        if expected_code is not None:
+            raise WriteError()
+        return value
+    if field != 'tel' or formatting not in TEL_FORMATS:
+        raise WriteError()
+    return national_number(value, expected_code)
 
 
 def requested_fields(request):
@@ -124,13 +182,20 @@ class IdentityManager:
                 pin = targets.consume(request.get('target'))
                 try:
                     deadline = request.get('start_deadline')
+                    expected_code = request.get('calling_code')
                     if (entry is None or not _protocol_ok(request)
-                            or set(request) != {'action', 'identity_protocol', 'handle', 'target', 'field', 'start_deadline'}
+                            or set(request) - {'format', 'calling_code'}
+                            != {'action', 'identity_protocol', 'handle', 'target', 'field', 'start_deadline'}
+                            or 'format' in request and request['format'] not in TEL_FORMATS
+                            or 'calling_code' in request and (
+                                'format' not in request or not isinstance(expected_code, str)
+                                or not re.fullmatch('[1-9][0-9]{0,2}', expected_code))
                             or type(deadline) not in {int, float}
                             or not self.broker.clock() < deadline <= self.broker.clock() + 4
                             or request['field'] != pin['field'] or not ready()):
                         return failure(kind='identity')
-                    value = _value_for(entry, request['field'])
+                    value = formatted(_value_for(entry, request['field']), request['field'],
+                                      request.get('format'), expected_code)
                     return targets.fill(pin, value, request['field'],
                                         lambda: ready() and self.broker.clock() < deadline, deadline)
                 finally:

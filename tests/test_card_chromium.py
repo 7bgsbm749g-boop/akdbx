@@ -681,4 +681,38 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
         assert command('fill-identity', '--field', 'tel', '--target', pin['target'], '--', fresh_handle,
                        code=1)['delivery'] == 'not-started'
         assert evaluate(chrome, "phone.value === '' && password.value === '' && submitAttempts === 0 && identityKeyEvents === 0")
+
+        # No autocomplete hint: only an explicit field purpose pins it; "off" needs its own flag.
+        evaluate(chrome, "phone.remove(); document.body.insertAdjacentHTML('beforeend', "
+                         "'<input id=bare type=tel><input id=hintoff type=tel autocomplete=off>"
+                         "<input id=other autocomplete=email>'); bare.focus()")
+        assert target('tel', '#bare', code=1)['delivery'] == 'not-started'
+        assert command('pin-identity-target', '--page-id', chrome.page, '--frame-id', chrome.frame,
+                       '--top-url', chrome.url, '--frame-url', chrome.url, '--selector', '#bare', '--field', 'tel',
+                       '--field-purpose', 'email', code=1)['error'].endswith('request not sent')
+        purpose = ('--field-purpose', 'tel')
+
+        def purpose_pin(selector, *extra, code=0):
+            return command('pin-identity-target', '--page-id', chrome.page, '--frame-id', chrome.frame,
+                           '--top-url', chrome.url, '--frame-url', chrome.url, '--selector', selector,
+                           '--field', 'tel', *purpose, *extra, code=code)
+        pin = purpose_pin('#bare')
+        handle = command('search-identities', LABEL)['entries'][0]['handle']
+        assert command('fill-identity', '--field', 'tel', '--format', 'national', '--calling-code', '44',
+                       '--target', pin['target'], '--', handle, code=1)['delivery'] == 'not-started'
+        pin = purpose_pin('#bare')
+        handle = command('search-identities', LABEL)['entries'][0]['handle']
+        assert command('fill-identity', '--field', 'tel', '--format', 'national', '--calling-code', '49',
+                       '--target', pin['target'], '--', handle) == dict(ok=True, filled='tel',
+                                                                          identity_delivery='cdp-identity-element-v1')
+        assert evaluate(chrome, "bare.value === '000000000'")
+        evaluate(chrome, 'hintoff.focus()')
+        assert purpose_pin('#hintoff', code=1)['delivery'] == 'not-started'
+        pin = purpose_pin('#hintoff', '--allow-autocomplete-off')
+        handle = command('search-identities', LABEL)['entries'][0]['handle']
+        assert command('fill-identity', '--field', 'tel', '--target', pin['target'], '--', handle)['ok']
+        assert evaluate(chrome, f"hintoff.value === {json.dumps(IDENTITY['tel'])}")
+        evaluate(chrome, 'other.focus()')
+        assert purpose_pin('#other', '--allow-autocomplete-off', code=1)['delivery'] == 'not-started'
+        assert evaluate(chrome, "other.value === '' && submitAttempts === 0 && identityKeyEvents === 0")
     assert broker.typer.events == []

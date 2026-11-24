@@ -86,7 +86,10 @@
         state = READ_CAPTURE(spec.selector, frameURL, null);
         el = state && document.querySelector(spec.selector);
       } else if (kind === "card" || kind === "identity") {
-        state = CARD_PIN(spec.selector, spec.field, frameURL, topURL, spec.processor || false, kind === "identity");
+        const identity = kind === "identity";
+        state = CARD_PIN(spec.selector, spec.field, frameURL, topURL, spec.processor || false, identity,
+          identity && typeof spec.field_purpose === "string" ? spec.field_purpose : false,
+          identity && spec.allow_autocomplete_off === true);
       }
     } catch {
       state = null;
