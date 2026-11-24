@@ -416,7 +416,7 @@ def parser() -> argparse.ArgumentParser:
     pin.add_argument('--pid', type=int, required=True)
     pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID or Windows top-level HWND, decimal or 0x hex')
     pin.add_argument('--browser-slot', metavar='SLOT',
-                     help='agent desktop slot whose Chrome owns the window (Linux, broker 0.35.1+): the broker pins it '
+                     help='agent desktop slot whose Chrome owns the window (Linux, broker 0.35.3+): the broker pins it '
                           'on that slot\'s X display; --pid must be that Chrome. Not taken from $AGENT_DESKTOP_SLOT')
     password_pin = commands.add_parser('pin-password-target', help='pin an exact HTTPS main-frame or same-site child-frame password field; no keyboard fallback')
     for flag in ('page-id', 'frame-id', 'selector'):
@@ -1122,7 +1122,7 @@ def _command(args) -> int:
             slot, refusal = browser_slots.request_field(args, capabilities, slot_route)
             if refusal is None and slot and args.command == 'pin-target' and (
                     type(capabilities.get('target_slot_protocol')) is not int or capabilities['target_slot_protocol'] != 1):
-                refusal = 'broker lacks slot window pins (target_slot_protocol 1); require broker 0.35.1 or newer; request not sent'
+                refusal = 'broker lacks slot window pins (target_slot_protocol 1); require broker 0.35.3 or newer; request not sent'
             if refusal is not None:
                 print(json.dumps({'ok': False, 'error': refusal}))
                 return 1

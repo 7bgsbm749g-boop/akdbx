@@ -59,7 +59,7 @@ A slot that exists but runs no Chrome gives the usual `target unavailable`
 refusal. A pin stays in the Chrome it was made in: fill it with the usual
 `fill`, `fill-card` or `fill-identity` (these take no slot).
 
-**Window pins in a slot (0.35.1+, `target_slot_protocol: 1`).** A slot's
+**Window pins in a slot (0.35.3+, `target_slot_protocol: 1`).** A slot's
 Chrome runs on the slot's own X display (for example `:101`), and the broker
 runs on another one. `pin-target` for a username or TOTP field in that Chrome
 takes `--browser-slot SLOT` too. Pass it explicitly (the CLI does not take it

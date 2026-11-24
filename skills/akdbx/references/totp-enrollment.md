@@ -27,7 +27,7 @@ verified X11 client window on Linux, the verified top-level HWND on Windows
 
 On an agent desktop slot (`status` shows `browser_profile_root`), the slot's
 Chrome runs on the slot's own X display, not the broker's. Pin its window with
-`--browser-slot SLOT` (0.35.1+, `target_slot_protocol: 1`; pass it explicitly,
+`--browser-slot SLOT` (0.35.3+, `target_slot_protocol: 1`; pass it explicitly,
 for example `--browser-slot "$AGENT_DESKTOP_SLOT"`): the broker finds that slot's Chrome from its
 profile lock and the X display where that Chrome is connected, and `--pid` must
 be that Chrome's browser PID. Without it the pin opens the broker's display and
