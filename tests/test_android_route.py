@@ -538,7 +538,6 @@ class FakeCDP:
                 return {'result': {'value': [{'selector': '#app_totp', 'type': 'text', 'focused': True}]}}
         if method == 'Runtime.callFunctionOn':
             declaration = params['functionDeclaration']
-            args = [a['value'] for a in params.get('arguments', [])]
             if 'this.focused' in declaration:
                 return {'result': {'value': self.focused}}
             if 'this.prepare' in declaration:
@@ -884,3 +883,10 @@ def test_the_start_deadline_bounds_the_first_key_not_the_value(device_file):
     finally:
         FakeAdb.helper = original
     assert cdp.set_values() == [SECRET]
+
+
+def test_too_many_same_site_tabs_are_refused_within_the_budget(device_file, monkeypatch):
+    cdp = FakeCDP('https://example.com/login')
+    broker, _ = chrome_broker(device_file, cdp)
+    monkeypatch.setattr(android_route, 'TAB_ATTACH_BUDGET', 0.0)
+    assert 'too many tabs' in pin(broker, mode='totp', field='#code')['error']

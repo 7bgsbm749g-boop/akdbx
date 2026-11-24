@@ -853,14 +853,18 @@ class AndroidTargets:
                      and _authority_matches(context['address_bar'], _origin_of(t['url']))]
         sessions = {}
         attach_deadline = time.monotonic() + TAB_ATTACH_BUDGET
+        too_many = AndroidError('too many tabs on this site to find the focused one; close some and try again')
         for page in pages:
-            if time.monotonic() >= attach_deadline:
-                raise AndroidError('too many tabs on this site to find the focused one; close some and try again')
+            left = attach_deadline - time.monotonic()
+            if left <= 0:
+                raise too_many
             try:
                 sessions[connection.call('Target.attachToTarget', {'targetId': page['targetId'], 'flatten': True},
-                                         timeout=TAB_CALL_TIMEOUT)['sessionId']] = page
+                                         timeout=min(TAB_CALL_TIMEOUT, left))['sessionId']] = page
             except Exception:
                 continue
+        if time.monotonic() >= attach_deadline:
+            raise too_many
         shown = []
         # Ask every tab at once: frozen background tabs never answer, so they cannot use up the search.
         for session in _answering_shown(connection, list(sessions), TAB_PROBE_TIMEOUT):
