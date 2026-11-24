@@ -359,8 +359,10 @@ class X11Typer:
         started = False
         session = None
         try:
-            session = (self.session_factory(identity.pid, identity.window) if identity.display is None
-                       else self.session_factory(identity.pid, identity.window, identity.display))
+            # Windows identities have no display; only a slot pin carries one.
+            display = getattr(identity, 'display', None)
+            session = (self.session_factory(identity.pid, identity.window) if display is None
+                       else self.session_factory(identity.pid, identity.window, display))
             if session.identity != identity:
                 raise TargetError()
             codes = session.prepare(steps)
