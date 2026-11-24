@@ -448,10 +448,13 @@ logon session, the identity does not) and `identity-<hash>.json` for each other
 The extension has its own version, separate from the akdbx version. After you
 update akdbx:
 
-1. Restart the broker on the new version, as described above.
-2. Run the same `extension build --output` command into the same folder.
-3. In `chrome://extensions`, click the reload button on the akdbx card. Pair
-   again if the popup asks.
+1. Run the same `extension build --output` command into the same folder.
+2. Restart the broker on the new version, as described above.
+3. From fill extension 0.7.0 the extension reloads itself from the rebuilt
+   folder when the new broker attaches (Helium has developer mode on, because
+   the extension is loaded unpacked). For an older extension, click the reload
+   button on the akdbx card in `chrome://extensions` once. Pair again if the
+   popup asks.
 
 An origin change alone needs none of these steps for an extension at 0.3.0 or
 later: restart the broker, and the extension follows its signed origin.

@@ -69,12 +69,18 @@ footer was built by akdbx 0.21.2 or earlier. `akdbx extension build` and
 `akdbx extension info` also print `extension_version`.
 
 When a browser shows `outdated`, the unpacked copy in that browser is stale
-after an akdbx update. Tell the user; do not reload it for them. The user
-rebuilds into the same folder and reloads:
+after an akdbx update. Rebuild into the same folder:
 
 1. `akdbx extension build --output SAME_FOLDER_AS_BEFORE`
-2. In `chrome://extensions`, click the reload button on the akdbx card.
-3. Pair again from the popup if it asks.
+2. From fill extension 0.7.0, nothing else: when the broker attaches (or sends
+   its next state), an extension older than the one the broker ships reads its
+   own folder's `manifest.json`, and if the folder holds that version it reloads
+   itself from disk (`chrome.runtime.reload()`), once per version. Build before
+   you restart the broker, so the first attach triggers it. An extension older
+   than 0.7.0 cannot do this: tell the user to click the reload button on the
+   akdbx card in `chrome://extensions` once; do not reload it for them.
+3. Pair again from the popup if it asks. A reload starts a new browser key; a
+   broker restart drops every pairing anyway.
 
 `newer` means the broker is older than the extension: restart the broker on
 the updated akdbx.

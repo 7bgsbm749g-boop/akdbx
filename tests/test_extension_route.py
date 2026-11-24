@@ -1593,6 +1593,14 @@ def test_state_messages_sign_the_connection_keys_with_the_broker_identity(tmp_pa
     assert broker.extension._state(other, 'attached')['channel_signature'] != message['channel_signature']
 
 
+def test_state_messages_name_the_extension_version_this_broker_ships():
+    """The extension reloads itself from a rebuilt unpacked folder when this version is newer than its own."""
+    broker = make_broker()
+    channel, _ = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    for kind in ('attached', 'state'):
+        assert broker.extension._state(channel, kind)['extension_version'] == route.EXTENSION_VERSION
+
+
 def test_a_version_the_extension_did_not_report_breaks_every_sealed_value():
     """From 0.4.0 the keys bind the reported version: an older extension behind a host that claims 0.4.0 opens nothing."""
     from cryptography.exceptions import InvalidTag

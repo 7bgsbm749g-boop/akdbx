@@ -1089,3 +1089,51 @@ test("the popup and its reset are reachable only from the popup page", () => {
   assert.match(source, /importScripts\("config.js", "trust.js"\)/);
   assert.match(source, /"reset-trust": popupReset/);
 });
+
+// A rebuilt unpacked folder: what fetch(chrome.runtime.getURL("manifest.json")) reads from disk.
+const diskManifest = version => async url => {
+  assert.equal(String(url), "chrome-extension://jjoamaejjkldcjcpgncoomoaagdfimhg/manifest.json");
+  return {json: async () => ({...manifest, version})};
+};
+const bumped = (text, part) => text.split(".").map((n, i) => i === part ? Number(n) + 1 : i > part ? 0 : Number(n)).join(".");
+
+test("an unpacked extension reloads itself once when the broker ships a newer build that is on disk", async () => {
+  const next = bumped(manifest.version, 1);
+  const local = {};
+  const {exports, chrome} = loadBackground({local, fetch: diskManifest(next)});
+  let reloads = 0;
+  chrome.runtime.reload = () => { reloads += 1; };
+  assert.equal(await exports.selfUpdate(next), true);
+  assert.equal(reloads, 1);
+  assert.equal(local.self_update, next);
+  // The same version never reloads again, so a reload that kept the old files cannot loop.
+  assert.equal(await exports.selfUpdate(next), false);
+  assert.equal(reloads, 1);
+});
+
+test("the extension never reloads for a folder that was not rebuilt, the same or an older version, or a bad one", async () => {
+  const next = bumped(manifest.version, 2);
+  const older = manifest.version.split(".").map((n, i) => i === 0 ? n : "0").join(".");
+  for (const [expected, onDisk] of [[next, manifest.version], [manifest.version, manifest.version],
+    [older, older], ["1.2", "1.2"], ["01.2.3", "01.2.3"], [null, manifest.version], [{}, manifest.version]]) {
+    const {exports, chrome} = loadBackground({fetch: diskManifest(onDisk)});
+    let reloads = 0;
+    chrome.runtime.reload = () => { reloads += 1; };
+    assert.equal(await exports.selfUpdate(expected), false, JSON.stringify([expected, onDisk]));
+    assert.equal(reloads, 0);
+  }
+});
+
+test("a state message from the broker starts the self-update; a failed disk read only skips it", async () => {
+  const next = bumped(manifest.version, 0);
+  let reloaded;
+  const done = new Promise(resolve => { reloaded = resolve; });
+  const {listeners, chrome} = loadBackground({fetch: diskManifest(next)});
+  chrome.runtime.reload = () => reloaded(true);
+  for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  listeners["port.message"]({type: "attached", paired: false, locked: true, extension_version: next});
+  assert.equal(await Promise.race([done, new Promise(resolve => setTimeout(() => resolve(false), 2000))]), true);
+  const failing = loadBackground({fetch: async () => { throw new TypeError("no file"); }});
+  failing.chrome.runtime.reload = () => assert.fail("reloaded without a rebuilt folder");
+  await assert.rejects(failing.exports.selfUpdate(next), TypeError);  // onHost catches this rejection.
+});

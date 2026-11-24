@@ -42,7 +42,8 @@ akdbx = ["import_assets/*", "browser_extension/*", "fill_extension/*", "public_s
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["screenshot_access: build the test extension with the <all_urls> access that Enhanced security asks for"]
+markers = ["screenshot_access: build the test extension with the <all_urls> access that Enhanced security asks for",
+           "older_build: load the test extension with an older version, in developer mode, to test its self-update"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10", "cryptography>=43,<47"]

@@ -238,6 +238,7 @@ function onHost(current, message) {
     state = brokerState(message);
     // Bind a first key or follow a signed move now, not only when the popup opens.
     if (port === current) observeTrust(state);
+    if (port === current) selfUpdate(message.extension_version).catch(() => false);
   } else if (message.type === "call") {
     handleCall(message).catch(() => ({ok: false})).then(result => {
       if (port === current) current.postMessage({type: "reply", id: message.id, result});
@@ -247,6 +248,41 @@ function onHost(current, message) {
     if (resolve) resolve(message.result);
   } else if (message.type === "error") {
     state = {connected: false, error: "attach refused"};
+  }
+}
+
+// An unpacked extension does not load a rebuilt folder by itself: the user had to click
+// reload in chrome://extensions after each update. When the broker ships a newer
+// extension and this extension's folder on disk already holds that version (read from
+// disk, so a folder that was not rebuilt, or a packed copy, never reloads), reload once
+// from disk. A reload ends this worker's session storage, so the new version pairs with
+// a new key; the broker that shipped it is a new process and has no pairing anyway.
+// local storage (the broker trust) stays. One try per version, so it can never loop.
+function versionParts(text) {
+  return typeof text === "string" && /^(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})$/.test(text)
+    ? text.split(".").map(Number) : null;
+}
+
+function newerVersion(a, b) {
+  for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i] > b[i];
+  return false;
+}
+
+let selfUpdating = false;
+
+async function selfUpdate(expected) {
+  const want = versionParts(expected), own = versionParts(chrome.runtime.getManifest().version);
+  if (!want || !own || !newerVersion(want, own) || selfUpdating) return false;
+  selfUpdating = true;
+  try {
+    if ((await chrome.storage.local.get("self_update")).self_update === expected) return false;
+    const response = await fetch(chrome.runtime.getURL("manifest.json"), {cache: "no-store"});
+    if ((await response.json()).version !== expected) return false;
+    await chrome.storage.local.set({self_update: expected});
+    chrome.runtime.reload();
+    return true;
+  } finally {
+    selfUpdating = false;
   }
 }
 
@@ -971,7 +1007,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 
 connect();
 if (typeof module !== "undefined") {
-  module.exports = {fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys, fill, pin, release, read,
+  module.exports = {selfUpdate, fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys, fill, pin, release, read,
     sealCapture, holdOwners, channelTrusted, setCaptureKey: key => { captureKey = Promise.resolve(key); },
     setChannel: value => { channel = {sealKey, captureKey, ...value}; }, channel: () => channel,
     popupState, popupReset, trustIdle: () => trustQueue, setSealKey: key => { sealKey = Promise.resolve(key); }, state: () => state};
