@@ -1,5 +1,6 @@
 """Private systemd service process for one AVD. Exits when the last lease has been idle."""
 import contextlib
+import errno
 import json
 import os
 from pathlib import Path
@@ -95,6 +96,20 @@ def serve(listener, idle, healthy):
                 conn.close()
 
 
+def reserve(stack, port):
+    """Bind the legacy adb notification port on both loopback addresses without listening."""
+    # No SO_REUSEADDR: with it, another account's socket could bind and listen beside ours.
+    stack.enter_context(socket.socket()).bind(('127.0.0.1', port))
+    try:
+        ipv6 = stack.enter_context(socket.socket(socket.AF_INET6))
+        ipv6.bind(('::1', port))
+    except OSError as exc:
+        # The emulator falls back to [::1] when 127.0.0.1 refuses it.
+        if exc.errno == errno.EADDRINUSE:
+            raise
+        # IPv6 is unavailable, so the emulator has no [::1] to fall back to.
+
+
 def private_adb(address, process):
     connection = socket.socket(socket.AF_UNIX)
     try:
@@ -113,7 +128,8 @@ def run(directory, adb, port, serial, managed):
     emulator_port = int(serial.removeprefix('emulator-'))
     for p in (emulator_port, emulator_port + 1):
         ensure_free(p)
-    env = {k: v for k, v in os.environ.items() if not k.startswith(('ANDROID_', 'ADB_'))}
+    # ADBHOST would make adb register a remote emulator under the local serial.
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('ANDROID_', 'ADB_')) and k != 'ADBHOST'}
     address = directory / 'adb'
     endpoint = 'localfilesystem:' + str(address)
     env.update(ANDROID_SDK_ROOT=managed['sdk'], ANDROID_AVD_HOME=managed['avd_home'],
@@ -123,9 +139,7 @@ def run(directory, adb, port, serial, managed):
     with contextlib.ExitStack() as stack:
         # The emulator also announces itself to a legacy TCP port. Reserve
         # that port without listening so it cannot register with another server.
-        reserved = stack.enter_context(socket.socket())
-        reserved.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        reserved.bind(('127.0.0.1', port))
+        reserve(stack, port)
         server = stack.enter_context(child([adb, '-L', endpoint, 'nodaemon', 'server'], env))
         deadline = time.monotonic() + 180
         while True:
@@ -153,15 +167,20 @@ def run(directory, adb, port, serial, managed):
             return subprocess.run([adb, '-L', endpoint, '-s', serial, 'shell', *args], env=env,
                                   capture_output=True, timeout=8)
 
+        def register():
+            # Discovery is off, so only this request attaches the emulator. adb
+            # ignores it while the emulator's transport already exists.
+            with private_adb(address, server) as connection:
+                message = f'host:emulator:{emulator_port + 1}'.encode('ascii')
+                connection.sendall(b'%04x' % len(message) + message)
+                # adb closes without a reply once it accepts the notification.
+                connection.recv(1)
+
         next_registration = 0
         while alive() and time.monotonic() < deadline:
             if owns_listener(guest, emulator_port + 1):
                 if time.monotonic() >= next_registration:
-                    with private_adb(address, server) as connection:
-                        message = f'host:emulator:{emulator_port + 1}'.encode('ascii')
-                        connection.sendall(b'%04x' % len(message) + message)
-                        # adb closes without a reply once it accepts the notification.
-                        connection.recv(1)
+                    register()
                     next_registration = time.monotonic() + 3
                 try:
                     boot = shell('getprop', 'sys.boot_completed')
@@ -179,14 +198,25 @@ def run(directory, adb, port, serial, managed):
         shell('settings', 'put', 'secure', 'speak_password', '0').check_returncode()
         if shell('settings', 'get', 'secure', 'speak_password').stdout.strip() != b'0':
             raise RuntimeError('could not verify Android password privacy setting')
+        def healthy():
+            # A guest reboot or adbd restart drops the transport; attach it again.
+            nonlocal next_registration
+            if not alive():
+                return False
+            if time.monotonic() >= next_registration:
+                if owns_listener(guest, emulator_port + 1):
+                    register()
+                next_registration = time.monotonic() + 10
+            return True
+
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
-            address = directory / 'ready'
-            listener.bind(str(address))
+            ready = directory / 'ready'
+            listener.bind(str(ready))
             listener.listen()
             try:
-                serve(listener, managed['idle_seconds'], alive)
+                serve(listener, managed['idle_seconds'], healthy)
             finally:
-                address.unlink(missing_ok=True)
+                ready.unlink(missing_ok=True)
 
 
 if __name__ == '__main__':

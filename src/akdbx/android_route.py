@@ -265,7 +265,7 @@ class Adb:
     def _environment(self):
         # Nothing from the caller's environment may redirect adb elsewhere.
         env = {key: value for key, value in os.environ.items()
-               if not key.startswith(('ADB_', 'ANDROID_')) and key not in {'ADB_SERVER_SOCKET'}}
+               if not key.startswith(('ADB_', 'ANDROID_')) and key != 'ADBHOST'}
         if self.device.managed:
             from .android_lifecycle import runtime
             env['ADB_SERVER_SOCKET'] = 'localfilesystem:' + str(runtime(self.device)[1] / 'adb')

@@ -58,7 +58,7 @@ On the broker host, choose one setup command. Without arguments,
 The managed adb server accepts clients on a private Unix socket. It disables
 USB, mDNS and emulator discovery. The worker registers its own emulator,
 which uses a pair of ports (5584 and 5585), and reserves its legacy adb
-notification port (5043) without accepting TCP clients. For another device, choose unused ports
+notification port (5043) on 127.0.0.1 and [::1] without accepting TCP clients. For another device, choose unused ports
 with `--adb-port` and `--emulator-port`. `--sdk` defaults to `ANDROID_HOME`,
 then `ANDROID_SDK_ROOT`, then `~/Android/Sdk`. New AVDs live under
 `$XDG_DATA_HOME/akdbx/android/avd` (default `~/.local/share/akdbx/android/avd`).

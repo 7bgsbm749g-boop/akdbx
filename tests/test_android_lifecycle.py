@@ -1,10 +1,12 @@
 """Registration, non-waking discovery and concurrent Android operation leases."""
 import contextlib
+import errno
 import json
 import os
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -212,9 +214,11 @@ def test_managed_server_only_listens_on_private_unix_socket(tmp_path, monkeypatc
         probe.bind(('127.0.0.1', 0))
         free = probe.getsockname()[1]
     monkeypatch.setattr(android_worker, 'ensure_free', lambda port: None)
+    monkeypatch.setenv('ADBHOST', '192.0.2.10')
     with pytest.raises(Captured):
         android_worker.run(tmp_path, device.adb, free, device.serial, device.managed)
     endpoint = 'localfilesystem:' + str(tmp_path / 'adb')
+    assert 'ADBHOST' not in original['env']
     assert original['argv'] == [device.adb, '-L', endpoint, 'nodaemon', 'server']
     assert original['env']['ADB_SERVER_SOCKET'] == endpoint
     for flag in ('ADB_USB', 'ADB_MDNS', 'ADB_EMU'):
@@ -224,6 +228,8 @@ def test_managed_server_only_listens_on_private_unix_socket(tmp_path, monkeypatc
 def test_managed_client_uses_owned_unix_peer(tmp_path, monkeypatch):
     device = managed(tmp_path)
     monkeypatch.setattr(android_lifecycle, 'runtime', lambda device: ('unit', tmp_path))
+    monkeypatch.setenv('ADBHOST', '192.0.2.10')
+    assert 'ADBHOST' not in Adb(device)._environment()
     with socket.socket(socket.AF_UNIX) as listener:
         listener.bind(str(tmp_path / 'adb'))
         listener.listen()
@@ -352,3 +358,58 @@ def test_worker_boots_registers_then_stops_its_children(tmp_path, monkeypatch):
                           ('getprop', 'sys.boot_completed'), ('settings', 'put', 'secure', 'speak_password', '0'),
                           ('settings', 'get', 'secure', 'speak_password'), ('stopped', 'emulator'), ('stopped', 'adb')]
     assert not (tmp_path / 'ready').exists()
+
+
+def test_notification_port_reservation_is_exclusive():
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        port = probe.getsockname()[1]
+    with contextlib.ExitStack() as stack:
+        android_worker.reserve(stack, port)
+        hosts = [(socket.AF_INET, '127.0.0.1')]
+        try:
+            with socket.socket(socket.AF_INET6) as check:
+                check.bind(('::1', 0))
+            hosts.append((socket.AF_INET6, '::1'))
+        except OSError:
+            pass
+        for family, host in hosts:
+            with socket.socket(family) as other:
+                other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                with pytest.raises(OSError) as refused:
+                    other.bind((host, port))
+                assert refused.value.errno == errno.EADDRINUSE
+            with socket.socket(family) as client, pytest.raises(ConnectionRefusedError):
+                client.connect((host, port))
+
+
+def test_worker_registers_the_emulator_again_while_serving(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from subprocess import CompletedProcess
+
+    device = managed(tmp_path)
+    registrations = []
+
+    @contextlib.contextmanager
+    def launched(argv, env):
+        yield SimpleNamespace(poll=lambda: None)
+
+    @contextlib.contextmanager
+    def adb_connection(address, process):
+        yield SimpleNamespace(sendall=registrations.append, recv=lambda size: b'')
+
+    def serve(listener, idle, healthy):
+        # The guest restarted adbd after boot: the next health check re-registers it.
+        later = time.monotonic() + 11
+        monkeypatch.setattr(android_worker.time, 'monotonic', lambda: later)
+        assert healthy()
+
+    monkeypatch.setattr(android_worker, 'child', launched)
+    monkeypatch.setattr(android_worker, 'owns_listener', lambda *args: True)
+    monkeypatch.setattr(android_worker, 'ensure_free', lambda port: None)
+    monkeypatch.setattr(android_worker, 'private_adb', adb_connection)
+    monkeypatch.setattr(android_worker, 'serve', serve)
+    monkeypatch.setattr(android_worker.subprocess, 'run',
+                        lambda argv, **kwargs: CompletedProcess(argv, 0, b'1' if 'getprop' in argv else b'0'))
+    android_worker.run(tmp_path, device.adb, 0, device.serial, {**device.managed, 'idle_seconds': .01})
+    assert registrations == [b'0012host:emulator:5585'] * 2
