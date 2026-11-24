@@ -455,10 +455,6 @@ class BrowserPasswords:
         """Reserve capacity atomically and capture the DOM target outside locks."""
         self.prune()
         request, profile, slot = browser_slots.select(request, self.profile, self.slots)
-        return self.pin_with(request, profile, slot)
-
-    def pin_with(self, request, profile, slot=None):
-        """Pin in the browser that profile names (a profile folder or an Android endpoint)."""
         required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode'}
         optional = set(request) & {'password_purpose', 'allow_autocomplete_off', 'frame_protocol', 'frame_origin', 'capture_protocol'}
         reading = request.get('mode') == 'read'

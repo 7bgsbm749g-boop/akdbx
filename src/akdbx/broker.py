@@ -41,7 +41,7 @@ from .browser_identity import BrowserIdentities
 from .extension_route import (ExtensionHub, ExtensionError, ExtensionPin, RoutedTargets,
                               DELIVERY as EXTENSION_DELIVERY)
 from .android_route import (AndroidTargets, AndroidPin, AndroidError, AndroidMismatch, ORIGIN_MISMATCH,
-                            GOOGLE_SIGN_IN_ORIGIN)
+                            GOOGLE_SIGN_IN_ORIGIN, GMAIL_ONLY)
 from .identities import COMMANDS as IDENTITY_COMMANDS, IdentityManager, capabilities as identity_capabilities, is_identity
 from .secrets_capture import SecretCaptures, captured_fields, is_secret_record
 from .totp_capture import TotpCaptures, pending as totp_pending, read_pending
@@ -146,7 +146,7 @@ class Broker:
         self.merges = create_merge_manager(self)
         self.secrets = SecretCaptures(self, secret_sinks_path)
         self.totp_captures = TotpCaptures(self)
-        self.android = AndroidTargets(android_devices_path, clock=clock, passwords=self.passwords)
+        self.android = AndroidTargets(android_devices_path, clock=clock)
         self.unlock_url: str | None = None
         # The private page's UnlockState, when this broker serves one.
         self.unlock_link = None
@@ -370,19 +370,26 @@ class Broker:
                 if not username or not password:
                     return {'ok': False, 'error': 'autofill not started: the entry has no username or password; no value sent',
                             'delivery': 'not-started'}
+                # A consumer Google account never moves its sign-in to another site;
+                # any other domain can send it to a company page akdbx cannot read.
+                if username.strip().lower().rsplit('@', 1)[-1] not in {'gmail.com', 'googlemail.com'}:
+                    return {'ok': False, 'error': 'autofill not started: ' + GMAIL_ONLY, 'delivery': 'not-started'}
                 values = {'email': username, 'password': password}
+                code_source = None
                 if request.get('code'):
                     configuration = read_configuration(entry)
-                    now = self.wall_clock()
-                    valid_until = (int(now // configuration.period) + 1) * configuration.period
-                    # The code page comes after two page loads: keep a wide margin.
-                    if valid_until - now < 20:
-                        return {'ok': False, 'error': 'autofill not started: TOTP code near expiry; wait and use fresh handles',
-                                'retry_after': math.ceil(valid_until - now)}
-                    values['code'] = code_at(configuration, now)
+
+                    def fresh_code():
+                        # Asked for only when the code field is ready: wait out a nearly spent period.
+                        now = self.wall_clock()
+                        left = (int(now // configuration.period) + 1) * configuration.period - now
+                        if left < MIN_VALIDITY:
+                            time.sleep(left + 0.2)
+                        return code_at(configuration, self.wall_clock())
+                    code_source = fresh_code
                 ready = lambda: self.clock() < start_deadline and delivery_ready()
                 try:
-                    return self.android.google_sign_in(request, values, ready)
+                    return self.android.google_sign_in(request, values, ready, code_source)
                 finally:
                     values = None
             finally:

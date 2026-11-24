@@ -163,36 +163,36 @@ pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
 
 ## Android devices (0.36.0)
 
-`akdbx android inspect | pin | fill | fill-totp` reach a device through the
-operator's adb server. The broker binds each pin to the device (adb serial and
-boot), the focused app (package, signing certificate, activity) and the field,
-and fills only an entry whose URL or additional URL is the verified site:
+`akdbx android inspect | pin | fill | fill-totp | google-sign-in` reach a
+device through the operator's adb server. The broker speaks adb's protocol
+itself on a loopback connection whose owner it checks, and binds each pin to
+the device (adb serial and boot), the focused app (package, signing
+certificate, activity, task) and the field. It fills only an entry whose URL
+or additional URL is the verified site:
 
-- **Google account sign-in** in Google Play services (Google signing
-  lineage): `https://accounts.google.com`. Its web view shows no page URL,
-  so the password and code go only through `akdbx android google-sign-in`,
-  which fills the entry's email, submits it and fills the password (and
-  code) on the pages Google's flow shows next, in one helper run.
 - **Chrome tabs and Custom Tabs** (Google-signed Chrome): the exact origin of
-  the one visible, focused tab, matched to Chrome's address bar. Pages are
-  read and filled through Chrome's DevTools socket, which adb forwards to a
-  loopback port only while the broker connects; logins reuse the CDP route's
-  DOM pin and fill. Before a pin, a random mark written through that socket
-  must show in Chrome's own address bar or task description, which proves
-  the socket is the focused Chrome's.
+  the one visible, focused tab, matched to Chrome's own address bar. The
+  broker reads the page through Chrome's DevTools socket (forwarded by adb
+  only while it connects) but never sends a value over it: an on-device
+  helper types the value as key events that Android delivers only to
+  Chrome's windows.
+- **Google account sign-in** in Google Play services: `akdbx android
+  google-sign-in` opens a new sign-in itself and fills a consumer (`@gmail.com`)
+  account's email, password and code on the pages Google's flow shows, in one
+  helper run. Its web view shows no page URL, so separate password and code
+  pins there are refused.
 - **Other apps** (native fields only): the site the agent names with
   `--app-site`, only when that site's Digital Asset Links share its
   credentials (`get_login_creds`) with the app's package and current signing
   certificate.
 
-App fields and Google sign-in use a small helper that the broker copies to the
-device (`src/akdbx/android_assets`, built reproducibly from
-[`android/helper`](android/helper)). The helper runs as the adb shell user,
-finds the exact field through the platform's accessibility API, checks it
-again, and sets the value with `ACTION_SET_TEXT`. The value travels only on
-the helper's standard input: never an argument, typed key, clipboard content,
-response or log. The broker refuses password fields while the device lets
-accessibility read password text (`speak_password`).
+App fields and Google sign-in use the same helper (`src/akdbx/android_assets`,
+built reproducibly from [`android/helper`](android/helper)), which finds the
+exact field through Android's accessibility API and sets the value there. A
+value travels only on the helper's standard input: never an argument, typed
+by the agent, on the clipboard, in a response or in a log. The broker refuses
+while the device lets accessibility read password text or shows typed
+password characters.
 
 Setup, the agent procedure, Google Play and GitHub Mobile steps and the
 limits are in [Android devices](skills/akdbx/references/android.md).

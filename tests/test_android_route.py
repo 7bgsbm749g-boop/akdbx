@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from akdbx import android_cli, android_route
-from akdbx.android_route import (AndroidError, AndroidTargets, CHROME_CODE_DELIVERY, DELIVERY, GOOGLE_SIGNER,
+from akdbx.android_route import (AndroidError, AndroidTargets, CHROME_DELIVERY, DELIVERY, GOOGLE_SIGNER,
                                  ORIGIN_MISMATCH, asset_link_allows, load_devices)
 from akdbx.broker import Broker
 
@@ -199,7 +199,7 @@ class FakeAdb:
     def __init__(self, scene):
         self.scene = scene
 
-    def helper(self, request, *, install, timeout=None):
+    def helper(self, request, *, install, timeout=None, answer=None):
         FakeAdb.requests.append(request)
         scene = self.scene
         op = request['op']
@@ -207,13 +207,18 @@ class FakeAdb:
             return {'ok': True, 'boot_id': scene.get('boot', BOOT), 'sdk': 35,
                     'speak_password': scene['context']['speak_password'], 'protocol': 1}
         if op in {'context', 'inspect'}:
-            answer = {'ok': True, 'context': scene['context'], 'fields': scene['fields'], 'protocol': 1}
-            if 'mark' in request:
-                answer['mark_seen'] = scene.get('shows_mark', lambda mark: True)(request['mark'])
-            return answer
+            return {'ok': True, 'context': scene['context'], 'fields': scene['fields'], 'protocol': 1}
         if op == 'google_sign_in':
-            return scene.get('sign_in', {'ok': True, 'steps': [k for k in ('email', 'password', 'code') if k in request],
-                                         'protocol': 1})
+            steps = ['email', 'password']
+            if request.get('code') is True:
+                # The helper asks for the code only when Google's code field is ready.
+                reply = json.loads(answer('code'))
+                FakeAdb.requests.append({'op': 'code-answer', **reply})
+                steps.append('code')
+            return scene.get('sign_in', {'ok': True, 'steps': steps, 'protocol': 1})
+        if op == 'type':
+            scene.setdefault('typed', []).append(request['value'])
+            return scene.get('type', {'ok': True, 'complete': True, 'started': True, 'protocol': 1})
         if op == 'check':
             by_id = {f['node_id']: f for f in scene['fields']}
             if not all(i in by_id for i in request['node_ids']):
@@ -276,7 +281,7 @@ def test_status_reports_android_capabilities(device_file):
     broker = make_broker(device_file, {'context': context(), 'fields': []})
     status = broker.dispatch({'action': 'ping'})
     assert status['android_fill_protocol'] == 1 and status['android_devices_configured'] is True
-    assert status['android_fill_delivery'] == DELIVERY and status['android_page_code_delivery'] == CHROME_CODE_DELIVERY
+    assert status['android_fill_delivery'] == DELIVERY and status['android_chrome_delivery'] == CHROME_DELIVERY
 
 
 APP = [field('21'), field('22', password=True)]
@@ -417,31 +422,42 @@ def test_google_sign_in_pins_only_the_email(device_file):
     assert fill(broker, 'Google', pinned['target'], mode='username')['ok']
 
 
+GMAIL = [Entry('1', 'Google', 'synthetic@gmail.com', SECRET, 'https://accounts.google.com/',
+               otp='otpauth://totp/s?secret=JBSWY3DPEHPK3PXP&issuer=akdbx'),
+         Entry('2', 'Work', 'synthetic@example.invalid', SECRET, 'https://accounts.google.com/'),
+         Entry('3', 'Other', 'other@gmail.com', SECRET, 'https://other.example/')]
+
+
 def test_google_sign_in_runs_email_password_and_code_in_one_helper_run(device_file):
-    broker = make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS})
-    response = google_sign_in(broker, code=False)
+    broker = make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS}, entries=GMAIL)
+    response = google_sign_in(broker, query='synthetic@gmail', code=False)
     assert response == {'ok': True, 'filled': ['email', 'password'], 'target_delivery': DELIVERY}
     [request] = sign_in_requests()
-    assert request['email'] == 'synthetic@example.invalid' and request['password'] == SECRET and 'code' not in request
+    assert request['email'] == 'synthetic@gmail.com' and request['password'] == SECRET and 'code' not in request
     assert SECRET not in json.dumps(response)
     FakeAdb.requests = []
-    response = google_sign_in(make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS},
-                                          entries=[Entry('1', 'Google', 'me@example.invalid', SECRET, 'https://accounts.google.com/',
-                                                         otp='otpauth://totp/s?secret=JBSWY3DPEHPK3PXP&issuer=akdbx')]), code=True)
+    response = google_sign_in(broker, query='synthetic@gmail', code=True)
     assert response['filled'] == ['email', 'password', 'code']
     [request] = sign_in_requests()
-    assert len(request['code']) == 6 and request['code'] not in json.dumps(response)
+    # The code is not in the request: the broker makes it when the helper asks.
+    assert request['code'] is True
+    [answer] = [r for r in FakeAdb.requests if r['op'] == 'code-answer']
+    assert len(answer['code']) == 6 and answer['code'] not in json.dumps(response)
+
+
+def test_google_sign_in_is_only_for_consumer_accounts(device_file):
+    # Another domain can send the sign-in to its own company page, whose site akdbx cannot read.
+    broker = make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS}, entries=GMAIL)
+    response = google_sign_in(broker, query='Work')
+    assert response['ok'] is False and response['delivery'] == 'not-started' and '@gmail.com' in response['error']
+    assert sign_in_requests() == []
 
 
 def test_google_sign_in_refusals(device_file):
-    broker = make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS})
-    assert google_sign_in(broker, query='Other') == {'ok': False, 'error': ORIGIN_MISMATCH, 'delivery': 'not-started'}
-    other = make_broker(device_file, {'context': context(**{**GMS, 'activity': 'com.google.android.gms/.Other'}), 'fields': []})
-    assert 'not Google account sign-in' in google_sign_in(other)['error']
-    unsigned = make_broker(device_file, {'context': context(**{**GMS, 'lineage': (OTHER_SIGNER,)}), 'fields': []})
-    assert 'not Google account sign-in' in google_sign_in(unsigned)['error']
-    speaking = make_broker(device_file, {'context': context(**GMS, speak_password=True), 'fields': []})
-    assert 'speak_password 0' in google_sign_in(speaking)['error']
+    broker = make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS}, entries=GMAIL)
+    assert google_sign_in(broker, query='other@gmail') == {'ok': False, 'error': ORIGIN_MISMATCH, 'delivery': 'not-started'}
+    speaking = make_broker(device_file, {'context': context(**GMS, speak_password=True), 'fields': []}, entries=GMAIL)
+    assert 'speak_password 0' in google_sign_in(speaking, query='synthetic@gmail')['error']
     assert sign_in_requests() == []
 
 
@@ -454,8 +470,8 @@ def test_google_sign_in_refusals(device_file):
     ({'ok': False, 'error': 'helper failed: IllegalStateException', 'protocol': 1}, {'ok': False, 'delivery': 'uncertain'}),
 ])
 def test_google_sign_in_reports_where_it_stopped(device_file, answer, expected):
-    broker = make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS, 'sign_in': answer})
-    response = google_sign_in(broker)
+    broker = make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS, 'sign_in': answer}, entries=GMAIL)
+    response = google_sign_in(broker, query='synthetic@gmail')
     assert {k: response[k] for k in expected} == expected
 
 
@@ -478,12 +494,13 @@ def test_unknown_device_is_refused(device_file):
 # ----- Chrome pages through DevTools ---------------------------------------
 
 class FakeCDP:
-    """A Chrome with one visible tab at URL and other frozen tabs."""
+    """A Chrome with one visible tab at URL and a frozen tab on another site."""
 
-    def __init__(self, url, shown=True, focused_code=True):
-        self.url, self.shown, self.focused_code = url, shown, focused_code
+    def __init__(self, url, shown=True, focused=True, holds=None):
+        self.url, self.shown, self.focused, self.holds = url, shown, focused, holds
         self.calls = []
         self.closed = False
+        self.objects = {}
 
     def call(self, method, params=None, session=None, *, timeout=3):
         self.calls.append((method, params))
@@ -492,34 +509,34 @@ class FakeCDP:
                                     {'targetId': 'T2', 'type': 'page', 'url': 'https://evil.example/'}]}
         if method == 'Target.attachToTarget':
             return {'sessionId': 'S-' + params['targetId']}
-        if method == 'Target.getTargetInfo':
-            return {'targetInfo': {'targetId': 'T1', 'type': 'page', 'url': self.url}}
         if method == 'Page.getFrameTree':
             return {'frameTree': {'frame': {'id': 'F1', 'url': self.url}}}
         if method == 'Page.createIsolatedWorld':
             return {'executionContextId': 5}
         if method == 'Runtime.evaluate':
             expression = params['expression']
-            if expression.startswith(android_route.MARK_SET):
-                return {'result': {'value': {'href': self.url, 'title': 'Sign in'}}}
-            if expression.startswith(android_route.MARK_RESTORE):
-                return {'result': {'value': self.url}}
             if expression == android_route.PAGE_STATE:
                 return {'result': {'value': {'url': self.url, 'shown': self.shown, 'secure': True}}}
-            if expression.startswith(android_route.OTP_CAPTURE):
-                if not self.focused_code:
+            if expression == 'performance.now()':
+                return {'result': {'value': 1000.0}}
+            if expression.startswith(android_route.PAGE_FIELD):
+                selector = json.loads('[' + expression[len(android_route.PAGE_FIELD) + 1:-1] + ']')[0]
+                if selector == '#missing':
                     return {'exceptionDetails': {}}
-                return {'result': {'type': 'object', 'objectId': 'OBJ'}}
+                object_id = 'OBJ%d' % len(self.objects)
+                self.objects[object_id] = selector
+                return {'result': {'type': 'object', 'objectId': object_id}}
             if expression == android_route.PAGE_FIELDS:
                 return {'result': {'value': [{'selector': '#app_totp', 'type': 'text', 'focused': True}]}}
         if method == 'Runtime.callFunctionOn':
-            if 'performance.now()' in params['functionDeclaration'] and 'arguments' not in params:
-                return {'result': {'value': 1000.0}}
-            if params['functionDeclaration'] == android_route.OTP_FILL:
+            declaration = params['functionDeclaration']
+            if 'this.focused' in declaration:
+                return {'result': {'value': self.focused}}
+            if 'this.prepare' in declaration:
                 return {'result': {'value': True}}
+            if 'this.length' in declaration:
+                return {'result': {'value': self.holds}}
             return {'result': {}}
-        if method == 'Runtime.releaseObject':
-            return {}
         raise AssertionError(method)
 
     def close(self):
@@ -529,18 +546,18 @@ class FakeCDP:
 CHROME = dict(package='com.android.chrome', activity=android_route.CHROME_ACTIVITIES[1], lineage=(GOOGLE_SIGNER,))
 
 
-def chrome_broker(device_file, cdp, address_bar='example.com', shows_mark=None):
+def chrome_broker(device_file, cdp, address_bar='example.com', type_answer=None):
     scene = {'context': context(**CHROME, address_bar=address_bar), 'fields': []}
-    if shows_mark is not None:
-        scene['shows_mark'] = shows_mark
+    if type_answer is not None:
+        scene['type'] = type_answer
     broker = make_broker(device_file, scene)
     broker.android.cdp_factory = lambda adb: cdp
-    return broker
+    return broker, scene
 
 
-def test_chrome_page_code_fill_binds_the_page_origin(device_file):
+def test_chrome_page_fill_types_values_that_devtools_never_carries(device_file):
     cdp = FakeCDP('https://example.com/sessions/two-factor/app')
-    broker = chrome_broker(device_file, cdp)
+    broker, scene = chrome_broker(device_file, cdp)
     inspected = broker.dispatch({'action': 'android-inspect', 'device': 'phone'})
     assert inspected['site'] == {'origin': 'https://example.com', 'source': 'chrome'}
     assert inspected['fields'][0]['field'] == '#app_totp'
@@ -548,74 +565,78 @@ def test_chrome_page_code_fill_binds_the_page_origin(device_file):
     assert ('Target.attachToTarget', {'targetId': 'T2', 'flatten': True}) not in cdp.calls
 
     pinned = pin(broker, mode='totp', field='#app_totp')
-    assert pinned['ok'] and pinned['android_delivery'] == CHROME_CODE_DELIVERY and pinned['origin'] == 'https://example.com'
+    assert pinned['ok'] and pinned['android_delivery'] == CHROME_DELIVERY and pinned['origin'] == 'https://example.com'
     assert fill(broker, 'Other', pinned['target'], mode='totp')['error'] == ORIGIN_MISMATCH
-    assert cdp.closed
+    assert cdp.closed and 'typed' not in scene
 
-    cdp.closed = False
+    cdp.closed, cdp.holds = False, 6
     pinned = pin(broker, mode='totp', field='#app_totp')
     response = fill(broker, 'synthetic-user', pinned['target'], mode='totp')
-    assert response == {'ok': True, 'filled': 'totp', 'target_delivery': CHROME_CODE_DELIVERY}
-    [call] = [params for method, params in cdp.calls
-              if method == 'Runtime.callFunctionOn' and params['functionDeclaration'] == android_route.OTP_FILL]
-    code = call['arguments'][0]['value']
-    assert len(code) == 6 and code not in json.dumps(response)
-    assert cdp.closed
+    assert response == {'ok': True, 'filled': 'totp', 'target_delivery': CHROME_DELIVERY}
+    [code] = scene['typed']
+    [request] = [r for r in FakeAdb.requests if r['op'] == 'type']
+    assert request['address_bar'] == 'example.com' and request['task_id'] == 12
+    assert code not in json.dumps(cdp.calls) and cdp.closed
 
 
-@pytest.mark.parametrize('kwargs, address_bar, error', [
-    (dict(shown=False), 'example.com', 'no single visible'),
-    (dict(), 'other.example', 'no single visible'),
-    (dict(focused_code=False), 'example.com', 'code field refused'),
+def test_chrome_login_types_both_values_and_devtools_never_sees_them(device_file):
+    cdp = FakeCDP('https://example.com/login', holds=None)
+    broker, scene = chrome_broker(device_file, cdp)
+    pinned = pin(broker, mode='login', field='#password', username_field='#login')
+    assert pinned['ok'] and list(cdp.objects.values()) == ['#login', '#password']
+    lengths = iter([len('synthetic-user'), len(SECRET)])
+    cdp.holds = None
+    original = cdp.call
+
+    def call(method, params=None, session=None, *, timeout=3):
+        if method == 'Runtime.callFunctionOn' and 'this.length' in params['functionDeclaration']:
+            return {'result': {'value': next(lengths)}}
+        return original(method, params, session, timeout=timeout)
+    cdp.call = call
+    assert fill(broker, 'synthetic-user', pinned['target'], mode='login')['ok']
+    assert scene['typed'] == ['synthetic-user', SECRET]
+    assert SECRET not in json.dumps(cdp.calls)
+
+
+@pytest.mark.parametrize('holds, type_answer, delivery', [
+    # The page cleared or cut the typed value: it may have seen part of it.
+    (3, None, 'uncertain'),
+    (None, {'ok': True, 'complete': False, 'started': False, 'protocol': 1}, 'not-started'),
+    (None, {'ok': True, 'complete': False, 'started': True, 'protocol': 1}, 'uncertain'),
+    (None, {'ok': False, 'error': 'Chrome is not the focused app in the pinned task', 'protocol': 1}, 'not-started'),
 ])
-def test_chrome_page_refusals(device_file, kwargs, address_bar, error):
-    broker = chrome_broker(device_file, FakeCDP('https://example.com/login', **kwargs), address_bar=address_bar)
-    assert error in pin(broker, mode='totp', field='#app_totp')['error']
+def test_chrome_typing_failures_report_whether_delivery_started(device_file, holds, type_answer, delivery):
+    cdp = FakeCDP('https://example.com/login', holds=holds)
+    broker, _ = chrome_broker(device_file, cdp, type_answer=type_answer)
+    response = fill(broker, 'synthetic-user', pin(broker, mode='password', field='#password')['target'])
+    assert response['ok'] is False and response['delivery'] == delivery
 
 
-def test_chrome_pin_needs_proof_that_the_devtools_peer_is_the_focused_chrome(device_file):
-    # Any app can hold the socket name chrome_devtools_remote. A mark written
-    # through the connection must show in Chrome's own UI before a pin.
-    cdp = FakeCDP('https://example.com/login')
-    broker = chrome_broker(device_file, cdp, shows_mark=lambda mark: False)
-    assert 'not the focused Chrome' in pin(broker, mode='totp', field='#code')['error']
-    expressions = [p['expression'] for m, p in cdp.calls if m == 'Runtime.evaluate']
-    assert any(e.startswith(android_route.MARK_RESTORE) for e in expressions)
-    assert not any(e.startswith(android_route.OTP_CAPTURE) for e in expressions) and cdp.closed
-    seen = []
-    broker = chrome_broker(device_file, FakeCDP('https://example.com/login'), shows_mark=lambda mark: seen.append(mark) or True)
-    assert pin(broker, mode='totp', field='#code')['ok']
-    [mark] = seen
-    assert mark.startswith('akdbx-') and len(mark) == 30
+@pytest.mark.parametrize('kwargs, address_bar, field, error', [
+    (dict(shown=False), 'example.com', '#code', 'no single visible'),
+    (dict(), 'other.example', '#code', 'no single visible'),
+    (dict(focused=False), 'example.com', '#code', 'tap the field first'),
+    (dict(), 'example.com', '#missing', 'page code field refused'),
+    (dict(), None, '#code', 'address bar is not shown'),
+])
+def test_chrome_page_refusals(device_file, kwargs, address_bar, field, error):
+    broker, _ = chrome_broker(device_file, FakeCDP('https://example.com/login', **kwargs), address_bar=address_bar)
+    assert error in pin(broker, mode='totp', field=field)['error']
 
 
-def test_chrome_address_bar_hides_www(device_file):
-    broker = chrome_broker(device_file, FakeCDP('https://www.example.com/login'), address_bar='example.com')
+def test_chrome_address_bar_hides_www_and_shows_unicode_hosts(device_file):
+    broker, _ = chrome_broker(device_file, FakeCDP('https://www.example.com/login'), address_bar='example.com')
     assert pin(broker, mode='totp', field='#code')['origin'] == 'https://www.example.com'
     assert android_route._authority_matches('example.com', ('https', 'www.example.com', 443))
     assert not android_route._authority_matches('www.example.com', ('https', 'example.com', 443))
     assert not android_route._authority_matches('example.com', ('https', 'wwwexample.com', 443))
+    assert android_route._authority_matches('bücher.de', ('https', 'xn--bcher-kva.de', 443))
+    assert not android_route._authority_matches('bucher.de', ('https', 'xn--bcher-kva.de', 443))
 
 
 def test_chrome_http_page_is_refused(device_file):
-    broker = chrome_broker(device_file, FakeCDP('http://example.com/login'), address_bar='example.com')
+    broker, _ = chrome_broker(device_file, FakeCDP('http://example.com/login'), address_bar='example.com')
     assert 'no single visible' in pin(broker, mode='totp', field='#code')['error']
-
-
-def test_chrome_login_uses_the_cdp_route_pin(device_file):
-    broker = chrome_broker(device_file, FakeCDP('https://example.com/login'))
-    seen = {}
-
-    def pin_with(request, profile, slot=None):
-        seen.update(request=request, profile=profile)
-        return {'ok': True, 'target': 'f' * 64, 'expires_in': 30, 'target_delivery': 'chromium-password-dom-v1'}
-    broker.passwords.pin_with = pin_with
-    response = pin(broker, mode='login', field='#password', username_field='#login')
-    assert response['ok'] and response['android_delivery'] == 'chromium-password-dom-v1'
-    assert seen['request'] == {'action': 'pin-password-target', 'password_protocol': 1, 'page_id': 'T1', 'frame_id': 'F1',
-                               'top_url': 'https://example.com/login', 'selector': '#password', 'mode': 'login',
-                               'username_selector': '#login'}
-    assert isinstance(seen['profile'], android_route.ChromeDevTools)
 
 
 def test_chrome_outside_a_tab_is_refused(device_file):
@@ -641,72 +662,90 @@ def test_forwarded_devtools_port_is_removed_once_connected():
     assert calls == ['forward', ('remove', 40000)]
 
 
+# ----- the adb process: values only on standard input ----------------------
+
+class FakeAdbServer:
+    """An adb server on loopback that speaks the host protocol and shell v2; it records what it receives."""
+
+    def __init__(self, answer):
+        import socket as socket_module
+        import threading
+        self.answer = answer
+        self.services, self.stdin = [], []
+        self.listener = socket_module.socket()
+        self.listener.bind(('127.0.0.1', 0))
+        self.listener.listen(4)
+        self.port = self.listener.getsockname()[1]
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self):
+        while True:
+            try:
+                connection, _ = self.listener.accept()
+            except OSError:
+                return
+            with connection:
+                try:
+                    self.session(connection)
+                except Exception:
+                    pass
+
+    def session(self, connection):
+        read = lambda n: android_route._read_exact(connection, n)
+        for _ in range(2):
+            service = read(int(read(4), 16)).decode()
+            self.services.append(service)
+            connection.sendall(b'OKAY')
+        data = b''
+        while True:
+            kind, payload = android_route._read_packet(connection)
+            if kind == android_route.SHELL_STDIN:
+                data += payload
+            if kind == android_route.SHELL_CLOSE_STDIN:
+                break
+        self.stdin.append(data)
+        output = ('AKDBX-ANDROID-RESULT ' + json.dumps({**self.answer, 'protocol': 1}) + '\n').encode()
+        android_route._send_packet(connection, android_route.SHELL_STDOUT, b'noise\n' + output)
+        android_route._send_packet(connection, android_route.SHELL_EXIT, b'\x00')
+
+    def close(self):
+        self.listener.close()
+
+
 @pytest.mark.skipif(os.name == 'nt', reason='Linux peer check')
-def test_adb_port_of_another_account_is_refused(monkeypatch):
-    import socket as socket_module
-    listener = socket_module.socket()
-    listener.bind(('127.0.0.1', 0))
-    listener.listen(1)
-    port = listener.getsockname()[1]
+def test_values_reach_the_device_only_in_stdin_packets_of_the_verified_connection(tmp_path):
+    server = FakeAdbServer({'ok': True, 'delivered': True, 'results': [{'accepted': True, 'confirmed': True}]})
+    adb = tmp_path / 'adb'
+    adb.write_text('#!/bin/sh\nexit 1\n')
+    adb.chmod(0o700)
     try:
-        runner = android_route.Adb(android_route.Device('phone', '/bin/true', port, 'emulator-5584'))
-        assert runner.server_running()
+        device = android_route.Device('phone', str(adb), server.port, 'emulator-5584')
+        runner = android_route.Adb(device)
+        answer = runner.helper({'op': 'fill', 'fields': [{'value': SECRET}]}, install=False)
+        assert answer['ok'] is True
+        assert server.services[0] == 'host:transport:emulator-5584'
+        assert server.services[1].startswith('shell,v2,raw:p=/data/local/tmp/akdbx/helper-')
+        assert android_route.HELPER_SHA256 in server.services[1] and SECRET not in ''.join(server.services)
+        assert SECRET.encode() in server.stdin[0]
+    finally:
+        server.close()
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Linux peer check')
+def test_a_helper_run_refuses_an_adb_port_of_another_account(tmp_path, monkeypatch):
+    server = FakeAdbServer({'ok': True})
+    try:
+        runner = android_route.Adb(android_route.Device('phone', '/bin/true', server.port, 'emulator-5584'))
 
         def other_owner(connection):
             raise android_route.TargetError()
         monkeypatch.setattr('akdbx.browser_password.verify_peer', other_owner)
         with pytest.raises(AndroidError, match='another account'):
-            runner.server_running()
+            runner.helper({'op': 'fill', 'fields': [{'value': SECRET}]}, install=False)
+        assert server.stdin == []
     finally:
-        listener.close()
-    assert not runner.server_running()
-
-
-# ----- the adb process: values only on standard input ----------------------
-
-FAKE_ADB = r'''#!PYTHON
-import json, os, sys
-log = os.environ['FAKE_ADB_LOG']
-args = sys.argv[1:]
-data = sys.stdin.buffer.read() if args[4:6] == ['shell', '-T'] else b''
-with open(log, 'a') as out:
-    out.write(json.dumps({'argv': args, 'stdin': data.decode()}) + '\n')
-if args[4:6] == ['shell', '-T']:
-    request = json.loads(data)
-    if request['op'] == 'probe':
-        answer = {'ok': True, 'boot_id': 'B', 'sdk': 35, 'speak_password': False}
-    else:
-        answer = {'ok': True, 'delivered': True, 'results': [{'accepted': True, 'confirmed': True}]}
-    answer['protocol'] = 1
-    print('noise from app_process')
-    print('AKDBX-ANDROID-RESULT ' + json.dumps(answer))
-'''
-
-
-@pytest.mark.skipif(os.name == 'nt', reason='fake adb is a POSIX script')
-def test_values_reach_adb_only_on_standard_input(tmp_path, monkeypatch):
-    adb = tmp_path / 'adb'
-    adb.write_text(FAKE_ADB.replace('PYTHON', sys.executable))
-    adb.chmod(0o700)
-    log = tmp_path / 'adb.log'
-    monkeypatch.setenv('FAKE_ADB_LOG', str(log))
-    monkeypatch.setenv('ANDROID_SERIAL', 'should-not-pass')
-    device = android_route.Device('phone', str(adb), 5043, 'emulator-5584')
-    runner = android_route.Adb(device)
-    monkeypatch.setattr(runner, 'server_running', lambda: True)
-    targets = AndroidTargets(None, adb_factory=lambda d: runner)
-    pinned = android_route.AndroidPin(token='t', device=device, boot_id='B', context=context(**GMS),
-                                      fields=[field('12', password=True, web=True, package='com.google.android.gms')],
-                                      mode='password', origin=('https', 'accounts.google.com', 443),
-                                      source='google-sign-in', expires_at=time.monotonic() + 30)
-    targets.deliver(pinned, 'password', [SECRET], lambda: True, time.monotonic() + 4)
-    records = [json.loads(line) for line in log.read_text().splitlines()]
-    assert [r['argv'][4:6] for r in records] == [['shell', '-T']] * 2
-    for record in records:
-        assert record['argv'][:4] == ['-P', '5043', '-s', 'emulator-5584']
-        assert SECRET not in json.dumps(record['argv'])
-        assert 'app_process' in record['argv'][-1] and android_route.HELPER_SHA256 in record['argv'][-1]
-    assert SECRET not in records[0]['stdin'] and SECRET in records[1]['stdin']
+        server.close()
 
 
 # ----- CLI --------------------------------------------------------------------

@@ -1,36 +1,35 @@
 """Android route: fill one verified field on a configured Android device.
 
-The broker reaches the device through the operator's adb server, with one of
-two deliveries:
+The broker speaks adb's host and shell protocols itself, on a loopback
+connection to the operator's adb server whose owner it checks, and starts a
+small helper on the device (``android_assets/akdbx-android-helper.dex``, built
+from ``android/helper``) with ``app_process`` as the adb shell user. A value
+travels only on that connection's standard input to the helper. It is never
+an adb or shell argument, never on the clipboard, never sent over Chrome's
+DevTools connection, and never in a response, an exception message or a log.
 
-- App fields, and Google's account sign-in in Google Play services: the
-  broker copies a small helper (``android_assets/akdbx-android-helper.dex``,
-  built from ``android/helper``) to the device and starts it with
-  ``app_process`` as the adb shell user. The helper reads the screen through
-  the platform's accessibility API (UiAutomation), checks the app, its
-  signing certificate and the exact field, and puts the value into that
-  field with ACTION_SET_TEXT. The value travels only on the helper's
-  standard input.
-- Pages in Chrome (tabs and Custom Tabs): Chrome's accessibility tree can be
-  stale, so the broker reads and fills the page through Chrome's DevTools
-  socket, which adb forwards to a loopback port only while the broker
-  connects. Logins use the CDP route's own DOM pin and fill; authenticator
-  codes use the same checks for a focused code field.
+- App fields and Google account sign-in: the helper finds the exact field
+  through the platform's accessibility API (UiAutomation), checks the app,
+  its signing certificate, task and field again, empties the field, sets the
+  value (ACTION_SET_TEXT) and confirms that the field holds it.
+- Chrome tabs and Custom Tabs: Chrome's accessibility tree can be stale, so
+  the broker reads the page through Chrome's DevTools socket (adb forwards it
+  to a loopback port only until the broker connects). DevTools only reads,
+  empties and focuses the field. The helper types the value as key events
+  that Android delivers only to windows of Chrome's app user, after it checks
+  that Chrome is focused in the pinned task and its address bar shows the
+  pinned host. An app that held the DevTools socket name could lie about a
+  page but never receives a value.
 
-A value is never an adb or shell argument, never on the clipboard, never
-typed as key events, and never in a response, an exception message or a log.
-
-A pin binds the device (configured name, adb serial and boot id), the focused
-app (package, current signer and activity) and the field. The site that a pin
-may receive a credential for is one of:
+The site that a pin may receive a credential for is one of:
 
 - the page in Chrome (com.android.chrome, signed by Google): the exact origin
-  of the one visible, focused tab, whose host must also match Chrome's own
-  address bar when the bar is shown;
-- Google's account sign-in in Google Play services (com.google.android.gms,
-  Google signing lineage, its sign-in activity): https://accounts.google.com;
-- any other app, when the agent names a site (--app-site) whose Digital
-  Asset Links file names that app's package and current signing certificate.
+  of the one visible, focused tab, whose host must match Chrome's address bar;
+- Google's account sign-in in Google Play services: https://accounts.google.com,
+  for an email pin and for the one-run google_sign_in (consumer accounts only);
+- a native field of any other app, when the agent names a site (--app-site)
+  whose Digital Asset Links share its credentials with that app's package and
+  current signing certificate.
 """
 from __future__ import annotations
 
@@ -55,8 +54,8 @@ from .target import DeliveryError, TargetError
 
 PROTOCOL = 1
 DELIVERY = 'android-accessibility-set-text-v1'
-# An authenticator code set in a Chrome page through Chrome's DevTools socket.
-CHROME_CODE_DELIVERY = 'android-chrome-dom-code-v1'
+# A value typed into a Chrome page as key events that only Chrome's windows receive.
+CHROME_DELIVERY = 'android-chrome-keys-v1'
 PIN_TTL = 30.0
 MAX_PINS = 64
 MODES = ('login', 'username', 'password', 'totp')
@@ -68,14 +67,17 @@ SERIAL = re.compile(r'[A-Za-z0-9._:-]{1,64}')
 
 HELPER_ASSET = 'akdbx-android-helper.dex'
 # SHA-256 of the bundled helper; tests/test_android_route.py checks it.
-HELPER_SHA256 = 'ba5a063bf2603efaa93480fd19fcaeca7eef4e31c88e3b889a47a54bd3ffba27'
+HELPER_SHA256 = '60ed0bebde01864525914fee1133cdb88ac22aba52da076338f92ec17b605fcf'
 HELPER_CLASS = 'org.akdbx.android.Helper'
 HELPER_PROTOCOL = 1
 RESULT_PREFIX = 'AKDBX-ANDROID-RESULT '
 DEVICE_DIR = '/data/local/tmp/akdbx'
 HELPER_MISSING = 86
 HELPER_TIMEOUT = 25.0
-SIGN_IN_TIMEOUT = 100.0
+SIGN_IN_TIMEOUT = 140.0
+DEVICE_PROBE_TIMEOUT = 15.0
+DEVICE_LIST_BUDGET = 150.0
+TAB_SEARCH_BUDGET = 20.0
 MAX_HELPER_OUTPUT = 512 * 1024
 MAX_TAB_LIST = 1024 * 1024
 MAX_ASSET_LINKS = 256 * 1024
@@ -93,6 +95,11 @@ GOOGLE_SIGN_IN_ORIGIN = ('https', 'accounts.google.com', 443)
 # let an app open a site's links, not receive its passwords.
 ASSET_LINK_RELATIONS = ('delegate_permission/common.get_login_creds',)
 
+SHOW_PASSWORD_REFUSAL = ('device shows each typed password character; on the device run '
+                         '"settings put system show_password 0" (adb shell), then pin again')
+GMAIL_ONLY = ('google-sign-in fills the password only for a @gmail.com or @googlemail.com account: '
+              'another domain can send the sign-in to its own company page, whose site akdbx cannot read; '
+              'no value sent')
 SPEAK_PASSWORD_REFUSAL = ('device lets accessibility services read password text; on the device run '
                           '"settings put secure speak_password 0" (adb shell), then pin again')
 GOOGLE_SECRETS_REFUSAL = ('Google sign-in takes the password and code only through '
@@ -114,7 +121,7 @@ class AndroidMismatch(TargetError):
 
 def capabilities(configured: bool) -> dict:
     return dict(android_fill_protocol=PROTOCOL, android_fill_delivery=DELIVERY,
-                android_page_code_delivery=CHROME_CODE_DELIVERY,
+                android_chrome_delivery=CHROME_DELIVERY,
                 android_fill_modes=list(MODES), android_devices_configured=configured)
 
 
@@ -268,28 +275,99 @@ class Adb:
             self.run('shell', f'rm -f {temporary}')
             raise AndroidError('could not copy the akdbx helper to the device')
 
-    def helper(self, request: dict, *, install: bool, timeout: float = HELPER_TIMEOUT) -> dict:
+    def _connect(self, timeout: float) -> socket.socket:
+        """A connection to the adb server whose owner is this user (checked on this very socket)."""
+        from .browser_password import verify_peer
+        connection = socket.create_connection(('127.0.0.1', self.device.port), timeout=min(timeout, 5.0))
+        try:
+            verify_peer(connection)
+        except TargetError:
+            connection.close()
+            raise AndroidError('the adb server port belongs to another account') from None
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+
+    @staticmethod
+    def _request(connection, service: str) -> None:
+        data = service.encode('utf-8')
+        connection.sendall(b'%04x' % len(data) + data)
+        status = _read_exact(connection, 4)
+        if status != b'OKAY':
+            raise AndroidError('adb refused the request; is the device connected?')
+
+    def shell(self, command: str, stdin: bytes, *, timeout: float, answer=None) -> tuple[int, bytes]:
+        """Run a device command over adb's shell protocol on a verified server connection.
+
+        The bytes on stdin go through the same connection that passed the owner
+        check, so another account cannot take over between check and use.
+        answer(line) is called for each stdout line that starts with NEED_PREFIX
+        and returns bytes to write to stdin (or None to close stdin).
+        """
+        deadline = time.monotonic() + timeout
+        connection = self._connect(timeout)
+        try:
+            self._request(connection, 'host:transport:' + self.device.serial)
+            self._request(connection, 'shell,v2,raw:' + command)
+            if stdin:
+                _send_packet(connection, SHELL_STDIN, stdin)
+            if answer is None:
+                _send_packet(connection, SHELL_CLOSE_STDIN, b'')
+            output = bytearray()
+            pending = b''
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                connection.settimeout(remaining)
+                kind, data = _read_packet(connection)
+                if kind == SHELL_EXIT:
+                    return (data[0] if data else 255), bytes(output[-MAX_HELPER_OUTPUT:])
+                if kind != SHELL_STDOUT:
+                    continue
+                output += data
+                if len(output) > 4 * MAX_HELPER_OUTPUT:
+                    del output[:-MAX_HELPER_OUTPUT]
+                if answer is not None:
+                    pending += data
+                    while b'\n' in pending:
+                        line, pending = pending.split(b'\n', 1)
+                        if line.startswith(NEED_PREFIX.encode()):
+                            reply = answer(line[len(NEED_PREFIX):].decode('utf-8', 'replace'))
+                            if reply is None:
+                                _send_packet(connection, SHELL_CLOSE_STDIN, b'')
+                            else:
+                                _send_packet(connection, SHELL_STDIN, reply)
+                    pending = pending[-4096:]
+        finally:
+            connection.close()
+
+    def helper(self, request: dict, *, install: bool, timeout: float = HELPER_TIMEOUT, answer=None) -> dict:
         """Run one helper request. Answers hold no value from the request."""
         data = (json.dumps(request, separators=(',', ':')) + '\n').encode('utf-8')
+        if not os.path.isfile(self.device.adb):
+            raise AndroidError('configured adb executable not found')
         for attempt in (0, 1):
-            result = self.run('shell', '-T', self._helper_command(), stdin=data, timeout=timeout)
-            if result.returncode == HELPER_MISSING and install and attempt == 0:
+            code, stdout = self.shell(self._helper_command(), data, timeout=timeout, answer=answer)
+            if code == HELPER_MISSING and install and attempt == 0:
                 self.install_helper()
                 continue
             break
-        if result.returncode == HELPER_MISSING:
+        data = None
+        if code == HELPER_MISSING:
             raise AndroidError('akdbx helper missing on the device')
-        output = result.stdout[-MAX_HELPER_OUTPUT:].decode('utf-8', 'replace')
+        output = stdout.decode('utf-8', 'replace')
         lines = [line for line in output.splitlines() if line.startswith(RESULT_PREFIX)]
         if len(lines) != 1:
             raise AndroidError('Android helper gave no answer')
         try:
-            answer = json.loads(lines[0][len(RESULT_PREFIX):])
+            result = json.loads(lines[0][len(RESULT_PREFIX):])
         except ValueError:
             raise AndroidError('Android helper gave no answer') from None
-        if not isinstance(answer, dict) or answer.get('protocol') != HELPER_PROTOCOL:
+        if not isinstance(result, dict) or result.get('protocol') != HELPER_PROTOCOL:
             raise AndroidError('Android helper protocol mismatch')
-        return answer
+        return result
 
     def forward_devtools(self) -> int:
         """Forward Chrome's DevTools socket to a new loopback port; only adbd may reach it."""
@@ -304,6 +382,32 @@ class Adb:
             self.run('forward', '--remove', f'tcp:{port}')
         except Exception:
             pass
+
+
+SHELL_STDIN, SHELL_STDOUT, SHELL_STDERR, SHELL_EXIT, SHELL_CLOSE_STDIN = 0, 1, 2, 3, 4
+NEED_PREFIX = 'AKDBX-ANDROID-NEED '
+
+
+def _read_exact(connection, size: int) -> bytes:
+    data = b''
+    while len(data) < size:
+        chunk = connection.recv(size - len(data))
+        if not chunk:
+            raise AndroidError('adb connection closed')
+        data += chunk
+    return data
+
+
+def _send_packet(connection, kind: int, data: bytes) -> None:
+    connection.sendall(bytes([kind]) + len(data).to_bytes(4, 'little') + data)
+
+
+def _read_packet(connection) -> tuple[int, bytes]:
+    header = _read_exact(connection, 5)
+    size = int.from_bytes(header[1:], 'little')
+    if size > MAX_HELPER_OUTPUT:
+        raise AndroidError('adb packet too large')
+    return header[0], _read_exact(connection, size)
 
 
 class ChromeDevTools:
@@ -375,65 +479,51 @@ PAGE_FIELDS = r"""(function() {
   }
   return fields;
 })()"""
-# An authenticator-code field: the CDP route's capture checks for one focused
-# text, tel or number input. The code is set with the native value setter.
-OTP_CAPTURE = r"""(function(selector, url) {
+# A pinned page field, held in an isolated world. DevTools here only reads,
+# clears and focuses: the value itself is typed by the device helper as key
+# events that the system delivers only to Chrome's windows, so a DevTools peer
+# that is not Chrome never receives it.
+PAGE_FIELD = r"""(function(selector, url, kind) {
   if (!isSecureContext || location.href !== url || !document.hasFocus() || document.visibilityState !== 'visible') throw 0;
   const query = s => { const a = document.querySelectorAll(s); if (a.length !== 1) throw 0; return a[0]; };
   const field = query(selector);
   const created = performance.now();
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  const getter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').get;
   const type = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'type').get;
+  const kinds = {password: ['password'], username: ['text', 'email'], code: ['text', 'tel', 'number']};
   const valid = e => {
     if (!(e instanceof HTMLInputElement) || !e.isConnected || e.ownerDocument !== document || e.disabled || e.readOnly || e.closest('[inert]')) return false;
     const t = type.call(e), r = e.getBoundingClientRect(), s = getComputedStyle(e);
-    return ['text', 'tel', 'number'].includes(t) && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none' && s.opacity !== '0';
+    return kinds[kind].includes(t) && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none' && s.opacity !== '0';
   };
   let tainted = false;
   const dirty = () => { tainted = true; };
   if (!window.navigation) throw 0;
   window.navigation.addEventListener('navigate', dirty);
-  window.addEventListener('blur', dirty, true);
   document.addEventListener('visibilitychange', dirty, true);
-  document.addEventListener('focusin', dirty, true);
   const observer = new MutationObserver(records => {
     for (const r of records) if (r.type === 'childList' && [...r.removedNodes].some(n => n === field || n.contains(field))) dirty();
   });
   observer.observe(document, {childList:true, subtree:true});
   const dispose = () => {
     window.navigation.removeEventListener('navigate', dirty);
-    window.removeEventListener('blur', dirty, true);
     document.removeEventListener('visibilitychange', dirty, true);
-    document.removeEventListener('focusin', dirty, true);
     observer.disconnect();
   };
-  const originalFocus = document.activeElement;
-  const check = () => performance.now() - created < 30000 && !tainted && isSecureContext && location.href === url && document.hasFocus() && document.visibilityState === 'visible' && document.activeElement === originalFocus && valid(field) && query(selector) === field;
-  if (!check() || originalFocus !== field) { dispose(); throw 0; }
-  return {mode: 'totp', field, setter, check, dispose};
-})"""
-OTP_FILL = r"""function(code, deadline) {
-  if (this.mode !== 'totp' || !this.check() || performance.now() >= deadline) return false;
-  this.setter.call(this.field, code);
-  this.field.dispatchEvent(new Event('input', {bubbles:true}));
-  this.field.dispatchEvent(new Event('change', {bubbles:true}));
-  this.dispose();
-  return true;
-}"""
-
-
-# Written into the chosen tab through the DevTools connection, then read back
-# from Chrome's own UI by the helper (see Helper.markShown).
-MARK_SET = r"""(function(mark, custom) {
-  const old = {href: location.href, title: document.title};
-  if (custom) document.title = mark;
-  else history.replaceState(history.state, '', location.href.split('#')[0] + '#' + mark);
-  return old;
-})"""
-MARK_RESTORE = r"""(function(old, custom) {
-  if (custom) document.title = old.title;
-  else history.replaceState(history.state, '', old.href);
-  return location.href;
+  const check = () => performance.now() - created < 30000 && !tainted && isSecureContext && location.href === url &&
+    document.hasFocus() && document.visibilityState === 'visible' && valid(field) && query(selector) === field;
+  if (!check()) { dispose(); throw 0; }
+  return {kind, field, check, dispose, focused: document.activeElement === field,
+    // Empty the field and focus it; the helper then types into the focused element.
+    prepare(deadline) {
+      if (!this.check() || performance.now() >= deadline) return false;
+      setter.call(field, '');
+      field.dispatchEvent(new Event('input', {bubbles:true}));
+      field.focus();
+      return document.activeElement === field && getter.call(field) === '' && this.check();
+    },
+    length() { return this.check() && document.activeElement === field ? getter.call(field).length : -1; }};
 })"""
 
 
@@ -452,6 +542,12 @@ def _authority_matches(authority, origin) -> bool:
     """
     _, host, port = origin
     hosts = {host, host[4:]} if host.startswith('www.') and len(host) > 4 else {host}
+    # Chrome shows an internationalized host in Unicode; DevTools gives punycode.
+    try:
+        import idna
+        hosts |= {idna.decode(h) for h in hosts if 'xn--' in h}
+    except Exception:
+        pass
     return authority in {h if port == 443 else f'{h}:{port}' for h in hosts} | {f'{h}:{port}' for h in hosts}
 
 
@@ -499,6 +595,33 @@ def _fetch_asset_links(url: str) -> bytes:
 # ----- pins -----------------------------------------------------------------
 
 @dataclass
+class ChromeFields:
+    """A Chrome pin's DevTools connection and its page-field objects, in fill order."""
+    connection: object
+    session: str
+    page_id: str
+    url: str
+    objects: list
+
+    def call(self, index, declaration, *args, timeout=3):
+        result = self.connection.call('Runtime.callFunctionOn', {
+            'objectId': self.objects[index], 'functionDeclaration': declaration,
+            'arguments': [{'value': value} for value in args], 'returnByValue': True}, self.session, timeout=timeout)
+        if 'exceptionDetails' in result:
+            raise TargetError()
+        return result.get('result', {}).get('value')
+
+    def close(self):
+        try:
+            for index in range(len(self.objects)):
+                self.call(index, 'function() { this.dispose(); }', timeout=0.2)
+        except Exception:
+            pass
+        finally:
+            self.connection.close()
+
+
+@dataclass
 class AndroidPin:
     token: str
     device: Device
@@ -509,7 +632,7 @@ class AndroidPin:
     origin: tuple
     source: str
     expires_at: float
-    # A Chrome code-field pin holds its DevTools pin (a browser_password.PasswordPin).
+    # A Chrome page pin holds its DevTools fields (ChromeFields).
     dom: object = None
     used: bool = field(default=False)
 
@@ -579,11 +702,9 @@ class AndroidTargets:
     """Android pins and fills for the broker."""
 
     def __init__(self, config_path: Path | None, *, clock: Callable[[], float] = time.monotonic,
-                 passwords=None, adb_factory=Adb, fetch=None, cdp_factory=None):
+                 adb_factory=Adb, fetch=None, cdp_factory=None):
         self.config_path = config_path
         self.clock = clock
-        # The broker's CDP password pins: Chrome login pins live there.
-        self.passwords = passwords
         self.adb_factory = adb_factory
         self.fetch = fetch
         self.cdp_factory = cdp_factory
@@ -615,11 +736,16 @@ class AndroidTargets:
         if set(request) - {'action', 'android_protocol'}:
             raise AndroidError('invalid Android device list request')
         result = []
+        deadline = time.monotonic() + DEVICE_LIST_BUDGET
         for device in self.devices().values():
             adb = self.adb_factory(device)
             item = {'name': device.name, 'serial': device.serial, 'adb_server_port': device.port}
+            if time.monotonic() >= deadline:
+                item.update(reachable=None, speak_password=None, sdk=None)
+                result.append(item)
+                continue
             try:
-                probe = adb.helper({'op': 'probe'}, install=True)
+                probe = adb.helper({'op': 'probe'}, install=True, timeout=DEVICE_PROBE_TIMEOUT)
                 item.update(reachable=probe.get('ok') is True,
                             speak_password=probe.get('speak_password') if isinstance(probe.get('speak_password'), bool) else None,
                             sdk=probe.get('sdk') if type(probe.get('sdk')) is int else None)
@@ -645,7 +771,10 @@ class AndroidTargets:
             pages = [t for t in pages if isinstance(t.get('url'), str) and _origin_of(t['url']) is not None
                      and _authority_matches(context['address_bar'], _origin_of(t['url']))]
         shown = []
-        for page in pages[:16]:
+        deadline = time.monotonic() + TAB_SEARCH_BUDGET
+        for page in pages[:64]:
+            if time.monotonic() >= deadline:
+                break
             try:
                 session = connection.call('Target.attachToTarget', {'targetId': page['targetId'], 'flatten': True},
                                           timeout=1.5)['sessionId']
@@ -685,88 +814,47 @@ class AndroidTargets:
         for item in fields[:40]:
             if not isinstance(item, dict):
                 continue
-            clean.append({'field': _clip(item.get('selector'), 300), 'kind': 'page',
+            clean.append({'field': _clip(item.get('selector'), 4096), 'kind': 'page',
                           **{key: _clip(item.get(key)) for key in ('type', 'id', 'name', 'autocomplete', 'placeholder', 'label')},
                           **{key: item.get(key) is True for key in ('focused', 'has_value', 'disabled')}})
         return {'site': {'origin': serialize_origin(page['origin']), 'source': 'chrome'}, 'page_url': _clip(page['url'], 2048),
                 'fields': clean}
 
-    def _bind_devtools(self, adb, connection, page, context) -> None:
-        """Prove that the DevTools peer is the focused Chrome, before any value moves.
-
-        Any app could hold the abstract socket name chrome_devtools_remote,
-        and SELinux keeps the shell from reading its owner. Only Chrome draws
-        its address bar and sets its task's description, so a mark written
-        through this connection must show there.
-        """
-        mark = 'akdbx-' + secrets.token_hex(12)
-        custom = context['activity'] == CHROME_ACTIVITIES[1]
-        result = connection.call('Runtime.evaluate', {
-            'expression': MARK_SET + '(' + json.dumps(mark) + ',' + json.dumps(custom) + ')',
-            'contextId': page['world'], 'returnByValue': True}, page['session'])
-        old = result.get('result', {}).get('value')
-        if not isinstance(old, dict) or old.get('href') != page['url'] or not isinstance(old.get('title'), str):
-            raise AndroidError('could not check that the page belongs to Chrome')
-        try:
-            seen = adb.helper({'op': 'context', 'mark': mark}, install=False)
-        finally:
-            restored = connection.call('Runtime.evaluate', {
-                'expression': MARK_RESTORE + '(' + json.dumps(old) + ',' + json.dumps(custom) + ')',
-                'contextId': page['world'], 'returnByValue': True}, page['session'])
-        if seen.get('ok') is not True or seen.get('mark_seen') is not True:
-            raise AndroidError("Chrome's DevTools socket is not the focused Chrome's; restart Chrome and try again")
-        if restored.get('result', {}).get('value') != page['url']:
-            raise AndroidError('the page changed while it was checked; try again')
-
     def _chrome_pin(self, request, mode, device, adb, context) -> dict:
-        from .browser_password import PROTOCOL as PASSWORD_PROTOCOL, DELIVERY as PASSWORD_DELIVERY, PasswordPin
-        selector = request.get('field')
-        username_selector = request.get('username_field')
-        for value in (selector, username_selector):
-            if value is not None and (not isinstance(value, str) or not 0 < len(value) <= 4096):
+        """Pin Chrome page fields: DevTools reads and focuses them; the helper types the values."""
+        selectors = [request.get('username_field'), request.get('field')] if mode == 'login' else [request.get('field')]
+        for value in selectors:
+            if not isinstance(value, str) or not 0 < len(value) <= 4096:
                 raise AndroidError('page fields are CSS selectors from android inspect')
         if request.get('app_site') is not None:
             raise AndroidError('--app-site is for apps; a Chrome page is verified by its own origin')
+        if context['address_bar'] is None:
+            raise AndroidError("Chrome's address bar is not shown; scroll up so it shows, then pin again")
+        kinds = {'login': ('username', 'password'), 'username': ('username',), 'password': ('password',),
+                 'totp': ('code',)}[mode]
         connection = self._cdp(adb)
+        fields = []
         try:
             page = self._chrome_page(connection, context)
-            self._bind_devtools(adb, connection, page, context)
+            for selector, kind in zip(selectors, kinds):
+                result = connection.call('Runtime.evaluate', {
+                    'expression': PAGE_FIELD + '(' + ','.join(json.dumps(v) for v in (selector, page['url'], kind)) + ')',
+                    'contextId': page['world']}, page['session'])
+                if 'exceptionDetails' in result or result['result'].get('type') != 'object' or 'objectId' not in result['result']:
+                    raise AndroidError(f'page {kind} field refused: it must be unique for its selector, visible and '
+                                       f'enabled, and a {"password" if kind == "password" else "text"} input')
+                fields.append(result['result']['objectId'])
+            # The caller tapped the first field: the pin is for the field the person sees in use.
+            focused = connection.call('Runtime.callFunctionOn', {
+                'objectId': fields[0], 'functionDeclaration': 'function() { return this.focused; }',
+                'returnByValue': True}, page['session'])
+            if focused.get('result', {}).get('value') is not True:
+                raise AndroidError('tap the field first: the pinned field must be the focused one')
         except Exception:
             connection.close()
             raise
-        if mode != 'totp':
-            connection.close()
-            if self.passwords is None:
-                raise AndroidError('Chrome page fill unavailable')
-            pin_request = {'action': 'pin-password-target', 'password_protocol': PASSWORD_PROTOCOL,
-                           'page_id': page['page_id'], 'frame_id': page['frame_id'], 'top_url': page['url'],
-                           'selector': selector, 'mode': mode}
-            if mode == 'login':
-                pin_request['username_selector'] = username_selector
-            if request.get('password_purpose') is not None:
-                pin_request['password_purpose'] = request['password_purpose']
-            self.passwords.prune()
-            try:
-                pinned = self.passwords.pin_with(pin_request, ChromeDevTools(adb))
-            except TargetError:
-                raise AndroidError('page field refused: it must be the focused field, unique for its selector, '
-                                   'visible, and marked username or current-password (or use --password-purpose)') from None
-            return {'ok': True, 'target': pinned['target'], 'expires_in': int(PIN_TTL),
-                    'android_delivery': PASSWORD_DELIVERY, 'mode': mode, 'origin': serialize_origin(page['origin']),
-                    'site_source': 'chrome', 'package': context['package']}
-        dom = None
-        try:
-            result = connection.call('Runtime.evaluate', {
-                'expression': OTP_CAPTURE + '(' + json.dumps(selector) + ',' + json.dumps(page['url']) + ')',
-                'contextId': page['world']}, page['session'])
-            if 'exceptionDetails' in result or result['result'].get('type') != 'object' or 'objectId' not in result['result']:
-                raise TargetError()
-            dom = PasswordPin(connection, page['session'], result['result']['objectId'], page['page_id'],
-                              page['frame_id'], page['url'], 'totp')
-        except Exception:
-            connection.close()
-            raise AndroidError('code field refused: it must be the focused text field, unique for its selector, and visible') from None
-        return self._store(device, context, [], 'totp', page['origin'], 'chrome', dom=dom)
+        dom = ChromeFields(connection, page['session'], page['page_id'], page['url'], fields)
+        return self._store(device, context, [], mode, page['origin'], 'chrome', dom=dom)
 
     # ----- apps ----------------------------------------------------------
 
@@ -842,7 +930,7 @@ class AndroidTargets:
                            for f in fields]}
 
     def pin(self, request) -> dict:
-        allowed = {'action', 'device', 'mode', 'field', 'username_field', 'app_site', 'password_purpose', 'android_protocol'}
+        allowed = {'action', 'device', 'mode', 'field', 'username_field', 'app_site', 'android_protocol'}
         if set(request) - allowed or request.get('android_protocol') != PROTOCOL:
             raise AndroidError('invalid Android pin request')
         mode = request.get('mode')
@@ -850,9 +938,6 @@ class AndroidTargets:
             raise AndroidError('mode must be login, username, password or totp')
         if (mode == 'login') != (request.get('username_field') is not None):
             raise AndroidError('--username-field is required in login mode and only there')
-        purpose = request.get('password_purpose')
-        if purpose is not None and (mode != 'password' or purpose not in {'current-password', 'new-password'}):
-            raise AndroidError('--password-purpose is current-password or new-password, in password mode on a page')
         app_site = request.get('app_site')
         if app_site is not None and not isinstance(app_site, str):
             raise AndroidError('invalid --app-site')
@@ -863,8 +948,6 @@ class AndroidTargets:
             return self._chrome_pin(request, mode, device, adb, context)
         if context['package'] == CHROME_PACKAGE:
             raise AndroidError('Chrome is not in a tab or Custom Tab, or is not signed by Google')
-        if purpose is not None:
-            raise AndroidError('--password-purpose is only for Chrome pages')
         if (context['package'] == GMS_PACKAGE and context['activity'] == GMS_SIGN_IN_ACTIVITY
                 and context['signer_lineage'][0] == GOOGLE_SIGNER and mode != 'username'):
             raise AndroidError(GOOGLE_SECRETS_REFUSAL)
@@ -900,7 +983,7 @@ class AndroidTargets:
             raise AndroidError(GOOGLE_SECRETS_REFUSAL)
         return self._store(device, context, fields, mode, origin, source)
 
-    def google_sign_in(self, request, values: dict, ready: Callable[[], bool]) -> dict:
+    def google_sign_in(self, request, values: dict, ready: Callable[[], bool], code=None) -> dict:
         """Fill the email, then the password (and a code) on the pages Google's flow shows next.
 
         Returns the receipt; raises DeliveryError(started) when the outcome is unknown.
@@ -911,17 +994,21 @@ class AndroidTargets:
             context = self._helper_context(adb.helper({'op': 'context'}, install=True))
         except AndroidError:
             raise DeliveryError(False) from None
-        if not (context['package'] == GMS_PACKAGE and context['activity'] == GMS_SIGN_IN_ACTIVITY
-                and context['signer_lineage'][0] == GOOGLE_SIGNER):
-            raise AndroidError('the focused screen is not Google account sign-in')
         if context['speak_password']:
             raise AndroidError(SPEAK_PASSWORD_REFUSAL)
         if not ready():
             raise DeliveryError(False)
         request = {'op': 'google_sign_in', 'boot_id': context['boot_id'], **values}
+        if code is not None:
+            request['code'] = True
+
+        def answer_need(need):
+            if need != 'code' or code is None:
+                return b'{}\n'
+            return (json.dumps({'code': code()}) + '\n').encode()
         try:
-            # Each later page may take the helper's 25-second wait.
-            answer = adb.helper(request, install=False, timeout=SIGN_IN_TIMEOUT)
+            # The run opens a new sign-in, then each page may take the helper's 25-second wait.
+            answer = adb.helper(request, install=False, timeout=SIGN_IN_TIMEOUT, answer=answer_need)
         except Exception:
             raise DeliveryError(True) from None
         finally:
@@ -931,7 +1018,8 @@ class AndroidTargets:
             raise DeliveryError(not isinstance(error, str) or error.startswith('helper failed'))
         steps = answer.get('steps')
         stopped = answer.get('stopped_at')
-        if (not isinstance(steps, list) or not all(step in values for step in steps)
+        allowed = set(values) | ({'code'} if code is not None else set())
+        if (not isinstance(steps, list) or not all(step in allowed for step in steps)
                 or stopped not in {None, 'email', 'password', 'code', 'submit'} or answer.get('uncertain') is True):
             raise DeliveryError(True)
         receipt = {'ok': True, 'filled': list(steps), 'target_delivery': DELIVERY}
@@ -954,7 +1042,7 @@ class AndroidTargets:
         for old in evicted:
             old.close()
         return {'ok': True, 'target': token, 'expires_in': int(PIN_TTL),
-                'android_delivery': CHROME_CODE_DELIVERY if dom is not None else DELIVERY,
+                'android_delivery': CHROME_DELIVERY if dom is not None else DELIVERY,
                 'mode': mode, 'origin': serialize_origin(origin), 'site_source': source,
                 'package': context['package']}
 
@@ -975,15 +1063,15 @@ class AndroidTargets:
             raise AndroidMismatch()
 
     def delivery(self, pin: AndroidPin) -> str:
-        return CHROME_CODE_DELIVERY if pin.source == 'chrome' else DELIVERY
+        return CHROME_DELIVERY if pin.source == 'chrome' else DELIVERY
 
     def deliver(self, pin: AndroidPin, mode: str, values: list[str], ready: Callable[[], bool],
                 start_deadline: float) -> None:
         """Fill the pinned fields; raise DeliveryError(started) on any failure."""
-        if pin.used or pin.mode != mode or (pin.dom is None and len(values) != len(pin.fields)):
+        if pin.used or pin.mode != mode or len(values) != (len(pin.dom.objects) if pin.dom is not None else len(pin.fields)):
             raise DeliveryError(False)
         if pin.dom is not None:
-            return self._deliver_page_code(pin, values, ready, start_deadline)
+            return self._deliver_page(pin, values, ready, start_deadline)
         pin.used = True
         adb = self.adb_factory(pin.device)
         try:
@@ -1018,26 +1106,45 @@ class AndroidTargets:
                            for r in results)):
             raise DeliveryError(answer.get('delivered') is not False)
 
-    def _deliver_page_code(self, pin, values, ready, start_deadline):
-        from .browser_password import BrowserPasswords
-        started = False
+    def _deliver_page(self, pin, values, ready, start_deadline):
+        """Type each value into its Chrome page field; DevTools never carries a value."""
         dom = pin.dom
+        adb = self.adb_factory(pin.device)
+        started = False
         try:
-            if len(values) != 1 or self.clock() >= pin.expires_at:
+            if self.clock() >= pin.expires_at:
                 raise TargetError()
-            # The same page, frame and renderer clock checks as the CDP route.
-            checker = self.passwords if self.passwords is not None else BrowserPasswords(clock=self.clock)
-            renderer_deadline = checker._recheck(dom, {pin.origin}, ready, start_deadline)
-            started = True
-            result = dom.connection.call('Runtime.callFunctionOn', {
-                'objectId': dom.object_id, 'functionDeclaration': OTP_FILL,
-                'arguments': [{'value': values[0]}, {'value': renderer_deadline}], 'returnByValue': True,
-            }, dom.session)
-            if 'exceptionDetails' in result:
+            probe = adb.helper({'op': 'probe'}, install=False)
+            if probe.get('ok') is not True or probe.get('boot_id') != pin.boot_id:
                 raise TargetError()
-            if result['result'].get('value') is not True:
-                started = False
-                raise TargetError()
+            for index, value in enumerate(values):
+                sample = dom.connection.call('Runtime.evaluate', {'expression': 'performance.now()', 'returnByValue': True},
+                                             dom.session)['result']['value']
+                remaining = min(start_deadline - self.clock(), PIN_TTL) if not started else PIN_TTL
+                if type(sample) not in {int, float} or remaining <= 0 or not ready():
+                    raise TargetError()
+                if dom.call(index, 'function(deadline) { return this.prepare(deadline); }', sample + remaining * 1000) is not True:
+                    raise TargetError()
+                request = {'op': 'type', 'boot_id': pin.boot_id, 'task_id': pin.context['task_id'],
+                           'address_bar': pin.context['address_bar'], 'value': value}
+                try:
+                    answer = adb.helper(request, install=False)
+                except Exception:
+                    started = True
+                    raise
+                finally:
+                    request = None
+                if answer.get('ok') is not True:
+                    error = answer.get('error')
+                    started = started or not isinstance(error, str) or error.startswith('helper failed')
+                    raise TargetError()
+                started = started or answer.get('started') is not False
+                if answer.get('complete') is not True:
+                    raise TargetError()
+                # The page holds as many characters as were typed: a handler did not clear or cut it.
+                if dom.call(index, 'function() { return this.length(); }') != len(value):
+                    started = True
+                    raise TargetError()
         except Exception:
             raise DeliveryError(started) from None
         finally:

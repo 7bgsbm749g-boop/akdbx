@@ -41,6 +41,7 @@ import java.util.List;
 public final class Helper {
     static final int PROTOCOL = 1;
     static final String RESULT_PREFIX = "AKDBX-ANDROID-RESULT ";
+    static final String NEED_PREFIX = "AKDBX-ANDROID-NEED ";
     static final int MAX_REQUEST = 256 * 1024;
     static final int MAX_FIELDS = 64;
     static final int MAX_NODES = 6000;
@@ -93,8 +94,14 @@ public final class Helper {
         return answer;
     }
 
+    private static BufferedReader input;
+
+    /** One line from stdin: the request, then any answer the broker sends to a NEED line. */
     static String readRequest() throws Exception {
-        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8), 8192);
+        if (input == null) {
+            input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8), 8192);
+        }
+        BufferedReader reader = input;
         StringBuilder text = new StringBuilder();
         int c;
         while ((c = reader.read()) != -1) {
@@ -117,7 +124,7 @@ public final class Helper {
             return probe();
         }
         if (!"inspect".equals(op) && !"check".equals(op) && !"fill".equals(op) && !"context".equals(op)
-                && !"google_sign_in".equals(op)) {
+                && !"google_sign_in".equals(op) && !"type".equals(op)) {
             throw new Refusal("unknown helper operation");
         }
         connect();
@@ -133,11 +140,10 @@ public final class Helper {
                 JSONObject answer = new JSONObject();
                 answer.put("ok", true);
                 answer.put("context", context(scene, walk(scene.root)));
-                String mark = request.optString("mark", "");
-                if (!mark.isEmpty()) {
-                    answer.put("mark_seen", markShown(mark));
-                }
                 return answer;
+            }
+            if ("type".equals(op)) {
+                return type(request);
             }
             if ("google_sign_in".equals(op)) {
                 return googleSignIn(request);
@@ -665,40 +671,105 @@ public final class Helper {
         return found;
     }
 
-    // ----- proof that a DevTools peer is the focused Chrome --------------
+    // ----- typing into Chrome ---------------------------------------------
 
-    static final String CUSTOM_TAB = "com.android.chrome/org.chromium.chrome.browser.customtabs.CustomTabActivity";
+    static final String[] CHROME_ACTIVITIES = {
+        "com.android.chrome/org.chromium.chrome.browser.ChromeTabbedActivity",
+        "com.android.chrome/org.chromium.chrome.browser.customtabs.CustomTabActivity",
+    };
+
+    static boolean showsPasswords() {
+        String value = setting("system", "show_password");
+        return !"0".equals(value);
+    }
+
+    /** Key events for each character, or null when one has no key on the virtual keyboard. */
+    static android.view.KeyEvent[] keyEvents(String value) {
+        android.view.KeyCharacterMap map = android.view.KeyCharacterMap.load(android.view.KeyCharacterMap.VIRTUAL_KEYBOARD);
+        List<android.view.KeyEvent> events = new ArrayList<>();
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < 0x20 || c > 0x7e) {
+                return null;
+            }
+            android.view.KeyEvent[] keys = map.getEvents(new char[] {c});
+            if (keys == null || keys.length == 0) {
+                return null;
+            }
+            for (android.view.KeyEvent key : keys) {
+                events.add(key);
+            }
+        }
+        return events.toArray(new android.view.KeyEvent[0]);
+    }
+
+    /** Inject one event that the system delivers only to a window of targetUid. */
+    static boolean inject(android.view.InputEvent event, int targetUid) throws Exception {
+        Object manager;
+        try {
+            manager = Class.forName("android.hardware.input.InputManagerGlobal").getMethod("getInstance").invoke(null);
+        } catch (ClassNotFoundException old) {
+            manager = Class.forName("android.hardware.input.InputManager").getMethod("getInstance").invoke(null);
+        }
+        Method method;
+        try {
+            method = manager.getClass().getMethod("injectInputEvent", android.view.InputEvent.class, int.class, int.class);
+        } catch (NoSuchMethodException old) {
+            method = manager.getClass().getMethod("injectInputEventToTarget", android.view.InputEvent.class, int.class, int.class);
+        }
+        // Mode 2: wait until the target window handled it.
+        return (Boolean) method.invoke(manager, event, 2, targetUid);
+    }
 
     /**
-     * True when Chrome's own UI shows the mark that the broker wrote into a
-     * page through a DevTools connection: the URL fragment in a tab's address
-     * bar, or the page title that a Custom Tab puts in its task description.
-     * Only Chrome draws its address bar and sets its task's description, so the
-     * DevTools peer that wrote the mark is the focused Chrome.
+     * Type a value as key events into Chrome's focused field. The system
+     * delivers each event only to a window owned by Chrome's Android user id,
+     * after this run checks that Chrome's tab or Custom Tab is focused in the
+     * pinned task and its own address bar shows the pinned host.
      */
-    boolean markShown(String mark) throws Exception {
-        long end = System.currentTimeMillis() + 2500;
-        while (System.currentTimeMillis() < end) {
-            Scene scene = scene();
-            if (!isChrome(scene.app.packageName)) {
-                return false;
-            }
-            if (CUSTOM_TAB.equals(scene.activity.flattenToShortString())) {
-                if (mark.equals(scene.task.label)) {
-                    return true;
-                }
-            } else {
-                for (AccessibilityNodeInfo node : walk(scene.root).nodes) {
-                    String id = node.getViewIdResourceName();
-                    if (id != null && id.equals(scene.app.packageName + CHROME_URL_BAR) && node.getText() != null
-                            && node.getText().toString().endsWith("#" + mark)) {
-                        return true;
-                    }
-                }
-            }
-            Thread.sleep(150);
+    JSONObject type(JSONObject request) throws Exception {
+        if (!bootId().equals(request.getString("boot_id"))) {
+            throw new Refusal("device restarted since the pin");
         }
-        return false;
+        String value = request.getString("value");
+        android.view.KeyEvent[] events = keyEvents(value);
+        if (events == null) {
+            throw new Refusal("value has a character with no key; only printable ASCII is typed");
+        }
+        if (speaksPasswords()) {
+            throw new Refusal("device lets accessibility read password text (speak_password is not 0)");
+        }
+        if (showsPasswords()) {
+            throw new Refusal("device shows typed password characters (show_password is not 0)");
+        }
+        Scene scene = scene();
+        String activity = scene.activity.flattenToShortString();
+        if (!isChrome(scene.app.packageName) || scene.app.lineage.isEmpty() || !GOOGLE_SIGNER.equals(scene.app.lineage.get(0))
+                || scene.app.debuggable || !(CHROME_ACTIVITIES[0].equals(activity) || CHROME_ACTIVITIES[1].equals(activity))
+                || scene.task.taskId != request.getInt("task_id")) {
+            throw new Refusal("Chrome is not the focused app in the pinned task");
+        }
+        String authority = addressBarAuthority(scene, walk(scene.root));
+        if (authority == null || !authority.equals(request.getString("address_bar"))) {
+            throw new Refusal("Chrome's address bar does not show the pinned site");
+        }
+        int typed = 0;
+        for (android.view.KeyEvent event : events) {
+            android.view.KeyEvent now = android.view.KeyEvent.changeTimeRepeat(event, android.os.SystemClock.uptimeMillis(), 0);
+            if (!inject(now, scene.app.uid)) {
+                JSONObject answer = new JSONObject();
+                answer.put("ok", true);
+                answer.put("complete", false);
+                answer.put("started", typed > 0);
+                return answer;
+            }
+            typed++;
+        }
+        JSONObject answer = new JSONObject();
+        answer.put("ok", true);
+        answer.put("complete", true);
+        answer.put("started", true);
+        return answer;
     }
 
     // ----- Google account sign-in in one run ------------------------------
@@ -713,9 +784,11 @@ public final class Helper {
             if (!isField(node) || !node.isEnabled() || !node.isVisibleToUser() || !inWeb(node) || inFrame(node)) {
                 continue;
             }
-            boolean match = "email".equals(kind) ? !node.isPassword() && "identifierId".equals(node.getViewIdResourceName())
+            String id = node.getViewIdResourceName();
+            boolean match = "email".equals(kind) ? !node.isPassword() && "identifierId".equals(id)
                     : "password".equals(kind) ? node.isPassword()
-                    : !node.isPassword();
+                    // Google's authenticator-app challenge; other challenges (SMS, recovery) stop the run.
+                    : !node.isPassword() && "totpPin".equals(id);
             if (match) {
                 if (found != null) {
                     return null; // Two candidates: not a page this run knows.
@@ -726,13 +799,36 @@ public final class Helper {
         return found;
     }
 
-    /** The sign-in scene, refused unless it is Google's signed sign-in activity in the same task. */
+    static boolean hasWebField(Walk walk) {
+        for (AccessibilityNodeInfo node : walk.nodes) {
+            if (isField(node) && node.isVisibleToUser() && inWeb(node)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static final String LEFT_SIGN_IN = "Google sign-in screen changed";
+
+    /**
+     * The sign-in scene, refused unless it is Google's signed sign-in
+     * activity in the run's own task; null while a page is still loading.
+     */
     Scene signInScene(int taskId) throws Exception {
-        Scene scene = scene();
+        Task task = focusedTask();
+        if (task == null || !GMS_SIGN_IN.equals(task.activity.flattenToShortString()) || task.taskId != taskId) {
+            throw new Refusal(LEFT_SIGN_IN);
+        }
+        Scene scene;
+        try {
+            scene = scene();
+        } catch (Refusal loading) {
+            return null; // No focused window or no content yet.
+        }
         if (!GMS_SIGN_IN.equals(scene.activity.flattenToShortString()) || scene.app.debuggable
                 || scene.app.lineage.isEmpty() || !GOOGLE_SIGNER.equals(scene.app.lineage.get(0))
-                || (taskId >= 0 && scene.task.taskId != taskId)) {
-            throw new Refusal("Google sign-in screen changed");
+                || scene.task.taskId != taskId) {
+            throw new Refusal(LEFT_SIGN_IN);
         }
         return scene;
     }
@@ -742,6 +838,10 @@ public final class Helper {
         long end = System.currentTimeMillis() + millis;
         while (System.currentTimeMillis() < end) {
             Scene scene = signInScene(taskId);
+            if (scene == null) {
+                Thread.sleep(250);
+                continue;
+            }
             Walk walk = walk(scene.root);
             boolean previousGone = true;
             if (previous != Long.MIN_VALUE) {
@@ -760,30 +860,108 @@ public final class Helper {
         return null;
     }
 
+    /**
+     * Set a field to a value and confirm it holds it. The field is emptied and
+     * checked first, so an unchanged masked value of the same length never
+     * counts as the new one.
+     */
     static boolean setAndConfirm(AccessibilityNodeInfo node, String value) throws Exception {
         node.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
-        Bundle arguments = new Bundle();
-        arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
-        if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
-            return false;
-        }
-        for (int attempt = 0; attempt < 10; attempt++) {
-            node.refresh();
-            CharSequence text = node.getText();
-            if (text != null && (text.toString().equals(value) || node.isPassword() && text.length() == value.length())) {
-                return true;
+        for (String step : new String[] {"", value}) {
+            Bundle arguments = new Bundle();
+            arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, step);
+            if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
+                return false;
             }
-            Thread.sleep(100);
+            boolean holds = false;
+            for (int attempt = 0; attempt < 10 && !holds; attempt++) {
+                if (!node.refresh()) {
+                    return false;
+                }
+                CharSequence text = node.getText();
+                CharSequence hint = node.getHintText();
+                boolean empty = text == null || text.length() == 0 || (hint != null && hint.toString().contentEquals(text));
+                holds = step.isEmpty() ? empty
+                        : text != null && !empty && (text.toString().equals(step) || node.isPassword() && text.length() == step.length());
+                if (!holds) {
+                    Thread.sleep(100);
+                }
+            }
+            if (!holds) {
+                return false;
+            }
         }
-        return false;
+        return true;
+    }
+
+    static final String FOOTER = "com.google.android.gms:id/suc_footer_button_bar";
+
+    /** The left of the two buttons in Google sign-in's own footer (Skip on the phone-number page), or null. */
+    static AccessibilityNodeInfo footerSkip(Walk walk) {
+        for (AccessibilityNodeInfo node : walk.nodes) {
+            if (FOOTER.equals(node.getViewIdResourceName())) {
+                List<AccessibilityNodeInfo> buttons = new ArrayList<>();
+                for (AccessibilityNodeInfo item : walk(node).nodes) {
+                    if (item != node && item.isClickable() && item.isVisibleToUser() && !inWeb(item)) {
+                        buttons.add(item);
+                    }
+                }
+                if (buttons.size() != 2) {
+                    return null;
+                }
+                Rect a = new Rect();
+                Rect b = new Rect();
+                buttons.get(0).getBoundsInScreen(a);
+                buttons.get(1).getBoundsInScreen(b);
+                return a.left <= b.left ? buttons.get(0) : buttons.get(1);
+            }
+        }
+        return null;
+    }
+
+    static List<Integer> gmsSignInTasks() throws Exception {
+        Object service = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
+        List<?> tasks = null;
+        for (Method method : service.getClass().getMethods()) {
+            if (!"getTasks".equals(method.getName())) {
+                continue;
+            }
+            Class<?>[] types = method.getParameterTypes();
+            Object[] args = new Object[types.length];
+            args[0] = 100;
+            for (int i = 1; i < types.length; i++) {
+                args[i] = types[i] == boolean.class ? (Object) false : (Object) 0;
+            }
+            tasks = (List<?>) method.invoke(service, args);
+            break;
+        }
+        List<Integer> ids = new ArrayList<>();
+        if (tasks == null) {
+            throw new Refusal("task list unavailable");
+        }
+        for (Object task : tasks) {
+            ids.add(task.getClass().getField("taskId").getInt(task));
+            Object top = task.getClass().getField("topActivity").get(task);
+            Object base = task.getClass().getField("baseActivity").get(task);
+            for (Object component : new Object[] {top, base}) {
+                if (component instanceof ComponentName
+                        && GMS_SIGN_IN.equals(((ComponentName) component).flattenToShortString())) {
+                    ids.add(-1 - task.getClass().getField("taskId").getInt(task));
+                }
+            }
+        }
+        return ids;
     }
 
     /**
-     * Google's sign-in WebView shows no page URL to accessibility, so a field
-     * there cannot be tied to accounts.google.com on its own. This run fills
-     * the entry's email, submits it, and fills the password (and a code) only
-     * on the pages that Google's flow shows next in the same task, with no
-     * other caller step in between.
+     * Google's sign-in web view shows no page URL to accessibility, so a page
+     * there cannot be tied to accounts.google.com on its own. This run closes
+     * every open Google sign-in, starts a new one in a new task, and fills the
+     * entry's email on that task's first email page, which Google Play
+     * services loads itself. It then submits the email and fills the password
+     * (and, when the broker answers, the code) only on the pages that Google's
+     * flow shows next in that task, with no caller step in between. The broker
+     * runs it only for consumer Google accounts, which never leave Google.
      */
     JSONObject googleSignIn(JSONObject request) throws Exception {
         if (!bootId().equals(request.getString("boot_id"))) {
@@ -792,24 +970,75 @@ public final class Helper {
         if (speaksPasswords()) {
             throw new Refusal("device lets accessibility read password text (speak_password is not 0)");
         }
-        Scene scene = signInScene(-1);
-        int taskId = scene.task.taskId;
+        Object service = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
+        int newest = 0;
+        for (int id : gmsSignInTasks()) {
+            if (id < 0) {
+                service.getClass().getMethod("removeTask", int.class).invoke(service, -1 - id);
+            } else {
+                newest = Math.max(newest, id);
+            }
+        }
+        run("/system/bin/am", "start", "-a", "android.settings.ADD_ACCOUNT_SETTINGS", "--esa", "account_types", "com.google");
+        int taskId = -1;
+        for (int attempt = 0; attempt < 100 && taskId < 0; attempt++) {
+            Task task = focusedTask();
+            if (task != null && GMS_SIGN_IN.equals(task.activity.flattenToShortString()) && task.taskId > newest) {
+                taskId = task.taskId;
+            } else {
+                Thread.sleep(200);
+            }
+        }
+        if (taskId < 0) {
+            throw new Refusal("Google sign-in did not open");
+        }
         JSONArray steps = new JSONArray();
         JSONObject answer = new JSONObject();
         answer.put("ok", true);
         answer.put("steps", steps);
-        String[][] plan = {{"email", "email"}, {"password", "password"}, {"code", "code"}};
+        // Pages before the email page: wait, and skip the phone-number offer with the footer's own button.
+        int skips = 0;
         long previous = Long.MIN_VALUE;
-        for (String[] step : plan) {
-            String kind = step[0];
+        long end = System.currentTimeMillis() + 60000;
+        AccessibilityNodeInfo field = null;
+        try {
+            while (field == null && System.currentTimeMillis() < end) {
+                Scene scene = signInScene(taskId);
+                if (scene == null) {
+                    Thread.sleep(250);
+                    continue;
+                }
+                Walk walk = walk(scene.root);
+                field = signInField(walk, "email");
+                if (field == null) {
+                    AccessibilityNodeInfo skip = hasWebField(walk) ? null : footerSkip(walk);
+                    if (skip != null && skips < 2 && walk.nodes.size() > 10) {
+                        Thread.sleep(500);
+                        if (skip.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                            skips++;
+                            Thread.sleep(1500);
+                        }
+                    } else {
+                        Thread.sleep(300);
+                    }
+                }
+            }
+        } catch (Refusal refusal) {
+            answer.put("stopped_at", "email");
+            answer.put("reason", refusal.reason);
+            return answer;
+        }
+        String[] plan = {"email", "password", "code"};
+        for (String kind : plan) {
             if (!request.has(kind)) {
                 break;
             }
-            AccessibilityNodeInfo field;
             try {
-                field = await(taskId, kind, previous, "email".equals(kind) ? 3000 : 25000);
+                if (!"email".equals(kind)) {
+                    field = await(taskId, kind, previous, 25000);
+                }
             } catch (Refusal refusal) {
-                // The screen left Google's sign-in: nothing more is filled.
+                // The screen left this Google sign-in: nothing more is filled.
                 answer.put("stopped_at", kind);
                 answer.put("reason", refusal.reason);
                 return answer;
@@ -818,7 +1047,21 @@ public final class Helper {
                 answer.put("stopped_at", kind);
                 return answer;
             }
-            if (!setAndConfirm(field, request.getString(kind))) {
+            String value;
+            if ("code".equals(kind)) {
+                // Ask for the code only now, so it is fresh when it is typed.
+                out.println(NEED_PREFIX + "code");
+                out.flush();
+                JSONObject reply = new JSONObject(readRequest());
+                value = reply.optString("code", "");
+                if (value.isEmpty()) {
+                    answer.put("stopped_at", kind);
+                    return answer;
+                }
+            } else {
+                value = request.getString(kind);
+            }
+            if (!setAndConfirm(field, value)) {
                 answer.put("stopped_at", kind);
                 answer.put("uncertain", true);
                 return answer;
@@ -983,30 +1226,14 @@ public final class Helper {
         JSONArray results = new JSONArray();
         boolean delivered = false;
         for (int i = 0; i < nodes.size(); i++) {
-            AccessibilityNodeInfo node = nodes.get(i);
-            String value = targets.getJSONObject(i).getString("value");
-            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
-            Bundle arguments = new Bundle();
-            arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
-            boolean accepted = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
-            delivered |= accepted;
-            boolean confirmed = false;
-            if (accepted) {
-                for (int attempt = 0; attempt < 10 && !confirmed; attempt++) {
-                    node.refresh();
-                    CharSequence text = node.getText();
-                    confirmed = text != null && (text.toString().equals(value)
-                            || (node.isPassword() && text.length() == value.length()));
-                    if (!confirmed) {
-                        Thread.sleep(100);
-                    }
-                }
-            }
+            boolean confirmed = setAndConfirm(nodes.get(i), targets.getJSONObject(i).getString("value"));
+            // An empty write already changed the field: count any attempt as delivered.
+            delivered = true;
             JSONObject result = new JSONObject();
-            result.put("accepted", accepted);
+            result.put("accepted", confirmed);
             result.put("confirmed", confirmed);
             results.put(result);
-            if (!accepted) {
+            if (!confirmed) {
                 break;
             }
         }

@@ -7,10 +7,9 @@ import re
 import sys
 import time
 
-from .android_route import CHROME_CODE_DELIVERY, DELIVERY, MODES, PROTOCOL
-from .browser_password import DELIVERY as PAGE_DELIVERY
+from .android_route import CHROME_DELIVERY, DELIVERY, MODES, PROTOCOL
 
-DELIVERIES = {DELIVERY, CHROME_CODE_DELIVERY, PAGE_DELIVERY}
+DELIVERIES = {DELIVERY, CHROME_DELIVERY}
 
 COMMAND = 'android'
 FILL_ERROR = re.compile(r"(autofill (not started|outcome uncertain|failed)|vault locked|identity record|card record"
@@ -41,13 +40,12 @@ def add_parser(commands):
                      help='a field value from android inspect: the password field (login, password), the username '
                           'field (username) or the code field (totp). A page field must be focused (tap it first)')
     pin.add_argument('--username-field', help='field value of the username field; login mode only')
-    pin.add_argument('--password-purpose', choices=('current-password', 'new-password'),
-                     help='Chrome page, password mode: the verified purpose of a field without an autocomplete hint')
+
     pin.add_argument('--app-site', help=('exact HTTPS origin whose Digital Asset Links name this app; needed for '
                                          'apps other than Chrome and Google account sign-in'))
     google = sub.add_parser('google-sign-in', help=(
-        'Google account sign-in screen: fill the entry\'s email, submit it, then fill the password (and with '
-        '--code the authenticator code) on the pages Google shows next, in one run'))
+        'open a new Google account sign-in, fill the entry\'s email, submit it, then fill the password (and with '
+        '--code the authenticator code) on the pages Google shows next, in one run; @gmail.com accounts only'))
     google.add_argument('handle', help='fresh handle from akdbx search; its URL or an additional URL is https://accounts.google.com')
     google.add_argument('--device', required=True)
     google.add_argument('--code', action='store_true', help='also fill the entry\'s authenticator code if Google asks for it next')
@@ -117,8 +115,7 @@ def run(args, request):
                 payload['username_field'] = args.username_field
             if args.app_site is not None:
                 payload['app_site'] = args.app_site
-            if args.password_purpose is not None:
-                payload['password_purpose'] = args.password_purpose
+
         elif command == 'google-sign-in':
             payload = {'action': 'android-google-sign-in', 'android_protocol': PROTOCOL, 'device': args.device,
                        'handle': args.handle, 'code': args.code, 'start_deadline': time.monotonic() + 4}
