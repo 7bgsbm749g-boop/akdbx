@@ -498,9 +498,11 @@ class FakeCDP:
     typed (False models a DevTools peer that is not Chrome, or a focus move).
     """
 
-    def __init__(self, url, shown=True, focused=True, shows_typed=True, set_answer=True, max_length=-1):
+    def __init__(self, url, shown=True, focused=True, shows_typed=True, set_answer=True, max_length=-1,
+                 input_type='text', hostile=False):
         self.url, self.shown, self.focused = url, shown, focused
         self.shows_typed, self.set_answer, self.max_length = shows_typed, set_answer, max_length
+        self.input_type, self.hostile = input_type, hostile
         self.calls = []
         self.closed = False
         self.objects = {}
@@ -523,6 +525,8 @@ class FakeCDP:
                 return {'result': {'value': {'url': self.url, 'shown': self.shown, 'secure': True}}}
             if expression == 'performance.now()':
                 return {'result': {'value': 1000.0}}
+            if expression == android_route.QUICK_STATE:
+                return {'result': {'value': self.shown}}
             if expression.startswith(android_route.PAGE_FIELD):
                 selector = json.loads('[' + expression[len(android_route.PAGE_FIELD) + 1:-1] + ']')[0]
                 if selector == '#missing':
@@ -538,10 +542,13 @@ class FakeCDP:
             if 'this.focused' in declaration:
                 return {'result': {'value': self.focused}}
             if 'this.prepare' in declaration:
-                return {'result': {'value': self.max_length}}
-            if 'this.holds' in declaration:
+                return {'result': {'value': [self.max_length, self.input_type]}}
+            if 'this.read' in declaration:
+                if self.hostile:
+                    # A peer that is not Chrome: it never saw the keys and can only guess.
+                    return {'result': {'value': True if len(self.calls) % 2 else 'a' * 16}}
                 typed = (self.scene or {}).get('typed', [])
-                return {'result': {'value': self.shows_typed and bool(typed) and args[0] == typed[-1]}}
+                return {'result': {'value': typed[-1] if self.shows_typed and typed else ''}}
             if 'this.set' in declaration:
                 return {'result': {'value': self.set_answer}}
             return {'result': {}}
@@ -586,23 +593,39 @@ def test_chrome_page_fill_sets_the_value_only_after_chrome_shows_the_typed_check
     pinned = pin(broker, mode='totp', field='#app_totp')
     response = fill(broker, 'synthetic-user', pinned['target'], mode='totp')
     assert response == {'ok': True, 'filled': 'totp', 'target_delivery': CHROME_DELIVERY}
-    # The helper typed a random check string (digits, within the field's maximum length), never the code.
+    # The helper typed a random check string, never the code: shorter than the field's limit and with
+    # a letter, so a page that submits a complete code never submits it.
     [check] = scene['typed']
     [code] = cdp.set_values()
-    assert check.isdigit() and len(check) == 6 and check != code and len(code) == 6
+    assert len(check) == 5 and not check.isdigit() and check != code and len(code) == 6
     [request] = [r for r in FakeAdb.requests if r['op'] == 'type']
     assert request['address_bar'] == 'example.com' and request['task_id'] == 12 and request['value'] == check
     assert code not in json.dumps(FakeAdb.requests) and cdp.closed
 
 
-def test_a_devtools_peer_that_cannot_show_the_typed_check_never_gets_the_value(device_file):
+@pytest.mark.parametrize('kwargs', [dict(shows_typed=False), dict(hostile=True)])
+def test_a_devtools_peer_that_cannot_show_the_typed_check_never_gets_the_value(device_file, kwargs):
     # Any app could hold Chrome's DevTools socket name, and focus could move:
-    # then the pinned element does not hold the string that only Chrome received.
-    cdp = FakeCDP('https://example.com/login', shows_typed=False)
+    # then the pinned element does not hold the string that only Chrome
+    # received. The broker compares; the peer never learns the expected string,
+    # so answering true or guessing does not help.
+    cdp = FakeCDP('https://example.com/login', **kwargs)
     broker, scene = chrome_broker(device_file, cdp)
     response = fill(broker, 'synthetic-user', pin(broker, mode='password', field='#password')['target'])
     assert response['ok'] is False and response['delivery'] == 'not-started'
     assert len(scene['typed']) == 1 and cdp.set_values() == [] and SECRET not in json.dumps(cdp.calls)
+    assert scene['typed'][0] not in json.dumps(cdp.calls)
+
+
+@pytest.mark.parametrize('max_length, input_type, size, digits', [
+    (-1, 'text', 8, False), (6, 'tel', 5, False), (11, 'text', 8, False), (-1, 'number', 5, True)])
+def test_a_code_field_check_never_looks_like_a_complete_code(max_length, input_type, size, digits):
+    for _ in range(50):
+        check = android_route._check_string('totp', max_length, input_type)
+        assert len(check) == size and check.isdigit() == digits
+    with pytest.raises(android_route.TargetError):
+        android_route._check_string('totp', 5, 'tel')
+    assert len(android_route._check_string('password', -1, 'password')) == 16
 
 
 def test_chrome_login_sets_both_values_after_each_check(device_file):
@@ -638,6 +661,7 @@ def test_chrome_login_finishes_after_the_start_deadline(device_file):
     (dict(set_answer='changed'), None, 'uncertain'),
     (dict(set_answer=False), None, 'not-started'),
     (dict(max_length=4), None, 'not-started'),
+    (dict(max_length=5, input_type='tel'), None, 'not-started'),
     (dict(), {'ok': True, 'complete': False, 'started': True, 'protocol': 1}, 'not-started'),
     (dict(), {'ok': False, 'error': 'Chrome is not the focused app in the pinned task', 'protocol': 1}, 'not-started'),
 ])

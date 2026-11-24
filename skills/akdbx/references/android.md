@@ -27,9 +27,10 @@ and sends the request on that connection's standard input.
   types a random check string as key events that Android delivers only to
   windows of Chrome's own app user (after it checks that Chrome is focused in
   the pinned task and that Chrome's own address bar shows the pinned host),
-  and the pinned element must then hold exactly that string. Only Chrome
-  received it, and only the focused element shows it. The broker then sets
-  the value on that element over the same connection.
+  and the broker reads the pinned element's text back and compares it with
+  that string itself (the connection is never told what to expect). Only
+  Chrome received the keys, and only the focused element shows them. The
+  broker then sets the value on that element over the same connection.
 
 ## Operator setup
 
@@ -161,9 +162,13 @@ reported as `uncertain`.
   synthetic account cannot pass Google's email page. The run was checked up to
   that point (a new task, the email filled and submitted, and a stop with no
   password when Google did not find the account).
-- Chrome pages: the field must accept the check string (16 letters and
-  digits, or 6 to 16 digits for a code field). An authenticator code is
-  visible on screen after it is filled, until the page submits it.
+- Chrome pages: the field must accept the check string, which is 6 to 16
+  letters and digits (up to the field's maximum length). In a code field it
+  is 5 to 8 characters with a letter and shorter than the field's limit, so
+  a page that submits a complete code never submits it; a number field gets
+  5 digits. A code field that drops letters, or a non-number field shorter
+  than 6 characters, is refused. An authenticator code is visible on screen
+  after it is filled, until the page submits it.
 - Chrome on Android sometimes stops giving its page to accessibility, so
   Chrome pages are read through DevTools. For other apps' web views the helper
   may briefly open and close the system volume panel to make the app rebuild

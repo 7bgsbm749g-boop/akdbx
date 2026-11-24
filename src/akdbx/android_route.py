@@ -20,8 +20,9 @@ message or a log.
   the helper types a random check string as key events that Android delivers
   only to windows of Chrome's app user (after it checks that Chrome is focused
   in the pinned task and its own address bar shows the pinned host), and the
-  pinned element must hold exactly that string. The broker then sets the
-  value on that element over the same, now proven, connection.
+  broker reads the pinned element's text and compares it with that string
+  itself. The broker then sets the value on that element over the same, now
+  proven, connection.
 
 The site that a pin may receive a credential for is one of:
 
@@ -81,9 +82,10 @@ HELPER_TIMEOUT = 25.0
 SIGN_IN_TIMEOUT = 140.0
 DEVICE_PROBE_TIMEOUT = 15.0
 DEVICE_LIST_BUDGET = 150.0
-TAB_SEARCH_BUDGET = 40.0
-# A frozen background tab answers no DevTools call: give each step little time.
-TAB_CALL_TIMEOUT = 0.75
+MAX_TABS = 200
+TAB_CALL_TIMEOUT = 2.0
+# A frozen background tab answers no DevTools call: all tabs are asked at once.
+TAB_PROBE_TIMEOUT = 3.0
 INSTALL_BUDGET = 100.0
 MAX_HELPER_OUTPUT = 512 * 1024
 MAX_TAB_LIST = 1024 * 1024
@@ -487,9 +489,9 @@ PAGE_FIELDS = r"""(function() {
 })()"""
 # A pinned page field, held in an isolated world. Before a value moves, the
 # field is emptied and focused, the device helper types a random check string
-# as key events that Android delivers only to Chrome's windows, and the field
-# must then hold exactly that string: only real Chrome can report it, and only
-# if the pinned element had focus. The value is then set on that element.
+# as key events that Android delivers only to Chrome's windows, and the broker
+# compares the field's text with that string: only real Chrome can return it,
+# and only if the pinned element had focus. The value is then set on it.
 PAGE_FIELD = r"""(function(selector, url, kind) {
   if (!isSecureContext || location.href !== url || !document.hasFocus() || document.visibilityState !== 'visible') throw 0;
   const query = s => { const a = document.querySelectorAll(s); if (a.length !== 1) throw 0; return a[0]; };
@@ -518,7 +520,7 @@ PAGE_FIELD = r"""(function(selector, url, kind) {
     document.removeEventListener('visibilitychange', dirty, true);
     observer.disconnect();
   };
-  const check = () => performance.now() - created < 30000 && !tainted && isSecureContext && location.href === url &&
+  const check = () => performance.now() - created < 60000 && !tainted && isSecureContext && location.href === url &&
     document.hasFocus() && document.visibilityState === 'visible' && valid(field) && query(selector) === field;
   if (!check()) { dispose(); throw 0; }
   return {kind, field, check, dispose, focused: document.activeElement === field,
@@ -529,9 +531,10 @@ PAGE_FIELD = r"""(function(selector, url, kind) {
       setter.call(field, '');
       field.dispatchEvent(new Event('input', {bubbles:true}));
       field.focus();
-      return document.activeElement === field && getter.call(field) === '' && this.check() ? field.maxLength : false;
+      return document.activeElement === field && getter.call(field) === '' && this.check() ? [field.maxLength, type.call(field)] : false;
     },
-    holds(text) { return this.check() && document.activeElement === field && getter.call(field) === text; },
+    // The field's text, for the broker to compare: the expected text never goes to this peer.
+    read() { return this.check() && document.activeElement === field ? getter.call(field) : null; },
     // Set the value on this element only; report whether the field keeps it.
     set(value) {
       if (!this.check() || document.activeElement !== field) return false;
@@ -541,6 +544,68 @@ PAGE_FIELD = r"""(function(selector, url, kind) {
       return getter.call(field) === value ? true : 'changed';
     }};
 })"""
+
+
+QUICK_STATE = "document.visibilityState === 'visible' && document.hasFocus()"
+
+
+def _answering_shown(connection, sessions, timeout):
+    """Sessions whose page says it is visible and focused, asked all at once."""
+    socket_ = getattr(connection, 'socket', None)
+    if socket_ is None or not hasattr(connection, 'counter'):
+        shown = []
+        for session in sessions:
+            try:
+                result = connection.call('Runtime.evaluate', {'expression': QUICK_STATE, 'returnByValue': True},
+                                         session, timeout=timeout)
+            except Exception:
+                continue
+            if result.get('result', {}).get('value') is True:
+                shown.append(session)
+        return shown
+    waiting = {}
+    for session in sessions:
+        connection.counter += 1
+        waiting[connection.counter] = session
+        socket_.send(json.dumps({'id': connection.counter, 'method': 'Runtime.evaluate', 'sessionId': session,
+                                 'params': {'expression': QUICK_STATE, 'returnByValue': True}}))
+    shown = []
+    deadline = time.monotonic() + timeout
+    while waiting and time.monotonic() < deadline:
+        try:
+            socket_.settimeout(max(0.01, deadline - time.monotonic()))
+            message = json.loads(socket_.recv())
+        except Exception:
+            break
+        session = waiting.pop(message.get('id'), None) if isinstance(message, dict) else None
+        if session is not None and message.get('result', {}).get('result', {}).get('value') is True:
+            shown.append(session)
+    return shown
+
+
+def _check_string(mode, max_length, input_type):
+    """A random string for the typed check that the field takes and that cannot pass as a code.
+
+    In a code field it has letters (where the field takes them) and is shorter
+    than the field's limit, so a page that submits a complete code never
+    submits it. A number field takes digits only: five, below any 6-digit code.
+    """
+    if mode == 'totp':
+        if input_type == 'number':
+            size, alphabet = 5, '0123456789'
+        else:
+            size = min(8, max_length - 1) if max_length > 0 else 8
+            alphabet = NONCE_ALPHABET
+        if size < 5:
+            raise TargetError()
+        text = ''.join(secrets.choice(alphabet) for _ in range(size))
+        if alphabet is NONCE_ALPHABET and text.isdigit():
+            text = secrets.choice('abcdefghijkmnpqrstuvwxyz') + text[1:]
+        return text
+    size = 16 if max_length < 0 else min(16, max_length)
+    if size < 6:
+        raise TargetError()
+    return ''.join(secrets.choice(NONCE_ALPHABET) for _ in range(size))
 
 
 def _origin_of(url):
@@ -790,19 +855,24 @@ class AndroidTargets:
             # background tabs, and a frozen tab answers no DevTools call.
             pages = [t for t in pages if isinstance(t.get('url'), str) and _origin_of(t['url']) is not None
                      and _authority_matches(context['address_bar'], _origin_of(t['url']))]
-        shown = []
-        deadline = time.monotonic() + TAB_SEARCH_BUDGET
-        for page in pages[:64]:
-            if time.monotonic() >= deadline:
-                break
+        sessions = {}
+        for page in pages[:MAX_TABS]:
             try:
-                session = connection.call('Target.attachToTarget', {'targetId': page['targetId'], 'flatten': True},
-                                          timeout=TAB_CALL_TIMEOUT)['sessionId']
-                frame = connection.call('Page.getFrameTree', session=session, timeout=TAB_CALL_TIMEOUT)['frameTree']['frame']
+                sessions[connection.call('Target.attachToTarget', {'targetId': page['targetId'], 'flatten': True},
+                                         timeout=TAB_CALL_TIMEOUT)['sessionId']] = page
+            except Exception:
+                continue
+        shown = []
+        # Ask every tab at once: frozen background tabs never answer, so they cannot use up the search.
+        for session in _answering_shown(connection, list(sessions), TAB_PROBE_TIMEOUT):
+            page = sessions[session]
+            try:
+                frame = connection.call('Page.getFrameTree', session=session)['frameTree']['frame']
                 world = connection.call('Page.createIsolatedWorld', {'frameId': frame['id'], 'worldName': 'akdbx-android-v1'},
-                                        session, timeout=TAB_CALL_TIMEOUT)['executionContextId']
+                                        session)['executionContextId']
+                # The page's own answer only picked candidates; this isolated world decides.
                 state = connection.call('Runtime.evaluate', {'expression': PAGE_STATE, 'contextId': world,
-                                                             'returnByValue': True}, session, timeout=TAB_CALL_TIMEOUT)['result'].get('value')
+                                                             'returnByValue': True}, session)['result'].get('value')
             except Exception:
                 continue
             if isinstance(state, dict) and state.get('shown') is True and state.get('url') == page.get('url'):
@@ -1146,21 +1216,23 @@ class AndroidTargets:
                                              dom.session)['result']['value']
                 if type(sample) not in {int, float}:
                     raise TargetError()
-                limit = dom.call(index, 'function(deadline) { return this.prepare(deadline); }', sample + 10000)
-                if type(limit) is not int:
+                prepared = dom.call(index, 'function(deadline) { return this.prepare(deadline); }', sample + 10000)
+                if (not isinstance(prepared, list) or len(prepared) != 2 or type(prepared[0]) is not int
+                        or not isinstance(prepared[1], str)):
                     raise TargetError()
-                # Code fields often take digits only and a fixed length.
-                size = 16 if limit < 0 else min(16, limit)
-                if size < 6:
-                    raise TargetError()
-                alphabet = '0123456789' if pin.mode == 'totp' else NONCE_ALPHABET
-                check = ''.join(secrets.choice(alphabet) for _ in range(size))
+                check = _check_string(pin.mode, *prepared)
                 answer = adb.helper({'op': 'type', 'boot_id': pin.boot_id, 'task_id': pin.context['task_id'],
                                      'address_bar': pin.context['address_bar'], 'value': check}, install=False)
                 if answer.get('ok') is not True or answer.get('complete') is not True:
                     raise TargetError()
-                # Only Chrome received the keys, and only the focused element shows them.
-                if dom.call(index, 'function(text) { return this.holds(text); }', check) is not True:
+                # Only Chrome received the keys, and only the focused element shows them. The
+                # broker compares: a peer that is not Chrome cannot know the string.
+                shown = dom.call(index, 'function() { return this.read(); }')
+                if not isinstance(shown, str) or not secrets.compare_digest(shown.encode(), check.encode()):
+                    raise TargetError()
+                # Authorized right before each value: the start (and code) checks for the first,
+                # the caller's connection for later ones.
+                if not (ready() if index == 0 else connected()):
                     raise TargetError()
                 started = True
                 result = dom.call(index, 'function(value) { return this.set(value); }', value)
