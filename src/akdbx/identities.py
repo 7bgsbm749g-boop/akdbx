@@ -84,7 +84,8 @@ TRUNK_ZERO = {
 
 def capabilities():
     return dict(identity_fields_protocol=FIELDS_PROTOCOL, identity_update_protocol=UPDATE_PROTOCOL,
-                identity_field_purpose_protocol=FIELD_PURPOSE_PROTOCOL, identity_tel_formats=list(TEL_FORMATS))
+                identity_field_purpose_protocol=FIELD_PURPOSE_PROTOCOL, identity_tel_formats=list(TEL_FORMATS),
+                identity_notify_page=True)
 
 
 def calling_code(digits):
@@ -249,8 +250,9 @@ class IdentityManager:
                     deadline = request.get('start_deadline')
                     expected_code = request.get('calling_code')
                     if (entry is None or not _protocol_ok(request)
-                            or set(request) - {'format', 'calling_code'}
+                            or set(request) - {'format', 'calling_code', 'notify_page'}
                             != {'action', 'identity_protocol', 'handle', 'target', 'field', 'start_deadline'}
+                            or 'notify_page' in request and request['notify_page'] is not True
                             or 'format' in request and request['format'] not in TEL_FORMATS
                             or 'calling_code' in request and (
                                 'format' not in request or not isinstance(expected_code, str)
@@ -262,7 +264,8 @@ class IdentityManager:
                     value = formatted(_value_for(entry, request['field']), request['field'],
                                       request.get('format'), expected_code)
                     return targets.fill(pin, value, request['field'],
-                                        lambda: ready() and self.broker.clock() < deadline, deadline)
+                                        lambda: ready() and self.broker.clock() < deadline, deadline,
+                                        notify_page=request.get('notify_page', False))
                 finally:
                     targets._close(pin)
             except Exception:

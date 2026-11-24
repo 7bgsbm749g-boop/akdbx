@@ -1353,12 +1353,16 @@ class ExtensionHub:
         if state != 'filled':
             raise DeliveryError(state == 'uncertain')
 
-    def fill_element(self, pin, value, field, ready, deadline=None):
+    def fill_element(self, pin, value, field, ready, deadline=None, *, notify_page=False):
         from .browser_card import failure
         if field != pin.mode:
             return failure(kind=pin.kind)
         deadline = self.clock() + 4 if deadline is None else deadline
         values = dict(value=value)
+        if notify_page:
+            if pin.kind != 'identity' or not pin.channel.supports((0, 9, 0)):
+                return failure(kind=pin.kind)
+            values['notify_page'] = True
         state = self._deliver(pin, values, ready, deadline)
         values.clear()
         if state == 'filled':
@@ -1411,10 +1415,10 @@ class RoutedTargets:
             raise CardTargetError() from None
         return pin if pin is not None else self.cdp.consume(token)
 
-    def fill(self, pin, value, field, ready, deadline=None):
+    def fill(self, pin, value, field, ready, deadline=None, *, notify_page=False):
         if isinstance(pin, ExtensionPin):
-            return self.hub.fill_element(pin, value, field, ready, deadline)
-        return self.cdp.fill(pin, value, field, ready, deadline)
+            return self.hub.fill_element(pin, value, field, ready, deadline, notify_page=notify_page)
+        return self.cdp.fill(pin, value, field, ready, deadline, notify_page=notify_page)
 
     def _close(self, pin):
         if isinstance(pin, ExtensionPin):

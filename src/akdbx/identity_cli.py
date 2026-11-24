@@ -49,10 +49,12 @@ def add_parsers(commands):
                    help='with --field-purpose: also accept autocomplete="off"')
     p.add_argument('--route', choices=ROUTES, help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
     browser_slots.add_argument(p)
-    p = commands.add_parser('fill-identity', help='fill the pinned DOM field without sending keys or submitting')
+    p = commands.add_parser('fill-identity', help='fill the pinned identity field')
     p.add_argument('handle')
     p.add_argument('--target', required=True)
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
+    p.add_argument('--notify-page', action='store_true',
+                   help='send bubbling input and change events after filling; a page handler may submit the form')
     p.add_argument('--format', choices=TEL_FORMATS,
                    help='tel only: national fills the national significant number (digits only: no +, calling code '
                         'or trunk 0); international fills + calling code and that number; the saved value stays as it is')
@@ -83,6 +85,8 @@ def _option_refusal(args, caps):
                                                or caps['identity_field_purpose_protocol'] != FIELD_PURPOSE_PROTOCOL):
             return 'broker lacks identity field purpose protocol 1'
     if args.command == 'fill-identity':
+        if args.notify_page and caps.get('identity_notify_page') is not True:
+            return 'broker lacks identity page notification support'
         if args.calling_code is not None and (args.format is None or not re.fullmatch('[1-9][0-9]{0,2}', args.calling_code)):
             return '--calling-code needs --format and 1 to 3 digits without +'
         if args.format is not None and args.field != 'tel':
@@ -207,6 +211,8 @@ def run(args, request):
             payload.update(slot)
         else:
             payload.update(handle=args.handle, target=args.target, field=args.field, start_deadline=time.monotonic() + 4)
+            if args.notify_page:
+                payload['notify_page'] = True
             if args.format is not None:
                 payload['format'] = args.format
             if args.calling_code is not None:

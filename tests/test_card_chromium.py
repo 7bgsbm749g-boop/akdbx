@@ -710,6 +710,45 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
                        code=1)['delivery'] == 'not-started'
         assert evaluate(chrome, "phone.value === '' && password.value === '' && submitAttempts === 0 && identityKeyEvents === 0")
 
+        # A form that listens on an ancestor must receive both events on the pinned field.
+        evaluate(chrome, """window.phoneEvents = [];
+          for (const type of ['input', 'change']) document.addEventListener(type, e => {
+            if (e.target === phone) phoneEvents.push([type, phone.value.length > 0]);
+          });""")
+        def notify_phone(code=0):
+            pin = target('tel', '#phone')
+            handle = command('search-identities', LABEL)['entries'][0]['handle']
+            return command('fill-identity', '--notify-page', '--field', 'tel', '--target', pin['target'],
+                           '--', handle, code=code)
+
+        assert notify_phone()['ok']
+        assert evaluate(chrome, 'JSON.stringify(phoneEvents)') == '[["input",true],["change",true]]'
+        evaluate(chrome, "phone.addEventListener('change', () => { phone.value = ''; }, {once:true})")
+        assert notify_phone(code=1)['delivery'] == 'uncertain'
+
+        evaluate(chrome, """phoneEvents.length = 0;
+          phone.addEventListener('input', () => { phone.value = ''; }, {once:true})""")
+        assert notify_phone(code=1)['delivery'] == 'uncertain'
+        assert evaluate(chrome, 'JSON.stringify(phoneEvents)') == '[["input",false]]'
+
+        evaluate(chrome, """phoneEvents.length = 0;
+          phone.addEventListener('input', () => { password.focus(); }, {once:true})""")
+        assert notify_phone(code=1)['delivery'] == 'uncertain'
+        assert evaluate(chrome, 'JSON.stringify(phoneEvents)') == '[["input",true]]'
+
+        evaluate(chrome, """document.body.insertAdjacentHTML('beforeend',
+          '<select id="region" autocomplete="country"><option></option><option>NZ</option></select>');
+          window.regionEvents = [];
+          for (const type of ['input', 'change']) document.addEventListener(type, e => {
+            if (e.target === region) regionEvents.push(type);
+          });
+          region.focus()""")
+        pin = target('country', '#region')
+        handle = command('search-identities', LABEL)['entries'][0]['handle']
+        assert command('fill-identity', '--notify-page', '--field', 'country', '--target', pin['target'],
+                       '--', handle)['ok']
+        assert evaluate(chrome, "regionEvents.join() === 'input,change' && region.value === 'NZ'")
+
         # No autocomplete hint: only an explicit field purpose pins it; "off" needs its own flag.
         evaluate(chrome, "phone.remove(); document.body.insertAdjacentHTML('beforeend', "
                          "'<input id=bare type=tel><input id=hintoff type=tel autocomplete=off>"

@@ -677,7 +677,7 @@ class RecordingTargets:
     def consume(self, token):
         return dict(field='tel' if token == 't' * 64 else 'email')
 
-    def fill(self, pin, value, field, ready, deadline):
+    def fill(self, pin, value, field, ready, deadline, *, notify_page=False):
         self.delivered.append((field, value))
         return dict(ok=True, filled=field, identity_delivery='cdp-identity-element-v1')
 
@@ -687,6 +687,7 @@ class RecordingTargets:
 
 @pytest.mark.parametrize('extra, delivered', [
     ({}, IDENTITY['tel']),
+    ({'notify_page': 1}, None),
     ({'format': 'national'}, '30000000'),
     ({'format': 'national', 'calling_code': '49'}, '30000000'),
     ({'format': 'national', 'calling_code': '44'}, None),
@@ -731,6 +732,8 @@ CAPS = dict(ok=True, locked=False, identity_protocol=1, identity_delivery='cdp-i
 
 
 @pytest.mark.parametrize('args, caps, error', [
+    (['fill-identity', '--field', 'tel', '--notify-page', '--target', 'a' * 64, '--', 'b' * 64], CAPS,
+     'broker lacks identity page notification support'),
     (PIN + ['--field-purpose', 'tel'], CAPS, 'broker lacks identity field purpose protocol 1'),
     (PIN + ['--allow-autocomplete-off'], CAPS | dict(identity_field_purpose_protocol=1),
      '--allow-autocomplete-off needs --field-purpose'),

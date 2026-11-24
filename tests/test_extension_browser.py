@@ -1277,6 +1277,33 @@ def test_an_ancestor_clip_path_inset_that_holds_the_field_fills_and_others_refus
         assert identity_pin(harness, url, '#' + field, **purpose)['ok'], field
 
 
+def test_identity_page_notification_is_opt_in_and_requires_a_supporting_extension(harness):
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate('/phone')
+    lab.evaluate("""window.phoneEvents = [];
+        for (const type of ['input', 'change']) document.addEventListener(type, e => {
+          if (e.target.id === 'phone') phoneEvents.push(type);
+        })""")
+
+    def fill(**options):
+        target = identity_pin(harness, url, '#phone', field_purpose='tel')
+        return identity_fill(broker, target['target'], **options)
+
+    [channel] = broker.extension.channels.values()
+    reported = channel.version
+    channel.version = '0.8.0'
+    try:
+        assert fill(notify_page=True) == card_failure(kind='identity')
+        assert lab.digest('phone') == EMPTY
+    finally:
+        channel.version = reported
+
+    assert fill()['ok']
+    assert lab.evaluate('phoneEvents.join()') == ''
+    assert fill(notify_page=True)['ok']
+    assert lab.evaluate('phoneEvents.join()') == 'input,change'
+
+
 def test_an_older_extension_never_gets_an_identity_purpose_pin(harness):
     """Fill extension 0.6.0 ignores the purpose; the broker refuses before it asks such a browser."""
     lab, broker = harness.lab, harness.broker

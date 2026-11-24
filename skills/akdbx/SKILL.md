@@ -582,7 +582,9 @@ From 0.36.3 (fill extension 0.7.2), a field in a side drawer or modal whose
 the CDP route and other clip shapes refuse
 ([clipped ancestors](references/identities.md#field-inside-a-clipped-drawer-or-modal-0363)). Names,
 addresses, phone numbers and emails never go in CLI arguments, output, logs or
-evidence. Fill does not submit the form.
+evidence. The default identity fill is silent. Use `fill-identity --notify-page`
+when the form needs edit events. Its handlers can validate, advance, or submit
+the form during the fill. Check the site's non-secret state afterward.
 
 **Shown-once secrets** ([secret capture](references/secret-capture.md)). For a
 secret that a site displays once (an OAuth client secret or API key) and that

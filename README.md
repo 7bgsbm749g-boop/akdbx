@@ -500,8 +500,10 @@ fresh `search-identities` handle; its page never shows the saved values, and
 the previous version stays in the entry history. `search-identities LABEL` returns
 only labels, group paths and single-use handles. Login search excludes these
 records. `pin-identity-target` and `fill-identity` deliver one field to a
-verified and focused Chromium DOM element without using keys or submitting
-the form. From 0.35.1, `pin-identity-target --field-purpose FIELD` (with
+verified and focused Chromium DOM element. The default fill is silent. For a
+form that tracks edits, add `--notify-page` to `fill-identity` to send bubbling
+`input` and `change` events. A page handler can submit the form in response.
+From 0.35.1, `pin-identity-target --field-purpose FIELD` (with
 `--allow-autocomplete-off` for `off`) pins a field that has no autocomplete
 token after the agent verified its purpose; a token for another detail still
 refuses (`identity_field_purpose_protocol: 1`, fill extension 0.7.0 on the

@@ -154,7 +154,7 @@
         seen = false;
       }
       if (!seen || !item.state.geometry()) return "refused";
-      const state = item.state.fill(values.value, maxAgeMs);
+      const state = item.state.fill(values.value, maxAgeMs, values.notify_page === true);
       return state === "filled" || state === "refused" ? state : "uncertain";
     } catch {
       return "uncertain";
