@@ -170,16 +170,15 @@ akdbx fill-identity --field tel --format national --calling-code 44 \
 ```
 
 - The broker removes the leading `+` (or `00`) and the country calling code,
-  a `(0)` trunk marker directly after the code (Italy, San Marino and Vatican
-  City keep the zero), and spaces, hyphens, dots, slashes and brackets. The
+  and spaces, hyphens, dots, slashes and brackets. The
   field receives only the digits of the national number. The saved value does
   not change.
 - `--calling-code DIGITS` (no `+`) refuses unless the saved number has that
   country calling code. Give the code the page's picker shows, so a number of
   another country never goes next to it. Check the picker shows the right
   country before you fill.
-- A saved number without `+` or `00`, or with letters or an extension,
-  refuses: the broker cannot split it safely. Ask the user to update the
+- A saved number without `+` or `00`, with a `(0)` marker, or with letters
+  or an extension, refuses: the broker cannot split it safely. Ask the user to update the
   identity's phone number in international form with `update-identity
   --fields tel`.
 - `--format` applies only to `--field tel`.

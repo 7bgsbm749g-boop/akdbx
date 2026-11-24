@@ -48,8 +48,6 @@ TEL_FORMATS = ('national',)
 TWO_DIGIT_CODES = frozenset(
     '20 27 30 31 32 33 34 36 39 40 41 43 44 45 46 47 48 49 51 52 53 54 55 56 57 58 '
     '60 61 62 63 64 65 66 81 82 84 86 90 91 92 93 94 95 98'.split())
-# Italy, San Marino and Vatican City dial the leading zero after the country code.
-ZERO_KEPT_CODES = frozenset({'39', '378', '379'})
 
 
 def capabilities():
@@ -69,12 +67,11 @@ def national_number(value, expected_code=None):
 
     The saved value must start with ``+`` or ``00`` and the country calling code.
     Spaces (any Unicode space separator), hyphens, dots, slashes and brackets are
-    dropped. A ``(0)`` trunk marker directly after the calling code is dropped
-    too (as in ``+44 (0)20 ...``), except for Italy, San Marino and Vatican City,
-    where the zero is part of the national number. A ``(0)`` anywhere else, or
-    any other character, refuses, so a value with an extension or letters is
-    never cut short. ``expected_code`` (digits) must equal the number's calling
-    code, for a separate country picker that already shows it.
+    dropped. Anything else refuses, so a value with an extension or letters is
+    never cut short. A ``(0)`` marker refuses too: some countries drop that zero
+    after the calling code and others dial it, so it cannot be split safely.
+    ``expected_code`` (digits) must equal the number's calling code, for a
+    separate country picker that already shows it.
     """
     text = ''.join(' ' if unicodedata.category(c) == 'Zs' else c for c in value).strip()
     if text.startswith('+'):
@@ -85,18 +82,10 @@ def national_number(value, expected_code=None):
         raise WriteError()
     if not re.fullmatch(r'[0-9 ().\-/]+', text):
         raise WriteError()
-    markers = list(re.finditer(r'\(\s*0\s*\)', text))
     digits = re.sub(r'[^0-9]', '', text)
     code = calling_code(digits)
-    if len(markers) > 1 or code[:1] == '0':
+    if re.search(r'\(\s*0\s*\)', text) or code[:1] == '0':
         raise WriteError()
-    if markers:
-        marker = markers[0]
-        if re.sub(r'[^0-9]', '', text[:marker.start()]) != code:
-            raise WriteError()
-        kept = '0' if code in ZERO_KEPT_CODES else ''
-        text = text[:marker.start()] + kept + text[marker.end():]
-        digits = re.sub(r'[^0-9]', '', text)
     if text.count('(') != text.count(')'):
         raise WriteError()
     national = digits[len(code):]

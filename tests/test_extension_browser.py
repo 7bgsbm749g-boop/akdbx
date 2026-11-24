@@ -57,7 +57,7 @@ class CardEntry(Entry):
         return {MARKER: 'v1', **{field: CARD[k] for k, field in FIELDS.items()}}.get(key)
 
 
-PHONE = '+44 (0)7000 000000'  # Synthetic only.
+PHONE = '+44 7000-000000'  # Synthetic only.
 PHONE_NATIONAL = '7000000000'
 
 
