@@ -8,8 +8,7 @@ sign-in, which opens github.com in a Custom Tab), and native app fields whose
 app a site names in its Digital Asset Links.
 
 The value never passes through the agent. It is never an adb or shell
-argument, never on the clipboard, never sent over Chrome's DevTools
-connection, and never in a response or log.
+argument, never on the clipboard, and never in a response or log.
 
 ## How a value reaches the device
 
@@ -21,13 +20,16 @@ and sends the request on that connection's standard input.
 - **App fields and Google sign-in**: the helper finds the exact field through
   Android's accessibility API, checks it again, empties it, sets the value
   (`ACTION_SET_TEXT`) and confirms that the field holds it.
-- **Chrome pages**: the broker uses Chrome's DevTools socket only to read the
-  page: which tab is visible, which field is focused, and how many characters
-  it holds. The helper types the value as key events that Android delivers
-  only to windows of Chrome's own app user, after it checks that Chrome is the
-  focused app in the pinned task and that Chrome's address bar shows the
-  pinned host. Another app that held the DevTools socket name could lie about
-  a page, but it never receives a value.
+- **Chrome pages**: the broker reads the page through Chrome's DevTools
+  socket (which tab is visible, which field is focused). Any app could hold
+  that socket's name, so before a value moves the broker proves the
+  connection is Chrome's: it empties and focuses the pinned field, the helper
+  types a random check string as key events that Android delivers only to
+  windows of Chrome's own app user (after it checks that Chrome is focused in
+  the pinned task and that Chrome's own address bar shows the pinned host),
+  and the pinned element must then hold exactly that string. Only Chrome
+  received it, and only the focused element shows it. The broker then sets
+  the value on that element over the same connection.
 
 ## Operator setup
 
@@ -46,16 +48,14 @@ and sends the request on that connection's standard input.
 
    The broker never starts an adb server: if none listens on that port it
    refuses.
-3. On the device, stop accessibility from reading password text, and stop
-   Android from showing each typed password character (emulator images often
-   have both on):
+3. On the device, stop accessibility from reading password text (Android
+   emulator images often have it on):
 
    ```sh
    adb -P 5043 -s emulator-5584 shell settings put secure speak_password 0
-   adb -P 5043 -s emulator-5584 shell settings put system show_password 0
    ```
 
-   The broker refuses until both are 0.
+   The broker refuses until it is 0.
 4. Recommended: in Chrome on the device, turn off Settings > Password Manager >
    "Offer to save passwords", so Chrome does not keep a second copy.
 
@@ -104,7 +104,7 @@ Android SDK level and `speak_password`.
 
 | Focused app | Delivery | Verified site |
 | --- | --- | --- |
-| Chrome tab or Custom Tab (`com.android.chrome`, Google signing key) | Key events to Chrome only (`android-chrome-keys-v1`) | The exact origin of the one visible, focused tab; its host must match Chrome's address bar (which hides `www.` and shows Unicode hosts) |
+| Chrome tab or Custom Tab (`com.android.chrome`, Google signing key) | Set on the element after the typed check proves the connection is Chrome's (`android-chrome-verified-dom-v1`) | The exact origin of the one visible, focused tab; its host must match Chrome's address bar (which hides `www.` and shows Unicode hosts) |
 | Google account sign-in (`com.google.android.gms`, Google signing lineage) | Accessibility helper (`android-accessibility-set-text-v1`) | `https://accounts.google.com`: the email pin, and `android google-sign-in` |
 | Any other app | Accessibility helper | The site named with `--app-site https://...`, only if that site's `/.well-known/assetlinks.json` shares its credentials with the app's package and current signing certificate (`delegate_permission/common.get_login_creds`; App Links alone are not enough). Native fields only: a web view inside an app is refused, because its page's site cannot be read |
 
@@ -154,14 +154,16 @@ reported as `uncertain`.
 - adb gives every process of the broker's operating-system user full control
   of the device, as a DevTools port does for a desktop browser. The broker
   checks the helper file's hash immediately before it starts it, but a
-  process of the same user that races the device files could interfere.
+  process of the same user that races the device files could interfere. adb's
+  loopback server port accepts any local client: on a host with other OS
+  accounts, protect it as you would a browser's debugging port.
 - The Google sign-in password and code steps were not tested end to end: a
   synthetic account cannot pass Google's email page. The run was checked up to
   that point (a new task, the email filled and submitted, and a stop with no
   password when Google did not find the account).
-- Chrome pages: only printable ASCII values can be typed; a value with other
-  characters is refused before any key. An authenticator code is visible on
-  screen after it is filled, until the page submits it.
+- Chrome pages: the field must accept the check string (16 letters and
+  digits, or 6 to 16 digits for a code field). An authenticator code is
+  visible on screen after it is filled, until the page submits it.
 - Chrome on Android sometimes stops giving its page to accessibility, so
   Chrome pages are read through DevTools. For other apps' web views the helper
   may briefly open and close the system volume panel to make the app rebuild

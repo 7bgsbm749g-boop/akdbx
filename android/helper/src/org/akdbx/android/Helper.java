@@ -640,13 +640,19 @@ public final class Helper {
     // ----- Chrome page origin ---------------------------------------------
 
     static final String CHROME_URL_BAR = ":id/url_bar";
+    static final String WIDGET_EDIT_TEXT = "android.widget.EditText";
+    static final String WIDGET_TEXT_VIEW = "android.widget.TextView";
 
     /** The host and port that Chrome's own address bar shows, or null. */
     static String addressBarAuthority(Scene scene, Walk walk) {
         String found = null;
         for (AccessibilityNodeInfo node : walk.nodes) {
             String id = node.getViewIdResourceName();
-            if (id != null && id.equals(scene.app.packageName + CHROME_URL_BAR)) {
+            // A web page's element can carry the same id (Chromium reports HTML
+            // ids as view ids): only Chrome's own native view counts.
+            if (id != null && id.equals(scene.app.packageName + CHROME_URL_BAR) && !inWeb(node)
+                    && (WIDGET_EDIT_TEXT.contentEquals(String.valueOf(node.getClassName()))
+                        || WIDGET_TEXT_VIEW.contentEquals(String.valueOf(node.getClassName())))) {
                 if (found != null || node.isFocused() || node.getText() == null) {
                     return null; // Two bars, or the user is editing it.
                 }
@@ -677,11 +683,6 @@ public final class Helper {
         "com.android.chrome/org.chromium.chrome.browser.ChromeTabbedActivity",
         "com.android.chrome/org.chromium.chrome.browser.customtabs.CustomTabActivity",
     };
-
-    static boolean showsPasswords() {
-        String value = setting("system", "show_password");
-        return !"0".equals(value);
-    }
 
     /** Key events for each character, or null when one has no key on the virtual keyboard. */
     static android.view.KeyEvent[] keyEvents(String value) {
@@ -722,10 +723,12 @@ public final class Helper {
     }
 
     /**
-     * Type a value as key events into Chrome's focused field. The system
-     * delivers each event only to a window owned by Chrome's Android user id,
-     * after this run checks that Chrome's tab or Custom Tab is focused in the
-     * pinned task and its own address bar shows the pinned host.
+     * Type a value (the broker's random, non-secret check string) as key
+     * events into Chrome's focused field. The system delivers each event only
+     * to a window owned by Chrome's Android user id, after this run checks
+     * that Chrome's tab or Custom Tab is focused in the pinned task and its
+     * own address bar shows the pinned host. Only real Chrome can then report
+     * the string in the pinned element over DevTools.
      */
     JSONObject type(JSONObject request) throws Exception {
         if (!bootId().equals(request.getString("boot_id"))) {
@@ -738,9 +741,6 @@ public final class Helper {
         }
         if (speaksPasswords()) {
             throw new Refusal("device lets accessibility read password text (speak_password is not 0)");
-        }
-        if (showsPasswords()) {
-            throw new Refusal("device shows typed password characters (show_password is not 0)");
         }
         Scene scene = scene();
         String activity = scene.activity.flattenToShortString();
@@ -971,19 +971,20 @@ public final class Helper {
             throw new Refusal("device lets accessibility read password text (speak_password is not 0)");
         }
         Object service = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
-        int newest = 0;
+        java.util.Set<Integer> before = new java.util.HashSet<>();
         for (int id : gmsSignInTasks()) {
             if (id < 0) {
                 service.getClass().getMethod("removeTask", int.class).invoke(service, -1 - id);
             } else {
-                newest = Math.max(newest, id);
+                before.add(id);
             }
         }
         run("/system/bin/am", "start", "-a", "android.settings.ADD_ACCOUNT_SETTINGS", "--esa", "account_types", "com.google");
         int taskId = -1;
         for (int attempt = 0; attempt < 100 && taskId < 0; attempt++) {
             Task task = focusedTask();
-            if (task != null && GMS_SIGN_IN.equals(task.activity.flattenToShortString()) && task.taskId > newest) {
+            // Task ids are numbered per Android user: a new task is one that did not exist before.
+            if (task != null && GMS_SIGN_IN.equals(task.activity.flattenToShortString()) && !before.contains(task.taskId)) {
                 taskId = task.taskId;
             } else {
                 Thread.sleep(200);

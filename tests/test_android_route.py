@@ -492,13 +492,19 @@ def test_unknown_device_is_refused(device_file):
 # ----- Chrome pages through DevTools ---------------------------------------
 
 class FakeCDP:
-    """A Chrome with one visible tab at URL and a frozen tab on another site."""
+    """A Chrome with one visible tab at URL and a frozen tab on another site.
 
-    def __init__(self, url, shown=True, focused=True, holds=None):
-        self.url, self.shown, self.focused, self.holds = url, shown, focused, holds
+    shows_typed: whether the pinned element reports the string the helper
+    typed (False models a DevTools peer that is not Chrome, or a focus move).
+    """
+
+    def __init__(self, url, shown=True, focused=True, shows_typed=True, set_answer=True, max_length=-1):
+        self.url, self.shown, self.focused = url, shown, focused
+        self.shows_typed, self.set_answer, self.max_length = shows_typed, set_answer, max_length
         self.calls = []
         self.closed = False
         self.objects = {}
+        self.scene = None
 
     def call(self, method, params=None, session=None, *, timeout=3):
         self.calls.append((method, params))
@@ -528,17 +534,25 @@ class FakeCDP:
                 return {'result': {'value': [{'selector': '#app_totp', 'type': 'text', 'focused': True}]}}
         if method == 'Runtime.callFunctionOn':
             declaration = params['functionDeclaration']
+            args = [a['value'] for a in params.get('arguments', [])]
             if 'this.focused' in declaration:
                 return {'result': {'value': self.focused}}
             if 'this.prepare' in declaration:
-                return {'result': {'value': True}}
-            if 'this.length' in declaration:
-                return {'result': {'value': self.holds}}
+                return {'result': {'value': self.max_length}}
+            if 'this.holds' in declaration:
+                typed = (self.scene or {}).get('typed', [])
+                return {'result': {'value': self.shows_typed and bool(typed) and args[0] == typed[-1]}}
+            if 'this.set' in declaration:
+                return {'result': {'value': self.set_answer}}
             return {'result': {}}
         raise AssertionError(method)
 
     def close(self):
         self.closed = True
+
+    def set_values(self):
+        return [p['arguments'][0]['value'] for m, p in self.calls
+                if m == 'Runtime.callFunctionOn' and 'this.set' in p['functionDeclaration']]
 
 
 CHROME = dict(package='com.android.chrome', activity=android_route.CHROME_ACTIVITIES[1], lineage=(GOOGLE_SIGNER,))
@@ -550,11 +564,12 @@ def chrome_broker(device_file, cdp, address_bar='example.com', type_answer=None)
         scene['type'] = type_answer
     broker = make_broker(device_file, scene)
     broker.android.cdp_factory = lambda adb: cdp
+    cdp.scene = scene
     return broker, scene
 
 
-def test_chrome_page_fill_types_values_that_devtools_never_carries(device_file):
-    cdp = FakeCDP('https://example.com/sessions/two-factor/app')
+def test_chrome_page_fill_sets_the_value_only_after_chrome_shows_the_typed_check(device_file):
+    cdp = FakeCDP('https://example.com/sessions/two-factor/app', max_length=6)
     broker, scene = chrome_broker(device_file, cdp)
     inspected = broker.dispatch({'action': 'android-inspect', 'device': 'phone'})
     assert inspected['site'] == {'origin': 'https://example.com', 'source': 'chrome'}
@@ -565,46 +580,69 @@ def test_chrome_page_fill_types_values_that_devtools_never_carries(device_file):
     pinned = pin(broker, mode='totp', field='#app_totp')
     assert pinned['ok'] and pinned['android_delivery'] == CHROME_DELIVERY and pinned['origin'] == 'https://example.com'
     assert fill(broker, 'Other', pinned['target'], mode='totp')['error'] == ORIGIN_MISMATCH
-    assert cdp.closed and 'typed' not in scene
+    assert cdp.closed and 'typed' not in scene and cdp.set_values() == []
 
-    cdp.closed, cdp.holds = False, 6
+    cdp.closed = False
     pinned = pin(broker, mode='totp', field='#app_totp')
     response = fill(broker, 'synthetic-user', pinned['target'], mode='totp')
     assert response == {'ok': True, 'filled': 'totp', 'target_delivery': CHROME_DELIVERY}
-    [code] = scene['typed']
+    # The helper typed a random check string (digits, within the field's maximum length), never the code.
+    [check] = scene['typed']
+    [code] = cdp.set_values()
+    assert check.isdigit() and len(check) == 6 and check != code and len(code) == 6
     [request] = [r for r in FakeAdb.requests if r['op'] == 'type']
-    assert request['address_bar'] == 'example.com' and request['task_id'] == 12
-    assert code not in json.dumps(cdp.calls) and cdp.closed
+    assert request['address_bar'] == 'example.com' and request['task_id'] == 12 and request['value'] == check
+    assert code not in json.dumps(FakeAdb.requests) and cdp.closed
 
 
-def test_chrome_login_types_both_values_and_devtools_never_sees_them(device_file):
-    cdp = FakeCDP('https://example.com/login', holds=None)
+def test_a_devtools_peer_that_cannot_show_the_typed_check_never_gets_the_value(device_file):
+    # Any app could hold Chrome's DevTools socket name, and focus could move:
+    # then the pinned element does not hold the string that only Chrome received.
+    cdp = FakeCDP('https://example.com/login', shows_typed=False)
+    broker, scene = chrome_broker(device_file, cdp)
+    response = fill(broker, 'synthetic-user', pin(broker, mode='password', field='#password')['target'])
+    assert response['ok'] is False and response['delivery'] == 'not-started'
+    assert len(scene['typed']) == 1 and cdp.set_values() == [] and SECRET not in json.dumps(cdp.calls)
+
+
+def test_chrome_login_sets_both_values_after_each_check(device_file):
+    cdp = FakeCDP('https://example.com/login')
     broker, scene = chrome_broker(device_file, cdp)
     pinned = pin(broker, mode='login', field='#password', username_field='#login')
     assert pinned['ok'] and list(cdp.objects.values()) == ['#login', '#password']
-    lengths = iter([len('synthetic-user'), len(SECRET)])
-    cdp.holds = None
+    assert fill(broker, 'synthetic-user', pinned['target'], mode='login')['ok']
+    assert cdp.set_values() == ['synthetic-user', SECRET]
+    assert len(scene['typed']) == 2 and SECRET not in scene['typed']
+
+
+def test_chrome_login_finishes_after_the_start_deadline(device_file):
+    # The 4-second start deadline bounds the start, not the second field.
+    cdp = FakeCDP('https://example.com/login')
+    broker, scene = chrome_broker(device_file, cdp)
+    now = [100.0]
+    broker.clock = broker.android.clock = lambda: now[0]
+    pinned = pin(broker, mode='login', field='#password', username_field='#login')
     original = cdp.call
 
-    def call(method, params=None, session=None, *, timeout=3):
-        if method == 'Runtime.callFunctionOn' and 'this.length' in params['functionDeclaration']:
-            return {'result': {'value': next(lengths)}}
+    def slow(method, params=None, session=None, *, timeout=3):
+        if method == 'Runtime.callFunctionOn' and 'this.set' in params['functionDeclaration']:
+            now[0] += 5
         return original(method, params, session, timeout=timeout)
-    cdp.call = call
+    cdp.call = slow
     assert fill(broker, 'synthetic-user', pinned['target'], mode='login')['ok']
-    assert scene['typed'] == ['synthetic-user', SECRET]
-    assert SECRET not in json.dumps(cdp.calls)
+    assert cdp.set_values() == ['synthetic-user', SECRET]
 
 
-@pytest.mark.parametrize('holds, type_answer, delivery', [
-    # The page cleared or cut the typed value: it may have seen part of it.
-    (3, None, 'uncertain'),
-    (None, {'ok': True, 'complete': False, 'started': False, 'protocol': 1}, 'not-started'),
-    (None, {'ok': True, 'complete': False, 'started': True, 'protocol': 1}, 'uncertain'),
-    (None, {'ok': False, 'error': 'Chrome is not the focused app in the pinned task', 'protocol': 1}, 'not-started'),
+@pytest.mark.parametrize('kwargs, type_answer, delivery', [
+    # The page cleared or cut the value: it may have seen it.
+    (dict(set_answer='changed'), None, 'uncertain'),
+    (dict(set_answer=False), None, 'not-started'),
+    (dict(max_length=4), None, 'not-started'),
+    (dict(), {'ok': True, 'complete': False, 'started': True, 'protocol': 1}, 'not-started'),
+    (dict(), {'ok': False, 'error': 'Chrome is not the focused app in the pinned task', 'protocol': 1}, 'not-started'),
 ])
-def test_chrome_typing_failures_report_whether_delivery_started(device_file, holds, type_answer, delivery):
-    cdp = FakeCDP('https://example.com/login', holds=holds)
+def test_chrome_fill_failures_report_whether_delivery_started(device_file, kwargs, type_answer, delivery):
+    cdp = FakeCDP('https://example.com/login', **kwargs)
     broker, _ = chrome_broker(device_file, cdp, type_answer=type_answer)
     response = fill(broker, 'synthetic-user', pin(broker, mode='password', field='#password')['target'])
     assert response['ok'] is False and response['delivery'] == delivery
@@ -629,6 +667,8 @@ def test_chrome_address_bar_hides_www_and_shows_unicode_hosts(device_file):
     assert not android_route._authority_matches('www.example.com', ('https', 'example.com', 443))
     assert not android_route._authority_matches('example.com', ('https', 'wwwexample.com', 443))
     assert android_route._authority_matches('bücher.de', ('https', 'xn--bcher-kva.de', 443))
+    assert android_route._authority_matches('[2001:db8::1]', ('https', '2001:db8::1', 443))
+    assert android_route._authority_matches('[2001:db8::1]:8443', ('https', '2001:db8::1', 8443))
     assert not android_route._authority_matches('bucher.de', ('https', 'xn--bcher-kva.de', 443))
 
 

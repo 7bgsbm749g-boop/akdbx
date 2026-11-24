@@ -4,9 +4,10 @@ The broker speaks adb's host and shell protocols itself, on a loopback
 connection to the operator's adb server whose owner it checks, and starts a
 small helper on the device (``android_assets/akdbx-android-helper.dex``, built
 from ``android/helper``) with ``app_process`` as the adb shell user. A value
-travels only on that connection's standard input to the helper. It is never
-an adb or shell argument, never on the clipboard, never sent over Chrome's
-DevTools connection, and never in a response, an exception message or a log.
+travels only on that connection's standard input to the helper, or (Chrome
+pages) over a DevTools connection proven to be Chrome's. It is never an adb or
+shell argument, never on the clipboard, and never in a response, an exception
+message or a log.
 
 - App fields and Google account sign-in: the helper finds the exact field
   through the platform's accessibility API (UiAutomation), checks the app,
@@ -14,12 +15,13 @@ DevTools connection, and never in a response, an exception message or a log.
   value (ACTION_SET_TEXT) and confirms that the field holds it.
 - Chrome tabs and Custom Tabs: Chrome's accessibility tree can be stale, so
   the broker reads the page through Chrome's DevTools socket (adb forwards it
-  to a loopback port only until the broker connects). DevTools only reads,
-  empties and focuses the field. The helper types the value as key events
-  that Android delivers only to windows of Chrome's app user, after it checks
-  that Chrome is focused in the pinned task and its address bar shows the
-  pinned host. An app that held the DevTools socket name could lie about a
-  page but never receives a value.
+  to a loopback port only until the broker connects). Any app could hold that
+  socket's name, so before a value moves the field is emptied and focused,
+  the helper types a random check string as key events that Android delivers
+  only to windows of Chrome's app user (after it checks that Chrome is focused
+  in the pinned task and its own address bar shows the pinned host), and the
+  pinned element must hold exactly that string. The broker then sets the
+  value on that element over the same, now proven, connection.
 
 The site that a pin may receive a credential for is one of:
 
@@ -54,8 +56,10 @@ from .target import DeliveryError, TargetError
 
 PROTOCOL = 1
 DELIVERY = 'android-accessibility-set-text-v1'
-# A value typed into a Chrome page as key events that only Chrome's windows receive.
-CHROME_DELIVERY = 'android-chrome-keys-v1'
+# A value set on the exact Chrome page element over a DevTools connection that
+# typed key events (which only Chrome's windows receive) proved to be Chrome's.
+CHROME_DELIVERY = 'android-chrome-verified-dom-v1'
+NONCE_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 PIN_TTL = 30.0
 MAX_PINS = 64
 MODES = ('login', 'username', 'password', 'totp')
@@ -67,7 +71,7 @@ SERIAL = re.compile(r'[A-Za-z0-9._:-]{1,64}')
 
 HELPER_ASSET = 'akdbx-android-helper.dex'
 # SHA-256 of the bundled helper; tests/test_android_route.py checks it.
-HELPER_SHA256 = '60ed0bebde01864525914fee1133cdb88ac22aba52da076338f92ec17b605fcf'
+HELPER_SHA256 = 'c96b65d827a7718df30647d028e5ade124b5e89f46f37f837c05499635cf95d2'
 HELPER_CLASS = 'org.akdbx.android.Helper'
 HELPER_PROTOCOL = 1
 RESULT_PREFIX = 'AKDBX-ANDROID-RESULT '
@@ -77,7 +81,10 @@ HELPER_TIMEOUT = 25.0
 SIGN_IN_TIMEOUT = 140.0
 DEVICE_PROBE_TIMEOUT = 15.0
 DEVICE_LIST_BUDGET = 150.0
-TAB_SEARCH_BUDGET = 20.0
+TAB_SEARCH_BUDGET = 40.0
+# A frozen background tab answers no DevTools call: give each step little time.
+TAB_CALL_TIMEOUT = 0.75
+INSTALL_BUDGET = 100.0
 MAX_HELPER_OUTPUT = 512 * 1024
 MAX_TAB_LIST = 1024 * 1024
 MAX_ASSET_LINKS = 256 * 1024
@@ -95,8 +102,6 @@ GOOGLE_SIGN_IN_ORIGIN = ('https', 'accounts.google.com', 443)
 # let an app open a site's links, not receive its passwords.
 ASSET_LINK_RELATIONS = ('delegate_permission/common.get_login_creds',)
 
-SHOW_PASSWORD_REFUSAL = ('device shows each typed password character; on the device run '
-                         '"settings put system show_password 0" (adb shell), then pin again')
 GMAIL_ONLY = ('google-sign-in fills the password only for a @gmail.com or @googlemail.com account: '
               'another domain can send the sign-in to its own company page, whose site akdbx cannot read; '
               'no value sent')
@@ -452,8 +457,9 @@ PAGE_FIELDS = r"""(function() {
     current = e;
     const id = attribute.call(e, 'id'), name = attribute.call(e, 'name');
     let selector = null;
-    if (id && unique('#' + CSS.escape(id))) selector = '#' + CSS.escape(id);
-    else if (name && unique('input[name="' + CSS.escape(name) + '"]')) selector = 'input[name="' + CSS.escape(name) + '"]';
+    const short = s => s.length <= 1000 && unique(s);
+    if (id && short('#' + CSS.escape(id))) selector = '#' + CSS.escape(id);
+    else if (name && short('input[name="' + CSS.escape(name) + '"]')) selector = 'input[name="' + CSS.escape(name) + '"]';
     else if (unique('input[type="' + t + '"]')) selector = 'input[type="' + t + '"]';
     else {
       // A structural path from the nearest ancestor with a unique id, or the root.
@@ -479,10 +485,11 @@ PAGE_FIELDS = r"""(function() {
   }
   return fields;
 })()"""
-# A pinned page field, held in an isolated world. DevTools here only reads,
-# clears and focuses: the value itself is typed by the device helper as key
-# events that the system delivers only to Chrome's windows, so a DevTools peer
-# that is not Chrome never receives it.
+# A pinned page field, held in an isolated world. Before a value moves, the
+# field is emptied and focused, the device helper types a random check string
+# as key events that Android delivers only to Chrome's windows, and the field
+# must then hold exactly that string: only real Chrome can report it, and only
+# if the pinned element had focus. The value is then set on that element.
 PAGE_FIELD = r"""(function(selector, url, kind) {
   if (!isSecureContext || location.href !== url || !document.hasFocus() || document.visibilityState !== 'visible') throw 0;
   const query = s => { const a = document.querySelectorAll(s); if (a.length !== 1) throw 0; return a[0]; };
@@ -515,15 +522,24 @@ PAGE_FIELD = r"""(function(selector, url, kind) {
     document.hasFocus() && document.visibilityState === 'visible' && valid(field) && query(selector) === field;
   if (!check()) { dispose(); throw 0; }
   return {kind, field, check, dispose, focused: document.activeElement === field,
-    // Empty the field and focus it; the helper then types into the focused element.
+    // Empty the field and focus it; the helper then types into the focused
+    // element. Answers the field's maximum length (-1 for none), or false.
     prepare(deadline) {
       if (!this.check() || performance.now() >= deadline) return false;
       setter.call(field, '');
       field.dispatchEvent(new Event('input', {bubbles:true}));
       field.focus();
-      return document.activeElement === field && getter.call(field) === '' && this.check();
+      return document.activeElement === field && getter.call(field) === '' && this.check() ? field.maxLength : false;
     },
-    length() { return this.check() && document.activeElement === field ? getter.call(field).length : -1; }};
+    holds(text) { return this.check() && document.activeElement === field && getter.call(field) === text; },
+    // Set the value on this element only; report whether the field keeps it.
+    set(value) {
+      if (!this.check() || document.activeElement !== field) return false;
+      setter.call(field, value);
+      field.dispatchEvent(new Event('input', {bubbles:true}));
+      field.dispatchEvent(new Event('change', {bubbles:true}));
+      return getter.call(field) === value ? true : 'changed';
+    }};
 })"""
 
 
@@ -541,6 +557,8 @@ def _authority_matches(authority, origin) -> bool:
     It hides a leading "www.". The DevTools origin stays the exact origin.
     """
     _, host, port = origin
+    if ':' in host:
+        host = f'[{host}]'  # Chrome shows an IPv6 address in brackets.
     hosts = {host, host[4:]} if host.startswith('www.') and len(host) > 4 else {host}
     # Chrome shows an internationalized host in Unicode; DevTools gives punycode.
     try:
@@ -745,7 +763,9 @@ class AndroidTargets:
                 result.append(item)
                 continue
             try:
-                probe = adb.helper({'op': 'probe'}, install=True, timeout=DEVICE_PROBE_TIMEOUT)
+                # Install the helper only while the list has time for a push and a second probe.
+                install = deadline - time.monotonic() >= INSTALL_BUDGET
+                probe = adb.helper({'op': 'probe'}, install=install, timeout=DEVICE_PROBE_TIMEOUT)
                 item.update(reachable=probe.get('ok') is True,
                             speak_password=probe.get('speak_password') if isinstance(probe.get('speak_password'), bool) else None,
                             sdk=probe.get('sdk') if type(probe.get('sdk')) is int else None)
@@ -777,12 +797,12 @@ class AndroidTargets:
                 break
             try:
                 session = connection.call('Target.attachToTarget', {'targetId': page['targetId'], 'flatten': True},
-                                          timeout=1.5)['sessionId']
-                frame = connection.call('Page.getFrameTree', session=session, timeout=1.5)['frameTree']['frame']
+                                          timeout=TAB_CALL_TIMEOUT)['sessionId']
+                frame = connection.call('Page.getFrameTree', session=session, timeout=TAB_CALL_TIMEOUT)['frameTree']['frame']
                 world = connection.call('Page.createIsolatedWorld', {'frameId': frame['id'], 'worldName': 'akdbx-android-v1'},
-                                        session, timeout=1.5)['executionContextId']
+                                        session, timeout=TAB_CALL_TIMEOUT)['executionContextId']
                 state = connection.call('Runtime.evaluate', {'expression': PAGE_STATE, 'contextId': world,
-                                                             'returnByValue': True}, session, timeout=1.5)['result'].get('value')
+                                                             'returnByValue': True}, session, timeout=TAB_CALL_TIMEOUT)['result'].get('value')
             except Exception:
                 continue
             if isinstance(state, dict) and state.get('shown') is True and state.get('url') == page.get('url'):
@@ -814,7 +834,8 @@ class AndroidTargets:
         for item in fields[:40]:
             if not isinstance(item, dict):
                 continue
-            clean.append({'field': _clip(item.get('selector'), 4096), 'kind': 'page',
+            selector = item.get('selector')
+            clean.append({'field': selector if isinstance(selector, str) and len(selector) <= 1000 else None, 'kind': 'page',
                           **{key: _clip(item.get(key)) for key in ('type', 'id', 'name', 'autocomplete', 'placeholder', 'label')},
                           **{key: item.get(key) is True for key in ('focused', 'has_value', 'disabled')}})
         return {'site': {'origin': serialize_origin(page['origin']), 'source': 'chrome'}, 'page_url': _clip(page['url'], 2048),
@@ -1066,12 +1087,12 @@ class AndroidTargets:
         return CHROME_DELIVERY if pin.source == 'chrome' else DELIVERY
 
     def deliver(self, pin: AndroidPin, mode: str, values: list[str], ready: Callable[[], bool],
-                start_deadline: float) -> None:
+                start_deadline: float, connected: Callable[[], bool] = lambda: True) -> None:
         """Fill the pinned fields; raise DeliveryError(started) on any failure."""
         if pin.used or pin.mode != mode or len(values) != (len(pin.dom.objects) if pin.dom is not None else len(pin.fields)):
             raise DeliveryError(False)
         if pin.dom is not None:
-            return self._deliver_page(pin, values, ready, start_deadline)
+            return self._deliver_page(pin, values, ready, start_deadline, connected)
         pin.used = True
         adb = self.adb_factory(pin.device)
         try:
@@ -1106,8 +1127,8 @@ class AndroidTargets:
                            for r in results)):
             raise DeliveryError(answer.get('delivered') is not False)
 
-    def _deliver_page(self, pin, values, ready, start_deadline):
-        """Type each value into its Chrome page field; DevTools never carries a value."""
+    def _deliver_page(self, pin, values, ready, start_deadline, connected):
+        """Prove the DevTools peer is Chrome and the pinned field has focus, then set each value on it."""
         dom = pin.dom
         adb = self.adb_factory(pin.device)
         started = False
@@ -1115,35 +1136,36 @@ class AndroidTargets:
             if self.clock() >= pin.expires_at:
                 raise TargetError()
             probe = adb.helper({'op': 'probe'}, install=False)
-            if probe.get('ok') is not True or probe.get('boot_id') != pin.boot_id:
+            if probe.get('ok') is not True or probe.get('boot_id') != pin.boot_id or probe.get('speak_password') is not False:
                 raise TargetError()
             for index, value in enumerate(values):
+                # The start deadline bounds only the start; later fields need the caller and the pin.
+                if not (ready() if index == 0 else connected()) or self.clock() >= pin.expires_at + PIN_TTL:
+                    raise TargetError()
                 sample = dom.connection.call('Runtime.evaluate', {'expression': 'performance.now()', 'returnByValue': True},
                                              dom.session)['result']['value']
-                remaining = min(start_deadline - self.clock(), PIN_TTL) if not started else PIN_TTL
-                if type(sample) not in {int, float} or remaining <= 0 or not ready():
+                if type(sample) not in {int, float}:
                     raise TargetError()
-                if dom.call(index, 'function(deadline) { return this.prepare(deadline); }', sample + remaining * 1000) is not True:
+                limit = dom.call(index, 'function(deadline) { return this.prepare(deadline); }', sample + 10000)
+                if type(limit) is not int:
                     raise TargetError()
-                request = {'op': 'type', 'boot_id': pin.boot_id, 'task_id': pin.context['task_id'],
-                           'address_bar': pin.context['address_bar'], 'value': value}
-                try:
-                    answer = adb.helper(request, install=False)
-                except Exception:
-                    started = True
-                    raise
-                finally:
-                    request = None
-                if answer.get('ok') is not True:
-                    error = answer.get('error')
-                    started = started or not isinstance(error, str) or error.startswith('helper failed')
+                # Code fields often take digits only and a fixed length.
+                size = 16 if limit < 0 else min(16, limit)
+                if size < 6:
                     raise TargetError()
-                started = started or answer.get('started') is not False
-                if answer.get('complete') is not True:
+                alphabet = '0123456789' if pin.mode == 'totp' else NONCE_ALPHABET
+                check = ''.join(secrets.choice(alphabet) for _ in range(size))
+                answer = adb.helper({'op': 'type', 'boot_id': pin.boot_id, 'task_id': pin.context['task_id'],
+                                     'address_bar': pin.context['address_bar'], 'value': check}, install=False)
+                if answer.get('ok') is not True or answer.get('complete') is not True:
                     raise TargetError()
-                # The page holds as many characters as were typed: a handler did not clear or cut it.
-                if dom.call(index, 'function() { return this.length(); }') != len(value):
-                    started = True
+                # Only Chrome received the keys, and only the focused element shows them.
+                if dom.call(index, 'function(text) { return this.holds(text); }', check) is not True:
+                    raise TargetError()
+                started = True
+                result = dom.call(index, 'function(value) { return this.set(value); }', value)
+                if result is not True:
+                    started = started if result == 'changed' or index > 0 else False
                     raise TargetError()
         except Exception:
             raise DeliveryError(started) from None

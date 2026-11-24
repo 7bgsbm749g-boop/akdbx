@@ -172,10 +172,11 @@ or additional URL is the verified site:
 
 - **Chrome tabs and Custom Tabs** (Google-signed Chrome): the exact origin of
   the one visible, focused tab, matched to Chrome's own address bar. The
-  broker reads the page through Chrome's DevTools socket (forwarded by adb
-  only while it connects) but never sends a value over it: an on-device
-  helper types the value as key events that Android delivers only to
-  Chrome's windows.
+  broker reads and fills the page through Chrome's DevTools socket (forwarded
+  by adb only while it connects). Before a value moves, an on-device helper
+  types a random check string as key events that Android delivers only to
+  Chrome's windows, and the pinned element must show it: that proves the
+  connection is Chrome's and the field has focus.
 - **Google account sign-in** in Google Play services: `akdbx android
   google-sign-in` opens a new sign-in itself and fills a consumer (`@gmail.com`)
   account's email, password and code on the pages Google's flow shows, in one
@@ -191,8 +192,7 @@ built reproducibly from [`android/helper`](android/helper)), which finds the
 exact field through Android's accessibility API and sets the value there. A
 value travels only on the helper's standard input: never an argument, typed
 by the agent, on the clipboard, in a response or in a log. The broker refuses
-while the device lets accessibility read password text or shows typed
-password characters.
+while the device lets accessibility read password text.
 
 Setup, the agent procedure, Google Play and GitHub Mobile steps and the
 limits are in [Android devices](skills/akdbx/references/android.md).
