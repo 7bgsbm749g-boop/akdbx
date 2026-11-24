@@ -1,4 +1,4 @@
-"""One-shot SMS webhooks (0.39.0); callbacks carry only the source and message id.
+"""One-shot SMS webhooks (0.40.0); callbacks carry only the source and message id.
 
 An agent that lets a site send a verification text registers a webhook and
 ends its turn. When the next text with a code arrives (from one source, or
