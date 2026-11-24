@@ -14,7 +14,7 @@ const privateLink = trust.privateLink;
 // The extension's own version, so a user can see a stale unpacked copy.
 function versionText(manifest) {
   const version = manifest && typeof manifest.version === "string" ? manifest.version : "";
-  return /^\d{1,5}\.\d{1,5}\.\d{1,5}$/.test(version) ? "akdbx extension " + version : "akdbx extension";
+  return /^\d{1,5}\.\d{1,5}\.\d{1,5}(\.\d{1,5})?$/.test(version) ? "akdbx extension " + version : "akdbx extension";
 }
 
 function label(kind, entry) {

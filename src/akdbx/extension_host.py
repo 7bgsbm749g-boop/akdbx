@@ -21,6 +21,8 @@ own folders and register the manifest for one browser:
 from __future__ import annotations
 
 import argparse
+import functools
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -131,10 +133,13 @@ def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
     except FrameError:
         return 1
     # Extensions built by akdbx 0.21.2 or earlier send no version; they still attach and show as outdated.
-    if (hello is None or set(hello) - {'version'} != {'type', 'protocol', 'public_key'} or hello['type'] != 'hello'
+    # A worker that found a newer build on disk, and could not reload into it, says ``stale: true``.
+    if (hello is None or set(hello) - {'version', 'stale'} != {'type', 'protocol', 'public_key'}
+            or hello['type'] != 'hello'
             or type(hello['protocol']) is not int or hello['protocol'] != PROTOCOL
             or not isinstance(hello['public_key'], str) or not PUBLIC_KEY.fullmatch(hello['public_key'])
-            or ('version' in hello and not valid_extension_version(hello['version']))):
+            or ('version' in hello and not valid_extension_version(hello['version']))
+            or ('stale' in hello and hello['stale'] is not True)):
         return 1
     out_lock = threading.Lock()
     try:
@@ -149,6 +154,8 @@ def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
                   public_key=hello['public_key'])
     if 'version' in hello:
         attach['extension_version'] = hello['version']
+    if 'stale' in hello:
+        attach['extension_stale'] = True
     try:
         send_message(connection, attach)
     except Exception:
@@ -547,6 +554,51 @@ def trusted_origin(value):
     return _origin(origin + '/')  # The browser serialization: no default port.
 
 
+def _source_files(host_name=HOST_NAME):
+    """The extension files that ``build`` writes, except config.js, with the source's own version.
+
+    ``host_name`` is the native-messaging host that background.js connects to;
+    tests use their own, and the content stamp always uses the default one.
+    """
+    if host_name != HOST_NAME and not re.fullmatch(r'[a-z0-9_]+(\.[a-z0-9_]+)+', host_name):
+        raise ValueError('invalid host name')
+    written = {}
+    for item in files('akdbx').joinpath('fill_extension').iterdir():
+        if not item.is_file() or item.name.startswith('.') or item.name == 'config.js':
+            continue
+        if item.name == 'content.js':
+            data = _content_script().encode('utf-8')
+        else:
+            data = item.read_bytes()
+        if item.name == 'manifest.json':
+            manifest = json.loads(data)
+            manifest['key'] = EXTENSION_KEY
+            data = json.dumps(manifest, indent=2).encode('utf-8')
+        if item.name == 'background.js' and host_name != HOST_NAME:
+            data = data.replace(HOST_NAME.encode(), host_name.encode())
+        written[item.name] = data
+    return written
+
+
+@functools.cache
+def built_version():
+    """The manifest version that ``build`` writes: EXTENSION_VERSION and a fourth part from the contents.
+
+    Chrome keeps a registered extension service worker, scripts and all, until
+    the manifest version changes or the extension reloads; a browser restart
+    alone does not replace it. Two builds with other contents and one version
+    (a development build in the same folder) left an old worker running beside
+    new content scripts. The fourth part is the first 16 bits of SHA-256 over
+    the files (config.js excluded, line endings normalized, default host name),
+    so a change to them gives another version and a restart loads the new
+    worker. The broker compares the version a worker reports with this one.
+    """
+    digest = hashlib.sha256()
+    for name, data in sorted(_source_files().items()):
+        digest.update(name.encode() + b'\0' + hashlib.sha256(data.replace(b'\r\n', b'\n')).digest())
+    return EXTENSION_VERSION + '.' + str(int.from_bytes(digest.digest()[:2], 'big'))
+
+
 def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
     """Write the unpacked extension. An existing folder must already hold this extension.
 
@@ -559,6 +611,10 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
     Every build writes a new random build ID (``BUILD_ID``): the extension
     drops broker trust saved under another build and starts again from this
     origin, while a reload of the same build keeps it.
+
+    The manifest gets ``built_version()``, and config.js the same version: the
+    worker imports config.js, so Chrome caches it with the worker, and the
+    worker reports that copy, not the manifest on disk (see background.js).
     """
     destination = Path(destination)
     origin = trusted_origin(unlock_origin) if unlock_origin is not None else None
@@ -569,32 +625,22 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
             current = {}
         if current.get('key') != EXTENSION_KEY:
             raise ValueError('destination exists and does not hold the akdbx extension; choose a new folder')
-    else:
-        destination.mkdir(parents=True)
-    source = files('akdbx').joinpath('fill_extension')
-    for item in source.iterdir():
-        if not item.is_file() or item.name.startswith('.'):
-            continue
-        if item.name == 'content.js':
-            data = _content_script().encode('utf-8')
-        else:
-            data = item.read_bytes()
-        if item.name == 'manifest.json':
-            manifest = json.loads(data)
-            # The manifest keeps the extension's own version (EXTENSION_VERSION).
-            manifest['key'] = EXTENSION_KEY
-            data = json.dumps(manifest, indent=2).encode('utf-8')
-        if item.name == 'background.js' and host_name != HOST_NAME:
-            if not re.fullmatch(r'[a-z0-9_]+(\.[a-z0-9_]+)+', host_name):
-                raise ValueError('invalid host name')
-            data = data.replace(HOST_NAME.encode(), host_name.encode())
-        (destination / item.name).write_bytes(data)
+    written = _source_files(host_name)
+    version = built_version()
+    manifest = json.loads(written['manifest.json'])
+    manifest['version'] = version
+    written['manifest.json'] = json.dumps(manifest, indent=2).encode('utf-8')
+    destination.mkdir(parents=True, exist_ok=True)
+    for name, data in written.items():
+        (destination / name).write_bytes(data)
     (destination / 'config.js').write_text(
         '"use strict";\n// Written by `akdbx extension build`: the first trusted origin for pairing and unlock links.\n'
         '// After the first pairing, origin changes signed by the broker identity key replace it.\n'
         'globalThis.AKDBX_TRUSTED_ORIGIN = ' + json.dumps(origin) + ';\n'
         '// A new random ID on every build: broker trust saved under another build no longer counts.\n'
-        'globalThis.AKDBX_BUILD_ID = ' + json.dumps(secrets.token_urlsafe(16)) + ';\n', encoding='utf-8')
+        'globalThis.AKDBX_BUILD_ID = ' + json.dumps(secrets.token_urlsafe(16)) + ';\n'
+        '// The manifest version of this build. The worker reports this copy, which Chrome caches with it.\n'
+        'globalThis.AKDBX_EXTENSION_VERSION = ' + json.dumps(version) + ';\n', encoding='utf-8')
     return destination
 
 
@@ -639,10 +685,10 @@ def run(args, socket_path=None, unlock_origin=None):
             print(json.dumps(dict(ok=True, browser=args.browser, removed=removed), indent=2))
         elif args.extension_command == 'build':
             path = build(args.output, unlock_origin=unlock_origin)
-            print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, extension_version=EXTENSION_VERSION,
+            print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, extension_version=built_version(),
                                   path=str(path.absolute()), trusted_origin=trusted_origin(unlock_origin)), indent=2))
         else:
-            print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, extension_version=EXTENSION_VERSION,
+            print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, extension_version=built_version(),
                                   host=HOST_NAME, protocol=PROTOCOL,
                                   akdbx_source=package_root(),
                                   browsers={b: {**{k: str(v) for k, v in paths(b).items()},

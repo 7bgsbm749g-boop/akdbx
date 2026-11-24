@@ -33,6 +33,44 @@ const waiting = new Map();
 const sessions = new Map();
 const processorGuards = new Map();
 
+/* The build this worker runs. Chrome keeps a registered worker, with the
+ * scripts it imported, until the manifest version changes or the extension
+ * reloads; content scripts and injected files come from disk. So after
+ * `akdbx extension build` rewrites the folder, an old worker can run beside
+ * new content scripts, and getManifest() can already describe the new build.
+ * config.js is cached with this worker, so its version names the code that
+ * runs here; manifest.json on disk names the newest build. */
+const VERSION = typeof globalThis.AKDBX_EXTENSION_VERSION === "string" ? globalThis.AKDBX_EXTENSION_VERSION
+  : chrome.runtime.getManifest().version;
+const RELOAD_KEY = "stale_reload";  // The disk version that this extension last reloaded for.
+
+// The version of the build on disk, or null when it cannot be read.
+async function diskVersion() {
+  try {
+    const response = await fetch(chrome.runtime.getURL("manifest.json"), {cache: "no-store"});
+    const version = (await response.json()).version;
+    return typeof version === "string" ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+// The disk version when this worker is older than the build on disk, else null.
+async function staleBuild() {
+  const disk = await diskVersion();
+  return disk !== null && disk !== VERSION ? disk : null;
+}
+
+// Reload once for each build on disk, so the new worker runs. A reload ends the
+// pairing (the pairing key lives in session storage). If that worker still runs
+// old code, there is no second reload: it reports itself stale.
+async function reloadFor(disk) {
+  if ((await chrome.storage.local.get(RELOAD_KEY))[RELOAD_KEY] === disk) return false;
+  await chrome.storage.local.set({[RELOAD_KEY]: disk});
+  chrome.runtime.reload();
+  return true;
+}
+
 // Only extension pages may read session storage; content scripts may not.
 chrome.storage.session.setAccessLevel?.({accessLevel: "TRUSTED_CONTEXTS"});
 // The broker trust lives in local storage: keep content scripts out of it too where the browser allows it.
@@ -107,7 +145,7 @@ async function localCode(publicKey) {
 // From fill extension 0.4.0 the keys also bind this extension's own version: a
 // host that reports another version to the broker makes every sealed message fail.
 function keyInfo(label) {
-  return label + "/" + chrome.runtime.getManifest().version;
+  return label + "/" + VERSION;
 }
 
 async function agreeKey(brokerPublicKey, info = keyInfo("akdbx-extension-v1"), usages = ["decrypt"]) {
@@ -165,6 +203,9 @@ async function unseal(sealed, context, keyPromise = sealKey) {
 
 async function connect() {
   if (port) return;
+  const disk = await staleBuild();
+  if (disk && await reloadFor(disk).catch(() => false)) return;
+  if (!disk) await chrome.storage.local.remove(RELOAD_KEY).catch(() => {});
   const key = (await pairingKeys()).publicKey;
   if (port) return;
   let current;
@@ -188,8 +229,9 @@ async function connect() {
     waiting.clear();
     scheduleReconnect();
   });
-  // The version lets `akdbx status` show a stale unpacked extension after an update.
-  current.postMessage({type: "hello", protocol: PROTOCOL, public_key: key, version: chrome.runtime.getManifest().version});
+  // The version lets `akdbx status` show an outdated or stale unpacked extension after an update.
+  current.postMessage({type: "hello", protocol: PROTOCOL, public_key: key, version: VERSION,
+    ...(disk ? {stale: true} : {})});
 }
 
 function scheduleReconnect() {
@@ -372,6 +414,14 @@ async function run(tabId, documentId, func, args = []) {
 
 // ----- broker requests (agent route) -------------------------------------
 async function handleCall(message) {
+  if (message.op === "frames" || message.op === "pin") {
+    // A newer build on disk: this worker's code may not match the content script it would inject.
+    const disk = await staleBuild();
+    if (disk) {
+      setTimeout(() => reloadFor(disk).catch(() => {}), 200);  // After the reply has gone out.
+      return {ok: false, error: "stale"};
+    }
+  }
   if (message.op === "frames") return frames(message);
   if (message.op === "pin") return pin(message);
   if (message.op === "fill") return fill(message);

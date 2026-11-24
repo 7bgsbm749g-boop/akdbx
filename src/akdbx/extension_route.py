@@ -80,6 +80,7 @@ import unicodedata
 from importlib.resources import files
 from urllib.parse import urlsplit
 
+from .browser_slots import SlotError
 from .protocol import ProtocolError, receive_message, send_message
 from .public_suffix import registrable_domain
 from .target import TargetError, DeliveryError
@@ -127,29 +128,56 @@ NO_EXTENSION = 'extension route unavailable: no paired akdbx browser extension i
 # The fill extension's own version, independent of the akdbx package version.
 # Bump it whenever the built extension changes: tests/fill_extension_fingerprint.json
 # records each version's contents, and test_extension_route.py checks the record.
+# A build adds a fourth part from its contents (extension_host.built_version), and
+# a loaded extension reports that four-part version.
 EXTENSION_VERSION_FORMAT = re.compile(r'(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})')
+REPORTED_VERSION_FORMAT = re.compile(EXTENSION_VERSION_FORMAT.pattern + r'(\.(0|[1-9][0-9]{0,4}))?')
 EXTENSION_VERSION = json.loads(files('akdbx').joinpath('fill_extension', 'manifest.json')
                                .read_text(encoding='utf-8'))['version']
 if not EXTENSION_VERSION_FORMAT.fullmatch(EXTENSION_VERSION):
     raise RuntimeError('the packaged fill extension has an invalid version')
+STALE = ('extension route unavailable: the browser runs an older akdbx extension service worker than the '
+         'extension files on disk (stale build); restart the browser, or reload akdbx on chrome://extensions, '
+         'then pair it again')
 
 
 def valid_extension_version(value):
-    """True for a strict MAJOR.MINOR.PATCH string of ASCII digits, at most 17 characters."""
-    return isinstance(value, str) and len(value) <= 17 and EXTENSION_VERSION_FORMAT.fullmatch(value) is not None
+    """True for MAJOR.MINOR.PATCH, optionally .BUILD, of ASCII digits, at most 23 characters."""
+    return isinstance(value, str) and len(value) <= 23 and REPORTED_VERSION_FORMAT.fullmatch(value) is not None
 
 
-def version_status(version):
+def version_parts(version):
+    """MAJOR, MINOR, PATCH of a valid reported version: the build part does not order versions."""
+    return tuple(int(part) for part in version.split('.')[:3])
+
+
+def version_status(version, stale=False):
     """How a loaded extension's version compares with the one this akdbx build ships.
 
     An extension built by akdbx 0.21.2 or earlier does not report a version, so a missing
-    version means an outdated extension.
+    version means an outdated extension. ``stale``: the extension's worker runs another
+    build than this one at the same MAJOR.MINOR.PATCH (another fourth part, or none), or
+    it said so itself (it found a newer build on disk and could not reload into it).
     """
     if version is None:
         return 'outdated'
-    loaded = tuple(int(part) for part in version.split('.'))
-    shipped = tuple(int(part) for part in EXTENSION_VERSION.split('.'))
-    return 'current' if loaded == shipped else 'outdated' if loaded < shipped else 'newer'
+    if stale:
+        return 'stale'
+    loaded, shipped = version_parts(version), version_parts(EXTENSION_VERSION)
+    if loaded == shipped:
+        from .extension_host import built_version
+        return 'current' if version == built_version() else 'stale'
+    return 'outdated' if loaded < shipped else 'newer'
+
+
+class StaleExtension(SlotError):
+    """The paired worker runs another build: refuse with a message that names the fix.
+
+    A SlotError, because the broker returns that error's message as it is.
+    """
+
+    def __init__(self):
+        super().__init__(STALE)
 
 
 class ExtensionError(Exception):
@@ -303,11 +331,13 @@ def _wait_readable(connection, timeout):
 class Channel:
     """One attached native host, bound to one browser profile's extension."""
 
-    def __init__(self, hub, connection, browser, public_key, version=None):
+    def __init__(self, hub, connection, browser, public_key, version=None, stale=False):
         from cryptography.hazmat.primitives import hashes, serialization
         from cryptography.hazmat.primitives.asymmetric import ec
         from cryptography.hazmat.primitives.kdf.hkdf import HKDF
         self.hub, self.connection, self.browser, self.version = hub, connection, browser, version
+        # Set at attach, or later when the worker answers a call with "stale".
+        self.stale = stale
         self.public_key = public_key
         self.digest = hashlib.sha256(public_key).digest()
         own = ec.generate_private_key(ec.SECP256R1())
@@ -357,7 +387,7 @@ class Channel:
         return payload if isinstance(payload, dict) else None
 
     def supports(self, version):
-        return self.version is not None and tuple(int(p) for p in self.version.split('.')) >= version
+        return self.version is not None and version_parts(self.version) >= version
 
     def supports_capture(self):
         return self.supports(CAPTURE_VERSION)
@@ -368,6 +398,21 @@ class Channel:
                 raise ExtensionError()
             self.connection.settimeout(5)
             send_message(self.connection, message)
+
+    def checked_call(self, op, timeout, **payload):
+        """A frame list or pin call, refused when this worker runs a stale build.
+
+        The broker knows a stale build from the reported version; the worker
+        also checks the manifest on disk before each such call and answers
+        ``{"ok": false, "error": "stale"}`` when the folder holds a newer build.
+        """
+        if version_status(self.version, self.stale) == 'stale':
+            raise StaleExtension()
+        result = self.call(op, timeout, **payload)
+        if result.get('ok') is False and result.get('error') == 'stale':
+            self.stale = True
+            raise StaleExtension()
+        return result
 
     def call(self, op, timeout, **payload):
         """Send one broker request to the extension and wait for its reply."""
@@ -486,6 +531,7 @@ class ExtensionHub:
 
     # ----- capabilities and state ---------------------------------------
     def capabilities(self):
+        from .extension_host import built_version
         with self._lock:
             channels = list(self.channels.values())
             approved = set(self.approved)
@@ -494,9 +540,10 @@ class ExtensionHub:
                      fill_routes=list(ROUTES), default_fill_route=self.default_route,
                      extension_connected=bool(channels),
                      extension_paired=any(c.digest in approved for c in channels),
-                     extension_version_expected=EXTENSION_VERSION,
+                     extension_version_expected=built_version(),
                      extension_browsers=[dict(browser=c.browser, paired=c.digest in approved, version=c.version,
-                                              version_status=version_status(c.version)) for c in channels])
+                                              version_status=version_status(c.version, c.stale))
+                                         for c in channels])
         pairing = [dict(browser=c.browser, **info) for c in channels if c.digest not in approved
                    for info in [self._pairing_info(c.digest)] if info.get('url')]
         if pairing:
@@ -641,8 +688,9 @@ class ExtensionHub:
         """Serve one long-lived host connection until it closes."""
         try:
             # A host relaying an extension built by akdbx 0.21.2 or earlier sends no version.
-            if (set(request) - {'extension_version'} != {'action', 'extension_protocol', 'extension_id', 'browser',
-                                                          'public_key'}
+            if (set(request) - {'extension_version', 'extension_stale'} != {'action', 'extension_protocol',
+                                                                             'extension_id', 'browser', 'public_key'}
+                    or request.get('extension_stale', True) is not True
                     or type(request.get('extension_protocol')) is not int or request['extension_protocol'] != PROTOCOL
                     or request.get('extension_id') != EXTENSION_ID or request.get('browser') not in BROWSERS):
                 raise ExtensionError()
@@ -653,7 +701,8 @@ class ExtensionHub:
         except ExtensionError:
             send_message(connection, dict(type='error', error='extension attach refused'))
             return
-        channel = Channel(self, connection, request['browser'], public_key, version)
+        channel = Channel(self, connection, request['browser'], public_key, version,
+                          stale=request.get('extension_stale') is True)
         with self._lock:
             if self._closed or len(self.channels) >= MAX_CHANNELS:
                 channel = None
@@ -936,7 +985,7 @@ class ExtensionHub:
         channels, tab_id = self._channels_for(request)
         found = []
         for channel in channels:
-            result = channel.call('frames', 10, top_url=request['top_url'], tab_id=tab_id)
+            result = channel.checked_call('frames', 10, top_url=request['top_url'], tab_id=tab_id)
             tabs = result.get('tabs')
             if result.get('ok') is not True or not isinstance(tabs, list) or len(tabs) > MAX_TABS:
                 raise ExtensionError()
@@ -1014,7 +1063,7 @@ class ExtensionHub:
             if self._closed or len(self.pins) >= MAX_PINS:
                 raise ExtensionError()
         channel = channels[0]
-        result = channel.call('pin', 8, tab_id=tab_id, document_id=request['frame_id'], top_url=request['top_url'],
+        result = channel.checked_call('pin', 8, tab_id=tab_id, document_id=request['frame_id'], top_url=request['top_url'],
                               frame_url=frame_url, kind=kind, spec=spec)
         created = self.clock()
         pin_id = result.get('pin_id')

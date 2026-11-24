@@ -21,7 +21,8 @@ const at = (origin, build = BUILD) => ({origin, build});
 const recordOf = (message, build = BUILD) => ({v: 1, public_key: message.public_key, key_id: message.statement.key_id,
   origin: message.statement.origin, seq: message.statement.seq, ...(build === null ? {} : {build})});
 
-function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, session} = {}) {
+// `disk`: the version in manifest.json on disk (default: what this worker runs); `version`: what config.js says.
+function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, session, version, disk} = {}) {
   const posted = [];
   const listeners = {};
   const event = name => ({addListener: fn => { listeners[name] = fn; }});
@@ -38,7 +39,7 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, 
   const chrome = {
     runtime: {id: "jjoamaejjkldcjcpgncoomoaagdfimhg", getURL: p => "chrome-extension://jjoamaejjkldcjcpgncoomoaagdfimhg/" + p,
       getManifest: () => manifest, connectNative: () => port, onStartup: event("startup"), onInstalled: event("installed"),
-      onMessage: event("message"), lastError: undefined},
+      onMessage: event("message"), lastError: undefined, reloads: 0, reload() { this.reloads += 1; }},
     storage: {session: area(session), local: area(local)},
     alarms: {create: () => {}, clear: () => {}, onAlarm: event("alarm")},
     contextMenus: {create: () => {}, onClicked: event("menu")},
@@ -62,8 +63,20 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, 
   const sandbox = {chrome, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, TextEncoder,
     TextDecoder, Uint8Array, AbortController, module: {exports: {}}, AKDBX_TRUSTED_ORIGIN: builtOrigin ?? null,
     AKDBX_BUILD_ID: build, Blob, OffscreenCanvas, createImageBitmap: async () => ({width: 100, height: 100, close() {}})};
-  // No network in these tests: the broker's HTTPS statement comes only from a scripted fetch.
-  if (fetch) sandbox.fetch = fetch;
+  if (version !== undefined) sandbox.AKDBX_EXTENSION_VERSION = version;
+  // No network in these tests: the broker's HTTPS statement comes only from a scripted fetch,
+  // and the worker's own manifest.json from `disk`.
+  const own = chrome.runtime.getURL("manifest.json");
+  const onDisk = disk === undefined ? (version ?? manifest.version) : disk;
+  sandbox.fetch = async (url, options) => {
+    if (url === own) {
+      assert.equal(options.cache, "no-store");
+      if (onDisk === null) throw new TypeError("missing");
+      return {json: async () => ({...manifest, version: onDisk})};
+    }
+    if (!fetch) throw new TypeError("no network in tests");
+    return fetch(url, options);
+  };
   vm.createContext(sandbox);
   sandbox.importScripts = (...names) => {
     for (const name of names.filter(n => n !== "config.js")) {
@@ -150,6 +163,59 @@ test("service worker sends only its public key and version, and refuses unsealed
   const other = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
   exports.setSealKey(other);
   await assert.rejects(exports.unseal({iv: "AAAAAAAAAAAAAAAA", data: "AAAAAAAAAAAAAAAAAAAAAAAA"}, "fill:x"));
+});
+
+const settle = async (until, rounds = 50) => {
+  for (let i = 0; i < rounds && !until(); i++) await new Promise(resolve => setTimeout(resolve, 10));
+};
+
+test("the hello reports the version of config.js, which Chrome caches with the worker", async () => {
+  const local = {stale_reload: "0.6.0.1"};
+  const {posted, chrome} = loadBackground({version: "0.6.0.7", local});
+  await settle(() => posted.length);
+  assert.deepEqual(Object.keys(posted[0]).sort(), ["protocol", "public_key", "type", "version"]);
+  assert.equal(posted[0].version, "0.6.0.7");
+  assert.equal(chrome.runtime.reloads, 0);
+  assert.equal("stale_reload" in local, false);  // Running the build on disk: the reload record goes.
+});
+
+test("a worker older than the build on disk reloads once; if that does not help it says it is stale", async () => {
+  // Chrome kept the worker of build 0.6.0.1; the folder now holds 0.6.0.2.
+  const local = {};
+  const first = loadBackground({version: "0.6.0.1", disk: "0.6.0.2", local});
+  await settle(() => first.chrome.runtime.reloads);
+  assert.equal(first.chrome.runtime.reloads, 1);
+  assert.equal(first.posted.length, 0);  // No hello: the reload ends this worker.
+  assert.equal(local.stale_reload, "0.6.0.2");
+  // The worker after the reload still runs 0.6.0.1: no second reload, and the broker hears it.
+  const second = loadBackground({version: "0.6.0.1", disk: "0.6.0.2", local});
+  await settle(() => second.posted.length);
+  assert.equal(second.chrome.runtime.reloads, 0);
+  assert.deepEqual([second.posted[0].version, second.posted[0].stale], ["0.6.0.1", true]);
+  // A manifest that cannot be read is not a newer build.
+  const unread = loadBackground({version: "0.6.0.1", disk: null});
+  await settle(() => unread.posted.length);
+  assert.equal(unread.posted[0].stale, undefined);
+  assert.equal(unread.chrome.runtime.reloads, 0);
+});
+
+test("a frame list or pin call to a worker older than the build on disk answers stale, then reloads", async () => {
+  const local = {stale_reload: "0.6.0.2"};  // Already reloaded for this build: the hello says stale.
+  const {posted, listeners, chrome, port} = loadBackground({version: "0.6.0.1", disk: "0.6.0.2", local});
+  await settle(() => posted.length);
+  delete local.stale_reload;  // The folder changed again under the running worker.
+  const scripts = [];
+  chrome.scripting.executeScript = async details => { scripts.push(details); return []; };
+  for (const [id, op] of [[1, "frames"], [2, "pin"]]) {
+    listeners["port.message"]({type: "call", id, op, top_url: "https://example.com/", tab_id: 1});
+  }
+  await settle(() => posted.length === 3);
+  assert.deepEqual(copy(posted.slice(1).map(m => [m.id, m.result])),
+    [[1, {ok: false, error: "stale"}], [2, {ok: false, error: "stale"}]]);
+  assert.deepEqual(scripts, []);  // Nothing injected from the newer files.
+  await settle(() => chrome.runtime.reloads, 60);
+  assert.equal(chrome.runtime.reloads, 1);
+  assert.equal(port.disconnected, undefined);
 });
 
 test("a restarted service worker keeps its pairing key, so its code and pending link stay the same", async () => {
