@@ -413,3 +413,57 @@ def test_worker_registers_the_emulator_again_while_serving(tmp_path, monkeypatch
                         lambda argv, **kwargs: CompletedProcess(argv, 0, b'1' if 'getprop' in argv else b'0'))
     android_worker.run(tmp_path, device.adb, 0, device.serial, {**device.managed, 'idle_seconds': .01})
     assert registrations == [b'0012host:emulator:5585'] * 2
+
+
+@pytest.mark.parametrize('code, skipped', [(errno.EAFNOSUPPORT, True), (errno.EADDRNOTAVAIL, True),
+                                           (errno.EMFILE, False), (errno.EADDRINUSE, False)])
+def test_notification_port_reservation_skips_only_missing_ipv6(monkeypatch, code, skipped):
+    real = socket.socket
+
+    def sockets(family=socket.AF_INET, *args):
+        if family == socket.AF_INET6:
+            raise OSError(code, os.strerror(code))
+        return real(family, *args)
+
+    monkeypatch.setattr(android_worker.socket, 'socket', sockets)
+    with contextlib.ExitStack() as stack:
+        if skipped:
+            android_worker.reserve(stack, 0)
+        else:
+            with pytest.raises(OSError):
+                android_worker.reserve(stack, 0)
+
+
+def test_slow_periodic_registration_keeps_the_emulator(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from subprocess import CompletedProcess
+
+    device = managed(tmp_path)
+    calls = []
+
+    @contextlib.contextmanager
+    def launched(argv, env):
+        yield SimpleNamespace(poll=lambda: None)
+
+    @contextlib.contextmanager
+    def adb_connection(address, process):
+        def recv(size):
+            if len(calls) > 1:
+                raise TimeoutError  # adb does not close the periodic request in time.
+            return b''
+        yield SimpleNamespace(sendall=lambda message: calls.append('registration'), recv=recv)
+
+    def serve(listener, idle, healthy):
+        later = time.monotonic() + 11
+        monkeypatch.setattr(android_worker.time, 'monotonic', lambda: later)
+        assert healthy()
+
+    monkeypatch.setattr(android_worker, 'child', launched)
+    monkeypatch.setattr(android_worker, 'owns_listener', lambda *args: True)
+    monkeypatch.setattr(android_worker, 'ensure_free', lambda port: None)
+    monkeypatch.setattr(android_worker, 'private_adb', adb_connection)
+    monkeypatch.setattr(android_worker, 'serve', serve)
+    monkeypatch.setattr(android_worker.subprocess, 'run',
+                        lambda argv, **kwargs: CompletedProcess(argv, 0, b'1' if 'getprop' in argv else b'0'))
+    android_worker.run(tmp_path, device.adb, 0, device.serial, {**device.managed, 'idle_seconds': .01})
+    assert calls == ['registration'] * 2

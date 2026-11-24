@@ -104,10 +104,10 @@ def reserve(stack, port):
         ipv6 = stack.enter_context(socket.socket(socket.AF_INET6))
         ipv6.bind(('::1', port))
     except OSError as exc:
-        # The emulator falls back to [::1] when 127.0.0.1 refuses it.
-        if exc.errno == errno.EADDRINUSE:
+        # The emulator falls back to [::1] when 127.0.0.1 refuses it. Skip only
+        # a host without IPv6 loopback, where that fallback cannot connect.
+        if exc.errno not in (errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL):
             raise
-        # IPv6 is unavailable, so the emulator has no [::1] to fall back to.
 
 
 def private_adb(address, process):
@@ -205,7 +205,10 @@ def run(directory, adb, port, serial, managed):
                 return False
             if time.monotonic() >= next_registration:
                 if owns_listener(guest, emulator_port + 1):
-                    register()
+                    try:
+                        register()
+                    except TimeoutError:
+                        pass  # A slow adb reply is retried at the next interval.
                 next_registration = time.monotonic() + 10
             return True
 
