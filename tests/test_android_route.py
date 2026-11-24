@@ -10,15 +10,13 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from akdbx import android_cli, android_route
-from akdbx.android_route import (AndroidError, AndroidTargets, CHROME_DELIVERY, DELIVERY, GOOGLE_SIGNER,
+from akdbx.android_route import (AndroidError, CHROME_DELIVERY, DELIVERY, GOOGLE_SIGNER,
                                  ORIGIN_MISMATCH, asset_link_allows, load_devices)
 from akdbx.broker import Broker
 
