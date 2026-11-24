@@ -122,7 +122,7 @@ def wait_for_cookie_server(xvfb, number, auth, monkeypatch):
 
 
 @pytest.fixture
-def slot_lab(isolated_x11, tmp_path, template, monkeypatch):  # noqa: F811
+def slot_lab(isolated_x11, tmp_path, template, monkeypatch, request):  # noqa: F811
     binary = shutil.which('google-chrome') or shutil.which('chromium')
     if not binary or not shutil.which('openssl'):
         pytest.skip('slot window pins need Chrome/Chromium, Xvfb and openssl')
@@ -133,6 +133,13 @@ def slot_lab(isolated_x11, tmp_path, template, monkeypatch):  # noqa: F811
     xauthority(auth, number)
     xvfb = subprocess.Popen(['Xvfb', f':{number}', '-screen', '0', '800x600x24', '-nolisten', 'tcp', '-auth', str(auth)],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+    def stop_xvfb():
+        # Runs whatever fails later in this fixture (TLS, Chrome start): the exact child is never left running.
+        if xvfb.poll() is None:
+            os.killpg(xvfb.pid, signal.SIGKILL)  # This fixture's own disposable X server.
+        xvfb.wait(timeout=5)
+    request.addfinalizer(stop_xvfb)
     wait_for_cookie_server(xvfb, number, auth, monkeypatch)
     # Discovery sees only this test's two displays, never a real desktop of the host.
     from akdbx import browser_slots
