@@ -59,6 +59,10 @@ def frame_url(frame):
 def endpoint(profile):
     if profile is None:
         raise TargetError()
+    # An Android device's Chrome: the Android route forwards its DevTools socket.
+    devtools = getattr(profile, 'devtools_endpoint', None)
+    if devtools is not None:
+        return devtools()
     if os.name == 'nt':
         from . import windows_browser
         try:
@@ -140,6 +144,8 @@ class CDP:
         url = endpoint(profile)
         raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         connection = None
+        # A forwarded Android endpoint listens only until this connection opens.
+        release = getattr(profile, 'release_endpoint', None)
         try:
             raw.settimeout(2)
             raw.connect(('127.0.0.1', urlsplit(url).port))
@@ -155,6 +161,9 @@ class CDP:
             finally:
                 raw.close()
             raise
+        finally:
+            if release is not None:
+                release()
         self.socket = connection
         self.counter = 0
 

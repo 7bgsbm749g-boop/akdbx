@@ -24,7 +24,7 @@ from .web_unlock import start_unlock_server
 from .local_https import is_loopback_origin, reload_certificate, start_local_unlock_server
 from .notifications import validate_webhook_url
 from . import capture_cli, card_cli, extension_host, identity_cli, pairing_cli, relay as relay_module, relay_cli, secret_cli
-from . import browser_slots, page_url, setup_cli
+from . import android_cli, android_route, browser_slots, page_url, setup_cli
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
 from .sink_helper import SinkError
 
@@ -283,8 +283,9 @@ def request(
     broker_uid: int | None = None,
     expected_unlock_origin: str = DEFAULT_UNLOCK_ORIGIN,
     before_send=None,
+    timeout: int | None = None,
 ) -> dict:
-    timeout = _request_timeout(payload)
+    timeout = _request_timeout(payload) if timeout is None else timeout
     if os.name == 'nt':
         from .windows_rpc import connect
         if broker_uid is not None:
@@ -374,6 +375,7 @@ def parser() -> argparse.ArgumentParser:
     capture_cli.add_parsers(commands)
     relay_cli.add_parser(commands)
     setup_cli.add_parser(commands)
+    android_cli.add_parser(commands)
     start = commands.add_parser("serve", help="unlock a KDBX and run the local broker")
     start.add_argument("database", type=Path)
     start.add_argument('--card-browser-profile', type=Path, default=os.environ.get('AKDBX_CARD_BROWSER_PROFILE'),
@@ -407,6 +409,11 @@ def parser() -> argparse.ArgumentParser:
                              'such as the systemd journal keeps'))
     start.add_argument('--default-fill-route', choices=FILL_ROUTES, default=os.environ.get('AKDBX_DEFAULT_FILL_ROUTE', 'cdp'),
                        help='route for pins that name none: cdp (debugging port) or extension (paired browser extension)')
+    start.add_argument('--android-devices', type=Path,
+                       default=os.environ.get(android_route.CONFIG_ENV) or android_route.default_config_path(),
+                       help=('operator file naming Android devices for the android commands (env '
+                             + android_route.CONFIG_ENV + '; default ' + str(android_route.default_config_path())
+                             + '); read at each request, so a change needs no restart'))
     search = commands.add_parser("search", help="return matching non-secret login metadata")
     search.add_argument("query", nargs="?", default="")
     fill = commands.add_parser("fill", help="autofill using a handle returned by search")
@@ -817,7 +824,8 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
                             password_browser_profile=args.password_browser_profile,
                             browser_profile_root=args.browser_profile_root,
                             notification_state_path=state, secret_sinks_path=args.secret_sinks,
-                            default_fill_route=args.default_fill_route)
+                            default_fill_route=args.default_fill_route,
+                            android_devices_path=args.android_devices)
         except SinkError as exc:
             print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
             return 2
@@ -860,7 +868,8 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
                             # An explicit --notification-state keeps the block beside it.
                             unlock_block_path=(None if args.notification_state
                                                else default_unlock_block_state(args.socket)),
-                            secret_sinks_path=args.secret_sinks, default_fill_route=args.default_fill_route)
+                            secret_sinks_path=args.secret_sinks, default_fill_route=args.default_fill_route,
+                            android_devices_path=args.android_devices)
         except SinkError as exc:
             print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
             return 2
@@ -932,6 +941,9 @@ def _command(args) -> int:
     if args.command in identity_cli.COMMANDS:
         return identity_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                             expected_unlock_origin=args.unlock_origin))
+    if args.command == android_cli.COMMAND:
+        return android_cli.run(args, lambda payload, **kwargs: request(
+            args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))
     if args.command == secret_cli.COMMAND:
         return secret_cli.run(args, lambda payload, **kwargs: request(
             args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))

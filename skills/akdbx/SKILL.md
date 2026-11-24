@@ -31,6 +31,7 @@ session.
 | Snapshot admission (review prototype) | [Admission](references/snapshot-admission.md), [group selection](references/group-selection.md), [selection verification](references/selection-verification.md) |
 | Open the private pages from any device (no Tailscale) | [The akdbx relay](#the-akdbx-relay) |
 | Windows host | [Windows operation](references/windows.md) |
+| Sign in on an Android device or emulator (Google Play, GitHub Mobile, apps, Chrome) | [Android devices](references/android.md) |
 | Set akdbx up for a user (first install, or add a part later) | [First-time setup](#first-time-setup) |
 | Broker missing, socket or Tailscale problems (Linux/VPS) | [VPS setup and recovery](references/vps-setup.md) |
 | akdbx itself is broken or lacks support | [Fixing akdbx](#when-akdbx-is-missing-something-or-broken), [repair-thread handoff](references/repair-thread.md) |
