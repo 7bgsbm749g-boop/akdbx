@@ -156,6 +156,40 @@ pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
   broker-socket and Unix-socket unlock notes below do not describe the Windows
   transport. [Private HTTPS pages](docs/private-pages.md) describes the unlock
   page for both platforms.
+- **Android devices and emulators** (0.36.0+): a broker on Linux fills a
+  login, password, username or authenticator code into one verified field on
+  an Android device that the operator names in a device file. See
+  [Android devices](#android-devices-0360).
+
+## Android devices (0.36.0)
+
+`akdbx android inspect | pin | fill | fill-totp` reach a device through the
+operator's adb server. The broker binds each pin to the device (adb serial and
+boot), the focused app (package, signing certificate, activity) and the field,
+and fills only an entry whose URL or additional URL is the verified site:
+
+- **Google account sign-in** in Google Play services (Google signing
+  lineage): `https://accounts.google.com`.
+- **Chrome tabs and Custom Tabs** (Google-signed Chrome): the exact origin of
+  the one visible, focused tab, matched to Chrome's address bar. Pages are
+  read and filled through Chrome's DevTools socket, which adb forwards to a
+  loopback port only while the broker connects; logins reuse the CDP route's
+  DOM pin and fill.
+- **Other apps**: the site the agent names with `--app-site`, only when that
+  site's Digital Asset Links name the app's package and current signing
+  certificate.
+
+App fields and Google sign-in use a small helper that the broker copies to the
+device (`src/akdbx/android_assets`, built reproducibly from
+[`android/helper`](android/helper)). The helper runs as the adb shell user,
+finds the exact field through the platform's accessibility API, checks it
+again, and sets the value with `ACTION_SET_TEXT`. The value travels only on
+the helper's standard input: never an argument, typed key, clipboard content,
+response or log. The broker refuses password fields while the device lets
+accessibility read password text (`speak_password`).
+
+Setup, the agent procedure, Google Play and GitHub Mobile steps and the
+limits are in [Android devices](skills/akdbx/references/android.md).
 
 ## Security model
 
