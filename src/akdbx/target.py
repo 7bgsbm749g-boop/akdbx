@@ -95,20 +95,49 @@ class Identity:
     process: tuple
     wm_class: tuple
     machine: str
-    # A slot pin's browser_slots.SlotDisplay; None is the broker's own display.
-    display: tuple | None = None
+    # A slot pin's display such as ':101'; None is the broker's own display.
+    display: str | None = None
 
 
-_AUTH = threading.local()
+_SLOT = threading.local()
 _AUTH_HOOK = threading.Lock()
 
 
-def _connect(display):
-    """Open an X connection; a slot display uses its own Xauthority file, per thread.
+def _slot_auth(sock, dno):
+    """Credentials for a slot display, only for a server of this user on a Unix socket.
 
-    python-xlib reads the cookie file only from $XAUTHORITY. Changing the
-    broker's environment would race other threads, so a slot connection names
-    its file in thread-local state that one wrapper of `get_auth` reads.
+    The peer is checked before any cookie is sent, so a socket that another
+    user put in place (after the display stopped) never receives one. The
+    cookie file is the connected X server's own `-auth` argument.
+    """
+    import struct
+    from Xlib import error, xauth
+    from .browser_slots import x11_cookie_file
+    if sock.family != socket.AF_UNIX:
+        raise error.XauthError('slot display is not a local Unix socket')
+    size = struct.calcsize('3i')
+    pid, uid, _ = struct.unpack('3i', sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, size))
+    if uid != os.getuid() or pid <= 0:
+        raise error.XauthError('slot display server is not this user')
+    try:
+        path = x11_cookie_file(pid)
+    except (OSError, ValueError):
+        raise error.XauthError('slot display cookie file is unsafe') from None
+    if path is None:
+        return b'', b''
+    try:
+        return xauth.Xauthority(path).get_best_auth(xauth.FamilyLocal, socket.gethostname().encode(), dno)
+    except (error.XauthError, error.XNoAuthError):
+        return b'', b''
+
+
+def _connect(display):
+    """Open an X connection: the broker's own display, or a slot display such as ':101'.
+
+    A slot display is opened only as a Unix socket (`unix:N`, no TCP
+    fallback), and its credentials come from `_slot_auth`. python-xlib takes
+    a cookie only from $XAUTHORITY; changing the broker's environment would
+    race other threads, so one wrapper of `get_auth` reads thread-local state.
     """
     from Xlib import display as xdisplay
     if display is None:
@@ -119,21 +148,16 @@ def _connect(display):
             original = connect.get_auth
 
             def get_auth(sock, dname, protocol, host, dno):
-                path = getattr(_AUTH, 'path', None)
-                if path is None:
-                    return original(sock, dname, protocol, host, dno)
-                from Xlib import error, xauth
-                try:
-                    return xauth.Xauthority(path).get_best_auth(xauth.FamilyLocal, socket.gethostname().encode(), dno)
-                except (error.XauthError, error.XNoAuthError):
-                    return b'', b''
+                if getattr(_SLOT, 'active', False):
+                    return _slot_auth(sock, dno)
+                return original(sock, dname, protocol, host, dno)
             get_auth._akdbx = True
             connect.get_auth = get_auth
-    _AUTH.path = display.xauthority
+    _SLOT.active = True
     try:
-        return xdisplay.Display(display.name)
+        return xdisplay.Display('unix' + display)
     finally:
-        _AUTH.path = None
+        _SLOT.active = False
 
 
 def process_identity(pid):

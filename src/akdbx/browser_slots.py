@@ -33,18 +33,6 @@ MESSAGES = re.compile(
     r'|browser slot window pins need Linux X11')
 
 
-class SlotDisplay(tuple):
-    """(display name such as ':101', its cookie file or None, the X server's PID or None)."""
-    __slots__ = ()
-
-    def __new__(cls, name, xauthority, pid):
-        return super().__new__(cls, (name, xauthority, pid))
-
-    name = property(lambda self: self[0])
-    xauthority = property(lambda self: self[1])
-    pid = property(lambda self: self[2])
-
-
 class SlotError(Exception):
     """A refused slot request; the message is safe to return over RPC."""
 
@@ -117,8 +105,8 @@ class BrowserSlots:
         Chrome's profile lock (`SingletonLock`, a symlink to `HOST-PID`) names
         the browser process. That process must be ours, on this host, and run
         with exactly this profile directory. Chrome rewrites its command line
-        as its process title (arguments joined by spaces), so a profile path
-        with whitespace refuses.
+        as its process title (arguments joined by spaces), so the argument is
+        matched as a whole, followed by a space or the end.
         """
         import socket as socket_module
         path = self.profile(name)
@@ -131,10 +119,10 @@ class BrowserSlots:
             pid = int(pid_text)
             proc = Path('/proc') / str(pid)
             profiles = {os.fsencode(os.path.realpath(path)), os.fsencode(path)}
-            if pid <= 1 or proc.stat().st_uid != os.getuid() or any(c.isspace() for c in b''.join(profiles).decode()):
+            if pid <= 1 or proc.stat().st_uid != os.getuid():
                 raise ValueError
-            args = [token for arg in (proc / 'cmdline').read_bytes().split(b'\0') for token in arg.split(b' ')]
-            if not any(b'--user-data-dir=' + profile in args for profile in profiles):
+            title = b' ' + (proc / 'cmdline').read_bytes().rstrip(b'\0').replace(b'\0', b' ') + b' '
+            if not any(b' --user-data-dir=' + profile + b' ' in title for profile in profiles):
                 raise ValueError
             return pid
         except (OSError, ValueError, UnicodeError):
@@ -146,15 +134,9 @@ class BrowserSlots:
                          'start the slot and pin again')
 
 
-def x11_servers() -> list[SlotDisplay]:
-    """Local X displays of this user: (name, cookie file or None, server PID).
-
-    A display is a Unix socket /tmp/.X11-unix/XN owned by this user. Its cookie
-    file is the `-auth FILE` argument of this user's X server process that
-    serves `:N` (X servers keep their own argv), if it names one; the file must
-    be a regular file of this user that others cannot write.
-    """
-    sockets = {}
+def x11_servers() -> list[str]:
+    """Local X displays of this user: ':N' for each Unix socket /tmp/.X11-unix/XN that this user owns."""
+    found = []
     try:
         with os.scandir('/tmp/.X11-unix') as entries:
             for entry in entries:
@@ -162,44 +144,30 @@ def x11_servers() -> list[SlotDisplay]:
                 if match:
                     info = entry.stat(follow_symlinks=False)
                     if stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid():
-                        sockets[match.group(1)] = None
+                        found.append(int(match.group(1)))
     except OSError:
         return []
-    servers = {}
-    try:
-        with os.scandir('/proc') as entries:
-            for entry in entries:
-                if not entry.name.isdigit():
-                    continue
-                try:
-                    if entry.stat(follow_symlinks=False).st_uid != os.getuid():
-                        continue
-                    argv = Path(entry.path, 'cmdline').read_bytes().split(b'\0')
-                except OSError:
-                    continue
-                if not argv or os.path.basename(argv[0]) not in {b'Xvfb', b'Xorg', b'Xvnc', b'Xephyr', b'Xtigervnc'}:
-                    continue
-                for arg in argv[1:]:
-                    if arg[:1] == b':' and arg[1:].decode('ascii', 'replace') in sockets:
-                        auth = None
-                        if b'-auth' in argv:
-                            index = argv.index(b'-auth')
-                            auth = os.fsdecode(argv[index + 1]) if index + 1 < len(argv) else ''
-                        servers[arg[1:].decode()] = (auth, int(entry.name))
-    except OSError:
-        return []
-    result = []
-    for number in sorted(sockets, key=int):
-        auth, pid = servers.get(number, (None, None))
-        if auth is not None:
-            try:
-                info = os.lstat(auth)
-                if not os.path.isabs(auth) or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
-                    continue
-            except OSError:
-                continue
-        result.append(SlotDisplay(':' + number, auth, pid))
-    return result
+    return [':' + str(number) for number in sorted(found)]
+
+
+def x11_cookie_file(server_pid: int):
+    """The `-auth FILE` of this user's X server process (X servers keep their argv), or None.
+
+    Raises ValueError for a process of another user or an unsafe file: a
+    regular file of this user that others cannot write, by absolute path.
+    """
+    proc = Path('/proc') / str(server_pid)
+    if proc.stat().st_uid != os.getuid():
+        raise ValueError
+    argv = (proc / 'cmdline').read_bytes().split(b'\0')
+    if b'-auth' not in argv:
+        return None
+    index = argv.index(b'-auth')
+    path = os.fsdecode(argv[index + 1]) if index + 1 < len(argv) else ''
+    info = os.lstat(path)
+    if not os.path.isabs(path) or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise ValueError
+    return path
 
 
 def select(request: dict, profile, slots: BrowserSlots | None):
