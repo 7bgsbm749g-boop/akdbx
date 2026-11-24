@@ -344,6 +344,9 @@ class BrowserCards:
     kind = 'card'
     delivery = DELIVERY
     fields = FILL_FIELDS
+    # Verification-code pins use their own derived script (browser_code).
+    pin_script = PIN_SCRIPT
+    pin_extra = ()
 
     def _failure(self, started=False):
         return failure(started, kind=self.kind)
@@ -448,7 +451,8 @@ class BrowserCards:
             arguments = [request[k] for k in ('selector', 'field', 'frame_url', 'top_url')]
             if self.kind == 'identity':
                 arguments.extend((False, True, purpose, allow_off))
-            expression = '(' + PIN_SCRIPT + ')(' + ','.join(map(json.dumps, arguments)) + ')'
+            arguments.extend(self.pin_extra)
+            expression = '(' + self.pin_script + ')(' + ','.join(map(json.dumps, arguments)) + ')'
             result = cdp.call('Runtime.evaluate', dict(expression=expression, contextId=context,
                               silent=True, timeout=1000), session)
             created = self.clock()

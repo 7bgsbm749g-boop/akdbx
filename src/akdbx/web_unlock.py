@@ -116,6 +116,10 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
                 manager.broker.identity_targets.prune()
             finally:
                 manager.broker._vault_lock.release()
+        # Expired codes and setup tokens go too, even when no one asks again.
+        inbox = getattr(getattr(manager, 'broker', None), 'sms', None)
+        if inbox is not None:
+            inbox.prune()
 
     def get_request(self):
         # Reserve capacity before accept(), so no more than the bounded worker
@@ -668,7 +672,8 @@ def handler_for(state: UnlockState):
         def _write_request(self) -> bool:
             from .import_web import handle_import
             from .extension_web import handle_pairing
-            if handle_import(self, state) or handle_pairing(self, state):
+            from .sms_web import handle_sms
+            if handle_import(self, state) or handle_pairing(self, state) or handle_sms(self, state):
                 return True
             route = urlsplit(self.path).path
             kind = {'/write': 'password', '/totp': 'totp', '/card': 'card', '/identity': 'identity'}.get(route)

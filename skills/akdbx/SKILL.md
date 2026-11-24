@@ -1,6 +1,6 @@
 ---
 name: akdbx
-description: Use the local KeePass broker to save and fill logins, identities, payment cards and TOTP codes without returning secrets to the agent, capture a secret a website shows once and deliver it to a configured service file, or merge encrypted KDBX databases. Use for authorized login, card autofill, address autofill, account save, shown-once secret capture, vault merge, or private unlock.
+description: Use the local KeePass broker to save and fill logins, identities, payment cards, TOTP codes and phone (SMS) verification codes without returning secrets to the agent, capture a secret a website shows once and deliver it to a configured service file, or merge encrypted KDBX databases. Use for authorized login, card autofill, address autofill, account save, shown-once secret capture, vault merge, or private unlock.
 ---
 
 # akdbx: KeePass autofill for agents
@@ -22,6 +22,7 @@ session.
 | Fill or save a payment card | [Cards](references/cards.md), [card-save notifications](references/card-save-notifications.md) |
 | Fill or save an address or contact | [Identities](references/identities.md) |
 | Authenticator (TOTP) code | [TOTP](references/totp.md), [private key import](references/private-import.md) |
+| Phone (SMS) verification code, or set up a phone number for codes | [SMS](references/sms.md) |
 | Add an authenticator app to a website account (enrollment, such as GitHub 2FA) | [Automatic authenticator enrollment](references/totp-enrollment.md) |
 | Create or change a password, save SSO/email-code accounts, add an origin, edit, move or delete an entry, create a group, store a key file | [Password writes](references/password-writes.md) |
 | Capture a secret a site shows once | [Secret capture](references/secret-capture.md) |
@@ -511,9 +512,23 @@ imports it once through `setup-totp`'s private page. When the task authorizes
 adding an authenticator app to the account, enroll it yourself with
 `capture-totp` (0.35.0+): the broker reads the setup key from the site's
 enrollment page; see [automatic enrollment](references/totp-enrollment.md).
-Never reset or replace a site's 2FA just to finish a login. Push approvals, SMS, passkeys and device
+Never reset or replace a site's 2FA just to finish a login. Push approvals, passkeys and device
 checks can still need the user. Details: [TOTP](references/totp.md) and
 [private key import](references/private-import.md).
+
+**Texted (SMS) codes.** When a site texts a code, read it with `sms-wait`
+(masked previews only) and fill it with `fill-sms-code` into a fresh
+`pin-code-target` pin, instead of asking the user for the code. The user's
+real phone number, forwarded by an iOS Shortcuts automation (`--kind
+shortcut`), is the recommended source: Google, many banks, WhatsApp and some
+other sites reject VoIP numbers, so a virtual number (`--kind twilio`) does not
+always work. If `sms_sources_configured` is 0, add a source once with
+`sms-add-source` and give the user its private setup link. Codes, webhook URLs
+and setup links never appear in output. To resume when the text arrives
+instead of waiting, register `subscribe-sms --source NAME --recent 120` with a
+webhook task bound to the current thread and end the turn; the
+`akdbx.sms-received` event carries only the source and message id. Details:
+[SMS](references/sms.md), [SMS notifications](references/sms-notifications.md).
 
 **Emailed codes.** The user's standing preference: for an authorized sign-in or
 sign-up, fetch the verification code from the user's mailbox yourself

@@ -742,6 +742,68 @@ Subscriptions without the opt-in get only `akdbx.unlocked`. The block itself
 is saved, so a restarted or rebooted broker stays blocked and sends the blocked
 event again to waiting opted-in subscriptions.
 
+## Phone verification texts (0.40.0)
+
+akdbx can receive the verification texts that sites send to a phone number and
+fill the code into the challenge field. The agent sees only a masked preview
+(every digit and link replaced), the sender and the code length; never the
+code, the text or the webhook token.
+
+A **source** is one phone number that forwards its texts to the broker's HTTPS
+origin (the akdbx relay, or another origin the phone or provider can reach):
+
+- `shortcut` (**recommended**): the user's own iPhone number. An iOS Shortcuts
+  automation (Message trigger that runs without confirmation, **Get Contents of URL**) posts
+  each verification text as JSON `{"text": ..., "from": ...}`. It works with
+  every site, because it is a real carrier number.
+- `twilio`: a Twilio virtual number whose "A message comes in" webhook posts
+  to akdbx (form fields `Body` and `From`; akdbx answers with empty TwiML).
+  Google, many banks, WhatsApp and some other sites reject VoIP numbers, so a
+  virtual number does not always work.
+  A free Twilio trial has more limits: it receives texts only from its
+  verified phone numbers (not from site short codes), and a "Limited trial"
+  has a shared trial number set up under **Try out SMS > Receive an SMS >
+  Custom** instead of Active numbers. Use a paid number for real sites.
+- `webhook`: any other service that can POST JSON or a form.
+
+```bash
+akdbx sms-add-source iphone --kind shortcut            # private setup page for the phone
+akdbx sms-add-source twilio-us --kind twilio --target PIN   # type the URL into a pinned console field
+akdbx sms-sources                                      # names, kinds, last text; never tokens
+akdbx sms-wait --recent 120 --timeout 120              # masked previews of received codes
+akdbx pin-code-target --page-id P --frame-id F --top-url URL --frame-url URL --selector '#code'
+akdbx fill-sms-code MESSAGE_ID --target PIN            # fills the code; returns no code
+akdbx sms-remove-source iphone
+akdbx subscribe-sms --source iphone --recent 120 --webhook-url-file FILE  # one-shot event for the next code
+```
+
+`subscribe-sms` registers a one-shot HTTPS webhook, like `subscribe-unlock`:
+the broker posts `akdbx.sms-received` with only the source and the message id
+when the next text with a code arrives, so an agent can end its turn and
+resume on the text. The setup page also ends with a live test: it waits for a
+test text and shows **Code received** when the code arrives, or why AKDBX dropped
+the text.
+
+Each source has its own random 256-bit token in its webhook URL
+(`/sms/in/TOKEN`). The broker saves only its SHA-256 hash, in a private mode
+0600 file (`serve --sms-sources`; by default beside `--notification-state`, or
+in the per-user state folder). A request needs the exact Host of the origin
+and no `Origin` header, so a web page cannot post texts. Each source accepts
+at most 20 texts a minute.
+
+The broker keeps a text only if it holds exactly one verification code (a
+verification word and one 4 to 8 digit group, or 3+3 / 4+4 split digits). It
+keeps that code and the masked preview in memory for 10 minutes, and drops
+every other text at once. Each code fills once; a fill that never started
+returns it to the inbox. `pin-code-target` pins one focused, visible, enabled
+`text`, `tel`, `number` or `password` input on an exact HTTPS page (the
+card transport's same-origin, hit-tested DOM guards, CDP route). For six
+one-digit boxes, `fill-sms-code` also takes an X11 `pin-target` token with
+`--target-url`, or `--target-url-file` for a challenge URL that holds a token.
+The iPhone filter forwards only texts with the word `code`; a second automation
+with `OTP` covers sites that say only that. See
+[the SMS workflow](skills/akdbx/references/sms.md).
+
 ## Authenticator codes (0.10.0)
 
 `akdbx` can import TOTP authenticator keys and directly fill the current code
@@ -813,7 +875,8 @@ The broker refuses a code with less than eight seconds remaining, returning
 a non-secret `retry_after` delay. Wait for the next period, then search and pin
 again. Keep the host clock synchronized. Never retry an uncertain/partial
 dispatch automatically or read back a filled code; verify the site's outcome.
-This handles standard authenticator challenges, not push approvals, SMS,
+This handles standard authenticator challenges, not push approvals, SMS
+(see phone verification texts above),
 passkeys, recovery checks or organization-specific device requirements.
 
 Algorithm references: [RFC 6238](https://www.rfc-editor.org/rfc/rfc6238) and

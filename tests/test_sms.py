@@ -1,0 +1,575 @@
+"""Phone verification texts: extraction, sources, inbox, HTTPS intake and fills."""
+import json
+import re
+import os
+import stat
+import threading
+import time
+from http.client import HTTPSConnection
+from types import SimpleNamespace
+from urllib.parse import urlencode, urlsplit
+import ssl
+
+import pytest
+
+from akdbx import sms, sms_cli
+from akdbx.broker import Broker
+from akdbx.sms import SmsError, SmsInbox, extract_code, mask
+from test_broker import Entry, RecordingTyper, Vault
+from test_windows_unlock import certificates  # noqa: F401
+
+ORIGIN = 'https://box.example.test'
+
+
+@pytest.mark.parametrize('text,code', [
+    ('G-482913 is your Google verification code.', '482913'),
+    ('Your Twilio verification code is: 771204', '771204'),
+    ('Your code is 123 456. Do not share it.', '123456'),
+    ('Use 4821 to sign in to Example.', '4821'),
+    ('Your Example login code: 5512-9983', '55129983'),
+    ('Verification code 991122. Not you? Call +447700900123.', '991122'),
+    ('Verify at https://x.test/v/123456 with code 778899', '778899'),
+    ('Your code is 482913. (c) 2026 Example Ltd', '482913'),
+    ('Ihr Bestätigungscode lautet 664422', '664422'),
+    ('Tu código de verificación es 908172', '908172'),
+    # Card and account suffixes, references, amounts and dated years are not the code.
+    ('Your OTP for card ending 4321 is 482913', '482913'),
+    ('Your verification code for account ending 1234 is 567890.', '567890'),
+    ('Card ending 4321: OTP is 482913.', '482913'),
+    ('Confirm transfer of 2500 EUR to account 7788 with code 482913', '482913'),
+    ('Your code is 2048 for card ending 7654.', '2048'),
+    ('Your verification code is 2017. Request reference 456789.', '2017'),
+    ('Code valid until 2025-11-24: 482913', '482913'),
+    ('Verify at example.test/v/123456 with code 778899', '778899'),
+    ('PIN 2048', '2048'),                                         # "in" inside PIN is no date word
+    ('Sign in 2048 is your code', '2048'),
+    ('Your code for 123 456 EUR is 482913.', '482913'),           # a spaced amount
+    ('Reference 123456. Your code is 123456.', '123456'),          # same digits as a reference
+    ('Use these numbers 482913 as your verification code.', '482913'),  # "rs" inside a word
+    ('Use 482913 to approve the payment to Mastercard 1234. Verification code required.', '482913'),
+    ('123456 is for your current request. For device 7890 use code 123456.', '123456'),
+    ('OTP for card VisaXXXX1234 is 482913', '482913'),
+    ('Type 482913 to continue. Secure authentication since 2025.', '482913'),
+    ('482913\nYour request ID is 7950. Your verification code is 482 913.', '482913'),
+    # The code has a strict label ("Enter N to", "verify with N") and the other number has none.
+    ('1234 is your request ID. Enter 482913 to verify.', '482913'),
+    ('Device 1234 is requesting access. Enter 482913 to confirm.', '482913'),
+    ('Device 1234 is active\nVerify with 482913.', '482913'),
+])
+def test_extract_code_finds_the_one_verification_code(text, code):
+    assert extract_code(text) == code
+
+
+@pytest.mark.parametrize('text', [
+    'See you at 1830 tomorrow',            # no verification word
+    'Your parcel 12345678 arrives today',  # no verification word
+    'code',                                # no digits
+    '',
+    None,
+    'Your code is 12.50 GBP',              # not 4-8 digits alone
+    'code ' + '1' * 3000,                   # too long
+    'Code 123456 or code 654321',          # ambiguous: two labelled values
+    'Use 4821 or 9934 to sign in',          # ambiguous: two values, neither labelled
+    # A second number in a label position, however loose ("ZIP code", "PIN is"), stops the choice.
+    'Use 482913 to confirm delivery to ZIP code 90210.',
+    'Your ZIP code is 90210. Use 482913 to verify.',
+    'Your postal code is 90210; your code is 482913',
+    'Your PIN is 4321. Enter 482913 to continue.',
+    'Device 1234 is active. 482913',                               # no label on either number
+    'Your code is 4821 9934',                                      # one code of 8 digits or two numbers
+    'Your code is AB12CD. Ref 4821',                               # the code is not a number
+])
+def test_extract_code_drops_texts_without_one_code(text):
+    assert extract_code(text) is None
+
+
+def test_mask_hides_every_digit_and_link():
+    preview = mask('G-482913 is your code. https://g.co/x/123 www.example.test/9 ‮end')
+    assert preview == '[code] is your code. [link] [link] end'
+    assert not any(c.isdigit() for c in preview)
+
+
+def test_mask_hides_links_without_a_scheme():
+    # A sign-in link written as host/path can hold a bearer token in letters.
+    preview = mask('Code 482913, or sign in at example.test/t/SyntheticTokenAbc')
+    assert preview == 'Code [code], or sign in at [link]' and 'SyntheticTokenAbc' not in preview
+    for link in ('example.test?token=SyntheticToken', 'example.test:8443/t/SyntheticToken',
+                 'example.xn--p1ai/t/SyntheticToken', '192.0.2.4/t/SyntheticToken',
+                 'münchen.de/t/SyntheticToken', '[2001:db8::1]/t/SyntheticToken',
+                 '//example.test/t/SyntheticToken', '//x/SyntheticToken', 'x.y?SyntheticToken'):
+        assert mask('OTP 482913 ' + link) == 'OTP [code] [link]'
+    # No code chosen: every number is bullets.
+    assert mask('Use 4821 or 9934 to sign in') == 'Use •••• or •••• to sign in'
+
+
+def test_preview_fits_the_rpc_limit_and_a_miswired_sender_is_masked(tmp_path):
+    inbox = SmsInbox(tmp_path / 'sms.json')
+    tokens = [inbox.add_source(f'source-{i}', 'webhook') for i in range(sms.MAX_SOURCES)]
+    for i in range(sms.MAX_MESSAGES):  # characters outside the BMP: 12 bytes each in JSON
+        inbox.receive(tokens[i % len(tokens)], '😀' * 64 + 'Example', '😀' * 400 + f' code 48291{i % 10}')
+    rows = inbox.wait()
+    assert len(rows) == sms.MAX_MESSAGES
+    assert len(json.dumps(dict(ok=True, messages=rows), separators=(',', ':')).encode()) < 64 * 1024
+    inbox.messages.clear()
+    assert inbox.receive(tokens[0], 'x' * 60 + ' 482913', 'Your code is 482913') == 'kept'
+    [row] = inbox.wait()
+    assert not set('482913') & set(row['sender'])  # checked before it is cut, so no digit is left
+    inbox.clock = lambda: time.monotonic() + sms.MESSAGE_TTL + 1
+    inbox.prune()
+    assert inbox.messages == []
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture
+def inbox(tmp_path):
+    clock = Clock()
+    box = SmsInbox(tmp_path / 'state' / 'sms-sources.json', clock=clock, wall_clock=lambda: 1_800_000_000 + clock.now)
+    box.test_clock = clock
+    return box
+
+
+def test_sources_keep_only_a_token_hash_in_a_private_file(inbox, tmp_path):
+    token = inbox.add_source('iphone', 'shortcut')
+    path = tmp_path / 'state' / 'sms-sources.json'
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    raw = path.read_text()
+    assert token not in raw
+    assert sms._hash(token) in raw
+    again = SmsInbox(path)
+    assert [s['name'] for s in again.list_sources()] == ['iphone']
+    assert again.source_for(token).kind == 'shortcut'
+    with pytest.raises(SmsError):
+        inbox.add_source('iphone', 'shortcut')
+    with pytest.raises(SmsError):
+        inbox.add_source('Bad Name', 'shortcut')
+    with pytest.raises(SmsError):
+        inbox.add_source('other', 'carrier-pigeon')
+
+
+def test_an_unsafe_state_file_is_refused(tmp_path):
+    path = tmp_path / 'state' / 'sms-sources.json'
+    SmsInbox(path).add_source('iphone', 'shortcut')
+    path.chmod(0o644)
+    with pytest.raises(ValueError):
+        SmsInbox(path)
+    path.chmod(0o600)
+    path.write_text('{"version": 1, "sources": [{"name": "x"}]}')
+    with pytest.raises(ValueError):
+        SmsInbox(path)
+
+
+def test_replace_rotates_the_token_and_remove_stops_it(inbox):
+    old = inbox.add_source('twilio-us', 'twilio')
+    new = inbox.add_source('twilio-us', 'twilio', replace=True)
+    assert inbox.receive(old, '+15550100', 'code 123456') == 'unknown'
+    assert inbox.receive(new, '+15550100', 'code 123456') == 'kept'
+    assert inbox.remove_source('twilio-us') is True
+    assert inbox.receive(new, '+15550100', 'code 123456') == 'unknown'
+    assert inbox.wait() == []
+    assert inbox.remove_source('twilio-us') is False
+
+
+def test_messages_hold_no_code_in_metadata_and_are_used_once(inbox):
+    token = inbox.add_source('iphone', 'shortcut')
+    assert inbox.receive(token, 'Google', 'Hello there') == 'dropped'
+    assert inbox.receive(token, 'Google', 'G-482913 is your Google verification code.') == 'kept'
+    [row] = inbox.wait()
+    assert set(row) == {'id', 'source', 'sender', 'preview', 'code_length', 'received_at', 'age_seconds'}
+    assert '482913' not in json.dumps(row)
+    assert row['code_length'] == 6 and row['source'] == 'iphone' and row['sender'] == 'Google'
+    assert inbox.list_sources()[0]['last_received'] == row['received_at']
+    message = inbox.take(row['id'])
+    assert message.code == '482913'
+    with pytest.raises(SmsError):
+        inbox.take(row['id'])
+    inbox.restore(message)
+    assert inbox.take(row['id']).code == '482913'
+
+
+def test_messages_expire_and_since_and_source_filter(inbox):
+    phone = inbox.add_source('iphone', 'shortcut')
+    virtual = inbox.add_source('twilio-us', 'twilio')
+    inbox.receive(phone, 'A', 'code 111111')
+    inbox.test_clock.now += 30
+    inbox.receive(virtual, 'B', 'code 222222')
+    assert [m['source'] for m in inbox.wait()] == ['twilio-us', 'iphone']
+    assert [m['source'] for m in inbox.wait(source='iphone')] == ['iphone']
+    assert [m['source'] for m in inbox.wait(since=1_800_000_000 + 1010)] == ['twilio-us']
+    with pytest.raises(SmsError):
+        inbox.wait(source='missing')
+    inbox.test_clock.now += sms.MESSAGE_TTL
+    assert inbox.wait() == []
+
+
+def test_rate_limit_per_source(inbox):
+    token = inbox.add_source('iphone', 'shortcut')
+    results = [inbox.receive(token, 'x', 'code 123456') for _ in range(sms.RATE_LIMIT + 1)]
+    assert results[-1] == 'limited' and results.count('kept') == sms.RATE_LIMIT
+    inbox.test_clock.now += 61
+    assert inbox.receive(token, 'x', 'code 123456') == 'kept'
+    assert len(inbox.messages) <= sms.MAX_MESSAGES
+
+
+def test_wait_returns_when_a_text_arrives():
+    box = SmsInbox(None)
+    box.sources['iphone'] = sms.Source('iphone', 'shortcut', sms._hash('t' * 43), 'now')
+    threading.Timer(0.2, lambda: box.receive('t' * 43, 'x', 'code 654321')).start()
+    started = time.monotonic()
+    rows = box.wait(timeout=10)
+    assert len(rows) == 1 and time.monotonic() - started < 5
+    assert box.wait(timeout=1, ready=lambda: False) == rows  # an existing text needs no wait
+
+
+def test_setup_pages_expire_and_die_with_their_source(inbox):
+    token = inbox.add_source('iphone', 'shortcut')
+    key = inbox.new_setup('iphone', token)
+    assert inbox.setup(key).token == token
+    inbox.add_source('iphone', 'shortcut', replace=True)
+    assert inbox.setup(key) is None
+    token = inbox.add_source('iphone', 'shortcut', replace=True)
+    key = inbox.new_setup('iphone', token)
+    inbox.test_clock.now += sms.SETUP_TTL
+    assert inbox.setup(key) is None
+
+
+# Broker actions ------------------------------------------------------------
+
+
+def unlocked_broker(tmp_path):
+    broker = Broker(Vault([Entry()]), RecordingTyper(), sms_sources_path=tmp_path / 'state' / 'sms.json')
+    broker.unlock_link = SimpleNamespace(origin=ORIGIN)
+    return broker
+
+
+def call(broker, action, **fields):
+    return broker.dispatch(dict(action=action, sms_protocol=1, **fields))
+
+
+def x11_target(broker):
+    return broker.dispatch(dict(action='pin-target', pid=os.getpid(), window=7, target_protocol=1))['target']
+
+
+def test_locked_broker_refuses_sms_actions_but_reports_the_protocol(tmp_path):
+    broker = Broker(None, RecordingTyper(), sms_sources_path=tmp_path / 'sms.json')
+    assert broker.dispatch(dict(action='ping'))['sms_protocol'] == 1
+    assert call(broker, 'sms-sources')['error'] == 'vault locked'
+
+
+def test_add_source_returns_a_private_setup_link_only(tmp_path):
+    broker = unlocked_broker(tmp_path)
+    receipt = call(broker, 'sms-add-source', name='iphone', kind='shortcut')
+    assert set(receipt) == {'ok', 'name', 'kind', 'private_url'}
+    url = urlsplit(receipt['private_url'])
+    assert receipt['private_url'].startswith(ORIGIN + '/sms/setup?token=')
+    setup = broker.sms.setup(url.query.split('=', 1)[1])
+    assert setup.token not in json.dumps(receipt)
+    assert call(broker, 'sms-sources') == dict(ok=True, sources=broker.sms.list_sources())
+    assert call(broker, 'sms-add-source', name='iphone', kind='shortcut')['ok'] is False
+    assert call(broker, 'sms-remove-source', name='iphone') == dict(ok=True, removed=True)
+    assert broker.dispatch(dict(action='sms-sources'))['error'] == 'SMS protocol 1 required'
+
+
+def test_fill_sms_code_types_the_code_once_through_a_pinned_x11_window(tmp_path):
+    broker = unlocked_broker(tmp_path)
+    token = broker.sms.add_source('iphone', 'shortcut')
+    broker.sms.receive(token, 'Google', 'G-482913 is your Google verification code.')
+    [row] = call(broker, 'sms-wait')['messages']
+    # X11 delivery needs an independently verified challenge URL; the code stays.
+    refused = call(broker, 'fill-sms-code', message=row['id'], target=x11_target(broker), target_protocol=1)
+    assert refused['ok'] is False and broker.typer.events == []
+    receipt = call(broker, 'fill-sms-code', message=row['id'], target=x11_target(broker), target_protocol=1,
+                   target_url='https://accounts.google.com/signin/challenge')
+    assert receipt == dict(ok=True, filled='one-time-code', target_delivery='x11-send-event-v1')
+    assert broker.typer.events == [('type', '482913')]
+    assert '482913' not in json.dumps(receipt)
+    again = call(broker, 'fill-sms-code', message=row['id'], target=x11_target(broker), target_protocol=1,
+                 target_url='https://accounts.google.com/')
+    assert again == dict(ok=False, error='unknown or expired SMS message')
+    assert broker.typer.events == [('type', '482913')]
+
+
+def test_a_spent_or_unknown_target_keeps_the_message(tmp_path):
+    broker = unlocked_broker(tmp_path)
+    token = broker.sms.add_source('iphone', 'shortcut')
+    broker.sms.receive(token, 'x', 'code 123456')
+    [row] = call(broker, 'sms-wait')['messages']
+    assert call(broker, 'fill-sms-code', message=row['id'], target='0' * 64, target_protocol=1)['ok'] is False
+    assert [m['id'] for m in call(broker, 'sms-wait')['messages']] == [row['id']]
+    expired = call(broker, 'fill-sms-code', message=row['id'], target=x11_target(broker), target_protocol=1,
+                   target_url='https://example.com/', start_deadline=time.monotonic() - 1)
+    assert expired['ok'] is False and broker.typer.events == []
+    assert [m['id'] for m in call(broker, 'sms-wait')['messages']] == [row['id']]
+
+
+def test_add_source_with_a_target_needs_a_webhook_url_dom_pin(tmp_path):
+    broker = unlocked_broker(tmp_path)
+    receipt = call(broker, 'sms-add-source', name='twilio-us', kind='twilio', target=x11_target(broker),
+                   target_protocol=1)
+    assert receipt['ok'] is False and broker.typer.events == []
+    assert broker.sms.list_sources() == []
+
+
+# HTTPS intake --------------------------------------------------------------
+
+
+def https(port, cafile, method, path, *, host, body=b'', content_type=None, origin=None, user_agent=None):
+    client = HTTPSConnection('127.0.0.1', port, context=ssl.create_default_context(cafile=str(cafile)), timeout=30)
+    try:
+        client.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+        client.putheader('Host', host)
+        if origin is not None:
+            client.putheader('Origin', origin)
+        if content_type is not None:
+            client.putheader('Content-Type', content_type)
+        if user_agent is not None:
+            client.putheader('User-Agent', user_agent)
+        client.putheader('Content-Length', str(len(body)))
+        client.endheaders(body)
+        response = client.getresponse()
+        return response.status, response.headers, response.read()
+    finally:
+        client.close()
+
+
+@pytest.fixture
+def served(certificates, tmp_path):  # noqa: F811
+    from akdbx.local_https import start_local_unlock_server
+    cert, key = certificates
+    key.chmod(0o600)
+    import socket
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        port = probe.getsockname()[1]
+    broker = Broker(Vault([Entry()]), RecordingTyper(), sms_sources_path=tmp_path / 'state' / 'sms.json')
+    server, _url = start_local_unlock_server(broker, tmp_path / 'vault.kdbx', None, 'https://node.tailnet.ts.net',
+                                             cert, key, local_port=port)
+    try:
+        yield SimpleNamespace(broker=broker, port=port, cert=cert, host='node.tailnet.ts.net')
+    finally:
+        server.shutdown()
+        server.server_close()
+        broker.unlock_notifications.close()
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Linux loopback HTTPS fixture')
+def test_https_intake_from_a_shortcut_and_twilio(served):
+    broker = served.broker
+    shortcut = broker.sms.add_source('iphone', 'shortcut')
+    twilio = broker.sms.add_source('twilio-us', 'twilio')
+    status, headers, body = https(served.port, served.cert, 'POST', '/sms/in/' + shortcut, host=served.host,
+                                  body=json.dumps({'text': 'G-482913 is your Google verification code.',
+                                                   'from': 'Google'}).encode(), content_type='application/json')
+    assert (status, body) == (200, b'{"ok":true}')
+    form = urlencode({'Body': 'Your Twilio verification code is: 771204', 'From': '+15550100',
+                      'To': '+15550199', 'MessageSid': 'SM' + '0' * 32}).encode()
+    status, headers, body = https(served.port, served.cert, 'POST', '/sms/in/' + twilio, host=served.host,
+                                  body=form, content_type='application/x-www-form-urlencoded')
+    assert status == 200 and headers['Content-Type'] == 'text/xml' and b'<Response>' in body
+    codes = sorted(m.code for m in broker.sms.messages)
+    assert codes == ['482913', '771204']
+    # A text without a code gets the same answer and is not kept.
+    status, _, body = https(served.port, served.cert, 'POST', '/sms/in/' + shortcut, host=served.host,
+                            body=b'{"text": "Lunch?", "from": "Sam"}', content_type='application/json')
+    assert (status, body) == (200, b'{"ok":true}') and len(broker.sms.messages) == 2
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Linux loopback HTTPS fixture')
+def test_https_intake_refuses_wrong_token_host_origin_method_and_body(served):
+    token = served.broker.sms.add_source('iphone', 'shortcut')
+    good = json.dumps({'text': 'code 123456'}).encode()
+    for method, path, extra in (
+            ('POST', '/sms/in/' + 'A' * 43, {}),
+            ('POST', '/sms/in/' + token, dict(host='attacker.test')),
+            ('POST', '/sms/in/' + token, dict(origin='https://attacker.test')),
+            ('GET', '/sms/in/' + token, dict(body=b'')),
+            ('POST', '/sms/in/' + token, dict(content_type='text/plain')),
+            ('POST', '/sms/in/' + token, dict(body=b'{"from": "x"}')),
+            ('POST', '/sms/in/' + token, dict(body=b'x' * (64 * 1024)))):
+        options = dict(host=served.host, body=good, content_type='application/json')
+        options.update(extra)
+        status, _, body = https(served.port, served.cert, method, path, **options)
+        assert status in {400, 404}, (method, extra)
+    assert served.broker.sms.messages == []
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Linux loopback HTTPS fixture')
+def test_setup_page_shows_the_webhook_url_for_its_source_only(served):
+    broker = served.broker
+    broker.unlock_link.origin  # the page's own origin
+    receipt = broker.dispatch(dict(action='sms-add-source', sms_protocol=1, name='iphone', kind='shortcut'))
+    path = urlsplit(receipt['private_url'])
+    status, headers, body = https(served.port, served.cert, 'GET', path.path + '?' + path.query, host=served.host)
+    assert status == 200 and headers['Cache-Control'] == 'no-store'
+    setup = broker.sms.setup(path.query.split('=', 1)[1])
+    assert ('https://node.tailnet.ts.net/sms/in/' + setup.token).encode() in body
+    assert b'Get Contents of URL' in body
+    # Tapping the box copies the URL: the portal script copies data-copy and covers the box with a copied message.
+    assert ('data-copy="https://node.tailnet.ts.net/sms/in/' + setup.token + '"').encode() in body
+    assert b'<span class="copy-label" aria-live="polite">Webhook URL. Tap to copy.</span>' in body
+    assert b'<span class="copy-done" aria-hidden="true">' in body and b'pathLength="1"' in body
+    assert b'Link copied to clipboard' in body and b'navigator.clipboard.writeText' in body
+    status, _, body = https(served.port, served.cert, 'GET', '/sms/setup?token=' + 'B' * 43, host=served.host)
+    assert status == 404 and setup.token.encode() not in body
+
+
+# CLI receipts --------------------------------------------------------------
+
+
+def run_cli(argv, responses, capsys):
+    from akdbx.cli import parser
+    args = parser().parse_args(argv)
+    sent = []
+
+    def request(payload):
+        sent.append(payload)
+        return responses.pop(0)
+    code = sms_cli.run(args, request)
+    return code, sent, capsys.readouterr()
+
+
+PING = dict(ok=True, sms_protocol=1, locked=False, code_browser_configured=True)
+
+
+def test_cli_prints_metadata_and_refuses_receipts_with_codes(capsys):
+    row = dict(id='a' * 32, source='iphone', sender='Google', preview='G-•••• is your code',
+               code_length=6, received_at='2026-11-23T10:00:00Z', age_seconds=3)
+    code, sent, out = run_cli(['sms-wait', '--recent', '60', '--timeout', '30'], [PING, dict(ok=True, messages=[row])],
+                              capsys)
+    assert code == 0 and json.loads(out.out)['messages'] == [row]
+    assert sent[1]['timeout'] == 30 and abs(sent[1]['since'] - (time.time() - 60)) < 5
+    leaked = dict(row, preview='G-482913 is your code')
+    code, _, out = run_cli(['sms-wait'], [PING, dict(ok=True, messages=[leaked])], capsys)
+    assert code == 2 and '482913' not in out.out + out.err
+    code, _, out = run_cli(['fill-sms-code', 'a' * 32, '--target', 'b' * 64],
+                           [PING, dict(ok=True, filled='one-time-code', code='482913')], capsys)
+    assert code == 2 and '482913' not in out.out + out.err
+
+
+def test_x11_fill_reads_the_challenge_url_from_a_private_file(tmp_path, capsys):
+    from akdbx import page_url
+    from akdbx.cli import parser
+    from akdbx.target import failure as x11_failure
+    url = 'https://login.example.test/u/mfa?state=SyntheticStateToken'
+    path = tmp_path / 'url'
+    path.write_text(url + '\n')
+    path.chmod(0o600)
+    argv = ['fill-sms-code', 'a' * 32, '--target', 'b' * 64, '--target-url-file', str(path)]
+    args = parser().parse_args(argv)
+    assert page_url.resolve(args) is None and args.target_url == url
+    sent = []
+    for receipt, status in ((x11_failure(False), 1), (x11_failure(True), 1)):
+        responses = [PING, receipt]
+
+        def request(payload):
+            sent.append(payload)
+            return responses.pop(0)
+        assert sms_cli.run(args, request) == status
+        assert json.loads(capsys.readouterr().out) == receipt  # shown, not withheld
+    assert sent[1]['target_url'] == url
+
+
+def test_cli_refuses_an_old_broker_before_sending(capsys):
+    code, sent, out = run_cli(['sms-sources'], [dict(ok=True)], capsys)
+    assert code == 1 and len(sent) == 1 and 'SMS protocol 1' in out.out
+
+
+SAFARI_26 = ('Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) '
+             'Version/26.1 Mobile/15E148 Safari/604.1')
+SAFARI_27 = SAFARI_26.replace('18_6', '18_7').replace('Version/26.1', 'Version/27.0')
+SAFARI_17 = SAFARI_26.replace('18_6', '17_5').replace('Version/26.1', 'Version/17.5')
+CHROME_16 = ('Mozilla/5.0 (iPhone; CPU iPhone OS 16_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) '
+             'CriOS/120.0.6099.119 Mobile/15E148 Safari/604.1')
+DESKTOP = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36'
+
+
+@pytest.mark.parametrize('agent, major, group', [
+    (SAFARI_27, 27, 'ios27'), (SAFARI_26, 26, 'ios17'), (SAFARI_17, 17, 'ios17'),
+    (CHROME_16, 16, 'ios16'), (DESKTOP, None, 'ios27'), ('', None, 'ios27')])
+def test_ios_version_detection_reads_safari_version_not_the_frozen_os_token(agent, major, group):
+    from akdbx.sms_web import ios_major, shortcut_group
+    assert ios_major(agent) == major and shortcut_group(major) == group
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Linux loopback HTTPS fixture')
+@pytest.mark.parametrize('agent, group', [(SAFARI_26, 'ios17'), (SAFARI_27, 'ios27'), (CHROME_16, 'ios16')])
+def test_setup_page_opens_the_steps_for_the_detected_ios_version(served, agent, group):
+    receipt = served.broker.dispatch(dict(action='sms-add-source', sms_protocol=1, name='iphone', kind='shortcut'))
+    path = urlsplit(receipt['private_url'])
+    status, _, body = https(served.port, served.cert, 'GET', path.path + '?' + path.query, host=served.host,
+                            user_agent=agent)
+    assert status == 200
+    shown = re.findall(rb'<ol class="setup-steps" data-variant="(\w+)" data-variant-group="ios-steps">', body)
+    hidden = re.findall(rb'<ol class="setup-steps" data-variant="(\w+)" data-variant-group="ios-steps" hidden>', body)
+    assert shown == [group.encode()] and len(hidden) == 2
+    assert f'<option data-show="{group}" selected>'.encode() in body and body.count(b' selected>') == 1
+    assert b'data-variant-select="ios-steps"' in body
+    # One step at a time: the portal script runs the wizard; without it every step shows.
+    assert body.count(b'<div class="wizard" data-wizard>') == 1 and b'<div class="wizard-nav" hidden>' in body
+    assert b'data-wizard-next' in body and b'function showStep(wizard, index)' in body
+
+
+@pytest.mark.parametrize('text, result', [
+    ('Your test code is 482913', 'code'), ('', 'empty'), ('See you at 1930 tomorrow', 'no-code-word'),
+    ('Your code is ready', 'no-code'), ('Code 482913 or code 771122', 'several-codes')])
+def test_each_text_records_why_it_was_kept_or_dropped_without_content(inbox, text, result):
+    from akdbx.sms import extract
+    assert extract(text)[1] == result
+    token = inbox.add_source('iphone', 'shortcut')
+    inbox.receive(token, 'Me', text)
+    row = inbox.list_sources()[0]
+    assert row['last_result'] == result and not any('482913' in str(v) for v in row.values())
+
+
+def test_setup_status_wakes_on_the_next_text_and_reports_no_content(inbox):
+    token = inbox.add_source('iphone', 'shortcut')
+    key = inbox.new_setup('iphone', token)
+    assert inbox.setup_status('B' * 43) is None
+    start = inbox.setup_status(key)
+    assert start == dict(count=0, result=None)
+    assert inbox.setup_status(key, 0, timeout=0) == dict(count=0, result=None)  # nothing new yet
+    inbox.receive(token, 'Me', 'hello')
+    assert inbox.setup_status(key, 0) == dict(count=1, result='no-code-word')
+    inbox.receive(token, 'Me', 'Your test code is 482913')
+    assert inbox.setup_status(key, 1) == dict(count=2, result='code')
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Linux loopback HTTPS fixture')
+def test_setup_page_live_test_route_waits_for_the_test_text(served):
+    receipt = served.broker.dispatch(dict(action='sms-add-source', sms_protocol=1, name='iphone', kind='shortcut'))
+    key = urlsplit(receipt['private_url']).query.split('=', 1)[1]
+    page = urlsplit(receipt['private_url'])
+    status, _, body = https(served.port, served.cert, 'GET', page.path + '?' + page.query, host=served.host)
+    assert status == 200 and f'data-wait="/sms/setup/wait?token={key}" data-count="0"'.encode() in body
+    assert b'data-test>' in body and b'class="wizard-done" hidden' in body and b'data-wizard-skip hidden' in body
+    setup = served.broker.sms.setup(key)
+    threading.Timer(0.3, served.broker.sms.receive, (setup.token, 'Me', 'Your test code is 482913')).start()
+    status, _, body = https(served.port, served.cert, 'GET', f'/sms/setup/wait?token={key}&after=0', host=served.host)
+    assert status == 200 and json.loads(body) == dict(ok=True, count=1, result='code')
+    assert b'482913' not in body
+    for path in (f'/sms/setup/wait?token={"B" * 43}&after=0', f'/sms/setup/wait?token={key}&after=x'):
+        assert https(served.port, served.cert, 'GET', path, host=served.host)[0] == 404
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Linux loopback HTTPS fixture')
+def test_test_page_waits_for_a_text_without_showing_or_changing_the_webhook_url(served):
+    broker = served.broker
+    first = broker.dispatch(dict(action='sms-add-source', sms_protocol=1, name='iphone', kind='shortcut'))
+    token = broker.sms.setup(urlsplit(first['private_url']).query.split('=', 1)[1]).token
+    receipt = broker.dispatch(dict(action='sms-test-page', sms_protocol=1, name='iphone'))
+    assert set(receipt) == {'ok', 'name', 'private_url'} and receipt['ok'] is True
+    assert sms_cli.valid_receipt(SimpleNamespace(command='sms-test-page', name='iphone'), receipt)
+    page = urlsplit(receipt['private_url'])
+    status, _, body = https(served.port, served.cert, 'GET', page.path + '?' + page.query, host=served.host)
+    assert status == 200 and b'Test SMS forwarding' in body and b'data-test>' in body and b'data-wizard-test' in body
+    assert token.encode() not in body and b'/sms/in/' not in body and b'class="copy-field"' not in body
+    assert broker.sms.source_for(token).name == 'iphone'  # the webhook URL still works
+    assert broker.dispatch(dict(action='sms-test-page', sms_protocol=1, name='nope')) == dict(
+        ok=False, error='unknown SMS source')

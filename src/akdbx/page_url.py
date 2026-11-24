@@ -10,7 +10,7 @@ import stat
 from pathlib import Path
 
 LIMIT = 4096
-FLAGS = ('top-url', 'frame-url')
+FLAGS = ('top-url', 'frame-url', 'target-url')
 
 
 class PageURLFileError(ValueError):

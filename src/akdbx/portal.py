@@ -62,6 +62,10 @@ input:not([type=checkbox]):not([type=radio]):not([type=file]):not([type=hidden])
   width: 100%; min-width: 0; padding: 0; border: 0; outline: 0; border-radius: 0;
   background: transparent; color: #fff; font-size: 16px; line-height: 1.5; letter-spacing: -.2px;
 }
+/* Windows and Linux draw the open list with system colours; white option text
+   on a white list hides every option except the highlighted one. */
+select { color-scheme: dark; }
+select option { background-color: #161616; color: #fff; }
 input::placeholder, textarea::placeholder { color: #ffffff80; opacity: 1; }
 input:disabled, select:disabled, textarea:disabled { opacity: .5; }
 input:-webkit-autofill { -webkit-text-fill-color: #fff; -webkit-box-shadow: 0 0 0 1000px #111 inset; caret-color: #fff; border-radius: 3px; }
@@ -118,6 +122,87 @@ button:disabled { cursor: default; opacity: .4; }
   background: linear-gradient(90deg, transparent, #ffffff38, transparent);
 }
 [hidden] { display: none !important; }
+.setup-steps { padding-left: 22px; margin: 0 0 18px; }
+.setup-steps li + li { margin-top: 14px; }
+.wizard-count { margin: 0 0 8px !important; color: #fff; font-size: 20px; font-weight: 500; letter-spacing: -.4px; line-height: 1.3; }
+.wizard-count.is-label { margin-bottom: 10px !important; font-size: 14px; letter-spacing: -.1px; }
+.wizard.is-wizard .setup-steps { list-style: none; padding: 0; margin: 0; }
+.wizard.is-wizard .setup-steps li { color: #ffffffd9; font-size: 16px; line-height: 1.6; }
+.wizard.is-wizard .setup-steps li + li { margin-top: 0; }
+.wizard.is-wizard .copy-field { margin-top: 18px; }
+.variant-field { margin-top: 0; }
+/* The step heading already names the list; the label stays for screen readers. */
+.wizard.is-wizard .variant-field label { position: absolute; width: 1px; height: 1px; margin: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.variant-field .field-hint { margin: 6px 0 0; }
+.wizard-nav { display: flex; gap: 10px; margin-top: 22px; }
+.wizard-nav button { flex: 1; min-height: 52px; }
+.wizard-nav button.wizard-back { flex-direction: row-reverse; justify-content: flex-end; }
+.wizard-nav button.wizard-back::after { transform: rotate(-135deg); }
+.wizard-nav button.wizard-next, .wizard-done button.wizard-next {
+  color: #fff; border-color: #ffffff32; border-top-color: #ffffff52;
+  background: linear-gradient(165deg, #ffffff16, #ffffff06 52%, #ffffff0a), #08080880;
+  box-shadow: inset 0 1px 0 #ffffff07, 0 6px 16px #0005;
+}
+.wizard-nav button.wizard-skip { flex-direction: row; }
+.sms-test {
+  display: flex; align-items: flex-start; gap: 12px; margin-top: 18px; padding: 14px 16px;
+  border: 1px solid #ffffff1a; border-radius: 14px; background: #00000038;
+}
+.sms-test[hidden] { display: none; }
+.sms-test-dot { flex-shrink: 0; width: 8px; height: 8px; margin-top: 7px; border-radius: 50%; background: #fff; }
+.sms-test-text { margin: 0 !important; color: #ffffffd9; font-size: 14px; line-height: 1.55; }
+.sms-test.is-warning { border-color: #ffffff3d; }
+.sms-test.is-warning .sms-test-dot { background: transparent; border: 1px solid #fff; }
+.wizard.is-done > :not(.wizard-done) { display: none !important; }
+.wizard-done { padding: 6px 0 2px; text-align: center; }
+.done-mark { width: 64px; height: 64px; fill: none; stroke: #fff; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.wizard.is-skipped .done-mark { display: none; }
+.wizard.is-passed .done-mark circle, .wizard.is-passed .done-mark path { stroke-dasharray: 1; stroke-dashoffset: 1; animation: copy-draw .8s cubic-bezier(.65, 0, .35, 1) .1s forwards; }
+.wizard-done-title { margin: 14px 0 8px; font-size: 22px; font-weight: 500; letter-spacing: -.4px; outline: 0; }
+.wizard-done-text { margin: 0 0 22px !important; font-size: 15px; }
+.wizard-done.is-closed .wizard-done-text { margin-bottom: 0 !important; }
+.wizard.is-skipped .wizard-done-title, .wizard-done.is-closed .wizard-done-title { margin-top: 0; }
+.wizard-done.is-closing .done-mark, .wizard-done.is-closing button.wizard-next { opacity: 0; transition: opacity .2s ease; }
+.wizard-done.is-closed .done-mark { display: none; }
+.wizard-done-close { margin: 16px 0 0 !important; color: #ffffff8c; font-size: 14px; }
+.wizard-done button.wizard-next { min-height: 52px; }
+@media (prefers-reduced-motion: no-preference) {
+  .sms-test:not(.is-warning) .sms-test-dot { animation: test-pulse 1.4s ease-in-out infinite; }
+  @keyframes test-pulse { 50% { opacity: .25; transform: scale(.7); } }
+  .wizard-done-close:not([hidden]) { animation: done-fade .35s ease .2s both; }
+  @keyframes done-fade { from { opacity: 0; } }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wizard.is-passed .done-mark circle, .wizard.is-passed .done-mark path { animation: none; stroke-dashoffset: 0; }
+}
+.setup-note { margin: 10px 0 0 !important; color: #ffffff8c; font-size: 12px; line-height: 1.55; }
+button.copy-field {
+  display: block; text-align: left; min-height: 0; padding: 13px 16px 12px; border: 1px solid #ffffff1a;
+  border-top-color: #ffffff20; border-radius: 14px; background: linear-gradient(135deg, #ffffff04, transparent 55%), #00000038;
+  box-shadow: inset 0 1px 0 #ffffff03; font-weight: 400; -webkit-user-select: none; user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+button.copy-field::before, button.copy-field::after { display: none; }
+button.copy-field:active { transform: none; border-color: #ffffff5c; }
+.copy-field .copy-label { display: block; margin-bottom: 5px; color: #ffffffb3; font-size: 11px; line-height: 1.5; }
+.copy-field .copy-text { -webkit-user-select: text; user-select: text; display: block; color: #fff; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
+.copy-done {
+  position: absolute; inset: 0; display: none; align-items: center; justify-content: center; gap: 9px;
+  border-radius: inherit; background: #0b0b0b; color: #fff; font-size: 17px; font-weight: 500; letter-spacing: -.2px;
+}
+.copy-done svg { flex-shrink: 0; width: 1.25em; height: 1.25em; fill: none; stroke: #fff; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.copy-done circle, .copy-done path { stroke-dasharray: 1; stroke-dashoffset: 1; }
+.copy-field.is-copied { border-color: #ffffff52; }
+.copy-field.is-copied .copy-label, .copy-field.is-copied .copy-text { visibility: hidden; }
+/* Drawn once: showing the box again on a later step does not replay it. */
+.copy-field.is-drawn .copy-done, .copy-field.is-drawn .copy-done circle, .copy-field.is-drawn .copy-done path { animation: none; stroke-dashoffset: 0; }
+.copy-field.is-copied .copy-done { display: flex; animation: copy-fade .18s ease-out; }
+.copy-field.is-copied .copy-done circle, .copy-field.is-copied .copy-done path { animation: copy-draw .65s cubic-bezier(.65, 0, .35, 1) .08s forwards; }
+@keyframes copy-draw { to { stroke-dashoffset: 0; } }
+@keyframes copy-fade { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .copy-field.is-copied .copy-done, .copy-field.is-copied .copy-done circle, .copy-field.is-copied .copy-done path { animation: none; stroke-dashoffset: 0; }
+}
 .portal-status.is-error, .portal-status.is-shown {
   position: static; width: auto; height: auto; margin: 18px 0 0 !important;
   overflow: visible; clip-path: none; white-space: normal;
@@ -150,7 +235,8 @@ dd { color: #fff; margin: 0; overflow-wrap: anywhere; }
   .field:nth-of-type(3) { animation-delay: .16s; } .field:nth-of-type(4) { animation-delay: .20s; }
   .field:nth-of-type(5) { animation-delay: .24s; }
   .field, label, button, a { transition: border-color .3s, color .3s, background-color .3s, box-shadow .3s, transform .35s var(--ease), opacity .25s; }
-  button:not([type=button])::before { animation: glint 9s ease-in-out 2s infinite; }
+  /* Call-to-action buttons share the unlock button's shimmer. */
+  button:not([type=button])::before, button.wizard-next::before { animation: glint 9s ease-in-out 2s infinite; }
   .portal-submit.is-pending { animation: unlock-press .16s ease-out; }
   .portal-submit.is-pending .portal-progress::before { animation: unlock-loading 1.3s ease-in-out infinite; }
   @keyframes unlock-press { from { transform: translateY(0); } to { transform: translateY(1px); } }
@@ -226,6 +312,184 @@ SCRIPT = r""""use strict";
     const visible = input.type === "password";
     input.type = visible ? "text" : "password";
     button.setAttribute("aria-pressed", String(visible));
+  });
+  // A wizard shows one step of its visible step list at a time: a step
+  // count, the step and the URL box on its steps. A page with a version list
+  // starts on a step 0 that shows the introduction and that list.
+  // Without this script every step stays visible.
+  function showStep(wizard, index) {
+    const steps = Array.from(wizard.querySelectorAll("ol.setup-steps:not([hidden]) > li"));
+    const first = wizard.querySelector("[data-variant-select]") ? -1 : 0;
+    const last = steps.length - 1;
+    index = Math.max(first, Math.min(index, last));
+    wizard.setAttribute("data-step", String(index));
+    steps.forEach((step, i) => { step.hidden = i !== index; });
+    document.querySelectorAll("[data-wizard-first]").forEach(part => { part.hidden = index !== first; });
+    // The page title shows on the first screen only; the step heading replaces it.
+    const title = document.getElementById("portal-title");
+    if (title) title.hidden = index !== first;
+    wizard.querySelectorAll("[data-wizard-url]").forEach(part => { part.hidden = index < 0 || !steps[index].hasAttribute("data-url"); });
+    const count = wizard.querySelector(".wizard-count");
+    count.textContent = index < 0 ? "Choose your iOS version" : "Step " + (index + 1) + " of " + steps.length;
+    count.classList.toggle("is-label", index < 0);
+    wizard.querySelector("[data-wizard-back]").hidden = index === first;
+    const next = wizard.querySelector("[data-wizard-next]");
+    next.hidden = index === last;
+    next.querySelector("span").textContent = index < 0 ? "Start" : "Next";
+    // The test step waits for the test text and offers to skip the test.
+    const testing = index >= 0 && steps[index].hasAttribute("data-test");
+    wizard.querySelector("[data-wizard-skip]").hidden = !testing;
+    const panel = wizard.querySelector("[data-wizard-test]");
+    if (panel) {
+      panel.hidden = !testing;
+      if (testing) watchTest(wizard, panel); else testRun += 1;
+    }
+  }
+  // The live test asks the broker for the next text (an 8-second wait per
+  // request). The answer has only a count and a result, never the text.
+  const TEST_RESULTS = {
+    "empty": "A text arrived, but it was empty. Check that the text field in the automation uses Message.",
+    "no-code-word": "A text arrived, but it has no word such as code. Send: Your test code is 482913",
+    "no-code": "A text arrived, but it has no code of 4 to 8 digits. Send: Your test code is 482913",
+    "several-codes": "A text arrived, but it has more than one number. Send: Your test code is 482913",
+    "expired": "This page has expired. Ask your agent for a new one."
+  };
+  let testRun = 0;
+  async function watchTest(wizard, panel) {
+    const run = ++testRun;
+    let count = Number(panel.getAttribute("data-count"));
+    while (run === testRun) {
+      let reply = null;
+      try {
+        const response = await fetch(panel.getAttribute("data-wait") + "&after=" + count,
+          {credentials: "same-origin", cache: "no-store", redirect: "error"});
+        if (response.status === 404) reply = {result: "expired"};
+        else if (response.ok) reply = await response.json();
+      } catch {
+        reply = null;
+      }
+      if (run !== testRun) return;
+      if (reply === null) {
+        // The phone may pause the page in the background; try again soon.
+        await new Promise(resume => setTimeout(resume, 1500));
+        continue;
+      }
+      if (reply.result === "expired") {
+        panel.classList.add("is-warning");
+        panel.querySelector(".sms-test-text").textContent = TEST_RESULTS.expired;
+        return;
+      }
+      if (reply.count > count) {
+        count = reply.count;
+        if (reply.result === "code") {
+          finish(wizard, true);
+          return;
+        }
+        panel.classList.add("is-warning");
+        panel.querySelector(".sms-test-text").textContent = TEST_RESULTS[reply.result] || TEST_RESULTS["no-code"];
+      }
+    }
+  }
+  function finish(wizard, passed) {
+    testRun += 1;
+    const done = wizard.querySelector(".wizard-done");
+    wizard.classList.add("is-done", passed ? "is-passed" : "is-skipped");
+    done.hidden = false;
+    const title = done.querySelector(".wizard-done-title");
+    title.textContent = passed ? "Code received" : "Setup finished";
+    const text = done.querySelector(".wizard-done-text");
+    text.textContent = text.getAttribute(passed ? "data-passed" : "data-skipped");
+    title.focus();
+    window.scrollTo({top: 0});
+  }
+  document.addEventListener("click", event => {
+    const skip = event.target.closest("[data-wizard-skip]");
+    if (skip) finish(skip.closest("[data-wizard]"), false);
+    const close = event.target.closest("[data-wizard-close]");
+    if (!close) return;
+    window.close();
+    // A page the user opened from a link cannot close itself: fade out the
+    // tick and the button, then ease the card to its new height.
+    setTimeout(() => {
+      const done = close.closest(".wizard-done");
+      const sheet = done.closest(".sheet");
+      const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const swap = () => {
+        const start = sheet.offsetHeight;
+        done.classList.add("is-closed");
+        close.hidden = true;
+        done.querySelector(".wizard-done-close").hidden = false;
+        if (calm) return;
+        const end = sheet.offsetHeight;
+        sheet.style.height = start + "px";
+        void sheet.offsetHeight;
+        sheet.style.transition = "height .45s cubic-bezier(.65, 0, .35, 1)";
+        sheet.style.height = end + "px";
+        const reset = event => {
+          if (event.target !== sheet || event.propertyName !== "height") return;
+          sheet.removeEventListener("transitionend", reset);
+          sheet.style.height = sheet.style.transition = "";
+        };
+        sheet.addEventListener("transitionend", reset);
+      };
+      if (calm) return swap();
+      done.classList.add("is-closing");
+      setTimeout(swap, 200);
+    }, 300);
+  });
+  document.querySelectorAll("[data-wizard]").forEach(wizard => {
+    wizard.classList.add("is-wizard");
+    wizard.querySelector(".wizard-count").hidden = false;
+    wizard.querySelector(".wizard-nav").hidden = false;
+    showStep(wizard, -1);
+  });
+  document.addEventListener("click", event => {
+    const button = event.target.closest("[data-wizard-next], [data-wizard-back]");
+    if (!button) return;
+    const wizard = button.closest("[data-wizard]");
+    const step = Number(wizard.getAttribute("data-step"));
+    showStep(wizard, button.hasAttribute("data-wizard-next") ? step + 1 : step - 1);
+    window.scrollTo({top: 0});
+  });
+  // A version list shows only the step list of the chosen option. It reads
+  // the option's data-show attribute, never an input.
+  document.addEventListener("change", event => {
+    const list = event.target.closest("[data-variant-select]");
+    if (!list) return;
+    const chosen = list.selectedOptions[0]?.getAttribute("data-show");
+    document.querySelectorAll('[data-variant-group="' + list.getAttribute("data-variant-select") + '"]')
+      .forEach(steps => { steps.hidden = steps.getAttribute("data-variant") !== chosen; });
+    document.querySelectorAll("[data-wizard]").forEach(wizard => showStep(wizard, -1));
+  });
+  // A copy box carries its text in data-copy (the SMS webhook URL on its
+  // private setup page). No input is read.
+  document.addEventListener("click", async event => {
+    const box = event.target.closest("[data-copy]");
+    if (!box) return;
+    const label = box.querySelector(".copy-label");
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(box.getAttribute("data-copy"));
+      copied = true;
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(box.querySelector(".copy-text"));
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      try { copied = document.execCommand("copy"); } catch { copied = false; }
+    }
+    if (copied) {
+      // The copied cover stays; another tap copies again and replays it.
+      box.classList.remove("is-copied", "is-drawn");
+      void box.offsetWidth;
+      box.classList.add("is-copied");
+      clearTimeout(box.drawTimer);
+      box.drawTimer = setTimeout(() => box.classList.add("is-drawn"), 900);
+      label.textContent = "Link copied to clipboard";
+    } else {
+      label.textContent = "Copy failed. Press and hold the link, then tap Copy.";
+    }
   });
   function setBusy(form, busy) {
     const button = form.querySelector(".portal-submit");
