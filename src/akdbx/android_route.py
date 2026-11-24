@@ -72,7 +72,7 @@ SERIAL = re.compile(r'[A-Za-z0-9._:-]{1,64}')
 
 HELPER_ASSET = 'akdbx-android-helper.dex'
 # SHA-256 of the bundled helper; tests/test_android_route.py checks it.
-HELPER_SHA256 = 'c96b65d827a7718df30647d028e5ade124b5e89f46f37f837c05499635cf95d2'
+HELPER_SHA256 = '0fae7b1b8efebbfa53abd6d8262845f8300b04c54d58be77f67a7e8cfd188fbd'
 HELPER_CLASS = 'org.akdbx.android.Helper'
 HELPER_PROTOCOL = 1
 RESULT_PREFIX = 'AKDBX-ANDROID-RESULT '

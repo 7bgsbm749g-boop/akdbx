@@ -896,10 +896,38 @@ public final class Helper {
 
     static final String FOOTER = "com.google.android.gms:id/suc_footer_button_bar";
 
-    /** The left of the two buttons in Google sign-in's own footer (Skip on the phone-number page), or null. */
+    static final String TEMPLATE = "com.google.android.gms:id/sud_layout_template_content";
+    static final String CONTENT = "com.google.android.gms:id/sud_layout_content";
+
+    /**
+     * Google sign-in's own native footer, or null. Some Google Play services
+     * builds give it the id FOOTER; others give it no id, and it is then the
+     * one other child of the setup template, beside the page content.
+     */
+    static AccessibilityNodeInfo footer(AccessibilityNodeInfo node) {
+        String id = node.getViewIdResourceName();
+        if (FOOTER.equals(id)) {
+            return node;
+        }
+        if (!TEMPLATE.equals(id) || node.getChildCount() != 2) {
+            return null;
+        }
+        AccessibilityNodeInfo first = node.getChild(0);
+        AccessibilityNodeInfo second = node.getChild(1);
+        if (first == null || second == null) {
+            return null;
+        }
+        if (CONTENT.equals(first.getViewIdResourceName()) && second.getViewIdResourceName() == null) {
+            return second;
+        }
+        return null;
+    }
+
+    /** The start button of the two in Google sign-in's own footer (Skip on the phone-number page), or null. */
     static AccessibilityNodeInfo footerSkip(Walk walk) {
-        for (AccessibilityNodeInfo node : walk.nodes) {
-            if (FOOTER.equals(node.getViewIdResourceName())) {
+        for (AccessibilityNodeInfo candidate : walk.nodes) {
+            AccessibilityNodeInfo node = footer(candidate);
+            if (node != null) {
                 List<AccessibilityNodeInfo> buttons = new ArrayList<>();
                 for (AccessibilityNodeInfo item : walk(node).nodes) {
                     if (item != node && item.isClickable() && item.isVisibleToUser() && !inWeb(item)) {
@@ -913,7 +941,14 @@ public final class Helper {
                 Rect b = new Rect();
                 buttons.get(0).getBoundsInScreen(a);
                 buttons.get(1).getBoundsInScreen(b);
-                return a.left <= b.left ? buttons.get(0) : buttons.get(1);
+                if (a.left == b.left) {
+                    // Stacked buttons: which one is Skip is not known.
+                    return null;
+                }
+                // Skip is the footer's start button: the left one, or the right one in a right-to-left layout.
+                boolean rtl = android.content.res.Resources.getSystem().getConfiguration().getLayoutDirection()
+                        == android.view.View.LAYOUT_DIRECTION_RTL;
+                return (a.left < b.left) != rtl ? buttons.get(0) : buttons.get(1);
             }
         }
         return null;
