@@ -140,9 +140,9 @@ STALE = ('extension route unavailable: the browser runs an older akdbx extension
          'extension files on disk (stale build); restart the browser, or reload akdbx on chrome://extensions, '
          'then pair it again')
 MISMATCH = ('extension route unavailable: the browser runs akdbx extension {loaded}, another build than this '
-            "broker's {expected}; run `akdbx extension build --output FOLDER` with this akdbx into the folder the "
-            'browser loads (or restart the broker if akdbx was updated), then reload akdbx on chrome://extensions '
-            'and pair it again')
+            "broker's {expected}; rebuild the folder the browser loads with this akdbx (`akdbx extension build "
+            "--output FOLDER`, with the broker's --unlock-origin if it has one), or restart the broker if akdbx was "
+            'updated; then reload akdbx on chrome://extensions and pair it again')
 
 
 def valid_extension_version(value):
@@ -405,6 +405,16 @@ class Channel:
             self.connection.settimeout(5)
             send_message(self.connection, message)
 
+    def refusal(self):
+        """The refusal for a stale or mismatched build that this broker already knows, else None."""
+        status = version_status(self.version, self.stale)
+        if status == 'stale':
+            return StaleExtension()
+        if status == 'mismatch':
+            from .extension_host import built_version
+            return StaleExtension(MISMATCH.format(loaded=self.version, expected=built_version()))
+        return None
+
     def checked_call(self, op, timeout, **payload):
         """A frame list or pin call, refused when this worker runs a stale or mismatched build.
 
@@ -412,12 +422,9 @@ class Channel:
         also checks the manifest on disk before each such call and answers
         ``{"ok": false, "error": "stale"}`` when the folder holds a newer build.
         """
-        status = version_status(self.version, self.stale)
-        if status == 'stale':
-            raise StaleExtension()
-        if status == 'mismatch':
-            from .extension_host import built_version
-            raise StaleExtension(MISMATCH.format(loaded=self.version, expected=built_version()))
+        refusal = self.refusal()
+        if refusal is not None:
+            raise refusal
         result = self.call(op, timeout, **payload)
         if result.get('ok') is False and result.get('error') == 'stale':
             self.stale = True
@@ -993,18 +1000,30 @@ class ExtensionHub:
             raise ExtensionError()
         _origin(request['top_url'])
         channels, tab_id = self._channels_for(request)
-        found, refused = [], None
+        found, refused, hidden = [], None, False
         for channel in channels:
-            try:
-                result = channel.checked_call('frames', 10, top_url=request['top_url'], tab_id=tab_id)
-            except StaleExtension as exc:
-                refused = refused or exc  # Another paired browser may still hold the page.
-                continue
-            tabs = result.get('tabs')
-            if result.get('ok') is not True or not isinstance(tabs, list) or len(tabs) > MAX_TABS:
-                raise ExtensionError()
-            found.extend((channel, tab) for tab in tabs)
-        if not found and refused is not None:
+            refusal = channel.refusal()
+            if refusal is not None and tab_id is not None:
+                raise refusal  # The page ID names this browser.
+            # A refused browser still answers, so that its open tabs keep an exact URL unique
+            # across paired browsers: a worker that found a newer build on disk counts them.
+            result = channel.call('frames', 10, top_url=request['top_url'], tab_id=tab_id)
+            if result.get('ok') is False and result.get('error') == 'stale':
+                channel.stale = True
+                refusal, matching = channel.refusal(), result.get('tabs')
+                if set(result) != {'ok', 'error', 'tabs'} or type(matching) is not int or not 0 <= matching <= MAX_TABS:
+                    raise ExtensionError()
+            else:
+                tabs = result.get('tabs')
+                if result.get('ok') is not True or not isinstance(tabs, list) or len(tabs) > MAX_TABS:
+                    raise ExtensionError()
+                matching = len(tabs)
+                if refusal is None:
+                    found.extend((channel, tab) for tab in tabs)
+            if refusal is not None:
+                refused, hidden = refused or refusal, hidden or matching > 0
+        # A URL also open in a refused browser does not name one tab: refuse with the fix, never pick the other.
+        if refused is not None and (hidden or not found):
             raise refused
         if len(found) != 1:
             raise ExtensionError()  # Missing or ambiguous: pass --page-id.

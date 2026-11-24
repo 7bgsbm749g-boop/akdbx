@@ -1329,25 +1329,71 @@ def test_a_stale_or_mismatched_worker_gets_no_frame_list_and_no_pin_and_the_erro
     assert 'chrome://extensions' in error and 'pair it again' in error
     assert ('restart the browser' in error) == (status == 'stale')
     assert ('akdbx extension build' in error and version in error) == (status == 'mismatch')
-    assert extension.calls == [] and broker.extension.pins == {}
+    # Only the frame list reached the worker (it counts the browser's tabs with the URL); never a pin.
+    assert extension.calls == ['frames'] and broker.extension.pins == {}
 
 
-def test_a_refused_browser_does_not_hide_the_page_in_another_paired_browser():
+def paired(broker, tabs, browser, version=BUILT, stale=False):
+    extension = FakeExtension(tabs)
+    channel = FakeChannel(broker.extension, extension, browser=browser, version=version)
+    channel.stale = stale
+    broker.extension.channels[channel.id] = channel
+    broker.extension.approved.append(channel.digest)
+    return channel, extension
+
+
+def worker_says_stale(extension):
+    """The worker found a newer build on disk: frame lists answer stale with the count of matching tabs."""
+    handle = extension.handle
+
+    def answer(op, payload):
+        if op == 'frames':
+            extension.calls.append(op)
+            return dict(ok=False, error='stale', tabs=sum(docs[0].url == payload['top_url']
+                                                          for docs in extension.tabs.values()))
+        return handle(op, payload)
+    extension.handle = answer
+
+
+@pytest.mark.parametrize('refused', ['stale', 'mismatch', 'worker'])
+def test_a_refused_browser_neither_hides_nor_borrows_a_page_in_another_paired_browser(refused):
     broker = make_broker()
-    current, _ = attach(broker, {3: [Document('TOP', LOGIN)]})
-    stale_extension = FakeExtension({})
-    stale = FakeChannel(broker.extension, stale_extension, browser='chrome')
-    stale.stale = True
-    broker.extension.channels[stale.id] = stale
-    broker.extension.approved.append(stale.digest)
+    current, _ = paired(broker, {3: [Document('TOP', LOGIN)]}, 'helium')
+    other = {'stale': dict(stale=True), 'mismatch': dict(version=OTHER_BUILD), 'worker': {}}[refused]
+    channel, extension = paired(broker, {7: [Document('TOP', 'https://other.example.org/')]}, 'chrome', **other)
+    if refused == 'worker':
+        worker_says_stale(extension)
+    error = (route.MISMATCH.format(loaded=OTHER_BUILD, expected=BUILT) if refused == 'mismatch' else route.STALE)
     request = dict(action='list-password-frames', password_protocol=1, frame_protocol=1, top_url=LOGIN,
                    route='extension')
+    # The URL is open only in the current browser: it lists and pins there.
     listing = broker.dispatch(request)
     assert listing['ok'] is True and listing['page_id'] == current.id + '.3'
     assert pin_password(broker, current, 3, 'TOP', LOGIN)['ok'] is True
-    # Only the refused browser could hold the page: its refusal, which names the fix.
-    assert broker.dispatch({**request, 'top_url': 'https://other.example.org/'}) == dict(ok=False, error=route.STALE)
-    assert broker.dispatch({**request, 'page_id': stale.id + '.3'}) == dict(ok=False, error=route.STALE)
+    # Open only in the refused browser, or in both: the refusal, never the other browser's tab.
+    assert broker.dispatch({**request, 'top_url': 'https://other.example.org/'}) == dict(ok=False, error=error)
+    extension.tabs[8] = [Document('TOP', LOGIN)]
+    assert broker.dispatch(request) == dict(ok=False, error=error)
+    # Nowhere: the refusal names the fix.
+    assert broker.dispatch({**request, 'top_url': 'https://missing.example.net/'}) == dict(ok=False, error=error)
+    # A page ID of the refused browser: refused at once.
+    calls = len(extension.calls)
+    assert broker.dispatch({**request, 'page_id': channel.id + '.8'}) == dict(ok=False, error=route.STALE
+                                                                             if refused != 'mismatch' else error)
+    assert len(extension.calls) == calls
+
+
+def test_a_stale_frame_answer_without_a_valid_tab_count_is_refused():
+    broker = make_broker()
+    channel, extension = paired(broker, {3: [Document('TOP', LOGIN)]}, 'helium')
+    request = dict(action='list-password-frames', password_protocol=1, frame_protocol=1, top_url=LOGIN,
+                   route='extension')
+    for reply in (dict(ok=False, error='stale'), dict(ok=False, error='stale', tabs=99),
+                  dict(ok=False, error='stale', tabs=True), dict(ok=False, error='stale', tabs=1, x=1)):
+        channel.stale = False
+        extension.handle = lambda op, payload, reply=reply: reply
+        assert broker.dispatch(request) == dict(ok=False, error='frame list unavailable: page missing, ambiguous, '
+                                                'changed or unsupported')
 
 
 def test_a_worker_that_finds_a_newer_build_on_disk_refuses_and_shows_stale_from_then_on():

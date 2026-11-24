@@ -419,7 +419,10 @@ async function handleCall(message) {
     const disk = await staleBuild();
     if (disk) {
       setTimeout(() => reloadFor(disk).catch(() => {}), 200);  // After the reply has gone out.
-      return {ok: false, error: "stale"};
+      if (message.op === "pin") return {ok: false, error: "stale"};
+      // The broker still counts this browser's tabs with the URL: a URL open in two browsers stays ambiguous.
+      return {ok: false, error: "stale", tabs: (await chrome.tabs.query({})).filter(tab => tab.url === message.top_url &&
+        (message.tab_id === null || message.tab_id === undefined || tab.id === message.tab_id)).length};
     }
   }
   if (message.op === "frames") return frames(message);

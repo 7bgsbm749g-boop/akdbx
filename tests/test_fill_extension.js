@@ -206,12 +206,16 @@ test("a frame list or pin call to a worker older than the build on disk answers 
   delete local.stale_reload;  // The folder changed again under the running worker.
   const scripts = [];
   chrome.scripting.executeScript = async details => { scripts.push(details); return []; };
+  // Two tabs show the URL, one another page: the stale frame answer counts the two, so a URL that
+  // another browser also shows stays ambiguous for the broker.
+  chrome.tabs.query = async () => [{id: 1, url: "https://example.com/"}, {id: 2, url: "https://example.com/"},
+    {id: 3, url: "https://other.example/"}];
   for (const [id, op] of [[1, "frames"], [2, "pin"]]) {
-    listeners["port.message"]({type: "call", id, op, top_url: "https://example.com/", tab_id: 1});
+    listeners["port.message"]({type: "call", id, op, top_url: "https://example.com/", tab_id: null});
   }
   await settle(() => posted.length === 3);
-  assert.deepEqual(copy(posted.slice(1).map(m => [m.id, m.result])),
-    [[1, {ok: false, error: "stale"}], [2, {ok: false, error: "stale"}]]);
+  assert.deepEqual(copy(posted.slice(1).map(m => [m.id, m.result]).sort((a, b) => a[0] - b[0])),
+    [[1, {ok: false, error: "stale", tabs: 2}], [2, {ok: false, error: "stale"}]]);
   assert.deepEqual(scripts, []);  // Nothing injected from the newer files.
   await settle(() => chrome.runtime.reloads, 60);
   assert.equal(chrome.runtime.reloads, 1);
