@@ -107,3 +107,24 @@ def test_cli_receipts_are_strict():
     assert sms_cli.valid_receipt(args, good)
     assert not sms_cli.valid_receipt(args, dict(good, code='482913'))
     assert not sms_cli.valid_receipt(args, dict(good, message_id='482913'))
+
+
+def test_same_url_waits_again_after_an_unrelated_text(events):
+    # Another site's code spends the one-shot wait; registering again with the
+    # same URL must start a new wait, not return the delivered one.
+    broker, sent = events
+    token = broker.sms.add_source('iphone', 'shortcut')
+    first = broker.dispatch(request(source='iphone'))['subscription_id']
+    broker.sms.receive(token, 'Other', 'Your Other code is 112233')
+    assert terminal(broker, first)['state'] == 'delivered'
+    again = broker.dispatch(request(source='iphone'))
+    assert again['subscription_id'] != first and again['state'] == 'subscribed' and again['message_id'] is None
+    broker.sms.receive(token, 'Google', TEXT)
+    assert terminal(broker, again['subscription_id'])['state'] == 'delivered'
+    assert len(sent) == 2 and sent[0][1]['message_id'] != sent[1][1]['message_id']
+
+
+def test_cli_shows_the_locked_receipt_for_subscriptions():
+    locked = dict(ok=False, error='vault locked', unlock_url='https://box.example.test/?token=' + 'a' * 43)
+    for command in ('subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms'):
+        assert sms_cli.valid_receipt(SimpleNamespace(command=command), locked)

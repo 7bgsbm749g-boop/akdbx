@@ -38,6 +38,12 @@ without confirmation and calls **Get Contents of URL** with Method POST and a
 JSON body: `text` = the message, `from` = its Sender (optional). The user must
 do this step on the phone; you cannot.
 
+The filter forwards only texts that contain the word `code`. A site whose text
+says only `OTP`, `PIN` or `passcode` (common for banks) is not forwarded, and
+`sms-wait` stays empty. Then ask the user to add a second automation with the
+same steps and that word instead of `code` (iOS allows one word per
+automation); the same webhook URL works for both.
+
 For a virtual number, type the webhook URL straight into the provider's
 console field instead, so the URL never reaches your output:
 
@@ -98,7 +104,9 @@ KIND --replace` issues a new URL (the old one stops working at once);
    The DOM pin accepts one focused, visible, enabled `text`, `tel`, `number`
    or `password` input on an exact HTTPS page. For six one-digit boxes, use
    X11 keyboard delivery instead: `pin-target --pid ... --window ...`, then
-   `fill-sms-code MESSAGE_ID --target X11_PIN --target-url VERIFIED_URL`.
+   `fill-sms-code MESSAGE_ID --target X11_PIN --target-url-file URL_FILE`
+   (a mode-0600 file with the verified challenge URL; use `--target-url URL`
+   only for a URL that holds no token).
 4. Check the site's result (signed-in page, next step), not the field.
 
 Each code is filled once. A fill that never started (expired or refused pin)

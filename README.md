@@ -769,7 +769,10 @@ returns it to the inbox. `pin-code-target` pins one focused, visible, enabled
 `text`, `tel`, `number` or `password` input on an exact HTTPS page (the
 card transport's same-origin, hit-tested DOM guards, CDP route). For six
 one-digit boxes, `fill-sms-code` also takes an X11 `pin-target` token with
-`--target-url`. See [the SMS workflow](skills/akdbx/references/sms.md).
+`--target-url`, or `--target-url-file` for a challenge URL that holds a token.
+The iPhone filter forwards only texts with the word `code`; a second automation
+with `OTP` covers sites that say only that. See
+[the SMS workflow](skills/akdbx/references/sms.md).
 
 ## Authenticator codes (0.10.0)
 

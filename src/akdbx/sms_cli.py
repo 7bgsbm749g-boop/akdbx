@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 from . import browser_slots, page_url
 from .browser_card import TTL, failure
 from .browser_code import DELIVERY, FIELDS
+from .target import failure as x11_failure
 from .sms import KINDS, MAX_WAIT, MESSAGE_ID, NAME, PROTOCOL, RESULTS, ROUTE_SETUP, TOKEN
 from .target import DELIVERY as X11_DELIVERY
 
@@ -70,7 +71,8 @@ def add_parsers(commands):
     p.add_argument('message', help='message id from sms-wait')
     p.add_argument('--target', required=True,
                    help='fresh pin-code-target token, or a pin-target token for X11 keyboard delivery')
-    p.add_argument('--target-url', help='independently verified HTTPS challenge URL; required with a pin-target token')
+    page_url.add(p, 'target-url', required=False,
+                 help='independently verified HTTPS challenge URL; required with a pin-target token')
     p = commands.add_parser('subscribe-sms', help='register a one-shot HTTPS webhook for the next verification text '
                                                   '(event akdbx.sms-received with the message id; never the code)')
     p.add_argument('--webhook-url-file', required=True, type=Path,
@@ -106,7 +108,7 @@ def _iso(value):
 
 def _failure_receipt(response):
     error = response.get('error')
-    if response in (TARGET_REFUSED, TARGET_UNCERTAIN):
+    if response in (TARGET_REFUSED, TARGET_UNCERTAIN, x11_failure(False), x11_failure(True)):
         return True
     if not isinstance(error, str) or len(error) > 300:
         return False
@@ -116,6 +118,8 @@ def _failure_receipt(response):
 
 def _subscription_receipt(args, response):
     if response.get('ok') is not True:
+        if response.get('ok') is False and response.get('error') == 'vault locked':
+            return _failure_receipt(response)  # keeps the private unlock link
         return (response.get('ok') is False and set(response) == {'ok', 'error'}
                 and response['error'] in SUBSCRIPTION_ERRORS | {'SMS protocol 1 required', 'invalid SMS request'})
     keys = {'ok', 'subscription_id', 'state', 'attempts', 'source', 'message_id'}

@@ -40,7 +40,8 @@ MAX_WAITERS = 4
 RATE_LIMIT = 20
 MAX_TEXT = 2048
 MAX_SENDER = 64
-MAX_PREVIEW = 320
+# 32 previews must fit one 64 KiB RPC reply even when JSON escapes every character.
+MAX_PREVIEW = 160
 ROUTE_IN = '/sms/in/'
 ROUTE_SETUP = '/sms/setup'
 ROUTE_SETUP_WAIT = '/sms/setup/wait'
@@ -59,8 +60,25 @@ KEYWORDS = re.compile(
 # 4 to 8 digits, alone or after a short prefix such as "G-"; or 3+3 / 4+4
 # digits split by one space or hyphen ("123 456", "1234-5678").
 _SPLIT = re.compile(r'(?<![0-9A-Za-z+])(\d{3,4})[ -](\d{3,4})(?![0-9A-Za-z])')
-_SINGLE = re.compile(r'(?<![0-9+])(?<![0-9][.,:/])(\d{4,8})(?![0-9])(?![.,:/][0-9])(?!\s?%)')
-_LINK = re.compile(r'(?:https?://|www\.)\S+', re.IGNORECASE)
+_SINGLE = re.compile(r'(?<![0-9+])(?<![0-9][.,:/-])(\d{4,8})(?![0-9])(?![.,:/-][0-9])(?!\s?%)')
+# A link, also one written without a scheme ("example.com/t/AbC"): its digits
+# are not a code and its letters can be a sign-in token.
+_LINK = re.compile(r'(?:https?://|www\.)\S+|(?<![\w@.-])[a-z0-9](?:[a-z0-9-]*[a-z0-9])?'
+                   r'(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}/\S*', re.IGNORECASE)
+# A digit group right after these is a card or account suffix, a reference or
+# an order number, not the code ("card ending 4321", "acct ****1234", "Ref: 5678").
+_NOT_CODE_BEFORE = re.compile(
+    r'(?:ending(?:\s+(?:in|with))?|ends?\s+(?:in|with)|last\s+(?:\d+\s+)?(?:digits?)?|card|account|acct|a/c|'
+    r'ref(?:erence)?|order|booking|invoice|ticket|[*x•#]{2,}|\*)\s*(?:no\.?|number|#)?\s*[:#.]?\s*$',
+    re.IGNORECASE)
+_CURRENCY = r'(?:€|\$|£|¥|₹|eur|usd|gbp|chf|inr|rs\.?|kr|sek|nok|dkk|pln|zł|aud|cad)'
+_AMOUNT_BEFORE = re.compile(_CURRENCY + r'\s?$', re.IGNORECASE)
+_AMOUNT_AFTER = re.compile(r'^\s?' + _CURRENCY + r'(?![a-z])', re.IGNORECASE)
+# A four-digit year only in date context ("(c) 2026", "May 2025", "in 2024").
+_YEAR_BEFORE = re.compile(
+    r'(?:©|\(c\)|copyright|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|'
+    r'sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|year|in|since)\.?\s*\d{0,2}(?:st|nd|rd|th)?,?\s*$',
+    re.IGNORECASE)
 _CONTROL = re.compile(r'[\x00-\x08\x0b-\x1f\x7f​-‏ -‮⁦-⁩]')
 
 
@@ -84,8 +102,9 @@ def extract(text: object) -> tuple[str | None, str]:
     'several-codes' (a tie between digit groups). They hold no text content.
 
     A text needs a verification word (code, OTP, verify ...). Links are
-    ignored. With several digit groups, the one nearest a verification word
-    wins; a tie is ambiguous and gives None.
+    ignored, and so are card or account suffixes, references, amounts and
+    dated years. With several digit groups left, the one nearest a
+    verification word wins; a tie is ambiguous and gives None.
     """
     if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
         return None, 'empty'
@@ -104,12 +123,12 @@ def extract(text: object) -> tuple[str | None, str]:
         if any(start <= match.start() < end for start, end in taken):
             continue
         candidates.setdefault(match.group(1), match.start())
-    if len(candidates) > 1:
-        # A four-digit year next to a real code is not the code.
-        years = {c for c in candidates if len(c) == 4 and c[:2] in {'19', '20'}}
-        if len(candidates) - len(years) >= 1:
-            for year in years:
-                candidates.pop(year)
+    for digits, start in list(candidates.items()):
+        before, after = text[max(0, start - 32):start], text[start + len(digits):start + len(digits) + 6]
+        year = len(digits) == 4 and digits[:2] in {'19', '20'} and _YEAR_BEFORE.search(before)
+        if (year or _NOT_CODE_BEFORE.search(before) or _AMOUNT_BEFORE.search(before)
+                or _AMOUNT_AFTER.search(after)):
+            del candidates[digits]
     if not candidates:
         return None, 'no-code'
     if len(candidates) == 1:
@@ -301,6 +320,11 @@ class SmsInbox:
         with self.condition:
             return capabilities(len(self.sources))
 
+    def prune(self) -> None:
+        """Drop expired texts and setup pages; the private server calls it when idle."""
+        with self.condition:
+            self._prune()
+
     def _prune(self) -> None:
         now = self.clock()
         self.messages = [m for m in self.messages if now - m.arrived < MESSAGE_TTL]
@@ -447,8 +471,11 @@ class SmsInbox:
             if code is None:
                 return 'dropped'
             self._prune()
-            message = Message(secrets.token_hex(16), source.name, clean_sender(sender), mask(text), code, now,
-                              self.wall_clock())
+            sender = clean_sender(sender)
+            if code in re.sub(r'\D', '', sender):
+                # A sender that carries the code (a miswired "from") is masked like the text.
+                sender = mask(sender)
+            message = Message(secrets.token_hex(16), source.name, sender, mask(text), code, now, self.wall_clock())
             self.messages.append(message)
             del self.messages[:-MAX_MESSAGES]
             self.condition.notify_all()
@@ -581,7 +608,10 @@ def dispatch(broker, request: dict, delivery_ready) -> dict:
         if action == 'fill-sms-code':
             return _fill(broker, request, delivery_ready)
         if action == 'subscribe-sms':
-            return broker.sms_notifications.subscribe_text(request, received=inbox.newest)
+            # Under the inbox lock a text kept now is either found by the lookup
+            # or published after the subscription exists: none falls between.
+            with inbox.condition:
+                return broker.sms_notifications.subscribe_text(request, received=inbox.newest)
         if action == 'sms-test-page':
             if set(request) != {'action', 'sms_protocol', 'name'}:
                 raise SmsError('invalid SMS request')

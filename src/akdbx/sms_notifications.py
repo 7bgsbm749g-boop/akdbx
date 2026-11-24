@@ -14,8 +14,13 @@ restored subscription waits for the next one.
 """
 from __future__ import annotations
 
+import hashlib
+
 from .notifications import UnlockNotifications
 from .sms import MESSAGE_ID, NAME
+
+
+FINISHED = {'delivered', 'failed', 'cancelled', 'expired'}
 
 
 def capabilities():
@@ -59,6 +64,14 @@ class SmsNotifications(UnlockNotifications):
                 or since is not None and (type(since) not in (int, float) or not 0 <= since < 2 ** 34)):
             return dict(ok=False, error='sms notification protocol 1 and a valid source name or none required')
         payload = {k: v for k, v in request.items() if k not in {'sms_protocol', 'source', 'since'}}
+        if isinstance(payload.get('webhook_url'), str):
+            # One-shot: after an event (or a cancel) the same URL and source
+            # start a new wait instead of returning the finished one.
+            url_hash = hashlib.sha256(payload['webhook_url'].encode()).digest()
+            with self._lock:
+                for key in [key for key, item in self._items.items()
+                            if item.url_hash == url_hash and item.subject == source and item.state in FINISHED]:
+                    del self._items[key]
         found = received(source, since) if since is not None else None
         result = f'{found[0]} {found[1]}' if found else None
         return self.subscribe(payload, unlocked=found is not None, subject=source, result=result)

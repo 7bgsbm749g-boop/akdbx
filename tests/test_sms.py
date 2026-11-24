@@ -32,6 +32,15 @@ ORIGIN = 'https://box.example.test'
     ('Your code is 482913. (c) 2026 Example Ltd', '482913'),
     ('Ihr Bestätigungscode lautet 664422', '664422'),
     ('Tu código de verificación es 908172', '908172'),
+    # Card and account suffixes, references, amounts and dated years are not the code.
+    ('Your OTP for card ending 4321 is 482913', '482913'),
+    ('Your verification code for account ending 1234 is 567890.', '567890'),
+    ('Card ending 4321: OTP is 482913.', '482913'),
+    ('Confirm transfer of 2500 EUR to account 7788 with code 482913', '482913'),
+    ('Your code is 2048 for card ending 7654.', '2048'),
+    ('Your verification code is 2017. Request reference 456789.', '2017'),
+    ('Code valid until 2025-11-24: 482913', '482913'),
+    ('Verify at example.test/v/123456 with code 778899', '778899'),
 ])
 def test_extract_code_finds_the_one_verification_code(text, code):
     assert extract_code(text) == code
@@ -55,6 +64,24 @@ def test_mask_hides_every_digit_and_link():
     preview = mask('G-482913 is your code. https://g.co/x/123 www.example.test/9 ‮end')
     assert preview == 'G-•••••• is your code. [link] [link] end'
     assert not any(c.isdigit() for c in preview)
+
+
+def test_mask_hides_links_without_a_scheme():
+    # A sign-in link written as host/path can hold a bearer token in letters.
+    preview = mask('Code 482913, or sign in at example.test/t/SyntheticTokenAbc')
+    assert preview == 'Code ••••••, or sign in at [link]' and 'SyntheticTokenAbc' not in preview
+
+
+def test_preview_fits_the_rpc_limit_and_a_miswired_sender_is_masked(tmp_path):
+    inbox = SmsInbox(tmp_path / 'sms.json')
+    token = inbox.add_source('iphone', 'shortcut')
+    assert inbox.receive(token, 'Your code is 482913', 'Your code is 482913 ' + 'é' * 400) == 'kept'
+    [row] = inbox.wait()
+    assert '482913' not in row['sender'] and len(row['preview']) <= sms.MAX_PREVIEW
+    assert len(json.dumps(row)) * sms.MAX_MESSAGES < 64 * 1024
+    inbox.clock = lambda: time.monotonic() + sms.MESSAGE_TTL + 1
+    inbox.prune()
+    assert inbox.messages == []
 
 
 class Clock:
@@ -389,6 +416,29 @@ def test_cli_prints_metadata_and_refuses_receipts_with_codes(capsys):
     code, _, out = run_cli(['fill-sms-code', 'a' * 32, '--target', 'b' * 64],
                            [PING, dict(ok=True, filled='one-time-code', code='482913')], capsys)
     assert code == 2 and '482913' not in out.out + out.err
+
+
+def test_x11_fill_reads_the_challenge_url_from_a_private_file(tmp_path, capsys):
+    from akdbx import page_url
+    from akdbx.cli import parser
+    from akdbx.target import failure as x11_failure
+    url = 'https://login.example.test/u/mfa?state=SyntheticStateToken'
+    path = tmp_path / 'url'
+    path.write_text(url + '\n')
+    path.chmod(0o600)
+    argv = ['fill-sms-code', 'a' * 32, '--target', 'b' * 64, '--target-url-file', str(path)]
+    args = parser().parse_args(argv)
+    assert page_url.resolve(args) is None and args.target_url == url
+    sent = []
+    for receipt, status in ((x11_failure(False), 1), (x11_failure(True), 1)):
+        responses = [PING, receipt]
+
+        def request(payload):
+            sent.append(payload)
+            return responses.pop(0)
+        assert sms_cli.run(args, request) == status
+        assert json.loads(capsys.readouterr().out) == receipt  # shown, not withheld
+    assert sent[1]['target_url'] == url
 
 
 def test_cli_refuses_an_old_broker_before_sending(capsys):

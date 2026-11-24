@@ -116,6 +116,10 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
                 manager.broker.identity_targets.prune()
             finally:
                 manager.broker._vault_lock.release()
+        # Expired codes and setup tokens go too, even when no one asks again.
+        inbox = getattr(getattr(manager, 'broker', None), 'sms', None)
+        if inbox is not None:
+            inbox.prune()
 
     def get_request(self):
         # Reserve capacity before accept(), so no more than the bounded worker
