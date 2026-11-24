@@ -106,9 +106,13 @@ DRAWERS_ACCEPTED = {
     'zero-phone': drawer('zero-phone', 'inset(0px)'),
     'percent-phone': drawer('percent-phone', 'inset(-10% 4px)'),
     'moved-phone': drawer('moved-phone', 'inset(-32px 0px -32px -32px)', 'transform:translateX(0px)'),
+    # The field's border box starts 8px (the padding) below the drawer's. Each inset is widened by its
+    # 0.1% rounding margin, so 7px holds the field and 8px, which only touches it, refuses.
+    'clear-phone': drawer('clear-phone', 'inset(7px 0px 0px)'),
 }
 DRAWERS_REFUSED = {
     'cut-phone': drawer('cut-phone', 'inset(0px 0px 0px 40px)'),
+    'touch-phone': drawer('touch-phone', 'inset(8px 0px 0px)'),
     'round-phone': drawer('round-phone', 'inset(-32px round 8px)'),
     'shape-phone': drawer('shape-phone', 'polygon(0 0,100% 0,100% 100%,0 100%)'),
     'scaled-phone': drawer('scaled-phone', 'inset(-32px)', 'transform:scale(1.01)'),
