@@ -331,6 +331,34 @@ def test_changed_or_wrong_field_refuses_without_writing_anywhere(chrome, mutatio
     assert chrome.broker.typer.events == []
 
 
+DRAWER = ("const d=document.createElement('div');d.id='drawer';number.before(d);d.append(number);"
+          "d.style.padding='16px';d.style.boxShadow='0 0 16px #000';")
+
+
+@pytest.mark.parametrize('style', [
+    # A side drawer that trims only its own shadow (Twilio console). The CDP isolated world cannot see
+    # closed shadow roots, and a closed wrapper that mirrors the drawer swaps the edges an inset clips,
+    # so this route refuses every clip-path; the extension route accepts this one (issue #69).
+    "d.style.clipPath='inset(-32px 0px -32px -32px)'", "d.style.clipPath='inset(0px)'",
+    "d.style.clipPath='inset(0px 0px 0px 40px)'", "d.style.clipPath='inset(-32px round 8px)'",
+    "d.style.clipPath='polygon(0 0,100% 0,100% 100%,0 100%)'", "d.style.clipPath='circle(100%)'",
+    "d.style.clipPath='url(#none)'", "d.style.clip='rect(0px,999px,999px,0px)';d.style.position='absolute'"])
+def test_the_cdp_route_refuses_any_ancestor_clip(chrome, style):
+    evaluate(chrome, DRAWER + style)
+    assert pin(chrome)['ok'] is False
+    assert chrome.broker.card_targets.pins == {}
+    assert evaluate(chrome, "Array.from(document.querySelectorAll('input')).every(e=>e.value==='')")
+
+
+def test_a_clip_added_after_the_cdp_pin_refuses_the_fill(chrome):
+    evaluate(chrome, DRAWER)
+    target = pin(chrome)
+    assert target['ok']
+    evaluate(chrome, "drawer.style.clipPath='inset(-32px 0px -32px -32px)'")
+    assert fill(chrome, target)['ok'] is False
+    assert evaluate(chrome, "Array.from(document.querySelectorAll('input')).every(e=>e.value==='')")
+
+
 @pytest.mark.parametrize('changes', [dict(selector='#address'), dict(selector='#password'), dict(selector='input'),
     dict(selector='#missing'), dict(field='cc-csc'), dict(top_url='https://wrong.test/'),
     dict(frame_url='https://wrong.test/'), dict(frame_id='wrong-frame'), dict(page_id='wrong-page'),

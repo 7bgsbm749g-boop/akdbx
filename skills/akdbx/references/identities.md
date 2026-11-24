@@ -128,6 +128,46 @@ field. It uses the retained DOM element and sends no keys, focus changes,
 clipboard data or form submission. Identity fills do not dispatch input or
 change events. A site that requires those events can need manual entry.
 
+### Field inside a clipped drawer or modal (0.36.3)
+
+Card and identity pins refuse a field when the field or an ancestor has CSS
+that can hide part of it: `clip`, masks, filters, `backdrop-filter`, a blend
+mode, and `clip-path`. From 0.36.3, the extension route (fill extension 0.7.2)
+accepts one `clip-path`: `inset(...)` with only `px` or `%` lengths, on an HTML
+block or atomic inline element with one box, when the field's whole border box
+lies inside the inset rectangle of that element's border box (each inset
+widened by a 0.1% rounding margin). Side drawers and modals often use a
+negative inset such as `inset(-32px 0px -32px -32px)` only to trim their own
+shadow; it hides nothing inside the drawer, so the field pins. The pin checks
+it again at the fill.
+
+The CDP route still refuses every `clip-path`: its page check cannot see
+closed shadow roots, and a closed shadow wrapper that mirrors the drawer keeps
+its size but swaps the edges the inset clips. For a field in such a drawer,
+pin with `--route extension`:
+
+```bash
+akdbx pin-identity-target --route extension --page-id PAGE_ID --frame-id FRAME_ID \
+  --top-url EXACT_HTTPS_URL --selector '#recipient-add-input' \
+  --field tel --field-purpose tel
+```
+
+The extension route still refuses:
+
+- an inset that cuts any part of the field, before the pin or after it;
+- `round` corners, `calc()`, a reference box keyword (`padding-box`), and every
+  other shape (`polygon()`, `circle()`, `ellipse()`, `path()`, `url()`);
+- an inset on an element that is not HTML, has more than one box, or is
+  inline, a table or a list item;
+- a scale, rotation, perspective, motion path or `zoom` on the clipping
+  element or any element above it (a pure translation is accepted), an SVG
+  element above it (a `foreignObject` viewport scales it), a rendered size
+  that differs from its layout size, or the clipping element or an element
+  above it slotted into an open or closed shadow tree.
+
+A refusal is the usual `target unavailable, changed or unsupported`. Password
+pins do not use this style check.
+
 ### Field without an autocomplete hint (0.35.1)
 
 Many sites have phone, name and address inputs with no autocomplete token.

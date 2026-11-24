@@ -314,6 +314,12 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
 - Identity pins with `--field-purpose` (0.35.1) need fill extension 0.7.0 or
   newer. An older extension gets no such pin: rebuild and reload it
   (`version_status` in `extension_browsers`).
+- A card or identity field under an ancestor `clip-path: inset(...)` that holds
+  the whole field (a side drawer that trims its shadow) pins from fill
+  extension 0.7.2 (akdbx 0.36.3), on this route only: the CDP route cannot see
+  closed shadow roots and refuses it. An older extension also refuses it as
+  `target unavailable, changed or unsupported`
+  ([clipped drawer or modal](identities.md#field-inside-a-clipped-drawer-or-modal-0363)).
 - Read pins and password pins in a child frame need fill extension 0.4.0 or
   newer; the broker refuses them from an older one. Build
   the extension again and reload it. From 0.4.0 both sealing keys bind the
