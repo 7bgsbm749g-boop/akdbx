@@ -193,8 +193,10 @@ akdbx fill-identity --field tel --format international --calling-code 44 \
   area code (`(020) 7946 ...`) works too.
 - For a `0...` number the broker cannot check the country: it takes
   `--calling-code` as the number's country, and a wrong code fills a wrong
-  number. Give it only when you know the number's country, for example from
-  the identity's saved `country` or from the user, and set the picker to it.
+  number. Give it only when the user told you the phone number's country, and
+  set the picker to it. The identity's address `country` is not the phone's
+  country (a French address can go with an Australian mobile); if you do not
+  know, ask the user.
 - For those trunk-0 countries a `0` after the calling code (`+44 07...`)
   refuses: it is the wrong number a page made from `07...` and a +44 picker.
 - A `(0)` marker, letters or an extension refuse: the broker cannot split
