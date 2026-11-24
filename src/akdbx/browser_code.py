@@ -13,8 +13,8 @@ FIELDS = ('one-time-code', 'webhook-url')
 
 def _derive(script: str) -> str:
     replacements = (
-        ("(selector, field, frameURL, topURL, processor=false, identity=false) => {",
-         "(selector, field, frameURL, topURL, processor=false, identity=false, code=false) => {"),
+        ("(selector, field, frameURL, topURL, processor=false, identity=false, purpose=false, allowOff=false) => {",
+         "(selector, field, frameURL, topURL, processor=false, identity=false, purpose=false, allowOff=false, code=false) => {"),
         ("  if (!input && !select && !textarea) return null;\n",
          "  if (!input && !select && !textarea) return null;\n  if (code && !input) return null;\n"),
         ("  } else if (computop ? !knownComputopField() :",
@@ -41,7 +41,7 @@ class BrowserCodes(BrowserCards):
     delivery = DELIVERY
     fields = FIELDS
     pin_script = CODE_PIN_SCRIPT
-    pin_extra = (False, False, True)
+    pin_extra = (False, False, False, False, True)
 
     def capabilities(self):
         return dict(code_protocol=1, code_browser_configured=self.configured, **self._receipt())

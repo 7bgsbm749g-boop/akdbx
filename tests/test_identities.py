@@ -22,7 +22,7 @@ IDENTITY = dict.fromkeys(FIELDS, '') | {
     'postal-code': '00042',
     'country': 'NZ',
     'country-name': 'New Zealand',
-    'tel': '+49 000 000000',
+    'tel': '+49 30 000000',
     'email': 'synthetic-only@example.test',
 }
 LABEL = 'Sample shipping'
@@ -533,7 +533,7 @@ def test_update_selects_a_unique_identity_under_an_ambiguous_group_path(deployed
     ('+1 (000) 000-0000', '0000000000', '1'),
     ('+7 900 000 00 00', '9000000000', '7'),
     ('+358 40 0000000', '400000000', '358'),
-    ('+49 000 000000', '000000000', '49'),
+    ('+49 30 000000', '30000000', '49'),
     ('+39 06 0000 0000', '0600000000', '39'),
     ('+852 0000 0000', '00000000', '852'),
     ('+33\u202f6\u202f00\u202f00\u202f00\u202f00', '600000000', '33'),
@@ -557,9 +557,110 @@ def test_national_format_refuses_a_number_it_cannot_split_safely(saved):
         national_number(saved)
 
 
+@pytest.mark.parametrize('saved, code, national', [
+    ('07000 000000', '44', '7000000000'),
+    ('07000-000-000', '44', '7000000000'),
+    ('020 0000 0000', '44', '2000000000'),
+    ('0800 000 0000', '44', '8000000000'),
+    ('\u00a007000\u2009000000 ', '44', '7000000000'),
+    ('030 000000', '49', '30000000'),
+    ('06 00 00 00 00', '33', '600000000'),
+    ('04 0000 0000', '61', '400000000'),
+    ('020 000 0000', '31', '200000000'),
+    ('(020) 0000 0000', '44', '2000000000'),
+    ('(07000) 000000', '44', '7000000000'),
+    ('( 020 ) 0000-0000', '44', '2000000000'),
+    ('(02) 0000 0000', '61', '200000000'),
+])
+def test_trunk_zero_number_with_its_calling_code_drops_only_the_trunk_zero(saved, code, national):
+    from akdbx.identities import international_number, national_number
+    assert national_number(saved, code) == national
+    assert international_number(saved, code) == '+' + code + national
+
+
+@pytest.mark.parametrize('saved, code', [
+    ('07000 000000', None),     # the country is unknown
+    ('07000 000000', '39'),     # Italy: the 0 is part of the number
+    ('06 0000 0000', '39'),
+    ('0549 000000', '378'),     # San Marino
+    ('07 00 00 00 00', '225'),  # Côte d'Ivoire: the 0 is part of the number
+    ('8 900 000 00 00', '7'),   # Russia: trunk prefix 8, not 0
+    ('06 1 000 0000', '36'),    # Hungary: trunk prefix 06
+    ('011 15 0000 0000', '54'),  # Argentina: mobile digits around the trunk 0
+    ('021 0000 0000', '55'),    # Brazil: carrier selection after the trunk 0
+    ('0600 000000', '34'),      # Spain: no trunk prefix
+    ('090 0000 0000', '81'),    # Japan: some numbers begin with 0
+    ('0 0000 000000', '44'),    # 0 followed by 0
+    ('007000 000000', '44'),    # 00 is the international prefix, then a bad code
+    ('07000 0000', '44'),       # a length the UK does not use
+    ('07000 0000000', '44'),
+    ('(0)7000 000000', '44'),   # a (0) marker, not a trunk prefix
+    ('(0) 7000 000000', '44'),
+    ('(00) 7000 000000', '44'),
+    ('((07000)) 000000', '44'),
+    ('(07000 000000', '44'),
+    ('07000) 000000', '44'),
+    ('07000 (0)00000', '44'),
+    ('07000 000000 ext 2', '44'),
+    ('7000 000000', '44'),      # no trunk prefix
+    ('', '44'),
+    ('0', '44'),
+])
+def test_trunk_zero_number_refuses_what_it_cannot_place_safely(saved, code):
+    from akdbx.identities import international_number, national_number
+    for split in (national_number, international_number):
+        with pytest.raises(Exception):
+            split(saved, code)
+
+
+@pytest.mark.parametrize('saved', ['+44 07000 000000', '0044 07000 000000', '+49 030 000000', '+33 06 00 00 00 00'])
+def test_trunk_zero_after_the_calling_code_refuses(saved):
+    # "+4407..." is the wrong number a page with a +44 picker made from "07...".
+    from akdbx.identities import international_number, national_number
+    for split in (national_number, international_number):
+        with pytest.raises(Exception):
+            split(saved)
+
+
+@pytest.mark.parametrize('saved, code, international', [
+    ('+44 7000 000000', '44', '+447000000000'),
+    ('0044 20 0000 0000', '44', '+442000000000'),
+    ('+1 (000) 000-0000', '1', '+10000000000'),
+    ('+39 06 0000 0000', '39', '+390600000000'),
+    ('+358 40 0000000', '358', '+358400000000'),
+])
+def test_international_format_normalizes_an_international_number(saved, code, international):
+    from akdbx.identities import international_number
+    assert international_number(saved) == international
+    assert international_number(saved, code) == international
+    with pytest.raises(Exception):
+        international_number(saved, '999')
+
+
+def test_trunk_zero_table_keeps_the_trunk_digit_rule():
+    from akdbx.identities import TRUNK_ZERO, TWO_DIGIT_CODES, calling_code
+    assert {'39', '378', '379', '225', '229', '7', '36', '54', '55', '34', '81', '1'}.isdisjoint(TRUNK_ZERO)
+    assert TRUNK_ZERO['44'] == '7 9 10'
+    for code, lengths in TRUNK_ZERO.items():
+        # A real calling code, in the prefix-free set calling_code() splits.
+        assert calling_code(code + '0' * 12) == code and (len(code) != 2 or code in TWO_DIGIT_CODES)
+        assert all(4 <= int(n) <= 14 and len(code) + int(n) <= 15 for n in lengths.split())
+
+
+def test_phone_refusals_never_show_the_number():
+    from akdbx.identities import international_number, national_number
+    for saved, code in [('07123 456789', '39'), ('07123 456789', None), ('+44 07123 456789', '44'),
+                        ('07123 456789', '33')]:
+        for split in (national_number, international_number):
+            with pytest.raises(Exception) as refused:
+                split(saved, code)
+            assert '123' not in str(refused.value) + repr(refused.value)
+
+
 def test_identity_status_advertises_field_purpose_and_the_national_format():
     status = Broker(Vault([]), RecordingTyper()).dispatch(dict(action='ping'))
-    assert status['identity_field_purpose_protocol'] == 1 and status['identity_tel_formats'] == ['national']
+    assert status['identity_field_purpose_protocol'] == 1
+    assert status['identity_tel_formats'] == ['national', 'international']
 
 
 class PhoneIdentity(Entry):
@@ -586,11 +687,14 @@ class RecordingTargets:
 
 @pytest.mark.parametrize('extra, delivered', [
     ({}, IDENTITY['tel']),
-    ({'format': 'national'}, '000000000'),
-    ({'format': 'national', 'calling_code': '49'}, '000000000'),
+    ({'format': 'national'}, '30000000'),
+    ({'format': 'national', 'calling_code': '49'}, '30000000'),
     ({'format': 'national', 'calling_code': '44'}, None),
+    ({'format': 'international'}, '+4930000000'),
+    ({'format': 'international', 'calling_code': '49'}, '+4930000000'),
+    ({'format': 'international', 'calling_code': '44'}, None),
     ({'calling_code': '49'}, None),
-    ({'format': 'international'}, None),
+    ({'format': 'e164'}, None),
     ({'format': 'national', 'calling_code': '+49'}, None),
     ({'format': 'national', 'calling_code': 49}, None),
 ])
@@ -637,9 +741,11 @@ CAPS = dict(ok=True, locked=False, identity_protocol=1, identity_delivery='cdp-i
     (['fill-identity', '--field', 'email', '--format', 'national', '--target', 'a' * 64, '--', 'b' * 64],
      CAPS | dict(identity_tel_formats=['national']), '--format applies only to --field tel'),
     (['fill-identity', '--field', 'tel', '--calling-code', '44', '--target', 'a' * 64, '--', 'b' * 64],
-     CAPS | dict(identity_tel_formats=['national']), '--calling-code needs --format national'),
+     CAPS | dict(identity_tel_formats=['national']), '--calling-code needs --format'),
     (['fill-identity', '--field', 'tel', '--format', 'national', '--calling-code', '+44', '--target', 'a' * 64,
-      '--', 'b' * 64], CAPS | dict(identity_tel_formats=['national']), '--calling-code needs --format national'),
+      '--', 'b' * 64], CAPS | dict(identity_tel_formats=['national']), '--calling-code needs --format'),
+    (['fill-identity', '--field', 'tel', '--format', 'international', '--calling-code', '44', '--target', 'a' * 64,
+      '--', 'b' * 64], CAPS | dict(identity_tel_formats=['national']), 'broker lacks the international tel format'),
 ])
 def test_cli_refuses_purpose_and_format_options_before_sending(args, caps, error, monkeypatch, capsys):
     calls = []

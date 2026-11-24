@@ -156,6 +156,46 @@ pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
   broker-socket and Unix-socket unlock notes below do not describe the Windows
   transport. [Private HTTPS pages](docs/private-pages.md) describes the unlock
   page for both platforms.
+- **Android devices and emulators** (0.36.0+): a broker on Linux fills a
+  login, password, username or authenticator code into one verified field on
+  an Android device that the operator names in a device file. See
+  [Android devices](#android-devices-0360).
+
+## Android devices (0.36.0)
+
+`akdbx android inspect | pin | fill | fill-totp | google-sign-in` reach a
+device through the operator's adb server. The broker speaks adb's protocol
+itself on a loopback connection whose owner it checks, and binds each pin to
+the device (adb serial and boot), the focused app (package, signing
+certificate, activity, task) and the field. It fills only an entry whose URL
+or additional URL is the verified site:
+
+- **Chrome tabs and Custom Tabs** (Google-signed Chrome): the exact origin of
+  the one visible, focused tab, matched to Chrome's own address bar. The
+  broker reads and fills the page through Chrome's DevTools socket (forwarded
+  by adb only while it connects). Before a value moves, an on-device helper
+  types a random check string as key events that Android delivers only to
+  Chrome's windows, and the pinned element must show it: that proves the
+  connection is Chrome's and the field has focus.
+- **Google account sign-in** in Google Play services: `akdbx android
+  google-sign-in` opens a new sign-in itself and fills a consumer (`@gmail.com`)
+  account's email, password and code on the pages Google's flow shows, in one
+  helper run. Its web view shows no page URL, so separate password and code
+  pins there are refused.
+- **Other apps** (native fields only): the site the agent names with
+  `--app-site`, only when that site's Digital Asset Links share its
+  credentials (`get_login_creds`) with the app's package and current signing
+  certificate.
+
+App fields and Google sign-in use the same helper (`src/akdbx/android_assets`,
+built reproducibly from [`android/helper`](android/helper)), which finds the
+exact field through Android's accessibility API and sets the value there. A
+value travels only on the helper's standard input: never an argument, typed
+by the agent, on the clipboard, in a response or in a log. The broker refuses
+while the device lets accessibility read password text.
+
+Setup, the agent procedure, Google Play and GitHub Mobile steps and the
+limits are in [Android devices](skills/akdbx/references/android.md).
 
 ## Security model
 
@@ -446,7 +486,13 @@ token after the agent verified its purpose; a token for another detail still
 refuses (`identity_field_purpose_protocol: 1`, fill extension 0.7.0 on the
 extension route). `fill-identity --field tel --format national
 [--calling-code CODE]` removes the `+` and country calling code for a phone
-input next to a separate country picker (`identity_tel_formats`). See
+input next to a separate country picker (`identity_tel_formats`). From
+0.36.1, `--format international [--calling-code CODE]` fills `+`, the code
+and the national number, and both formats accept a saved national number
+with a trunk `0` (`07...`) when `--calling-code` names a country whose trunk
+`0` is never part of the number (`TRUNK_ZERO`, from Google libphonenumber
+metadata; `tools/trunk_zero_table.py` prints it). Other countries, such as
+Italy, refuse instead of guessing. See
 [identity workflows](skills/akdbx/references/identities.md) for
 supported fields, target discovery and example commands.
 

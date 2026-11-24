@@ -1,4 +1,4 @@
 """Agent-safe KeePass autofill broker."""
 
-__version__ = "0.35.3"
+__version__ = "0.36.1"
 

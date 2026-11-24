@@ -54,10 +54,12 @@ def add_parsers(commands):
     p.add_argument('--target', required=True)
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
     p.add_argument('--format', choices=TEL_FORMATS,
-                   help='tel only: national removes the + and the country calling code (the saved value stays as it is)')
+                   help='tel only: national fills the national significant number (digits only: no +, calling code '
+                        'or trunk 0); international fills + calling code and that number; the saved value stays as it is')
     p.add_argument('--calling-code', metavar='DIGITS',
-                   help='with --format national: refuse unless the saved number has this country calling code, '
-                        'for example 44 when the page\'s country picker shows +44')
+                   help='with --format: the country calling code the page\'s country picker shows, for example 44 '
+                        'for +44; refuse unless the saved number has it; required when the saved number is in '
+                        'national form with a trunk 0 (07...), which only some countries allow')
 
 
 def field_list(text):
@@ -82,7 +84,7 @@ def _option_refusal(args, caps):
             return 'broker lacks identity field purpose protocol 1'
     if args.command == 'fill-identity':
         if args.calling_code is not None and (args.format is None or not re.fullmatch('[1-9][0-9]{0,2}', args.calling_code)):
-            return '--calling-code needs --format national and 1 to 3 digits without +'
+            return '--calling-code needs --format and 1 to 3 digits without +'
         if args.format is not None and args.field != 'tel':
             return '--format applies only to --field tel'
         formats = caps.get('identity_tel_formats')
