@@ -164,11 +164,13 @@ reported as `uncertain`.
   password when Google did not find the account).
 - Chrome pages: the field must accept the check string, which is 6 to 16
   letters and digits (up to the field's maximum length). In a code field it
-  is 5 to 8 characters with a letter and shorter than the field's limit, so
-  a page that submits a complete code never submits it; a number field gets
-  5 digits. A code field that drops letters, or a non-number field shorter
-  than 6 characters, is refused. An authenticator code is visible on screen
-  after it is filled, until the page submits it.
+  is 5 characters with a letter (5 digits in a number field), fewer than any
+  code, so a page that submits a complete code never submits it. A code
+  field that drops letters, a code field limited to fewer than 6 characters,
+  or another field limited to fewer than 6 is refused. An authenticator code
+  is visible on screen after it is filled, until the page submits it.
+- A site with so many open tabs that Chrome's DevTools cannot list them
+  within 30 seconds is refused; close some tabs.
 - Chrome on Android sometimes stops giving its page to accessibility, so
   Chrome pages are read through DevTools. For other apps' web views the helper
   may briefly open and close the system volume panel to make the app rebuild

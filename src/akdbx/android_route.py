@@ -82,7 +82,7 @@ HELPER_TIMEOUT = 25.0
 SIGN_IN_TIMEOUT = 140.0
 DEVICE_PROBE_TIMEOUT = 15.0
 DEVICE_LIST_BUDGET = 150.0
-MAX_TABS = 200
+TAB_ATTACH_BUDGET = 30.0
 TAB_CALL_TIMEOUT = 2.0
 # A frozen background tab answers no DevTools call: all tabs are asked at once.
 TAB_PROBE_TIMEOUT = 3.0
@@ -586,17 +586,13 @@ def _answering_shown(connection, sessions, timeout):
 def _check_string(mode, max_length, input_type):
     """A random string for the typed check that the field takes and that cannot pass as a code.
 
-    In a code field it has letters (where the field takes them) and is shorter
-    than the field's limit, so a page that submits a complete code never
-    submits it. A number field takes digits only: five, below any 6-digit code.
+    In a code field it is five characters, fewer than any code, so a page that
+    submits when a code is complete never submits it; it has a letter where
+    the field takes one. A number field takes digits only.
     """
     if mode == 'totp':
-        if input_type == 'number':
-            size, alphabet = 5, '0123456789'
-        else:
-            size = min(8, max_length - 1) if max_length > 0 else 8
-            alphabet = NONCE_ALPHABET
-        if size < 5:
+        size, alphabet = 5, '0123456789' if input_type == 'number' else NONCE_ALPHABET
+        if 0 <= max_length < 6:
             raise TargetError()
         text = ''.join(secrets.choice(alphabet) for _ in range(size))
         if alphabet is NONCE_ALPHABET and text.isdigit():
@@ -856,7 +852,10 @@ class AndroidTargets:
             pages = [t for t in pages if isinstance(t.get('url'), str) and _origin_of(t['url']) is not None
                      and _authority_matches(context['address_bar'], _origin_of(t['url']))]
         sessions = {}
-        for page in pages[:MAX_TABS]:
+        attach_deadline = time.monotonic() + TAB_ATTACH_BUDGET
+        for page in pages:
+            if time.monotonic() >= attach_deadline:
+                raise AndroidError('too many tabs on this site to find the focused one; close some and try again')
             try:
                 sessions[connection.call('Target.attachToTarget', {'targetId': page['targetId'], 'flatten': True},
                                          timeout=TAB_CALL_TIMEOUT)['sessionId']] = page
@@ -1157,12 +1156,13 @@ class AndroidTargets:
         return CHROME_DELIVERY if pin.source == 'chrome' else DELIVERY
 
     def deliver(self, pin: AndroidPin, mode: str, values: list[str], ready: Callable[[], bool],
-                start_deadline: float, connected: Callable[[], bool] = lambda: True) -> None:
+                start_deadline: float, connected: Callable[[], bool] = lambda: True,
+                valid: Callable[[], bool] = lambda: True) -> None:
         """Fill the pinned fields; raise DeliveryError(started) on any failure."""
         if pin.used or pin.mode != mode or len(values) != (len(pin.dom.objects) if pin.dom is not None else len(pin.fields)):
             raise DeliveryError(False)
         if pin.dom is not None:
-            return self._deliver_page(pin, values, ready, start_deadline, connected)
+            return self._deliver_page(pin, values, ready, start_deadline, connected, valid)
         pin.used = True
         adb = self.adb_factory(pin.device)
         try:
@@ -1197,7 +1197,7 @@ class AndroidTargets:
                            for r in results)):
             raise DeliveryError(answer.get('delivered') is not False)
 
-    def _deliver_page(self, pin, values, ready, start_deadline, connected):
+    def _deliver_page(self, pin, values, ready, start_deadline, connected, valid):
         """Prove the DevTools peer is Chrome and the pinned field has focus, then set each value on it."""
         dom = pin.dom
         adb = self.adb_factory(pin.device)
@@ -1221,6 +1221,9 @@ class AndroidTargets:
                         or not isinstance(prepared[1], str)):
                     raise TargetError()
                 check = _check_string(pin.mode, *prepared)
+                # The first key event starts the fill: the start deadline bounds it.
+                if not (ready() if index == 0 else connected()):
+                    raise TargetError()
                 answer = adb.helper({'op': 'type', 'boot_id': pin.boot_id, 'task_id': pin.context['task_id'],
                                      'address_bar': pin.context['address_bar'], 'value': check}, install=False)
                 if answer.get('ok') is not True or answer.get('complete') is not True:
@@ -1230,9 +1233,8 @@ class AndroidTargets:
                 shown = dom.call(index, 'function() { return this.read(); }')
                 if not isinstance(shown, str) or not secrets.compare_digest(shown.encode(), check.encode()):
                     raise TargetError()
-                # Authorized right before each value: the start (and code) checks for the first,
-                # the caller's connection for later ones.
-                if not (ready() if index == 0 else connected()):
+                # Right before each value: the caller is still there and a code is still valid.
+                if not (connected() and valid()):
                     raise TargetError()
                 started = True
                 result = dom.call(index, 'function(value) { return this.set(value); }', value)

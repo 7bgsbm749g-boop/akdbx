@@ -618,7 +618,8 @@ def test_a_devtools_peer_that_cannot_show_the_typed_check_never_gets_the_value(d
 
 
 @pytest.mark.parametrize('max_length, input_type, size, digits', [
-    (-1, 'text', 8, False), (6, 'tel', 5, False), (11, 'text', 8, False), (-1, 'number', 5, True)])
+    # Five characters even without a maximum: a page may submit at six.
+    (-1, 'text', 5, False), (6, 'tel', 5, False), (11, 'text', 5, False), (-1, 'number', 5, True)])
 def test_a_code_field_check_never_looks_like_a_complete_code(max_length, input_type, size, digits):
     for _ in range(50):
         check = android_route._check_string('totp', max_length, input_type)
@@ -862,3 +863,24 @@ def test_cli_google_sign_in_sends_no_value(capsys):
     code, sent, out = run_cli(['android', 'google-sign-in', 'a' * 64, '--device', 'phone', '--code'], [receipt], capsys)
     assert code == 0 and json.loads(out.out) == receipt
     assert set(sent[1]) == {'action', 'android_protocol', 'device', 'handle', 'code', 'start_deadline'} and sent[1]['code'] is True
+
+
+def test_the_start_deadline_bounds_the_first_key_not_the_value(device_file):
+    # The first typed key starts the fill; a slow device may pass 4 seconds while typing.
+    cdp = FakeCDP('https://example.com/login')
+    broker, scene = chrome_broker(device_file, cdp)
+    now = [100.0]
+    broker.clock = broker.android.clock = lambda: now[0]
+    pinned = pin(broker, mode='password', field='#password')
+    original = FakeAdb.helper
+
+    def slow(self, request, **kwargs):
+        if request['op'] == 'type':
+            now[0] += 5
+        return original(self, request, **kwargs)
+    FakeAdb.helper = slow
+    try:
+        assert fill(broker, 'synthetic-user', pinned['target'])['ok']
+    finally:
+        FakeAdb.helper = original
+    assert cdp.set_values() == [SECRET]
