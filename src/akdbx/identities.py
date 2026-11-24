@@ -99,7 +99,9 @@ def _phone_number(value, expected_code=None):
 
     The saved value must start with ``+`` or ``00`` and the country calling code,
     or, when ``expected_code`` (digits) names a country in TRUNK_ZERO, with one
-    national trunk prefix ``0`` and a non-zero digit. Spaces (any Unicode space
+    national trunk prefix ``0`` (which may open a bracketed area code) and a
+    non-zero digit. The broker cannot check the country of such a number:
+    ``expected_code`` is taken as its country. Spaces (any Unicode space
     separator), hyphens, dots, slashes and brackets are dropped. Anything else
     refuses, so a value with an extension or letters is never cut short. A
     ``(0)`` marker refuses too: some countries drop that zero after the calling
@@ -110,18 +112,20 @@ def _phone_number(value, expected_code=None):
     separate country picker that already shows it. Errors never include the value.
     """
     text = ''.join(' ' if unicodedata.category(c) == 'Zs' else c for c in value).strip()
+    if re.search(r'\(\s*0\s*\)', text):
+        raise WriteError()
     trunk = False
     if text.startswith('+'):
         text = text[1:]
     elif text.startswith('00'):
         text = text[2:]
-    elif text.startswith('0') and expected_code in TRUNK_ZERO:
-        text, trunk = text[1:], True
+    elif expected_code in TRUNK_ZERO and re.match(r'\(?\s*0', text):
+        # The trunk 0 may open a bracketed area code: (020) 7946 0000.
+        at = text.index('0')
+        text, trunk = text[:at] + text[at + 1:], True
     else:
         raise WriteError()
-    if not re.fullmatch(r'[0-9 ().\-/]+', text):
-        raise WriteError()
-    if re.search(r'\(\s*0\s*\)', text) or text.count('(') != text.count(')'):
+    if not re.fullmatch(r'[0-9 ().\-/]+', text) or text.count('(') != text.count(')'):
         raise WriteError()
     digits = re.sub(r'[^0-9]', '', text)
     if trunk:

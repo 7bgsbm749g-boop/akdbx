@@ -567,6 +567,10 @@ def test_national_format_refuses_a_number_it_cannot_split_safely(saved):
     ('06 00 00 00 00', '33', '600000000'),
     ('04 0000 0000', '61', '400000000'),
     ('020 000 0000', '31', '200000000'),
+    ('(020) 0000 0000', '44', '2000000000'),
+    ('(07000) 000000', '44', '7000000000'),
+    ('( 020 ) 0000-0000', '44', '2000000000'),
+    ('(02) 0000 0000', '61', '200000000'),
 ])
 def test_trunk_zero_number_with_its_calling_code_drops_only_the_trunk_zero(saved, code, national):
     from akdbx.identities import international_number, national_number
@@ -590,7 +594,12 @@ def test_trunk_zero_number_with_its_calling_code_drops_only_the_trunk_zero(saved
     ('007000 000000', '44'),    # 00 is the international prefix, then a bad code
     ('07000 0000', '44'),       # a length the UK does not use
     ('07000 0000000', '44'),
-    ('(07000) 000000', '44'),   # does not begin with the trunk 0
+    ('(0)7000 000000', '44'),   # a (0) marker, not a trunk prefix
+    ('(0) 7000 000000', '44'),
+    ('(00) 7000 000000', '44'),
+    ('((07000)) 000000', '44'),
+    ('(07000 000000', '44'),
+    ('07000) 000000', '44'),
     ('07000 (0)00000', '44'),
     ('07000 000000 ext 2', '44'),
     ('7000 000000', '44'),      # no trunk prefix

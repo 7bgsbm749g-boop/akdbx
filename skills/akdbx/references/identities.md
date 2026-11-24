@@ -178,7 +178,8 @@ akdbx fill-identity --field tel --format international --calling-code 44 \
   number (`+447...`). The saved value does not change.
 - `--calling-code DIGITS` (no `+`) is the code the page's picker shows. A saved
   `+...` or `00...` number refuses unless it has that code, so a number of
-  another country never goes next to the picker. Check the picker shows the
+  another country never goes next to the picker (for a `0...` number, see
+  below). Check the picker shows the
   right country before you fill.
 - A saved number in national form with one trunk `0` (`07...`, 0.35.4) works
   only with `--calling-code`, which tells the broker the country. The broker
@@ -188,7 +189,12 @@ akdbx fill-identity --field tel --format international --calling-code 44 \
   only for a number of a length that country uses. Other countries refuse: in
   Italy (39) the `0` is part of the number, Russia (7) uses `8`, Hungary (36)
   uses `06`, Argentina (54) and Brazil (55) put other digits next to it.
-  Without `--calling-code` it refuses: the country is unknown.
+  Without `--calling-code` it refuses: the country is unknown. A bracketed
+  area code (`(020) 7946 ...`) works too.
+- For a `0...` number the broker cannot check the country: it takes
+  `--calling-code` as the number's country, and a wrong code fills a wrong
+  number. Give it only when you know the number's country, for example from
+  the identity's saved `country` or from the user, and set the picker to it.
 - For those trunk-0 countries a `0` after the calling code (`+44 07...`)
   refuses: it is the wrong number a page made from `07...` and a +44 picker.
 - A `(0)` marker, letters or an extension refuse: the broker cannot split
