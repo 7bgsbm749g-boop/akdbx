@@ -406,11 +406,16 @@ def test_a_broker_without_slots_refuses_a_slot_pin(slot_lab, tmp_path):
 def test_cli_slot_pin_and_pending_fill(slot_lab, monkeypatch, capsys):
     lab = slot_lab
     monkeypatch.setattr(cli, 'request', lambda socket, payload, **kwargs: lab.broker.dispatch(payload))
-    monkeypatch.setenv('AGENT_DESKTOP_SLOT', 'slot2')  # The desktop's variable selects the slot by default.
+    monkeypatch.setenv('AGENT_DESKTOP_SLOT', 'slot2')
     open_page(lab, VERIFY)
+    # The desktop's variable alone does not make a window pin a slot pin: a native app needs a plain one.
+    focus_code_field(lab)
+    assert cli.main(['pin-target', '--pid', str(lab.chrome.pid), '--window', str(lab.window.id)]) == 1
+    assert 'browser_slot' not in capsys.readouterr().out
     for _ in range(2):
         focus_code_field(lab)
-        assert cli.main(['pin-target', '--pid', str(lab.chrome.pid), '--window', str(lab.window.id)]) == 0
+        assert cli.main(['pin-target', '--pid', str(lab.chrome.pid), '--window', str(lab.window.id),
+                         '--browser-slot', 'slot2']) == 0
         pinned = json.loads(capsys.readouterr().out)
         assert pinned['browser_slot'] == 'slot2'
         assert cli.main(['search', TITLE]) == 0

@@ -62,8 +62,9 @@ refusal. A pin stays in the Chrome it was made in: fill it with the usual
 **Window pins in a slot (0.35.1+, `target_slot_protocol: 1`).** A slot's
 Chrome runs on the slot's own X display (for example `:101`), and the broker
 runs on another one. `pin-target` for a username or TOTP field in that Chrome
-takes `--browser-slot SLOT` too (default `$AGENT_DESKTOP_SLOT` for a broker that
-reports a root):
+takes `--browser-slot SLOT` too. Pass it explicitly (the CLI does not take it
+from `$AGENT_DESKTOP_SLOT` for a window pin, because a native app on the
+broker's display needs a pin without it):
 
 ```bash
 akdbx pin-target --pid SLOT_CHROME_PID --window SLOT_CHROME_WINDOW --browser-slot SLOT
@@ -73,7 +74,9 @@ akdbx fill-totp HANDLE [--pending] --target-url 'https://example.com/two-factor'
 The broker takes the slot Chrome's PID from the profile lock (`SingletonLock`)
 and checks that this process is ours and runs exactly that profile. It then
 finds the one local X display of this user where that PID is a connected
-client, with that X server's own cookie file. `--pid` must be that Chrome's
+client. It opens that display only as a Unix socket whose peer is an X server
+of this user, and sends that server's own `-auth` cookie only after it checks
+the peer. `--pid` must be that Chrome's
 browser PID, and the window must be its focused, active top-level window on
 that display, as for every window pin. The receipt adds `browser_slot`. The
 pin and the fill both stay on that display. A slot with no running Chrome

@@ -16,6 +16,7 @@ DELIVERY_TIMEOUT = 3.0
 
 
 SLOT_PROTOCOL = 1
+SLOT_X_TIMEOUT = 5.0
 
 
 def capabilities():
@@ -119,6 +120,8 @@ def _slot_auth(sock, dno):
     pid, uid, _ = struct.unpack('3i', sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, size))
     if uid != os.getuid() or pid <= 0:
         raise error.XauthError('slot display server is not this user')
+    # A frozen server must not hold a pin (and the broker's vault lock) for long.
+    sock.settimeout(SLOT_X_TIMEOUT)
     try:
         path = x11_cookie_file(pid)
     except (OSError, ValueError):

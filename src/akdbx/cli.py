@@ -416,9 +416,8 @@ def parser() -> argparse.ArgumentParser:
     pin.add_argument('--pid', type=int, required=True)
     pin.add_argument('--window', type=lambda value: int(value, 0), required=True, help='verified X11 client window ID or Windows top-level HWND, decimal or 0x hex')
     pin.add_argument('--browser-slot', metavar='SLOT',
-                     help='agent desktop slot whose Chrome owns the window (Linux): the broker pins it on that '
-                          'slot\'s X display; --pid must be that Chrome. Default: $AGENT_DESKTOP_SLOT when the broker '
-                          'runs with --browser-profile-root')
+                     help='agent desktop slot whose Chrome owns the window (Linux, broker 0.35.1+): the broker pins it '
+                          'on that slot\'s X display; --pid must be that Chrome. Not taken from $AGENT_DESKTOP_SLOT')
     password_pin = commands.add_parser('pin-password-target', help='pin an exact HTTPS main-frame or same-site child-frame password field; no keyboard fallback')
     for flag in ('page-id', 'frame-id', 'selector'):
         password_pin.add_argument('--' + flag, required=True)
@@ -1112,7 +1111,9 @@ def _command(args) -> int:
                     or capabilities['password_frame_protocol'] != 1 or capabilities.get('password_frame_policy') != 'same-site-chain-v1'):
                 print(json.dumps({'ok': False, 'error': 'broker lacks password frame protocol 1; require broker 0.16.0 or newer; frame request not sent'}))
                 return 1
-        if args.command in {'list-password-frames', 'pin-password-target', 'pin-target'} and browser_slots.chosen(args) is not None:
+        # A window pin takes a slot only when asked: from a slot shell it can also pin a native app on the broker's display.
+        if (args.command in {'list-password-frames', 'pin-password-target'} and browser_slots.chosen(args) is not None
+                or args.command == 'pin-target' and args.browser_slot is not None):
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
             slot_route = ('cdp' if args.command == 'pin-target' else
