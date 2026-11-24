@@ -38,7 +38,41 @@ STRIPE_ELEMENTS_JSON = json.dumps({name: {'path': '^' + path + '$', 'fields': fi
 # Rectangles and elementFromPoint cannot prove visual exposure through masks or
 # filters or blending. Stripe dialogs can translate the frame without changing
 # its axes. The offset is already included in getBoundingClientRect().
-STYLE_GUARD = r'''function supportedStyle(style, mapping=false, allowTranslation=false) {
+# One clip shape is provable: an ancestor's `clip-path: inset(...)` hides nothing
+# of a node whose whole border box lies inside the inset rectangle (a side drawer
+# that trims only its own shadow). The caller passes `clipped` to check that, and
+# must also prove the ancestor and everything above it unscaled and unrotated.
+STYLE_GUARD = r'''function insetContains(value, owner, rect) {
+  // Only px and % lengths: no calc(), no round corners, no reference box keyword.
+  // Only an HTML element with one box: its reference box is then its border box.
+  const n = '-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:px|%)';
+  const m = new RegExp('^inset\\((' + n + '(?: ' + n + '){0,3})\\)$').exec(value);
+  if (!m || owner.namespaceURI !== 'http://www.w3.org/1999/xhtml' ||
+      owner.getClientRects().length !== 1) return false;
+  const box = owner.getBoundingClientRect();
+  const [top, right=top, bottom=top, left=right] = m[1].split(' ');
+  const length = (v, size) => v.endsWith('%') ? parseFloat(v) * size / 100 : parseFloat(v);
+  const t = length(top, box.height), r = length(right, box.width);
+  const b = length(bottom, box.height), l = length(left, box.width);
+  return [t, r, b, l, rect.left, rect.right, rect.top, rect.bottom].every(Number.isFinite) &&
+    rect.left >= box.left + l && rect.right <= box.right - r &&
+    rect.top >= box.top + t && rect.bottom <= box.bottom - b;
+}
+// A translation moves an element and its clip together, and
+// getBoundingClientRect() includes it; scaling, rotation, perspective, a
+// motion path or zoom would make the inset lengths differ from screen pixels.
+function unscaled(style) {
+  const transform = style.getPropertyValue('transform').trim();
+  if (transform !== '' && transform !== 'none') {
+    if (!transform.startsWith('matrix(')) return false;
+    const m = new DOMMatrixReadOnly(transform);
+    if (!(m.is2D && m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1)) return false;
+  }
+  return ['rotate','scale','perspective','offset-path'].every(k =>
+    ['', 'none'].includes(style.getPropertyValue(k).trim())) &&
+    ['', '1'].includes(style.getPropertyValue('zoom').trim());
+}
+function supportedStyle(style, mapping=false, allowTranslation=false, clipped=null) {
   if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0 ||
       style.getPropertyValue('content-visibility') === 'hidden') return false;
   const blend = style.getPropertyValue('mix-blend-mode').trim();
@@ -48,6 +82,7 @@ STYLE_GUARD = r'''function supportedStyle(style, mapping=false, allowTranslation
   const geometry=mapping ? ['transform','rotate','translate','scale','perspective','offset-path'] : [];
   return [...visual,...geometry].every(k => {
     const value=style.getPropertyValue(k).trim();
+    if (clipped && k === 'clip-path' && value.startsWith('inset(')) return clipped(value);
     if (allowTranslation && k === 'transform' && value.startsWith('matrix(')) {
       const m = new DOMMatrixReadOnly(value);
       return m.is2D && m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1 &&

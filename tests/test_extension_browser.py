@@ -135,6 +135,14 @@ PAGES = {
                '<input id="phone-on" type="tel" autocomplete="on"><input id="phone-off" type="tel" autocomplete="off">'
                '<input id="phone-email" type="text" autocomplete="email"><input id="phone-national" type="tel" '
                'autocomplete="tel-national"></form>' + DIGEST),
+    # A side drawer that trims only its own shadow, an inset that cuts its field, and another clip shape.
+    '/drawer': ('<!doctype html><meta charset="utf-8"><form>'
+                '<div style="padding:16px;clip-path:inset(-32px 0px -32px -32px);box-shadow:0 0 16px #000">'
+                '<input id="drawer-phone" type="tel" style="width:200px;height:30px"></div>'
+                '<div style="padding:16px;clip-path:inset(0px 0px 0px 40px)">'
+                '<input id="cut-phone" type="tel" style="width:200px;height:30px"></div>'
+                '<div style="padding:16px;clip-path:polygon(0 0,100% 0,100% 100%,0 100%)">'
+                '<input id="shape-phone" type="tel" style="width:200px;height:30px"></div></form>' + DIGEST),
     '/framed-visible': LOGIN_FRAME.format(''),
     '/framed-hidden': LOGIN_FRAME.format('opacity:0'),
     '/decoy': '<!doctype html><meta charset="utf-8"><p>decoy</p>',
@@ -1210,6 +1218,28 @@ def test_an_identity_field_without_an_autocomplete_hint_fills_with_an_explicit_p
     assert lab.digest('phone') == EMPTY
     assert lab.digest('phone-email') == EMPTY and lab.digest('phone-national') == EMPTY
     assert not any(e['trusted'] for e in lab.evaluate('syntheticEvents'))
+
+
+def test_an_ancestor_clip_path_inset_that_holds_the_field_fills_and_others_refuse(harness):
+    """The extension runs the same pin script: a shadow-trimming inset fills; a cutting inset or other shape refuses."""
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate('/drawer')
+    purpose = dict(field_purpose='tel')
+    for selector in ('#cut-phone', '#shape-phone'):
+        assert identity_pin(harness, url, selector, **purpose) == card_failure(kind='identity'), selector
+    assert lab.untouched()
+    target = identity_pin(harness, url, '#drawer-phone', **purpose)
+    assert target['ok'], target
+    assert identity_fill(broker, target['target'])['ok']
+    assert lab.digest('drawer-phone') == sha(PHONE)
+    # An inset that starts to cut the field after the pin refuses the fill.
+    lab.evaluate("document.getElementById('drawer-phone').value = ''")
+    target = identity_pin(harness, url, '#drawer-phone', **purpose)
+    assert target['ok'], target
+    lab.evaluate("document.getElementById('drawer-phone').parentElement.style.clipPath = 'inset(0px 0px 0px 40px)'")
+    assert identity_fill(broker, target['target']) == card_failure(kind='identity')
+    assert lab.digest('drawer-phone') == EMPTY
+    assert lab.digest('cut-phone') == EMPTY and lab.digest('shape-phone') == EMPTY
 
 
 def test_an_older_extension_never_gets_an_identity_purpose_pin(harness):

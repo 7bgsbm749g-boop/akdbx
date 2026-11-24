@@ -561,7 +561,10 @@ input next to a separate country picker takes `fill-identity --format national
 --calling-code CODE` (digits without the code or trunk `0`) or, from 0.36.1,
 `--format international --calling-code CODE` (`+` code and number). A saved
 `07...` number needs `--calling-code`; some countries refuse it
-([identities](references/identities.md#phone-number-next-to-a-country-picker)). Names,
+([identities](references/identities.md#phone-number-next-to-a-country-picker)).
+From 0.36.2 (fill extension 0.7.2), a field in a side drawer or modal whose
+`clip-path: inset(...)` only trims its shadow pins; other clip shapes refuse
+([clipped ancestors](references/identities.md#field-inside-a-clipped-drawer-or-modal-0362)). Names,
 addresses, phone numbers and emails never go in CLI arguments, output, logs or
 evidence. Fill does not submit the form.
 

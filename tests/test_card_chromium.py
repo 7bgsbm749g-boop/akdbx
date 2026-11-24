@@ -331,6 +331,57 @@ def test_changed_or_wrong_field_refuses_without_writing_anywhere(chrome, mutatio
     assert chrome.broker.typer.events == []
 
 
+DRAWER = ("const d=document.createElement('div');d.id='drawer';number.before(d);d.append(number);"
+          "d.style.padding='16px';d.style.boxShadow='0 0 16px #000';")
+
+
+@pytest.mark.parametrize('style,accepted', [
+    # A side drawer that trims only its own shadow (Twilio console): nothing of the field is hidden.
+    ("d.style.clipPath='inset(-32px 0px -32px -32px)'", True),
+    ("d.style.clipPath='inset(0px)'", True),
+    ("d.style.clipPath='inset(-10% 8px)'", True),
+    ("d.style.clipPath='inset(-32px 0px -32px -32px)';d.style.transform='translateX(0px)'", True),
+    # The field's border box starts 21px below the drawer's (16px padding and its 5px margin).
+    ("d.style.clipPath='inset(21px 0px 0px)'", True),
+    # An inset that cuts the field, rounded corners, or anything scaling or rotating the clip refuses.
+    ("d.style.clipPath='inset(0px 0px 0px 40px)'", False),
+    ("d.style.clipPath='inset(22px 0px 0px)'", False),
+    ("d.style.clipPath='inset(50%)'", False),
+    ("d.style.clipPath='inset(-32px round 8px)'", False),
+    ("d.style.clipPath='inset(calc(-32px + 1%))'", False),
+    ("d.style.clipPath='inset(-32px) padding-box'", False),
+    ("d.style.clipPath='inset(-32px)';d.style.transform='scale(1.01)'", False),
+    ("d.style.clipPath='inset(-32px)';document.body.style.rotate='1deg'", False),
+    ("d.style.clipPath='inset(-32px)';document.body.style.zoom='1.5'", False),
+    # Every other clip shape still refuses.
+    ("d.style.clipPath='polygon(0 0,100% 0,100% 100%,0 100%)'", False),
+    ("d.style.clipPath='circle(100%)'", False),
+    ("d.style.clipPath='url(#none)'", False),
+    ("d.style.clip='rect(0px,999px,999px,0px)';d.style.position='absolute'", False)])
+def test_an_ancestor_clip_path_is_accepted_only_when_its_inset_holds_the_field(chrome, style, accepted):
+    evaluate(chrome, DRAWER + style)
+    target = pin(chrome)
+    assert target['ok'] is accepted, evaluate(chrome, "getComputedStyle(drawer).clipPath")
+    if accepted:
+        assert fill(chrome, target) == dict(ok=True, filled='cc-number', card_delivery='cdp-card-element-v1')
+        assert evaluate(chrome, 'number.value') == CARD['number']
+    else:
+        assert chrome.broker.card_targets.pins == {}
+    assert evaluate(chrome, "Array.from(document.querySelectorAll('input')).every(e=>e===number||e.value==='')")
+
+
+@pytest.mark.parametrize('change', ["drawer.style.clipPath='inset(0px 0px 0px 40px)'",
+    "drawer.style.clipPath='polygon(0 0,100% 0,100% 100%,0 100%)'", "drawer.style.transform='scale(0.5)'",
+    "drawer.style.paddingLeft='0px'"])
+def test_an_inset_that_cuts_the_field_after_the_pin_refuses_the_fill(chrome, change):
+    evaluate(chrome, DRAWER + "d.style.clipPath='inset(-32px 0px -32px 8px)'")
+    target = pin(chrome)
+    assert target['ok']
+    evaluate(chrome, change)
+    assert fill(chrome, target)['ok'] is False
+    assert evaluate(chrome, "Array.from(document.querySelectorAll('input')).every(e=>e.value==='')")
+
+
 @pytest.mark.parametrize('changes', [dict(selector='#address'), dict(selector='#password'), dict(selector='input'),
     dict(selector='#missing'), dict(field='cc-csc'), dict(top_url='https://wrong.test/'),
     dict(frame_url='https://wrong.test/'), dict(frame_id='wrong-frame'), dict(page_id='wrong-page'),
