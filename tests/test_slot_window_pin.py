@@ -535,13 +535,20 @@ def test_the_cookie_comes_from_the_connected_server_also_with_displayfd(tmp_path
     """An Xvfb that picks its own number (-displayfd) has no :N in argv; its -auth still gives the cookie."""
     import select
     from akdbx import target
+    if not shutil.which('Xvfb'):
+        pytest.skip('the -displayfd cookie test needs Xvfb')
     auth = tmp_path / 'displayfd-Xauthority'
     xauthority(auth)
     read_fd, write_fd = os.pipe()
-    xvfb = subprocess.Popen(['Xvfb', '-displayfd', str(write_fd), '-screen', '0', '320x240x24', '-nolisten', 'tcp',
-                             '-auth', str(auth)], pass_fds=(write_fd,), stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, start_new_session=True)
-    os.close(write_fd)
+    try:
+        xvfb = subprocess.Popen(['Xvfb', '-displayfd', str(write_fd), '-screen', '0', '320x240x24', '-nolisten', 'tcp',
+                                 '-auth', str(auth)], pass_fds=(write_fd,), stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+    except BaseException:
+        os.close(read_fd)
+        raise
+    finally:
+        os.close(write_fd)
     try:
         try:
             assert select.select([read_fd], [], [], 10)[0], 'synthetic X server did not start'
