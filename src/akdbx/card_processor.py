@@ -41,7 +41,8 @@ STRIPE_ELEMENTS_JSON = json.dumps({name: {'path': '^' + path + '$', 'fields': fi
 # One clip shape is provable: an ancestor's `clip-path: inset(...)` hides nothing
 # of a node whose whole border box lies inside the inset rectangle (a side drawer
 # that trims only its own shadow). The caller passes `clipped` to check that, and
-# must also check `flatChain()` on that ancestor and everything above it.
+# must also check `flatChain()` on that ancestor and everything above it. Only
+# the extension route accepts it.
 STYLE_GUARD = r'''function insetContains(value, owner, rect, style) {
   // Only px and % lengths: no calc(), no round corners, no reference box keyword.
   // Only an HTML block or atomic inline with one box: its reference box is then
@@ -76,8 +77,10 @@ STYLE_GUARD = r'''function insetContains(value, owner, rect, style) {
 // getBoundingClientRect() includes it; scaling, rotation, perspective, a
 // motion path or zoom would make the inset lengths differ from screen pixels.
 // So would an SVG viewport around a foreignObject, and a shadow tree into which
-// the element is slotted: its wrappers are not in the parentElement chain. The
-// extension can also see closed shadow roots.
+// the element is slotted: its wrappers are not in the parentElement chain. Only
+// the extension can see closed shadow roots, so the CDP route (where chrome.dom
+// does not exist) never accepts an inset: a closed wrapper that mirrors the
+// element keeps its size but swaps the edges an inset clips (issue #69).
 function flatChain(element, style) {
   const transform = style.getPropertyValue('transform').trim();
   if (transform !== '' && transform !== 'none') {
@@ -87,7 +90,7 @@ function flatChain(element, style) {
   }
   const parent = element.parentElement, closed = globalThis.chrome?.dom?.openOrClosedShadowRoot;
   return element.namespaceURI === 'http://www.w3.org/1999/xhtml' && element.assignedSlot === null &&
-    (parent === null || parent.shadowRoot === null && (typeof closed !== 'function' || !closed(parent))) &&
+    typeof closed === 'function' && (parent === null || parent.shadowRoot === null && !closed(parent)) &&
     ['rotate','scale','perspective','offset-path'].every(k =>
       ['', 'none'].includes(style.getPropertyValue(k).trim())) &&
     ['', '1'].includes(style.getPropertyValue('zoom').trim()) && (element.currentCSSZoom ?? 1) === 1;

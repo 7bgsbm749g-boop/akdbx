@@ -132,14 +132,27 @@ change events. A site that requires those events can need manual entry.
 
 Card and identity pins refuse a field when the field or an ancestor has CSS
 that can hide part of it: `clip`, masks, filters, `backdrop-filter`, a blend
-mode, and `clip-path`. From 0.36.2 (fill extension 0.7.2 on the extension
-route) one `clip-path` is accepted: `inset(...)` with only `px` or `%`
-lengths, on an HTML block or atomic inline element with one box, when the
-field's whole border box lies inside the inset rectangle of that element's
-border box (each inset widened by a 0.1% rounding margin). Side drawers and modals often use a negative
-inset such as `inset(-32px 0px -32px -32px)` only to trim their own shadow;
-it hides nothing inside the drawer, so the field pins. The pin checks it again
-at the fill. These still refuse:
+mode, and `clip-path`. From 0.36.2, the extension route (fill extension 0.7.2)
+accepts one `clip-path`: `inset(...)` with only `px` or `%` lengths, on an HTML
+block or atomic inline element with one box, when the field's whole border box
+lies inside the inset rectangle of that element's border box (each inset
+widened by a 0.1% rounding margin). Side drawers and modals often use a
+negative inset such as `inset(-32px 0px -32px -32px)` only to trim their own
+shadow; it hides nothing inside the drawer, so the field pins. The pin checks
+it again at the fill.
+
+The CDP route still refuses every `clip-path`: its page check cannot see
+closed shadow roots, and a closed shadow wrapper that mirrors the drawer keeps
+its size but swaps the edges the inset clips. For a field in such a drawer,
+pin with `--route extension`:
+
+```bash
+akdbx pin-identity-target --route extension --page-id PAGE_ID --frame-id FRAME_ID \
+  --top-url EXACT_HTTPS_URL --selector '#recipient-add-input' \
+  --field tel --field-purpose tel
+```
+
+The extension route still refuses:
 
 - an inset that cuts any part of the field, before the pin or after it;
 - `round` corners, `calc()`, a reference box keyword (`padding-box`), and every
@@ -150,9 +163,7 @@ at the fill. These still refuse:
   element or any element above it (a pure translation is accepted), an SVG
   element above it (a `foreignObject` viewport scales it), a rendered size
   that differs from its layout size, or the clipping element or an element
-  above it slotted into a shadow tree. The extension route sees open and
-  closed shadow roots; the CDP route sees only open ones, but its size check
-  still refuses a scale from a closed shadow tree.
+  above it slotted into an open or closed shadow tree.
 
 A refusal is the usual `target unavailable, changed or unsupported`. Password
 pins do not use this style check.

@@ -316,7 +316,8 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   (`version_status` in `extension_browsers`).
 - A card or identity field under an ancestor `clip-path: inset(...)` that holds
   the whole field (a side drawer that trims its shadow) pins from fill
-  extension 0.7.2 (akdbx 0.36.2). An older extension still refuses it as
+  extension 0.7.2 (akdbx 0.36.2), on this route only: the CDP route cannot see
+  closed shadow roots and refuses it. An older extension also refuses it as
   `target unavailable, changed or unsupported`
   ([clipped drawer or modal](identities.md#field-inside-a-clipped-drawer-or-modal-0362)).
 - Read pins and password pins in a child frame need fill extension 0.4.0 or

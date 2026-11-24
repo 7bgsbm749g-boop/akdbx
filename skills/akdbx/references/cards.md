@@ -191,10 +191,11 @@ and checks the exact merchant URLs, browser ancestry, retained iframe identity
 and browser-native hit testing before and after dispatch. The native hit tests
 include covers with `pointer-events:none` and require the retained input and
 iframe-owner nodes. Even a transparent overlay can cause a conservative refusal.
-Mask-box images and other unsupported CSS effects are refused. From 0.36.2 an
-ancestor `clip-path: inset(...)` that holds the whole input is accepted
-([clipped drawer or modal](identities.md#field-inside-a-clipped-drawer-or-modal-0362));
-other clip shapes and an inset on the merchant's iframe owner still refuse. Cross-process parent and child
+Mask-box images and other unsupported CSS effects are refused. From 0.36.2 the
+extension route accepts an ancestor `clip-path: inset(...)` that holds the whole
+input ([clipped drawer or modal](identities.md#field-inside-a-clipped-drawer-or-modal-0362));
+the CDP route, other clip shapes and an inset on the merchant's iframe owner
+still refuse. Cross-process parent and child
 checks are separate operations; an interrupted or changed post-dispatch guard
 returns an uncertain receipt, never proof that nothing was written. Do not
 retry it automatically. No submit, keyboard, clipboard or agent-visible card
