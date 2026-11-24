@@ -484,8 +484,6 @@ def parser() -> argparse.ArgumentParser:
                      if name == 'move-entry' else
                      'metadata-only: move a selected entry into the vault\'s existing recycle bin (never a permanent delete)')
         command = commands.add_parser(name, help=help_text, description=help_text)
-        for option in ('title', 'username', 'url', 'group'):
-            command.add_argument('--' + option, required=True, help=f'the selected entry\'s exact {option} from search')
         if name == 'move-entry':
             command.add_argument('--to-group', required=True, help="exact existing destination group path; '' is the top level")
         command.add_argument('handle', help='fresh selected-entry handle from search')
@@ -1040,8 +1038,7 @@ def _command(args) -> int:
     elif args.command in URL_CHANGES:
         payload.update(handle=args.handle, url=args.url, additional_urls_protocol=1)
     elif args.command in ENTRY_MOVES:
-        payload.update(handle=args.handle, entry_organize_protocol=1,
-                       metadata=dict(title=args.title, username=args.username, url=args.url, group=args.group))
+        payload.update(handle=args.handle, entry_organize_protocol=1)
         if args.command == 'move-entry':
             payload['to_group'] = args.to_group
     elif args.command in {'write-status', 'cancel-write', 'commit-password'}:
@@ -1398,7 +1395,9 @@ def _command(args) -> int:
             set(response) != {'ok', 'state', 'changed', 'metadata', 'group'}
             or response.get('state') != 'saved'
             or response.get('changed') != ('moved' if args.command == 'move-entry' else 'deleted')
-            or response.get('metadata') != payload['metadata']
+            or not isinstance(response.get('metadata'), dict)
+            or set(response['metadata']) != {'title', 'username', 'url', 'group'}
+            or not all(isinstance(value, str) for value in response['metadata'].values())
             or not isinstance(response.get('group'), str)
             or (args.command == 'move-entry' and response['group'] != args.to_group)):
         print('entry move outcome unconfirmed: receipt rejected; search before any retry', file=sys.stderr)

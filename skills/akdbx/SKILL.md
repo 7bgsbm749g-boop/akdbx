@@ -603,8 +603,8 @@ capability checks and recovery. In short:
 - **Another exact origin for a login:** `add-url` / `remove-url` (metadata only,
   same registrable domain only, with the user's authorization).
 - **Move or delete an entry the user named:** `move-entry --to-group GROUP` or
-  `delete-entry` (to the recycle bin only), with a fresh handle and the four
-  exact metadata fields (0.38.0, `entry_organize_protocol: 1`; see
+  `delete-entry` (to the recycle bin only), with a fresh handle from a checked
+  search result (0.38.0, `entry_organize_protocol: 1`; see
   [move or delete](references/password-writes.md#move-or-delete-an-entry-0380)).
 - **A secret that already exists in a file** (for example a service key):
   `sudo cat FILE | akdbx save-secret --stdin --title ... --username ... --url ...

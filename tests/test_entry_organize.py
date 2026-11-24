@@ -22,7 +22,7 @@ SECRET = 'synthetic-organize-password-only'
 OTHER = 'synthetic-organize-other-only'
 
 
-def build(path, *, recycle_bin=True, bin_enabled=True):
+def build(path, *, recycle_bin=True, bin_enabled=True, version=None, no_location=False):
     vault = create_database(io.BytesIO(), password=MASTER)
     params = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
     params['I'].value = 1
@@ -33,6 +33,11 @@ def build(path, *, recycle_bin=True, bin_enabled=True):
     entry = vault.add_entry(web, 'Synthetic site', 'synthetic-account', SECRET, url='https://example.test/login', notes='keep notes')
     entry.set_custom_property('custom', 'keep property')
     entry._set_times_property('LocationChanged', datetime(2020, 1, 1, tzinfo=timezone.utc))
+    if no_location:
+        times = entry._element.find('Times')
+        times.remove(times.find('LocationChanged'))
+    if version:
+        vault.kdbx.header.value.minor_version = version[1]
     vault.add_entry(web, 'Unrelated', 'other-account', OTHER, url='https://other.test')
     if recycle_bin:
         vault._create_or_get_recyclebin_group()
@@ -47,7 +52,8 @@ def build(path, *, recycle_bin=True, bin_enabled=True):
 def templates(tmp_path_factory):
     folder = tmp_path_factory.mktemp('organize-templates')
     made = {}
-    for name, options in {'bin': {}, 'nobin': {'recycle_bin': False}, 'off': {'bin_enabled': False}}.items():
+    for name, options in {'bin': {}, 'nobin': {'recycle_bin': False}, 'off': {'bin_enabled': False},
+                          'v41': {'version': (4, 1)}, 'nolocation': {'no_location': True}}.items():
         made[name] = folder / f'{name}.kdbx'
         build(made[name], **options)
     return made
@@ -82,8 +88,7 @@ def selected(broker, query='Synthetic site'):
 
 def organize(broker, action='move-entry', to_group='Favourites', entry=None, **overrides):
     entry = entry or selected(broker)
-    request = {'action': action, 'handle': entry['handle'], 'entry_organize_protocol': 1,
-               'metadata': {key: entry[key] for key in ('title', 'username', 'url', 'group')}}
+    request = {'action': action, 'handle': entry['handle'], 'entry_organize_protocol': 1}
     if action == 'move-entry':
         request['to_group'] = to_group
     request.update(overrides)
@@ -98,6 +103,7 @@ def test_move_changes_only_the_group_and_location_time(deployed):
     broker, path, _ = deployed
     before = reopened(path).find_entries(title='Synthetic site', first=True)
     history, mtime = len(before.history), before.mtime
+    old_group = before.group.uuid
     moved = organize(broker)
     assert moved == {'ok': True, 'state': 'saved', 'changed': 'moved', 'group': 'Favourites',
                      'metadata': {'title': 'Synthetic site', 'username': 'synthetic-account',
@@ -108,8 +114,11 @@ def test_move_changes_only_the_group_and_location_time(deployed):
     assert entry.group.name == 'Favourites' and entry.uuid == before.uuid
     assert entry.password == SECRET and entry.notes == 'keep notes'
     assert entry.get_custom_property('custom') == 'keep property'
-    assert len(entry.history) == history and entry.mtime == mtime
-    assert entry._get_times_property('LocationChanged') > datetime(2020, 1, 1, tzinfo=timezone.utc)
+    # A move is a new version, as add-url is: merges key versions by modification time.
+    assert len(entry.history) == history + 1 and entry.history[-1].mtime == mtime
+    assert entry.mtime > mtime and entry._get_times_property('LocationChanged') == entry.mtime
+    # KDBX 4.0 has no PreviousParentGroup field.
+    assert entry._element.find('PreviousParentGroup') is None and old_group
     assert vault.find_entries(title='Unrelated', first=True).group.name == 'Web'
     assert len(list(path.parent.glob('.*.akdbx-backup-*'))) == 1
     assert selected(broker)['group'] == 'Favourites'
@@ -164,19 +173,16 @@ def test_request_shape_metadata_and_handles(deployed):
     broker, path, _ = deployed
     entry = selected(broker)
     before = path.read_bytes()
-    wrong = dict(entry, title='Other title')
-    assert 'metadata mismatch' in organize(broker, entry=wrong)['error']
-    for extra in ({'password': 'x'}, {'entry_organize_protocol': 2}, {'metadata': 'x'}):
-        assert not organize(broker, entry=entry, **extra)['ok']
+    for extra in ({'password': 'x'}, {'entry_organize_protocol': 2}, {'metadata': {}}, {'to_group': None}):
+        assert 'accept only' in organize(broker, entry=entry, **extra)['error']
     delete_with_group = {'action': 'delete-entry', 'handle': entry['handle'], 'entry_organize_protocol': 1,
-                         'to_group': 'Favourites',
-                         'metadata': {key: entry[key] for key in ('title', 'username', 'url', 'group')}}
+                         'to_group': 'Favourites'}
     assert 'accept only' in broker.dispatch(delete_with_group)['error']
     assert 'search again' in organize(broker, entry=dict(entry, handle='0' * 64))['error']
     assert path.read_bytes() == before
     # A successful move invalidates every outstanding handle.
-    fresh, stale = selected(broker), selected(broker, 'Unrelated')
-    result = organize(broker, entry=fresh)
+    stale = selected(broker, 'Unrelated')
+    result = organize(broker, entry=entry)
     assert result['ok'], result
     assert 'search again' in organize(broker, entry=stale)['error']
 
@@ -200,20 +206,15 @@ def test_cli_move_and_delete_wire_flow(deployed, capsys):
         assert SECRET not in captured.out + captured.err and MASTER not in captured.out + captured.err
         return json.loads(captured.out) if captured.out else captured.err
 
-    def fields(name):
-        entry = command('search', name)['entries'][0]
-        return entry['handle'], ['--title', entry['title'], '--username', entry['username'],
-                                 '--url', entry['url'], '--group', entry['group']]
+    def handle(name):
+        return command('search', name)['entries'][0]['handle']
 
     with running_broker(sock, broker):
         assert command('status')['entry_organize_protocol'] == 1
-        handle, meta = fields('Synthetic site')
-        moved = command('move-entry', *meta, '--to-group', 'Favourites', '--', handle)
-        assert moved['ok'] and moved['group'] == 'Favourites'
-        handle, meta = fields('Unrelated')
-        assert command('move-entry', *meta, '--to-group', 'Missing', '--', handle, expected=1)['ok'] is False
-        handle, meta = fields('Unrelated')
-        deleted = command('delete-entry', *meta, '--', handle)
+        moved = command('move-entry', '--to-group', 'Favourites', '--', handle('Synthetic site'))
+        assert moved['ok'] and moved['group'] == 'Favourites' and moved['metadata']['group'] == 'Web'
+        assert command('move-entry', '--to-group', 'Missing', '--', handle('Unrelated'), expected=1)['ok'] is False
+        deleted = command('delete-entry', '--', handle('Unrelated'))
         assert deleted['ok'] and deleted['changed'] == 'deleted'
     vault = reopened(path)
     assert vault.find_entries(title='Synthetic site', first=True).group.name == 'Favourites'
@@ -227,8 +228,7 @@ def test_cli_refuses_old_broker_without_sending(monkeypatch, capsys):
         sent.append(payload['action'])
         return {'ok': True, 'version': '0.37.0'}
     monkeypatch.setattr(cli, 'request', fake)
-    args = ['--title', 't', '--username', 'u', '--url', 'https://a.example/', '--group', '']
-    assert cli.main(['--socket', '/nonexistent', 'delete-entry', *args, '--', 'a' * 64]) == 1
+    assert cli.main(['--socket', '/nonexistent', 'delete-entry', '--', 'a' * 64]) == 1
     assert sent == ['ping'] and 'entry organize protocol 1' in capsys.readouterr().out
 
 
@@ -236,10 +236,10 @@ def test_cli_rejects_a_receipt_for_another_group(monkeypatch, capsys):
     def fake(socket_path, payload, **kwargs):
         if payload['action'] == 'ping':
             return {'ok': True, 'entry_organize_protocol': 1}
-        return {'ok': True, 'state': 'saved', 'changed': 'moved', 'metadata': payload['metadata'], 'group': 'Elsewhere'}
+        return {'ok': True, 'state': 'saved', 'changed': 'moved', 'group': 'Elsewhere',
+                'metadata': {'title': 't', 'username': 'u', 'url': 'https://a.example/', 'group': 'Web'}}
     monkeypatch.setattr(cli, 'request', fake)
-    args = ['--title', 't', '--username', 'u', '--url', 'https://a.example/', '--group', 'Web']
-    assert cli.main(['--socket', '/nonexistent', 'move-entry', *args, '--to-group', 'Favourites', '--', 'a' * 64]) == 2
+    assert cli.main(['--socket', '/nonexistent', 'move-entry', '--to-group', 'Favourites', '--', 'a' * 64]) == 2
     assert 'receipt rejected' in capsys.readouterr().err
 
 
@@ -257,5 +257,76 @@ def test_entry_moves_hold_the_vault_lock(action, monkeypatch):
         observed.append(result[0])
         return {'ok': True}
     monkeypatch.setattr(broker.writes, 'organize_entry', probe)
-    broker.dispatch({'action': action, 'handle': 'h', 'metadata': {}, 'entry_organize_protocol': 1})
+    broker.dispatch({'action': action, 'handle': 'h', 'entry_organize_protocol': 1})
     assert observed == [False]
+
+
+def test_move_refuses_the_configured_recycle_bin_while_recycling_is_off(tmp_path, templates):
+    broker, path, _, server = deploy(tmp_path, templates['off'])
+    try:
+        before = path.read_bytes()
+        assert 'use delete-entry' in organize(broker, to_group='Recycle Bin')['error']
+        assert path.read_bytes() == before
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_missing_location_time_is_created(tmp_path, templates):
+    broker, path, _, server = deploy(tmp_path, templates['nolocation'])
+    try:
+        assert reopened(path).find_entries(title='Synthetic site', first=True)._get_times_property('LocationChanged') is None
+        assert organize(broker)['ok']
+        entry = reopened(path).find_entries(title='Synthetic site', first=True)
+        assert entry._get_times_property('LocationChanged') == entry.mtime
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_kdbx41_delete_records_the_previous_parent_for_keepassxc_restore(tmp_path, templates):
+    import base64
+    broker, path, _, server = deploy(tmp_path, templates['v41'])
+    try:
+        assert tuple(reopened(path).version) == (4, 1)
+        web = reopened(path).find_groups(name='Web', first=True).uuid
+        assert organize(broker, action='delete-entry')['ok']
+        entry = reopened(path).find_entries(title='Synthetic site', first=True)
+        assert entry._element.findtext('PreviousParentGroup') == base64.b64encode(web.bytes).decode('ascii')
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _merge_engine():
+    from akdbx import merge
+    try:
+        return merge.engine_version() is not None
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _merge_engine(), reason='requires the pinned KeePassXC merge engine')
+@pytest.mark.parametrize('action', ['move-entry', 'delete-entry'])
+@pytest.mark.parametrize('moved_is_target', [True, False])
+def test_default_merge_accepts_a_move_in_either_direction(tmp_path, templates, action, moved_is_target):
+    import uuid
+    brokers = []
+    for name in ('a', 'b'):
+        folder = tmp_path / name
+        folder.mkdir(mode=0o700)
+        brokers.append(deploy(folder, templates['bin']))
+    (moved, moved_path, _, _), (other, other_path, _, _) = brokers
+    try:
+        assert organize(moved, action=action)['ok']
+        target, source, path = (moved, other_path, moved_path) if moved_is_target else (other, moved_path, other_path)
+        result = target.dispatch({'action': 'merge', 'source': str(source), 'operation_id': uuid.uuid4().hex})
+        assert result.get('ok'), result
+        vault = reopened(path)
+        entry = vault.find_entries(title='Synthetic site', first=True)
+        expected = vault.recyclebin_group.uuid if action == 'delete-entry' else vault.find_groups(name='Favourites', first=True).uuid
+        assert entry.group.uuid == expected and entry.password == SECRET
+    finally:
+        for *_, server in brokers:
+            server.shutdown()
+            server.server_close()

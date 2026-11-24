@@ -1,6 +1,7 @@
 """Private password writes and explicit metadata-only passwordless identities."""
 from __future__ import annotations
 
+import base64
 import ipaddress
 import re
 import secrets
@@ -142,15 +143,16 @@ def entry_organize_capabilities():
 
 
 def _recycle_bin(vault):
-    """The vault's own recycle bin group, or None when it is off or not created yet."""
+    """The vault's configured recycle bin group and whether recycling is on."""
     try:
         enabled = vault._xpath('/KeePassFile/Meta/RecycleBinEnabled', first=True)
-        if enabled is None or (enabled.text or '').strip().casefold() != 'true':
-            return None
+        enabled = enabled is not None and (enabled.text or '').strip().casefold() == 'true'
         group = vault.recyclebin_group
     except Exception:
-        return None
-    return group if group is not None and not group.is_root_group else None
+        return None, False
+    if group is None or group.is_root_group:
+        return None, False
+    return group, enabled
 
 
 def _inside(entry, group):
@@ -167,9 +169,24 @@ def _location_changed(entry):
         value = entry._get_times_property('LocationChanged')
     except Exception:
         value = None
-    if value is None:
-        return datetime(1970, 1, 1, tzinfo=timezone.utc)
-    return value.replace(microsecond=0)
+    return None if value is None else value.replace(microsecond=0)
+
+
+def _set_location(entry, group, changed_at):
+    """Record a move as KeePassXC does: new LocationChanged and, on KDBX 4.1, the previous parent."""
+    from lxml import etree
+    times = entry._element.find('Times')
+    if times is None:
+        times = etree.SubElement(entry._element, 'Times')
+    node = times.find('LocationChanged')
+    if node is None:
+        node = etree.SubElement(times, 'LocationChanged')
+    node.text = entry._kp._encode_time(changed_at)
+    if tuple(entry._kp.version) >= (4, 1):
+        node = entry._element.find('PreviousParentGroup')
+        if node is None:
+            node = etree.SubElement(entry._element, 'PreviousParentGroup')
+        node.text = base64.b64encode(group.uuid.bytes).decode('ascii')
 
 
 def _serialize_origin(origin):
@@ -736,13 +753,12 @@ class WriteManager:
         """
         action = request.get('action')
         moving = action == 'move-entry'
-        keys = {'action', 'handle', 'metadata', 'entry_organize_protocol', *(('to_group',) if moving else ())}
+        keys = {'action', 'handle', 'entry_organize_protocol', *(('to_group',) if moving else ())}
         if (action not in ORGANIZE_ACTIONS or set(request) != keys
                 or type(request.get('entry_organize_protocol')) is not int
                 or request['entry_organize_protocol'] != ENTRY_ORGANIZE_PROTOCOL
-                or not isinstance(request.get('metadata'), dict)
                 or (moving and not isinstance(request.get('to_group'), str))):
-            raise WriteError('entry moves accept only a fresh handle, its exact metadata and a destination')
+            raise WriteError('entry moves accept only a fresh handle and a destination')
         try:
             entry = self.broker._resolve(request.get('handle'))
         except ValueError:
@@ -752,8 +768,6 @@ class WriteManager:
         if is_card(entry) or is_identity(entry):
             raise WriteError('only login entries can be moved or deleted here; use KeePassXC for cards and identities')
         values = metadata(entry)
-        if request['metadata'] != values:
-            raise WriteError('entry metadata mismatch; search again')
         self._require_available()
         vault = self.broker.vault
         uuid = entry.uuid
@@ -761,7 +775,7 @@ class WriteManager:
             raise WriteError('entry metadata mismatch; search again')
 
         def destination(candidate, current):
-            bin_group = _recycle_bin(candidate)
+            bin_group, recycling = _recycle_bin(candidate)
             if moving:
                 group = group_for(candidate, request['to_group'])
                 if bin_group is not None and (group.uuid == bin_group.uuid or _inside(group, bin_group)):
@@ -769,14 +783,18 @@ class WriteManager:
                 if current.group is not None and current.group.uuid == group.uuid:
                     raise WriteError('entry is already in that group')
                 return group
-            if bin_group is None:
+            if bin_group is None or not recycling:
                 raise WriteError('vault recycle bin is off or not created yet; delete this entry in KeePassXC')
             if _inside(current, bin_group):
                 raise WriteError('entry is already in the recycle bin; empty it in KeePassXC')
             return bin_group
 
         target_group = destination(vault, entry)
-        changed_at = _entry_changed_at(entry, self.broker.wall_clock, latest=_location_changed(entry))
+        # A move is a new version: merges key versions by modification time.
+        latest, _ = _entry_write_clock(entry, self.broker.wall_clock)
+        moved = _location_changed(entry)
+        changed_at = _entry_changed_at(entry, self.broker.wall_clock,
+                                       latest=latest if moved is None else max(latest, moved))
         expected = '/'.join(target_group.path) if target_group.path else ''
 
         def selected(candidate):
@@ -790,13 +808,17 @@ class WriteManager:
         def mutate(candidate):
             current = selected(candidate)
             group = destination(candidate, current)
+            previous = current.group
+            current.save_history()
             candidate.move_entry(current, group)
-            current._set_times_property('LocationChanged', changed_at)
+            _set_location(current, previous, changed_at)
+            current.mtime = changed_at
 
         def verify_saved(candidate):
             entries = [e for e in active_entries(candidate) if e.uuid == uuid]
             if (len(entries) != 1 or entries[0].password != password
-                    or metadata(entries[0]) != {**values, 'group': expected}):
+                    or metadata(entries[0]) != {**values, 'group': expected}
+                    or _location_changed(entries[0]) != changed_at or entries[0].mtime != changed_at):
                 raise WriteError('entry move verification failed; vault update not confirmed')
 
         try:
