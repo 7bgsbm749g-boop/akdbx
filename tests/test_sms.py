@@ -41,6 +41,11 @@ ORIGIN = 'https://box.example.test'
     ('Your verification code is 2017. Request reference 456789.', '2017'),
     ('Code valid until 2025-11-24: 482913', '482913'),
     ('Verify at example.test/v/123456 with code 778899', '778899'),
+    ('PIN 2048', '2048'),                                         # "in" inside PIN is no date word
+    ('Sign in 2048 is your code', '2048'),
+    ('Your code for 123 456 EUR is 482913.', '482913'),           # a spaced amount
+    ('Reference 123456. Your code is 123456.', '123456'),          # same digits as a reference
+    ('Use these numbers 482913 as your verification code.', '482913'),  # "rs" inside a word
 ])
 def test_extract_code_finds_the_one_verification_code(text, code):
     assert extract_code(text) == code
@@ -70,15 +75,22 @@ def test_mask_hides_links_without_a_scheme():
     # A sign-in link written as host/path can hold a bearer token in letters.
     preview = mask('Code 482913, or sign in at example.test/t/SyntheticTokenAbc')
     assert preview == 'Code ••••••, or sign in at [link]' and 'SyntheticTokenAbc' not in preview
+    for link in ('example.test?token=SyntheticToken', 'example.test:8443/t/SyntheticToken'):
+        assert mask('OTP 482913 ' + link) == 'OTP •••••• [link]'
 
 
 def test_preview_fits_the_rpc_limit_and_a_miswired_sender_is_masked(tmp_path):
     inbox = SmsInbox(tmp_path / 'sms.json')
-    token = inbox.add_source('iphone', 'shortcut')
-    assert inbox.receive(token, 'Your code is 482913', 'Your code is 482913 ' + 'é' * 400) == 'kept'
+    tokens = [inbox.add_source(f'source-{i}', 'webhook') for i in range(sms.MAX_SOURCES)]
+    for i in range(sms.MAX_MESSAGES):  # characters outside the BMP: 12 bytes each in JSON
+        inbox.receive(tokens[i % len(tokens)], '😀' * 64 + 'Example', '😀' * 400 + f' code 48291{i % 10}')
+    rows = inbox.wait()
+    assert len(rows) == sms.MAX_MESSAGES
+    assert len(json.dumps(dict(ok=True, messages=rows), separators=(',', ':')).encode()) < 64 * 1024
+    inbox.messages.clear()
+    assert inbox.receive(tokens[0], 'x' * 60 + ' 482913', 'Your code is 482913') == 'kept'
     [row] = inbox.wait()
-    assert '482913' not in row['sender'] and len(row['preview']) <= sms.MAX_PREVIEW
-    assert len(json.dumps(row)) * sms.MAX_MESSAGES < 64 * 1024
+    assert not set('482913') & set(row['sender'])  # checked before it is cut, so no digit is left
     inbox.clock = lambda: time.monotonic() + sms.MESSAGE_TTL + 1
     inbox.prune()
     assert inbox.messages == []

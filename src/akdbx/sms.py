@@ -40,8 +40,11 @@ MAX_WAITERS = 4
 RATE_LIMIT = 20
 MAX_TEXT = 2048
 MAX_SENDER = 64
-# 32 previews must fit one 64 KiB RPC reply even when JSON escapes every character.
 MAX_PREVIEW = 160
+# 32 rows must fit one 64 KiB RPC reply, and JSON escapes a character outside
+# the BMP as 12 bytes: preview and sender are also bounded in encoded bytes.
+PREVIEW_BYTES = 960
+SENDER_BYTES = 320
 ROUTE_IN = '/sms/in/'
 ROUTE_SETUP = '/sms/setup'
 ROUTE_SETUP_WAIT = '/sms/setup/wait'
@@ -64,20 +67,20 @@ _SINGLE = re.compile(r'(?<![0-9+])(?<![0-9][.,:/-])(\d{4,8})(?![0-9])(?![.,:/-][
 # A link, also one written without a scheme ("example.com/t/AbC"): its digits
 # are not a code and its letters can be a sign-in token.
 _LINK = re.compile(r'(?:https?://|www\.)\S+|(?<![\w@.-])[a-z0-9](?:[a-z0-9-]*[a-z0-9])?'
-                   r'(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}/\S*', re.IGNORECASE)
+                   r'(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}(?::\d+)?[/?#]\S*', re.IGNORECASE)
 # A digit group right after these is a card or account suffix, a reference or
 # an order number, not the code ("card ending 4321", "acct ****1234", "Ref: 5678").
 _NOT_CODE_BEFORE = re.compile(
-    r'(?:ending(?:\s+(?:in|with))?|ends?\s+(?:in|with)|last\s+(?:\d+\s+)?(?:digits?)?|card|account|acct|a/c|'
+    r'(?<![a-z])(?:ending(?:\s+(?:in|with))?|ends?\s+(?:in|with)|last\s+(?:\d+\s+)?(?:digits?)?|card|account|acct|a/c|'
     r'ref(?:erence)?|order|booking|invoice|ticket|[*x•#]{2,}|\*)\s*(?:no\.?|number|#)?\s*[:#.]?\s*$',
     re.IGNORECASE)
-_CURRENCY = r'(?:€|\$|£|¥|₹|eur|usd|gbp|chf|inr|rs\.?|kr|sek|nok|dkk|pln|zł|aud|cad)'
+_CURRENCY = r'(?:€|\$|£|¥|₹|(?<![a-z])(?:eur|usd|gbp|chf|inr|rs\.?|kr|sek|nok|dkk|pln|zł|aud|cad))'
 _AMOUNT_BEFORE = re.compile(_CURRENCY + r'\s?$', re.IGNORECASE)
 _AMOUNT_AFTER = re.compile(r'^\s?' + _CURRENCY + r'(?![a-z])', re.IGNORECASE)
-# A four-digit year only in date context ("(c) 2026", "May 2025", "in 2024").
+# A four-digit year only in date context ("(c) 2026", "May 2025").
 _YEAR_BEFORE = re.compile(
-    r'(?:©|\(c\)|copyright|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|'
-    r'sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|year|in|since)\.?\s*\d{0,2}(?:st|nd|rd|th)?,?\s*$',
+    r'(?:©|\(c\)|(?<![a-z])(?:copyright|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|'
+    r'sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|year))\.?\s*\d{0,2}(?:st|nd|rd|th)?,?\s*$',
     re.IGNORECASE)
 _CONTROL = re.compile(r'[\x00-\x08\x0b-\x1f\x7f​-‏ -‮⁦-⁩]')
 
@@ -112,23 +115,23 @@ def extract(text: object) -> tuple[str | None, str]:
     keywords = [m.start() for m in KEYWORDS.finditer(text)]
     if not keywords:
         return None, 'no-code-word'
-    candidates: dict[str, int] = {}
-    taken: list[tuple[int, int]] = []
+    found: list[tuple[str, int, int]] = []  # every digit group: (digits, start, end)
     for match in _SPLIT.finditer(text):
         digits = match.group(1) + match.group(2)
         if 6 <= len(digits) <= 8:
-            taken.append(match.span())
-            candidates.setdefault(digits, match.start())
+            found.append((digits, *match.span()))
     for match in _SINGLE.finditer(text):
-        if any(start <= match.start() < end for start, end in taken):
-            continue
-        candidates.setdefault(match.group(1), match.start())
-    for digits, start in list(candidates.items()):
-        before, after = text[max(0, start - 32):start], text[start + len(digits):start + len(digits) + 6]
+        if not any(start <= match.start() < end for _, start, end in found):
+            found.append((match.group(1), *match.span()))
+    candidates: dict[str, int] = {}
+    for digits, start, end in sorted(found, key=lambda group: group[1]):
+        # Judge each occurrence on its own context, so a reference with the
+        # same digits as the labelled code does not remove the code.
+        before, after = text[max(0, start - 32):start], text[end:end + 6]
         year = len(digits) == 4 and digits[:2] in {'19', '20'} and _YEAR_BEFORE.search(before)
-        if (year or _NOT_CODE_BEFORE.search(before) or _AMOUNT_BEFORE.search(before)
+        if not (year or _NOT_CODE_BEFORE.search(before) or _AMOUNT_BEFORE.search(before)
                 or _AMOUNT_AFTER.search(after)):
-            del candidates[digits]
+            candidates.setdefault(digits, start)
     if not candidates:
         return None, 'no-code'
     if len(candidates) == 1:
@@ -144,19 +147,31 @@ def extract_code(text: object) -> str | None:
     return extract(text)[0]
 
 
+def _fit(text: str, characters: int, encoded: int) -> str:
+    """``text`` cut to ``characters`` and to ``encoded`` bytes of JSON (ASCII escapes), with an ellipsis."""
+    if len(text) <= characters and len(json.dumps(text)) <= encoded:
+        return text
+    cut = text[:characters - 1]
+    while cut and len(json.dumps(cut + '…')) > encoded:
+        cut = cut[:-1]
+    return cut + '…'
+
+
 def mask(text: str) -> str:
     """A preview with every digit and link replaced; safe to show the agent."""
     text = _LINK.sub('[link]', _normal(text))
     text = re.sub(r'\d', '•', text)
-    text = ' '.join(text.split())
-    return text if len(text) <= MAX_PREVIEW else text[:MAX_PREVIEW - 1] + '…'
+    return _fit(' '.join(text.split()), MAX_PREVIEW, PREVIEW_BYTES)
 
 
-def clean_sender(value: object) -> str:
+def clean_sender(value: object, code: str | None = None) -> str:
+    """The sender, cut to size; masked like the text when it carries ``code`` (a miswired "from")."""
     if not isinstance(value, str):
         return ''
     value = ' '.join(_normal(value).split())
-    return value[:MAX_SENDER]
+    if code and code in re.sub(r'\D', '', value):
+        return _fit(mask(value), MAX_SENDER, SENDER_BYTES)
+    return _fit(value, MAX_SENDER, SENDER_BYTES)
 
 
 def _hash(token: str) -> str:
@@ -471,11 +486,8 @@ class SmsInbox:
             if code is None:
                 return 'dropped'
             self._prune()
-            sender = clean_sender(sender)
-            if code in re.sub(r'\D', '', sender):
-                # A sender that carries the code (a miswired "from") is masked like the text.
-                sender = mask(sender)
-            message = Message(secrets.token_hex(16), source.name, sender, mask(text), code, now, self.wall_clock())
+            message = Message(secrets.token_hex(16), source.name, clean_sender(sender, code), mask(text), code, now,
+                              self.wall_clock())
             self.messages.append(message)
             del self.messages[:-MAX_MESSAGES]
             self.condition.notify_all()
