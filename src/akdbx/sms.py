@@ -64,15 +64,15 @@ KEYWORDS = re.compile(
 # digits split by one space or hyphen ("123 456", "1234-5678").
 _SPLIT = re.compile(r'(?<![0-9A-Za-z+])(\d{3,4})[ -](\d{3,4})(?![0-9A-Za-z])')
 _SINGLE = re.compile(r'(?<![0-9+])(?<![0-9][.,:/-])(\d{4,8})(?![0-9])(?![.,:/-][0-9])(?!\s?%)')
-# A link, also one written without a scheme ("example.com/t/AbC"): its digits
-# are not a code and its letters can be a sign-in token.
-_LINK = re.compile(r'(?:https?://|www\.)\S+|(?<![\w@.-])(?:[a-z0-9-]+\.)+[a-z0-9-]+(?::\d+)?[/?#]\S*',
-                   re.IGNORECASE)
+# A link, also one written without a scheme: any word whose host part has a dot,
+# colon or bracket before a "/", "?" or "#" ("example.com/t/AbC", "münchen.de/x",
+# "[2001:db8::1]/x"). Its digits are not a code and its letters can be a token.
+_LINK = re.compile(r'(?:https?://|www\.)\S+|(?<!\S)[^\s/?#]*[.:\]][^\s/?#]*[/?#]\S*', re.IGNORECASE)
 # A digit group right after these is a card or account suffix, a reference or
 # an order number, not the code ("card ending 4321", "acct ****1234", "Ref: 5678").
 _NOT_CODE_BEFORE = re.compile(
     r'(?:card|[*x•#]{2,}|\*|(?<![a-z])(?:ending(?:\s+(?:in|with))?|ends?\s+(?:in|with)|last\s+(?:\d+\s+)?(?:digits?)?|'
-    r'account|acct|a/c|ref(?:erence)?|order|booking|invoice|ticket))\s*(?:no\.?|number|#)?\s*[:#.]?\s*$',
+    r'account|acct|a/c|ref(?:erence)?|order|booking|invoice|ticket|(?:zip|postal|post|area)\s?code|postcode))\s*(?:no\.?|number|#)?\s*[:#.]?\s*$',
     re.IGNORECASE)
 _CURRENCY = r'(?:€|\$|£|¥|₹|(?<![a-z])(?:eur|usd|gbp|chf|inr|rs\.?|kr|sek|nok|dkk|pln|zł|aud|cad))'
 _AMOUNT_BEFORE = re.compile(_CURRENCY + r'\s?$', re.IGNORECASE)
@@ -86,7 +86,8 @@ _YEAR_BEFORE = re.compile(
 # "Bestätigungscode lautet 664422"), or "is your ... code" right after it.
 _LABEL_BEFORE = re.compile(r'(?:' + KEYWORDS.pattern + r')\w*\W{0,3}(?:(?:is|was|ist|lautet|es|est|è|é)\W{1,3})?$',
                            re.IGNORECASE)
-_LABEL_AFTER = re.compile(r'\W{0,3}(?:is|was|ist|es|est)\s', re.IGNORECASE)
+_LABEL_AFTER = re.compile(r'\W{0,3}(?:is|was|ist|es|est)\s+(?:(?:your|the|a|an|ihr|dein|tu|votre|il)\s+)?'
+                          r'(?:[^\s.!?]+\s+){0,3}?(?:' + KEYWORDS.pattern + r')', re.IGNORECASE)
 _CONTROL = re.compile(r'[\x00-\x08\x0b-\x1f\x7f​-‏ -‮⁦-⁩]')
 
 
@@ -137,7 +138,7 @@ def extract(text: object) -> tuple[str | None, str]:
                 or _AMOUNT_AFTER.search(after)):
             continue
         values.add(digits)
-        if _LABEL_BEFORE.search(before) or _LABEL_AFTER.match(after) and KEYWORDS.search(after):
+        if _LABEL_BEFORE.search(before) or _LABEL_AFTER.match(after):
             labelled.add(digits)
     # A value next to a verification word ("code is 482913", "482913 is your
     # code") wins; otherwise the text must hold exactly one value. Anything

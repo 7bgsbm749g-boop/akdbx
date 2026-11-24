@@ -51,6 +51,7 @@ ORIGIN = 'https://box.example.test'
     ('OTP for card VisaXXXX1234 is 482913', '482913'),
     ('Type 482913 to continue. Secure authentication since 2025.', '482913'),
     ('482913\nYour request ID is 7950. Your verification code is 482 913.', '482913'),
+    ('Use 482913 to confirm delivery to ZIP code 90210.', '482913'),
 ])
 def test_extract_code_finds_the_one_verification_code(text, code):
     assert extract_code(text) == code
@@ -66,6 +67,8 @@ def test_extract_code_finds_the_one_verification_code(text, code):
     'code ' + '1' * 3000,                   # too long
     'Code 123456 or code 654321',          # ambiguous: two labelled values
     'Use 4821 or 9934 to sign in',          # ambiguous: two values, neither labelled
+    '1234 is your request ID. Enter 482913 to verify.',           # the label is in another phrase
+    'Device 1234 is requesting access. Enter 482913 to confirm.',
 ])
 def test_extract_code_drops_texts_without_one_code(text):
     assert extract_code(text) is None
@@ -82,7 +85,8 @@ def test_mask_hides_links_without_a_scheme():
     preview = mask('Code 482913, or sign in at example.test/t/SyntheticTokenAbc')
     assert preview == 'Code ••••••, or sign in at [link]' and 'SyntheticTokenAbc' not in preview
     for link in ('example.test?token=SyntheticToken', 'example.test:8443/t/SyntheticToken',
-                 'example.xn--p1ai/t/SyntheticToken', '192.0.2.4/t/SyntheticToken'):
+                 'example.xn--p1ai/t/SyntheticToken', '192.0.2.4/t/SyntheticToken',
+                 'münchen.de/t/SyntheticToken', '[2001:db8::1]/t/SyntheticToken'):
         assert mask('OTP 482913 ' + link) == 'OTP •••••• [link]'
 
 
