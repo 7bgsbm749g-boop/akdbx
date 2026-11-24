@@ -33,6 +33,7 @@ from .sink_helper import SinkError
 DEFAULT_UNLOCK_ORIGIN = "https://unlock.example.invalid:9443"
 IDENTITY_CREATES = ('create-sso-entry', 'create-passwordless-entry')
 URL_CHANGES = ('add-url', 'remove-url')
+ENTRY_MOVES = ('move-entry', 'delete-entry')
 
 
 # Where systemd-logind puts per-user runtime directories. A non-interactive
@@ -277,7 +278,7 @@ def _request_timeout(payload: dict) -> int:
         timeout = payload.get('timeout', 0)
         return (timeout if type(timeout) is int and 0 <= timeout <= 300 else 0) + 10
     slow = slow or action in {'pin-code-target', 'sms-add-source'}
-    return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, 'commit-password', secret_cli.COMMAND, *capture_cli.COMMANDS) else 15 if slow else 5
+    return 240 if action in (*IDENTITY_CREATES, *URL_CHANGES, *ENTRY_MOVES, 'commit-password', secret_cli.COMMAND, *capture_cli.COMMANDS) else 15 if slow else 5
 
 
 def request(
@@ -485,6 +486,14 @@ def parser() -> argparse.ArgumentParser:
                      if name == 'add-url' else 'metadata-only: remove one additional exact HTTPS origin from a selected entry')
         command = commands.add_parser(name, help=help_text, description=help_text)
         command.add_argument('--url', required=True, help='exact HTTPS origin, for example https://login.example.com/')
+        command.add_argument('handle', help='fresh selected-entry handle from search')
+    for name in ENTRY_MOVES:
+        help_text = ('metadata-only: move a selected entry into another existing group'
+                     if name == 'move-entry' else
+                     'metadata-only: move a selected entry into the vault\'s existing recycle bin (never a permanent delete)')
+        command = commands.add_parser(name, help=help_text, description=help_text)
+        if name == 'move-entry':
+            command.add_argument('--to-group', required=True, help="exact existing destination group path; '' is the top level")
         command.add_argument('handle', help='fresh selected-entry handle from search')
     for name in ('write-status', 'cancel-write', 'commit-password'):
         command = commands.add_parser(name, help='check/cancel a staged write' if name != 'commit-password' else 'save staged password after verified website acceptance')
@@ -1064,6 +1073,10 @@ def _command(args) -> int:
             payload['replace'] = args.replace
     elif args.command in URL_CHANGES:
         payload.update(handle=args.handle, url=args.url, additional_urls_protocol=1)
+    elif args.command in ENTRY_MOVES:
+        payload.update(handle=args.handle, entry_organize_protocol=1)
+        if args.command == 'move-entry':
+            payload['to_group'] = args.to_group
     elif args.command in {'write-status', 'cancel-write', 'commit-password'}:
         payload['write_handle'] = args.write_handle
         if args.command == 'commit-password':
@@ -1248,6 +1261,13 @@ def _command(args) -> int:
                     or capabilities.get('additional_urls_policy') != 'kp2a-exact-origin-v1'):
                 print(json.dumps({'ok': False, 'error': 'broker lacks additional URL protocol 1; require broker 0.18.0 or newer; change not sent'}))
                 return 1
+        if args.command in ENTRY_MOVES:
+            capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
+                                   expected_unlock_origin=args.unlock_origin)
+            if (capabilities.get('ok') is not True or type(capabilities.get('entry_organize_protocol')) is not int
+                    or capabilities['entry_organize_protocol'] != 1):
+                print(json.dumps({'ok': False, 'error': 'broker lacks entry organize protocol 1; require broker 0.38.0 or newer; change not sent'}))
+                return 1
         if os.name == 'nt' and args.command in {'merge', 'admit'}:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -1298,6 +1318,8 @@ def _command(args) -> int:
             print('merge outcome unconfirmed: broker response rejected; use merge-status ' + payload['operation_id'] + '; do not retry with a new ID', file=sys.stderr)
         elif args.command in URL_CHANGES:
             print('additional URL save outcome unconfirmed: broker response rejected; search before any retry', file=sys.stderr)
+        elif args.command in ENTRY_MOVES:
+            print('entry move outcome unconfirmed: broker response rejected; search before any retry', file=sys.stderr)
         elif args.command in IDENTITY_CREATES:
             print(f'{identity_kind} save outcome unconfirmed: broker response rejected; check status and search before any retry', file=sys.stderr)
         elif args.command in {'fill', 'fill-generated', 'fill-totp'}:
@@ -1319,6 +1341,8 @@ def _command(args) -> int:
             print('save outcome uncertain: check write-status before any retry; do not reset the site again', file=sys.stderr)
         elif args.command in URL_CHANGES:
             print('additional URL save outcome uncertain: search to check the entry before any retry', file=sys.stderr)
+        elif args.command in ENTRY_MOVES:
+            print('entry move outcome uncertain: search to check the entry before any retry', file=sys.stderr)
         elif args.command in IDENTITY_CREATES:
             print(f'{identity_kind} save outcome uncertain: check status and search before any retry; do not create another record automatically', file=sys.stderr)
         elif args.command in {'merge', 'admit'}:
@@ -1402,6 +1426,17 @@ def _command(args) -> int:
             or not all(isinstance(url, str) for url in response['additional_urls'])
             or (response['url'].rstrip('/') in response['additional_urls']) != (args.command == 'add-url')):
         print('additional URL save outcome unconfirmed: receipt rejected; search before any retry', file=sys.stderr)
+        return 2
+    if args.command in ENTRY_MOVES and response.get('ok') and (
+            set(response) != {'ok', 'state', 'changed', 'metadata', 'group'}
+            or response.get('state') != 'saved'
+            or response.get('changed') != ('moved' if args.command == 'move-entry' else 'deleted')
+            or not isinstance(response.get('metadata'), dict)
+            or set(response['metadata']) != {'title', 'username', 'url', 'group'}
+            or not all(isinstance(value, str) for value in response['metadata'].values())
+            or not isinstance(response.get('group'), str)
+            or (args.command == 'move-entry' and response['group'] != args.to_group)):
+        print('entry move outcome unconfirmed: receipt rejected; search before any retry', file=sys.stderr)
         return 2
     if args.command in IDENTITY_CREATES and response.get('ok') and (
             response.get('state') != 'saved' or response.get('passwordless') is not True

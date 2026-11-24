@@ -20,6 +20,7 @@ from typing import Callable, Protocol
 from .target import TargetPins, TargetError, DeliveryError, DELIVERY, capabilities as target_capabilities, failure as target_failure
 from .writes import (WriteManager, WriteError, generated_capabilities, sso_capabilities, passwordless_capabilities, passwordless_identity,
                      additional_origins, additional_urls, additional_urls_capabilities, allowed_origins,
+                     entry_organize_capabilities,
                      secret_save_capabilities)
 from .merge import MergeError, create_manager as create_merge_manager
 from .persistence import SaveError
@@ -345,7 +346,7 @@ class Broker:
                 or action == 'sms-add-source' and 'target' in request) and delivery_ready is None and 'start_deadline' not in request:
             request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
         # Search and write operations observe a consistent vault/revision.
-        if action in {"pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated", "add-url", "remove-url", "save-secret", "capture-secret", "capture-totp", "commit-totp", "create-card", "update-card", "search-cards", "pin-card-target", "fill-card"} | IDENTITY_COMMANDS:
+        if action in {"pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated", "add-url", "remove-url", "move-entry", "delete-entry", "save-secret", "capture-secret", "capture-totp", "commit-totp", "create-card", "update-card", "search-cards", "pin-card-target", "fill-card"} | IDENTITY_COMMANDS:
             with self._vault_lock:
                 return self._dispatch(request, delivery_ready=delivery_ready)
         return self._dispatch(request, delivery_ready=delivery_ready)
@@ -438,7 +439,7 @@ class Broker:
                     **({"relay": self.relay.status()} if self.relay is not None else {}),
                     **({"active_origin": origin} if isinstance(origin, str) else {})}
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **sms_notification_capabilities(), **self.secrets.capabilities(), **self.android.capabilities(), **self.totp_captures.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
+            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **entry_organize_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **sms_notification_capabilities(), **self.secrets.capabilities(), **self.android.capabilities(), **self.totp_captures.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -526,6 +527,13 @@ class Broker:
             return sms_module.dispatch(self, request, delivery_ready)
         if action in {'merge', 'admit'}:
             return self.merges.begin(request)
+        if action in {'move-entry', 'delete-entry'}:
+            try:
+                return self.writes.organize_entry(request)
+            except (WriteError, SaveError) as exc:
+                return {'ok': False, 'error': str(exc)}
+            except Exception:
+                return {'ok': False, 'error': 'entry move failed; vault update not confirmed'}
         if action in {'add-url', 'remove-url'}:
             try:
                 return self.writes.change_additional_url(request)
