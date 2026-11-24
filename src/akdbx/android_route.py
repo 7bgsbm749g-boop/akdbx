@@ -68,6 +68,7 @@ CONFIG_ENV = 'AKDBX_ANDROID_DEVICES'
 MAX_CONFIG = 64 * 1024
 MAX_DEVICES = 16
 DEVICE_NAME = re.compile(r'[a-z0-9][a-z0-9._-]{0,31}')
+AVD_NAME = re.compile(r'[A-Za-z0-9_][A-Za-z0-9._-]{0,249}')
 SERIAL = re.compile(r'[A-Za-z0-9._:-]{1,64}')
 
 HELPER_ASSET = 'akdbx-android-helper.dex'
@@ -229,7 +230,7 @@ def load_devices(path: Path | None) -> dict[str, Device]:
         managed = value.get('managed')
         if 'managed' in value:
             if (not isinstance(managed, dict) or set(managed) != {'avd', 'sdk', 'avd_home', 'idle_seconds'}
-                    or not isinstance(managed['avd'], str) or not DEVICE_NAME.fullmatch(managed['avd'])
+                    or not isinstance(managed['avd'], str) or not AVD_NAME.fullmatch(managed['avd'])
                     or any(not isinstance(managed[k], str) or not os.path.isabs(managed[k])
                            for k in ('sdk', 'avd_home'))
                     or type(managed['idle_seconds']) is not int or not 120 <= managed['idle_seconds'] <= 3600
@@ -265,7 +266,11 @@ class Adb:
         # Nothing from the caller's environment may redirect adb elsewhere.
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(('ADB_', 'ANDROID_')) and key not in {'ADB_SERVER_SOCKET'}}
-        env['ANDROID_ADB_SERVER_PORT'] = str(self.device.port)
+        if self.device.managed:
+            from .android_lifecycle import runtime
+            env['ADB_SERVER_SOCKET'] = 'localfilesystem:' + str(runtime(self.device)[1] / 'adb')
+        else:
+            env['ANDROID_ADB_SERVER_PORT'] = str(self.device.port)
         return env
 
     def server_running(self) -> bool:
@@ -274,13 +279,9 @@ class Adb:
         Another OS account could listen on the port while the operator's adb
         server is down; the CDP route's peer check refuses that listener.
         """
-        from .browser_password import verify_peer
         try:
-            with socket.create_connection(('127.0.0.1', self.device.port), timeout=1.0) as connection:
-                verify_peer(connection)
+            with self._connect(1):
                 return True
-        except TargetError:
-            raise AndroidError('the adb server port belongs to another account') from None
         except OSError:
             return False
 
@@ -290,7 +291,7 @@ class Adb:
         if not self.server_running():
             # Starting a server here would make one the operator did not set up.
             raise AndroidError('adb server not running on the configured port')
-        argv = [self.device.adb, '-P', str(self.device.port), '-s', self.device.serial, *args]
+        argv = [self.device.adb, '-s', self.device.serial, *args]
         return subprocess.run(argv, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                               env=self._environment(), timeout=timeout, check=False)
 
@@ -316,6 +317,19 @@ class Adb:
     def _connect(self, timeout: float) -> socket.socket:
         """A connection to the adb server whose owner is this user (checked on this very socket)."""
         from .browser_password import verify_peer
+        if self.device.managed:
+            from .android_lifecycle import runtime
+            from .cli import _peer_credentials
+            connection = socket.socket(socket.AF_UNIX)
+            try:
+                connection.settimeout(min(timeout, 5.0))
+                connection.connect(str(runtime(self.device)[1] / 'adb'))
+                if _peer_credentials(connection)[1] != os.getuid():
+                    raise AndroidError('the managed adb server belongs to another account')
+                return connection
+            except BaseException:
+                connection.close()
+                raise
         connection = socket.create_connection(('127.0.0.1', self.device.port), timeout=min(timeout, 5.0))
         try:
             verify_peer(connection)
@@ -467,6 +481,27 @@ class ChromeDevTools:
         if self.port is not None:
             self.adb.remove_forward(self.port)
             self.port = None
+
+
+class ManagedChromeDevTools:
+    """Upgrade a stream through the private adb socket without publishing a forward."""
+
+    def __init__(self, adb: Adb):
+        self.adb = adb
+
+    def devtools_endpoint(self):
+        # The WebSocket handshake needs a Host and path. No TCP connection is made.
+        return 'ws://127.0.0.1/devtools/browser'
+
+    def open_verified_socket(self):
+        connection = self.adb._connect(2)
+        try:
+            self.adb._request(connection, 'host:transport:' + self.adb.device.serial)
+            self.adb._request(connection, 'localabstract:chrome_devtools_remote')
+            return connection
+        except BaseException:
+            connection.close()
+            raise
 
 
 # Run in a fresh isolated world of the main frame: page scripts cannot change them.
@@ -893,7 +928,8 @@ class AndroidTargets:
         if self.cdp_factory is not None:
             return self.cdp_factory(adb)
         from .browser_password import CDP
-        return CDP(ChromeDevTools(adb))
+        profile = ManagedChromeDevTools(adb) if adb.device.managed else ChromeDevTools(adb)
+        return CDP(profile)
 
     def _chrome_page(self, connection, context) -> dict:
         """The one visible, focused Chrome tab; its host must match the address bar."""

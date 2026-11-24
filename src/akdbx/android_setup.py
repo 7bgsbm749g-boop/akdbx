@@ -12,7 +12,7 @@ import tempfile
 import urllib.request
 import zipfile
 
-from .android_route import (Adb, AndroidError, CONFIG_ENV, DEVICE_NAME, Device, MAX_DEVICES, SERIAL,
+from .android_route import (AVD_NAME, Adb, AndroidError, CONFIG_ENV, DEVICE_NAME, Device, MAX_DEVICES, SERIAL,
                             _read_private_file, default_config_path, load_devices)
 
 
@@ -31,7 +31,7 @@ def add_parsers(sub):
     choice.add_argument('--manage-avd', metavar='AVD', help='explicitly manage an existing, stopped AVD')
     setup.add_argument('--device', default='android', help='device name in the broker configuration')
     setup.add_argument('--adb', type=Path, help='adb executable for --attach')
-    setup.add_argument('--adb-port', type=int, help='adb server port (existing: 5037, managed: 5043)')
+    setup.add_argument('--adb-port', type=int, help='adb server port for attached devices (5037) or reserved emulator notification port (5043)')
     setup.add_argument('--emulator-port', type=int, default=5584, help='private even console port (managed)')
     setup.add_argument('--sdk', type=Path, help='Android SDK root (default: ANDROID_HOME or ~/Android/Sdk)')
     setup.add_argument('--avd-home', type=Path, help='AVD registry containing NAME.ini, or directory for a new AVD')
@@ -150,7 +150,7 @@ def setup(args):
             raise AndroidError('managed Google Play images require an x86_64 Linux host with KVM access')
         subprocess.run(['systemctl', '--user', 'show-environment'], stdout=subprocess.DEVNULL, check=True)
         avd = args.manage_avd or name
-        if not DEVICE_NAME.fullmatch(avd):
+        if not AVD_NAME.fullmatch(avd):
             raise AndroidError('invalid managed AVD name')
         home = (args.avd_home or Path(os.environ.get('XDG_DATA_HOME') or Path.home() / '.local/share')
                 / 'akdbx/android/avd').resolve()

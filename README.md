@@ -180,16 +180,17 @@ ordinary browser fills work while the emulator is off.
 [Setup, device ownership and approval procedure](skills/akdbx/references/android.md#on-demand-emulator-0370)
 
 `akdbx android inspect | pin | fill | fill-totp | google-sign-in` reach a
-device through the operator's adb server. The broker speaks adb's protocol
-itself on a loopback connection whose owner it checks, and binds each pin to
+device through adb. For a managed emulator the broker uses a Unix socket in
+its private runtime directory. For an attached device it checks ownership of
+the operator's loopback adb connection. It binds each pin to
 the device (adb serial and boot), the focused app (package, signing
 certificate, activity, task) and the field. It fills only an entry whose URL
 or additional URL is the verified site:
 
 - **Chrome tabs and Custom Tabs** (Google-signed Chrome): the exact origin of
   the one visible, focused tab, matched to Chrome's own address bar. The
-  broker reads and fills the page through Chrome's DevTools socket (forwarded
-  by adb only while it connects). Before a value moves, an on-device helper
+  broker reads and fills the page through Chrome's DevTools socket. Managed
+  devices use a private adb stream. Attached devices use a temporary forward. Before a value moves, an on-device helper
   types a random check string as key events that Android delivers only to
   Chrome's windows, and the pinned element must show it: that proves the
   connection is Chrome's and the field has focus.

@@ -12,8 +12,9 @@ argument, never on the clipboard, and never in a response or log.
 
 ## How a value reaches the device
 
-The broker talks to the operator's adb server itself, over a loopback
-connection whose owner it checks (another OS account's listener is refused).
+The broker checks the operating-system owner of its adb connection. A managed
+emulator has a Unix socket in a private runtime directory. An attached
+device uses its operator's loopback adb server.
 It starts a small akdbx helper on the device (`app_process`, adb shell user)
 and sends the request on that connection's standard input.
 
@@ -21,7 +22,8 @@ and sends the request on that connection's standard input.
   Android's accessibility API, checks it again, empties it, sets the value
   (`ACTION_SET_TEXT`) and confirms that the field holds it.
 - **Chrome pages**: the broker reads the page through Chrome's DevTools
-  socket (which tab is visible, which field is focused). Any app could hold
+  socket (which tab is visible, which field is focused). On managed devices
+  this is a stream inside the private adb connection. Any app could hold
   that socket's name, so before a value moves the broker proves the
   connection is Chrome's: it empties and focuses the pinned field, the helper
   types a random check string as key events that Android delivers only to
@@ -53,8 +55,10 @@ On the broker host, choose one setup command. Without arguments,
   converting an attached entry. Stop that device and its dedicated adb
   server first. Adoption keeps the virtual disk and signed-in accounts.
 
-Managed devices use a private adb server (default port 5043) and a pair of
-emulator ports (5584 and 5585). For another device, choose unused ports
+The managed adb server accepts clients on a private Unix socket. It disables
+USB, mDNS and emulator discovery. The worker registers its own emulator,
+which uses a pair of ports (5584 and 5585), and reserves its legacy adb
+notification port (5043) without accepting TCP clients. For another device, choose unused ports
 with `--adb-port` and `--emulator-port`. `--sdk` defaults to `ANDROID_HOME`,
 then `ANDROID_SDK_ROOT`, then `~/Android/Sdk`. New AVDs live under
 `$XDG_DATA_HOME/akdbx/android/avd` (default `~/.local/share/akdbx/android/avd`).
@@ -66,7 +70,7 @@ state without starting it. Inspect, pin and Google sign-in wake it before
 contacting the device. For several app steps or a long-running tool, wrap the
 command with `akdbx android run --device android -- PROGRAM ARGS`. For example,
 `akdbx android run --device android -- adb shell getprop ro.build.version.sdk`
-reads the Android version. The command gets the correct adb path, port and
+reads the Android version. The command gets the correct adb path, endpoint and
 serial. Concurrent commands share one emulator. After the last command exits,
 the emulator and its adb server stop after the idle interval (default 180
 seconds; set `--idle-seconds` at setup). The AVD data stays on disk.
@@ -211,7 +215,7 @@ reported as `uncertain`.
 - adb gives every process of the broker's operating-system user full control
   of the device, as a DevTools port does for a desktop browser. The broker
   checks the helper file's hash immediately before it starts it, but a
-  process of the same user that races the device files could interfere. adb's
+  process of the same user that races the device files could interfere. An externally managed adb
   loopback server port accepts any local client: on a host with other OS
   accounts, protect it as you would a browser's debugging port.
 - The Google sign-in password and code steps were not tested end to end: a

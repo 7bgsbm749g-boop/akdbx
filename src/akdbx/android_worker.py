@@ -6,6 +6,7 @@ from pathlib import Path
 import selectors
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -42,7 +43,12 @@ def owns_listener(process, port):
         return False
     inodes = set()
     for table in ('tcp', 'tcp6'):
-        for line in Path(f'/proc/net/{table}').read_text().splitlines()[1:]:
+        try:
+            rows = Path(f'/proc/net/{table}').read_text().splitlines()
+        except FileNotFoundError:
+            # IPv4-only Linux kernels omit the tcp6 table.
+            continue
+        for line in rows[1:]:
             cols = line.split()
             if cols[3] == '0A' and int(cols[1].split(':')[1], 16) == port:
                 inodes.add(f'socket:[{cols[9]}]')
@@ -89,40 +95,82 @@ def serve(listener, idle, healthy):
                 conn.close()
 
 
+def private_adb(address, process):
+    connection = socket.socket(socket.AF_UNIX)
+    try:
+        connection.settimeout(2)
+        connection.connect(str(address))
+        pid, uid, _ = struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        if pid != process.pid or uid != os.getuid() or process.poll() is not None:
+            raise RuntimeError('private adb server changed')
+        return connection
+    except BaseException:
+        connection.close()
+        raise
+
+
 def run(directory, adb, port, serial, managed):
     emulator_port = int(serial.removeprefix('emulator-'))
-    for p in (port, emulator_port, emulator_port + 1):
+    for p in (emulator_port, emulator_port + 1):
         ensure_free(p)
     env = {k: v for k, v in os.environ.items() if not k.startswith(('ANDROID_', 'ADB_'))}
+    address = directory / 'adb'
+    endpoint = 'localfilesystem:' + str(address)
     env.update(ANDROID_SDK_ROOT=managed['sdk'], ANDROID_AVD_HOME=managed['avd_home'],
-               ANDROID_ADB_SERVER_PORT=str(port), ADB_LOCAL_TRANSPORT_MAX_PORT='0')
+               ADB_SERVER_SOCKET=endpoint, ADB_EMU='0', ADB_USB='0', ADB_MDNS='0',
+               ADB_LOCAL_TRANSPORT_MAX_PORT='0')
     emulator = Path(managed['sdk']) / 'emulator' / 'emulator'
     with contextlib.ExitStack() as stack:
-        server = stack.enter_context(child([adb, '-P', str(port), 'nodaemon', 'server'], env))
+        # The emulator also announces itself to a legacy TCP port. Reserve
+        # that port without listening so it cannot register with another server.
+        reserved = stack.enter_context(socket.socket())
+        reserved.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        reserved.bind(('127.0.0.1', port))
+        server = stack.enter_context(child([adb, '-L', endpoint, 'nodaemon', 'server'], env))
         deadline = time.monotonic() + 180
-        while not owns_listener(server, port):
-            if server.poll() is not None or time.monotonic() >= deadline:
-                raise RuntimeError('private adb server did not start')
-            time.sleep(.1)
+        while True:
+            try:
+                with private_adb(address, server):
+                    break
+            except (FileNotFoundError, ConnectionRefusedError):
+                if server.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError('private adb server did not start')
+                time.sleep(.1)
         guest = stack.enter_context(child([emulator, '-avd', managed['avd'], '-port', str(emulator_port),
                                           '-no-window', '-no-audio', '-no-boot-anim', '-no-snapshot',
                                           '-gpu', 'swiftshader', '-accel', 'on', '-cores', '2',
-                                          '-memory', '2048', '-feature', '-Vulkan', '-no-metrics'], env))
+                                          '-memory', '2048', '-feature', '-Vulkan', '-no-metrics'],
+                                         {**env, 'ANDROID_ADB_SERVER_PORT': str(port)}))
 
         def alive():
             return guest.poll() is None and server.poll() is None
 
         def shell(*args):
-            if not owns_listener(server, port) or not owns_listener(guest, emulator_port + 1):
+            if not owns_listener(guest, emulator_port + 1):
                 raise RuntimeError('private Android transport changed')
-            return subprocess.run([adb, '-P', str(port), '-s', serial, 'shell', *args], env=env,
+            with private_adb(address, server):
+                pass
+            return subprocess.run([adb, '-L', endpoint, '-s', serial, 'shell', *args], env=env,
                                   capture_output=True, timeout=8)
 
+        next_registration = 0
         while alive() and time.monotonic() < deadline:
             if owns_listener(guest, emulator_port + 1):
+                if time.monotonic() >= next_registration:
+                    with private_adb(address, server) as connection:
+                        message = f'host:emulator:{emulator_port + 1}'.encode('ascii')
+                        connection.sendall(b'%04x' % len(message) + message)
+                        # adb closes without a reply once it accepts the notification.
+                        connection.recv(1)
+                    next_registration = time.monotonic() + 3
                 try:
-                    if shell('getprop', 'sys.boot_completed').stdout.strip() == b'1':
-                        break
+                    boot = shell('getprop', 'sys.boot_completed')
+                    if boot.returncode == 0:
+                        if boot.stdout.strip() == b'1':
+                            break
+                        # The transport is online; no further registration is needed
+                        # while the guest finishes booting.
+                        next_registration = time.monotonic() + 3
                 except subprocess.TimeoutExpired:
                     pass
             time.sleep(.5)

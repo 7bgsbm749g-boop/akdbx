@@ -37,6 +37,16 @@ def state(device: Device) -> str:
     return 'starting-or-stopping' if directory.exists() else 'asleep'
 
 
+def _start(device, unit, directory):
+    argv = ['systemd-run', '--user', '--quiet', '--collect', '--expand-environment=no', '--service-type=exec',
+            '--unit', unit, '-p', f'RuntimeDirectory={unit}', '-p', 'RuntimeDirectoryMode=0700',
+            '-p', 'UMask=0077', '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=45',
+            sys.executable, '-I', str(Path(__file__).with_name('android_worker.py').resolve()),
+            str(directory), device.adb, str(device.port), device.serial,
+            json.dumps(device.managed, separators=(',', ':'))]
+    return subprocess.run(argv, capture_output=True, timeout=15).returncode == 0
+
+
 @contextlib.contextmanager
 def use(device: Device):
     """Hold a connection for the operation; closing the last starts the idle period."""
@@ -48,6 +58,9 @@ def use(device: Device):
     unit, directory = runtime(device)
     address = str(directory / 'ready')
     deadline = time.monotonic() + 210
+    launched_at = None
+    retry_at = 0
+    launch_failed = False
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         while True:
@@ -62,26 +75,24 @@ def use(device: Device):
             client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             if time.monotonic() >= deadline:
                 raise AndroidError(f'Android startup timed out; check journalctl --user -u {unit}')
-            if not directory.exists():
-                argv = ['systemd-run', '--user', '--quiet', '--collect', '--expand-environment=no', '--service-type=exec', '--unit', unit,
-                        '-p', f'RuntimeDirectory={unit}', '-p', 'RuntimeDirectoryMode=0700',
-                        '-p', 'UMask=0077', '-p', 'KillMode=mixed', '-p', 'TimeoutStopSec=45',
-                        sys.executable, '-I', str(Path(__file__).with_name('android_worker.py').resolve()),
-                        str(directory), device.adb, str(device.port), device.serial,
-                        json.dumps(device.managed, separators=(',', ':'))]
-                result = subprocess.run(argv, capture_output=True, timeout=15)
-                if result.returncode and not directory.exists():
-                    active = subprocess.run(['systemctl', '--user', 'is-active', unit],
-                                            capture_output=True, timeout=5)
-                    if active.stdout.strip() not in (b'active', b'activating', b'deactivating'):
-                        raise AndroidError(f'could not start managed Android device; check journalctl --user -u {unit}')
-                # The unit can exit during boot. Do not keep retrying a broken image.
-                while time.monotonic() < deadline and not (directory / 'ready').is_socket():
-                    if not directory.exists():
+            now = time.monotonic()
+            if not directory.exists() and now >= retry_at:
+                if launched_at is not None:
+                    if now - launched_at >= 2:
                         raise AndroidError(f'Android worker exited; check journalctl --user -u {unit}')
-                    time.sleep(.25)
-            else:
-                time.sleep(.25)
-        yield client
+                elif _start(device, unit, directory):
+                    launched_at = time.monotonic()
+                else:
+                    # A concurrent start can own the unit before systemd creates
+                    # RuntimeDirectory. An idle unit can also be pending collection
+                    # after the directory disappears. Retry either transition.
+                    load = subprocess.run(['systemctl', '--user', 'show', '-p', 'LoadState', '--value', unit],
+                                          capture_output=True, timeout=5)
+                    if launch_failed and load.stdout.strip() != b'loaded':
+                        raise AndroidError(f'could not start managed Android device; check journalctl --user -u {unit}')
+                    launch_failed = True
+                    retry_at = time.monotonic() + 1
+            time.sleep(.25)
+        yield
     finally:
         client.close()

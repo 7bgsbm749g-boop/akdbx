@@ -11,7 +11,7 @@ import sys
 import time
 
 from . import android_lifecycle, android_setup
-from .android_route import AndroidError, CHROME_DELIVERY, DELIVERY, MODES, PROTOCOL, load_devices
+from .android_route import Adb, AndroidError, CHROME_DELIVERY, DELIVERY, MODES, PROTOCOL, load_devices
 
 DELIVERIES = {DELIVERY, CHROME_DELIVERY}
 
@@ -116,14 +116,16 @@ def run(args, request):
             argv = argv[1:]
         if command == 'run' and not argv:
             raise AndroidError('android run requires a program after --')
-        with android_lifecycle.use(device) as lease:
+        if command == 'run' and not device.managed and not Adb(device).server_running():
+            raise AndroidError('adb server not running on the configured port')
+        with android_lifecycle.use(device):
             if command == 'wake':
                 print(json.dumps({'ok': True, 'device': device.name, 'power_state': 'awake'}))
                 return 0
-            env = {k: v for k, v in os.environ.items() if not k.startswith(('ADB_', 'ANDROID_'))}
-            env.update(ANDROID_SERIAL=device.serial, ANDROID_ADB_SERVER_PORT=str(device.port),
+            env = Adb(device)._environment()
+            env.update(ANDROID_SERIAL=device.serial,
                        PATH=str(os.path.dirname(device.adb)) + os.pathsep + env.get('PATH', ''))
-            return subprocess.run(argv, env=env, pass_fds=(lease.fileno(),) if lease else ()).returncode
+            return subprocess.run(argv, env=env).returncode
     except (AndroidError, OSError, subprocess.SubprocessError) as exc:
         print(json.dumps({'ok': False, 'error': str(exc) if isinstance(exc, AndroidError)
                           else 'local Android setup or lifecycle command failed'}))
@@ -132,6 +134,7 @@ def run(args, request):
 
 def _request(args, request, leases):
     command = args.android_command
+    sent = False
     try:
         caps = request({'action': 'ping'})
         if (caps.get('ok') is not True or type(caps.get('android_fill_protocol')) is not int
@@ -170,12 +173,16 @@ def _request(args, request, leases):
                        'start_deadline': time.monotonic() + 4}
             if command == 'fill':
                 payload['mode'] = args.mode
+        sent = True
         response = request(payload, timeout=TIMEOUTS[command])
         if not valid(command, response):
             raise ValueError
     except AndroidError:
         raise
     except Exception:
+        if not sent:
+            print(json.dumps({'ok': False, 'error': 'Android preparation failed; request not sent'}))
+            return 1
         if command in FILLS:
             print('autofill outcome unconfirmed: broker response rejected; do not retry automatically', file=sys.stderr)
         else:
