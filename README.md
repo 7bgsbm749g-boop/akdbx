@@ -487,7 +487,7 @@ refuses (`identity_field_purpose_protocol: 1`, fill extension 0.7.0 on the
 extension route). `fill-identity --field tel --format national
 [--calling-code CODE]` removes the `+` and country calling code for a phone
 input next to a separate country picker (`identity_tel_formats`). From
-0.35.4, `--format international [--calling-code CODE]` fills `+`, the code
+0.36.1, `--format international [--calling-code CODE]` fills `+`, the code
 and the national number, and both formats accept a saved national number
 with a trunk `0` (`07...`) when `--calling-code` names a country whose trunk
 `0` is never part of the number (`TRUNK_ZERO`, from Google libphonenumber

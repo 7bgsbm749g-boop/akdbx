@@ -558,7 +558,7 @@ with no autocomplete hint (or only `on`) needs `--field-purpose FIELD` after
 you verify its purpose on the page (`autocomplete="off"` also needs
 `--allow-autocomplete-off`); a hint for another detail still refuses. A phone
 input next to a separate country picker takes `fill-identity --format national
---calling-code CODE` (digits without the code or trunk `0`) or, from 0.35.4,
+--calling-code CODE` (digits without the code or trunk `0`) or, from 0.36.1,
 `--format international --calling-code CODE` (`+` code and number). A saved
 `07...` number needs `--calling-code`; some countries refuse it
 ([identities](references/identities.md#phone-number-next-to-a-country-picker)). Names,

@@ -162,7 +162,7 @@ akdbx pin-identity-target --route extension --page-id PAGE_ID --frame-id FRAME_I
 
 When the page has a separate country-code dropdown, the phone input wants the
 number without the country code, or the full number with it. Fill with
-`--format national` or (from 0.35.4) `--format international`. Require
+`--format national` or (from 0.36.1) `--format international`. Require
 `identity_tel_formats` in `status` to contain the format you use:
 
 ```bash
@@ -181,7 +181,7 @@ akdbx fill-identity --field tel --format international --calling-code 44 \
   another country never goes next to the picker (for a `0...` number, see
   below). Check the picker shows the
   right country before you fill.
-- A saved number in national form with one trunk `0` (`07...`, 0.35.4) works
+- A saved number in national form with one trunk `0` (`07...`, 0.36.1) works
   only with `--calling-code`, which tells the broker the country. The broker
   drops the `0` only for countries where the `0` is never part of the number
   (for example 44 UK, 49 Germany, 33 France, 61 Australia; the full list is
