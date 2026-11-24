@@ -1544,6 +1544,7 @@ class Setup:
     # ----- 7. optional features ---------------------------------------------
     def stage_features(self):
         self.say(NOTIFICATIONS)
+        self.say("Optional Android device: run akdbx android setup to attach a device or create an on-demand Google Play emulator on Linux.")
         engine = self.tools.get('keepassxc_cli')
         self.say('Merge: ' + (f'available (KeePassXC CLI {engine})' if engine else
                               'not available: install KeePassXC 2.7.10 or newer (below 2.8) for all users'

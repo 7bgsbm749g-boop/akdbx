@@ -2,12 +2,16 @@
 
 Commands take no secret argument. Fill commands print only a receipt.
 """
+import contextlib
 import json
+import os
+import subprocess
 import re
 import sys
 import time
 
-from .android_route import CHROME_DELIVERY, DELIVERY, MODES, PROTOCOL
+from . import android_lifecycle, android_setup
+from .android_route import AndroidError, CHROME_DELIVERY, DELIVERY, MODES, PROTOCOL, load_devices
 
 DELIVERIES = {DELIVERY, CHROME_DELIVERY}
 
@@ -30,6 +34,7 @@ def add_parser(commands):
                      'The value goes from the broker to an akdbx helper on the device over adb standard input; '
                      'it is never an argument, typed key, clipboard content or output.'))
     sub = android.add_subparsers(dest='android_command', required=True)
+    android_setup.add_parsers(sub)
     sub.add_parser('devices', help='list configured devices and whether each is reachable')
     inspect = sub.add_parser('inspect', help='read-only: the focused app, its verified site and its text fields')
     inspect.add_argument('--device', required=True, help='device name from android devices')
@@ -95,11 +100,52 @@ def valid(command, response):
 def run(args, request):
     command = args.android_command
     try:
+        if command == 'setup':
+            print(json.dumps(android_setup.setup(args)))
+            return 0
+        if command not in ('wake', 'run'):
+            with contextlib.ExitStack() as leases:
+                return _request(args, request, leases)
+        device = load_devices(android_setup.config_path()).get(args.device)
+        if device is None:
+            raise AndroidError('device is not registered in the local Android configuration')
+        if command == 'wake' and device.managed is None:
+            raise AndroidError('attached devices remain under operator control')
+        argv = getattr(args, 'argv', [])
+        if argv[:1] == ['--']:
+            argv = argv[1:]
+        if command == 'run' and not argv:
+            raise AndroidError('android run requires a program after --')
+        with android_lifecycle.use(device) as lease:
+            if command == 'wake':
+                print(json.dumps({'ok': True, 'device': device.name, 'power_state': 'awake'}))
+                return 0
+            env = {k: v for k, v in os.environ.items() if not k.startswith(('ADB_', 'ANDROID_'))}
+            env.update(ANDROID_SERIAL=device.serial, ANDROID_ADB_SERVER_PORT=str(device.port),
+                       PATH=str(os.path.dirname(device.adb)) + os.pathsep + env.get('PATH', ''))
+            return subprocess.run(argv, env=env, pass_fds=(lease.fileno(),) if lease else ()).returncode
+    except (AndroidError, OSError, subprocess.SubprocessError) as exc:
+        print(json.dumps({'ok': False, 'error': str(exc) if isinstance(exc, AndroidError)
+                          else 'local Android setup or lifecycle command failed'}))
+        return 1
+
+
+def _request(args, request, leases):
+    command = args.android_command
+    try:
         caps = request({'action': 'ping'})
         if (caps.get('ok') is not True or type(caps.get('android_fill_protocol')) is not int
                 or caps['android_fill_protocol'] != PROTOCOL or caps.get('android_fill_delivery') != DELIVERY):
             print(json.dumps({'ok': False, 'error': 'broker lacks Android fill protocol 1; update akdbx; request not sent'}))
             return 1
+        managed = caps.get('android_managed_devices', {}).get(getattr(args, 'device', None))
+        if managed and (command == 'inspect' or not caps.get('locked')):
+            device = load_devices(android_setup.config_path()).get(args.device)
+            if not device or not device.managed or android_lifecycle.unit_name(device) != managed.get('unit'):
+                raise AndroidError('use the broker host and its AKDBX_ANDROID_DEVICES file for managed Android')
+            # Boot before starting the short fill deadline. The 30-second pin
+            # and its 60-second fill fit within the minimum 120-second idle period.
+            leases.enter_context(android_lifecycle.use(device))
         if command == 'devices':
             payload = {'action': 'android-devices'}
         elif command == 'inspect':
@@ -127,6 +173,8 @@ def run(args, request):
         response = request(payload, timeout=TIMEOUTS[command])
         if not valid(command, response):
             raise ValueError
+    except AndroidError:
+        raise
     except Exception:
         if command in FILLS:
             print('autofill outcome unconfirmed: broker response rejected; do not retry automatically', file=sys.stderr)

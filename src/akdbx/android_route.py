@@ -156,6 +156,22 @@ class Device:
     adb: str
     port: int
     serial: str
+    managed: dict | None = None
+
+    def reserved_ports(self):
+        ports = {self.port}
+        if self.managed:
+            console = int(self.serial.removeprefix('emulator-'))
+            ports.update((console, console + 1))
+        return ports
+
+    def conflicts_with(self, other):
+        if not (self.managed or other.managed):
+            return False
+        return (bool(self.reserved_ports() & other.reserved_ports()) or self.serial == other.serial
+                or (self.managed and other.managed and
+                    (self.managed['avd_home'], self.managed['avd']) ==
+                    (other.managed['avd_home'], other.managed['avd'])))
 
 
 def _read_private_file(path: Path) -> bytes:
@@ -203,14 +219,29 @@ def load_devices(path: Path | None) -> dict[str, Device]:
     devices = {}
     for name, value in raw['devices'].items():
         if (not isinstance(name, str) or not DEVICE_NAME.fullmatch(name) or not isinstance(value, dict)
-                or set(value) != {'adb', 'adb_server_port', 'serial'}):
+                or set(value) not in ({'adb', 'adb_server_port', 'serial'}, {'adb', 'adb_server_port', 'serial', 'managed'})):
             raise AndroidError('invalid Android device entry')
         adb, port, serial = value['adb'], value['adb_server_port'], value['serial']
         if (not isinstance(adb, str) or not os.path.isabs(adb) or os.path.normpath(adb) != adb
                 or type(port) is not int or not 1024 <= port <= 65535
                 or not isinstance(serial, str) or not SERIAL.fullmatch(serial)):
             raise AndroidError('invalid Android device entry')
-        devices[name] = Device(name, adb, port, serial)
+        managed = value.get('managed')
+        if 'managed' in value:
+            if (not isinstance(managed, dict) or set(managed) != {'avd', 'sdk', 'avd_home', 'idle_seconds'}
+                    or not isinstance(managed['avd'], str) or not DEVICE_NAME.fullmatch(managed['avd'])
+                    or any(not isinstance(managed[k], str) or not os.path.isabs(managed[k])
+                           for k in ('sdk', 'avd_home'))
+                    or type(managed['idle_seconds']) is not int or not 120 <= managed['idle_seconds'] <= 3600
+                    or not re.fullmatch(r'emulator-[0-9]{4}', serial)):
+                raise AndroidError('invalid managed Android device settings')
+            console = int(serial[9:])
+            if console % 2 or not 5554 <= console <= 5682 or port in (console, console + 1):
+                raise AndroidError('invalid managed emulator ports')
+        device = Device(name, adb, port, serial, managed)
+        if any(device.conflicts_with(other) for other in devices.values()):
+            raise AndroidError('another device uses this managed transport or AVD')
+        devices[name] = device
     return devices
 
 
@@ -802,14 +833,28 @@ class AndroidTargets:
             return False
 
     def capabilities(self) -> dict:
-        return capabilities(self.configured())
+        from .android_lifecycle import state, unit_name
+        try:
+            devices = self.devices()
+        except AndroidError:
+            devices = {}
+        result = capabilities(bool(devices))
+        managed = {d.name: {'state': state(d), 'unit': unit_name(d)} for d in devices.values() if d.managed}
+        if managed:
+            result['android_managed_devices'] = managed
+        return result
 
     def _device(self, request) -> Device:
         name = request.get('device')
         devices = self.devices()
         if not isinstance(name, str) or name not in devices:
             raise AndroidError('unknown Android device; configured devices: ' + (', '.join(sorted(devices)) or 'none'))
-        return devices[name]
+        device = devices[name]
+        if device.managed:
+            from .android_lifecycle import state
+            if state(device) != 'awake':
+                raise AndroidError('managed Android device is asleep; use android wake on the broker host')
+        return device
 
     def list_devices(self, request) -> dict:
         if set(request) - {'action', 'android_protocol'}:
@@ -819,6 +864,13 @@ class AndroidTargets:
         for device in self.devices().values():
             adb = self.adb_factory(device)
             item = {'name': device.name, 'serial': device.serial, 'adb_server_port': device.port}
+            if device.managed is not None:
+                from .android_lifecycle import state
+                item['power_state'] = state(device)
+                if item['power_state'] != 'awake':
+                    item.update(reachable=False, speak_password=None, sdk=None)
+                    result.append(item)
+                    continue
             if time.monotonic() >= deadline:
                 item.update(reachable=None, speak_password=None, sdk=None)
                 result.append(item)

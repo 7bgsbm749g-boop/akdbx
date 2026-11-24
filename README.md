@@ -158,10 +158,26 @@ pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
   page for both platforms.
 - **Android devices and emulators** (0.36.0+): a broker on Linux fills a
   login, password, username or authenticator code into one verified field on
-  an Android device that the operator names in a device file. See
+  a registered Android device. Version 0.37.0 adds optional setup and on-demand
+  Google Play emulators. See
   [Android devices](#android-devices-0360).
 
 ## Android devices (0.36.0)
+
+**Optional on-demand emulator (0.37.0+).** Run `akdbx android setup --create`
+on an x86-64 Linux host with KVM, a systemd user session and a Java runtime.
+Setup uses Google's SDK to create a persistent Google Play virtual device.
+Android operations start it when needed. It stops three minutes after its
+last operation. Apps, their sign-ins and notification settings stay on disk.
+To connect a device you already run, use `akdbx android setup --attach SERIAL`.
+
+For a service that offers mobile sign-in confirmation, such as GitHub Mobile,
+sign in to its app once and enable its notifications. When a login you started
+offers mobile confirmation, run `akdbx android wake --device android`
+**before requesting the push**. Match the request in the app to that login.
+A sleeping emulator cannot wake itself on an incoming push. Vault TOTP and
+ordinary browser fills work while the emulator is off.
+[Setup, device ownership and approval procedure](skills/akdbx/references/android.md#on-demand-emulator-0370)
 
 `akdbx android inspect | pin | fill | fill-totp | google-sign-in` reach a
 device through the operator's adb server. The broker speaks adb's protocol

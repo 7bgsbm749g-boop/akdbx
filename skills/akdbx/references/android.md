@@ -32,7 +32,63 @@ and sends the request on that connection's standard input.
   Chrome received the keys, and only the focused element shows them. The
   broker then sets the value on that element over the same connection.
 
-## Operator setup
+## On-demand emulator (0.37.0+)
+
+On the broker host, choose one setup command. Without arguments,
+`akdbx android setup` prompts at a terminal. The default device name is
+`android`; use `--device NAME` to select another.
+
+- `akdbx android setup --create` provisions a persistent Android 35 Google Play
+  x86-64 virtual device. It uses Google's Linux command-line tools, downloads
+  the SDK packages if needed and lets sdkmanager present its license. Allow
+  several GiB for the SDK and device data. The host needs Java, read/write
+  access to `/dev/kvm`, and systemd 254+ with a working user manager. Run it
+  as the user who runs the broker. Setup leaves the emulator off.
+- `akdbx android setup --attach SERIAL --adb-port 5037` registers an online
+  device on a running adb server and disables spoken passwords. Its operator
+  controls its power and adb server.
+- `akdbx android setup --manage-avd NAME --sdk /path/to/sdk --avd-home /path/to/avd`
+  adopts an existing stopped emulator. The registry directory must contain
+  `NAME.ini`. Use its original SDK, device name, adb and emulator ports when
+  converting an attached entry. Stop that device and its dedicated adb
+  server first. Adoption keeps the virtual disk and signed-in accounts.
+
+Managed devices use a private adb server (default port 5043) and a pair of
+emulator ports (5584 and 5585). For another device, choose unused ports
+with `--adb-port` and `--emulator-port`. `--sdk` defaults to `ANDROID_HOME`,
+then `ANDROID_SDK_ROOT`, then `~/Android/Sdk`. New AVDs live under
+`$XDG_DATA_HOME/akdbx/android/avd` (default `~/.local/share/akdbx/android/avd`).
+Use the same `AKDBX_ANDROID_DEVICES` setting in the CLI and the broker when
+you choose a custom registration file.
+
+`akdbx status` and `akdbx android devices` report the managed device's power
+state without starting it. Inspect, pin and Google sign-in wake it before
+contacting the device. For several app steps or a long-running tool, wrap the
+command with `akdbx android run --device android -- PROGRAM ARGS`. For example,
+`akdbx android run --device android -- adb shell getprop ro.build.version.sdk`
+reads the Android version. The command gets the correct adb path, port and
+serial. Concurrent commands share one emulator. After the last command exits,
+the emulator and its adb server stop after the idle interval (default 180
+seconds; set `--idle-seconds` at setup). The AVD data stays on disk.
+
+### Mobile confirmation
+
+1. Sign in to the service's mobile app on this device and enable notifications.
+2. When the active login offers mobile confirmation, wake the device with
+   `akdbx android wake --device NAME` before requesting the notification. For
+   a flow that may take longer than the idle interval, hold the whole flow
+   with `android run`.
+3. Open the matching request in the app. Check its account, service and the
+   challenge from the login you started. Confirm that request and check that
+   the service accepts it. If the prompt cannot be matched, leave it pending.
+   Support for mobile confirmation depends on the provider and app.
+
+A push notification cannot boot a stopped emulator. An ordinary browser fill
+or vault TOTP does not power up Android. The stock Google Play image and its
+signed-in app data belong to the Android SDK installation and AVD. The
+broker delivers credentials through its existing verified helper.
+
+## Manual setup for an externally managed device
 
 1. Run the adb server that already serves the device, on a fixed port.
 2. Create the broker's device file, owned by the broker user, mode 0600, in a
