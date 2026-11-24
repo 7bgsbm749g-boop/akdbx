@@ -238,6 +238,8 @@ function onHost(current, message) {
     state = brokerState(message);
     // Bind a first key or follow a signed move now, not only when the popup opens.
     if (port === current) observeTrust(state);
+    // Never while paired: the reload would end a pairing the user just made (or one a fill uses).
+    if (port === current && !state.paired) selfUpdate(message.extension_version).catch(() => false);
   } else if (message.type === "call") {
     handleCall(message).catch(() => ({ok: false})).then(result => {
       if (port === current) current.postMessage({type: "reply", id: message.id, result});
@@ -248,6 +250,53 @@ function onHost(current, message) {
   } else if (message.type === "error") {
     state = {connected: false, error: "attach refused"};
   }
+}
+
+// An unpacked extension does not load a rebuilt folder by itself: the user had to click
+// reload in chrome://extensions after each update. When the broker ships a newer
+// extension and this extension's folder on disk already holds that version (read from
+// disk, so a folder that was not rebuilt, or a packed copy, never reloads), reload once
+// from disk. A reload ends this worker's session storage, so the new version pairs with
+// a new key. It therefore runs only while this key is not paired: on the attach after a
+// broker restart (which drops every pairing) or when the popup opens before pairing.
+// local storage (the broker trust) stays. One try per version, so it can never loop; the
+// mark goes when that version runs, so a later downgrade and update can reload again.
+chrome.storage.local.get("self_update").then(found => {
+  if (found.self_update === chrome.runtime.getManifest().version) return chrome.storage.local.remove("self_update");
+}).catch(() => {});
+
+function versionParts(text) {
+  return typeof text === "string" && /^(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})$/.test(text)
+    ? text.split(".").map(Number) : null;
+}
+
+function newerVersion(a, b) {
+  for (let i = 0; i < 3; i += 1) if (a[i] !== b[i]) return a[i] > b[i];
+  return false;
+}
+
+// One check at a time; a second caller (the popup) waits for the same answer.
+let selfUpdating = null;
+
+function selfUpdate(expected) {
+  if (!selfUpdating) selfUpdating = trySelfUpdate(expected).finally(() => { selfUpdating = null; });
+  return selfUpdating;
+}
+
+async function trySelfUpdate(expected) {
+  const want = versionParts(expected), own = versionParts(chrome.runtime.getManifest().version);
+  if (!want || !own || !newerVersion(want, own)) return false;
+  if ((await chrome.storage.local.get("self_update")).self_update === expected) return false;
+  const response = await fetch(chrome.runtime.getURL("manifest.json"), {cache: "no-store"});
+  if ((await response.json()).version !== expected) return false;
+  await chrome.storage.local.set({self_update: expected});
+  // A pairing can finish while the folder is read: then keep the key and try at the next attach.
+  if (state.paired) {
+    await chrome.storage.local.remove("self_update");
+    return false;
+  }
+  chrome.runtime.reload();
+  return true;
 }
 
 // What the popup needs from a broker state message. The identity is checked later, against stored trust.
@@ -840,6 +889,10 @@ async function popupState() {
   await connect();
   const fresh = port ? await brokerRequest("state", {}, 5000) : null;
   if (fresh && fresh.ok) state = brokerState(fresh);
+  // Reload into a rebuilt folder before the popup offers a pairing for this key.
+  if (fresh && fresh.ok && !state.paired && await selfUpdate(fresh.extension_version).catch(() => false)) {
+    return {ok: false, error: "akdbx is loading its update. Open the popup again."};
+  }
   // The popup shows the code of this browser's own key, never one from the host.
   const code = await localCode((await pairingKeys()).publicKey);
   // After the identity work queued before it, on the newest broker state.
@@ -971,7 +1024,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 
 connect();
 if (typeof module !== "undefined") {
-  module.exports = {fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys, fill, pin, release, read,
+  module.exports = {selfUpdate, fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys, fill, pin, release, read,
     sealCapture, holdOwners, channelTrusted, setCaptureKey: key => { captureKey = Promise.resolve(key); },
     setChannel: value => { channel = {sealKey, captureKey, ...value}; }, channel: () => channel,
     popupState, popupReset, trustIdle: () => trustQueue, setSealKey: key => { sealKey = Promise.resolve(key); }, state: () => state};

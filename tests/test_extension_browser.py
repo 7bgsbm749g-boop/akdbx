@@ -463,6 +463,17 @@ def grant_screenshots(extension):
     path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
 
 
+OLDER_VERSION = '0.0.1'
+
+
+def older_build(extension):
+    """The folder as an earlier akdbx built it: the same files under an older version."""
+    path = Path(extension) / 'manifest.json'
+    manifest = json.loads(path.read_text(encoding='utf-8'))
+    manifest['version'] = OLDER_VERSION
+    path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+
+
 @pytest.fixture
 def harness(private_dir, certificates, monkeypatch, request):
     if sys.platform != 'win32':
@@ -485,6 +496,10 @@ def harness(private_dir, certificates, monkeypatch, request):
     extension = extension_host.build(Path(private_dir) / 'extension', host_name=host_name, unlock_origin=unlock_origin)
     if 'enhanced' in request.fixturenames or request.node.get_closest_marker('screenshot_access') is not None:
         grant_screenshots(extension)
+    older = request.node.get_closest_marker('older_build') is not None
+    loaded = OLDER_VERSION if older else route.EXTENSION_VERSION
+    if older:
+        older_build(extension)
     launcher = Path(private_dir) / ('host.cmd' if sys.platform == 'win32' else 'host.sh')
     launcher.write_text(extension_host._launcher_text(kind, sys.executable, str(pipe)), encoding='utf-8', newline='')
     native_hosts = None
@@ -511,7 +526,7 @@ def harness(private_dir, certificates, monkeypatch, request):
     server.start()
     try:
         with chromium_lab(private_dir, *certificates, pages=PAGES, binary=binary, extension=extension,
-                          hosts=('js.stripe.com',), native_hosts=native_hosts) as lab:
+                          hosts=('js.stripe.com',), native_hosts=native_hosts, developer_mode=older) as lab:
             deadline = time.monotonic() + 60
             while not broker.extension.channels:
                 assert time.monotonic() < deadline, 'the extension host did not attach to the broker'
@@ -519,9 +534,9 @@ def harness(private_dir, certificates, monkeypatch, request):
             [channel] = broker.extension.channels.values()
             assert channel.browser == kind
             # The loaded extension reports its own manifest version to the broker.
-            assert channel.version == route.EXTENSION_VERSION
+            assert channel.version == loaded
             assert broker.dispatch(dict(action='ping'))['extension_browsers'] == [
-                dict(browser=kind, paired=False, version=route.EXTENSION_VERSION, version_status='current')]
+                dict(browser=kind, paired=False, version=loaded, version_status='outdated' if older else 'current')]
             # The popup shows a code computed from its own key; it must equal
             # the code the broker's pairing page shows for the key it received.
             workers = [t for t in lab.observer.call('Target.getTargets')['targetInfos']
@@ -534,7 +549,9 @@ def harness(private_dir, certificates, monkeypatch, request):
             assert broker.extension.approve(token)
             # Reload so the declared content script runs in the test page.
             lab.navigate('/login')
-            yield Harness(lab, broker, kind, unlock_origin, identity)
+            harness = Harness(lab, broker, kind, unlock_origin, identity)
+            harness.extension, harness.host_name = extension, host_name
+            yield harness
     finally:
         stop.set()
         server.join(5)
@@ -546,6 +563,39 @@ def harness(private_dir, certificates, monkeypatch, request):
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
             except OSError:
                 pass
+
+
+@pytest.mark.older_build
+def test_an_unpacked_extension_loads_its_rebuilt_folder_by_itself(harness):
+    """After an update the user no longer clicks reload: the extension reloads from its rebuilt folder.
+
+    A browser runs an older build; the broker ships a newer one. Until the folder holds
+    the newer build nothing reloads, and a paired extension waits. After `akdbx extension
+    build` the next state message to an unpaired extension makes it reload itself from
+    disk and attach again with the new version.
+    """
+    hub = harness.hub
+    [old] = hub.channels.values()
+    hub.refresh()  # The folder still holds the older build: no reload.
+    time.sleep(2)
+    assert list(hub.channels.values()) == [old] and not old.closed.is_set()
+    extension_host.build(harness.extension, host_name=harness.host_name, unlock_origin=harness.unlock_origin)
+    hub.refresh()  # Still paired: a reload would end the pairing, so the extension waits.
+    time.sleep(2)
+    assert list(hub.channels.values()) == [old] and not old.closed.is_set()
+    # What a broker restart on the new akdbx does: it has no pairing, and the next state triggers the reload.
+    with hub._lock:
+        hub.approved.clear()
+    hub.refresh()
+    deadline = time.monotonic() + 60
+    while not any(c.version == route.EXTENSION_VERSION and not c.closed.is_set() for c in hub.channels.values()):
+        assert time.monotonic() < deadline, 'the extension did not reload its rebuilt folder'
+        time.sleep(.1)
+    assert old.closed.wait(10)
+    browsers = harness.broker.dispatch(dict(action='ping'))['extension_browsers']
+    assert browsers == [dict(browser=harness.kind, paired=False, version=route.EXTENSION_VERSION, version_status='current')]
+    # The new version runs, so its once-per-version mark is gone again.
+    assert harness.worker_call("chrome.storage.local.get('self_update').then(x => x.self_update ?? null)") is None
 
 
 SETTINGS = "chrome.storage.local.get('settings').then(found => found.settings ?? null)"

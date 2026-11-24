@@ -530,7 +530,10 @@ class ExtensionHub:
             paired = channel.digest in self.approved
         locked = self.broker.locked
         message = dict(type=kind, channel=channel.id, paired=paired, locked=locked, protocol=PROTOCOL,
-                       broker_public_key=b64url(channel.broker_public_key))
+                       broker_public_key=b64url(channel.broker_public_key),
+                       # An unpacked extension reloads itself once when its folder on disk already
+                       # holds this newer version (`akdbx extension build` after an update).
+                       extension_version=EXTENSION_VERSION)
         identity = self.identity
         if identity is not None:
             # Signed by the broker's identity key: a relaying host cannot change it.

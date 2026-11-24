@@ -1089,3 +1089,104 @@ test("the popup and its reset are reachable only from the popup page", () => {
   assert.match(source, /importScripts\("config.js", "trust.js"\)/);
   assert.match(source, /"reset-trust": popupReset/);
 });
+
+// A rebuilt unpacked folder: what fetch(chrome.runtime.getURL("manifest.json")) reads from disk.
+const diskManifest = version => async url => {
+  assert.equal(String(url), "chrome-extension://jjoamaejjkldcjcpgncoomoaagdfimhg/manifest.json");
+  return {json: async () => ({...manifest, version})};
+};
+const bumped = (text, part) => text.split(".").map((n, i) => i === part ? Number(n) + 1 : i > part ? 0 : Number(n)).join(".");
+
+test("an unpacked extension reloads itself once when the broker ships a newer build that is on disk", async () => {
+  const next = bumped(manifest.version, 1);
+  const local = {};
+  const {exports, chrome} = loadBackground({local, fetch: diskManifest(next)});
+  let reloads = 0;
+  chrome.runtime.reload = () => { reloads += 1; };
+  assert.equal(await exports.selfUpdate(next), true);
+  assert.equal(reloads, 1);
+  assert.equal(local.self_update, next);
+  // The same version never reloads again, so a reload that kept the old files cannot loop.
+  assert.equal(await exports.selfUpdate(next), false);
+  assert.equal(reloads, 1);
+});
+
+test("the extension never reloads for a folder that was not rebuilt, the same or an older version, or a bad one", async () => {
+  const next = bumped(manifest.version, 2);
+  const older = manifest.version.split(".").map((n, i) => i === 0 ? n : "0").join(".");
+  for (const [expected, onDisk] of [[next, manifest.version], [manifest.version, manifest.version],
+    [older, older], ["1.2", "1.2"], ["01.2.3", "01.2.3"], [null, manifest.version], [{}, manifest.version]]) {
+    const {exports, chrome} = loadBackground({fetch: diskManifest(onDisk)});
+    let reloads = 0;
+    chrome.runtime.reload = () => { reloads += 1; };
+    assert.equal(await exports.selfUpdate(expected), false, JSON.stringify([expected, onDisk]));
+    assert.equal(reloads, 0);
+  }
+});
+
+test("a state message from the broker starts the self-update; a failed disk read only skips it", async () => {
+  const next = bumped(manifest.version, 0);
+  let reloaded;
+  const done = new Promise(resolve => { reloaded = resolve; });
+  const {listeners, chrome} = loadBackground({fetch: diskManifest(next)});
+  chrome.runtime.reload = () => reloaded(true);
+  for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  listeners["port.message"]({type: "attached", paired: false, locked: true, extension_version: next});
+  assert.equal(await Promise.race([done, new Promise(resolve => setTimeout(() => resolve(false), 2000))]), true);
+  const failing = loadBackground({fetch: async () => { throw new TypeError("no file"); }});
+  failing.chrome.runtime.reload = () => assert.fail("reloaded without a rebuilt folder");
+  await assert.rejects(failing.exports.selfUpdate(next), TypeError);  // onHost catches this rejection.
+});
+
+test("a paired extension never reloads itself: a pairing or unlock state keeps the key the user just paired", async () => {
+  const next = bumped(manifest.version, 1);
+  const {listeners, chrome} = loadBackground({fetch: diskManifest(next)});
+  let reloads = 0;
+  chrome.runtime.reload = () => { reloads += 1; };
+  for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  listeners["port.message"]({type: "state", paired: true, locked: false, extension_version: next});
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(reloads, 0);
+});
+
+test("the popup reloads into a rebuilt folder before it offers a pairing link", async () => {
+  const next = bumped(manifest.version, 1);
+  let reloads = 0;
+  const {exports, chrome} = loadBackground({fetch: diskManifest(next),
+    answer: brokerAnswer({paired: false, locked: true, extension_version: next,
+      pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=t1"}})});
+  chrome.runtime.reload = () => { reloads += 1; };
+  const state = await exports.popupState();
+  assert.equal(reloads, 1);
+  assert.equal(state.ok, false);
+  assert.equal(state.pairing_url, undefined);
+});
+
+test("the self-update mark goes when that version runs, so a later downgrade and update reload again", async () => {
+  const local = {self_update: manifest.version};
+  loadBackground({local});
+  for (let i = 0; i < 100 && "self_update" in local; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal("self_update" in local, false);
+  const newer = {self_update: bumped(manifest.version, 1)};  // A reload that kept the old files keeps its mark.
+  loadBackground({local: newer});
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(newer.self_update, bumped(manifest.version, 1));
+});
+
+test("a pairing that finishes while the folder is read keeps its key, and the popup waits for the same check", async () => {
+  const next = bumped(manifest.version, 1);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const local = {};
+  const {exports, listeners, chrome} = loadBackground({local, fetch: async url => { await gate; return diskManifest(next)(url); }});
+  let reloads = 0;
+  chrome.runtime.reload = () => { reloads += 1; };
+  for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  listeners["port.message"]({type: "attached", paired: false, locked: true, extension_version: next});
+  const waiting = exports.selfUpdate(next);  // The popup's call while the attach's check reads the folder.
+  listeners["port.message"]({type: "state", paired: true, locked: false, extension_version: next});
+  release();
+  assert.equal(await waiting, false);
+  assert.equal(reloads, 0);
+  assert.equal("self_update" in local, false);  // The next unpaired attach tries again.
+});

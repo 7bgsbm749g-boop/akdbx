@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "akdbx",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Fill saved logins, cards and addresses from your local akdbx broker.",
   "minimum_chrome_version": "127",
   "permissions": ["nativeMessaging", "scripting", "webNavigation", "tabs", "storage", "contextMenus", "alarms"],

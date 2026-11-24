@@ -138,7 +138,8 @@ class Lab:
 
 
 @contextmanager
-def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extension=None, hosts=(), native_hosts=None):
+def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extension=None, hosts=(), native_hosts=None,
+                 developer_mode=False):
     """Serve the synthetic pages over loopback TLS and run one private browser."""
     binary = binary or browser_binary()
     assert binary is not None, 'a Chromium browser is required'
@@ -189,6 +190,12 @@ def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extens
     # Optional extra switches for one run, for example --force-color-profile=display-p3-d65 to render as a
     # colour-managed display would.
     sandbox += os.environ.get('AKDBX_TEST_BROWSER_EXTRA_ARGS', '').split()
+    if developer_mode:
+        # As in a browser where the user loaded the extension unpacked: without developer
+        # mode a reload disables an unpacked extension (DISABLE_UNSUPPORTED_DEVELOPER_EXTENSION).
+        (profile / 'Default').mkdir(mode=0o700)
+        (profile / 'Default' / 'Preferences').write_text(json.dumps({'extensions': {'ui': {'developer_mode': True}}}),
+                                                         encoding='utf-8')
     if native_hosts:
         # Linux Chromium reads user-level native-messaging hosts from the profile folder.
         (profile / 'NativeMessagingHosts').mkdir(mode=0o700)
