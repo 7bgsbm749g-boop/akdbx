@@ -199,7 +199,7 @@ class FakeAdb:
     def __init__(self, scene):
         self.scene = scene
 
-    def helper(self, request, *, install):
+    def helper(self, request, *, install, timeout=None):
         FakeAdb.requests.append(request)
         scene = self.scene
         op = request['op']
