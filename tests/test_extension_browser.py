@@ -92,6 +92,43 @@ async function digest(id) {
   return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
 }
 </script>'''
+
+
+def drawer(field, clip, extra=''):
+    """A side drawer (inline-block, so they all fit on screen) around one phone input."""
+    return (f'<div style="display:inline-block;margin:12px;padding:8px;box-shadow:0 0 16px #000;'
+            f'clip-path:{clip};{extra}"><input id="{field}" type="tel" style="width:120px;height:24px"></div>')
+
+
+# Accepted: insets that hold their whole field. Refused: everything else, on the extension route.
+DRAWERS_ACCEPTED = {
+    'drawer-phone': drawer('drawer-phone', 'inset(-32px 0px -32px -32px)'),  # Twilio's shadow trim
+    'zero-phone': drawer('zero-phone', 'inset(0px)'),
+    'percent-phone': drawer('percent-phone', 'inset(-10% 4px)'),
+    'moved-phone': drawer('moved-phone', 'inset(-32px 0px -32px -32px)', 'transform:translateX(0px)'),
+    # The field's border box starts 8px (the padding) below the drawer's. Each inset is widened by its
+    # 0.1% rounding margin, so 7px holds the field and 8px, which only touches it, refuses.
+    'clear-phone': drawer('clear-phone', 'inset(7px 0px 0px)'),
+}
+DRAWERS_REFUSED = {
+    'cut-phone': drawer('cut-phone', 'inset(0px 0px 0px 40px)'),
+    'touch-phone': drawer('touch-phone', 'inset(8px 0px 0px)'),
+    'round-phone': drawer('round-phone', 'inset(-32px round 8px)'),
+    'shape-phone': drawer('shape-phone', 'polygon(0 0,100% 0,100% 100%,0 100%)'),
+    'scaled-phone': drawer('scaled-phone', 'inset(-32px)', 'transform:scale(1.01)'),
+    # An SVG viewport scales the drawer with no CSS transform anywhere.
+    'svg-phone': ('<svg viewBox="0 0 160 60" style="width:320px;height:120px"><foreignObject width="160" height="60">'
+                  + drawer('svg-phone', 'inset(-32px)') + '</foreignObject></svg>'),
+    # Slotted into a shadow tree: a closed one flips the drawer, an open one only slots it.
+    'closed-phone': '<div id="closed-host">' + drawer('closed-phone', 'inset(-32px 0px -32px -32px)') + '</div>',
+    'open-phone': '<div id="open-host">' + drawer('open-phone', 'inset(-32px)') + '</div>',
+}
+DRAWER_PAGE = ('<!doctype html><meta charset="utf-8"><form>' + ''.join(DRAWERS_ACCEPTED.values())
+               + ''.join(DRAWERS_REFUSED.values()) + '</form><script>'
+               'document.getElementById("closed-host").attachShadow({mode: "closed"}).innerHTML = '
+               '\'<div style="transform:scaleX(-1)"><slot></slot></div>\';'
+               'document.getElementById("open-host").attachShadow({mode: "open"}).innerHTML = "<slot></slot>";'
+               '</script>' + DIGEST)
 SECRET = 'SynthCapture-0123456789abcdefOnly'
 GROUPED_KEY = 'jbsw y3dp ehpk 3pxp jbsw y3dp ehpk 3pxp'  # A synthetic Base32 setup key.
 SECRET_STYLE = '<style>body{margin:0}code,input{display:block;margin:4px;font:16px monospace}</style>'
@@ -135,6 +172,7 @@ PAGES = {
                '<input id="phone-on" type="tel" autocomplete="on"><input id="phone-off" type="tel" autocomplete="off">'
                '<input id="phone-email" type="text" autocomplete="email"><input id="phone-national" type="tel" '
                'autocomplete="tel-national"></form>' + DIGEST),
+    '/drawer': DRAWER_PAGE,
     '/framed-visible': LOGIN_FRAME.format(''),
     '/framed-hidden': LOGIN_FRAME.format('opacity:0'),
     '/decoy': '<!doctype html><meta charset="utf-8"><p>decoy</p>',
@@ -1210,6 +1248,33 @@ def test_an_identity_field_without_an_autocomplete_hint_fills_with_an_explicit_p
     assert lab.digest('phone') == EMPTY
     assert lab.digest('phone-email') == EMPTY and lab.digest('phone-national') == EMPTY
     assert not any(e['trusted'] for e in lab.evaluate('syntheticEvents'))
+
+
+def test_an_ancestor_clip_path_inset_that_holds_the_field_fills_and_others_refuse(harness):
+    """Only the extension route sees closed shadow roots, so only it accepts an inset that holds the whole field."""
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate('/drawer')
+    purpose = dict(field_purpose='tel')
+    for field in DRAWERS_REFUSED:
+        assert identity_pin(harness, url, '#' + field, **purpose) == card_failure(kind='identity'), field
+    assert lab.untouched()
+    for field in DRAWERS_ACCEPTED:
+        target = identity_pin(harness, url, '#' + field, **purpose)
+        assert target['ok'], (field, target)
+        assert identity_fill(broker, target['target'])['ok'], field
+        assert lab.digest(field) == sha(PHONE), field
+    # An inset that starts to cut the field after the pin refuses the fill.
+    lab.evaluate("document.getElementById('drawer-phone').value = ''")
+    target = identity_pin(harness, url, '#drawer-phone', **purpose)
+    assert target['ok'], target
+    lab.evaluate("document.getElementById('drawer-phone').parentElement.style.clipPath = 'inset(0px 0px 0px 40px)'")
+    assert identity_fill(broker, target['target']) == card_failure(kind='identity')
+    assert lab.digest('drawer-phone') == EMPTY
+    assert all(lab.digest(field) == EMPTY for field in DRAWERS_REFUSED)
+    # Each refused field refuses only for its clip: without it, it pins.
+    for field in DRAWERS_REFUSED:
+        lab.evaluate(f"document.getElementById({json.dumps(field)}).parentElement.style.clipPath = 'none'")
+        assert identity_pin(harness, url, '#' + field, **purpose)['ok'], field
 
 
 def test_an_older_extension_never_gets_an_identity_purpose_pin(harness):

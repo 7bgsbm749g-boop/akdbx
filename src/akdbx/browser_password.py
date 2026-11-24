@@ -142,14 +142,16 @@ class CDP:
     def __init__(self, profile):
         import websocket
         url = endpoint(profile)
-        raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        open_verified = getattr(profile, 'open_verified_socket', None)
+        raw = open_verified() if open_verified else socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         connection = None
         # A forwarded Android endpoint listens only until this connection opens.
         release = getattr(profile, 'release_endpoint', None)
         try:
             raw.settimeout(2)
-            raw.connect(('127.0.0.1', urlsplit(url).port))
-            verify_peer(raw)
+            if open_verified is None:
+                raw.connect(('127.0.0.1', urlsplit(url).port))
+                verify_peer(raw)
             connection = websocket.create_connection(url, socket=raw, redirect_limit=0, timeout=2,
                                                       suppress_origin=True, http_no_proxy=['127.0.0.1'])
             if connection.sock is not raw or connection.getstatus() != 101:
