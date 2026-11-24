@@ -26,7 +26,7 @@ from test_windows_unlock import certificates  # noqa: F401
 
 pytestmark = pytest.mark.skipif(os.name == 'nt', reason='Linux paths and modes; Windows parts are native tests')
 EXECUTABLE = str(Path(sys.executable).absolute())
-LOCKED = {'ok': True, 'locked': True, 'version': '0.36.3', 'unlock_url': 'https://localhost:9443/?token=synthetic',
+LOCKED = {'ok': True, 'locked': True, 'version': '0.37.0', 'unlock_url': 'https://localhost:9443/?token=synthetic',
           'fill_routes': ['cdp', 'extension'], 'default_fill_route': 'extension'}
 
 
