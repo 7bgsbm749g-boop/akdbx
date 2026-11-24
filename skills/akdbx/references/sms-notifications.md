@@ -1,4 +1,4 @@
-# Resume when a verification text arrives (0.37.0)
+# Resume when a verification text arrives (0.39.0)
 
 SMS notifications are one-shot HTTPS webhooks, like
 [unlock notifications](unlock-notifications.md). The broker posts one event
@@ -52,7 +52,7 @@ other texts at once; `sms-sources` shows the last result per source
    ```
 
    Keep the URL file until you remove the trigger: a non-matching event needs
-   it to register again (0.37.0+ starts a new wait for the same URL and source
+   it to register again (0.39.0+ starts a new wait for the same URL and source
    once the last one has fired). Then delete it. Keep the `subscription_id` and
    the task ID in the private task context for cleanup.
 4. Require `expires_in: null`. Do not add `--ttl` unless the user asks for a

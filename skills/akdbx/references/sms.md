@@ -1,11 +1,11 @@
-# Phone verification texts (SMS) (0.37.0)
+# Phone verification texts (SMS) (0.39.0)
 
 akdbx can receive the verification texts that sites send to a phone number and
 fill the code straight into the challenge field. You see only a masked preview
 (plain words only: no digits, no links), the sender and the code length. You
 never see the code, the webhook token or the text itself.
 
-Require broker 0.37.0 or newer and `status` field `sms_protocol: 1`.
+Require broker 0.39.0 or newer and `status` field `sms_protocol: 1`.
 `sms_sources_configured` tells you how many phone numbers forward texts.
 
 ## Two kinds of phone number

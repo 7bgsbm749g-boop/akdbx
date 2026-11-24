@@ -740,7 +740,7 @@ Subscriptions without the opt-in get only `akdbx.unlocked`. The block itself
 is saved, so a restarted or rebooted broker stays blocked and sends the blocked
 event again to waiting opted-in subscriptions.
 
-## Phone verification texts (0.37.0)
+## Phone verification texts (0.39.0)
 
 akdbx can receive the verification texts that sites send to a phone number and
 fill the code into the challenge field. The agent sees only a masked preview
