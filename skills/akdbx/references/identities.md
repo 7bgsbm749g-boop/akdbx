@@ -158,30 +158,43 @@ akdbx pin-identity-target --route extension --page-id PAGE_ID --frame-id FRAME_I
   shows `version_status: "current"`); the broker refuses a purpose pin to an
   older extension.
 
-### Phone number next to a country picker (0.35.1)
+### Phone number next to a country picker
 
-When the page has a separate country-code dropdown and the phone input wants
-only the national number, fill with `--format national`. Require
-`identity_tel_formats` to contain `"national"` in `status`:
+When the page has a separate country-code dropdown, the phone input wants the
+number without the country code, or the full number with it. Fill with
+`--format national` or (from 0.35.4) `--format international`. Require
+`identity_tel_formats` in `status` to contain the format you use:
 
 ```bash
 akdbx fill-identity --field tel --format national --calling-code 44 \
   --target TARGET_FROM_PIN -- HANDLE_FROM_SEARCH
+akdbx fill-identity --field tel --format international --calling-code 44 \
+  --target TARGET_FROM_PIN -- HANDLE_FROM_SEARCH
 ```
 
-- The broker removes the leading `+` (or `00`) and the country calling code,
-  and spaces, hyphens, dots, slashes and brackets. The
-  field receives only the digits of the national number. The saved value does
-  not change.
-- `--calling-code DIGITS` (no `+`) refuses unless the saved number has that
-  country calling code. Give the code the page's picker shows, so a number of
-  another country never goes next to it. Check the picker shows the right
-  country before you fill.
-- A saved number without `+` or `00`, with a `(0)` marker, or with letters
-  or an extension, refuses: the broker cannot split it safely. Ask the user to update the
-  identity's phone number in international form with `update-identity
-  --fields tel`.
-- `--format` applies only to `--field tel`.
+- `national` fills the national significant number, digits only: no `+`,
+  `00`, country calling code or trunk `0`. Spaces, hyphens, dots, slashes and
+  brackets are dropped. `international` fills `+`, the calling code and that
+  number (`+447...`). The saved value does not change.
+- `--calling-code DIGITS` (no `+`) is the code the page's picker shows. A saved
+  `+...` or `00...` number refuses unless it has that code, so a number of
+  another country never goes next to the picker. Check the picker shows the
+  right country before you fill.
+- A saved number in national form with one trunk `0` (`07...`, 0.35.4) works
+  only with `--calling-code`, which tells the broker the country. The broker
+  drops the `0` only for countries where the `0` is never part of the number
+  (for example 44 UK, 49 Germany, 33 France, 61 Australia; the full list is
+  `TRUNK_ZERO` in `src/akdbx/identities.py`, from Google libphonenumber), and
+  only for a number of a length that country uses. Other countries refuse: in
+  Italy (39) the `0` is part of the number, Russia (7) uses `8`, Hungary (36)
+  uses `06`, Argentina (54) and Brazil (55) put other digits next to it.
+  Without `--calling-code` it refuses: the country is unknown.
+- For those trunk-0 countries a `0` after the calling code (`+44 07...`)
+  refuses: it is the wrong number a page made from `07...` and a +44 picker.
+- A `(0)` marker, letters or an extension refuse: the broker cannot split
+  the number safely. If a fill refuses, ask the user to update the identity's
+  phone number in international form with `update-identity --fields tel`.
+- A refusal never shows the number. `--format` applies only to `--field tel`.
 
 A receipt reports the field token and delivery outcome. Check the site's
 non-secret state without reading the filled value. On an uncertain response

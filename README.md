@@ -486,7 +486,13 @@ token after the agent verified its purpose; a token for another detail still
 refuses (`identity_field_purpose_protocol: 1`, fill extension 0.7.0 on the
 extension route). `fill-identity --field tel --format national
 [--calling-code CODE]` removes the `+` and country calling code for a phone
-input next to a separate country picker (`identity_tel_formats`). See
+input next to a separate country picker (`identity_tel_formats`). From
+0.35.4, `--format international [--calling-code CODE]` fills `+`, the code
+and the national number, and both formats accept a saved national number
+with a trunk `0` (`07...`) when `--calling-code` names a country whose trunk
+`0` is never part of the number (`TRUNK_ZERO`, from Google libphonenumber
+metadata; `tools/trunk_zero_table.py` prints it). Other countries, such as
+Italy, refuse instead of guessing. See
 [identity workflows](skills/akdbx/references/identities.md) for
 supported fields, target discovery and example commands.
 

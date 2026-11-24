@@ -68,7 +68,7 @@ class RecordingTyper:
 
 def target_capabilities():
     """Return independent capabilities, including for frozen broker fixtures."""
-    return dict(identity_protocol=1, identity_delivery='cdp-identity-element-v1', identity_browser_configured=False, identity_fields_protocol=1, identity_update_protocol=1, identity_field_purpose_protocol=1, identity_tel_formats=['national'],
+    return dict(identity_protocol=1, identity_delivery='cdp-identity-element-v1', identity_browser_configured=False, identity_fields_protocol=1, identity_update_protocol=1, identity_field_purpose_protocol=1, identity_tel_formats=['national', 'international'],
                 target_fill_required=True, target_fill_protocol=1,
                 target_fill_delivery='x11-send-event-v1', target_slot_protocol=1, password_fill_protocol=1, password_purpose_protocol=1, password_autocomplete_off_protocol=1, password_frame_protocol=1, password_frame_policy="same-site-chain-v1",
                 password_fill_delivery='chromium-password-dom-v1', password_browser_configured=False, browser_slot_protocol=1,

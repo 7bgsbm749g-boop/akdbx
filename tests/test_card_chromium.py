@@ -705,7 +705,12 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
         assert command('fill-identity', '--field', 'tel', '--format', 'national', '--calling-code', '49',
                        '--target', pin['target'], '--', handle) == dict(ok=True, filled='tel',
                                                                           identity_delivery='cdp-identity-element-v1')
-        assert evaluate(chrome, "bare.value === '000000000'")
+        assert evaluate(chrome, "bare.value === '30000000'")
+        pin = purpose_pin('#bare')
+        handle = command('search-identities', LABEL)['entries'][0]['handle']
+        assert command('fill-identity', '--field', 'tel', '--format', 'international',
+                       '--target', pin['target'], '--', handle)['ok']
+        assert evaluate(chrome, "bare.value === '+4930000000'")
         evaluate(chrome, 'hintoff.focus()')
         assert purpose_pin('#hintoff', code=1)['delivery'] == 'not-started'
         pin = purpose_pin('#hintoff', '--allow-autocomplete-off')
