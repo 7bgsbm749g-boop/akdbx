@@ -72,12 +72,13 @@ When a browser shows `outdated`, the unpacked copy in that browser is stale
 after an akdbx update. Rebuild into the same folder:
 
 1. `akdbx extension build --output SAME_FOLDER_AS_BEFORE`
-2. From fill extension 0.7.0, nothing else: when the broker attaches (or sends
-   its next state), an extension older than the one the broker ships reads its
-   own folder's `manifest.json`, and if the folder holds that version it reloads
-   itself from disk (`chrome.runtime.reload()`), once per version. Build before
-   you restart the broker, so the first attach triggers it. An extension older
-   than 0.7.0 cannot do this: tell the user to click the reload button on the
+2. From fill extension 0.8.0, nothing else: when the broker attaches or sends
+   state, or the popup opens, an unpaired extension older than the one the
+   broker ships reads its own folder's `manifest.json`. If the folder holds
+   that version, it reloads itself from disk (`chrome.runtime.reload()`), once
+   per version. A paired extension waits, so a reload never ends a pairing:
+   build before you restart the broker, and the first attach after the restart
+   triggers it. An extension older than 0.8.0 cannot do this: tell the user to click the reload button on the
    akdbx card in `chrome://extensions` once; do not reload it for them.
 3. Pair again from the popup if it asks. A reload starts a new browser key; a
    broker restart drops every pairing anyway.
@@ -560,6 +561,6 @@ guidance names them. Without such tools, use the user's everyday browser.
 | Popup: "This broker signs with another identity key…" | The broker's identity key changed. Ask the user whether they set up the broker again (another computer, deleted state). Only then may the user click **Reset broker trust…** and pair again; otherwise they must not reset or enter the master password. |
 | Popup: "…this extension was built for…", "…this extension trusts…" or "no trusted broker address" | The broker names another origin than the trusted one, or the extension has none. No reset is offered: you run `akdbx extension build` again with the broker's current origin and the user reloads the extension. Any local build (also one for the same origin) replaces the saved broker trust; the extension then binds the broker key from the built origin's HTTPS page. A reload without a build changes nothing. |
 | Popup: "The broker page at … names another identity than the native host sent" | The native host and the broker's HTTPS page disagree about the broker key, so the extension learned nothing. Tell the user not to enter the master password; check that the broker on that origin and the installed native host (`akdbx extension install`) are the user's own. |
-| `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Ask the user to rebuild into the same folder and reload it in `chrome://extensions`. |
+| `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Rebuild into the same folder, as in [Extension version](#extension-version); from extension 0.8.0 it then reloads itself, and only an older one needs the user's reload in `chrome://extensions`. |
 | Right after an update, the popup says the broker is not reachable and `status` shows `extension_connected: false` | The broker, or the Python that the host launcher runs, still has akdbx 0.21.2 or earlier, and it refuses the new extension's hello. Restart the broker on the new version. If the launcher points to another Python, run `akdbx extension install --browser NAME` again from the updated installation. |
 | The popup says the broker is not reachable and the broker is running; `extension info` shows `launcher_state: "stale"`, or the launcher fails with `No module named 'akdbx.extension_host'` | The launcher runs another akdbx than the CLI: an older release folder, or (before 0.31.1) the interpreter's own akdbx. Run `akdbx extension refresh` with the current CLI; with an akdbx before 0.31.1 on Linux, update first. Then reopen the popup. |

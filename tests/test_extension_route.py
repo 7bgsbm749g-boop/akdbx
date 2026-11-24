@@ -1177,6 +1177,28 @@ def test_build_stores_the_browser_serialization_of_the_trusted_origin(tmp_path):
     assert 'AKDBX_TRUSTED_ORIGIN = "https://localhost";' in (built / 'config.js').read_text()
 
 
+def test_build_writes_the_manifest_last_and_whole(tmp_path, monkeypatch):
+    """A running extension reloads when the manifest on disk is newer: every other file must be there first."""
+    first = extension_host.build(tmp_path / 'ext', unlock_origin='https://localhost:9443')
+    old_config = (first / 'config.js').read_text()
+    seen = []
+    real_replace = os.replace
+
+    def replace(source, target):
+        target = Path(target)
+        if target.name == 'manifest.json':
+            seen.append(((target.parent / 'config.js').read_text(), sorted(p.name for p in target.parent.iterdir())))
+        return real_replace(source, target)
+
+    monkeypatch.setattr(extension_host.os, 'replace', replace)
+    built = extension_host.build(first, unlock_origin='https://localhost:9443')
+    [(config, names)] = seen
+    assert config != old_config  # The new build ID is already on disk when the manifest appears.
+    assert set(names) >= {'background.js', 'content.js', 'config.js', 'manifest.json'}
+    assert not (built / '.manifest.json.tmp').exists()
+    assert json.loads((built / 'manifest.json').read_text())['version'] == route.EXTENSION_VERSION
+
+
 def test_every_build_writes_a_new_build_id(tmp_path):
     # The extension drops broker trust saved under another build ID, so each build must write a new one.
     ids = []

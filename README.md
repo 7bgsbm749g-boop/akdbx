@@ -194,7 +194,7 @@ The extension has its own semantic version, starting at 0.1.0, separate from
 the akdbx version; the popup shows it in its footer. After an akdbx update,
 `version_status: "outdated"` means the unpacked copy is stale: run
 `extension build` into the same folder again, best before the broker restart.
-From extension 0.7.0 the extension then reloads itself from the rebuilt folder
+From extension 0.8.0 the extension then reloads itself from the rebuilt folder
 when the broker attaches; an older one needs one click on reload on the akdbx
 card in `chrome://extensions`. An extension built by akdbx 0.21.2 or earlier
 reports no version; it still works and shows as outdated.

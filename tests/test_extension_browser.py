@@ -570,8 +570,9 @@ def test_an_unpacked_extension_loads_its_rebuilt_folder_by_itself(harness):
     """After an update the user no longer clicks reload: the extension reloads from its rebuilt folder.
 
     A browser runs an older build; the broker ships a newer one. Until the folder holds
-    the newer build nothing reloads. After `akdbx extension build` the next state message
-    makes the extension reload itself from disk and attach again with the new version.
+    the newer build nothing reloads, and a paired extension waits. After `akdbx extension
+    build` the next state message to an unpaired extension makes it reload itself from
+    disk and attach again with the new version.
     """
     hub = harness.hub
     [old] = hub.channels.values()
@@ -579,6 +580,12 @@ def test_an_unpacked_extension_loads_its_rebuilt_folder_by_itself(harness):
     time.sleep(2)
     assert list(hub.channels.values()) == [old] and not old.closed.is_set()
     extension_host.build(harness.extension, host_name=harness.host_name, unlock_origin=harness.unlock_origin)
+    hub.refresh()  # Still paired: a reload would end the pairing, so the extension waits.
+    time.sleep(2)
+    assert list(hub.channels.values()) == [old] and not old.closed.is_set()
+    # What a broker restart on the new akdbx does: it has no pairing, and the next state triggers the reload.
+    with hub._lock:
+        hub.approved.clear()
     hub.refresh()
     deadline = time.monotonic() + 60
     while not any(c.version == route.EXTENSION_VERSION and not c.closed.is_set() for c in hub.channels.values()):
@@ -587,8 +594,8 @@ def test_an_unpacked_extension_loads_its_rebuilt_folder_by_itself(harness):
     assert old.closed.wait(10)
     browsers = harness.broker.dispatch(dict(action='ping'))['extension_browsers']
     assert browsers == [dict(browser=harness.kind, paired=False, version=route.EXTENSION_VERSION, version_status='current')]
-    # A reload starts a new browser key (session storage ends), so the new build pairs again.
-    assert harness.worker_call("chrome.storage.local.get('self_update').then(x => x.self_update)") == route.EXTENSION_VERSION
+    # The new version runs, so its once-per-version mark is gone again.
+    assert harness.worker_call("chrome.storage.local.get('self_update').then(x => x.self_update ?? null)") is None
 
 
 SETTINGS = "chrome.storage.local.get('settings').then(found => found.settings ?? null)"

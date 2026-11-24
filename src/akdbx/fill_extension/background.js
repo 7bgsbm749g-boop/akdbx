@@ -238,7 +238,8 @@ function onHost(current, message) {
     state = brokerState(message);
     // Bind a first key or follow a signed move now, not only when the popup opens.
     if (port === current) observeTrust(state);
-    if (port === current) selfUpdate(message.extension_version).catch(() => false);
+    // Never while paired: the reload would end a pairing the user just made (or one a fill uses).
+    if (port === current && !state.paired) selfUpdate(message.extension_version).catch(() => false);
   } else if (message.type === "call") {
     handleCall(message).catch(() => ({ok: false})).then(result => {
       if (port === current) current.postMessage({type: "reply", id: message.id, result});
@@ -256,8 +257,14 @@ function onHost(current, message) {
 // extension and this extension's folder on disk already holds that version (read from
 // disk, so a folder that was not rebuilt, or a packed copy, never reloads), reload once
 // from disk. A reload ends this worker's session storage, so the new version pairs with
-// a new key; the broker that shipped it is a new process and has no pairing anyway.
-// local storage (the broker trust) stays. One try per version, so it can never loop.
+// a new key. It therefore runs only while this key is not paired: on the attach after a
+// broker restart (which drops every pairing) or when the popup opens before pairing.
+// local storage (the broker trust) stays. One try per version, so it can never loop; the
+// mark goes when that version runs, so a later downgrade and update can reload again.
+chrome.storage.local.get("self_update").then(found => {
+  if (found.self_update === chrome.runtime.getManifest().version) return chrome.storage.local.remove("self_update");
+}).catch(() => {});
+
 function versionParts(text) {
   return typeof text === "string" && /^(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})$/.test(text)
     ? text.split(".").map(Number) : null;
@@ -876,6 +883,10 @@ async function popupState() {
   await connect();
   const fresh = port ? await brokerRequest("state", {}, 5000) : null;
   if (fresh && fresh.ok) state = brokerState(fresh);
+  // Reload into a rebuilt folder before the popup offers a pairing for this key.
+  if (fresh && fresh.ok && !state.paired && await selfUpdate(fresh.extension_version).catch(() => false)) {
+    return {ok: false, error: "akdbx is loading its update. Open the popup again."};
+  }
   // The popup shows the code of this browser's own key, never one from the host.
   const code = await localCode((await pairingKeys()).publicKey);
   // After the identity work queued before it, on the newest broker state.

@@ -450,7 +450,7 @@ update akdbx:
 
 1. Run the same `extension build --output` command into the same folder.
 2. Restart the broker on the new version, as described above.
-3. From fill extension 0.7.0 the extension reloads itself from the rebuilt
+3. From fill extension 0.8.0 the extension reloads itself from the rebuilt
    folder when the new broker attaches (Helium has developer mode on, because
    the extension is loaded unpacked). For an older extension, click the reload
    button on the akdbx card in `chrome://extensions` once. Pair again if the

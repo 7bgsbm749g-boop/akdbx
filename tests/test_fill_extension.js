@@ -1137,3 +1137,38 @@ test("a state message from the broker starts the self-update; a failed disk read
   failing.chrome.runtime.reload = () => assert.fail("reloaded without a rebuilt folder");
   await assert.rejects(failing.exports.selfUpdate(next), TypeError);  // onHost catches this rejection.
 });
+
+test("a paired extension never reloads itself: a pairing or unlock state keeps the key the user just paired", async () => {
+  const next = bumped(manifest.version, 1);
+  const {listeners, chrome} = loadBackground({fetch: diskManifest(next)});
+  let reloads = 0;
+  chrome.runtime.reload = () => { reloads += 1; };
+  for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  listeners["port.message"]({type: "state", paired: true, locked: false, extension_version: next});
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(reloads, 0);
+});
+
+test("the popup reloads into a rebuilt folder before it offers a pairing link", async () => {
+  const next = bumped(manifest.version, 1);
+  let reloads = 0;
+  const {exports, chrome} = loadBackground({fetch: diskManifest(next),
+    answer: brokerAnswer({paired: false, locked: true, extension_version: next,
+      pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=t1"}})});
+  chrome.runtime.reload = () => { reloads += 1; };
+  const state = await exports.popupState();
+  assert.equal(reloads, 1);
+  assert.equal(state.ok, false);
+  assert.equal(state.pairing_url, undefined);
+});
+
+test("the self-update mark goes when that version runs, so a later downgrade and update reload again", async () => {
+  const local = {self_update: manifest.version};
+  loadBackground({local});
+  for (let i = 0; i < 100 && "self_update" in local; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal("self_update" in local, false);
+  const newer = {self_update: bumped(manifest.version, 1)};  // A reload that kept the old files keeps its mark.
+  loadBackground({local: newer});
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(newer.self_update, bumped(manifest.version, 1));
+});

@@ -583,7 +583,8 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
             manifest = json.loads(data)
             # The manifest keeps the extension's own version (EXTENSION_VERSION).
             manifest['key'] = EXTENSION_KEY
-            data = json.dumps(manifest, indent=2).encode('utf-8')
+            manifest_data = json.dumps(manifest, indent=2).encode('utf-8')
+            continue
         if item.name == 'background.js' and host_name != HOST_NAME:
             if not re.fullmatch(r'[a-z0-9_]+(\.[a-z0-9_]+)+', host_name):
                 raise ValueError('invalid host name')
@@ -595,6 +596,11 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
         'globalThis.AKDBX_TRUSTED_ORIGIN = ' + json.dumps(origin) + ';\n'
         '// A new random ID on every build: broker trust saved under another build no longer counts.\n'
         'globalThis.AKDBX_BUILD_ID = ' + json.dumps(secrets.token_urlsafe(16)) + ';\n', encoding='utf-8')
+    # The manifest goes last and whole: a running extension (0.8.0+) reloads itself when the
+    # manifest on disk shows a newer version, so every other file must already be in place.
+    staged = destination / '.manifest.json.tmp'
+    staged.write_bytes(manifest_data)
+    os.replace(staged, destination / 'manifest.json')
     return destination
 
 
