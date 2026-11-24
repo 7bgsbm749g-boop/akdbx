@@ -86,7 +86,9 @@ encrypted entry history and existing encrypted backups. There is no key-reveal,
 export, delete-TOTP or history-restore command in this version.
 
 This saves an authenticator to KeePass only. It does not enable or reconfigure
-2FA on the site. A pending site enrollment can be checked after import with a
+2FA on the site. To add an authenticator app to a website account without a
+private page (0.35.0+), use [automatic enrollment](totp-enrollment.md): the
+broker reads the setup key from the site's enrollment page. A pending site enrollment can be checked after import with a
 normal code fill, but the agent must separately verify site acceptance and
 report failed enrollment accurately. Do not remove recovery methods. This
 version attaches TOTP to existing entries, including managed SSO/email-code

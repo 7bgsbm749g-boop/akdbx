@@ -42,6 +42,7 @@ from .extension_route import (ExtensionHub, ExtensionError, ExtensionPin, Routed
                               DELIVERY as EXTENSION_DELIVERY)
 from .identities import COMMANDS as IDENTITY_COMMANDS, IdentityManager, capabilities as identity_capabilities, is_identity
 from .secrets_capture import SecretCaptures, captured_fields, is_secret_record
+from .totp_capture import TotpCaptures, pending as totp_pending, read_pending
 from .runtime import (
     acquire_lifecycle_lock,
     anchored_socket_path,
@@ -139,6 +140,7 @@ class Broker:
         self.identities = IdentityManager(self)
         self.merges = create_merge_manager(self)
         self.secrets = SecretCaptures(self, secret_sinks_path)
+        self.totp_captures = TotpCaptures(self)
         self.unlock_url: str | None = None
         # The private page's UnlockState, when this broker serves one.
         self.unlock_link = None
@@ -321,10 +323,10 @@ class Broker:
                 return {'ok': False, 'error': 'merge operation failed'}
             finally:
                 self._vault_lock.release()
-        if action in {'fill', 'fill-generated', 'fill-totp', 'fill-card', 'fill-identity', 'capture-secret'} and delivery_ready is None and 'start_deadline' not in request:
+        if action in {'fill', 'fill-generated', 'fill-totp', 'fill-card', 'fill-identity', 'capture-secret', 'capture-totp'} and delivery_ready is None and 'start_deadline' not in request:
             request = {**request, 'start_deadline': self.clock() + FILL_START_TIMEOUT}
         # Search and write operations observe a consistent vault/revision.
-        if action in {"pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated", "add-url", "remove-url", "save-secret", "capture-secret", "create-card", "update-card", "search-cards", "pin-card-target", "fill-card"} | IDENTITY_COMMANDS:
+        if action in {"pin-target", "fill", "fill-totp", "setup-totp", "search", "create-sso-entry", "create-passwordless-entry", "create-entry", "update-password", "generate-password", "generate-entry", "write-status", "cancel-write", "commit-password", "fill-generated", "add-url", "remove-url", "save-secret", "capture-secret", "capture-totp", "commit-totp", "create-card", "update-card", "search-cards", "pin-card-target", "fill-card"} | IDENTITY_COMMANDS:
             with self._vault_lock:
                 return self._dispatch(request, delivery_ready=delivery_ready)
         return self._dispatch(request, delivery_ready=delivery_ready)
@@ -351,7 +353,7 @@ class Broker:
                     **({"relay": self.relay.status()} if self.relay is not None else {}),
                     **({"active_origin": origin} if isinstance(origin, str) else {})}
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **self.secrets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
+            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **self.secrets.capabilities(), **self.totp_captures.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -396,6 +398,16 @@ class Broker:
                 return self.secrets.capture(request, delivery_ready)
             except Exception:
                 return {'ok': False, 'error': 'secret capture failed; vault update not confirmed'}
+        if action == 'capture-totp':
+            try:
+                return self.totp_captures.capture(request, delivery_ready)
+            except Exception:
+                return {'ok': False, 'error': 'authenticator capture failed; vault update not confirmed'}
+        if action == 'commit-totp':
+            try:
+                return self.totp_captures.commit(request)
+            except Exception:
+                return {'ok': False, 'error': 'authenticator save failed; vault update not confirmed'}
         if action == 'deliver-secret':
             try:
                 return self.secrets.deliver(request)
@@ -492,6 +504,8 @@ class Broker:
                         candidate.update(identity)
                     if totp_configured(entry):
                         candidate['totp_configured'] = True
+                    if totp_pending(entry):
+                        candidate['totp_pending'] = True
                     if is_secret_record(entry):
                         candidate['secret_record'] = True
                     fields = captured_fields(entry)
@@ -531,8 +545,8 @@ class Broker:
                 if isinstance(target, DOM_PINS) and (type(request.get('target_protocol')) is not int or request['target_protocol'] != 1):
                     raise TargetError()
                 allowed = {'action', 'handle', 'start_deadline', 'target', 'target_protocol'}
-                allowed.add('target_url' if action == 'fill-totp' else 'mode')
-                if set(request) - allowed:
+                allowed |= {'target_url', 'pending'} if action == 'fill-totp' else {'mode'}
+                if set(request) - allowed or 'pending' in request and request['pending'] is not True:
                     raise TargetError()
                 mode = 'totp' if action == 'fill-totp' else request.get("mode", "login")
                 if action != 'fill-totp' and mode not in ("login", "username", "password"):
@@ -591,7 +605,8 @@ class Broker:
                         target_origin = https_origin(request.get('target_url'))
                         if target_origin not in additional_origins(entry) and target_origin != https_origin(entry.url):
                             return {'ok': False, 'error': 'autofill not started: TOTP target site mismatch'}
-                        configuration = read_configuration(entry)
+                        # --pending: the key a capture-totp saved for this enrollment.
+                        configuration = read_pending(entry) if request.get('pending') is True else read_configuration(entry)
                         now = self.wall_clock()
                         password = code_at(configuration, now)
                         valid_from = int(now // configuration.period) * configuration.period
