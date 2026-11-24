@@ -142,7 +142,12 @@ PAGES = {
                 '<div style="padding:16px;clip-path:inset(0px 0px 0px 40px)">'
                 '<input id="cut-phone" type="tel" style="width:200px;height:30px"></div>'
                 '<div style="padding:16px;clip-path:polygon(0 0,100% 0,100% 100%,0 100%)">'
-                '<input id="shape-phone" type="tel" style="width:200px;height:30px"></div></form>' + DIGEST),
+                '<input id="shape-phone" type="tel" style="width:200px;height:30px"></div>'
+                '<div id="host"><div style="padding:16px;clip-path:inset(-32px 0px -32px -32px)">'
+                '<input id="slot-phone" type="tel" style="width:200px;height:30px"></div></div></form>'
+                # A closed shadow tree flips the slotted drawer: only the extension can see it.
+                '<script>document.getElementById("host").attachShadow({mode: "closed"}).innerHTML = '
+                '\'<div style="transform:scaleX(-1)"><slot></slot></div>\';</script>' + DIGEST),
     '/framed-visible': LOGIN_FRAME.format(''),
     '/framed-hidden': LOGIN_FRAME.format('opacity:0'),
     '/decoy': '<!doctype html><meta charset="utf-8"><p>decoy</p>',
@@ -1225,7 +1230,7 @@ def test_an_ancestor_clip_path_inset_that_holds_the_field_fills_and_others_refus
     lab, broker = harness.lab, harness.broker
     url = lab.navigate('/drawer')
     purpose = dict(field_purpose='tel')
-    for selector in ('#cut-phone', '#shape-phone'):
+    for selector in ('#cut-phone', '#shape-phone', '#slot-phone'):
         assert identity_pin(harness, url, selector, **purpose) == card_failure(kind='identity'), selector
     assert lab.untouched()
     target = identity_pin(harness, url, '#drawer-phone', **purpose)
@@ -1239,7 +1244,7 @@ def test_an_ancestor_clip_path_inset_that_holds_the_field_fills_and_others_refus
     lab.evaluate("document.getElementById('drawer-phone').parentElement.style.clipPath = 'inset(0px 0px 0px 40px)'")
     assert identity_fill(broker, target['target']) == card_failure(kind='identity')
     assert lab.digest('drawer-phone') == EMPTY
-    assert lab.digest('cut-phone') == EMPTY and lab.digest('shape-phone') == EMPTY
+    assert lab.digest('cut-phone') == EMPTY and lab.digest('shape-phone') == EMPTY and lab.digest('slot-phone') == EMPTY
 
 
 def test_an_older_extension_never_gets_an_identity_purpose_pin(harness):

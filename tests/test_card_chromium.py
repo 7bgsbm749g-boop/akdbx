@@ -341,8 +341,10 @@ DRAWER = ("const d=document.createElement('div');d.id='drawer';number.before(d);
     ("d.style.clipPath='inset(0px)'", True),
     ("d.style.clipPath='inset(-10% 8px)'", True),
     ("d.style.clipPath='inset(-32px 0px -32px -32px)';d.style.transform='translateX(0px)'", True),
-    # The field's border box starts 21px below the drawer's (16px padding and its 5px margin).
-    ("d.style.clipPath='inset(21px 0px 0px)'", True),
+    # The field's border box starts 21px below the drawer's (16px padding and its 5px margin); each
+    # inset is widened by its 0.1% rounding margin, so 20px holds the field and 21px no longer does.
+    ("d.style.clipPath='inset(20px 0px 0px)'", True),
+    ("d.style.clipPath='inset(21px 0px 0px)'", False),
     # An inset that cuts the field, rounded corners, or anything scaling or rotating the clip refuses.
     ("d.style.clipPath='inset(0px 0px 0px 40px)'", False),
     ("d.style.clipPath='inset(22px 0px 0px)'", False),
@@ -353,6 +355,18 @@ DRAWER = ("const d=document.createElement('div');d.id='drawer';number.before(d);
     ("d.style.clipPath='inset(-32px)';d.style.transform='scale(1.01)'", False),
     ("d.style.clipPath='inset(-32px)';document.body.style.rotate='1deg'", False),
     ("d.style.clipPath='inset(-32px)';document.body.style.zoom='1.5'", False),
+    # A scale the parentElement walk cannot see: an SVG viewport, or a shadow-tree wrapper of a slotted drawer.
+    ("d.style.clipPath='inset(-32px)';const s=document.createElementNS('http://www.w3.org/2000/svg','svg');"
+     "s.setAttribute('viewBox','0 0 300 100');s.style.cssText='display:block;width:600px;height:200px';"
+     "const f=document.createElementNS('http://www.w3.org/2000/svg','foreignObject');f.setAttribute('width','300');"
+     "f.setAttribute('height','100');s.append(f);d.before(s);f.append(d)", False),
+    ("d.style.clipPath='inset(-32px)';const h=document.createElement('div');d.before(h);h.append(d);"
+     "h.attachShadow({mode:'closed'}).innerHTML='<div style=\"transform:scale(1.5);transform-origin:0 0\"><slot></slot></div>'", False),
+    ("d.style.clipPath='inset(-32px)';const h=document.createElement('div');d.before(h);h.append(d);"
+     "h.attachShadow({mode:'open'}).innerHTML='<slot></slot>'", False),
+    # Only a block or atomic inline with one box.
+    ("d.style.clipPath='inset(-32px)';d.style.display='inline'", False),
+    ("d.style.clipPath='inset(-32px)';d.style.display='table'", False),
     # Every other clip shape still refuses.
     ("d.style.clipPath='polygon(0 0,100% 0,100% 100%,0 100%)'", False),
     ("d.style.clipPath='circle(100%)'", False),

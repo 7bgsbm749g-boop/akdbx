@@ -41,19 +41,33 @@ STRIPE_ELEMENTS_JSON = json.dumps({name: {'path': '^' + path + '$', 'fields': fi
 # One clip shape is provable: an ancestor's `clip-path: inset(...)` hides nothing
 # of a node whose whole border box lies inside the inset rectangle (a side drawer
 # that trims only its own shadow). The caller passes `clipped` to check that, and
-# must also prove the ancestor and everything above it unscaled and unrotated.
-STYLE_GUARD = r'''function insetContains(value, owner, rect) {
+# must also check `flatChain()` on that ancestor and everything above it.
+STYLE_GUARD = r'''function insetContains(value, owner, rect, style) {
   // Only px and % lengths: no calc(), no round corners, no reference box keyword.
-  // Only an HTML element with one box: its reference box is then its border box.
+  // Only an HTML block or atomic inline with one box: its reference box is then
+  // its border box.
   const n = '-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:px|%)';
   const m = new RegExp('^inset\\((' + n + '(?: ' + n + '){0,3})\\)$').exec(value);
-  if (!m || owner.namespaceURI !== 'http://www.w3.org/1999/xhtml' ||
-      owner.getClientRects().length !== 1) return false;
-  const box = owner.getBoundingClientRect();
+  if (!m || owner.namespaceURI !== 'http://www.w3.org/1999/xhtml' || owner.getClientRects().length !== 1 ||
+      !['block','flow-root','flex','grid','inline-block','inline-flex','inline-grid'].includes(style.display))
+    return false;
+  // A scale the DOM walk cannot see (a shadow-tree wrapper) changes the
+  // rendered size against the layout size. Allow only rounding, and widen each
+  // inset by that much.
+  const box = owner.getBoundingClientRect(), px = k => parseFloat(style.getPropertyValue(k));
+  const extra = style.boxSizing === 'border-box' ? [0, 0] :
+    [px('padding-left') + px('padding-right') + px('border-left-width') + px('border-right-width'),
+     px('padding-top') + px('padding-bottom') + px('border-top-width') + px('border-bottom-width')];
+  const width = px('width') + extra[0], height = px('height') + extra[1], slack = 0.001;
+  if (!(width > 0 && height > 0 && Math.abs(box.width - width) <= slack * width &&
+        Math.abs(box.height - height) <= slack * height)) return false;
   const [top, right=top, bottom=top, left=right] = m[1].split(' ');
-  const length = (v, size) => v.endsWith('%') ? parseFloat(v) * size / 100 : parseFloat(v);
-  const t = length(top, box.height), r = length(right, box.width);
-  const b = length(bottom, box.height), l = length(left, box.width);
+  const length = (v, size) => {
+    const used = v.endsWith('%') ? parseFloat(v) * size / 100 : parseFloat(v);
+    return used + slack * Math.abs(used);
+  };
+  const t = length(top, height), r = length(right, width);
+  const b = length(bottom, height), l = length(left, width);
   return [t, r, b, l, rect.left, rect.right, rect.top, rect.bottom].every(Number.isFinite) &&
     rect.left >= box.left + l && rect.right <= box.right - r &&
     rect.top >= box.top + t && rect.bottom <= box.bottom - b;
@@ -61,16 +75,22 @@ STYLE_GUARD = r'''function insetContains(value, owner, rect) {
 // A translation moves an element and its clip together, and
 // getBoundingClientRect() includes it; scaling, rotation, perspective, a
 // motion path or zoom would make the inset lengths differ from screen pixels.
-function unscaled(style) {
+// So would an SVG viewport around a foreignObject, and a shadow tree into which
+// the element is slotted: its wrappers are not in the parentElement chain. The
+// extension can also see closed shadow roots.
+function flatChain(element, style) {
   const transform = style.getPropertyValue('transform').trim();
   if (transform !== '' && transform !== 'none') {
     if (!transform.startsWith('matrix(')) return false;
     const m = new DOMMatrixReadOnly(transform);
     if (!(m.is2D && m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1)) return false;
   }
-  return ['rotate','scale','perspective','offset-path'].every(k =>
-    ['', 'none'].includes(style.getPropertyValue(k).trim())) &&
-    ['', '1'].includes(style.getPropertyValue('zoom').trim());
+  const parent = element.parentElement, closed = globalThis.chrome?.dom?.openOrClosedShadowRoot;
+  return element.namespaceURI === 'http://www.w3.org/1999/xhtml' && element.assignedSlot === null &&
+    (parent === null || parent.shadowRoot === null && (typeof closed !== 'function' || !closed(parent))) &&
+    ['rotate','scale','perspective','offset-path'].every(k =>
+      ['', 'none'].includes(style.getPropertyValue(k).trim())) &&
+    ['', '1'].includes(style.getPropertyValue('zoom').trim()) && (element.currentCSSZoom ?? 1) === 1;
 }
 function supportedStyle(style, mapping=false, allowTranslation=false, clipped=null) {
   if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0 ||

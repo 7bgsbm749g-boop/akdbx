@@ -134,8 +134,9 @@ Card and identity pins refuse a field when the field or an ancestor has CSS
 that can hide part of it: `clip`, masks, filters, `backdrop-filter`, a blend
 mode, and `clip-path`. From 0.36.2 (fill extension 0.7.2 on the extension
 route) one `clip-path` is accepted: `inset(...)` with only `px` or `%`
-lengths, when the field's whole border box lies inside the inset rectangle of
-that ancestor's border box. Side drawers and modals often use a negative
+lengths, on an HTML block or atomic inline element with one box, when the
+field's whole border box lies inside the inset rectangle of that element's
+border box (each inset widened by a 0.1% rounding margin). Side drawers and modals often use a negative
 inset such as `inset(-32px 0px -32px -32px)` only to trim their own shadow;
 it hides nothing inside the drawer, so the field pins. The pin checks it again
 at the fill. These still refuse:
@@ -143,9 +144,15 @@ at the fill. These still refuse:
 - an inset that cuts any part of the field, before the pin or after it;
 - `round` corners, `calc()`, a reference box keyword (`padding-box`), and every
   other shape (`polygon()`, `circle()`, `ellipse()`, `path()`, `url()`);
-- an inset on an element that is not HTML or has more than one box;
+- an inset on an element that is not HTML, has more than one box, or is
+  inline, a table or a list item;
 - a scale, rotation, perspective, motion path or `zoom` on the clipping
-  element or any element above it (a pure translation is accepted).
+  element or any element above it (a pure translation is accepted), an SVG
+  element above it (a `foreignObject` viewport scales it), a rendered size
+  that differs from its layout size, or the clipping element or an element
+  above it slotted into a shadow tree. The extension route sees open and
+  closed shadow roots; the CDP route sees only open ones, but its size check
+  still refuses a scale from a closed shadow tree.
 
 A refusal is the usual `target unavailable, changed or unsupported`. Password
 pins do not use this style check.

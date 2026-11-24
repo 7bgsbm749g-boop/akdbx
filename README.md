@@ -495,8 +495,9 @@ metadata; `tools/trunk_zero_table.py` prints it). Other countries, such as
 Italy, refuse instead of guessing. From 0.36.2 (fill extension 0.7.2), card
 and identity pins accept an ancestor `clip-path: inset(...)` (only `px` or
 `%` lengths, no `round`) when the field's whole border box lies inside the
-inset rectangle and nothing from that ancestor up scales or rotates it: a
-side drawer whose negative inset only trims its shadow. Every other clip
+inset rectangle and nothing from that ancestor up scales, rotates, zooms,
+slots it into a shadow tree or puts it in an SVG viewport: a side drawer
+whose negative inset only trims its shadow. Every other clip
 shape, `clip`, masks, filters and `backdrop-filter` still refuse. See
 [identity workflows](skills/akdbx/references/identities.md) for
 supported fields, target discovery and example commands.

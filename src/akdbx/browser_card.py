@@ -240,7 +240,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
   const getter = Object.getOwnPropertyDescriptor(proto, 'value').get;
   const selectIndex = identity && select && Object.getOwnPropertyDescriptor(proto, 'selectedIndex');
   // An ancestor's clip-path inset that holds the node's whole border box is
-  // accepted; from that ancestor up, nothing may scale or rotate the inset.
+  // accepted; from that ancestor up, nothing may scale, rotate or reparent it.
   function shown(node, owner, forbidTransform=false) {
     const rect = node.getBoundingClientRect();
     let ancestor = node, flat = false;
@@ -248,10 +248,10 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
       if (i >= 64) return false;
       const style = owner.defaultView.getComputedStyle(ancestor), clipper = ancestor;
       let inset = false;
-      const clipped = value => inset = insetContains(value, clipper, rect);
+      const clipped = value => inset = insetContains(value, clipper, rect, style);
       if (!supportedStyle(style,forbidTransform,false,clipped)) return false;
       flat = flat || inset;
-      if (flat && !unscaled(style)) return false;
+      if (flat && !flatChain(ancestor, style)) return false;
     }
     return owner.visibilityState === 'visible' && !node.closest('[inert]');
   }
