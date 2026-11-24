@@ -90,14 +90,11 @@ KIND --replace` issues a new URL (the old one stops working at once);
    [SMS notifications](sms-notifications.md) (`subscribe-sms`).
 
    Each row has `id`, `source`, `sender`, `preview`, `code_length`,
-   `received_at` and `age_seconds`. The preview shows only words that akdbx
-   knows (a fixed list of ordinary words) and names in the places where a
-   name stands, such as `your Example code` or `for Example`. `[code]`
-   stands in the place of the code that akdbx will fill. Each digit of any
-   other number is `•`. `[link]` stands for a link, and `[hidden]` for all
-   other words. So a preview can be short: `[code] is your Example
-   verification code. [hidden]`. The `sender` is a number, or a name of up
-   to three words; a longer sender is shown as a preview is.
+   `received_at` and `age_seconds`. The preview shows only plain words.
+   `[code]` stands in the place of the code that akdbx will fill. Each digit
+   of any other number is `•`. `[link]` and `[hidden]` stand for links, for
+   words that are not only letters, and for a word in the place of a code
+   that akdbx does not know as an ordinary word.
 
    Pick the newest row whose sender and preview match this site and this
    attempt. Then make these two checks before you fill:
@@ -141,9 +138,7 @@ site rejects the code, request one new text; stop after two rejected fresh codes
 - The broker keeps only texts with exactly one verification code, in memory.
   When two numbers can be the code, it does not choose: it drops the text.
   It also drops a text that gives its code in letters or in a form other
-  than 4 to 8 digits, even when the text has another number. A number with
-  no code word at it is kept only from a text in which akdbx knows every
-  word.
+  than 4 to 8 digits, even when the text has another number.
   It drops all other texts at once and never stores message bodies.
 - Inbound texts need an HTTPS origin that the phone or provider can reach:
   the akdbx relay (or another public origin). Tailscale-only origins work
