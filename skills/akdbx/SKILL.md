@@ -23,7 +23,7 @@ session.
 | Fill or save an address or contact | [Identities](references/identities.md) |
 | Authenticator (TOTP) code | [TOTP](references/totp.md), [private key import](references/private-import.md) |
 | Add an authenticator app to a website account (enrollment, such as GitHub 2FA) | [Automatic authenticator enrollment](references/totp-enrollment.md) |
-| Create or change a password, save SSO/email-code accounts, add an origin, store a key file | [Password writes](references/password-writes.md) |
+| Create or change a password, save SSO/email-code accounts, add an origin, move or delete an entry, store a key file | [Password writes](references/password-writes.md) |
 | Capture a secret a site shows once | [Secret capture](references/secret-capture.md) |
 | Vault locked: wait for unlock | [Unlock notifications](references/unlock-notifications.md) |
 | Unlock link blocked (`unlock_blocked: true` or `akdbx.unlock-blocked`) | [Blocked unlock link](#blocked-unlock-link) |
@@ -602,6 +602,10 @@ capability checks and recovery. In short:
   or store a one-time code.
 - **Another exact origin for a login:** `add-url` / `remove-url` (metadata only,
   same registrable domain only, with the user's authorization).
+- **Move or delete an entry the user named:** `move-entry --to-group GROUP` or
+  `delete-entry` (to the recycle bin only), with a fresh handle and the four
+  exact metadata fields (0.38.0, `entry_organize_protocol: 1`; see
+  [move or delete](references/password-writes.md#move-or-delete-an-entry-0380)).
 - **A secret that already exists in a file** (for example a service key):
   `sudo cat FILE | akdbx save-secret --stdin --title ... --username ... --url ...
   --group ...`. Never read, print or copy the file yourself.

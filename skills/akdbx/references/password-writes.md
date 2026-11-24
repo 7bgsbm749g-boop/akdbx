@@ -419,6 +419,38 @@ successful receipt is:
 If the CLI reports an unconfirmed or uncertain outcome, search again before
 any retry; a duplicate addition refuses harmlessly.
 
+## Move or delete an entry (0.38.0)
+
+`move-entry` moves one existing login entry into another existing group.
+`delete-entry` moves it into the vault's own KeePass recycle bin; it never
+deletes permanently (empty the bin in KeePassXC). Both are metadata-only: the
+password, other fields and history stay as they are. Only the parent group and
+the entry's `LocationChanged` time change, so a later merge keeps the newer
+location. Require integer `entry_organize_protocol: 1` in `status`; the CLI
+refuses an older broker before it sends. Do this only when the user asked for
+that exact entry to be moved or deleted.
+
+```bash
+akdbx search 'example.com'
+akdbx move-entry --title T --username U --url URL --group CURRENT_GROUP \
+  --to-group 'Favourites' -- HANDLE_FROM_SEARCH
+akdbx delete-entry --title T --username U --url URL --group CURRENT_GROUP -- FRESH_HANDLE
+```
+
+Rules:
+
+- Pass a fresh handle and all four exact metadata fields from the same search
+  result. Any mismatch refuses, and the handle is used up.
+- `--to-group` is the exact path of an existing group (`''` is the top level,
+  `Parent/Child` for a nested group). A missing, ambiguous or current group
+  refuses. Moving into the recycle bin refuses: use `delete-entry`.
+- `delete-entry` refuses when the vault's recycle bin is turned off or does not
+  exist yet, and for an entry that is already in it.
+- Card and identity records refuse.
+- The receipt is `{"ok": true, "state": "saved", "changed": "moved"|"deleted",
+  "metadata": {...}, "group": "NEW_GROUP"}`. Every handle and pending write is
+  stale afterwards: search again.
+
 ## Cancellation and recovery
 
 ```bash

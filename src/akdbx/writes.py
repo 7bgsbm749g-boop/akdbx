@@ -51,9 +51,9 @@ def _entry_write_clock(entry, wall_clock, *, latest=None):
     return latest, now
 
 
-def _entry_changed_at(entry, wall_clock):
+def _entry_changed_at(entry, wall_clock, *, latest=None):
     """Use a real, strictly newer KDBX second without inventing future dates."""
-    latest, now = _entry_write_clock(entry, wall_clock)
+    latest, now = _entry_write_clock(entry, wall_clock, latest=latest)
     deadline = monotonic() + 1.25
     while latest == now:
         # Ordinary same-second saves can wait for a real clock boundary. A
@@ -130,6 +130,46 @@ MAX_ADDITIONAL_URLS = 32
 
 def additional_urls_capabilities():
     return dict(additional_urls_protocol=ADDITIONAL_URLS_PROTOCOL, additional_urls_policy=ADDITIONAL_URLS_POLICY)
+
+
+ENTRY_ORGANIZE_PROTOCOL = 1
+ORGANIZE_ACTIONS = ('move-entry', 'delete-entry')
+
+
+def entry_organize_capabilities():
+    """move-entry: into an existing group; delete-entry: into the vault's existing recycle bin only."""
+    return dict(entry_organize_protocol=ENTRY_ORGANIZE_PROTOCOL)
+
+
+def _recycle_bin(vault):
+    """The vault's own recycle bin group, or None when it is off or not created yet."""
+    try:
+        enabled = vault._xpath('/KeePassFile/Meta/RecycleBinEnabled', first=True)
+        if enabled is None or (enabled.text or '').strip().casefold() != 'true':
+            return None
+        group = vault.recyclebin_group
+    except Exception:
+        return None
+    return group if group is not None and not group.is_root_group else None
+
+
+def _inside(entry, group):
+    ancestor = getattr(entry, 'group', None)
+    while ancestor is not None:
+        if ancestor.uuid == group.uuid:
+            return True
+        ancestor = getattr(ancestor, 'parentgroup', None)
+    return False
+
+
+def _location_changed(entry):
+    try:
+        value = entry._get_times_property('LocationChanged')
+    except Exception:
+        value = None
+    if value is None:
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return value.replace(microsecond=0)
 
 
 def _serialize_origin(origin):
@@ -686,6 +726,90 @@ class WriteManager:
         saved = selected(self.broker.vault)
         return dict(ok=True, state='saved', metadata=values, additional_urls=additional_urls(saved),
                     changed='added' if adding else 'removed', url=serialized + '/')
+
+    def organize_entry(self, request):
+        """Move one selected entry to an existing group, or into the existing recycle bin.
+
+        Metadata-only: the password, fields and history stay as they are. Only
+        the entry's parent group and its LocationChanged time change, so a later
+        merge keeps the newer location.
+        """
+        action = request.get('action')
+        moving = action == 'move-entry'
+        keys = {'action', 'handle', 'metadata', 'entry_organize_protocol', *(('to_group',) if moving else ())}
+        if (action not in ORGANIZE_ACTIONS or set(request) != keys
+                or type(request.get('entry_organize_protocol')) is not int
+                or request['entry_organize_protocol'] != ENTRY_ORGANIZE_PROTOCOL
+                or not isinstance(request.get('metadata'), dict)
+                or (moving and not isinstance(request.get('to_group'), str))):
+            raise WriteError('entry moves accept only a fresh handle, its exact metadata and a destination')
+        try:
+            entry = self.broker._resolve(request.get('handle'))
+        except ValueError:
+            raise WriteError('unknown or expired handle; search again') from None
+        from .cards import is_card
+        from .identities import is_identity
+        if is_card(entry) or is_identity(entry):
+            raise WriteError('only login entries can be moved or deleted here; use KeePassXC for cards and identities')
+        values = metadata(entry)
+        if request['metadata'] != values:
+            raise WriteError('entry metadata mismatch; search again')
+        self._require_available()
+        vault = self.broker.vault
+        uuid = entry.uuid
+        if sum(e.uuid == uuid for e in active_entries(vault)) != 1:
+            raise WriteError('entry metadata mismatch; search again')
+
+        def destination(candidate, current):
+            bin_group = _recycle_bin(candidate)
+            if moving:
+                group = group_for(candidate, request['to_group'])
+                if bin_group is not None and (group.uuid == bin_group.uuid or _inside(group, bin_group)):
+                    raise WriteError('use delete-entry to move an entry into the recycle bin')
+                if current.group is not None and current.group.uuid == group.uuid:
+                    raise WriteError('entry is already in that group')
+                return group
+            if bin_group is None:
+                raise WriteError('vault recycle bin is off or not created yet; delete this entry in KeePassXC')
+            if _inside(current, bin_group):
+                raise WriteError('entry is already in the recycle bin; empty it in KeePassXC')
+            return bin_group
+
+        target_group = destination(vault, entry)
+        changed_at = _entry_changed_at(entry, self.broker.wall_clock, latest=_location_changed(entry))
+        expected = '/'.join(target_group.path) if target_group.path else ''
+
+        def selected(candidate):
+            entries = [e for e in active_entries(candidate) if e.uuid == uuid]
+            if len(entries) != 1 or metadata(entries[0]) != values:
+                raise WriteError('entry changed; search again')
+            return entries[0]
+
+        password = entry.password
+
+        def mutate(candidate):
+            current = selected(candidate)
+            group = destination(candidate, current)
+            candidate.move_entry(current, group)
+            current._set_times_property('LocationChanged', changed_at)
+
+        def verify_saved(candidate):
+            entries = [e for e in active_entries(candidate) if e.uuid == uuid]
+            if (len(entries) != 1 or entries[0].password != password
+                    or metadata(entries[0]) != {**values, 'group': expected}):
+                raise WriteError('entry move verification failed; vault update not confirmed')
+
+        try:
+            self.broker.vault = vault._akdbx_store.commit(vault, mutate, verify_candidate=verify_saved)
+        except (SaveError, WriteError):
+            raise
+        except Exception:
+            raise WriteError('save failed; vault update not confirmed') from None
+        finally:
+            password = None
+        self.invalidate_revision()
+        return dict(ok=True, state='saved', changed='moved' if moving else 'deleted',
+                    metadata=values, group=expected)
 
     def begin(self, request):
         entry = None
