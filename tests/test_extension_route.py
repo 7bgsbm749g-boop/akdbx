@@ -40,7 +40,10 @@ STRIPE_CARD_ELEMENT = ('https://js.stripe.com/v3/elements-inner-card-' + 'c' * 3
 
 
 # The fake extension reports the shipped version, which the keys bind (0.4.0+).
-BOUND = b'/' + route.EXTENSION_VERSION.encode()
+BUILT = extension_host.built_version()  # What a current extension reports.
+BOUND = b'/' + BUILT.encode()
+# The same MAJOR.MINOR.PATCH with other contents.
+OTHER_BUILD = route.EXTENSION_VERSION + '.' + str((int(BUILT.rsplit('.', 1)[1]) + 1) % 65536)
 
 
 def new_key():
@@ -179,7 +182,7 @@ class FakeExtension:
 
 
 class FakeChannel(route.Channel):
-    def __init__(self, hub, extension, browser='helium', version=route.EXTENSION_VERSION):
+    def __init__(self, hub, extension, browser='helium', version=BUILT):
         super().__init__(hub, None, browser, EXTENSION_PUBLIC, version)
         self.extension = extension
         extension.channel = self
@@ -1257,18 +1260,197 @@ def test_extension_version_changes_with_its_contents(tmp_path):
                 f"records {recorded['version']}: run this test once with AKDBX_UPDATE_EXTENSION_FINGERPRINT=1")
 
 
-def test_build_keeps_the_extension_version_and_reports_it(tmp_path, capsys):
+def test_build_stamps_the_extension_version_with_its_contents_and_reports_it(tmp_path, capsys):
     built = extension_host.build(tmp_path / 'ext', unlock_origin='https://localhost:9443')
     manifest = json.loads((built / 'manifest.json').read_text())
-    assert manifest['version'] == route.EXTENSION_VERSION
+    # MAJOR.MINOR.PATCH from the source manifest, then 16 bits of the content hash.
+    assert manifest['version'] == BUILT and BUILT.startswith(route.EXTENSION_VERSION + '.')
+    assert 0 <= int(BUILT.rsplit('.', 1)[1]) <= 65535 and route.valid_extension_version(BUILT)
+    assert 'version_name' not in manifest  # chrome://extensions shows the full version.
+    assert f'globalThis.AKDBX_EXTENSION_VERSION = "{BUILT}";' in (built / 'config.js').read_text()
     assert route.EXTENSION_VERSION_FORMAT.fullmatch(route.EXTENSION_VERSION)
     assert version_tuple(route.EXTENSION_VERSION) >= (0, 1, 0)
     args = SimpleNamespace(extension_command='build', output=tmp_path / 'cli')
     assert extension_host.run(args, unlock_origin='https://localhost:9443') == 0
-    assert json.loads(capsys.readouterr().out)['extension_version'] == route.EXTENSION_VERSION
-    assert json.loads((tmp_path / 'cli' / 'manifest.json').read_text())['version'] == route.EXTENSION_VERSION
+    assert json.loads(capsys.readouterr().out)['extension_version'] == BUILT
+    assert json.loads((tmp_path / 'cli' / 'manifest.json').read_text())['version'] == BUILT
     assert extension_host.run(SimpleNamespace(extension_command='info')) == 0
-    assert json.loads(capsys.readouterr().out)['extension_version'] == route.EXTENSION_VERSION
+    assert json.loads(capsys.readouterr().out)['extension_version'] == BUILT
+
+
+def test_other_extension_contents_give_another_build_version(monkeypatch):
+    """Chrome loads a new worker only for a new manifest version; the test host name does not count."""
+    real = extension_host._source_files
+    assert extension_host.built_version() == BUILT
+    try:
+        monkeypatch.setattr(extension_host, '_source_files',
+                            lambda host_name=route.HOST_NAME: {**real(host_name), 'background.js': b'// other'})
+        extension_host.built_version.cache_clear()
+        other = extension_host.built_version()
+        assert other != BUILT and other.startswith(route.EXTENSION_VERSION + '.')
+        monkeypatch.setattr(extension_host, '_source_files',
+                            lambda host_name=route.HOST_NAME: {**real(host_name), 'background.js':
+                                                               real()['background.js'].replace(b'\r\n', b'\n')
+                                                               .replace(b'\n', b'\r\n')})
+        extension_host.built_version.cache_clear()
+        assert extension_host.built_version() == BUILT  # A CRLF checkout builds the same version.
+    finally:
+        monkeypatch.undo()
+        extension_host.built_version.cache_clear()
+    assert extension_host.built_version() == BUILT
+
+
+def test_a_build_for_a_test_host_keeps_the_version_of_the_shipped_contents(tmp_path):
+    built = extension_host.build(tmp_path / 'ext', host_name='org.akdbx.test_x', unlock_origin='https://localhost:9443')
+    assert b'org.akdbx.test_x' in (built / 'background.js').read_bytes()
+    assert json.loads((built / 'manifest.json').read_text())['version'] == BUILT
+
+
+@pytest.mark.parametrize('version, worker_stale, status', [
+    (OTHER_BUILD, False, 'mismatch'), (route.EXTENSION_VERSION, False, 'mismatch'), (BUILT, True, 'stale')])
+def test_a_stale_or_mismatched_worker_gets_no_frame_list_and_no_pin_and_the_error_names_the_fix(
+        version, worker_stale, status):
+    """A worker that Chrome kept from another build pins fine but fails later fills: refuse it at the start."""
+    broker = make_broker([CardEntry()])
+    extension = FakeExtension({3: [Document('TOP', LOGIN)], 5: [Document('TOP', TOP)]})
+    channel = FakeChannel(broker.extension, extension, version=version)
+    channel.stale = worker_stale
+    broker.extension.channels[channel.id] = channel
+    broker.extension.approved.append(channel.digest)
+    state = broker.dispatch(dict(action='ping'))
+    assert state['extension_paired'] is True
+    assert state['extension_browsers'] == [dict(browser='helium', paired=True, version=version, version_status=status)]
+    # A stale worker: restart or reload. Another build than the broker's: rebuild with this akdbx.
+    error = route.STALE if status == 'stale' else route.MISMATCH.format(loaded=version, expected=BUILT)
+    for result in (broker.dispatch(dict(action='list-password-frames', password_protocol=1, frame_protocol=1,
+                                        top_url=LOGIN, route='extension')),
+                   pin_password(broker, channel, 3, 'TOP', LOGIN),
+                   card_pin(broker, channel, 'TOP')):
+        assert result == dict(ok=False, error=error)
+    assert 'chrome://extensions' in error and 'pair it again' in error
+    assert ('restart the browser' in error) == (status == 'stale')
+    assert ('akdbx --unlock-origin ORIGIN extension build' in error and version in error) == (status == 'mismatch')
+    # Only the frame list reached the worker (it counts the browser's tabs with the URL); never a pin.
+    assert extension.calls == ['frames'] and broker.extension.pins == {}
+
+
+def paired(broker, tabs, browser, version=BUILT, stale=False):
+    extension = FakeExtension(tabs)
+    channel = FakeChannel(broker.extension, extension, browser=browser, version=version)
+    channel.stale = stale
+    broker.extension.channels[channel.id] = channel
+    broker.extension.approved.append(channel.digest)
+    return channel, extension
+
+
+def worker_says_stale(extension):
+    """The worker found a newer build on disk: frame lists answer stale with the count of matching tabs."""
+    handle = extension.handle
+
+    def answer(op, payload):
+        if op == 'frames':
+            extension.calls.append(op)
+            return dict(ok=False, error='stale', tabs=sum(docs[0].url == payload['top_url']
+                                                          for docs in extension.tabs.values()))
+        return handle(op, payload)
+    extension.handle = answer
+
+
+@pytest.mark.parametrize('refused', ['stale', 'mismatch', 'worker'])
+def test_a_refused_browser_neither_hides_nor_borrows_a_page_in_another_paired_browser(refused):
+    broker = make_broker()
+    current, _ = paired(broker, {3: [Document('TOP', LOGIN)]}, 'helium')
+    other = {'stale': dict(stale=True), 'mismatch': dict(version=OTHER_BUILD), 'worker': {}}[refused]
+    channel, extension = paired(broker, {7: [Document('TOP', 'https://other.example.org/')]}, 'chrome', **other)
+    if refused == 'worker':
+        worker_says_stale(extension)
+    error = (route.MISMATCH.format(loaded=OTHER_BUILD, expected=BUILT) if refused == 'mismatch' else route.STALE)
+    request = dict(action='list-password-frames', password_protocol=1, frame_protocol=1, top_url=LOGIN,
+                   route='extension')
+    # The URL is open only in the current browser: it lists and pins there.
+    listing = broker.dispatch(request)
+    assert listing['ok'] is True and listing['page_id'] == current.id + '.3'
+    assert pin_password(broker, current, 3, 'TOP', LOGIN)['ok'] is True
+    # Open only in the refused browser, or in both: the refusal, never the other browser's tab.
+    assert broker.dispatch({**request, 'top_url': 'https://other.example.org/'}) == dict(ok=False, error=error)
+    extension.tabs[8] = [Document('TOP', LOGIN)]
+    assert broker.dispatch(request) == dict(ok=False, error=error)
+    # Nowhere: the refusal names the fix.
+    assert broker.dispatch({**request, 'top_url': 'https://missing.example.net/'}) == dict(ok=False, error=error)
+    # A page ID of the refused browser: refused at once.
+    calls = len(extension.calls)
+    assert broker.dispatch({**request, 'page_id': channel.id + '.8'}) == dict(ok=False, error=route.STALE
+                                                                             if refused != 'mismatch' else error)
+    assert len(extension.calls) == calls
+
+
+def test_the_frame_list_names_the_fix_of_the_refused_browser_that_has_the_page():
+    broker = make_broker()
+    mismatched, _ = paired(broker, {}, 'chrome', version=OTHER_BUILD)
+    _, extension = paired(broker, {t: [Document('TOP', LOGIN)] for t in range(1, 6)}, 'edge')
+    worker_says_stale(extension)  # Five tabs show the URL: more than one frame list may name.
+    request = dict(action='list-password-frames', password_protocol=1, frame_protocol=1, top_url=LOGIN,
+                   route='extension')
+    assert broker.dispatch(request) == dict(ok=False, error=route.STALE)
+    # Nowhere open: the first refusal.
+    assert broker.dispatch({**request, 'top_url': 'https://missing.example.net/'}) == dict(
+        ok=False, error=route.MISMATCH.format(loaded=OTHER_BUILD, expected=BUILT))
+    assert mismatched.stale is False
+
+
+def test_a_stale_frame_answer_without_a_valid_tab_count_is_refused():
+    broker = make_broker()
+    channel, extension = paired(broker, {3: [Document('TOP', LOGIN)]}, 'helium')
+    request = dict(action='list-password-frames', password_protocol=1, frame_protocol=1, top_url=LOGIN,
+                   route='extension')
+    for reply in (dict(ok=False, error='stale'), dict(ok=False, error='stale', tabs=-1),
+                  dict(ok=False, error='stale', tabs=True), dict(ok=False, error='stale', tabs=1, x=1)):
+        channel.stale = False
+        extension.handle = lambda op, payload, reply=reply: reply
+        assert broker.dispatch(request) == dict(ok=False, error='frame list unavailable: page missing, ambiguous, '
+                                                'changed or unsupported')
+
+
+def test_a_worker_that_finds_a_newer_build_on_disk_refuses_and_shows_stale_from_then_on():
+    broker = make_broker()
+    channel, extension = attach(broker, {3: [Document('TOP', LOGIN)]})
+    assert pin_password(broker, channel, 3, 'TOP', LOGIN)['ok'] is True
+    handle = extension.handle
+    extension.handle = lambda op, payload: (extension.calls.append(op) or dict(ok=False, error='stale')
+                                            if op in {'frames', 'pin'} else handle(op, payload))
+    assert pin_password(broker, channel, 3, 'TOP', LOGIN) == dict(ok=False, error=route.STALE)
+    assert channel.stale is True
+    assert broker.dispatch(dict(action='ping'))['extension_browsers'][0]['version_status'] == 'stale'
+    calls = len(extension.calls)
+    assert pin_password(broker, channel, 3, 'TOP', LOGIN) == dict(ok=False, error=route.STALE)
+    assert len(extension.calls) == calls  # Refused by the broker: no call to the worker.
+
+
+def test_host_forwards_a_stale_worker_and_refuses_any_other_stale_value(pair_of_sockets):
+    broker_side, host_side = pair_of_sockets
+    hello = frame(dict(type='hello', protocol=1, public_key=KEY, version=BUILT, stale=True))
+    assert extension_host.relay(io.BytesIO(hello), io.BytesIO(), route.EXTENSION_ORIGIN, 'helium',
+                                lambda: host_side) == 0
+    assert receive_message(broker_side) == dict(action='extension-attach', extension_protocol=1,
+                                                extension_id=route.EXTENSION_ID, browser='helium', public_key=KEY,
+                                                extension_version=BUILT, extension_stale=True)
+    for value in (False, 1, 'true', None):
+        connected = []
+        hello = frame(dict(type='hello', protocol=1, public_key=KEY, version=BUILT, stale=value))
+        assert extension_host.relay(io.BytesIO(hello), io.BytesIO(), route.EXTENSION_ORIGIN, 'helium',
+                                    lambda: connected.append(1)) == 1
+        assert connected == []
+
+
+@pytest.mark.parametrize('value', [False, 1, 'true', None])
+def test_attach_refuses_any_stale_value_but_true(pair_of_sockets, value):
+    broker_side, host_side = pair_of_sockets
+    request = dict(action='extension-attach', extension_protocol=1, extension_id=route.EXTENSION_ID,
+                   browser='helium', public_key=KEY, extension_version=BUILT, extension_stale=value)
+    broker = make_broker()
+    broker.extension.attach(broker_side, request)
+    assert receive_message(host_side) == dict(type='error', error='extension attach refused')
+    assert broker.extension.channels == {}
 
 
 def test_host_forwards_a_valid_extension_version(pair_of_sockets):
@@ -1281,7 +1463,7 @@ def test_host_forwards_a_valid_extension_version(pair_of_sockets):
                                                 extension_version='0.1.0')
 
 
-@pytest.mark.parametrize('version', ['1.0', '1.0.0.0', '01.0.0', '1.0.0-beta', ' 1.0.0', '1.0.0\n', '123456.0.0',
+@pytest.mark.parametrize('version', ['1.0', '1.0.0.0.0', '1.0.0.01', '01.0.0', '1.0.0-beta', ' 1.0.0', '1.0.0\n', '123456.0.0',
                                      1, None, ['1.0.0'], '١.٠.٠'])
 def test_host_refuses_a_malformed_extension_version(version):
     connected = []
@@ -1294,8 +1476,9 @@ def test_host_refuses_a_malformed_extension_version(version):
 
 def test_extension_version_check_is_strict():
     assert route.valid_extension_version('1.2.3') and route.valid_extension_version('99999.0.0')
-    for bad in ('1.2', '1.2.3.4', '01.2.3', '1.2.3 ', '1.2.3\n', '99999.99999.999999', 1, True, None,
-                '١.٢.٣', ''):
+    assert route.valid_extension_version('1.2.3.4') and route.valid_extension_version('99999.99999.99999.99999')
+    for bad in ('1.2', '1.2.3.4.5', '1.2.3.04', '01.2.3', '1.2.3 ', '1.2.3\n', '99999.99999.999999', '1.2.3.',
+                '1.2.3.123456', 1, True, None, '١.٢.٣', ''):
         assert not route.valid_extension_version(bad)
 
 
@@ -1311,9 +1494,16 @@ def test_attach_refuses_a_malformed_extension_version(pair_of_sockets, version):
 
 
 @pytest.mark.parametrize('extra, version, version_status', [
-    (dict(extension_version=route.EXTENSION_VERSION), route.EXTENSION_VERSION, 'current'),
+    (dict(extension_version=BUILT), BUILT, 'current'),
     (dict(extension_version='0.0.9'), '0.0.9', 'outdated'),
+    (dict(extension_version='0.0.9.7'), '0.0.9.7', 'outdated'),
     (dict(extension_version='999.0.0'), '999.0.0', 'newer'),
+    # The same MAJOR.MINOR.PATCH with other contents, or from a build without the fourth part:
+    # the browser loads another build than this broker's.
+    (dict(extension_version=OTHER_BUILD), OTHER_BUILD, 'mismatch'),
+    (dict(extension_version=route.EXTENSION_VERSION), route.EXTENSION_VERSION, 'mismatch'),
+    # The worker found a newer build on disk and could not reload into it.
+    (dict(extension_version=BUILT, extension_stale=True), BUILT, 'stale'),
     # An extension built by akdbx 0.21.2 or earlier sends no version: it attaches and shows as outdated.
     ({}, None, 'outdated'),
 ])
@@ -1326,7 +1516,7 @@ def test_status_shows_each_loaded_extension_version(pair_of_sockets, extra, vers
     worker.start()
     assert receive_message(host_side)['type'] == 'attached'
     status = broker.dispatch(dict(action='ping'))
-    assert status['extension_version_expected'] == route.EXTENSION_VERSION and status['extension_connected'] is True
+    assert status['extension_version_expected'] == BUILT and status['extension_connected'] is True
     assert status['extension_browsers'] == [dict(browser='helium', paired=False, version=version,
                                                  version_status=version_status)]
     host_side.close()
@@ -1336,7 +1526,7 @@ def test_status_shows_each_loaded_extension_version(pair_of_sockets, extra, vers
 
 def test_status_lists_the_expected_extension_version_without_a_connection():
     status = make_broker().dispatch(dict(action='ping'))
-    assert status['extension_version_expected'] == route.EXTENSION_VERSION and status['extension_browsers'] == []
+    assert status['extension_version_expected'] == BUILT and status['extension_browsers'] == []
 
 
 # ----- secret capture -----------------------------------------------------------------

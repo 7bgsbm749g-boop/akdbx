@@ -8,7 +8,8 @@ from urllib.parse import urlsplit
 from .browser_card import TTL, failure
 from .browser_identity import DELIVERY
 from . import browser_slots, page_url
-from .identities import COMMANDS, FAILED, FIELDS, FIELDS_PROTOCOL, FILL_FIELDS, REFUSED, UPDATE_PROTOCOL, label_matches
+from .identities import (COMMANDS, FAILED, FIELD_PURPOSE_PROTOCOL, FIELDS, FIELDS_PROTOCOL, FILL_FIELDS, REFUSED,
+                         TEL_FORMATS, UPDATE_PROTOCOL, label_matches)
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
 
 PIN_ARGS = ('page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field')
@@ -41,12 +42,22 @@ def add_parsers(commands):
     page_url.add(p, 'frame-url', required=False,
                  help='exact frame URL; required on the cdp route, optional on the extension route')
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
+    p.add_argument('--field-purpose', choices=FILL_FIELDS, metavar='FIELD',
+                   help='you verified on the page that the field takes this detail (the same value as --field); '
+                        'accepts a field with no autocomplete token or only "on"; a token for another detail still refuses')
+    p.add_argument('--allow-autocomplete-off', action='store_true',
+                   help='with --field-purpose: also accept autocomplete="off"')
     p.add_argument('--route', choices=ROUTES, help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
     browser_slots.add_argument(p)
     p = commands.add_parser('fill-identity', help='fill the pinned DOM field without sending keys or submitting')
     p.add_argument('handle')
     p.add_argument('--target', required=True)
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
+    p.add_argument('--format', choices=TEL_FORMATS,
+                   help='tel only: national removes the + and the country calling code (the saved value stays as it is)')
+    p.add_argument('--calling-code', metavar='DIGITS',
+                   help='with --format national: refuse unless the saved number has this country calling code, '
+                        'for example 44 when the page\'s country picker shows +44')
 
 
 def field_list(text):
@@ -57,6 +68,27 @@ def field_list(text):
     if not text.strip() or unknown or len(set(fields)) != len(fields):
         raise argparse.ArgumentTypeError('use comma-separated fields from: ' + ', '.join(FIELDS))
     return fields
+
+
+def _option_refusal(args, caps):
+    """Why the CLI refuses the pin or fill options before sending, or None."""
+    if args.command == 'pin-identity-target':
+        if args.allow_autocomplete_off and args.field_purpose is None:
+            return '--allow-autocomplete-off needs --field-purpose'
+        if args.field_purpose is not None and args.field_purpose != args.field:
+            return '--field-purpose must name the same detail as --field'
+        if args.field_purpose is not None and (type(caps.get('identity_field_purpose_protocol')) is not int
+                                               or caps['identity_field_purpose_protocol'] != FIELD_PURPOSE_PROTOCOL):
+            return 'broker lacks identity field purpose protocol 1'
+    if args.command == 'fill-identity':
+        if args.calling_code is not None and (args.format is None or not re.fullmatch('[1-9][0-9]{0,2}', args.calling_code)):
+            return '--calling-code needs --format national and 1 to 3 digits without +'
+        if args.format is not None and args.field != 'tel':
+            return '--format applies only to --field tel'
+        formats = caps.get('identity_tel_formats')
+        if args.format is not None and (not isinstance(formats, list) or args.format not in formats):
+            return f'broker lacks the {args.format} tel format'
+    return None
 
 
 def _token(value):
@@ -126,6 +158,10 @@ def run(args, request):
                 type(caps.get('identity_update_protocol')) is not int or caps['identity_update_protocol'] != UPDATE_PROTOCOL):
             print(json.dumps(dict(ok=False, error='broker lacks identity update protocol 1; request not sent')))
             return 1
+        refusal = _option_refusal(args, caps)
+        if refusal is not None:
+            print(json.dumps(dict(ok=False, error=refusal + '; request not sent')))
+            return 1
         if args.command == 'pin-identity-target':
             args.resolved_route = args.route or caps.get('default_fill_route') or 'cdp'
             if args.resolved_route == 'extension' and (type(caps.get('extension_protocol')) is not int
@@ -158,6 +194,10 @@ def run(args, request):
             payload.update({key: getattr(args, key) for key in PIN_ARGS if getattr(args, key) is not None})
             if args.route is not None:
                 payload['route'] = args.route
+            if args.field_purpose is not None:
+                payload['field_purpose'] = args.field_purpose
+            if args.allow_autocomplete_off:
+                payload['allow_autocomplete_off'] = True
             slot, refusal = browser_slots.request_field(args, caps, args.resolved_route)
             if refusal is not None:
                 print(json.dumps(dict(ok=False, error=refusal)))
@@ -165,6 +205,10 @@ def run(args, request):
             payload.update(slot)
         else:
             payload.update(handle=args.handle, target=args.target, field=args.field, start_deadline=time.monotonic() + 4)
+            if args.format is not None:
+                payload['format'] = args.format
+            if args.calling_code is not None:
+                payload['calling_code'] = args.calling_code
         response = request(payload)
         if not valid_receipt(args, response):
             raise ValueError

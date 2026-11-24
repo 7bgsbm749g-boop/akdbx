@@ -1480,14 +1480,15 @@ class Setup:
             raise RuntimeError(error)
 
     def _build_extension(self):
-        from .extension_host import BUILD_ID, EXTENSION_KEY, trusted_origin
+        from .extension_host import BUILD_ID, EXTENSION_KEY, built_version, trusted_origin
         folder = Path(self.choice['extension_dir'])
         try:
             origin = trusted_origin(self.origin)
             manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
             config = (folder / 'config.js').read_text(encoding='utf-8')
             # An unchanged folder is not rebuilt, so it keeps its build ID and the extension its saved trust.
-            built = (manifest.get('key') == EXTENSION_KEY and manifest.get('version') == EXTENSION_VERSION
+            built = (manifest.get('key') == EXTENSION_KEY and manifest.get('version') == built_version()
+                     and f'globalThis.AKDBX_EXTENSION_VERSION = {json.dumps(built_version())};' in config
                      and json.dumps(origin) in config and BUILD_ID.search(config) is not None)
         except Exception:
             built = False

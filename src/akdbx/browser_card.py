@@ -165,7 +165,7 @@ class CDP:
 # All DOM methods run in a private isolated world. Page JavaScript cannot replace
 # its builtins or the native value setter. Capture the actual element, not a
 # selector to resolve later. Every check and the write run in one JS task.
-PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=false) => {
+PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=false, purpose=false, allowOff=false) => {
   __STYLE_GUARD__
   const matches = document.querySelectorAll(selector);
   if (matches.length !== 1) return null;
@@ -214,11 +214,19 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
   }
   // Identity fields follow the ordered HTML autocomplete token grammar.
   const prefix = tokens.slice(0, -1);
-  if (identity) {
+  // An explicit field purpose (the agent verified it on the page) also accepts
+  // a field with no autocomplete token or only `on`, and `off` only with its own
+  // flag. Any other hint must still name this field.
+  const attested = identity && purpose === field &&
+    (tokens.length === 0 || tokens.length === 1 && (tokens[0] === 'on' || tokens[0] === 'off' && allowOff === true));
+  if (identity && purpose !== false && purpose !== field) return null;
+  if (identity && !attested) {
     if (prefix[0]?.startsWith('section-')) prefix.shift();
     if (['shipping','billing'].includes(prefix[0])) prefix.shift();
     if (['tel','email'].includes(field) && ['home','work','mobile','fax','pager'].includes(prefix[0])) prefix.shift();
     if (prefix.length || tokens[tokens.length - 1] !== field) return null;
+  }
+  if (identity) {
     if (input && !(type === 'text' || type === 'email' && field === 'email' ||
                    type === 'tel' && field === 'tel')) return null;
   } else if (computop ? !knownComputopField() :
@@ -310,6 +318,21 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
     '__STRIPE_ELEMENTS__', card_processor.STRIPE_ELEMENTS_JSON)
 
 
+def field_purpose(kind, request):
+    """The identity pin's explicit field purpose and autocomplete-off flag, checked.
+
+    ``field_purpose`` must name the pinned field; ``allow_autocomplete_off``
+    must be ``True`` and needs ``field_purpose``. Cards take neither.
+    """
+    purpose, allow_off = request.get('field_purpose', False), request.get('allow_autocomplete_off', False)
+    if ('field_purpose' in request or 'allow_autocomplete_off' in request) and (
+            kind != 'identity' or 'field_purpose' in request and request['field_purpose'] != request.get('field')
+            or 'allow_autocomplete_off' in request and (request['allow_autocomplete_off'] is not True
+                                                        or 'field_purpose' not in request)):
+        raise CardTargetError()
+    return purpose, allow_off
+
+
 class BrowserCards:
     kind = 'card'
     delivery = DELIVERY
@@ -382,6 +405,8 @@ class BrowserCards:
         processor = request.get('processor')
         if self.kind == 'card' and 'processor' in request:
             allowed |= {'processor', 'processor_protocol'}
+        purpose, allow_off = field_purpose(self.kind, request)
+        allowed |= set(request) & {'field_purpose', 'allow_autocomplete_off'}
         self.prune()
         if (set(request) != allowed or type(request.get(protocol)) is not int or request[protocol] != 1
                 or profile is None or len(self.pins) >= MAX_PINS or request.get('field') not in self.fields
@@ -418,7 +443,7 @@ class BrowserCards:
                                worldName=f'akdbx-{self.kind}-v1'), session)['executionContextId']
             arguments = [request[k] for k in ('selector', 'field', 'frame_url', 'top_url')]
             if self.kind == 'identity':
-                arguments.extend((False, True))
+                arguments.extend((False, True, purpose, allow_off))
             arguments.extend(self.pin_extra)
             expression = '(' + self.pin_script + ')(' + ','.join(map(json.dumps, arguments)) + ')'
             result = cdp.call('Runtime.evaluate', dict(expression=expression, contextId=context,

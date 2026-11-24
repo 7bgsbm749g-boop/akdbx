@@ -254,7 +254,8 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
 # must focus it. Text selection is not accepted: on X11, Chromium publishes any
 # selected text to the PRIMARY selection, outside the broker. Pin and read both require the exact
 # URL/origin, page focus, visibility, a unique selector match and one
-# unchanged single-line value. Any mutation of the element, navigation, blur,
+# unchanged single-line value (one token, or a Base32 setup key in space-separated
+# groups; capture-secret still refuses any space). Any mutation of the element, navigation, blur,
 # focus change or value change taints the pin. The value stays in the
 # renderer until the broker's own read call; the pin receipt never holds it.
 READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
@@ -274,10 +275,20 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
   if (!(element instanceof HTMLElement) || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement ||
       isInput && inputType.call(element) !== 'text' || element.isContentEditable || !leaf()) throw 0;
   const text = () => isInput ? inputValue.call(element) : innerText.call(element);
+  // An authenticator setup key printed in groups ("abcd efgh ijkl mnop"): only
+  // the Base32 alphabet (with "=" padding at the end only), one ASCII space
+  // between groups, every group as long as the first (3 to 8) except a shorter
+  // last one, and at least 16 characters.
+  const grouped = value => {
+    const groups = value.split(' '), size = groups[0].length, joined = groups.join('');
+    return groups.length > 1 && size >= 3 && size <= 8 && joined.length >= 16 && /^[A-Za-z2-7]+=*$/.test(joined) &&
+      groups.every((g, i) => g.length > 0 && (i < groups.length - 1 ? g.length === size : g.length <= size));
+  };
   const clean = raw => {
     if (typeof raw !== 'string') return null;
     const value = raw.replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '');
-    if (!value || value.length > 4096 || /[\s\p{C}\p{Z}]/u.test(value)) return null;
+    if (!value || value.length > 4096) return null;
+    if (/[\s\p{C}\p{Z}]/u.test(value) && !grouped(value)) return null;
     return value;
   };
   const visible = () => {

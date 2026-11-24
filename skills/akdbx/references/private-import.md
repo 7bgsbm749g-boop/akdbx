@@ -124,7 +124,9 @@ write status first. Keep private URLs/handles out of durable notes and PRs.
 
 ## Future enrollment and replacement
 
-The importer is deliberately not an autonomous website-2FA reset. A new website
+The importer is deliberately not an autonomous website-2FA reset. A new,
+authorized enrollment can skip this importer: [automatic enrollment](totp-enrollment.md)
+(0.35.0+) reads the setup key from the site's page and needs no user step. A new website
 authenticator must use an explicitly authorized additive route. Verify site
 acceptance and the retained phone method independently; keep recovery available.
 The existing `--replace` flag only permits replacing the KDBX field and preserves

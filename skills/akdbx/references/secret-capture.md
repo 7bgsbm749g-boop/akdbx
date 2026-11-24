@@ -1,5 +1,8 @@
 # Capture a shown-once secret and deliver it (0.20.0)
 
+For an authenticator (TOTP) setup key, use `capture-totp` instead: see
+[automatic authenticator enrollment](totp-enrollment.md).
+
 Use this when a website shows a new secret once (an OAuth client secret, an API
 key, a webhook signing secret) and the task needs it stored and later written
 to a service configuration. The broker reads the page element itself, saves

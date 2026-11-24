@@ -55,9 +55,19 @@ package version. `status` shows:
 
 | Key | Value |
 | --- | --- |
-| `extension_version_expected` | The version this akdbx build ships, for example `"0.3.0"` |
+| `extension_version_expected` | The version this akdbx build writes, for example `"0.7.1.12345"` (0.35.2+; before: `"0.7.0"`) |
 | `extension_browsers[].version` | The version the loaded extension reported, or `null` |
-| `extension_browsers[].version_status` | `"current"`, `"outdated"` (older, or no version) or `"newer"` |
+| `extension_browsers[].version_status` | `"current"`, `"outdated"` (older, or no version), `"newer"`, or from 0.35.2 `"stale"` (an old worker beside newer files) and `"mismatch"` (another build than this broker's) |
+
+From akdbx 0.35.2 (extension 0.7.1) `akdbx extension build` adds a fourth
+version part from the built contents: `MAJOR.MINOR.PATCH.N`, where N is the
+first 16 bits of SHA-256 over the built files (config.js excluded). Only
+MAJOR.MINOR.PATCH orders versions; N names the contents. `extension build`
+and `extension info` print the four-part version, and chrome://extensions
+shows it. A broker or host launcher from akdbx 0.35.1 or earlier refuses the
+four-part hello (the popup says the broker is not reachable): restart the
+broker on the updated akdbx, and run `akdbx extension refresh` (or
+`install`) from it.
 
 An extension built by akdbx 0.21.2 or earlier reports no version. It still
 attaches and works, with `version: null` and `version_status: "outdated"`.
@@ -78,6 +88,60 @@ rebuilds into the same folder and reloads:
 
 `newer` means the broker is older than the extension: restart the broker on
 the updated akdbx.
+
+### Stale service worker (0.35.2+)
+
+Chrome keeps a registered extension service worker, with the scripts it
+imported, until the manifest `version` changes or the extension reloads. A
+browser restart alone does not replace it. Content scripts and injected
+files come from disk. So when a build with other contents but the same
+version went into the loaded folder (a development or worktree build), the
+browser ran the old worker beside the new content script. Seen on
+23 November 2026 with extension 0.5.0 in Chrome 153: `pin-password-target
+--route extension` worked, then every `fill` and `fill-generated` returned
+`autofill not started: target unavailable, changed or unsupported; pin
+again`, while `status` showed `version_status: "current"`.
+
+From 0.35.2:
+
+- The content stamp (fourth version part) changes the version for any other
+  contents, so a browser restart loads the new worker.
+- The worker reports the version from its own config.js, which Chrome caches
+  with it, not the manifest on disk. The broker shows `version_status:
+  "mismatch"` when that version has the same MAJOR.MINOR.PATCH as its own
+  build but another (or no) fourth part: the browser loads other contents
+  than this akdbx builds.
+- Before each frame list and pin, the worker reads manifest.json on disk. If
+  the folder holds a newer build, it answers `stale` and reloads itself once
+  for that build (`chrome.runtime.reload()`). If the worker after that reload
+  still runs old code, it does not reload again and tells the broker
+  (`stale: true` in its hello).
+- A stale or mismatched worker gets no frame list and no pin. A frame list
+  without `--page-id` still lists the page in another paired browser when
+  only that browser has the URL open; if the refused browser has it open
+  too, the list fails with the refusal, never with the other browser's tab.
+  A stale worker
+  (`version_status: "stale"`) gets `extension route unavailable: the browser
+  runs an older akdbx extension service worker than the extension files on
+  disk (stale build); restart the browser, or reload akdbx on
+  chrome://extensions, then pair it again`. A mismatched one gets `…the
+  browser runs akdbx extension X, another build than this broker's Y; rebuild
+  the folder the browser loads with this akdbx and the broker's private-page
+  origin (the origin of its unlock link): \`akdbx --unlock-origin ORIGIN
+  extension build --output FOLDER\`, or restart the broker if akdbx was
+  updated; then reload akdbx on chrome://extensions and pair it again`.
+
+Fix: restart the browser, or click reload on the akdbx card in
+`chrome://extensions`. Keep Developer mode on there: with it off, Chromium
+blocks an unpacked extension when it reloads ("blocked by Chromium"), also
+after the worker's own reload. Then pair again: a reload, also the worker's own
+reload, ends the pairing, because the pairing key lives in session storage.
+Every `extension build` also writes a new random build ID, and a reloaded
+worker drops the broker trust saved under another build. So expect a new
+pairing after every rebuild that the browser loads. A content-identical
+rebuild gets the same version, so a restart keeps the running worker, but a
+reload still needs a pairing. Rebuild only when `extension info` shows
+another `extension_version` than the folder's manifest.
 
 ## Pairing
 
@@ -243,6 +307,13 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   `capture_delivery: "extension-dom-read-v1"`.
   Without `--route`, a read pin takes the broker's default route when the
   broker advertises `extension_capture_protocol: 1`, else the CDP route.
+- Authenticator enrollment (0.35.0+): the same read pin feeds `capture-totp`
+  ([automatic enrollment](totp-enrollment.md)). Fill extension 0.6.0 also reads
+  a setup key printed in space-separated Base32 groups; 0.5.0 and older read
+  only a key printed as one token.
+- Identity pins with `--field-purpose` (0.35.1) need fill extension 0.7.0 or
+  newer. An older extension gets no such pin: rebuild and reload it
+  (`version_status` in `extension_browsers`).
 - Read pins and password pins in a child frame need fill extension 0.4.0 or
   newer; the broker refuses them from an older one. Build
   the extension again and reload it. From 0.4.0 both sealing keys bind the
@@ -303,13 +374,73 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   then gets the CDP route's owner guard (connected, visible, no `srcdoc`, safe
   `sandbox`, no attribute change), checked at pin and again before the fill or
   read.
-- Hit tests: there is no browser-native hit test. The checks use
+- Hit tests (default): there is no browser-native hit test. The checks use
   `elementFromPoint` in the isolated world, which skips click-through covers
   (`pointer-events: none`, `inert` content, a popover's `::backdrop`). For card
   and address fields the CDP route also runs `DOM.getNodeForLocation`, which
-  sees them; use the CDP route where a page may cover such a field. Read pins
-  use the same `elementFromPoint` check on both routes, and password pins have
-  no hit test on either.
+  sees them; use the CDP route where a page may cover such a field, unless the
+  user turned on Enhanced security. Read pins use the same `elementFromPoint`
+  check on both routes, and password pins have no hit test on either.
+- Covers (Enhanced security: experimental, off by default; 0.34.0+, fill
+  extension 0.5.0). The user turns it on in the extension's settings page (the
+  cog in the popup, or the browser's extension options); an agent does not.
+  The page first asks the browser for the optional `<all_urls>` host access,
+  and stores the setting only when the browser grants it. Turning it off keeps
+  that access: Chrome's `permissions.remove` of `<all_urls>` also withholds the
+  required `https://*/*` access. On, but without that access (not granted, or
+  removed later on the browser's extension page), every card, address and read
+  pin refuses; the settings page shows a warning. The broker does not see the
+  setting: a refused pin looks like any other refused pin, so when the pins of
+  an ordinary page keep refusing on the extension route, the user can turn the
+  setting off or the agent can use the CDP route. With the setting on, a card,
+  address or read pin needs proof that nothing is
+  painted over the field or the secret. `elementFromPoint` cannot give it (it
+  skips click-through and inert covers), and no list of selectors names every
+  cover. The extension asks the browser instead, in two steps, at the pin and
+  again at the fill or read:
+  1. The occlusion test. `IntersectionObserver` with `trackVisibility` runs the
+     browser's own occlusion hit test: the one CDP's `DOM.getNodeForLocation`
+     runs (pointer-events and `inert` ignored, visual overflow included), over
+     the whole box of the element, through every parent frame. A cross-origin
+     parent reports the occlusion of the whole `<iframe>` to its child, so a
+     processor frame also sees a cover in the merchant page. A popover, a
+     `::backdrop`, an exit transition, any pseudo-element, an inert or
+     shadow-root cover: each is a box above the element, so the answer is
+     "not visible". Opacity below 1, a filter or a distorting transform on the
+     element's chain give the same answer. The fill or read runs in the task
+     that delivers a fresh "visible" answer. The test needs a rendered tab.
+  2. The pixel challenge, for every card, address and read check. Step 1 does
+     not count paint that the element's own ancestors draw over it (a
+     negative-offset outline, also around a processor iframe), and it is
+     all-or-nothing for the whole box: a floating label, an icon in the field,
+     an element over another part of a processor frame, or the transparent
+     `::backdrop` of a cookie popover elsewhere also fail it.
+     The service worker then adds one user-origin rule (it beats every author
+     rule) that paints only the pinned element in a random colour, takes a
+     screenshot of the tab (`tabs.captureVisibleTab`), removes the rule, and
+     checks the colour at the points CDP hit-tests: the centre of a field; for
+     a secret, a point every few pixels along each line of its text. A cover
+     of any kind, in any document or frame, changes those pixels, so the pin
+     refuses; a see-through veil also refuses. The field shows the colour for
+     about a tenth of a second. The screenshot stays in the service worker and
+     is dropped after the check. The element's own outline gets another colour,
+     so one drawn over its content refuses; a secret element that draws its own
+     `::before`, `::after`, list marker or scroll markers refuses, because that
+     content would take the challenge colour. After the screenshot the points are measured
+     again; a layout shift refuses.
+  Costs and limits: `tabs.captureVisibleTab` needs the `<all_urls>` host
+  permission (asked for when the setting is turned on) and allows two
+  screenshots each second, so challenges run one at a time, about half a
+  second apart: each card or address field costs one challenge at its pin and
+  one at its fill. Colours are compared exactly. Chrome returns tab screenshots
+  in sRGB also when it renders for a colour-managed display: the tests pass with
+  forced Display P3 and scRGB profiles (`--force-color-profile`). A display
+  that still changed the colours would refuse, never fill. The tab must be the active tab of a window that renders.
+  Only a script that can read the field's own document can copy the colour
+  onto a cover in time, and such a script can read the filled value anyway;
+  a parent page cannot see the colour in a cross-origin processor frame. A
+  cover that comes and goes by itself is seen only if it is there at the pin
+  or at the fill.
 
 ## Setup
 
@@ -372,15 +503,37 @@ launcher; reinstall the other slots afterwards.
 
 ## Agent desktop slot without DevTools
 
-Use this when a bot check (seen: DataDome on a SoundCloud sign-up) refuses an
-agent desktop slot even after the CDP route, a clean profile and a residential
-IP. The check detects the open DevTools connection ("use of developer or
-inspection tools"), so every route that needs it fails: the CDP route, the
-`browser_*` tools and `browser_prepare`. Each refused attempt can make the
-next one harder, so change the setup before you try again.
+Use this as soon as a bot check or site block stops you in an agent desktop
+slot (seen: DataDome on a SoundCloud sign-up, Cloudflare "Verifying…" that
+does not finish). Apply all the steps below together, in this order, before
+the next attempt. Do not try them one at a time: a home IP alone did not
+pass, because the check also detects the open DevTools connection ("use
+of developer or inspection tools"). Every route that needs that connection
+fails: the CDP route, the `browser_*` tools and `browser_prepare`. Each
+refused attempt makes the next one harder.
 
-The host commands below exist on the operator's VPS (agent desktop slots); on
-another host, use its equivalent or the user's everyday browser.
+Two parts depend on the host. Use the host's own tools for them; its agent
+guidance names them. Without such tools, use the user's everyday browser.
+
+- **Chrome without DevTools (required):** restart only the slot's Chrome
+  without `--remote-debugging-port`, and keep it so until you finish.
+- **Home IP proxy (optional, recommended):** send only the slot's Chrome
+  traffic out through the user's home (residential) internet connection, for
+  example an SSH SOCKS tunnel (`ssh -N -D 127.0.0.1:PORT HOME_HOST`) and Chrome
+  `--proxy-server=socks5://127.0.0.1:PORT` with
+  `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`. Make it fail
+  closed: if the tunnel stops, Chrome must get no connection, never the
+  datacenter IP. Without a home IP proxy, do all the other steps; a
+  datacenter IP makes a pass less likely.
+- **Slow, hung or refused:** a home connection is often slow (seen: about
+  100 KB/s), so pages through the proxy can take 10-60 seconds. Measure it
+  before you judge a page. Content that still arrives is slow, not refused.
+  *Refused* means an explicit message ("blocked", "failed", "try again", an
+  error code): stop; it counts as an attempt. *Hung* means a check that still
+  shows "Verifying…" after 90 seconds with no message. Seen: Cloudflare hung
+  through a home IP proxy in every setup and passed at once on the direct IP,
+  while DataDome passed through the proxy. So on a hang with the proxy on,
+  remove the proxy and try once on the direct IP, with every other step kept.
 
 1. **Remove every trace of the blocked attempt first.** A refused attempt
    leaves the bot check's state in the slot profile: its cookie (for
@@ -391,7 +544,7 @@ another host, use its equivalent or the user's everyday browser.
    partitioned data under the site). Keep the data of every other site,
    also the same vendor's data for other sites. Print only cookie names and
    domains, never values.
-   - While the slot's Chrome still has DevTools (before `slot-devtools off`),
+   - While the slot's Chrome still has DevTools (before you remove it),
      from a page session: find the matching cookies with
      `Storage.getCookies` (also partitioned ones) and remove each with
      `Network.deleteCookies`; run `Storage.clearDataForOrigin` for each site
@@ -411,16 +564,10 @@ another host, use its equivalent or the user's everyday browser.
      cookies. Clean another slot only if it was part of the blocked attempt
      and no other agent uses it.
 2. **Restart Chrome first, pair after.** Pairing lasts only until the browser
-   restarts, and both commands restart the slot's Chrome. Run them before you
-   load or pair the extension:
-
-   ```bash
-   slot-devtools off "$SLOT"     # Chrome without --remote-debugging-port
-   laptop-proxy on "$SLOT"       # optional: the user's home IP, if the IP is also blocked
-   ```
-
-   Both last only until the slot stops. `slot-devtools status` and
-   `laptop-proxy status` show each slot.
+   restarts, and both host changes restart the slot's Chrome. Before you load
+   or pair the extension, restart the slot's Chrome without DevTools and, if
+   available, with the home IP proxy. Check the exit IP (for example
+   `https://api.ipify.org`) with desktop input before the real page.
 3. **Desktop input only.** From now on use only `vps_computer` desktop
    actions on the Chrome window (`list_windows` for the new pid and window id,
    `get_window_state`, `click`, `type_text`, `press_key`, `hotkey`, `drag`),
@@ -458,8 +605,8 @@ another host, use its equivalent or the user's everyday browser.
    extension: `list-password-frames`, `pin-password-target` and
    `fill`/`fill-generated` with `--route extension`. Do not look at the field.
    Dismiss Chrome's own "Save password?" prompt; save the entry in akdbx.
-7. **Clean up.** `laptop-proxy off "$SLOT"`, `slot-devtools on "$SLOT"`
-   (Chrome restarts with DevTools, so the pairing ends), then `end_session`.
+7. **Clean up.** Remove the home IP proxy, restart the slot's Chrome with
+   DevTools again (the pairing ends), then `end_session`.
 
 ## Errors
 
@@ -471,6 +618,8 @@ another host, use its equivalent or the user's everyday browser.
 | Popup: "This broker signs with another identity key…" | The broker's identity key changed. Ask the user whether they set up the broker again (another computer, deleted state). Only then may the user click **Reset broker trust…** and pair again; otherwise they must not reset or enter the master password. |
 | Popup: "…this extension was built for…", "…this extension trusts…" or "no trusted broker address" | The broker names another origin than the trusted one, or the extension has none. No reset is offered: you run `akdbx extension build` again with the broker's current origin and the user reloads the extension. Any local build (also one for the same origin) replaces the saved broker trust; the extension then binds the broker key from the built origin's HTTPS page. A reload without a build changes nothing. |
 | Popup: "The broker page at … names another identity than the native host sent" | The native host and the broker's HTTPS page disagree about the broker key, so the extension learned nothing. Tell the user not to enter the master password; check that the broker on that origin and the installed native host (`akdbx extension install`) are the user's own. |
+| `version_status: "stale"` in `extension_browsers`, or a pin or frame list fails with `…older akdbx extension service worker…` | The browser runs an old worker beside newer files ([stale service worker](#stale-service-worker-0352)). Restart the browser, or reload akdbx in `chrome://extensions`, then pair again. |
+| `version_status: "mismatch"`, or a pin or frame list fails with `…another build than this broker's…` | The loaded folder holds another build than this broker's. Run `akdbx --unlock-origin ORIGIN extension build --output FOLDER` with the broker's akdbx, where ORIGIN is the broker's private-page origin (the origin of its unlock link; the build replaces the saved broker trust), or restart the broker if akdbx was updated in place. Then reload akdbx in `chrome://extensions` and pair again. |
 | `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Ask the user to rebuild into the same folder and reload it in `chrome://extensions`. |
-| Right after an update, the popup says the broker is not reachable and `status` shows `extension_connected: false` | The broker, or the Python that the host launcher runs, still has akdbx 0.21.2 or earlier, and it refuses the new extension's hello. Restart the broker on the new version. If the launcher points to another Python, run `akdbx extension install --browser NAME` again from the updated installation. |
+| Right after an update, the popup says the broker is not reachable and `status` shows `extension_connected: false` | The broker, or the Python that the host launcher runs, is older than the extension and refuses its hello: akdbx 0.21.2 or earlier for any versioned extension, akdbx 0.35.1 or earlier for an extension built by 0.35.2 or later (four-part version). Restart the broker on the new version. If the launcher points to another Python, run `akdbx extension install --browser NAME` again from the updated installation. |
 | The popup says the broker is not reachable and the broker is running; `extension info` shows `launcher_state: "stale"`, or the launcher fails with `No module named 'akdbx.extension_host'` | The launcher runs another akdbx than the CLI: an older release folder, or (before 0.31.1) the interpreter's own akdbx. Run `akdbx extension refresh` with the current CLI; with an akdbx before 0.31.1 on Linux, update first. Then reopen the popup. |

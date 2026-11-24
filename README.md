@@ -116,10 +116,25 @@ shown-once secrets shown in the top document, and it holds a child frame's
 `<iframe>` owner with the CDP route's owner guard (found with a nonce
 handshake). Read pins and password pins in a child frame then need fill
 extension 0.4.0; an older one is refused until it is built again. One check
-stays weaker: the extension has no browser-native hit test, so only the CDP
-route refuses a card or address field under a click-through cover
+stays weaker by default: the extension has no browser-native hit test, so only
+the CDP route refuses a card or address field under a click-through cover
 (`pointer-events: none`, `inert` or a popover backdrop). Read pins use the same
 DOM hit test on both routes.
+
+From 0.34.0 (fill extension 0.5.0) the extension has a settings page (the cog
+in its popup). Its experimental **Enhanced security** setting, off by default,
+makes card, address and read pins on the extension route refuse a field or
+secret under any cover, click-through and inert ones included. The browser's
+own occlusion test (`IntersectionObserver` v2) decides too, and a pixel check
+paints the field in a random colour for about a tenth of a second and a tab
+screenshot must show that colour (one check at each pin and each fill). Turning
+it on asks the browser for the `<all_urls>` permission; the check needs a
+rendered, active tab and can refuse a safe page. See
+[the extension route](skills/akdbx/references/extension.md).
+
+From 0.35.0 (fill extension 0.6.0) read pins on both routes also accept an
+authenticator setup key printed in space-separated Base32 groups, for
+`capture-totp`. `capture-secret` still refuses any value with a space.
 
 Native applications (username and TOTP fields outside a browser) use window
 pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
@@ -173,7 +188,8 @@ metadata only. `status` advertises `extension_protocol: 1`, `fill_routes`,
 `default_fill_route` (`serve --default-fill-route`), `extension_connected`,
 `extension_paired`, and `extension_version_expected`. Each `extension_browsers`
 item shows the `version` that browser loaded and a `version_status`
-(`current`, `outdated` or `newer`).
+(`current`, `outdated`, `newer`, or from 0.35.2 `stale` and `mismatch`; see
+the skill's extension reference).
 
 The extension has its own semantic version, starting at 0.1.0, separate from
 the akdbx version; the popup shows it in its footer. After an akdbx update,
@@ -261,6 +277,8 @@ A host can run several agent desktops at the same time. Each desktop is a *slot*
 Each slot `ROOT/slotN` is one Chrome user data directory, started as above (`--user-data-dir=ROOT/slotN --remote-debugging-port=0 --remote-debugging-address=127.0.0.1`, `umask 077`). Slot names match `slot[1-9][0-9]?`. The root replaces `--password-browser-profile` and `--card-browser-profile` for password, card and identity fills; the broker refuses to start with both. The single-profile options work as before when no root is set.
 
 With a root, every CDP pin names its slot: `pin-password-target`, `list-password-frames`, `pin-card-target` and `pin-identity-target` take `--browser-slot SLOT`, and default to the `AGENT_DESKTOP_SLOT` environment variable (sent only to a broker that reports a root, so a single-profile broker keeps working in an agent desktop shell). The request field is `browser_slot`; the broker advertises `browser_slot_protocol: 1` (0.30.0+).
+
+A window pin of a slot's Chrome (`pin-target`, for username and TOTP fills) needs `--browser-slot SLOT` too (0.35.3+, `target_slot_protocol: 1`), because that Chrome runs on the slot's own X display. Pass it explicitly; a window pin does not take `AGENT_DESKTOP_SLOT`, so a native app on the broker's display keeps a plain pin. The broker takes the slot Chrome's PID from its profile lock, finds the X display where that PID is a client, and sends that X server's cookie only to a Unix-socket peer of the same user. `--pid` must be that Chrome.
 
 ```bash
 .venv/bin/akdbx pin-password-target --browser-slot slot2 --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
@@ -422,7 +440,14 @@ the previous version stays in the entry history. `search-identities LABEL` retur
 only labels, group paths and single-use handles. Login search excludes these
 records. `pin-identity-target` and `fill-identity` deliver one field to a
 verified and focused Chromium DOM element without using keys or submitting
-the form. See [identity workflows](skills/akdbx/references/identities.md) for
+the form. From 0.35.1, `pin-identity-target --field-purpose FIELD` (with
+`--allow-autocomplete-off` for `off`) pins a field that has no autocomplete
+token after the agent verified its purpose; a token for another detail still
+refuses (`identity_field_purpose_protocol: 1`, fill extension 0.7.0 on the
+extension route). `fill-identity --field tel --format national
+[--calling-code CODE]` removes the `+` and country calling code for a phone
+input next to a separate country picker (`identity_tel_formats`). See
+[identity workflows](skills/akdbx/references/identities.md) for
 supported fields, target discovery and example commands.
 
 ## Payment cards (0.14.0)
@@ -773,6 +798,32 @@ passkeys, recovery checks or organization-specific device requirements.
 
 Algorithm references: [RFC 6238](https://www.rfc-editor.org/rfc/rfc6238) and
 [Google's Key URI format](https://github.com/google/google-authenticator/wiki/Key-Uri-Format).
+
+### Automatic enrollment (0.35.0)
+
+When the user authorizes adding an authenticator app to a website account (for
+example GitHub's two-factor setup), the agent can enroll it with no private
+page and no user step. The broker reads the setup key from the site's page
+through a single-use read pin, the same route as
+[secret capture](skills/akdbx/references/secret-capture.md):
+
+```bash
+akdbx pin-password-target --mode read --page-id PAGE --frame-id FRAME --top-url URL --selector '#setup-key'
+akdbx capture-totp --target TARGET --handle HANDLE --title T --username U --url URL --group G
+akdbx pin-target --pid CHROME_PID --window CHROME_WINDOW [--browser-slot SLOT]   # 0.35.3+: a slot's own X display
+akdbx fill-totp HANDLE --pending --target-url URL --target WINDOW_PIN   # the site's "verify the code" field
+akdbx commit-totp --handle HANDLE --site-accepted --title T --username U --url URL --group G
+```
+
+`capture-totp` saves the key as the entry's pending authenticator (a protected
+`akdbx.pending-otp` field); the entry's `otp` field does not change until
+`commit-totp --site-accepted`, so a failed or repeated enrollment never removes
+an existing authenticator. An existing `otp` needs `--replace` and stays in the
+entry history; `commit-totp --discard` removes a pending key. The page must be
+on the entry's origin, and the value must be a supported Base32 key (one token
+or space-separated groups) or `otpauth://totp/` URI. Search shows
+`totp_pending: true` while a key is pending. Require `totp_capture_protocol: 1`.
+Details: [automatic authenticator enrollment](skills/akdbx/references/totp-enrollment.md).
 
 ## Encrypted vault merge (0.8.0)
 

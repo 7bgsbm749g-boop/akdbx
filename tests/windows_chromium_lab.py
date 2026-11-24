@@ -138,8 +138,12 @@ class Lab:
 
 
 @contextmanager
-def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extension=None, hosts=(), native_hosts=None):
-    """Serve the synthetic pages over loopback TLS and run one private browser."""
+def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extension=None, hosts=(), native_hosts=None,
+                 restart=False):
+    """Serve the synthetic pages over loopback TLS and run one private browser.
+
+    ``restart``: start the browser again on the profile that an earlier run in ``directory`` left.
+    """
     binary = binary or browser_binary()
     assert binary is not None, 'a Chromium browser is required'
     documents = {'/login': FORM, '/signup': FORM, '/card': CARD,
@@ -176,19 +180,31 @@ def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extens
                       ['--load-extension=' + str(extension), '--disable-extensions-except=' + str(extension),
                        '--disable-features=DisableLoadExtensionCommandLineSwitch'])
     profile = Path(directory) / 'synthetic-profile'
-    if os.name == 'nt':
+    if restart:
+        assert profile.is_dir(), 'no earlier browser profile to restart'
+        (profile / 'DevToolsActivePort').unlink(missing_ok=True)  # The port file of the closed browser.
+    elif os.name == 'nt':
         import win32file
         from akdbx import windows_security as security
         # Private and inheritable: the browser's own port file gets the same DACL.
         win32file.CreateDirectoryW(str(profile), security.private_attributes(directory=True))
     else:
         profile.mkdir(mode=0o700)
+    if extension is not None and not restart:
+        # Developer mode on, as in every profile where a user loaded the unpacked extension: without it
+        # Chromium blocks the unpacked extension when it reloads (chrome.runtime.reload()).
+        (profile / 'Default').mkdir()
+        (profile / 'Default' / 'Preferences').write_text(json.dumps({'extensions': {'ui': {'developer_mode': True}}}),
+                                                         encoding='utf-8')
     # Linux only: a host without unprivileged user namespaces cannot start
     # Chromium's sandbox; the disposable synthetic profile may then run without it.
     sandbox = ['--no-sandbox'] if os.name != 'nt' and os.environ.get('AKDBX_TEST_BROWSER_NO_SANDBOX') == '1' else []
+    # Optional extra switches for one run, for example --force-color-profile=display-p3-d65 to render as a
+    # colour-managed display would.
+    sandbox += os.environ.get('AKDBX_TEST_BROWSER_EXTRA_ARGS', '').split()
     if native_hosts:
         # Linux Chromium reads user-level native-messaging hosts from the profile folder.
-        (profile / 'NativeMessagingHosts').mkdir(mode=0o700)
+        (profile / 'NativeMessagingHosts').mkdir(mode=0o700, exist_ok=restart)
         for name, manifest in native_hosts.items():
             (profile / 'NativeMessagingHosts' / (name + '.json')).write_text(json.dumps(manifest), encoding='utf-8')
     log = (Path(directory) / 'synthetic-chromium.log').open('wb')

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import secrets
 import socket
+import threading
 import time
 
 DELIVERY = 'win32-char-v1' if os.name == 'nt' else 'x11-send-event-v1'
@@ -14,9 +15,18 @@ MAX_PINS = 128
 DELIVERY_TIMEOUT = 3.0
 
 
+SLOT_PROTOCOL = 1
+SLOT_X_TIMEOUT = 5.0
+# python-xlib waits for replies in select() with no timeout, so a socket
+# timeout cannot end a wait on a frozen server. Every slot connection is shut
+# down at this deadline; pins and fills finish well before it.
+SLOT_X_DEADLINE = 10.0
+
+
 def capabilities():
+    # Linux: `pin-target --browser-slot` pins a window of an agent desktop slot's Chrome on that slot's display.
     return dict(target_fill_required=True, target_fill_protocol=1, target_fill_delivery=DELIVERY,
-                **({'target_fill_modes': ['username']} if os.name == 'nt' else {}))
+                **({'target_fill_modes': ['username']} if os.name == 'nt' else {'target_slot_protocol': SLOT_PROTOCOL}))
 
 
 class TargetError(Exception):
@@ -35,25 +45,42 @@ def failure(started=False):
 
 
 class TargetPins:
-    def __init__(self, typer, clock):
+    def __init__(self, typer, clock, slots=None):
         self.typer, self.clock = typer, clock
+        # The broker's agent desktop slots (browser_slots.BrowserSlots), or None.
+        self.slots = slots
         self.pins = {}
 
     def pin(self, request):
-        if set(request) != {'action', 'pid', 'window', 'target_protocol'} or type(request.get('target_protocol')) is not int or request['target_protocol'] != 1:
+        from .browser_slots import FIELD, SlotError, valid_name
+        if (set(request) - {FIELD} != {'action', 'pid', 'window', 'target_protocol'}
+                or type(request.get('target_protocol')) is not int or request['target_protocol'] != 1):
             raise TargetError()
         pid, window = request.get('pid'), request.get('window')
         maximum = 0xffffffffffffffff if os.name == 'nt' else 0xffffffff
         if type(pid) is not int or pid <= 0 or type(window) is not int or not 1 < window <= maximum:
             raise TargetError()
+        display = None
+        if FIELD in request:
+            # The slot's display comes from its verified Chrome, and the
+            # window must belong to that Chrome: never to another slot's or app's.
+            if self.slots is None:
+                if not valid_name(request[FIELD]):
+                    raise SlotError('browser slot invalid: use a slot name such as slot1')
+                raise SlotError('browser slot not supported: this broker has no --browser-profile-root; omit --browser-slot')
+            name = request[FIELD]
+            if self.slots.chrome(name) != pid:
+                raise TargetError()
+            display = locate_display(pid, name)
         self.pins = {key: value for key, value in self.pins.items() if value[0] > self.clock()}
         if len(self.pins) >= MAX_PINS:
             raise TargetError()
-        identity = self.typer.capture(pid, window)
+        identity = self.typer.capture(pid, window) if display is None else self.typer.capture(pid, window, display=display)
         token = secrets.token_hex(32)
         self.pins[token] = (self.clock() + PIN_TTL, identity)
         return {'ok': True, 'target': token, 'pid': pid, 'window': window,
-                'expires_in': int(PIN_TTL), 'target_delivery': DELIVERY}
+                'expires_in': int(PIN_TTL), 'target_delivery': DELIVERY,
+                **({FIELD: request[FIELD]} if display is not None else {})}
 
     def consume(self, request):
         token = request.get('target')
@@ -73,6 +100,82 @@ class Identity:
     process: tuple
     wm_class: tuple
     machine: str
+    # A slot pin's display such as ':101'; None is the broker's own display.
+    display: str | None = None
+
+
+_SLOT = threading.local()
+_AUTH_HOOK = threading.Lock()
+
+
+def _shutdown(sock):
+    """End a slot connection's waits: select() returns, recv sees EOF, python-xlib raises."""
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass  # Already closed: a closed socket object has no descriptor left to touch.
+
+
+def _slot_auth(sock, dno):
+    """Credentials for a slot display, only for a server of this user on a Unix socket.
+
+    The peer is checked before any cookie is sent, so a socket that another
+    user put in place (after the display stopped) never receives one. The
+    cookie file is the connected X server's own `-auth` argument.
+    """
+    import struct
+    from Xlib import error, xauth
+    from .browser_slots import x11_cookie_file
+    if sock.family != socket.AF_UNIX:
+        raise error.XauthError('slot display is not a local Unix socket')
+    size = struct.calcsize('3i')
+    pid, uid, _ = struct.unpack('3i', sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, size))
+    if uid != os.getuid() or pid <= 0:
+        raise error.XauthError('slot display server is not this user')
+    # A frozen server must not hold a pin (and the broker's vault lock) for long.
+    sock.settimeout(SLOT_X_TIMEOUT)
+    watchdog = threading.Timer(SLOT_X_DEADLINE, _shutdown, args=(sock,))
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        path = x11_cookie_file(pid)
+    except (OSError, ValueError):
+        raise error.XauthError('slot display cookie file is unsafe') from None
+    if path is None:
+        return b'', b''
+    try:
+        return xauth.Xauthority(path).get_best_auth(xauth.FamilyLocal, socket.gethostname().encode(), dno)
+    except (error.XauthError, error.XNoAuthError):
+        return b'', b''
+
+
+def _connect(display):
+    """Open an X connection: the broker's own display, or a slot display such as ':101'.
+
+    A slot display is opened only as a Unix socket (`unix:N`, no TCP
+    fallback), and its credentials come from `_slot_auth`. python-xlib takes
+    a cookie only from $XAUTHORITY; changing the broker's environment would
+    race other threads, so one wrapper of `get_auth` reads thread-local state.
+    """
+    from Xlib import display as xdisplay
+    if display is None:
+        return xdisplay.Display()
+    from Xlib.support import connect
+    with _AUTH_HOOK:
+        if not getattr(connect.get_auth, '_akdbx', False):
+            original = connect.get_auth
+
+            def get_auth(sock, dname, protocol, host, dno):
+                if getattr(_SLOT, 'active', False):
+                    return _slot_auth(sock, dno)
+                return original(sock, dname, protocol, host, dno)
+            get_auth._akdbx = True
+            connect.get_auth = get_auth
+    _SLOT.active = True
+    try:
+        return xdisplay.Display('unix' + display)
+    finally:
+        _SLOT.active = False
 
 
 def process_identity(pid):
@@ -85,6 +188,34 @@ def process_identity(pid):
     return fields[19], exe.st_dev, exe.st_ino
 
 
+def locate_display(pid, name):
+    """The one local X display of this user where `pid` is a connected client (X-Resource)."""
+    from .browser_slots import SlotError, x11_servers
+    from Xlib.ext import res
+    found = []
+    for server in x11_servers():
+        connection = None
+        try:
+            connection = _connect(server)
+            if not connection.has_extension('X-Resource'):
+                continue
+            clients = connection.res_query_client_ids([{'client': 0, 'mask': res.LocalClientPIDMask}]).ids
+            if any(item.spec.mask == res.LocalClientPIDMask and list(item.value) == [pid] for item in clients):
+                found.append(server)
+        except Exception:
+            continue
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+    if len(found) != 1:
+        raise SlotError(f'browser slot not running: {name} has no verified Chrome on a local X display; '
+                        'start the slot and pin again')
+    return found[0]
+
+
 class X11Session:
     """One private connection per capture/delivery; explicit SendEvent destination.
 
@@ -92,10 +223,11 @@ class X11Session:
     Applications may ignore synthetic events, or change an internal field/tab;
     this is dispatch assurance, never proof of field receipt/authentication.
     """
-    def __init__(self, pid, window):
-        from Xlib import X, Xatom, display
+    def __init__(self, pid, window, display=None):
+        from Xlib import X, Xatom
         self.X, self.Xatom = X, Xatom
-        self.display = display.Display()
+        self.target_display = display
+        self.display = _connect(display)
         self.display.set_error_handler(self._error)
         self.bad = False
         self.pid, self.window = pid, window
@@ -176,7 +308,7 @@ class X11Session:
         if any(self.display.query_keymap()) or self.root.query_pointer().mask:
             raise TargetError()
         return Identity(self.pid, self.window, focus.id, self.root.id,
-                        process_identity(self.pid), tuple(wm_class), machine)
+                        process_identity(self.pid), tuple(wm_class), machine, self.target_display)
 
     def check(self):
         if self.snapshot() != self.identity:
@@ -233,8 +365,8 @@ class X11Typer:
         # Lazy: status, locked vaults and synthetic tests need no desktop.
         self.session_factory = session_factory
 
-    def capture(self, pid, window):
-        session = self.session_factory(pid, window)
+    def capture(self, pid, window, *, display=None):
+        session = self.session_factory(pid, window) if display is None else self.session_factory(pid, window, display)
         try:
             session.check()
             return session.identity
@@ -245,7 +377,10 @@ class X11Typer:
         started = False
         session = None
         try:
-            session = self.session_factory(identity.pid, identity.window)
+            # Windows identities have no display; only a slot pin carries one.
+            display = getattr(identity, 'display', None)
+            session = (self.session_factory(identity.pid, identity.window) if display is None
+                       else self.session_factory(identity.pid, identity.window, display))
             if session.identity != identity:
                 raise TargetError()
             codes = session.prepare(steps)

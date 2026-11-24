@@ -23,6 +23,7 @@ session.
 | Fill or save an address or contact | [Identities](references/identities.md) |
 | Authenticator (TOTP) code | [TOTP](references/totp.md), [private key import](references/private-import.md) |
 | Phone (SMS) verification code, or set up a phone number for codes | [SMS](references/sms.md) |
+| Add an authenticator app to a website account (enrollment, such as GitHub 2FA) | [Automatic authenticator enrollment](references/totp-enrollment.md) |
 | Create or change a password, save SSO/email-code accounts, add an origin, store a key file | [Password writes](references/password-writes.md) |
 | Capture a secret a site shows once | [Secret capture](references/secret-capture.md) |
 | Vault locked: wait for unlock | [Unlock notifications](references/unlock-notifications.md) |
@@ -339,17 +340,21 @@ variable, which the CLI sends by default; if it is not set, run
 and the slots that exist. Fills need no slot: a pin stays in the Chrome it was
 made in. See [agent desktop slots](references/target-fill.md#agent-desktop-slots).
 
-**Strict bot checks in an agent desktop slot: extension route, no DevTools.**
-Some checks (seen: DataDome on a sign-up) refuse every slot Chrome that has a
-DevTools connection open, also on a residential IP. The CDP route and the
-`browser_*` tools both need that connection, so they cannot pass. What worked:
-first remove every trace of the refused attempt from the slot profile (the
-check's cookie, storage and cache for that site only), then restart the slot's
-Chrome without its debugging port, use desktop (pixel) input only, and fill
-the password through the akdbx extension. Follow
+**Bot checks in an agent desktop slot: apply every step together.** When a
+bot check or site block stops you in a slot (Cloudflare "Verifying…" that does
+not finish, DataDome, "You have been blocked", a refused sign-up), do not try
+fixes one at a time. Each refused attempt raises the risk score, and one fix
+alone does not pass: a home IP alone failed, and the checks also detect an
+open DevTools connection, which the CDP route and the `browser_*` tools need.
+In one go: remove every trace of the refused attempt from the slot profile,
+restart its Chrome without the debugging port, use desktop (pixel) input only,
+and fill secrets only through the akdbx extension. If a home IP proxy is
+available, also send the slot's traffic through it (optional, recommended:
+datacenter IPs score worse; but if a check hangs on "Verifying…" through it,
+try once on the direct IP, see the reference). Follow
 [Agent desktop slot without DevTools](references/extension.md#agent-desktop-slot-without-devtools).
 The same limits apply: only the user's own account and data, no CAPTCHA
-solvers, and stop after two failed attempts.
+solvers, and stop after two failed attempts with the full setup.
 
 Both routes keep the same model: list frames, a 30-second single-use pin bound
 to one exact element, a fresh search handle per fill, and a receipt with no
@@ -363,8 +368,10 @@ Try normal, visible verification controls (such as a "Verify you are human"
 checkbox) yourself. The prompt alone is not a blocker. Check the result after
 each attempt. If the first attempt fails, look at the fresh page and try once
 more with a fresh target. Ask the user only after two failed attempts, and
-report both. If the check fails because the browser is a debugging-port
-browser, see [Choose the fill route](#choose-the-fill-route). Do not switch to
+report both. In an agent desktop slot, a check that does not pass goes
+straight to the full setup in
+[Choose the fill route](#choose-the-fill-route) (all steps together, not one
+at a time). Do not switch to
 another browser profile to get around a check.
 
 ## Log in to a website
@@ -405,6 +412,8 @@ Entry flags in search results:
   one-time code. Use the emailed-code workflow below. Never save the code or
   invent a password.
 - `totp_configured: true`: the entry has an authenticator key.
+- `totp_pending: true`: `capture-totp` saved a new key that `commit-totp` has
+  not yet made the entry's authenticator (an enrollment is in progress).
 - `additional_urls`: extra exact HTTPS origins (KeePassXC "Additional URLs",
   `KP2A_URL*` fields) where this credential may fill, besides the main URL.
 
@@ -461,7 +470,9 @@ Rules (full detail in [password field delivery](references/target-fill.md)):
 - Native apps and username or TOTP fields outside a browser use window pins:
   `pin-target --pid PID --window WINDOW` (X11 on Linux, HWND on Windows). A
   window pin never accepts a password or login fill, because a browser's
-  address bar shares its window.
+  address bar shares its window. In an agent desktop slot, a window of the
+  slot's Chrome needs `--browser-slot "$AGENT_DESKTOP_SLOT"` (0.35.3+, pass it
+  explicitly), because that Chrome is on the slot's own X display.
 - For a multi-step sign-in, fill the username and password separately, with a
   new search and pin for each step.
 - Do not move focus or navigate while a pin or fill is pending.
@@ -496,8 +507,11 @@ do anything else.
 has `totp_configured: true`, fill it with `fill-totp` instead of asking for a
 phone approval. Use a fresh handle, a verified HTTPS challenge URL and a fresh
 pin. Codes and keys never appear in output. If the key is missing, the user
-imports it once through `setup-totp`'s private page. Never reset or replace a
-site's 2FA just to finish a login. Push approvals, passkeys and device
+imports it once through `setup-totp`'s private page. When the task authorizes
+adding an authenticator app to the account, enroll it yourself with
+`capture-totp` (0.35.0+): the broker reads the setup key from the site's
+enrollment page; see [automatic enrollment](references/totp-enrollment.md).
+Never reset or replace a site's 2FA just to finish a login. Push approvals, passkeys and device
 checks can still need the user. Details: [TOTP](references/totp.md) and
 [private key import](references/private-import.md).
 
@@ -553,7 +567,13 @@ ask the user which one to use. Both give the user a private save page. Ask
 only for the fields the task needs: pass them with `--fields` (for example
 `--fields tel` for a phone number) so the page shows only those fields.
 `search-identities`,
-`pin-identity-target` and `fill-identity` fill one field at a time. Names,
+`pin-identity-target` and `fill-identity` fill one field at a time. A field
+with no autocomplete hint (or only `on`) needs `--field-purpose FIELD` after
+you verify its purpose on the page (`autocomplete="off"` also needs
+`--allow-autocomplete-off`); a hint for another detail still refuses. A phone
+input next to a separate country picker takes `fill-identity --format national
+--calling-code CODE`, which removes the `+` and country code (0.35.1;
+[identities](references/identities.md#field-without-an-autocomplete-hint-0351)). Names,
 addresses, phone numbers and emails never go in CLI arguments, output, logs or
 evidence. Fill does not submit the form.
 
@@ -634,6 +654,8 @@ retained encrypted originals.
 | `browser slot required` / `unknown` / `invalid` | Pass your own slot (`$AGENT_DESKTOP_SLOT` or `vps-agent-desktop current`) with `--browser-slot`. Never use another agent's slot. |
 | Pin refused | Read the reason. Fix the target (focus, selector, frame, origin); never edit the page or the entry to force it. |
 | `frame list unavailable` / `target unavailable` on the extension route | Browser closed, extension not loaded, or not paired (`extension_paired: false`). Give the user the pairing link. |
+| `extension route unavailable: the browser runs an older akdbx extension service worker …` (pins and frame lists), or `version_status: "stale"` | The browser kept an old service worker after `akdbx extension build` rewrote the folder (0.35.2+ detects it). Before 0.35.2 the pin worked and every later `fill` failed with `target unavailable, changed or unsupported; pin again`. Restart the browser, or reload akdbx on `chrome://extensions`, then pair again (`extension_paired: false` until then). A worker that sees a newer build on disk reloads itself once, so it may only need the pairing ([stale worker](references/extension.md#stale-service-worker-0352)). |
+| `extension route unavailable: the browser runs akdbx extension … another build than this broker's …`, or `version_status: "mismatch"` | The loaded folder holds another build than the broker's. Run `akdbx --unlock-origin ORIGIN extension build --output FOLDER` with the broker's akdbx, where ORIGIN is the origin of the broker's unlock link (or restart the broker if akdbx was updated in place), reload akdbx on `chrome://extensions`, then pair again. |
 | Extension popup: broker not reachable while the broker runs (`extension_connected: false`) | Run `akdbx extension info`. If a browser shows `launcher_state: "stale"`, run `akdbx extension refresh` (0.31.1+), then reopen the popup ([host launcher](references/extension.md#host-launcher-0311)). |
 | Site check or card decline that looks like a false positive on CDP | Stop retrying. Use the extension route ([Choose the fill route](#choose-the-fill-route)). |
 | `fill denied` or a terminal approval prompt | The running broker is very old. Do not approve the prompt. Its owner must restart it on a current version (private web unlock). |

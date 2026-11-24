@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "akdbx"
-version = "0.34.0"
+version = "0.35.3"
 description = "A secret-withholding KeePass autofill broker for local agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -42,6 +42,7 @@ akdbx = ["import_assets/*", "browser_extension/*", "fill_extension/*", "public_s
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["screenshot_access: build the test extension with the <all_urls> access that Enhanced security asks for"]
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10", "cryptography>=43,<47"]
