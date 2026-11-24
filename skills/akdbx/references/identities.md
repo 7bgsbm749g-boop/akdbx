@@ -121,11 +121,67 @@ Use the matching HTML autocomplete field token:
 Text inputs, compatible email and telephone inputs, and a street-address
 textarea can receive values. Single-select country and region controls
 require a unique enabled option whose value matches the stored text exactly.
-An absent saved value or missing or conflicting autocomplete token refuses.
+An absent saved value or missing or conflicting autocomplete token refuses,
+unless you give an explicit field purpose (below).
 The broker also refuses a hidden, unfocused, covered, ambiguous, or changed
 field. It uses the retained DOM element and sends no keys, focus changes,
 clipboard data or form submission. Identity fills do not dispatch input or
 change events. A site that requires those events can need manual entry.
+
+### Field without an autocomplete hint (0.35.1)
+
+Many sites have phone, name and address inputs with no autocomplete token.
+Require `identity_field_purpose_protocol: 1` from `akdbx status`. First verify
+from the page itself that the field takes this detail: its label, placeholder,
+`name`, `type` and the form around it. Then add `--field-purpose FIELD` with
+the same value as `--field`:
+
+```bash
+akdbx pin-identity-target --route extension --page-id PAGE_ID --frame-id FRAME_ID \
+  --top-url EXACT_HTTPS_URL --selector 'input[name="phoneNumber"]' \
+  --field tel --field-purpose tel
+```
+
+- With the purpose, the broker also accepts a field with no autocomplete
+  attribute, an empty one, or only `on`.
+- `autocomplete="off"` needs `--allow-autocomplete-off` as well (only
+  together with `--field-purpose`).
+- A token for another detail still refuses, for example `email` when you
+  pin `tel`, and so does a sub-token such as `tel-national`. A purpose that
+  differs from `--field` refuses before the request is sent.
+- Every other guard stays: exact URL, same origin, unique selector, visible
+  and uncovered field, focus, compatible input type, 30-second single-use
+  pin, and no value in any output. A hint that changes after the pin refuses
+  the fill. Never add or rewrite page attributes to make a field eligible.
+- The CDP and extension routes apply the same rules. The extension route
+  needs fill extension 0.7.0 or newer (`extension_browsers` in `status`
+  shows `version_status: "current"`); the broker refuses a purpose pin to an
+  older extension.
+
+### Phone number next to a country picker (0.35.1)
+
+When the page has a separate country-code dropdown and the phone input wants
+only the national number, fill with `--format national`. Require
+`identity_tel_formats` to contain `"national"` in `status`:
+
+```bash
+akdbx fill-identity --field tel --format national --calling-code 44 \
+  --target TARGET_FROM_PIN -- HANDLE_FROM_SEARCH
+```
+
+- The broker removes the leading `+` (or `00`) and the country calling code,
+  and spaces, hyphens, dots, slashes and brackets. The
+  field receives only the digits of the national number. The saved value does
+  not change.
+- `--calling-code DIGITS` (no `+`) refuses unless the saved number has that
+  country calling code. Give the code the page's picker shows, so a number of
+  another country never goes next to it. Check the picker shows the right
+  country before you fill.
+- A saved number without `+` or `00`, with a `(0)` marker, or with letters
+  or an extension, refuses: the broker cannot split it safely. Ask the user to update the
+  identity's phone number in international form with `update-identity
+  --fields tel`.
+- `--format` applies only to `--field tel`.
 
 A receipt reports the field token and delivery outcome. Check the site's
 non-secret state without reading the filled value. On an uncertain response

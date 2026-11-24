@@ -33,6 +33,7 @@ from akdbx.broker import Broker, serve
 from akdbx.local_https import start_local_unlock_server
 from akdbx.browser_card import failure as card_failure
 from akdbx.cards import FIELDS, MARKER
+from akdbx.identities import MARKER as IDENTITY_MARKER, property_key as identity_property
 from akdbx.target import failure
 from test_broker import Entry, Vault
 from test_windows_unlock import certificates  # noqa: F401
@@ -54,6 +55,16 @@ class NoKeys:
 class CardEntry(Entry):
     def get_custom_property(self, key):
         return {MARKER: 'v1', **{field: CARD[k] for k, field in FIELDS.items()}}.get(key)
+
+
+PHONE = '+44 7000-000000'  # Synthetic only.
+PHONE_NATIONAL = '7000000000'
+
+
+class IdentityEntry(Entry):
+    def get_custom_property(self, key):
+        return {IDENTITY_MARKER: 'v1', identity_property('tel'): PHONE,
+                identity_property('email'): 'synthetic-only@example.test'}.get(key)
 
 
 if sys.platform == 'win32':
@@ -118,6 +129,12 @@ PAGES = {
                     '<input id="number" autocomplete="cc-number" style="width:220px;height:44px">'
                     '<label for="number" style="position:absolute;left:8px;top:2px;font-size:10px;pointer-events:none">'
                     'Card number</label></div></form>' + DIGEST),
+    # A phone input with no autocomplete hint next to a separate country picker, as many sign-up pages have.
+    '/phone': ('<!doctype html><meta charset="utf-8"><form><select id="country"><option value="+44">+44</option>'
+               '</select><input id="phone" type="tel" name="phoneNumber" style="width:200px;height:30px">'
+               '<input id="phone-on" type="tel" autocomplete="on"><input id="phone-off" type="tel" autocomplete="off">'
+               '<input id="phone-email" type="text" autocomplete="email"><input id="phone-national" type="tel" '
+               'autocomplete="tel-national"></form>' + DIGEST),
     '/framed-visible': LOGIN_FRAME.format(''),
     '/framed-hidden': LOGIN_FRAME.format('opacity:0'),
     '/decoy': '<!doctype html><meta charset="utf-8"><p>decoy</p>',
@@ -482,6 +499,7 @@ def harness(private_dir, certificates, monkeypatch, request):
         launcher.chmod(0o700)
         native_hosts = {host_name: extension_host._manifest(launcher, host_name)}
     entries = [Entry(username=USERNAME, password=PASSWORD, url=ORIGIN + '/login'), CardEntry(title='Synthetic card'),
+               IdentityEntry(uuid='identity', title='Synthetic phone', path=('Root', 'Web', 'Synthetic phone')),
                Entry(title='Other', username='other@example.test', password=PASSWORD, url='https://other.example.org/'),
                Entry(title='Auth', username=USERNAME, password=PASSWORD, url='https://auth.example.com/login')]
     broker = Broker(Vault(entries), NoKeys())
@@ -1131,6 +1149,79 @@ def test_card_pins_refuse_a_click_through_cover_and_keep_a_floating_label(harnes
     assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
                                 field='cc-number')) == card_failure()
     assert lab.digest('number') == EMPTY
+
+
+def identity_pin(harness, url, selector, field='tel', **extra):
+    listing = harness.frames(url)
+    harness.focus(selector.lstrip('#'))
+    return harness.broker.dispatch(dict(action='pin-identity-target', identity_protocol=1, page_id=listing['page_id'],
+                                        frame_id=listing['main_frame_id'], top_url=url, selector=selector,
+                                        field=field, route='extension', **extra))
+
+
+def identity_fill(broker, target, field='tel', **extra):
+    handle = broker.dispatch(dict(action='search-identities', identity_protocol=1, query='Synthetic phone',
+                                  exact=True))['entries'][0]['handle']
+    return broker.dispatch(dict(action='fill-identity', identity_protocol=1, handle=handle, target=target,
+                                field=field, start_deadline=broker.clock() + 4, **extra))
+
+
+def test_an_identity_field_without_an_autocomplete_hint_fills_with_an_explicit_purpose(harness):
+    """The agent attests the field's purpose; the national format drops the country code for a separate picker."""
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate('/phone')
+    purpose = dict(field_purpose='tel')
+    # Without the attestation, no hint, "on", "off", another detail and a sub-token all refuse, as before.
+    for selector in ('#phone', '#phone-on', '#phone-off', '#phone-email', '#phone-national'):
+        assert identity_pin(harness, url, selector) == card_failure(kind='identity'), selector
+    # With it, a conflicting hint and "off" (without its own flag) still refuse; a purpose for another field refuses.
+    for selector in ('#phone-email', '#phone-national', '#phone-off'):
+        assert identity_pin(harness, url, selector, **purpose) == card_failure(kind='identity'), selector
+    assert identity_pin(harness, url, '#phone-email', field='email', **purpose) == card_failure(kind='identity')
+    assert identity_pin(harness, url, '#phone', allow_autocomplete_off=True) == card_failure(kind='identity')
+    assert lab.untouched()
+    # No hint: the saved number goes in without + and country code; the stored value is unchanged.
+    target = identity_pin(harness, url, '#phone', **purpose)
+    assert target['ok'] and target['identity_delivery'] == route.DELIVERY, target
+    # A calling code that differs from the saved number's refuses and uses up the pin.
+    assert identity_fill(broker, target['target'], format='national', calling_code='49') == card_failure(kind='identity')
+    assert lab.digest('phone') == EMPTY
+    target = identity_pin(harness, url, '#phone', **purpose)
+    receipt = identity_fill(broker, target['target'], format='national', calling_code='44')
+    assert receipt == dict(ok=True, filled='tel', identity_delivery=route.DELIVERY)
+    assert lab.digest('phone') == sha(PHONE_NATIONAL)
+    assert lab.evaluate("document.getElementById('country').value") == '+44'
+    # "on" with the purpose fills the saved value as it is.
+    target = identity_pin(harness, url, '#phone-on', **purpose)
+    assert identity_fill(broker, target['target'])['ok']
+    assert lab.digest('phone-on') == sha(PHONE)
+    # "off" needs its own flag as well.
+    target = identity_pin(harness, url, '#phone-off', allow_autocomplete_off=True, **purpose)
+    assert target['ok'], target
+    assert identity_fill(broker, target['target'], format='national')['ok']
+    assert lab.digest('phone-off') == sha(PHONE_NATIONAL)
+    # A hint that changes after the pin refuses the fill.
+    lab.evaluate("document.getElementById('phone').value = ''")
+    target = identity_pin(harness, url, '#phone', **purpose)
+    lab.evaluate("document.getElementById('phone').setAttribute('autocomplete', 'email')")
+    assert identity_fill(broker, target['target']) == card_failure(kind='identity')
+    assert lab.digest('phone') == EMPTY
+    assert lab.digest('phone-email') == EMPTY and lab.digest('phone-national') == EMPTY
+    assert not any(e['trusted'] for e in lab.evaluate('syntheticEvents'))
+
+
+def test_an_older_extension_never_gets_an_identity_purpose_pin(harness):
+    """Fill extension 0.6.0 ignores the purpose; the broker refuses before it asks such a browser."""
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate('/phone')
+    [channel] = broker.extension.channels.values()
+    reported = channel.version
+    channel.version = '0.6.0'
+    try:
+        assert identity_pin(harness, url, '#phone', field_purpose='tel') == card_failure(kind='identity')
+    finally:
+        channel.version = reported
+    assert identity_pin(harness, url, '#phone', field_purpose='tel')['ok']
 
 
 def same_site_frame(harness, url, ready='password'):

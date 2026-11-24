@@ -524,3 +524,165 @@ def test_update_selects_a_unique_identity_under_an_ambiguous_group_path(deployed
     assert [(e['title'], e['group']) for e in found] == [(LABEL, 'Web/Work/Travel')]
     pending = update(broker, found[0]['handle'], ['email'], group='Web/Work/Travel')
     assert pending['ok'] and pending['state'] == 'pending'
+
+
+@pytest.mark.parametrize('saved, national, code', [
+    ('+44 7000 000000', '7000000000', '44'),
+    ('+44 7000-000000', '7000000000', '44'),
+    ('0044 20 0000 0000', '2000000000', '44'),
+    ('+1 (000) 000-0000', '0000000000', '1'),
+    ('+7 900 000 00 00', '9000000000', '7'),
+    ('+358 40 0000000', '400000000', '358'),
+    ('+49 000 000000', '000000000', '49'),
+    ('+39 06 0000 0000', '0600000000', '39'),
+    ('+852 0000 0000', '00000000', '852'),
+    ('+33\u202f6\u202f00\u202f00\u202f00\u202f00', '600000000', '33'),
+    ('+44\u00a07000\u2009000000', '7000000000', '44'),
+])
+def test_national_format_removes_only_the_country_calling_code(saved, national, code):
+    from akdbx.identities import national_number
+    assert national_number(saved) == national
+    assert national_number(saved, code) == national
+    with pytest.raises(Exception):
+        national_number(saved, '999')
+
+
+@pytest.mark.parametrize('saved', ['07000 000000', '7000000000', '+44 7000 000000 ext 2', '+44', '+44 7000 (000000',
+                                   '+44 70OO 000000', '++44 7000 000000', '+44 7000 000000 0000 0000',
+                                   '+44 20 7000 (0)000', '+44 (0)20 7000 0000', '+39 (0)6 0000 0000',
+                                   '+225 (0)7 00 00 00 00', '+0044 20 0000 0000', '+44 7000 000000\u200b'])
+def test_national_format_refuses_a_number_it_cannot_split_safely(saved):
+    from akdbx.identities import national_number
+    with pytest.raises(Exception):
+        national_number(saved)
+
+
+def test_identity_status_advertises_field_purpose_and_the_national_format():
+    status = Broker(Vault([]), RecordingTyper()).dispatch(dict(action='ping'))
+    assert status['identity_field_purpose_protocol'] == 1 and status['identity_tel_formats'] == ['national']
+
+
+class PhoneIdentity(Entry):
+    def get_custom_property(self, key):
+        return {MARKER: 'v1', property_key('tel'): IDENTITY['tel'], property_key('email'): IDENTITY['email']}.get(key)
+
+
+class RecordingTargets:
+    """Stands in for the browser: records what would be delivered, never a real field."""
+
+    def __init__(self):
+        self.delivered, self.closed = [], 0
+
+    def consume(self, token):
+        return dict(field='tel' if token == 't' * 64 else 'email')
+
+    def fill(self, pin, value, field, ready, deadline):
+        self.delivered.append((field, value))
+        return dict(ok=True, filled=field, identity_delivery='cdp-identity-element-v1')
+
+    def _close(self, pin):
+        self.closed += 1
+
+
+@pytest.mark.parametrize('extra, delivered', [
+    ({}, IDENTITY['tel']),
+    ({'format': 'national'}, '000000000'),
+    ({'format': 'national', 'calling_code': '49'}, '000000000'),
+    ({'format': 'national', 'calling_code': '44'}, None),
+    ({'calling_code': '49'}, None),
+    ({'format': 'international'}, None),
+    ({'format': 'national', 'calling_code': '+49'}, None),
+    ({'format': 'national', 'calling_code': 49}, None),
+])
+def test_fill_formats_only_the_delivered_tel_value(extra, delivered):
+    from akdbx.browser_card import failure
+    broker = Broker(Vault([PhoneIdentity(uuid='phone', title=LABEL, path=('Web', LABEL))]), RecordingTyper())
+    broker.identity_targets = targets = RecordingTargets()
+    handle = search(broker)['entries'][0]['handle']
+    receipt = broker.dispatch(dict(action='fill-identity', identity_protocol=1, handle=handle, target='t' * 64,
+                                   field='tel', start_deadline=broker.clock() + 3, **extra))
+    if delivered is None:
+        assert receipt == failure(kind='identity') and targets.delivered == []
+    else:
+        assert receipt['ok'] and targets.delivered == [('tel', delivered)]
+    assert targets.closed == 1
+    # The saved value stays as it is.
+    assert broker.vault.entries[0].get_custom_property(property_key('tel')) == IDENTITY['tel']
+
+
+def test_national_format_applies_only_to_tel():
+    from akdbx.browser_card import failure
+    broker = Broker(Vault([PhoneIdentity(uuid='phone', title=LABEL, path=('Web', LABEL))]), RecordingTyper())
+    broker.identity_targets = targets = RecordingTargets()
+    handle = search(broker)['entries'][0]['handle']
+    assert broker.dispatch(dict(action='fill-identity', identity_protocol=1, handle=handle, target='e' * 64,
+                                field='email', format='national', start_deadline=broker.clock() + 3)) == failure(kind='identity')
+    assert targets.delivered == []
+
+
+PIN = ['pin-identity-target', '--page-id', 'P', '--frame-id', 'F', '--top-url', 'https://shop.example/',
+       '--frame-url', 'https://shop.example/', '--selector', '#phone', '--field', 'tel']
+CAPS = dict(ok=True, locked=False, identity_protocol=1, identity_delivery='cdp-identity-element-v1',
+            identity_browser_configured=True, default_fill_route='cdp')
+
+
+@pytest.mark.parametrize('args, caps, error', [
+    (PIN + ['--field-purpose', 'tel'], CAPS, 'broker lacks identity field purpose protocol 1'),
+    (PIN + ['--allow-autocomplete-off'], CAPS | dict(identity_field_purpose_protocol=1),
+     '--allow-autocomplete-off needs --field-purpose'),
+    (PIN + ['--field-purpose', 'email'], CAPS | dict(identity_field_purpose_protocol=1),
+     '--field-purpose must name the same detail as --field'),
+    (['fill-identity', '--field', 'tel', '--format', 'national', '--target', 'a' * 64, '--', 'b' * 64], CAPS,
+     'broker lacks the national tel format'),
+    (['fill-identity', '--field', 'email', '--format', 'national', '--target', 'a' * 64, '--', 'b' * 64],
+     CAPS | dict(identity_tel_formats=['national']), '--format applies only to --field tel'),
+    (['fill-identity', '--field', 'tel', '--calling-code', '44', '--target', 'a' * 64, '--', 'b' * 64],
+     CAPS | dict(identity_tel_formats=['national']), '--calling-code needs --format national'),
+    (['fill-identity', '--field', 'tel', '--format', 'national', '--calling-code', '+44', '--target', 'a' * 64,
+      '--', 'b' * 64], CAPS | dict(identity_tel_formats=['national']), '--calling-code needs --format national'),
+])
+def test_cli_refuses_purpose_and_format_options_before_sending(args, caps, error, monkeypatch, capsys):
+    calls = []
+
+    def broker(_, payload, **kwargs):
+        calls.append(payload)
+        return caps
+    monkeypatch.setattr(cli, 'request', broker)
+    assert cli.main(args) == 1
+    assert calls == [{'action': 'ping'}]
+    assert json.loads(capsys.readouterr().out)['error'].startswith(error)
+
+
+def test_cli_sends_the_purpose_and_format_options(monkeypatch, capsys):
+    sent = []
+    caps = CAPS | dict(identity_field_purpose_protocol=1, identity_tel_formats=['national'])
+
+    def broker(_, payload, **kwargs):
+        if payload['action'] == 'ping':
+            return caps
+        sent.append(payload)
+        if payload['action'] == 'pin-identity-target':
+            return dict(ok=True, field='tel', target='c' * 64, expires_in=30, identity_delivery='cdp-identity-element-v1')
+        return dict(ok=True, filled='tel', identity_delivery='cdp-identity-element-v1')
+    monkeypatch.setattr(cli, 'request', broker)
+    assert cli.main(PIN + ['--field-purpose', 'tel', '--allow-autocomplete-off']) == 0
+    assert cli.main(['fill-identity', '--field', 'tel', '--format', 'national', '--calling-code', '44',
+                     '--target', 'a' * 64, '--', 'b' * 64]) == 0
+    assert sent[0]['field_purpose'] == 'tel' and sent[0]['allow_autocomplete_off'] is True
+    assert sent[1]['format'] == 'national' and sent[1]['calling_code'] == '44'
+    assert cli.main(PIN) == 0 and cli.main(['fill-identity', '--field', 'tel', '--target', 'a' * 64, '--', 'b' * 64]) == 0
+    assert not {'field_purpose', 'allow_autocomplete_off'} & set(sent[2]) and not {'format', 'calling_code'} & set(sent[3])
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize('extra', [dict(field_purpose='email'), dict(allow_autocomplete_off=True),
+                                   dict(field_purpose='tel', allow_autocomplete_off=False),
+                                   dict(field_purpose='tel', allow_autocomplete_off='yes')])
+def test_broker_refuses_an_inconsistent_purpose_before_any_browser_call(extra):
+    from akdbx.browser_card import CardTargetError, field_purpose
+    with pytest.raises(CardTargetError):
+        field_purpose('identity', dict(field='tel', **extra))
+    with pytest.raises(CardTargetError):
+        field_purpose('card', dict(field='cc-number', field_purpose='cc-number'))
+    assert field_purpose('identity', dict(field='tel')) == (False, False)
+    assert field_purpose('identity', dict(field='tel', field_purpose='tel', allow_autocomplete_off=True)) == ('tel', True)
