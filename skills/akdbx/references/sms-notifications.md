@@ -1,4 +1,4 @@
-# Resume when a verification text arrives (0.34.0)
+# Resume when a verification text arrives (0.37.0)
 
 SMS notifications are one-shot HTTPS webhooks, like
 [unlock notifications](unlock-notifications.md). The broker posts one event

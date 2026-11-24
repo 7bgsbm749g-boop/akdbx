@@ -1,11 +1,11 @@
-# Phone verification texts (SMS) (0.34.0)
+# Phone verification texts (SMS) (0.37.0)
 
 akdbx can receive the verification texts that sites send to a phone number and
 fill the code straight into the challenge field. You see only a masked preview
 (no digits, no links), the sender and the code length. You never see the code,
 the webhook token or the text itself.
 
-Require broker 0.34.0 or newer and `status` field `sms_protocol: 1`.
+Require broker 0.37.0 or newer and `status` field `sms_protocol: 1`.
 `sms_sources_configured` tells you how many phone numbers forward texts.
 
 ## Two kinds of phone number
@@ -51,6 +51,16 @@ In the Twilio Console the field is **Phone Numbers > Active numbers > (number)
 > Messaging Configuration > A message comes in** (Webhook, HTTP POST). Save the
 configuration and check that Twilio shows it saved. If the fill does not
 finish, the receipt has a `private_url` fallback page.
+
+A free Twilio trial is only for tests. It accepts texts only from its verified
+phone numbers, never from site short codes, so it cannot take real
+verification texts. A "Limited trial" (no card) has no Active numbers: its
+webhook field is **Try out SMS > Receive an SMS > Custom**, and its trial
+number can differ for each verified number. Add a verified number with
+`fill-identity --field tel --format national --calling-code CC` (0.36.1+)
+when the console has a country picker; a saved `0…` value without the
+format becomes a wrong `+CC0…` number, and Twilio then drops that phone's
+texts without a log entry.
 
 `akdbx sms-sources` lists sources (never tokens), with `last_received` and
 `last_result` (why the last text was kept or dropped: `code`, `no-code-word`,

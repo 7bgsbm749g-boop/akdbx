@@ -190,7 +190,7 @@ def run(args, request):
         if args.command in {'subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms'} and (
                 caps.get('sms_notifications_supported') is not True
                 or type(caps.get('sms_notifications_protocol')) is not int or caps['sms_notifications_protocol'] != 1):
-            print(json.dumps(dict(ok=False, error='broker lacks SMS notification protocol 1; require broker 0.34.0 '
+            print(json.dumps(dict(ok=False, error='broker lacks SMS notification protocol 1; require broker 0.37.0 '
                                                   'or newer; subscription request not sent')))
             return 1
         payload = dict(action=args.command, sms_protocol=PROTOCOL)

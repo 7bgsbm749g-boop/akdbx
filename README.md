@@ -712,7 +712,7 @@ Subscriptions without the opt-in get only `akdbx.unlocked`. The block itself
 is saved, so a restarted or rebooted broker stays blocked and sends the blocked
 event again to waiting opted-in subscriptions.
 
-## Phone verification texts (0.34.0)
+## Phone verification texts (0.37.0)
 
 akdbx can receive the verification texts that sites send to a phone number and
 fill the code into the challenge field. The agent sees only a masked preview
@@ -730,6 +730,10 @@ origin (the akdbx relay, or another origin the phone or provider can reach):
   to akdbx (form fields `Body` and `From`; akdbx answers with empty TwiML).
   Google, many banks, WhatsApp and some other sites reject VoIP numbers, so a
   virtual number does not always work.
+  A free Twilio trial has more limits: it receives texts only from its
+  verified phone numbers (not from site short codes), and a "Limited trial"
+  has a shared trial number set up under **Try out SMS > Receive an SMS >
+  Custom** instead of Active numbers. Use a paid number for real sites.
 - `webhook`: any other service that can POST JSON or a form.
 
 ```bash
