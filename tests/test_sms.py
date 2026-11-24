@@ -51,7 +51,10 @@ ORIGIN = 'https://box.example.test'
     ('OTP for card VisaXXXX1234 is 482913', '482913'),
     ('Type 482913 to continue. Secure authentication since 2025.', '482913'),
     ('482913\nYour request ID is 7950. Your verification code is 482 913.', '482913'),
-    ('Use 482913 to confirm delivery to ZIP code 90210.', '482913'),
+    # The code has a strict label ("Enter N to", "verify with N") and the other number has none.
+    ('1234 is your request ID. Enter 482913 to verify.', '482913'),
+    ('Device 1234 is requesting access. Enter 482913 to confirm.', '482913'),
+    ('Device 1234 is active\nVerify with 482913.', '482913'),
 ])
 def test_extract_code_finds_the_one_verification_code(text, code):
     assert extract_code(text) == code
@@ -67,8 +70,14 @@ def test_extract_code_finds_the_one_verification_code(text, code):
     'code ' + '1' * 3000,                   # too long
     'Code 123456 or code 654321',          # ambiguous: two labelled values
     'Use 4821 or 9934 to sign in',          # ambiguous: two values, neither labelled
-    '1234 is your request ID. Enter 482913 to verify.',           # the label is in another phrase
-    'Device 1234 is requesting access. Enter 482913 to confirm.',
+    # A second number in a label position, however loose ("ZIP code", "PIN is"), stops the choice.
+    'Use 482913 to confirm delivery to ZIP code 90210.',
+    'Your ZIP code is 90210. Use 482913 to verify.',
+    'Your postal code is 90210; your code is 482913',
+    'Your PIN is 4321. Enter 482913 to continue.',
+    'Device 1234 is active. 482913',                               # no label on either number
+    'Your code is 4821 9934',                                      # one code of 8 digits or two numbers
+    'Your code is AB12CD. Ref 4821',                               # the code is not a number
 ])
 def test_extract_code_drops_texts_without_one_code(text):
     assert extract_code(text) is None
@@ -76,18 +85,21 @@ def test_extract_code_drops_texts_without_one_code(text):
 
 def test_mask_hides_every_digit_and_link():
     preview = mask('G-482913 is your code. https://g.co/x/123 www.example.test/9 ‮end')
-    assert preview == 'G-•••••• is your code. [link] [link] end'
+    assert preview == '[code] is your code. [link] [link] end'
     assert not any(c.isdigit() for c in preview)
 
 
 def test_mask_hides_links_without_a_scheme():
     # A sign-in link written as host/path can hold a bearer token in letters.
     preview = mask('Code 482913, or sign in at example.test/t/SyntheticTokenAbc')
-    assert preview == 'Code ••••••, or sign in at [link]' and 'SyntheticTokenAbc' not in preview
+    assert preview == 'Code [code], or sign in at [link]' and 'SyntheticTokenAbc' not in preview
     for link in ('example.test?token=SyntheticToken', 'example.test:8443/t/SyntheticToken',
                  'example.xn--p1ai/t/SyntheticToken', '192.0.2.4/t/SyntheticToken',
-                 'münchen.de/t/SyntheticToken', '[2001:db8::1]/t/SyntheticToken'):
-        assert mask('OTP 482913 ' + link) == 'OTP •••••• [link]'
+                 'münchen.de/t/SyntheticToken', '[2001:db8::1]/t/SyntheticToken',
+                 '//example.test/t/SyntheticToken', '//x/SyntheticToken', 'x.y?SyntheticToken'):
+        assert mask('OTP 482913 ' + link) == 'OTP [code] [link]'
+    # No code chosen: every number is bullets.
+    assert mask('Use 4821 or 9934 to sign in') == 'Use •••• or •••• to sign in'
 
 
 def test_preview_fits_the_rpc_limit_and_a_miswired_sender_is_masked(tmp_path):

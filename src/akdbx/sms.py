@@ -7,10 +7,11 @@ has its own 256-bit webhook token. The broker keeps only the SHA-256 of a
 token, in one private state file; the token itself appears only in the
 private setup page or is typed straight into a pinned field.
 
-An incoming text is reduced at once to a masked preview (no digits, no links)
-and one verification code. A text without one unambiguous code is dropped
-and never kept. Codes live only in memory, for MESSAGE_TTL seconds, and each
-can be filled once. No command returns a code, a token or a message body.
+An incoming text is reduced at once to a masked preview (plain words only: no
+digits, no links, "[code]" where the chosen code stands) and one verification
+code. A text without one unambiguous code is dropped and never kept. Codes
+live only in memory, for MESSAGE_TTL seconds, and each can be filled once. No
+command returns a code, a token or a message body.
 """
 from __future__ import annotations
 
@@ -55,42 +56,6 @@ TOKEN = re.compile(r'[A-Za-z0-9_-]{43}')
 MESSAGE_ID = re.compile(r'[0-9a-f]{32}')
 STATE_LIMIT = 64 * 1024
 
-# Words that mark a verification text, in the languages most services use.
-KEYWORDS = re.compile(
-    r'code|codice|c[oó]digo|kod|otp|pin\b|passcode|password|verif|confirm|'
-    r'authenticat|sign[ -]?in|log[ -]?in|one[ -]time|security|2fa|token|'
-    r'best[äa]tigung|verifica|v[ée]rification|pr[üu]f', re.IGNORECASE)
-# 4 to 8 digits, alone or after a short prefix such as "G-"; or 3+3 / 4+4
-# digits split by one space or hyphen ("123 456", "1234-5678").
-_SPLIT = re.compile(r'(?<![0-9A-Za-z+])(\d{3,4})[ -](\d{3,4})(?![0-9A-Za-z])')
-_SINGLE = re.compile(r'(?<![0-9+])(?<![0-9][.,:/-])(\d{4,8})(?![0-9])(?![.,:/-][0-9])(?!\s?%)')
-# A link, also one written without a scheme: any word whose host part has a dot,
-# colon or bracket before a "/", "?" or "#" ("example.com/t/AbC", "münchen.de/x",
-# "[2001:db8::1]/x"). Its digits are not a code and its letters can be a token.
-_LINK = re.compile(r'(?:https?://|www\.)\S+|(?<!\S)[^\s/?#]*[.:\]][^\s/?#]*[/?#]\S*', re.IGNORECASE)
-# A digit group right after these is a card or account suffix, a reference or
-# an order number, not the code ("card ending 4321", "acct ****1234", "Ref: 5678").
-_NOT_CODE_BEFORE = re.compile(
-    r'(?:card|[*x•#]{2,}|\*|(?<![a-z])(?:ending(?:\s+(?:in|with))?|ends?\s+(?:in|with)|last\s+(?:\d+\s+)?(?:digits?)?|'
-    r'account|acct|a/c|ref(?:erence)?|order|booking|invoice|ticket|(?:zip|postal|post|area)\s?code|postcode))\s*(?:no\.?|number|#)?\s*[:#.]?\s*$',
-    re.IGNORECASE)
-_CURRENCY = r'(?:€|\$|£|¥|₹|(?<![a-z])(?:eur|usd|gbp|chf|inr|rs\.?|kr|sek|nok|dkk|pln|zł|aud|cad))'
-_AMOUNT_BEFORE = re.compile(_CURRENCY + r'\s?$', re.IGNORECASE)
-_AMOUNT_AFTER = re.compile(r'^\s?' + _CURRENCY + r'(?![a-z])', re.IGNORECASE)
-# A four-digit year only in date context ("(c) 2026", "May 2025", "since 2025").
-_YEAR_BEFORE = re.compile(
-    r'(?:©|\(c\)|(?<![a-z])(?:copyright|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|'
-    r'sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|year|since))\.?\s*\d{0,2}(?:st|nd|rd|th)?,?\s*$',
-    re.IGNORECASE)
-# A verification word right before the value ("code: 482913", "OTP is 482913",
-# "Bestätigungscode lautet 664422"), or "is your ... code" right after it.
-_LABEL_BEFORE = re.compile(r'(?:' + KEYWORDS.pattern + r')\w*\W{0,3}(?:(?:is|was|ist|lautet|es|est|è|é)\W{1,3})?$',
-                           re.IGNORECASE)
-_LABEL_AFTER = re.compile(r'\W{0,3}(?:is|was|ist|es|est)\s+(?:(?:your|the|a|an|ihr|dein|tu|votre|il)\s+)?'
-                          r'(?:[^\s.!?]+\s+){0,3}?(?:' + KEYWORDS.pattern + r')', re.IGNORECASE)
-_CONTROL = re.compile(r'[\x00-\x08\x0b-\x1f\x7f​-‏ -‮⁦-⁩]')
-
-
 class SmsError(Exception):
     """A refused SMS request; the message is safe to return."""
 
@@ -100,60 +65,461 @@ def capabilities(configured: int) -> dict:
                 sms_message_ttl=MESSAGE_TTL)
 
 
-def _normal(text: str) -> str:
-    return _CONTROL.sub(' ', unicodedata.normalize('NFKC', text))
+# Words that mark a verification text, in the languages most services use.
+KEYWORDS = re.compile(
+    r'code|codice|c[oó]digo|kod|otp|pin\b|passcode|password|verif|confirm|'
+    r'authenticat|sign[ -]?in|log[ -]?in|one[ -]time|security|2fa|token|'
+    r'best[äa]tigung|verifica|v[ée]rification|pr[üu]f', re.IGNORECASE)
+
+# Reading a text ------------------------------------------------------------
+#
+# One reader serves the code choice and the preview, so the two can never
+# disagree about what a word is. It keeps no list of link forms and no list of
+# things that are not a code (card, reference, year, ZIP, currency). It works
+# the other way round, from what is known to be safe:
+#
+# * A WORD is what stands between spaces, tabs and line breaks; no link, in any
+#   notation, can cross one. The preview shows a word only when it is PLAIN:
+#   letters only, with ordinary punctuation at its ends. A number shows as
+#   bullets, the chosen code as "[code]", every other word as a placeholder. A
+#   link is hidden because it is not a plain word, not because it was
+#   recognised as a link.
+# * A CANDIDATE is a number written the way codes are written: one group of 4
+#   to 8 digits, or 3+3 / 4+4, alone in its word or glued to one word
+#   ("Code:482913", "G-482913"). A text whose only candidate it is gives that
+#   code. With several candidates the broker does not judge which numbers are
+#   not codes. One of them must stand in a STRICT label position ("code is N",
+#   "N is your ... code", "Use N to", "Your code for ... is N") and no other may
+#   stand in any label position, however loose. Everything else is dropped.
+# * Every word list below is an allow-list. A wording it lacks costs one
+#   dropped text. It cannot make the broker choose a number.
+
+_OPEN = '([{<"\'“‘«¿¡【（「『《〈'
+_CLOSE = '.,;:!?)]}>"\'”’»。，！？：；、】）」』》〉'
+_JOIN = "-‐'’&"                 # inside a plain word: one-time, don't, H&M
+_STOP = '.!?;|。！？；'           # ends a sentence
+_END = _STOP + ',，、'           # ends a clause
+_LINK = '/@?=&%\\'
+_DIGITS = '0123456789'
+MAX_WORD = 40                   # a longer "word" is not shown
+MAX_LETTERS = 24                # nor is one with a longer run of letters
+_o, _c, _j = (re.escape(s) for s in (_OPEN, _CLOSE, _JOIN))
+# Patterns over a word's SHAPE: L letter, M mark, 0 digit, 9 other numeral,
+# and each punctuation character as itself.
+_W = 'L[LM]*'
+_G = '[^LM09]'
+_PLAIN = re.compile(f'([{_o}]*)({_W}(?:[{_j}]{_W})*)([{_c}]*)')
+# One digit group, or two joined by a hyphen, with at most one word glued to each side:
+# "482913", "(482913)", "G-482913", "Code:482913", "OTP482913", "482913.Do", "5512-9983".
+_BARE = re.compile(f'(?:([{_o}]*)({_W})({_G}{{0,3}})|({_G}*))(0+)(?:-(0+))?(?:({_G}{{1,3}})({_W})([{_c}]*)|({_G}*))')
+_NUMERIC = re.compile('[^LM9]*0[^LM9]*')
+_SYMBOLIC = re.compile('[^LM09]+')
+_LINKISH = re.compile(f'[{re.escape(_LINK)}]|[LM09][.:#][LM09]')
+_GLUED = re.compile(f'[{_o}]*({_W})[.!?;,]({_W})([{_c}]*)')  # "out.Use": a full stop without its space
+_ALONE = re.compile('(?<![LM09])0{4,8}(?![LM09])')  # a code-sized digit group that stands free inside a word
+_PHONE = re.compile(r'\+?[0-9]+(?:-[0-9]+)*')  # a number that can run on into the next word
+
+# Label words, case-folded. Every list is an allow-list.
+_SELF = frozenset('otp passcode tan mtan'.split())                    # a code whatever stands before it
+_CODE = frozenset('code codes código codigo codice kod kode kód cod код'.split())  # a code unless modified
+_WEAK = frozenset('password pin passwort kennwort contraseña senha clave token'.split())  # only after a strong word
+_COMPOUND = ('code', 'kode', 'kod', 'passwort', 'kennwort', 'tan')   # Bestätigungscode, Einmalpasswort, smsTAN
+_STRONG = ('verif', 'vérif', 'authenti', 'autenti', 'authori', 'autori', 'secur', 'sécur', 'segur', 'sicher',
+           'sicur', 'säkerhet', 'sikker', 'beveilig', 'login', 'log-in', 'logon', 'signin', 'sign-in', 'anmeld',
+           'inlog', 'connexion', 'one-time', 'onetime', 'single-use', 'einmal', 'engång', 'engang', 'two-factor',
+           'two-step', 'confirm', 'bestätig', 'bestaetig', 'bevestig', 'conferm', 'bekræft', 'bekreft', 'access',
+           'acces', 'accès', 'zugang', 'activat', 'activación', 'aktivier', 'freischalt', 'validat', 'approv',
+           'identif', 'registr', 'reset', 'recovery', 'temporary', 'unique', 'único', 'unico', 'prüf', 'sms',
+           'otp', 'passcode', '2fa', '2sv', '2-step', '2-factor', '3ds', '3d', '3-d')
+_STRONG_MIXED = frozenset({'2fa', '2sv', '2-step', '2-factor', '3ds', '3d', '3-d'})  # not plain words, still read
+_STRONG_PAIRS = frozenset({('one', 'time'), ('single', 'use'), ('two', 'factor'), ('two', 'step'), ('log', 'in'),
+                           ('sign', 'in')})
+_FUNCTION = frozenset(
+    'a an the this that these your my our its is are was be as at by for from in of on or and to via with use using '
+    'enter type input please here new following below above current latest '
+    'der die das den dem des ein eine einen ihr ihre ihren dein deine deinen mit und oder ist lautet bitte neuer '
+    'neue hier für zum zur el la los las un una tu su este esta con y o es para de le les une votre ton ce cet '
+    'cette avec et ou est pour du il lo tuo suo questo e è per di um uma seu sua com é do da het een uw je jouw '
+    'met en of voor'.split())
+_COPULA = frozenset('is was are ist war lautet es est è é er är jest'.split())
+_IMPERATIVE = frozenset(
+    'use enter type input submit insert provide verwenden verwende nutze nutzen benutze benutzen usa utiliza '
+    'utilice ingresa ingrese introduce introduzca utilisez utilise saisissez saisis entrez tapez inserisci digita '
+    'insira digite utilize gebruik'.split())
+_VERIFY = frozenset('verify confirm authenticate approve authorize authorise continue proceed login bestätigen '
+                    'bestätige verifizieren verifica confirma vérifiez confirmez'.split())
+_WITH = frozenset('with using via mit con avec met'.split())
+_PARTICLE = frozenset('to as for in on when if within um zum zur als für para como pour comme per come om'.split())
+_PREPOSITION = frozenset('for to on of at für zur zum zu para de pour per di voor'.split())
+_OF = frozenset("de di da do du del della des".split())               # "código de verificación"
+_AND = frozenset('and or und oder y o et ou e en of'.split())
+_NEGATION = frozenset('not no never nicht kein keine non ne pas nunca nie'.split())
 
 
-def extract(text: object) -> tuple[str | None, str]:
-    """The one verification code in a text and why: (code, 'code'), or (None, reason).
+@dataclass
+class _Word:
+    kind: str              # 'plain', 'punct', 'bare', 'number' or 'hidden'
+    text: str              # cleaned characters; shown only through ``shown``
+    shown: str             # what the preview shows when the word is not the code
+    core: str = ''         # plain: its letters, case-folded
+    front: str = ''        # bare: punctuation before the digits, or between "Code" and the digits
+    lead: str = ''         # bare: "Code" in "Code:482913"
+    groups: tuple = ()     # bare: its one or two digit groups
+    close: str = ''        # bare: punctuation after the digits
+    trail: str = ''        # bare: "Do" in "482913.Do"
+    after: str = ''        # punctuation at the end of the word
+    digits: bool = False   # holds a numeral
+    doubt: str = ''        # set on a number that may be a code the broker cannot read: it is never chosen
+    value: str = ''        # a candidate's digits (on its first word)
+    part: bool = False     # the second word of a split candidate
 
-    Reasons: 'empty', 'no-code-word', 'no-code' (no 4-8 digit group) and
-    'several-codes' (a tie between digit groups). They hold no text content.
 
-    A text needs a verification word (code, OTP, verify ...). Links are
-    ignored, and so are card or account suffixes, references, amounts and
-    dated years. A value right next to a verification word wins; otherwise
-    the text must hold exactly one value. Anything else gives None.
+@dataclass(frozen=True)
+class Reading:
+    code: str | None       # the one verification code, or None
+    result: str            # one of RESULTS; never text content
+    preview: str           # safe to show the agent
+
+
+def _clean(raw: str) -> list[tuple[str, bool]]:
+    """One spaced word, NFKC, cut at odd spaces and pictographs; invisible characters removed, never made gaps.
+
+    Each part has a flag: an invisible character stood between two digits, or the word holds a direction
+    override. A number in such a part may not read on a screen as its characters say.
     """
-    if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
-        return None, 'empty'
-    text = _LINK.sub(' ', _normal(text))
-    if not KEYWORDS.search(text):
-        return None, 'no-code-word'
-    found: list[tuple[str, int, int]] = []  # every digit group: (digits, start, end)
-    for match in _SPLIT.finditer(text):
-        digits = match.group(1) + match.group(2)
-        if 6 <= len(digits) <= 8:
-            found.append((digits, *match.span()))
-    for match in _SINGLE.finditer(text):
-        if not any(start <= match.start() < end for _, start, end in found):
-            found.append((match.group(1), *match.span()))
-    values, labelled = set(), set()
-    for digits, start, end in found:
-        # Each occurrence is judged on its own context: a reference with the
-        # same digits as the labelled code does not remove the code.
-        before, after = text[max(0, start - 32):start], text[end:end + 48]
-        year = len(digits) == 4 and digits[:2] in {'19', '20'} and _YEAR_BEFORE.search(before)
-        if (year or _NOT_CODE_BEFORE.search(before) or _AMOUNT_BEFORE.search(before)
-                or _AMOUNT_AFTER.search(after)):
+    override = '\u202d' in raw or '\u202e' in raw
+    parts, part, odd, gap = [], [], False, False
+    for ch in unicodedata.normalize('NFKC', raw):
+        category = unicodedata.category(ch)
+        if category[0] == 'Z' or category in {'So', 'Sk'} or ch in '\x0b\x0c\x1c\x1d\x1e\x1f\x85':
+            if part:
+                parts.append((''.join(part), odd or override))
+            part, odd, gap = [], False, False
+        elif category[0] == 'C':
+            gap = bool(part) and part[-1] in _DIGITS
+        else:
+            odd, gap = odd or gap and ch in _DIGITS, False
+            part.append(ch)
+    if part:
+        parts.append((''.join(part), odd or override))
+    return parts
+
+
+def _shape(text: str) -> str:
+    out = []
+    for ch in text:
+        category = unicodedata.category(ch)
+        if category[0] in 'LM':
+            out.append(category[0])
+        elif ch in _DIGITS:
+            out.append('0')
+        elif category[0] == 'N':
+            out.append('9')
+        else:
+            out.append(ch)  # punctuation, a currency sign or a mathematical sign
+    return ''.join(out)
+
+
+def _hidden(text: str, shape: str) -> _Word:
+    """A word the preview never shows. Its digits are no candidate; if they may be a code, the word is in doubt."""
+    # One free code-sized group and no link sign ("active.G-482913", a missing space): it may be the code.
+    alone = len(re.findall('0+', shape)) == 1 and _ALONE.search(shape) and not any(ch in _LINK for ch in shape)
+    doubt = '9' in shape or '0M' in shape or alone
+    return _Word('hidden', text, '[link]' if _LINKISH.search(shape) else '[hidden]',
+                 digits='0' in shape or '9' in shape, after=text[-1] if shape[-1] in _CLOSE else '',
+                 doubt='no-code' if doubt else '')
+
+
+def _classify(text: str) -> _Word:
+    shape = _shape(text)
+    if len(text) > MAX_WORD:
+        return _hidden(text, shape)
+    match = _PLAIN.fullmatch(shape)
+    if match:
+        letters = text[match.start(2):match.end(2)]
+        if max(len(run) for run in re.split(f'[{_j}]', letters)) > MAX_LETTERS:
+            return _hidden(text, shape)
+        return _Word('plain', text, text, core=letters.casefold().replace('‐', '-').replace('’', "'"),
+                     after=match.group(3))
+    if _SYMBOLIC.fullmatch(shape):
+        return _Word('punct', text, text, after=text)
+    bullets = ''.join('•' if c in '09' else text[i] for i, c in enumerate(shape))
+    match = _BARE.fullmatch(shape)
+    if match:
+        lead, glue, a, b, trail = (text[match.start(n):match.end(n)] if match.group(n) else ''
+                                   for n in (2, 3, 5, 6, 8))
+        before, close = match.group(4) or '', match.group(7) or match.group(10) or ''
+        if lead and not glue and _tier(lead.casefold()) is None:
+            return _hidden(text, shape)  # "Visa1234", "INR2500": only a code noun may touch its number ("OTP482913")
+        if not lead and not trail and (before.endswith('+') or '%' in close or any(
+                unicodedata.category(ch) == 'Sc' for ch in before + close)):
+            return _Word('number', text, bullets, digits=True, after=close)  # a phone number or an amount by its sign
+        shown = '•' * len(a) + ('-' + '•' * len(b) if b else '') if lead or trail else bullets
+        return _Word('bare', text, shown, front=glue or before, lead=lead.casefold(), groups=(a, b) if b else (a,),
+                     close=close, trail=trail.casefold(), after=match.group(9) or '' if trail else close, digits=True)
+    if '9' in shape and 'L' not in shape and 'M' not in shape:
+        return _Word('number', text, bullets, digits=True, doubt='no-code')  # numerals the broker does not type
+    if _NUMERIC.fullmatch(shape):
+        return _Word('number', text, bullets, digits=True, after=text[-1] if shape[-1] in _CLOSE else '')
+    return _hidden(text, shape)
+
+
+def _words(text: str) -> list[list[_Word]]:
+    """The text as lines of words.
+
+    A spaced word can hold an odd space or a pictograph ("code\u00a0482913"). Its parts are read one by one, but
+    its plain parts show only when every part is plain: nothing glued to a link or a number is ever shown.
+    """
+    lines = []
+    for line in re.split(r'[\n\r]+', text):
+        words = []
+        for raw in re.split(r'[ \t]+', line):
+            parts = []
+            for part, odd in _clean(raw):
+                parts.append(_classify(part))
+                if odd and parts[-1].digits:
+                    parts[-1].doubt = 'no-code'
+            if len(parts) > 1 and any(part.kind == 'hidden' for part in parts):
+                joined = ''.join(part.text for part in parts)
+                link = any(part.shown == '[link]' for part in parts)
+                number = any(part.kind in {'bare', 'number'} or part.doubt for part in parts)
+                parts = [_Word('hidden', joined, '[link]' if link else '[hidden]', after=parts[-1].after,
+                               digits=any(part.digits for part in parts), doubt='no-code' if number else '')]
+            elif len(parts) > 1 and any(part.kind in {'bare', 'number'} for part in parts):
+                for part in parts:
+                    if part.kind == 'plain':
+                        part.shown = '[hidden]'
+            words.extend(parts)
+        if words:
+            lines.append(words)
+    return lines
+
+
+def _numbers(line: list[_Word]) -> None:
+    """Mark the candidates of one line. Digit groups that touch are judged together, never one by one."""
+    def joins(word: _Word) -> bool:  # "12.50", "18:30" and "2025-11-24:" are complete in themselves
+        return not word.doubt and (word.kind == 'bare' or word.kind == 'number' and _PHONE.fullmatch(word.text))
+
+    index = 0
+    while index < len(line):
+        run = [line[index]]
+        index += 1
+        if not joins(run[0]):
             continue
-        values.add(digits)
-        if _LABEL_BEFORE.search(before) or _LABEL_AFTER.match(after):
-            labelled.add(digits)
-    # A value next to a verification word ("code is 482913", "482913 is your
-    # code") wins; otherwise the text must hold exactly one value. Anything
-    # else is ambiguous and dropped rather than guessed.
-    for choice in (labelled, values):
-        if len(choice) == 1:
-            return next(iter(choice)), 'code'
-        if choice:
-            return None, 'several-codes'
-    return None, 'no-code'
+        while (index < len(line) and run[-1].text[-1] in _DIGITS and joins(line[index])
+               and line[index].text[0] in _DIGITS):
+            run.append(line[index])
+            index += 1
+        sizes = tuple(len(group) for word in run for group in re.findall('[0-9]+', word.text))
+        bare = all(word.kind == 'bare' for word in run)
+        if len(run) == 1 and bare and (4 <= sizes[0] <= 8 if len(sizes) == 1 else sizes in {(3, 3), (4, 4)}):
+            run[0].value = ''.join(run[0].groups)
+        elif len(run) == 2 and bare and sizes == (3, 3):
+            run[0].value, run[1].part = run[0].groups[0] + run[1].groups[0], True
+        elif len(run) > 1 and '+' not in run[0].text and sum(sizes) <= 8 and max(sizes) >= 4:
+            # "1234 5678", "1234 567": one code or two numbers? Not for the broker to guess.
+            run[0].doubt = 'several-codes'
 
 
-def extract_code(text: object) -> str | None:
-    """The one verification code in a text, or None when there is not exactly one."""
-    return extract(text)[0]
+def _stream(lines: list[list[_Word]]) -> list[tuple]:
+    """The words as label grammar tokens.
+
+    ('w', word) and, for a plain word, its spelling; ('n', word) for a candidate or a number in doubt,
+    ('n', None) for any other number; (':',) for
+    "Label: N"; ('|', 'stop' / 'comma' / 'line') where a clause ends; ('h',) a word the broker does not
+    read; ('x',) other punctuation.
+    """
+    out: list[tuple] = []
+
+    def marks(punctuation: str) -> None:
+        if ':' in punctuation or '：' in punctuation:
+            out.append((':',))
+        if any(ch in _END for ch in punctuation):
+            out.append(('|', 'stop' if any(ch in _STOP for ch in punctuation) else 'comma'))
+
+    for line in lines:
+        for word in line:
+            if word.kind == 'plain':
+                out.append(('w', word.core, word.text))
+                marks(word.after)
+            elif word.kind == 'punct':
+                if all(ch in ':-‐–—=>' for ch in word.text):
+                    out.append((':',))
+                elif any(ch in _END for ch in word.text):
+                    out.append(('|', 'stop'))
+                else:
+                    out.append(('x',))
+            elif word.kind == 'bare':
+                if word.lead:
+                    out.append(('w', word.lead))
+                    if any(ch in _END for ch in word.front):
+                        out.append(('|', 'stop'))
+                    elif word.front.strip(_OPEN + _CLOSE):
+                        out.append((':',))  # "Code:482913", "G-482913", "code=482913"
+                else:
+                    marks(word.front)
+                if not word.part:
+                    out.append(('n', word if word.value or word.doubt else None))
+                marks(word.close)
+                if word.trail:
+                    out.append(('w', word.trail))
+                    marks(word.after)
+            elif word.text.casefold().strip(_OPEN + _CLOSE) in _STRONG_MIXED:
+                out.append(('w', word.text.casefold().strip(_OPEN + _CLOSE)))
+                marks(word.after)
+            elif _GLUED.fullmatch(_shape(word.text)):
+                match = _GLUED.fullmatch(_shape(word.text))
+                out.extend((('w', word.text[match.start(1):match.end(1)].casefold()), ('|', 'stop'),
+                            ('w', word.text[match.start(2):match.end(2)].casefold())))
+                marks(match.group(3))
+            else:
+                out.append(('n', word if word.doubt else None) if word.digits else ('h',))
+                marks(word.after)
+        out.append(('|', 'line'))
+    return out
+
+
+def _strong(core: str) -> bool:
+    return core.startswith(_STRONG)
+
+
+def _tier(core: str) -> str | None:
+    """'self', 'code' or 'weak' for a label noun; None for any other word, "postcode" and "zip-code" included."""
+    *modifiers, head = core.split('-')
+    tier = 'self' if head in _SELF else 'code' if head in _CODE else 'weak' if head in _WEAK else None
+    if tier is None:
+        for suffix in _COMPOUND:
+            if head.endswith(suffix) and len(head) > len(suffix):
+                tier = 'self' if _strong(head[:-len(suffix)]) else None
+                break
+    if tier is None or not modifiers:
+        return tier
+    return 'self' if _strong('-'.join(modifiers)) or all(_strong(m) for m in modifiers) else None
+
+
+class _Labels:
+    """Which numbers of a token stream stand in a code label position.
+
+    Strict: the label is a verification code noun that no unknown word
+    modifies, a "use/enter N to" order or "verify with N". Unknown wording
+    points at nothing. Only a strict label can select a code among several.
+
+    Loose: any code noun in the same positions ("ZIP code 90210", "Your PIN is
+    1234", "1234 is your Example code"), a verification word or an unreadable
+    word right before the number ("Verification: 482913"), a number listed
+    after another number and a number alone in its clause. A loose label never
+    selects a code. It stops another number from being selected.
+    """
+
+    def __init__(self, stream: list[tuple], loose: bool = False) -> None:
+        self.stream, self.loose = stream, loose
+
+    def token(self, i: int) -> tuple:
+        return self.stream[i] if 0 <= i < len(self.stream) else ('|', 'line')
+
+    def kind(self, i: int) -> str:
+        return self.token(i)[0]
+
+    def word(self, i: int) -> str:
+        return self.token(i)[1] if self.kind(i) == 'w' else ''
+
+    def rival(self, i: int) -> bool:
+        """Token ``i`` is a candidate or a number in doubt."""
+        return self.kind(i) == 'n' and self.token(i)[1] is not None
+
+    def edge(self, i: int) -> bool:
+        return self.token(i) in (('|', 'stop'), ('|', 'line'))
+
+    def strong_before(self, i: int) -> bool:
+        """A verification word right before token ``i`` ("verification", "one time")."""
+        return self.kind(i - 1) == 'w' and (_strong(self.word(i - 1)) or _tier(self.word(i - 1)) == 'self'
+                                            or (self.word(i - 2), self.word(i - 1)) in _STRONG_PAIRS)
+
+    def noun(self, i: int) -> bool:
+        """Token ``i`` is a code noun that an unknown word does not modify ("ZIP code" is not one)."""
+        tier = _tier(self.word(i))
+        if tier is None or tier == 'self' or self.loose:
+            return tier is not None and (tier == 'self' or self.loose)
+        if self.strong_before(i):
+            return True
+        return tier == 'code' and (self.kind(i - 1) in '|:' or self.word(i - 1) in _FUNCTION)
+
+    def phrase(self, i: int) -> int:
+        """The last token of the noun phrase that starts with noun ``i`` ("código de verificación")."""
+        if self.word(i + 1) in _OF and _strong(self.word(i + 2)):
+            return i + 2
+        return i
+
+    def ends_phrase(self, i: int) -> bool:
+        """Token ``i`` ends a code noun phrase."""
+        if self.noun(i) or self.loose and _strong(self.word(i)):
+            return True
+        return _strong(self.word(i)) and self.word(i - 1) in _OF and _tier(self.word(i - 2)) is not None
+
+    def before(self, p: int) -> bool:
+        """"code 482913", "code: 482913", "code is 482913", "code is: 482913"."""
+        i = p - 1
+        if i > 0 and self.token(i) == ('|', 'line') and (self.kind(i - 1) == ':' or self.word(i - 1) in _COPULA):
+            i -= 1  # "Your code is:" and the code on the next line
+        if self.kind(i) == ':':
+            i -= 1
+        if self.loose and (self.kind(i) == 'h' or self.rival(i) or self.rival(i - 1) and (
+                self.word(i) in _AND or self.token(i) == ('|', 'comma'))):
+            return True  # after a word the broker cannot read, or listed after another possible code
+        if self.word(i) in _COPULA:
+            i -= 1
+        return self.ends_phrase(i)
+
+    def after(self, p: int) -> bool:
+        """"482913 is your Google verification code"."""
+        if self.word(p + 1) not in _COPULA:
+            return False
+        stage = 0  # the words up to the noun, in this order: function words, one name, verification words
+        for i in range(p + 2, p + 8):
+            word = self.word(i)
+            if self.kind(i) != 'w' or word in _NEGATION:
+                return False
+            if _tier(word) is not None and not (_strong(word) and _tier(self.word(i + 1)) is not None):
+                rest = self.phrase(i) + 1
+                return self.noun(i) and (self.loose or self.kind(rest) != 'w' or self.word(rest) in _FUNCTION)
+            now = 2 if _strong(word) or (word, self.word(i + 1)) in _STRONG_PAIRS or (
+                self.word(i - 1), word) in _STRONG_PAIRS else 0 if word in _FUNCTION else 1
+            if not self.loose and (now < stage or now == stage == 1):
+                return False
+            stage = now
+        return False
+
+    def order(self, p: int) -> bool:
+        """"Use 482913 to sign in", "Enter 482913.", "Verify with 482913"."""
+        i = p - 2 if self.kind(p - 1) == ':' else p - 1
+        if self.word(i) in _IMPERATIVE:
+            return self.loose or self.kind(p + 1) == '|' or self.word(p + 1) in _PARTICLE
+        return self.word(i) in _WITH and (self.word(i - 1) in _VERIFY
+                                          or (self.word(i - 2), self.word(i - 1)) in _STRONG_PAIRS)
+
+    def predicate(self, p: int) -> bool:
+        """"Your OTP for card ending 4321 is 482913": the clause starts with the code noun and ends in "is N"."""
+        i = p - 2 if self.kind(p - 1) == ':' else p - 1
+        if self.word(i) not in _COPULA:
+            return False
+        start = i
+        while self.kind(start - 1) not in '|:':
+            start -= 1
+        if self.loose:
+            return any(_tier(self.word(j)) is not None for j in range(start, i))
+        for j in range(start, i):
+            if self.kind(j) != 'w':
+                return False
+            if _tier(self.word(j)) is not None:
+                rest = self.phrase(j) + 1
+                return self.noun(j) and rest < i and self.word(rest) in _PREPOSITION
+            if self.word(j) not in _FUNCTION and not _strong(self.word(j)) and self.word(j) not in {'one', 'time'}:
+                return False
+        return False
+
+    def labelled(self, p: int) -> bool:
+        alone = self.loose and self.edge(p - 1) and self.edge(p + 1)  # the only thing in its sentence or line
+        return alone or self.before(p) or self.after(p) or self.order(p) or self.predicate(p)
 
 
 def _fit(text: str, characters: int, encoded: int) -> str:
@@ -166,21 +532,133 @@ def _fit(text: str, characters: int, encoded: int) -> str:
     return cut + '…'
 
 
-def mask(text: str) -> str:
-    """A preview with every digit and link replaced; safe to show the agent."""
-    text = _LINK.sub('[link]', _normal(text))
-    text = re.sub(r'\d', '•', text)
-    return _fit(' '.join(text.split()), MAX_PREVIEW, PREVIEW_BYTES)
+def _preview(lines: list[list[_Word]], code: str | None) -> str:
+    shown = []
+    for line in lines:
+        for word in line:
+            if code is not None and word.value == code:
+                shown.append('[code]' + word.close)
+            elif code is not None and word.part and shown and shown[-1] == '[code]':
+                shown[-1] += word.close
+            else:
+                shown.append(word.shown)
+    text = ' '.join(shown)
+    at = text.find('[code]')
+    if at > MAX_PREVIEW * 2 // 3:  # keep the chosen code and the words around it in a long text
+        text = '…' + text[text.rfind(' ', 0, at - MAX_PREVIEW // 2) + 1:]
+    return _fit(text, MAX_PREVIEW, PREVIEW_BYTES)
+
+
+def read(text: object) -> Reading:
+    """Read one text once: its verification code, why (one of RESULTS), and its preview.
+
+    The code is None unless the text has a verification word and either one
+    candidate number, or one candidate with a strict label and no other number
+    in any label position. Two labelled numbers, a code noun that points at
+    something the broker cannot type ("code is AB12CD", "code is HXKQWP",
+    "code is 12 34 56"), a labelled number of unclear extent ("code is 1234
+    5678") and an unlabelled code among other numbers all give None: the text
+    is dropped, never guessed.
+
+    The preview holds plain words, bullets, "[code]" where the chosen code
+    stands, and placeholders. It never holds a numeral, nor any character of
+    a spaced word that is more than letters and ordinary punctuation.
+    """
+    if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
+        return Reading(None, 'empty', '')
+    try:
+        return _read(text)
+    except Exception:  # the text is untrusted: a reader fault drops it and shows nothing
+        return Reading(None, 'no-code', '')
+
+
+def _read(text: str) -> Reading:
+    lines = _words(text.lstrip('\ufeff'))
+    for line in lines:
+        _numbers(line)
+    stream = _stream(lines)
+    words = [word for line in lines for word in line]
+    code, result = _choose(words, stream)
+    return Reading(code, result, _preview(lines, code))
+
+
+def _choose(words: list[_Word], stream: list[tuple]) -> tuple[str | None, str]:
+    # The gate reads the words the labels read: plain words, "Code" in "Code:482913", "2FA". Never a link.
+    if not KEYWORDS.search(' '.join(token[1] for token in stream if token[0] == 'w')):
+        return None, 'no-code-word'
+    strict, loose = _Labels(stream), _Labels(stream, loose=True)
+    values: set = set()      # each different number that could be the code
+    selected: set = set()    # those with a strict label
+    claimed: set = set()     # those with any label
+    lower = any(len(token) == 3 and token[2] != token[2].upper() for token in stream)
+    for p, token in enumerate(stream):
+        if len(token) == 3 and lower and token[2].isupper() and 4 <= sum(ch.isalpha() for ch in token[2]) <= 10 and (
+                strict.kind(p - 1) == ':' or strict.word(p - 1) in _COPULA) and strict.before(p):
+            return None, 'no-code'  # "Your code is HXKQWP": a code in letters; the broker types digits only
+        if token[0] != 'n':
+            continue
+        word = token[1]
+        if word is None:
+            if strict.before(p) or strict.after(p) or strict.predicate(p):
+                return None, 'no-code'  # "code is AB12CD", "12 34 56 is your code": not a number the broker types
+            continue
+        # A number in doubt ("1234 5678", foreign numerals) competes like a candidate but can never be chosen.
+        value = word.value or id(word)
+        values.add(value)
+        if strict.labelled(p):
+            selected.add(value)
+        if loose.labelled(p):
+            claimed.add(value)
+    codes = {value for value in values if isinstance(value, str)}
+    if not codes:
+        return None, next((word.doubt for word in words if word.doubt), 'no-code')
+    if len(values) == 1:
+        return next(iter(codes)), 'code'
+    # Several numbers: one must carry a strict label, and no other may stand in any label position.
+    if len(selected) == 1 and selected <= codes and not claimed - selected:
+        return next(iter(selected)), 'code'
+    return None, 'several-codes'
+
+
+def extract(text: object) -> tuple[str | None, str]:
+    """The one verification code in a text and why: (code, 'code'), or (None, reason).
+
+    Reasons: 'empty', 'no-code-word', 'no-code' (no number the broker can
+    type as a code) and 'several-codes' (more than one, and no single
+    labelled one). They hold no text content. See ``read``.
+    """
+    reading = read(text)
+    return reading.code, reading.result
+
+
+def extract_code(text: object) -> str | None:
+    """The one verification code in a text, or None when there is not exactly one."""
+    return read(text).code
+
+
+def mask(text: object) -> str:
+    """A preview that is safe to show the agent; "[code]" marks the chosen code. See ``read``."""
+    return read(text).preview
 
 
 def clean_sender(value: object, code: str | None = None) -> str:
-    """The sender, cut to size; masked like the text when it carries ``code`` (a miswired "from")."""
-    if not isinstance(value, str):
+    """The sender for the agent: a phone number or short code as it is, any other sender masked like a text.
+
+    A sender that is not only a number (a name, or the whole message after a
+    miswired "from") shows plain words, bullets and placeholders. So does a
+    number that holds ``code``.
+    """
+    if not isinstance(value, str) or len(value) > MAX_TEXT:
         return ''
-    value = ' '.join(_normal(value).split())
-    if code and code in re.sub(r'\D', '', value):
-        return _fit(mask(value), MAX_SENDER, SENDER_BYTES)
-    return _fit(value, MAX_SENDER, SENDER_BYTES)
+    try:
+        words = [word for line in _words(value) for word in line]
+    except Exception:
+        return ''
+    digits = ''.join(ch for word in words for ch in word.text if ch in _DIGITS)
+    number = (words and all(word.kind in {'bare', 'number'} and not word.lead and not word.trail and not word.doubt
+                            for word in words)
+              and 3 <= len(digits) <= 15 and not (code and code in digits))
+    return _fit(' '.join(word.text if number else word.shown for word in words), MAX_SENDER, SENDER_BYTES)
 
 
 def _hash(token: str) -> str:
@@ -489,14 +967,15 @@ class SmsInbox:
                 return 'limited'
             source.received.append(now)
             source.last_received = _iso(self.wall_clock())
-            code, source.last_result = extract(text)
+            reading = read(text)
+            code, source.last_result = reading.code, reading.result
             source.count += 1
             self.condition.notify_all()
             if code is None:
                 return 'dropped'
             self._prune()
-            message = Message(secrets.token_hex(16), source.name, clean_sender(sender, code), mask(text), code, now,
-                              self.wall_clock())
+            message = Message(secrets.token_hex(16), source.name, clean_sender(sender, code), reading.preview, code,
+                              now, self.wall_clock())
             self.messages.append(message)
             del self.messages[:-MAX_MESSAGES]
             self.condition.notify_all()

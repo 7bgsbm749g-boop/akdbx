@@ -2,8 +2,8 @@
 
 akdbx can receive the verification texts that sites send to a phone number and
 fill the code straight into the challenge field. You see only a masked preview
-(no digits, no links), the sender and the code length. You never see the code,
-the webhook token or the text itself.
+(plain words only: no digits, no links), the sender and the code length. You
+never see the code, the webhook token or the text itself.
 
 Require broker 0.37.0 or newer and `status` field `sms_protocol: 1`.
 `sms_sources_configured` tells you how many phone numbers forward texts.
@@ -89,10 +89,21 @@ KIND --replace` issues a new URL (the old one stops working at once);
    one-shot webhook instead and end the turn:
    [SMS notifications](sms-notifications.md) (`subscribe-sms`).
 
-   Each row has `id`, `source`, `sender`, `preview` (digits shown as `•`),
-   `code_length`, `received_at` and `age_seconds`. Pick the newest row whose
-   sender and preview match this site and this attempt. If none match, the
-   text has not arrived or was not forwarded; do not guess.
+   Each row has `id`, `source`, `sender`, `preview`, `code_length`,
+   `received_at` and `age_seconds`. The preview shows only plain words.
+   `[code]` stands in the place of the code that akdbx will fill. Each digit
+   of any other number is `•`. `[link]` and `[hidden]` stand for links and
+   for words that are not only letters.
+
+   Pick the newest row whose sender and preview match this site and this
+   attempt. Then make these two checks before you fill:
+   - `[code]` stands in the place of the verification code, not in the place
+     of a card number, an amount or a reference;
+   - `code_length` is the number of digits that the page asks for.
+
+   If a check fails, do not fill that row. If no row matches, the text has
+   not arrived, was not forwarded, or had more than one possible code and was
+   dropped (`sms-sources` shows `several-codes`); do not guess.
 3. Focus the code field, pin it and fill once:
 
    ```bash
@@ -122,6 +133,7 @@ site rejects the code, request one new text; stop after two rejected fresh codes
   SHA-256 hash, in a private file (`--sms-sources`, default beside
   `--notification-state` or in the per-user state folder).
 - The broker keeps only texts with exactly one verification code, in memory.
+  When two numbers can be the code, it does not choose: it drops the text.
   It drops all other texts at once and never stores message bodies.
 - Inbound texts need an HTTPS origin that the phone or provider can reach:
   the akdbx relay (or another public origin). Tailscale-only origins work
