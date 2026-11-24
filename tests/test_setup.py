@@ -212,6 +212,22 @@ def test_running_setup_again_changes_nothing(home, vault, pair, capsys):
     assert [argv[1:] for argv in runner.commands()] == [['--user', 'is-enabled', 'akdbx.service']]
 
 
+def test_setup_rebuilds_a_folder_whose_config_js_names_another_build(home, vault, pair, capsys):
+    """A build that stopped after the manifest leaves config.js with the old version: not built yet."""
+    setup(*base(vault, pair, '--browser', 'edge'), runner=Runner(), capsys=capsys)
+    config = home / '.local/share/akdbx/extension/config.js'
+    version = extension_host.built_version()
+    stamp = f'globalThis.AKDBX_EXTENSION_VERSION = "{version}";'
+    assert stamp in config.read_text()
+    config.write_text(config.read_text().replace(stamp, 'globalThis.AKDBX_EXTENSION_VERSION = "0.0.1.1";'))
+    second = Runner()
+    second.enabled = True
+    code, result, _ = setup('--yes', '--json', '--browser', 'edge', runner=second,
+                            status=Status(second, running=True), capsys=capsys)
+    assert code == 0, result
+    assert stamp in config.read_text()
+
+
 def test_with_yes_only_the_flags_of_this_run_select_a_change(home, vault, pair, tmp_path, capsys):
     # M2: saved answers give paths and ports; they never select a change under --yes.
     profile = tmp_path / 'cdp-profile'

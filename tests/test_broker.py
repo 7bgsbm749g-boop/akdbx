@@ -829,12 +829,12 @@ def expected_sso_capabilities():
 
 
 def expected_extension_capabilities():
-    from akdbx.extension_route import EXTENSION_VERSION
+    from akdbx.extension_host import built_version
     return {"extension_protocol": 1, "extension_delivery": "extension-dom-v1",
             "extension_capture_protocol": 1, "extension_capture_delivery": "extension-dom-read-v1",
             "extension_id": "jjoamaejjkldcjcpgncoomoaagdfimhg", "fill_routes": ["cdp", "extension"],
             "default_fill_route": "cdp", "extension_connected": False, "extension_paired": False,
-            "extension_version_expected": EXTENSION_VERSION, "extension_browsers": []}
+            "extension_version_expected": built_version(), "extension_browsers": []}
 
 
 def expected_merge_capabilities(available=False):

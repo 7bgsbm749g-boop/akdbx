@@ -518,10 +518,10 @@ def harness(private_dir, certificates, monkeypatch, request):
                 time.sleep(.1)
             [channel] = broker.extension.channels.values()
             assert channel.browser == kind
-            # The loaded extension reports its own manifest version to the broker.
-            assert channel.version == route.EXTENSION_VERSION
+            # The loaded extension reports the version of its own build (with the content stamp) to the broker.
+            assert channel.version == extension_host.built_version() and channel.stale is False
             assert broker.dispatch(dict(action='ping'))['extension_browsers'] == [
-                dict(browser=kind, paired=False, version=route.EXTENSION_VERSION, version_status='current')]
+                dict(browser=kind, paired=False, version=extension_host.built_version(), version_status='current')]
             # The popup shows a code computed from its own key; it must equal
             # the code the broker's pairing page shows for the key it received.
             workers = [t for t in lab.observer.call('Target.getTargets')['targetInfos']
@@ -534,7 +534,9 @@ def harness(private_dir, certificates, monkeypatch, request):
             assert broker.extension.approve(token)
             # Reload so the declared content script runs in the test page.
             lab.navigate('/login')
-            yield Harness(lab, broker, kind, unlock_origin, identity)
+            harness = Harness(lab, broker, kind, unlock_origin, identity)
+            harness.extension, harness.host_name = extension, host_name  # For a rebuild in the same folder.
+            yield harness
     finally:
         stop.set()
         server.join(5)
@@ -1464,3 +1466,120 @@ def test_a_grouped_authenticator_setup_key_reads_and_prose_refuses(harness):
     url = lab.navigate('/totp-prose')
     harness.focus('secret')
     assert read_pin(harness, url) == failure()
+
+
+# ----- a rebuild in the same folder ------------------------------------------------
+REBUILT = b'\nglobalThis.AKDBX_TEST_REBUILT = true;\n'
+
+
+def rebuild(monkeypatch, folder, *, keep_version=False, **options):
+    """`akdbx extension build` into the same folder from other contents (one more line in background.js).
+
+    ``keep_version``: write the old version, as two builds with other contents and one
+    version did before the content stamp. Returns the version written.
+    """
+    old = extension_host.built_version()
+    source = extension_host._source_files
+    monkeypatch.setattr(extension_host, '_source_files', lambda host_name=route.HOST_NAME: {
+        **source(host_name), 'background.js': source(host_name)['background.js'] + REBUILT})
+    extension_host.built_version.cache_clear()
+    if keep_version:
+        monkeypatch.setattr(extension_host, 'built_version', lambda: old)
+    try:
+        extension_host.build(folder, **options)
+        return extension_host.built_version()
+    finally:
+        monkeypatch.undo()
+        extension_host.built_version.cache_clear()
+
+
+def worker_value(lab, expression, timeout=30):
+    """Evaluate in the extension's running service worker once its script has run; wait for one."""
+    deadline = time.monotonic() + timeout
+    while True:
+        workers = [t for t in lab.observer.call('Target.getTargets')['targetInfos']
+                   if t['type'] == 'service_worker' and t['url'].startswith(route.EXTENSION_ORIGIN)]
+        try:
+            if workers:
+                session = lab.observer.call('Target.attachToTarget',
+                                            dict(targetId=workers[0]['targetId'], flatten=True))['sessionId']
+                # A worker target can appear before its script ran.
+                if lab.observer.evaluate("typeof connect === 'function'", session):
+                    return lab.observer.evaluate(expression, session, await_promise=True)
+        except Exception:
+            if time.monotonic() > deadline:
+                raise
+        assert time.monotonic() < deadline, 'no extension service worker runs'
+        time.sleep(.2)
+
+
+RUNS = '[globalThis.AKDBX_EXTENSION_VERSION, globalThis.AKDBX_TEST_REBUILT === true, typeof staleBuild]'
+
+
+def test_a_rebuild_with_other_contents_runs_the_new_worker_after_a_browser_restart(private_dir, certificates,
+                                                                                   monkeypatch):
+    """Chrome keeps a registered worker until the manifest version changes; the content stamp changes it.
+
+    The first rebuild keeps the version, as builds did before the stamp: the restarted
+    browser usually still runs the old worker beside the new files on disk (in 3 of 4
+    local Chromium 153 runs). The stamped rebuild gives another version, and after the
+    next restart the new worker runs.
+    """
+    binary = extension_browser()
+    if binary is None:
+        pytest.skip('the extension route tests require Helium, Chrome or Edge')
+    if sys.platform != 'win32':
+        certificates[1].chmod(0o600)
+    folder = Path(private_dir) / 'extension'
+    origin = 'https://localhost:9443'
+    extension_host.build(folder, unlock_origin=origin)
+    first = extension_host.built_version()
+    run = dict(binary=binary, extension=folder)
+    with chromium_lab(private_dir, *certificates, **run) as lab:
+        assert worker_value(lab, RUNS) == [first, False, 'function']
+    same = rebuild(monkeypatch, folder, keep_version=True, unlock_origin=origin)
+    assert same == first and REBUILT in (folder / 'background.js').read_bytes()
+    with chromium_lab(private_dir, *certificates, restart=True, **run) as lab:
+        # Usually the cached old worker beside the new files (the defect); Chromium does not always keep it.
+        assert worker_value(lab, RUNS) in ([first, False, 'function'], [first, True, 'function'])
+    stamped = rebuild(monkeypatch, folder, unlock_origin=origin)
+    assert stamped != first and json.loads((folder / 'manifest.json').read_text())['version'] == stamped
+    with chromium_lab(private_dir, *certificates, restart=True, **run) as lab:
+        # Chromium registers the new worker at startup. Edge on Windows can first start the registered old
+        # worker, which then finds the newer build on disk and reloads into it.
+        deadline = time.monotonic() + 30
+        while (runs := worker_value(lab, RUNS)) != [stamped, True, 'function']:
+            assert runs == [first, False, 'function'] and time.monotonic() < deadline, runs
+            time.sleep(.2)
+
+
+def test_a_worker_that_finds_a_newer_build_on_disk_refuses_the_pin_and_reloads_into_it(harness, monkeypatch):
+    """A rebuild under a running browser: the next pin names the fix and the worker reloads itself.
+
+    The reload ends the pairing (the worker's key lives in session storage), so the new
+    worker attaches unpaired, with the new version, and needs a new pairing.
+    """
+    [old] = harness.hub.channels.values()
+    assert harness.hub._paired_channel() == [old]
+    url = harness.lab.evaluate('location.href')
+    listing = harness.frames(url)
+    harness.focus('password')
+    pin = dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+               frame_id=listing['main_frame_id'], top_url=url, selector='#password', mode='password', route='extension')
+    assert harness.broker.dispatch(pin)['ok'] is True
+    newer = rebuild(monkeypatch, harness.extension, host_name=harness.host_name, unlock_origin=harness.unlock_origin)
+    assert newer != old.version
+    assert harness.broker.dispatch(pin) == dict(ok=False, error=route.STALE)
+    assert old.stale is True and harness.frames(url) == dict(ok=False, error=route.STALE)
+    assert harness.broker.dispatch(dict(action='ping'))['extension_browsers'][0]['version_status'] == 'stale'
+    deadline = time.monotonic() + 60
+    while True:  # One snapshot: the old host may be gone before the new one attaches.
+        channels = list(harness.hub.channels.values())
+        if len(channels) == 1 and channels[0] is not old:
+            break
+        assert time.monotonic() < deadline, 'the extension did not reload into the new build'
+        time.sleep(.2)
+    [new] = channels
+    assert new.version == newer and new.stale is False and new.digest != old.digest
+    assert harness.hub._paired_channel() == [] and harness.broker.dispatch(dict(action='ping'))['extension_paired'] is False
+    assert worker_value(harness.lab, RUNS) == [newer, True, 'function']
