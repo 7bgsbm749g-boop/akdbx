@@ -65,7 +65,7 @@ do not move or reuse a published tag.
 
 The fill extension's version is `"version"` in
 `src/akdbx/fill_extension/manifest.json`. `akdbx extension build` keeps it
-and adds a fourth part from the built contents (0.35.1+, so Chrome loads a
+and adds a fourth part from the built contents (0.35.2+, so Chrome loads a
 new service worker for other contents); it does not copy the akdbx version. Bump it in the same pull request as any
 change to the files the build writes (every file except `config.js`; this
 includes the generated `content.js`, which copies the CDP route's DOM checks,

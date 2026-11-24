@@ -188,7 +188,7 @@ metadata only. `status` advertises `extension_protocol: 1`, `fill_routes`,
 `default_fill_route` (`serve --default-fill-route`), `extension_connected`,
 `extension_paired`, and `extension_version_expected`. Each `extension_browsers`
 item shows the `version` that browser loaded and a `version_status`
-(`current`, `outdated`, `newer`, or from 0.35.1 `stale` and `mismatch`; see
+(`current`, `outdated`, `newer`, or from 0.35.2 `stale` and `mismatch`; see
 the skill's extension reference).
 
 The extension has its own semantic version, starting at 0.1.0, separate from
