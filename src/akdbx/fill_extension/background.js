@@ -275,22 +275,28 @@ function newerVersion(a, b) {
   return false;
 }
 
-let selfUpdating = false;
+// One check at a time; a second caller (the popup) waits for the same answer.
+let selfUpdating = null;
 
-async function selfUpdate(expected) {
+function selfUpdate(expected) {
+  if (!selfUpdating) selfUpdating = trySelfUpdate(expected).finally(() => { selfUpdating = null; });
+  return selfUpdating;
+}
+
+async function trySelfUpdate(expected) {
   const want = versionParts(expected), own = versionParts(chrome.runtime.getManifest().version);
-  if (!want || !own || !newerVersion(want, own) || selfUpdating) return false;
-  selfUpdating = true;
-  try {
-    if ((await chrome.storage.local.get("self_update")).self_update === expected) return false;
-    const response = await fetch(chrome.runtime.getURL("manifest.json"), {cache: "no-store"});
-    if ((await response.json()).version !== expected) return false;
-    await chrome.storage.local.set({self_update: expected});
-    chrome.runtime.reload();
-    return true;
-  } finally {
-    selfUpdating = false;
+  if (!want || !own || !newerVersion(want, own)) return false;
+  if ((await chrome.storage.local.get("self_update")).self_update === expected) return false;
+  const response = await fetch(chrome.runtime.getURL("manifest.json"), {cache: "no-store"});
+  if ((await response.json()).version !== expected) return false;
+  await chrome.storage.local.set({self_update: expected});
+  // A pairing can finish while the folder is read: then keep the key and try at the next attach.
+  if (state.paired) {
+    await chrome.storage.local.remove("self_update");
+    return false;
   }
+  chrome.runtime.reload();
+  return true;
 }
 
 // What the popup needs from a broker state message. The identity is checked later, against stored trust.

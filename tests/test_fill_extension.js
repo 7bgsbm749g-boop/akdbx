@@ -1172,3 +1172,21 @@ test("the self-update mark goes when that version runs, so a later downgrade and
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(newer.self_update, bumped(manifest.version, 1));
 });
+
+test("a pairing that finishes while the folder is read keeps its key, and the popup waits for the same check", async () => {
+  const next = bumped(manifest.version, 1);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const local = {};
+  const {exports, listeners, chrome} = loadBackground({local, fetch: async url => { await gate; return diskManifest(next)(url); }});
+  let reloads = 0;
+  chrome.runtime.reload = () => { reloads += 1; };
+  for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  listeners["port.message"]({type: "attached", paired: false, locked: true, extension_version: next});
+  const waiting = exports.selfUpdate(next);  // The popup's call while the attach's check reads the folder.
+  listeners["port.message"]({type: "state", paired: true, locked: false, extension_version: next});
+  release();
+  assert.equal(await waiting, false);
+  assert.equal(reloads, 0);
+  assert.equal("self_update" in local, false);  // The next unpaired attach tries again.
+});

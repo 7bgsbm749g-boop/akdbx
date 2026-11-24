@@ -598,9 +598,9 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
         'globalThis.AKDBX_BUILD_ID = ' + json.dumps(secrets.token_urlsafe(16)) + ';\n', encoding='utf-8')
     # The manifest goes last and whole: a running extension (0.8.0+) reloads itself when the
     # manifest on disk shows a newer version, so every other file must already be in place.
-    staged = destination / '.manifest.json.tmp'
-    staged.write_bytes(manifest_data)
-    os.replace(staged, destination / 'manifest.json')
+    with tempfile.NamedTemporaryFile(dir=destination, prefix='.manifest-', suffix='.tmp', delete=False) as staged:
+        staged.write(manifest_data)
+    os.replace(staged.name, destination / 'manifest.json')
     return destination
 
 

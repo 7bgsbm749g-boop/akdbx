@@ -1195,7 +1195,7 @@ def test_build_writes_the_manifest_last_and_whole(tmp_path, monkeypatch):
     [(config, names)] = seen
     assert config != old_config  # The new build ID is already on disk when the manifest appears.
     assert set(names) >= {'background.js', 'content.js', 'config.js', 'manifest.json'}
-    assert not (built / '.manifest.json.tmp').exists()
+    assert not [p for p in built.iterdir() if p.name.startswith('.manifest-')]
     assert json.loads((built / 'manifest.json').read_text())['version'] == route.EXTENSION_VERSION
 
 
