@@ -68,13 +68,14 @@ SERIAL = re.compile(r'[A-Za-z0-9._:-]{1,64}')
 
 HELPER_ASSET = 'akdbx-android-helper.dex'
 # SHA-256 of the bundled helper; tests/test_android_route.py checks it.
-HELPER_SHA256 = 'ab6607d1cbbc1731a42d2844c431d5eaf413600977bf40e11829a9540756cd28'
+HELPER_SHA256 = 'ba5a063bf2603efaa93480fd19fcaeca7eef4e31c88e3b889a47a54bd3ffba27'
 HELPER_CLASS = 'org.akdbx.android.Helper'
 HELPER_PROTOCOL = 1
 RESULT_PREFIX = 'AKDBX-ANDROID-RESULT '
 DEVICE_DIR = '/data/local/tmp/akdbx'
 HELPER_MISSING = 86
 HELPER_TIMEOUT = 25.0
+SIGN_IN_TIMEOUT = 100.0
 MAX_HELPER_OUTPUT = 512 * 1024
 MAX_TAB_LIST = 1024 * 1024
 MAX_ASSET_LINKS = 256 * 1024
@@ -88,11 +89,14 @@ CHROME_ACTIVITIES = ('com.android.chrome/org.chromium.chrome.browser.ChromeTabbe
 GMS_PACKAGE = 'com.google.android.gms'
 GMS_SIGN_IN_ACTIVITY = 'com.google.android.gms/.auth.uiflows.minutemaid.MinuteMaidActivity'
 GOOGLE_SIGN_IN_ORIGIN = ('https', 'accounts.google.com', 443)
-ASSET_LINK_RELATIONS = ('delegate_permission/common.get_login_creds',
-                        'delegate_permission/common.handle_all_urls')
+# Only the relation that shares sign-in credentials; App Links (handle_all_urls)
+# let an app open a site's links, not receive its passwords.
+ASSET_LINK_RELATIONS = ('delegate_permission/common.get_login_creds',)
 
 SPEAK_PASSWORD_REFUSAL = ('device lets accessibility services read password text; on the device run '
                           '"settings put secure speak_password 0" (adb shell), then pin again')
+GOOGLE_SECRETS_REFUSAL = ('Google sign-in takes the password and code only through '
+                          '"akdbx android google-sign-in"; pin only the email here')
 ORIGIN_MISMATCH = "autofill not started: the pinned Android app or page is not this entry's site; no value sent"
 
 
@@ -220,9 +224,18 @@ class Adb:
         return env
 
     def server_running(self) -> bool:
+        """True when this user's process listens on the configured adb port.
+
+        Another OS account could listen on the port while the operator's adb
+        server is down; the CDP route's peer check refuses that listener.
+        """
+        from .browser_password import verify_peer
         try:
-            with socket.create_connection(('127.0.0.1', self.device.port), timeout=1.0):
+            with socket.create_connection(('127.0.0.1', self.device.port), timeout=1.0) as connection:
+                verify_peer(connection)
                 return True
+        except TargetError:
+            raise AndroidError('the adb server port belongs to another account') from None
         except OSError:
             return False
 
@@ -255,11 +268,11 @@ class Adb:
             self.run('shell', f'rm -f {temporary}')
             raise AndroidError('could not copy the akdbx helper to the device')
 
-    def helper(self, request: dict, *, install: bool) -> dict:
+    def helper(self, request: dict, *, install: bool, timeout: float = HELPER_TIMEOUT) -> dict:
         """Run one helper request. Answers hold no value from the request."""
         data = (json.dumps(request, separators=(',', ':')) + '\n').encode('utf-8')
         for attempt in (0, 1):
-            result = self.run('shell', '-T', self._helper_command(), stdin=data, timeout=HELPER_TIMEOUT)
+            result = self.run('shell', '-T', self._helper_command(), stdin=data, timeout=timeout)
             if result.returncode == HELPER_MISSING and install and attempt == 0:
                 self.install_helper()
                 continue
@@ -322,13 +335,17 @@ PAGE_STATE = r"""(function() {
 PAGE_FIELDS = r"""(function() {
   const type = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'type').get;
   const attribute = Element.prototype.getAttribute;
-  const unique = s => { try { return document.querySelectorAll(s).length === 1; } catch (e) { return false; } };
+  // A selector is usable only when its one match is the element it describes.
+  let current = null;
+  const only = (s, element) => { try { const a = document.querySelectorAll(s); return a.length === 1 && a[0] === element; } catch (e) { return false; } };
+  const unique = s => only(s, current);
   const fields = [];
   for (const e of document.querySelectorAll('input')) {
     const t = type.call(e);
     if (!['text', 'email', 'password', 'tel', 'number', 'search', 'url'].includes(t)) continue;
     const r = e.getBoundingClientRect();
     if (!e.checkVisibility({checkOpacity: true, checkVisibilityCSS: true}) || r.width <= 0 || r.height <= 0) continue;
+    current = e;
     const id = attribute.call(e, 'id'), name = attribute.call(e, 'name');
     let selector = null;
     if (id && unique('#' + CSS.escape(id))) selector = '#' + CSS.escape(id);
@@ -339,7 +356,7 @@ PAGE_FIELDS = r"""(function() {
       const steps = [];
       for (let node = e; node && node.nodeType === 1 && node !== document.documentElement; node = node.parentElement) {
         const nodeId = attribute.call(node, 'id');
-        if (node !== e && nodeId && unique('#' + CSS.escape(nodeId))) { steps.unshift('#' + CSS.escape(nodeId)); break; }
+        if (node !== e && nodeId && only('#' + CSS.escape(nodeId), node)) { steps.unshift('#' + CSS.escape(nodeId)); break; }
         let index = 1;
         for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling)
           if (sibling.localName === node.localName) index++;
@@ -405,6 +422,21 @@ OTP_FILL = r"""function(code, deadline) {
 }"""
 
 
+# Written into the chosen tab through the DevTools connection, then read back
+# from Chrome's own UI by the helper (see Helper.markShown).
+MARK_SET = r"""(function(mark, custom) {
+  const old = {href: location.href, title: document.title};
+  if (custom) document.title = mark;
+  else history.replaceState(history.state, '', location.href.split('#')[0] + '#' + mark);
+  return old;
+})"""
+MARK_RESTORE = r"""(function(old, custom) {
+  if (custom) document.title = old.title;
+  else history.replaceState(history.state, '', old.href);
+  return location.href;
+})"""
+
+
 def _origin_of(url):
     from .totp import https_origin
     try:
@@ -414,9 +446,13 @@ def _origin_of(url):
 
 
 def _authority_matches(authority, origin) -> bool:
-    """Chrome's address bar shows the host, and the port when it is not the default."""
+    """Chrome's address bar shows the host, and the port when it is not the default.
+
+    It hides a leading "www.". The DevTools origin stays the exact origin.
+    """
     _, host, port = origin
-    return authority in {host if port == 443 else f'{host}:{port}', f'{host}:{port}'}
+    hosts = {host, host[4:]} if host.startswith('www.') and len(host) > 4 else {host}
+    return authority in {h if port == 443 else f'{h}:{port}' for h in hosts} | {f'{h}:{port}' for h in hosts}
 
 
 def asset_link_allows(site, package: str, signer: str, *, fetch=None) -> bool:
@@ -490,6 +526,7 @@ FIELD_KEYS = {'window_id': int, 'node_id': str, 'class': str, 'view_id': (str, t
               'has_text': bool, 'input_type': int, 'bounds': list, 'web': bool}
 CONTEXT_KEYS = {'address_bar': (str, type(None)), 'boot_id': str, 'sdk': int, 'speak_password': bool,
                 'window_id': int, 'window_title': (str, type(None)), 'package': str, 'activity': str,
+                'task_id': int, 'user_id': int,
                 'signers': list, 'signer_lineage': list, 'debuggable': bool, 'system_app': bool}
 HEX64 = re.compile(r'[0-9A-F]{64}')
 NODE_ID = re.compile(r'-?[0-9]{1,20}')
@@ -654,6 +691,33 @@ class AndroidTargets:
         return {'site': {'origin': serialize_origin(page['origin']), 'source': 'chrome'}, 'page_url': _clip(page['url'], 2048),
                 'fields': clean}
 
+    def _bind_devtools(self, adb, connection, page, context) -> None:
+        """Prove that the DevTools peer is the focused Chrome, before any value moves.
+
+        Any app could hold the abstract socket name chrome_devtools_remote,
+        and SELinux keeps the shell from reading its owner. Only Chrome draws
+        its address bar and sets its task's description, so a mark written
+        through this connection must show there.
+        """
+        mark = 'akdbx-' + secrets.token_hex(12)
+        custom = context['activity'] == CHROME_ACTIVITIES[1]
+        result = connection.call('Runtime.evaluate', {
+            'expression': MARK_SET + '(' + json.dumps(mark) + ',' + json.dumps(custom) + ')',
+            'contextId': page['world'], 'returnByValue': True}, page['session'])
+        old = result.get('result', {}).get('value')
+        if not isinstance(old, dict) or old.get('href') != page['url'] or not isinstance(old.get('title'), str):
+            raise AndroidError('could not check that the page belongs to Chrome')
+        try:
+            seen = adb.helper({'op': 'context', 'mark': mark}, install=False)
+        finally:
+            restored = connection.call('Runtime.evaluate', {
+                'expression': MARK_RESTORE + '(' + json.dumps(old) + ',' + json.dumps(custom) + ')',
+                'contextId': page['world'], 'returnByValue': True}, page['session'])
+        if seen.get('ok') is not True or seen.get('mark_seen') is not True:
+            raise AndroidError("Chrome's DevTools socket is not the focused Chrome's; restart Chrome and try again")
+        if restored.get('result', {}).get('value') != page['url']:
+            raise AndroidError('the page changed while it was checked; try again')
+
     def _chrome_pin(self, request, mode, device, adb, context) -> dict:
         from .browser_password import PROTOCOL as PASSWORD_PROTOCOL, DELIVERY as PASSWORD_DELIVERY, PasswordPin
         selector = request.get('field')
@@ -666,6 +730,7 @@ class AndroidTargets:
         connection = self._cdp(adb)
         try:
             page = self._chrome_page(connection, context)
+            self._bind_devtools(adb, connection, page, context)
         except Exception:
             connection.close()
             raise
@@ -714,6 +779,9 @@ class AndroidTargets:
         if (app_site is None and package == GMS_PACKAGE and google and activity == GMS_SIGN_IN_ACTIVITY
                 and all(f['web'] for f in fields)):
             return GOOGLE_SIGN_IN_ORIGIN, 'google-sign-in'
+        if any(f['web'] for f in fields):
+            # An app's web view shows no page URL to accessibility.
+            raise AndroidError("a web field inside an app is refused: its page's site cannot be read")
         if app_site is None:
             raise AndroidError('app not verified for any site; give --app-site with the HTTPS site whose '
                                'Digital Asset Links name this app')
@@ -762,6 +830,8 @@ class AndroidTargets:
                 raise AndroidError('target app is debuggable')
             origin, source = self._app_site(context, web[:1] or fields[:1], None)
             verified = {'origin': serialize_origin(origin), 'source': source}
+            if source == 'google-sign-in':
+                note = 'pin only the email here; use "akdbx android google-sign-in" for the password and code'
         except AndroidError as exc:
             note = exc.message
         return {**base, 'site': verified, **({'site_note': note} if note else {}),
@@ -795,6 +865,9 @@ class AndroidTargets:
             raise AndroidError('Chrome is not in a tab or Custom Tab, or is not signed by Google')
         if purpose is not None:
             raise AndroidError('--password-purpose is only for Chrome pages')
+        if (context['package'] == GMS_PACKAGE and context['activity'] == GMS_SIGN_IN_ACTIVITY
+                and context['signer_lineage'][0] == GOOGLE_SIGNER and mode != 'username'):
+            raise AndroidError(GOOGLE_SECRETS_REFUSAL)
         ids = [request.get('username_field'), request.get('field')] if mode == 'login' else [request.get('field')]
         if not all(isinstance(i, str) and NODE_ID.fullmatch(i) for i in ids) or len(set(ids)) != len(ids):
             raise AndroidError('app fields are the field values from android inspect')
@@ -821,7 +894,50 @@ class AndroidTargets:
         if len({f['web'] for f in fields}) != 1:
             raise AndroidError('login fields must both be web fields or both be app fields')
         origin, source = self._app_site(context, fields, app_site)
+        if source == 'google-sign-in' and mode != 'username':
+            # The sign-in web view shows no page URL: a work account can move
+            # it to another site. Only the one-run sign-in may fill secrets.
+            raise AndroidError(GOOGLE_SECRETS_REFUSAL)
         return self._store(device, context, fields, mode, origin, source)
+
+    def google_sign_in(self, request, values: dict, ready: Callable[[], bool]) -> dict:
+        """Fill the email, then the password (and a code) on the pages Google's flow shows next.
+
+        Returns the receipt; raises DeliveryError(started) when the outcome is unknown.
+        """
+        device = self._device(request)
+        adb = self.adb_factory(device)
+        try:
+            context = self._helper_context(adb.helper({'op': 'context'}, install=True))
+        except AndroidError:
+            raise DeliveryError(False) from None
+        if not (context['package'] == GMS_PACKAGE and context['activity'] == GMS_SIGN_IN_ACTIVITY
+                and context['signer_lineage'][0] == GOOGLE_SIGNER):
+            raise AndroidError('the focused screen is not Google account sign-in')
+        if context['speak_password']:
+            raise AndroidError(SPEAK_PASSWORD_REFUSAL)
+        if not ready():
+            raise DeliveryError(False)
+        request = {'op': 'google_sign_in', 'boot_id': context['boot_id'], **values}
+        try:
+            # Each later page may take the helper's 25-second wait.
+            answer = adb.helper(request, install=False, timeout=SIGN_IN_TIMEOUT)
+        except Exception:
+            raise DeliveryError(True) from None
+        finally:
+            request = None
+        if answer.get('ok') is not True:
+            error = answer.get('error')
+            raise DeliveryError(not isinstance(error, str) or error.startswith('helper failed'))
+        steps = answer.get('steps')
+        stopped = answer.get('stopped_at')
+        if (not isinstance(steps, list) or not all(step in values for step in steps)
+                or stopped not in {None, 'email', 'password', 'code', 'submit'} or answer.get('uncertain') is True):
+            raise DeliveryError(True)
+        receipt = {'ok': True, 'filled': list(steps), 'target_delivery': DELIVERY}
+        if stopped is not None:
+            receipt['stopped_at'] = stopped
+        return receipt
 
     def _store(self, device, context, fields, mode, origin, source, *, dom=None) -> dict:
         token = secrets.token_hex(32)
@@ -895,8 +1011,11 @@ class AndroidTargets:
             error = answer.get('error')
             raise DeliveryError(not isinstance(error, str) or error.startswith('helper failed'))
         results = answer.get('results')
+        # Success needs every field to hold the value: a field may accept the
+        # write and still truncate or clear it.
         if (not isinstance(results, list) or len(results) != len(values)
-                or not all(isinstance(r, dict) and r.get('accepted') is True for r in results)):
+                or not all(isinstance(r, dict) and r.get('accepted') is True and r.get('confirmed') is True
+                           for r in results)):
             raise DeliveryError(answer.get('delivered') is not False)
 
     def _deliver_page_code(self, pin, values, ready, start_deadline):

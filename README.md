@@ -169,14 +169,20 @@ boot), the focused app (package, signing certificate, activity) and the field,
 and fills only an entry whose URL or additional URL is the verified site:
 
 - **Google account sign-in** in Google Play services (Google signing
-  lineage): `https://accounts.google.com`.
+  lineage): `https://accounts.google.com`. Its web view shows no page URL,
+  so the password and code go only through `akdbx android google-sign-in`,
+  which fills the entry's email, submits it and fills the password (and
+  code) on the pages Google's flow shows next, in one helper run.
 - **Chrome tabs and Custom Tabs** (Google-signed Chrome): the exact origin of
   the one visible, focused tab, matched to Chrome's address bar. Pages are
   read and filled through Chrome's DevTools socket, which adb forwards to a
   loopback port only while the broker connects; logins reuse the CDP route's
-  DOM pin and fill.
-- **Other apps**: the site the agent names with `--app-site`, only when that
-  site's Digital Asset Links name the app's package and current signing
+  DOM pin and fill. Before a pin, a random mark written through that socket
+  must show in Chrome's own address bar or task description, which proves
+  the socket is the focused Chrome's.
+- **Other apps** (native fields only): the site the agent names with
+  `--app-site`, only when that site's Digital Asset Links share its
+  credentials (`get_login_creds`) with the app's package and current signing
   certificate.
 
 App fields and Google sign-in use a small helper that the broker copies to the

@@ -40,7 +40,8 @@ from .browser_card import BrowserCards
 from .browser_identity import BrowserIdentities
 from .extension_route import (ExtensionHub, ExtensionError, ExtensionPin, RoutedTargets,
                               DELIVERY as EXTENSION_DELIVERY)
-from .android_route import AndroidTargets, AndroidPin, AndroidError, AndroidMismatch, ORIGIN_MISMATCH
+from .android_route import (AndroidTargets, AndroidPin, AndroidError, AndroidMismatch, ORIGIN_MISMATCH,
+                            GOOGLE_SIGN_IN_ORIGIN)
 from .identities import COMMANDS as IDENTITY_COMMANDS, IdentityManager, capabilities as identity_capabilities, is_identity
 from .secrets_capture import SecretCaptures, captured_fields, is_secret_record
 from .totp_capture import TotpCaptures, pending as totp_pending, read_pending
@@ -336,6 +337,65 @@ class Broker:
                 return self._dispatch(request, delivery_ready=delivery_ready)
         return self._dispatch(request, delivery_ready=delivery_ready)
 
+    def _android_google_sign_in(self, request, internal_dispatch, delivery_ready):
+        """Fill a Google entry into Google's account sign-in on an Android device, in one run."""
+        allowed = {'action', 'android_protocol', 'device', 'handle', 'code', 'start_deadline'}
+        try:
+            if set(request) - allowed or request.get('android_protocol') != 1 or not isinstance(request.get('code', False), bool):
+                raise TargetError()
+            entry = self._resolve(request.get('handle'))
+            start_deadline = request.get('start_deadline')
+            if start_deadline is None and internal_dispatch:
+                start_deadline = self.clock() + FILL_START_TIMEOUT
+            if isinstance(start_deadline, bool) or not isinstance(start_deadline, (int, float)) or not math.isfinite(start_deadline):
+                raise ValueError('autofill not started: invalid deadline')
+        except TargetError:
+            return target_failure()
+        except ValueError as exc:
+            return {'ok': False, 'error': str(exc)}
+        try:
+            remaining = min(start_deadline - self.clock(), FILL_START_TIMEOUT)
+            if remaining <= 0 or not self._keyboard_lock.acquire(timeout=remaining):
+                return {'ok': False, 'error': 'autofill not started: request expired'}
+            try:
+                if self.clock() >= start_deadline or not delivery_ready():
+                    return {'ok': False, 'error': 'autofill not started: request expired'}
+                if is_identity(entry) or is_card(entry) or passwordless_identity(entry) or is_secret_record(entry):
+                    return {'ok': False, 'error': 'autofill not started: Google sign-in needs a login entry; no value sent',
+                            'delivery': 'not-started'}
+                if GOOGLE_SIGN_IN_ORIGIN not in allowed_origins(entry):
+                    return {'ok': False, 'error': ORIGIN_MISMATCH, 'delivery': 'not-started'}
+                username, password = entry.username or '', entry.password or ''
+                self._validate_credential_text(username, password)
+                if not username or not password:
+                    return {'ok': False, 'error': 'autofill not started: the entry has no username or password; no value sent',
+                            'delivery': 'not-started'}
+                values = {'email': username, 'password': password}
+                if request.get('code'):
+                    configuration = read_configuration(entry)
+                    now = self.wall_clock()
+                    valid_until = (int(now // configuration.period) + 1) * configuration.period
+                    # The code page comes after two page loads: keep a wide margin.
+                    if valid_until - now < 20:
+                        return {'ok': False, 'error': 'autofill not started: TOTP code near expiry; wait and use fresh handles',
+                                'retry_after': math.ceil(valid_until - now)}
+                    values['code'] = code_at(configuration, now)
+                ready = lambda: self.clock() < start_deadline and delivery_ready()
+                try:
+                    return self.android.google_sign_in(request, values, ready)
+                finally:
+                    values = None
+            finally:
+                self._keyboard_lock.release()
+        except AndroidError as exc:
+            return {'ok': False, 'error': 'autofill not started: ' + exc.message, 'delivery': 'not-started'}
+        except DeliveryError as exc:
+            return target_failure(exc.started)
+        except TotpError as exc:
+            return {'ok': False, 'error': 'autofill not started: ' + str(exc)}
+        except Exception:
+            return {'ok': False, 'error': 'autofill failed'}
+
     def _dispatch(
         self,
         request: dict,
@@ -409,6 +469,8 @@ class Broker:
                 return {'ok': False, 'error': exc.message}
             except Exception:
                 return target_failure()
+        if action == 'android-google-sign-in':
+            return self._android_google_sign_in(request, internal_dispatch, delivery_ready)
         if action == 'pin-target':
             try:
                 return self.targets.pin(request)

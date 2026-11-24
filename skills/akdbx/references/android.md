@@ -57,7 +57,8 @@ Android SDK level and `speak_password`.
    has a `field` value: a node id for app fields (`kind: "app"`), a CSS
    selector for page fields (`kind: "page"`). It never holds field text.
 3. Search the entry as usual (`akdbx search`). Its URL or an additional URL
-   must be the exact verified site origin.
+   must be the exact verified site origin. On Google's account sign-in, use
+   `akdbx android google-sign-in` instead of steps 4 and 5 (see below).
 4. Pin within 30 seconds:
 
    ```sh
@@ -83,8 +84,15 @@ Android SDK level and `speak_password`.
 | Focused app | Delivery | Verified site |
 | --- | --- | --- |
 | Chrome tab or Custom Tab (`com.android.chrome`, Google signing key) | Chrome DevTools socket (`chromium-password-dom-v1` for logins, `android-chrome-dom-code-v1` for codes) | The exact origin of the one visible, focused tab; its host must also match Chrome's address bar when the bar shows |
-| Google account sign-in (`com.google.android.gms`, sign-in activity, Google signing lineage) | Accessibility helper (`android-accessibility-set-text-v1`) | `https://accounts.google.com` |
-| Any other app | Accessibility helper | The site named with `--app-site https://...`, only if that site's `/.well-known/assetlinks.json` names the app's package and current signing certificate (`get_login_creds` or `handle_all_urls`) |
+| Google account sign-in (`com.google.android.gms`, sign-in activity, Google signing lineage) | Accessibility helper (`android-accessibility-set-text-v1`) | `https://accounts.google.com`, for the email pin and for `android google-sign-in` only |
+| Any other app | Accessibility helper | The site named with `--app-site https://...`, only if that site's `/.well-known/assetlinks.json` names the app's package and current signing certificate with `delegate_permission/common.get_login_creds`. App Links (`handle_all_urls`) are not enough. Only native app fields: a web view inside an app is refused, because its page's site cannot be read |
+
+Before a Chrome pin, the broker proves that Chrome's DevTools socket belongs
+to the focused, Google-signed Chrome: it writes a random mark into the tab
+(a URL fragment in a tab, the page title in a Custom Tab) and the helper must
+read it back from Chrome's own address bar or task description. The page's
+URL or title changes for about a second and is then restored. Any app could
+otherwise hold the DevTools socket name.
 
 The fill refuses before any value moves when the entry's URL and additional
 URLs do not include that site, when the pinned app, activity, signer, field
@@ -100,11 +108,24 @@ for its selector, visible, and (for passwords) marked `autocomplete`
 ## Google Play and GitHub Mobile
 
 - **Google Play sign-in**: open Play Store or Settings > Accounts > Add
-  account > Google. Inspect shows `site_source: "google-sign-in"`. Fill the
-  email (`--mode username`), tap Next, inspect again, fill the password
-  (`--mode password`), tap Next. A Google 2-Step code field on the same
-  screens takes `--mode totp`. The Google entry's URL (or an additional URL)
-  must be `https://accounts.google.com`; `akdbx add-url` can add it.
+  account > Google, until the "Email or phone" page shows. Inspect shows
+  `source: "google-sign-in"`. Then run one command:
+
+  ```sh
+  akdbx android google-sign-in HANDLE --device github-mobile [--code]
+  ```
+
+  The helper fills the entry's email and submits it, then fills the password
+  (and with `--code` the authenticator code) only on the pages that Google's
+  flow shows next in the same task, with no other step in between. The
+  receipt lists what it filled (`"filled": ["email", "password"]`) and
+  `stopped_at` when a page did not come (for example Google asked for another
+  sign-in method or could not find the account); nothing after that point is
+  filled. Google's sign-in web view shows no page URL, and a work account can
+  move it to another site (SAML), so a separate password or code pin there is
+  refused; only the email may be pinned alone. The Google entry's URL (or an
+  additional URL) must be `https://accounts.google.com`; `akdbx add-url` can
+  add it.
 - **GitHub Mobile**: "Sign in" opens github.com in a Chrome Custom Tab.
   Tap the username field, inspect (`site_source: "chrome"`), pin in login
   mode, fill, tap "Sign in". On the two-factor page, tap the code field,
@@ -116,16 +137,21 @@ for its selector, visible, and (for passwords) marked `autocomplete`
   Google Play services 26.45. A physical device over USB uses the same path but
   was not tested; the device must have USB debugging on.
 - Linux broker only was tested. The Windows broker has the same code path.
-- adb gives every process of the broker's operating-system user full control
-  of the device, as a DevTools port does for a desktop browser. akdbx checks
+- The broker refuses an adb server port owned by another OS account. adb
+  gives every process of the broker's operating-system user full control of
+  the device, as a DevTools port does for a desktop browser. akdbx checks
   the helper file's hash immediately before it starts it, but a process of the
   same user that races the device files could interfere.
-- In Google Play services, the page URL is not visible to accessibility.
-  akdbx trusts Google's signed sign-in activity to show Google's sign-in. A
-  work account that redirects to a third-party identity provider (SAML) inside
-  that screen is not detected: do not fill a Google password there.
+- In Google Play services, the page URL is not visible to accessibility, so
+  passwords and codes go only through `android google-sign-in`. If the
+  entry's own account is a work account that signs in with its company's
+  identity provider, that run fills the entry's password on the provider's
+  page that Google's flow opens. The positive password and code steps were
+  not tested end to end: a synthetic account cannot pass Google's email page.
 - An authenticator code is visible on screen after it is filled, until the
   page submits it.
+- Chrome's address bar hides `www.`; akdbx accepts that, and still uses the
+  exact origin from DevTools.
 - Chrome on Android sometimes stops giving its page to accessibility. Chrome
   pages therefore use Chrome's DevTools socket. For other apps' web views the
   helper may briefly open and close the system volume panel to make the app

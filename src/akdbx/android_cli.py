@@ -15,7 +15,11 @@ DELIVERIES = {DELIVERY, CHROME_CODE_DELIVERY, PAGE_DELIVERY}
 COMMAND = 'android'
 FILL_ERROR = re.compile(r"(autofill (not started|outcome uncertain|failed)|vault locked|identity record|card record"
                         r"|passwordless record|captured secret record|save outcome uncertain|request failed"
-                        r"|mode must)[^\n]{0,300}")
+                        r"|mode must|unknown or expired handle|invalid handle)[^\n]{0,300}")
+FILLS = {'fill', 'fill-totp', 'google-sign-in'}
+# Response budgets in seconds. The fill-start deadline stays 4 seconds; a fill
+# that started may take the helper's whole run.
+TIMEOUTS = {'devices': 180, 'inspect': 60, 'pin': 60, 'fill': 60, 'fill-totp': 60, 'google-sign-in': 150}
 TOKEN = re.compile(r'[0-9a-f]{64}')
 
 
@@ -41,6 +45,12 @@ def add_parser(commands):
                      help='Chrome page, password mode: the verified purpose of a field without an autocomplete hint')
     pin.add_argument('--app-site', help=('exact HTTPS origin whose Digital Asset Links name this app; needed for '
                                          'apps other than Chrome and Google account sign-in'))
+    google = sub.add_parser('google-sign-in', help=(
+        'Google account sign-in screen: fill the entry\'s email, submit it, then fill the password (and with '
+        '--code the authenticator code) on the pages Google shows next, in one run'))
+    google.add_argument('handle', help='fresh handle from akdbx search; its URL or an additional URL is https://accounts.google.com')
+    google.add_argument('--device', required=True)
+    google.add_argument('--code', action='store_true', help='also fill the entry\'s authenticator code if Google asks for it next')
     for name in ('fill', 'fill-totp'):
         fill = sub.add_parser(name, help=('fill the entry\'s login, username or password into the pinned field(s)'
                                           if name == 'fill' else 'fill the entry\'s current authenticator code'))
@@ -62,7 +72,7 @@ def valid(command, response):
         keys = {'ok', 'error', 'delivery', 'retry_after', 'unlock_url', 'unlock_blocked'}
         if not set(response) <= keys or not _short(response.get('error')):
             return False
-        if command in {'fill', 'fill-totp'}:
+        if command in FILLS:
             return (FILL_ERROR.fullmatch(response['error']) is not None
                     and response.get('delivery', 'not-started') in {'not-started', 'uncertain'})
         return 'delivery' not in response
@@ -75,6 +85,11 @@ def valid(command, response):
                 and isinstance(response['target'], str) and TOKEN.fullmatch(response['target']) is not None
                 and response['android_delivery'] in DELIVERIES and response['expires_in'] == 30
                 and response['mode'] in MODES and _short(response['origin']) and _short(response['package']))
+    if command == 'google-sign-in':
+        return (set(response) - {'stopped_at'} == {'ok', 'filled', 'target_delivery'}
+                and response['target_delivery'] == DELIVERY and isinstance(response['filled'], list)
+                and all(step in ('email', 'password', 'code') for step in response['filled'])
+                and response.get('stopped_at', 'email') in ('email', 'password', 'code', 'submit'))
     return (set(response) == {'ok', 'filled', 'target_delivery'} and response['target_delivery'] in DELIVERIES
             and response['filled'] in MODES)
 
@@ -104,16 +119,19 @@ def run(args, request):
                 payload['app_site'] = args.app_site
             if args.password_purpose is not None:
                 payload['password_purpose'] = args.password_purpose
+        elif command == 'google-sign-in':
+            payload = {'action': 'android-google-sign-in', 'android_protocol': PROTOCOL, 'device': args.device,
+                       'handle': args.handle, 'code': args.code, 'start_deadline': time.monotonic() + 4}
         else:
             payload = {'action': command, 'handle': args.handle, 'target': args.target, 'target_protocol': 1,
                        'start_deadline': time.monotonic() + 4}
             if command == 'fill':
                 payload['mode'] = args.mode
-        response = request(payload)
+        response = request(payload, timeout=TIMEOUTS[command])
         if not valid(command, response):
             raise ValueError
     except Exception:
-        if command in {'fill', 'fill-totp'}:
+        if command in FILLS:
             print('autofill outcome unconfirmed: broker response rejected; do not retry automatically', file=sys.stderr)
         else:
             print('Android request failed; response withheld', file=sys.stderr)

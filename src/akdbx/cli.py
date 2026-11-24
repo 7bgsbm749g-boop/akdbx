@@ -283,8 +283,9 @@ def request(
     broker_uid: int | None = None,
     expected_unlock_origin: str = DEFAULT_UNLOCK_ORIGIN,
     before_send=None,
+    timeout: int | None = None,
 ) -> dict:
-    timeout = _request_timeout(payload)
+    timeout = _request_timeout(payload) if timeout is None else timeout
     if os.name == 'nt':
         from .windows_rpc import connect
         if broker_uid is not None:
@@ -941,8 +942,8 @@ def _command(args) -> int:
         return identity_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                             expected_unlock_origin=args.unlock_origin))
     if args.command == android_cli.COMMAND:
-        return android_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
-                                                           expected_unlock_origin=args.unlock_origin))
+        return android_cli.run(args, lambda payload, **kwargs: request(
+            args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))
     if args.command == secret_cli.COMMAND:
         return secret_cli.run(args, lambda payload, **kwargs: request(
             args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))

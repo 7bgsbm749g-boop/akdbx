@@ -116,7 +116,8 @@ public final class Helper {
         if ("probe".equals(op)) {
             return probe();
         }
-        if (!"inspect".equals(op) && !"check".equals(op) && !"fill".equals(op) && !"context".equals(op)) {
+        if (!"inspect".equals(op) && !"check".equals(op) && !"fill".equals(op) && !"context".equals(op)
+                && !"google_sign_in".equals(op)) {
             throw new Refusal("unknown helper operation");
         }
         connect();
@@ -132,7 +133,14 @@ public final class Helper {
                 JSONObject answer = new JSONObject();
                 answer.put("ok", true);
                 answer.put("context", context(scene, walk(scene.root)));
+                String mark = request.optString("mark", "");
+                if (!mark.isEmpty()) {
+                    answer.put("mark_seen", markShown(mark));
+                }
                 return answer;
+            }
+            if ("google_sign_in".equals(op)) {
+                return googleSignIn(request);
             }
             return fill(request);
         } finally {
@@ -186,17 +194,41 @@ public final class Helper {
         return answer;
     }
 
-    static ComponentName focusedActivity() {
+    /** The focused task as the system reports it. */
+    static final class Task {
+        ComponentName activity;
+        int taskId;
+        int userId;
+        String label;
+    }
+
+    static Task focusedTask() {
         try {
             Object service = Class.forName("android.app.ActivityTaskManager").getMethod("getService").invoke(null);
             Object info = service.getClass().getMethod("getFocusedRootTaskInfo").invoke(service);
             if (info != null) {
                 Object top = info.getClass().getField("topActivity").get(info);
                 if (top instanceof ComponentName) {
-                    return (ComponentName) top;
+                    Task task = new Task();
+                    task.activity = (ComponentName) top;
+                    task.taskId = info.getClass().getField("taskId").getInt(info);
+                    task.userId = info.getClass().getField("userId").getInt(info);
+                    Object description = info.getClass().getField("taskDescription").get(info);
+                    if (description instanceof android.app.ActivityManager.TaskDescription) {
+                        task.label = ((android.app.ActivityManager.TaskDescription) description).getLabel();
+                    }
+                    return task;
                 }
             }
         } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    static ComponentName focusedActivity() {
+        Task task = focusedTask();
+        if (task != null) {
+            return task.activity;
         }
         return null;
     }
@@ -210,16 +242,16 @@ public final class Helper {
         int uid;
     }
 
-    static App app(String packageName) throws Exception {
+    static App app(String packageName, int userId) throws Exception {
         Object pm = Class.forName("android.app.ActivityThread").getMethod("getPackageManager").invoke(null);
         PackageInfo info = null;
         int flags = PackageManager.GET_SIGNING_CERTIFICATES;
         try {
             Method method = pm.getClass().getMethod("getPackageInfo", String.class, long.class, int.class);
-            info = (PackageInfo) method.invoke(pm, packageName, (long) flags, 0);
+            info = (PackageInfo) method.invoke(pm, packageName, (long) flags, userId);
         } catch (NoSuchMethodException missing) {
             Method method = pm.getClass().getMethod("getPackageInfo", String.class, int.class, int.class);
-            info = (PackageInfo) method.invoke(pm, packageName, flags, 0);
+            info = (PackageInfo) method.invoke(pm, packageName, flags, userId);
         }
         if (info == null || info.applicationInfo == null) {
             throw new Refusal("target app is not installed");
@@ -343,14 +375,16 @@ public final class Helper {
         AccessibilityWindowInfo window;
         AccessibilityNodeInfo root;
         ComponentName activity;
+        Task task;
         App app;
     }
 
     Scene scene() throws Exception {
-        ComponentName activity = focusedActivity();
-        if (activity == null) {
+        Task task = focusedTask();
+        if (task == null) {
             throw new Refusal("no focused activity");
         }
+        ComponentName activity = task.activity;
         AccessibilityWindowInfo chosen = null;
         for (int attempt = 0; attempt < 10 && chosen == null; attempt++) {
             for (AccessibilityWindowInfo window : automation.getWindows()) {
@@ -378,7 +412,9 @@ public final class Helper {
         scene.window = chosen;
         scene.root = root;
         scene.activity = activity;
-        scene.app = app(activity.getPackageName());
+        scene.task = task;
+        // A work profile's app exists only for that profile's Android user.
+        scene.app = app(activity.getPackageName(), task.userId);
         return scene;
     }
 
@@ -629,6 +665,176 @@ public final class Helper {
         return found;
     }
 
+    // ----- proof that a DevTools peer is the focused Chrome --------------
+
+    static final String CUSTOM_TAB = "com.android.chrome/org.chromium.chrome.browser.customtabs.CustomTabActivity";
+
+    /**
+     * True when Chrome's own UI shows the mark that the broker wrote into a
+     * page through a DevTools connection: the URL fragment in a tab's address
+     * bar, or the page title that a Custom Tab puts in its task description.
+     * Only Chrome draws its address bar and sets its task's description, so the
+     * DevTools peer that wrote the mark is the focused Chrome.
+     */
+    boolean markShown(String mark) throws Exception {
+        long end = System.currentTimeMillis() + 2500;
+        while (System.currentTimeMillis() < end) {
+            Scene scene = scene();
+            if (!isChrome(scene.app.packageName)) {
+                return false;
+            }
+            if (CUSTOM_TAB.equals(scene.activity.flattenToShortString())) {
+                if (mark.equals(scene.task.label)) {
+                    return true;
+                }
+            } else {
+                for (AccessibilityNodeInfo node : walk(scene.root).nodes) {
+                    String id = node.getViewIdResourceName();
+                    if (id != null && id.equals(scene.app.packageName + CHROME_URL_BAR) && node.getText() != null
+                            && node.getText().toString().endsWith("#" + mark)) {
+                        return true;
+                    }
+                }
+            }
+            Thread.sleep(150);
+        }
+        return false;
+    }
+
+    // ----- Google account sign-in in one run ------------------------------
+
+    static final String GMS_SIGN_IN = "com.google.android.gms/.auth.uiflows.minutemaid.MinuteMaidActivity";
+    static final String GOOGLE_SIGNER = "F0FD6C5B410F25CB25C3B53346C8972FAE30F8EE7411DF910480AD6B2D60DB83";
+
+    /** The one visible, enabled web field of the kind asked for, or null. */
+    static AccessibilityNodeInfo signInField(Walk walk, String kind) {
+        AccessibilityNodeInfo found = null;
+        for (AccessibilityNodeInfo node : walk.nodes) {
+            if (!isField(node) || !node.isEnabled() || !node.isVisibleToUser() || !inWeb(node) || inFrame(node)) {
+                continue;
+            }
+            boolean match = "email".equals(kind) ? !node.isPassword() && "identifierId".equals(node.getViewIdResourceName())
+                    : "password".equals(kind) ? node.isPassword()
+                    : !node.isPassword();
+            if (match) {
+                if (found != null) {
+                    return null; // Two candidates: not a page this run knows.
+                }
+                found = node;
+            }
+        }
+        return found;
+    }
+
+    /** The sign-in scene, refused unless it is Google's signed sign-in activity in the same task. */
+    Scene signInScene(int taskId) throws Exception {
+        Scene scene = scene();
+        if (!GMS_SIGN_IN.equals(scene.activity.flattenToShortString()) || scene.app.debuggable
+                || scene.app.lineage.isEmpty() || !GOOGLE_SIGNER.equals(scene.app.lineage.get(0))
+                || (taskId >= 0 && scene.task.taskId != taskId)) {
+            throw new Refusal("Google sign-in screen changed");
+        }
+        return scene;
+    }
+
+    /** Wait until the field of this kind shows and the previous field is gone. */
+    AccessibilityNodeInfo await(int taskId, String kind, long previous, long millis) throws Exception {
+        long end = System.currentTimeMillis() + millis;
+        while (System.currentTimeMillis() < end) {
+            Scene scene = signInScene(taskId);
+            Walk walk = walk(scene.root);
+            boolean previousGone = true;
+            if (previous != Long.MIN_VALUE) {
+                for (AccessibilityNodeInfo node : walk.nodes) {
+                    if (sourceNodeId(node) == previous && node.isVisibleToUser()) {
+                        previousGone = false;
+                    }
+                }
+            }
+            AccessibilityNodeInfo field = previousGone ? signInField(walk, kind) : null;
+            if (field != null) {
+                return field;
+            }
+            Thread.sleep(250);
+        }
+        return null;
+    }
+
+    static boolean setAndConfirm(AccessibilityNodeInfo node, String value) throws Exception {
+        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS);
+        Bundle arguments = new Bundle();
+        arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, value);
+        if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) {
+            return false;
+        }
+        for (int attempt = 0; attempt < 10; attempt++) {
+            node.refresh();
+            CharSequence text = node.getText();
+            if (text != null && (text.toString().equals(value) || node.isPassword() && text.length() == value.length())) {
+                return true;
+            }
+            Thread.sleep(100);
+        }
+        return false;
+    }
+
+    /**
+     * Google's sign-in WebView shows no page URL to accessibility, so a field
+     * there cannot be tied to accounts.google.com on its own. This run fills
+     * the entry's email, submits it, and fills the password (and a code) only
+     * on the pages that Google's flow shows next in the same task, with no
+     * other caller step in between.
+     */
+    JSONObject googleSignIn(JSONObject request) throws Exception {
+        if (!bootId().equals(request.getString("boot_id"))) {
+            throw new Refusal("device restarted");
+        }
+        if (speaksPasswords()) {
+            throw new Refusal("device lets accessibility read password text (speak_password is not 0)");
+        }
+        Scene scene = signInScene(-1);
+        int taskId = scene.task.taskId;
+        JSONArray steps = new JSONArray();
+        JSONObject answer = new JSONObject();
+        answer.put("ok", true);
+        answer.put("steps", steps);
+        String[][] plan = {{"email", "email"}, {"password", "password"}, {"code", "code"}};
+        long previous = Long.MIN_VALUE;
+        for (String[] step : plan) {
+            String kind = step[0];
+            if (!request.has(kind)) {
+                break;
+            }
+            AccessibilityNodeInfo field;
+            try {
+                field = await(taskId, kind, previous, "email".equals(kind) ? 3000 : 25000);
+            } catch (Refusal refusal) {
+                // The screen left Google's sign-in: nothing more is filled.
+                answer.put("stopped_at", kind);
+                answer.put("reason", refusal.reason);
+                return answer;
+            }
+            if (field == null) {
+                answer.put("stopped_at", kind);
+                return answer;
+            }
+            if (!setAndConfirm(field, request.getString(kind))) {
+                answer.put("stopped_at", kind);
+                answer.put("uncertain", true);
+                return answer;
+            }
+            previous = sourceNodeId(field);
+            // Submit as the keyboard's Enter would; Google's pages submit on it.
+            boolean submitted = field.performAction(android.R.id.accessibilityActionImeEnter);
+            steps.put(kind);
+            if (!submitted) {
+                answer.put("stopped_at", "submit");
+                return answer;
+            }
+        }
+        return answer;
+    }
+
     JSONObject context(Scene scene, Walk walk) throws Exception {
         JSONObject context = new JSONObject();
         // Chrome's own address bar: the broker matches its host with Chrome's
@@ -643,6 +849,8 @@ public final class Helper {
         context.put("window_title", title == null ? JSONObject.NULL : clip(title.toString()));
         context.put("package", scene.app.packageName);
         context.put("activity", scene.activity.flattenToShortString());
+        context.put("task_id", scene.task.taskId);
+        context.put("user_id", scene.task.userId);
         context.put("signers", new JSONArray(scene.app.signers));
         context.put("signer_lineage", new JSONArray(scene.app.lineage));
         context.put("debuggable", scene.app.debuggable);
@@ -735,7 +943,8 @@ public final class Helper {
         JSONObject expectContext = request.getJSONObject("context");
         if (!scene.app.packageName.equals(expectContext.getString("package"))
                 || !new JSONArray(scene.app.signers).toString().equals(expectContext.getJSONArray("signers").toString())
-                || !scene.activity.flattenToShortString().equals(expectContext.getString("activity"))) {
+                || !scene.activity.flattenToShortString().equals(expectContext.getString("activity"))
+                || scene.task.taskId != expectContext.getInt("task_id")) {
             throw new Refusal("focused app changed since the pin");
         }
         if (scene.app.debuggable) {

@@ -152,11 +152,11 @@ def test_asset_links_name_the_app_and_signer():
     fetch = lambda url: fetched.append(url) or statements()
     assert asset_link_allows(SITE, 'com.example.app', OTHER_SIGNER, fetch=fetch)
     assert fetched == ['https://example.com/.well-known/assetlinks.json']
-    assert asset_link_allows(SITE, 'com.example.app', OTHER_SIGNER,
-                             fetch=lambda url: statements(relation='delegate_permission/common.handle_all_urls'))
 
 
 @pytest.mark.parametrize('fetch', [
+    # App Links let an app open the site's links; they do not share its credentials.
+    lambda url: statements(relation='delegate_permission/common.handle_all_urls'),
     lambda url: statements(package='com.example.other'),
     lambda url: statements(signer='CD' * 32),
     lambda url: statements(relation='delegate_permission/common.use_as_origin'),
@@ -172,7 +172,8 @@ def test_asset_links_refuse_other_apps(fetch):
 
 def context(package='com.example.app', activity='com.example.app/.Login', lineage=(OTHER_SIGNER,), **extra):
     return {'address_bar': None, 'boot_id': BOOT, 'sdk': 35, 'speak_password': False, 'window_id': 7,
-            'window_title': 'Sign in', 'package': package, 'activity': activity, 'signers': [lineage[-1]],
+            'window_title': 'Sign in', 'package': package, 'activity': activity, 'task_id': 12, 'user_id': 0,
+            'signers': [lineage[-1]],
             'signer_lineage': list(lineage), 'debuggable': False, 'system_app': False, **extra}
 
 
@@ -206,7 +207,13 @@ class FakeAdb:
             return {'ok': True, 'boot_id': scene.get('boot', BOOT), 'sdk': 35,
                     'speak_password': scene['context']['speak_password'], 'protocol': 1}
         if op in {'context', 'inspect'}:
-            return {'ok': True, 'context': scene['context'], 'fields': scene['fields'], 'protocol': 1}
+            answer = {'ok': True, 'context': scene['context'], 'fields': scene['fields'], 'protocol': 1}
+            if 'mark' in request:
+                answer['mark_seen'] = scene.get('shows_mark', lambda mark: True)(request['mark'])
+            return answer
+        if op == 'google_sign_in':
+            return scene.get('sign_in', {'ok': True, 'steps': [k for k in ('email', 'password', 'code') if k in request],
+                                         'protocol': 1})
         if op == 'check':
             by_id = {f['node_id']: f for f in scene['fields']}
             if not all(i in by_id for i in request['node_ids']):
@@ -272,99 +279,82 @@ def test_status_reports_android_capabilities(device_file):
     assert status['android_fill_delivery'] == DELIVERY and status['android_page_code_delivery'] == CHROME_CODE_DELIVERY
 
 
-def test_google_sign_in_fills_the_google_entry_only(device_file):
-    scene = {'context': context(**GMS), 'fields': [field('11', web=True, package='com.google.android.gms'),
-                                                   field('12', password=True, web=True, package='com.google.android.gms')]}
-    broker = make_broker(device_file, scene)
-    inspected = broker.dispatch({'action': 'android-inspect', 'device': 'phone'})
-    assert inspected['site'] == {'origin': 'https://accounts.google.com', 'source': 'google-sign-in'}
-    assert [f['field'] for f in inspected['fields']] == ['11', '12']
+APP = [field('21'), field('22', password=True)]
 
-    pinned = pin(broker, mode='password', field='12')
-    assert pinned['ok'] and pinned['origin'] == 'https://accounts.google.com' and pinned['android_delivery'] == DELIVERY
+
+def app_broker(device_file, scene_change=None, fields=None, fill=None):
+    scene = {'context': context(**(scene_change or {})), 'fields': fields or APP}
+    if fill is not None:
+        scene['fill'] = fill
+    broker = make_broker(device_file, scene,
+                         fetch=lambda url: statements() if url.startswith('https://example.com/') else b'[]')
+    return broker, scene
+
+
+def test_an_app_fills_only_the_entry_of_the_site_its_asset_links_name(device_file):
+    broker, _ = app_broker(device_file)
+    inspected = broker.dispatch({'action': 'android-inspect', 'device': 'phone'})
+    assert inspected['site'] is None and 'give --app-site' in inspected['site_note']
+    assert [f['field'] for f in inspected['fields']] == ['21', '22']
+    assert 'give --app-site' in pin(broker, mode='password', field='22')['error']
+    assert 'exact HTTPS origin' in pin(broker, mode='password', field='22', app_site='http://example.com')['error']
+    assert 'do not name this app' in pin(broker, mode='password', field='22', app_site='https://other.example')['error']
+
+    pinned = pin(broker, mode='password', field='22', app_site='https://example.com')
+    assert pinned['ok'] and pinned['origin'] == 'https://example.com' and pinned['site_source'] == 'asset-links'
+    assert pinned['android_delivery'] == DELIVERY
     assert fill(broker, 'Other', pinned['target']) == {'ok': False, 'error': ORIGIN_MISMATCH, 'delivery': 'not-started'}
     assert fill_requests() == []
 
-    pinned = pin(broker, mode='password', field='12')
-    response = fill(broker, 'Google', pinned['target'])
+    pinned = pin(broker, mode='password', field='22', app_site='https://example.com')
+    response = fill(broker, 'synthetic-user', pinned['target'])
     assert response == {'ok': True, 'filled': 'password', 'target_delivery': DELIVERY}
     assert SECRET not in json.dumps(response)
     [request] = fill_requests()
     assert [f['value'] for f in request['fields']] == [SECRET] and request['boot_id'] == BOOT
     # A pin is single use.
-    assert fill(broker, 'Google', pinned['target'])['delivery'] == 'not-started'
+    assert fill(broker, 'synthetic-user', pinned['target'])['delivery'] == 'not-started'
 
 
 def test_login_mode_fills_both_fields_in_order(device_file):
-    scene = {'context': context(**GMS), 'fields': [field('11', web=True, package='com.google.android.gms'),
-                                                   field('12', password=True, web=True, package='com.google.android.gms')]}
-    broker = make_broker(device_file, scene)
-    pinned = pin(broker, mode='login', field='12', username_field='11')
-    assert fill(broker, 'Google', pinned['target'], mode='login')['ok']
+    broker, _ = app_broker(device_file)
+    pinned = pin(broker, mode='login', field='22', username_field='21', app_site='https://example.com')
+    assert fill(broker, 'synthetic-user', pinned['target'], mode='login')['ok']
     [request] = fill_requests()
-    assert [(f['expect']['node_id'], f['value']) for f in request['fields']] == [
-        ('11', 'synthetic@example.invalid'), ('12', SECRET)]
+    assert [(f['expect']['node_id'], f['value']) for f in request['fields']] == [('21', 'synthetic-user'), ('22', SECRET)]
 
 
-@pytest.mark.parametrize('change, error', [
-    (dict(lineage=(OTHER_SIGNER,)), 'app not verified'),
-    (dict(activity='com.google.android.gms/.Other'), 'app not verified'),
-])
-def test_google_sign_in_needs_google_signing_and_its_activity(device_file, change, error):
-    scene = {'context': context(**{**GMS, **change}),
-             'fields': [field('12', password=True, web=True, package='com.google.android.gms')]}
-    assert error in pin(make_broker(device_file, scene), mode='password', field='12')['error']
+def test_a_web_field_inside_an_app_is_refused(device_file):
+    # An app's web view shows no page URL; asset links name the app, not the page it shows.
+    broker, _ = app_broker(device_file, fields=[field('22', password=True, web=True)])
+    assert 'web field inside an app' in pin(broker, mode='password', field='22', app_site='https://example.com')['error']
 
 
 @pytest.mark.parametrize('scene_change, request_change, error', [
     ({'speak_password': True}, {}, 'speak_password 0'),
     ({'debuggable': True}, {}, 'debuggable'),
-    ({}, {'mode': 'password', 'field': '11'}, 'password value needs a password field'),
-    ({}, {'mode': 'username', 'field': '12'}, 'not a password field'),
+    ({}, {'mode': 'password', 'field': '21'}, 'password value needs a password field'),
+    ({}, {'mode': 'username', 'field': '22'}, 'not a password field'),
     ({}, {'mode': 'password', 'field': '99'}, 'field not found'),
     ({}, {'mode': 'password', 'field': '#password'}, 'field values from android inspect'),
-    ({}, {'mode': 'login', 'field': '12'}, 'required in login mode'),
+    ({}, {'mode': 'login', 'field': '22'}, 'required in login mode'),
 ])
 def test_unsafe_or_wrong_targets_are_refused(device_file, scene_change, request_change, error):
-    scene = {'context': context(**GMS, **scene_change),
-             'fields': [field('11', web=True, package='com.google.android.gms'),
-                        field('12', password=True, web=True, package='com.google.android.gms')]}
-    response = pin(make_broker(device_file, scene), **{'mode': 'password', 'field': '12', **request_change})
+    broker, _ = app_broker(device_file, scene_change)
+    response = pin(broker, **{'mode': 'password', 'field': '22', 'app_site': 'https://example.com', **request_change})
     assert response['ok'] is False and error in response['error']
 
 
-def test_hidden_field_and_frames_are_refused(device_file):
-    scene = {'context': context(**GMS), 'fields': [field('12', password=True, web=True, package='com.google.android.gms',
-                                                         visible=False),
-                                                   field('13', password=True, web=True, package='com.google.android.gms',
-                                                         in_frame=True)]}
-    broker = make_broker(device_file, scene)
-    assert 'visible' in pin(broker, mode='password', field='12')['error']
-    assert 'frame' in pin(broker, mode='password', field='13')['error']
-
-
-def test_an_app_needs_asset_links_for_the_named_site(device_file):
-    scene = {'context': context(), 'fields': [field('21'), field('22', password=True)]}
-    broker = make_broker(device_file, scene, fetch=lambda url: statements())
-    assert 'give --app-site' in pin(broker, mode='password', field='22')['error']
-    assert 'exact HTTPS origin' in pin(broker, mode='password', field='22', app_site='http://example.com')['error']
-    broker.android.fetch = lambda url: statements() if url.startswith('https://example.com/') else b'[]'
-    assert 'do not name this app' in pin(broker, mode='password', field='22', app_site='https://other.example')['error']
-    pinned = pin(broker, mode='login', field='22', username_field='21', app_site='https://example.com')
-    assert pinned['ok'] and pinned['origin'] == 'https://example.com' and pinned['site_source'] == 'asset-links'
-    assert fill(broker, 'synthetic-user', pinned['target'], mode='login')['ok']
+def test_hidden_field_is_refused(device_file):
+    broker, _ = app_broker(device_file, fields=[field('22', password=True, visible=False)])
+    assert 'visible' in pin(broker, mode='password', field='22', app_site='https://example.com')['error']
 
 
 def test_fill_stops_before_any_value_when_the_device_changed(device_file):
-    scene = {'context': context(**GMS), 'fields': [field('12', password=True, web=True, package='com.google.android.gms')]}
-    broker = make_broker(device_file, scene)
-    pinned = pin(broker, mode='password', field='12')
+    broker, scene = app_broker(device_file)
+    pinned = pin(broker, mode='password', field='22', app_site='https://example.com')
     scene['boot'] = 'another-boot'
-    assert fill(broker, 'Google', pinned['target'])['delivery'] == 'not-started'
-    scene.pop('boot')
-    scene['context'] = context(**GMS, speak_password=True)
-    pinned = pin(broker, mode='password', field='12')
-    assert pinned['ok'] is False
+    assert fill(broker, 'synthetic-user', pinned['target'])['delivery'] == 'not-started'
     assert fill_requests() == []
 
 
@@ -373,18 +363,17 @@ def test_fill_stops_before_any_value_when_the_device_changed(device_file):
     ({'ok': False, 'error': 'helper failed: RuntimeException', 'protocol': 1}, 'uncertain'),
     ({'ok': True, 'delivered': False, 'results': [{'accepted': False, 'confirmed': False}], 'protocol': 1}, 'not-started'),
     ({'ok': True, 'delivered': True, 'results': [{'accepted': False}], 'protocol': 1}, 'uncertain'),
+    # The field took the write but does not hold the value (for example, a maximum length cut it).
+    ({'ok': True, 'delivered': True, 'results': [{'accepted': True, 'confirmed': False}], 'protocol': 1}, 'uncertain'),
 ])
 def test_helper_failures_report_whether_delivery_started(device_file, answer, delivery):
-    scene = {'context': context(**GMS), 'fields': [field('12', password=True, web=True, package='com.google.android.gms')],
-             'fill': answer}
-    broker = make_broker(device_file, scene)
-    response = fill(broker, 'Google', pin(broker, mode='password', field='12')['target'])
+    broker, _ = app_broker(device_file, fill=answer)
+    response = fill(broker, 'synthetic-user', pin(broker, mode='password', field='22', app_site='https://example.com')['target'])
     assert response['ok'] is False and response['delivery'] == delivery and SECRET not in json.dumps(response)
 
 
 def test_authenticator_code_goes_to_an_app_field_of_the_entry_site(device_file):
-    scene = {'context': context(), 'fields': [field('31')]}
-    broker = make_broker(device_file, scene, fetch=lambda url: statements())
+    broker, _ = app_broker(device_file, fields=[field('31')])
     pinned = pin(broker, mode='totp', field='31', app_site='https://example.com')
     response = fill(broker, 'synthetic-user', pinned['target'], mode='totp')
     assert response == {'ok': True, 'filled': 'totp', 'target_delivery': DELIVERY}
@@ -396,6 +385,78 @@ def test_authenticator_code_goes_to_an_app_field_of_the_entry_site(device_file):
     refused = broker.dispatch({'action': 'fill-totp', 'handle': handle(broker, 'synthetic-user'), 'target': pinned['target'],
                                'target_protocol': 1, 'target_url': 'https://example.com/'})
     assert refused['ok'] is False and refused['delivery'] == 'not-started'
+
+
+# ----- Google account sign-in -------------------------------------------------
+
+GMS_FIELDS = [field('11', web=True, package='com.google.android.gms'),
+              field('12', password=True, web=True, package='com.google.android.gms')]
+
+
+def google_sign_in(broker, query='Google', code=False):
+    return broker.dispatch({'action': 'android-google-sign-in', 'android_protocol': 1, 'device': 'phone',
+                            'handle': handle(broker, query), 'code': code})
+
+
+def sign_in_requests():
+    return [r for r in FakeAdb.requests if r['op'] == 'google_sign_in']
+
+
+def test_google_sign_in_pins_only_the_email(device_file):
+    broker = make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS})
+    inspected = broker.dispatch({'action': 'android-inspect', 'device': 'phone'})
+    assert inspected['site'] == {'origin': 'https://accounts.google.com', 'source': 'google-sign-in'}
+    assert 'google-sign-in' in inspected['site_note']
+    # The sign-in web view shows no page URL: a work account can move it to
+    # another site, so a separate password or code pin is refused.
+    for mode in ('password', 'totp'):
+        assert 'android google-sign-in' in pin(broker, mode=mode, field='12' if mode == 'password' else '11')['error']
+    assert 'android google-sign-in' in pin(broker, mode='login', field='12', username_field='11')['error']
+    pinned = pin(broker, mode='username', field='11')
+    assert pinned['ok'] and pinned['origin'] == 'https://accounts.google.com'
+    assert fill(broker, 'Google', pinned['target'], mode='username')['ok']
+
+
+def test_google_sign_in_runs_email_password_and_code_in_one_helper_run(device_file):
+    broker = make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS})
+    response = google_sign_in(broker, code=False)
+    assert response == {'ok': True, 'filled': ['email', 'password'], 'target_delivery': DELIVERY}
+    [request] = sign_in_requests()
+    assert request['email'] == 'synthetic@example.invalid' and request['password'] == SECRET and 'code' not in request
+    assert SECRET not in json.dumps(response)
+    FakeAdb.requests = []
+    response = google_sign_in(make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS},
+                                          entries=[Entry('1', 'Google', 'me@example.invalid', SECRET, 'https://accounts.google.com/',
+                                                         otp='otpauth://totp/s?secret=JBSWY3DPEHPK3PXP&issuer=akdbx')]), code=True)
+    assert response['filled'] == ['email', 'password', 'code']
+    [request] = sign_in_requests()
+    assert len(request['code']) == 6 and request['code'] not in json.dumps(response)
+
+
+def test_google_sign_in_refusals(device_file):
+    broker = make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS})
+    assert google_sign_in(broker, query='Other') == {'ok': False, 'error': ORIGIN_MISMATCH, 'delivery': 'not-started'}
+    other = make_broker(device_file, {'context': context(**{**GMS, 'activity': 'com.google.android.gms/.Other'}), 'fields': []})
+    assert 'not Google account sign-in' in google_sign_in(other)['error']
+    unsigned = make_broker(device_file, {'context': context(**{**GMS, 'lineage': (OTHER_SIGNER,)}), 'fields': []})
+    assert 'not Google account sign-in' in google_sign_in(unsigned)['error']
+    speaking = make_broker(device_file, {'context': context(**GMS, speak_password=True), 'fields': []})
+    assert 'speak_password 0' in google_sign_in(speaking)['error']
+    assert sign_in_requests() == []
+
+
+@pytest.mark.parametrize('answer, expected', [
+    ({'ok': True, 'steps': ['email'], 'stopped_at': 'password', 'protocol': 1},
+     {'ok': True, 'filled': ['email'], 'stopped_at': 'password', 'target_delivery': DELIVERY}),
+    ({'ok': True, 'steps': ['email'], 'stopped_at': 'password', 'uncertain': True, 'protocol': 1},
+     {'ok': False, 'delivery': 'uncertain'}),
+    ({'ok': False, 'error': 'Google sign-in screen changed', 'protocol': 1}, {'ok': False, 'delivery': 'not-started'}),
+    ({'ok': False, 'error': 'helper failed: IllegalStateException', 'protocol': 1}, {'ok': False, 'delivery': 'uncertain'}),
+])
+def test_google_sign_in_reports_where_it_stopped(device_file, answer, expected):
+    broker = make_broker(device_file, {'context': context(**GMS), 'fields': GMS_FIELDS, 'sign_in': answer})
+    response = google_sign_in(broker)
+    assert {k: response[k] for k in expected} == expected
 
 
 def test_inspect_and_device_list_work_while_locked(device_file):
@@ -439,6 +500,10 @@ class FakeCDP:
             return {'executionContextId': 5}
         if method == 'Runtime.evaluate':
             expression = params['expression']
+            if expression.startswith(android_route.MARK_SET):
+                return {'result': {'value': {'href': self.url, 'title': 'Sign in'}}}
+            if expression.startswith(android_route.MARK_RESTORE):
+                return {'result': {'value': self.url}}
             if expression == android_route.PAGE_STATE:
                 return {'result': {'value': {'url': self.url, 'shown': self.shown, 'secure': True}}}
             if expression.startswith(android_route.OTP_CAPTURE):
@@ -464,8 +529,10 @@ class FakeCDP:
 CHROME = dict(package='com.android.chrome', activity=android_route.CHROME_ACTIVITIES[1], lineage=(GOOGLE_SIGNER,))
 
 
-def chrome_broker(device_file, cdp, address_bar='example.com'):
+def chrome_broker(device_file, cdp, address_bar='example.com', shows_mark=None):
     scene = {'context': context(**CHROME, address_bar=address_bar), 'fields': []}
+    if shows_mark is not None:
+        scene['shows_mark'] = shows_mark
     broker = make_broker(device_file, scene)
     broker.android.cdp_factory = lambda adb: cdp
     return broker
@@ -504,6 +571,30 @@ def test_chrome_page_code_fill_binds_the_page_origin(device_file):
 def test_chrome_page_refusals(device_file, kwargs, address_bar, error):
     broker = chrome_broker(device_file, FakeCDP('https://example.com/login', **kwargs), address_bar=address_bar)
     assert error in pin(broker, mode='totp', field='#app_totp')['error']
+
+
+def test_chrome_pin_needs_proof_that_the_devtools_peer_is_the_focused_chrome(device_file):
+    # Any app can hold the socket name chrome_devtools_remote. A mark written
+    # through the connection must show in Chrome's own UI before a pin.
+    cdp = FakeCDP('https://example.com/login')
+    broker = chrome_broker(device_file, cdp, shows_mark=lambda mark: False)
+    assert 'not the focused Chrome' in pin(broker, mode='totp', field='#code')['error']
+    expressions = [p['expression'] for m, p in cdp.calls if m == 'Runtime.evaluate']
+    assert any(e.startswith(android_route.MARK_RESTORE) for e in expressions)
+    assert not any(e.startswith(android_route.OTP_CAPTURE) for e in expressions) and cdp.closed
+    seen = []
+    broker = chrome_broker(device_file, FakeCDP('https://example.com/login'), shows_mark=lambda mark: seen.append(mark) or True)
+    assert pin(broker, mode='totp', field='#code')['ok']
+    [mark] = seen
+    assert mark.startswith('akdbx-') and len(mark) == 30
+
+
+def test_chrome_address_bar_hides_www(device_file):
+    broker = chrome_broker(device_file, FakeCDP('https://www.example.com/login'), address_bar='example.com')
+    assert pin(broker, mode='totp', field='#code')['origin'] == 'https://www.example.com'
+    assert android_route._authority_matches('example.com', ('https', 'www.example.com', 443))
+    assert not android_route._authority_matches('www.example.com', ('https', 'example.com', 443))
+    assert not android_route._authority_matches('example.com', ('https', 'wwwexample.com', 443))
 
 
 def test_chrome_http_page_is_refused(device_file):
@@ -548,6 +639,27 @@ def test_forwarded_devtools_port_is_removed_once_connected():
     endpoint.release_endpoint()
     endpoint.release_endpoint()
     assert calls == ['forward', ('remove', 40000)]
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Linux peer check')
+def test_adb_port_of_another_account_is_refused(monkeypatch):
+    import socket as socket_module
+    listener = socket_module.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+    try:
+        runner = android_route.Adb(android_route.Device('phone', '/bin/true', port, 'emulator-5584'))
+        assert runner.server_running()
+
+        def other_owner(connection):
+            raise android_route.TargetError()
+        monkeypatch.setattr('akdbx.browser_password.verify_peer', other_owner)
+        with pytest.raises(AndroidError, match='another account'):
+            runner.server_running()
+    finally:
+        listener.close()
+    assert not runner.server_running()
 
 
 # ----- the adb process: values only on standard input ----------------------
@@ -608,7 +720,7 @@ def run_cli(argv, responses, capsys):
     args = parser().parse_args(argv)
     sent = []
 
-    def request(payload):
+    def request(payload, timeout=None):
         sent.append(payload)
         return caps() if payload['action'] == 'ping' else responses.pop(0)
     code = android_cli.run(args, request)
@@ -636,3 +748,16 @@ def test_cli_pin_needs_the_username_field_only_in_login_mode(capsys):
     code, sent, out = run_cli(['android', 'pin', '--device', 'phone', '--mode', 'password', '--field', '1'], [pinned], capsys)
     assert code == 0 and sent[1] == {'action': 'android-pin', 'android_protocol': 1, 'device': 'phone',
                                      'mode': 'password', 'field': '1'}
+
+
+def test_cli_reports_a_used_handle_as_not_started(capsys):
+    refusal = {'ok': False, 'error': 'unknown or expired handle; search again'}
+    code, _, out = run_cli(['android', 'fill', 'a' * 64, '--target', 'b' * 64, '--mode', 'password'], [refusal], capsys)
+    assert code == 1 and json.loads(out.out) == refusal and 'unconfirmed' not in out.err
+
+
+def test_cli_google_sign_in_sends_no_value(capsys):
+    receipt = {'ok': True, 'filled': ['email'], 'stopped_at': 'password', 'target_delivery': DELIVERY}
+    code, sent, out = run_cli(['android', 'google-sign-in', 'a' * 64, '--device', 'phone', '--code'], [receipt], capsys)
+    assert code == 0 and json.loads(out.out) == receipt
+    assert set(sent[1]) == {'action', 'android_protocol', 'device', 'handle', 'code', 'start_deadline'} and sent[1]['code'] is True
