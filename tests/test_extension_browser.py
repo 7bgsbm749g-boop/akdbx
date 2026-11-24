@@ -1522,7 +1522,7 @@ def test_a_rebuild_with_other_contents_runs_the_new_worker_after_a_browser_resta
 
     The first rebuild keeps the version, as builds did before the stamp: the restarted
     browser still runs the old worker beside the new files on disk. The stamped rebuild
-    gives another version, and the next restart runs the new worker.
+    gives another version, and after the next restart the new worker runs.
     """
     binary = extension_browser()
     if binary is None:
@@ -1543,7 +1543,12 @@ def test_a_rebuild_with_other_contents_runs_the_new_worker_after_a_browser_resta
     stamped = rebuild(monkeypatch, folder, unlock_origin=origin)
     assert stamped != first and json.loads((folder / 'manifest.json').read_text())['version'] == stamped
     with chromium_lab(private_dir, *certificates, restart=True, **run) as lab:
-        assert worker_value(lab, RUNS) == [stamped, True, 'function']
+        # Chromium registers the new worker at startup. Edge on Windows can first start the registered old
+        # worker, which then finds the newer build on disk and reloads into it.
+        deadline = time.monotonic() + 30
+        while (runs := worker_value(lab, RUNS)) != [stamped, True, 'function']:
+            assert runs == [first, False, 'function'] and time.monotonic() < deadline, runs
+            time.sleep(.2)
 
 
 def test_a_worker_that_finds_a_newer_build_on_disk_refuses_the_pin_and_reloads_into_it(harness, monkeypatch):

@@ -1290,7 +1290,8 @@ def test_other_extension_contents_give_another_build_version(monkeypatch):
         assert other != BUILT and other.startswith(route.EXTENSION_VERSION + '.')
         monkeypatch.setattr(extension_host, '_source_files',
                             lambda host_name=route.HOST_NAME: {**real(host_name), 'background.js':
-                                                               real()['background.js'].replace(b'\n', b'\r\n')})
+                                                               real()['background.js'].replace(b'\r\n', b'\n')
+                                                               .replace(b'\n', b'\r\n')})
         extension_host.built_version.cache_clear()
         assert extension_host.built_version() == BUILT  # A CRLF checkout builds the same version.
     finally:
