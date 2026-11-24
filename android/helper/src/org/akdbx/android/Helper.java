@@ -923,7 +923,7 @@ public final class Helper {
         return null;
     }
 
-    /** The left of the two buttons in Google sign-in's own footer (Skip on the phone-number page), or null. */
+    /** The start button of the two in Google sign-in's own footer (Skip on the phone-number page), or null. */
     static AccessibilityNodeInfo footerSkip(Walk walk) {
         for (AccessibilityNodeInfo candidate : walk.nodes) {
             AccessibilityNodeInfo node = footer(candidate);
@@ -941,7 +941,14 @@ public final class Helper {
                 Rect b = new Rect();
                 buttons.get(0).getBoundsInScreen(a);
                 buttons.get(1).getBoundsInScreen(b);
-                return a.left <= b.left ? buttons.get(0) : buttons.get(1);
+                if (a.left == b.left) {
+                    // Stacked buttons: which one is Skip is not known.
+                    return null;
+                }
+                // Skip is the footer's start button: the left one, or the right one in a right-to-left layout.
+                boolean rtl = android.content.res.Resources.getSystem().getConfiguration().getLayoutDirection()
+                        == android.view.View.LAYOUT_DIRECTION_RTL;
+                return (a.left < b.left) != rtl ? buttons.get(0) : buttons.get(1);
             }
         }
         return null;
