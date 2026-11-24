@@ -1566,10 +1566,13 @@ def test_a_worker_that_finds_a_newer_build_on_disk_refuses_the_pin_and_reloads_i
     assert old.stale is True and harness.frames(url) == dict(ok=False, error=route.STALE)
     assert harness.broker.dispatch(dict(action='ping'))['extension_browsers'][0]['version_status'] == 'stale'
     deadline = time.monotonic() + 60
-    while list(harness.hub.channels.values()) == [old] or old.id in harness.hub.channels:
+    while True:  # One snapshot: the old host may be gone before the new one attaches.
+        channels = list(harness.hub.channels.values())
+        if len(channels) == 1 and channels[0] is not old:
+            break
         assert time.monotonic() < deadline, 'the extension did not reload into the new build'
         time.sleep(.2)
-    [new] = harness.hub.channels.values()
+    [new] = channels
     assert new.version == newer and new.stale is False and new.digest != old.digest
     assert harness.hub._paired_channel() == [] and harness.broker.dispatch(dict(action='ping'))['extension_paired'] is False
     assert worker_value(harness.lab, RUNS) == [newer, True, 'function']

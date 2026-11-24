@@ -1488,6 +1488,7 @@ class Setup:
             config = (folder / 'config.js').read_text(encoding='utf-8')
             # An unchanged folder is not rebuilt, so it keeps its build ID and the extension its saved trust.
             built = (manifest.get('key') == EXTENSION_KEY and manifest.get('version') == built_version()
+                     and f'globalThis.AKDBX_EXTENSION_VERSION = {json.dumps(built_version())};' in config
                      and json.dumps(origin) in config and BUILD_ID.search(config) is not None)
         except Exception:
             built = False

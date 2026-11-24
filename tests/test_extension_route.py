@@ -1305,9 +1305,10 @@ def test_a_build_for_a_test_host_keeps_the_version_of_the_shipped_contents(tmp_p
     assert json.loads((built / 'manifest.json').read_text())['version'] == BUILT
 
 
-@pytest.mark.parametrize('version, worker_stale', [(OTHER_BUILD, False), (route.EXTENSION_VERSION, False),
-                                                   (BUILT, True)])
-def test_a_stale_worker_gets_no_frame_list_and_no_pin_and_the_error_names_the_fix(version, worker_stale):
+@pytest.mark.parametrize('version, worker_stale, status', [
+    (OTHER_BUILD, False, 'mismatch'), (route.EXTENSION_VERSION, False, 'mismatch'), (BUILT, True, 'stale')])
+def test_a_stale_or_mismatched_worker_gets_no_frame_list_and_no_pin_and_the_error_names_the_fix(
+        version, worker_stale, status):
     """A worker that Chrome kept from another build pins fine but fails later fills: refuse it at the start."""
     broker = make_broker([CardEntry()])
     extension = FakeExtension({3: [Document('TOP', LOGIN)], 5: [Document('TOP', TOP)]})
@@ -1315,16 +1316,38 @@ def test_a_stale_worker_gets_no_frame_list_and_no_pin_and_the_error_names_the_fi
     channel.stale = worker_stale
     broker.extension.channels[channel.id] = channel
     broker.extension.approved.append(channel.digest)
-    status = broker.dispatch(dict(action='ping'))
-    assert status['extension_paired'] is True
-    assert status['extension_browsers'] == [dict(browser='helium', paired=True, version=version, version_status='stale')]
+    state = broker.dispatch(dict(action='ping'))
+    assert state['extension_paired'] is True
+    assert state['extension_browsers'] == [dict(browser='helium', paired=True, version=version, version_status=status)]
+    # A stale worker: restart or reload. Another build than the broker's: rebuild with this akdbx.
+    error = route.STALE if status == 'stale' else route.MISMATCH.format(loaded=version, expected=BUILT)
     for result in (broker.dispatch(dict(action='list-password-frames', password_protocol=1, frame_protocol=1,
                                         top_url=LOGIN, route='extension')),
                    pin_password(broker, channel, 3, 'TOP', LOGIN),
                    card_pin(broker, channel, 'TOP')):
-        assert result == dict(ok=False, error=route.STALE)
-    assert 'chrome://extensions' in route.STALE and 'pair it again' in route.STALE and 'restart the browser' in route.STALE
+        assert result == dict(ok=False, error=error)
+    assert 'chrome://extensions' in error and 'pair it again' in error
+    assert ('restart the browser' in error) == (status == 'stale')
+    assert ('akdbx extension build' in error and version in error) == (status == 'mismatch')
     assert extension.calls == [] and broker.extension.pins == {}
+
+
+def test_a_refused_browser_does_not_hide_the_page_in_another_paired_browser():
+    broker = make_broker()
+    current, _ = attach(broker, {3: [Document('TOP', LOGIN)]})
+    stale_extension = FakeExtension({})
+    stale = FakeChannel(broker.extension, stale_extension, browser='chrome')
+    stale.stale = True
+    broker.extension.channels[stale.id] = stale
+    broker.extension.approved.append(stale.digest)
+    request = dict(action='list-password-frames', password_protocol=1, frame_protocol=1, top_url=LOGIN,
+                   route='extension')
+    listing = broker.dispatch(request)
+    assert listing['ok'] is True and listing['page_id'] == current.id + '.3'
+    assert pin_password(broker, current, 3, 'TOP', LOGIN)['ok'] is True
+    # Only the refused browser could hold the page: its refusal, which names the fix.
+    assert broker.dispatch({**request, 'top_url': 'https://other.example.org/'}) == dict(ok=False, error=route.STALE)
+    assert broker.dispatch({**request, 'page_id': stale.id + '.3'}) == dict(ok=False, error=route.STALE)
 
 
 def test_a_worker_that_finds_a_newer_build_on_disk_refuses_and_shows_stale_from_then_on():
@@ -1415,9 +1438,9 @@ def test_attach_refuses_a_malformed_extension_version(pair_of_sockets, version):
     (dict(extension_version='0.0.9.7'), '0.0.9.7', 'outdated'),
     (dict(extension_version='999.0.0'), '999.0.0', 'newer'),
     # The same MAJOR.MINOR.PATCH with other contents, or from a build without the fourth part:
-    # the worker Chrome kept runs another build than this broker's.
-    (dict(extension_version=OTHER_BUILD), OTHER_BUILD, 'stale'),
-    (dict(extension_version=route.EXTENSION_VERSION), route.EXTENSION_VERSION, 'stale'),
+    # the browser loads another build than this broker's.
+    (dict(extension_version=OTHER_BUILD), OTHER_BUILD, 'mismatch'),
+    (dict(extension_version=route.EXTENSION_VERSION), route.EXTENSION_VERSION, 'mismatch'),
     # The worker found a newer build on disk and could not reload into it.
     (dict(extension_version=BUILT, extension_stale=True), BUILT, 'stale'),
     # An extension built by akdbx 0.21.2 or earlier sends no version: it attaches and shows as outdated.

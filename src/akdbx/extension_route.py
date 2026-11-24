@@ -139,6 +139,10 @@ if not EXTENSION_VERSION_FORMAT.fullmatch(EXTENSION_VERSION):
 STALE = ('extension route unavailable: the browser runs an older akdbx extension service worker than the '
          'extension files on disk (stale build); restart the browser, or reload akdbx on chrome://extensions, '
          'then pair it again')
+MISMATCH = ('extension route unavailable: the browser runs akdbx extension {loaded}, another build than this '
+            "broker's {expected}; run `akdbx extension build --output FOLDER` with this akdbx into the folder the "
+            'browser loads (or restart the broker if akdbx was updated), then reload akdbx on chrome://extensions '
+            'and pair it again')
 
 
 def valid_extension_version(value):
@@ -155,9 +159,11 @@ def version_status(version, stale=False):
     """How a loaded extension's version compares with the one this akdbx build ships.
 
     An extension built by akdbx 0.21.2 or earlier does not report a version, so a missing
-    version means an outdated extension. ``stale``: the extension's worker runs another
-    build than this one at the same MAJOR.MINOR.PATCH (another fourth part, or none), or
-    it said so itself (it found a newer build on disk and could not reload into it).
+    version means an outdated extension. ``stale``: the worker found a newer build on disk
+    and could not reload into it, so a browser restart or reload fixes it. ``mismatch``: the
+    same MAJOR.MINOR.PATCH as this broker's build with another (or no) fourth part, so the
+    browser loads other contents than this akdbx builds; a rebuild with this akdbx (or a
+    broker restart after an update) fixes it.
     """
     if version is None:
         return 'outdated'
@@ -166,7 +172,7 @@ def version_status(version, stale=False):
     loaded, shipped = version_parts(version), version_parts(EXTENSION_VERSION)
     if loaded == shipped:
         from .extension_host import built_version
-        return 'current' if version == built_version() else 'stale'
+        return 'current' if version == built_version() else 'mismatch'
     return 'outdated' if loaded < shipped else 'newer'
 
 
@@ -176,8 +182,8 @@ class StaleExtension(SlotError):
     A SlotError, because the broker returns that error's message as it is.
     """
 
-    def __init__(self):
-        super().__init__(STALE)
+    def __init__(self, message=STALE):
+        super().__init__(message)
 
 
 class ExtensionError(Exception):
@@ -400,14 +406,18 @@ class Channel:
             send_message(self.connection, message)
 
     def checked_call(self, op, timeout, **payload):
-        """A frame list or pin call, refused when this worker runs a stale build.
+        """A frame list or pin call, refused when this worker runs a stale or mismatched build.
 
         The broker knows a stale build from the reported version; the worker
         also checks the manifest on disk before each such call and answers
         ``{"ok": false, "error": "stale"}`` when the folder holds a newer build.
         """
-        if version_status(self.version, self.stale) == 'stale':
+        status = version_status(self.version, self.stale)
+        if status == 'stale':
             raise StaleExtension()
+        if status == 'mismatch':
+            from .extension_host import built_version
+            raise StaleExtension(MISMATCH.format(loaded=self.version, expected=built_version()))
         result = self.call(op, timeout, **payload)
         if result.get('ok') is False and result.get('error') == 'stale':
             self.stale = True
@@ -983,13 +993,19 @@ class ExtensionHub:
             raise ExtensionError()
         _origin(request['top_url'])
         channels, tab_id = self._channels_for(request)
-        found = []
+        found, refused = [], None
         for channel in channels:
-            result = channel.checked_call('frames', 10, top_url=request['top_url'], tab_id=tab_id)
+            try:
+                result = channel.checked_call('frames', 10, top_url=request['top_url'], tab_id=tab_id)
+            except StaleExtension as exc:
+                refused = refused or exc  # Another paired browser may still hold the page.
+                continue
             tabs = result.get('tabs')
             if result.get('ok') is not True or not isinstance(tabs, list) or len(tabs) > MAX_TABS:
                 raise ExtensionError()
             found.extend((channel, tab) for tab in tabs)
+        if not found and refused is not None:
+            raise refused
         if len(found) != 1:
             raise ExtensionError()  # Missing or ambiguous: pass --page-id.
         channel, tab = found[0]
