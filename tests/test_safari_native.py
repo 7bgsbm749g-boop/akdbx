@@ -38,13 +38,22 @@ def helper(tmp_path_factory):
     source.write_bytes(safari.assets().joinpath('BrokerBridge.swift').read_bytes())
     entitlement = folder / 'native.entitlements'
     entitlement.write_bytes(safari.assets().joinpath('Extension.entitlements').read_bytes())
-    binary = folder / 'akdbx-safari-native-test'
+    app = folder / 'NativeLab.app'
+    executable = app / 'Contents/MacOS'
+    executable.mkdir(parents=True)
+    binary = executable / 'akdbx-safari-native-test'
+    (app / 'Contents/Info.plist').write_bytes(plistlib.dumps({
+        'CFBundleIdentifier': 'org.akdbx.safari.native-test',
+        'CFBundleExecutable': binary.name, 'CFBundleName': 'NativeLab',
+        'CFBundlePackageType': 'APPL', 'CFBundleVersion': '1',
+        'LSMinimumSystemVersion': '14.0', 'LSBackgroundOnly': True,
+    }))
     checked(['xcrun', 'swiftc', '-parse-as-library', str(source),
              str(Path(__file__).with_name('safari_bridge_main.swift')), '-framework', 'Foundation',
              '-framework', 'Security', '-o', str(binary)])
     checked(['codesign', '--force', '--sign', '-', '--identifier', 'org.akdbx.safari.native-test',
-             '--entitlements', str(entitlement), str(binary)])
-    checked(['codesign', '--verify', '--strict', str(binary)])
+             '--entitlements', str(entitlement), str(app)])
+    checked(['codesign', '--verify', '--strict', str(app)])
     return binary
 
 

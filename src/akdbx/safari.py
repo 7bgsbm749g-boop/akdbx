@@ -119,7 +119,16 @@ def build_app(destination, *, unlock_origin):
               'CODE_SIGN_STYLE=Manual', 'DEVELOPMENT_TEAM=', 'build'], timeout=600)
         built = derived / 'Build' / 'Products' / 'Release' / (APP_NAME + '.app')
         if not _owned_app(built):
-            raise RuntimeError('Xcode did not produce the expected Safari app')
+            products = []
+            for candidate in (derived / 'Build' / 'Products' / 'Release').glob('*.app'):
+                info = candidate / 'Contents/Info.plist'
+                bundle_id = None
+                if info.is_file() and info.stat().st_size <= 65536:
+                    bundle_id = plistlib.loads(info.read_bytes()).get('CFBundleIdentifier')
+                products.append(dict(name=candidate.name, bundle_id=bundle_id))
+                if len(products) == 8:
+                    break
+            raise RuntimeError('Xcode did not produce the expected Safari app: ' + json.dumps(products))
         extensions = list((built / 'Contents' / 'PlugIns').glob('*.appex'))
         if len(extensions) != 1:
             raise RuntimeError('the Safari app must contain exactly one native extension')
