@@ -95,14 +95,15 @@ def build_app(destination, *, unlock_origin):
         project_data = plistlib.loads(_run(['plutil', '-convert', 'xml1', '-o', '-', str(project_file)]))
         objects = project_data['objects']
         identifiers = {
-            'com.apple.product-type.application': APP_ID,
-            'com.apple.product-type.app-extension': SAFARI_EXTENSION_ID,
+            '.app': APP_ID,
+            '.appex': SAFARI_EXTENSION_ID,
         }
         configured = []
         for target in objects.values():
             if target.get('isa') != 'PBXNativeTarget':
                 continue
-            identifier = identifiers.get(target.get('productType'))
+            product = objects[target['productReference']]['path']
+            identifier = identifiers.get(Path(product).suffix)
             if identifier is None:
                 raise RuntimeError('the Safari project has an unexpected native target')
             configurations = objects[target['buildConfigurationList']]['buildConfigurations']

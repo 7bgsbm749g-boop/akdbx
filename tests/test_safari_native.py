@@ -142,6 +142,8 @@ def test_sandboxed_native_bridge_attaches_and_preserves_profile_isolation(helper
         initial_fds = call(dict(op='test-fd-count'))['count']
         for _ in range(8):
             opened = call(dict(op='open', hello=hello()), profile='profile-a')
+            if not opened['ok']:
+                opened['test_runtime_probe'] = call(dict(op='test-runtime-probe'))
             assert opened['ok'], opened
             token = opened['session']
             assert call(dict(op='read', session=token), profile='profile-b')['ok'] is False
