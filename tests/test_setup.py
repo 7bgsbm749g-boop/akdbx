@@ -214,6 +214,26 @@ def test_adding_firefox_with_a_relative_current_chromium_folder(home, vault, pai
         'chrome': str(folder), 'firefox': str(folder.with_name(folder.name + '-firefox'))}
 
 
+@pytest.mark.parametrize('custom', [False, True])
+def test_legacy_unused_chromium_path_does_not_displace_a_later_firefox_build(home, vault, pair, capsys, custom):
+    folder = home / ('custom-addon' if custom else '.local/share/akdbx/extension')
+    state = home / '.config/akdbx/setup.json'
+    state.parent.mkdir(mode=0o700)
+    state.write_text(json.dumps(dict(version='0.44.0', browsers=[], extension_dir=str(folder))))
+    state.chmod(0o600)
+    code, first, _ = setup(*base(vault, pair, '--browser', 'firefox', '--start-at-login',
+                                '--extension-dir', str(folder)), capsys=capsys)
+    assert code == 0 and first['ok'], first
+    code, second, _ = setup(*base(vault, pair, '--browser', 'firefox', '--browser', 'chrome',
+                                 '--start-at-login'), capsys=capsys)
+    assert code == 0 and second['ok'], second
+    folders = second['stages']['fill']['extension_dirs']
+    assert folders['firefox'] == str(folder) and folders['chrome'] != str(folder)
+    for browser, path in folders.items():
+        manifest = json.loads((Path(path) / 'manifest.json').read_text())
+        assert ('gecko' in manifest.get('browser_specific_settings', {})) is (browser == 'firefox')
+
+
 def test_without_a_terminal_it_needs_yes_or_dry_run(home, vault, capsys):
     code, _, runner = setup('--vault', str(vault))
     assert code == 2 and runner.calls == []

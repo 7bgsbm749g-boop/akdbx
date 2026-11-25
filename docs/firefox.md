@@ -44,6 +44,8 @@ uses `FOLDER`. The setup JSON's `stages.fill.extension_dirs` reports the folder
 for each browser.
 Each format's folder is saved separately, so adding another browser later
 keeps the existing Firefox folder in place.
+An existing akdbx manifest establishes which format owns a saved folder. This
+also handles unused Chromium paths saved by older setup versions.
 
 ## Native host locations
 

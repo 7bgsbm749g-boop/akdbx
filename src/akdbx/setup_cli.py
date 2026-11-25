@@ -824,18 +824,16 @@ class Setup:
         choice['browsers'] = list(dict.fromkeys(browsers))
         chromium = any(b in CHROMIUM_BROWSERS for b in choice['browsers'])
         firefox = 'firefox' in choice['browsers']
-        chrome_dir = self.remembered('extension_dir')
-        firefox_dir = self.remembered('firefox_extension_dir')
-        chrome_dir = Path(chrome_dir) if chrome_dir else None
-        firefox_dir = Path(firefox_dir) if firefox_dir else None
+        chrome_dir = self._remembered_extension_dir('chrome')
+        firefox_dir = self._remembered_extension_dir('firefox')
         if args.extension_dir is not None:
             folder = Path(os.path.abspath(args.extension_dir.expanduser()))
             if chromium or not firefox:
                 chrome_dir = folder
             if firefox:
                 firefox_dir = folder.with_name(folder.name + '-firefox') if chromium else folder
-        # Assign a default only when that format is selected. An established
-        # folder stays in place; a new format gets a distinct default.
+        # The manifest establishes the format of an existing folder. Defaults
+        # are assigned only for selected formats that have no folder yet.
         base = self.default_extension_dir()
         if chromium and chrome_dir is None:
             chrome_dir = base if base != firefox_dir else base.with_name(base.name + '-chromium')
@@ -1495,6 +1493,25 @@ class Setup:
 
     def _extension_folder(self, browser):
         return Path(self.choice['firefox_extension_dir' if browser == 'firefox' else 'extension_dir'])
+
+    def _remembered_extension_dir(self, browser):
+        from .extension_host import EXTENSION_KEY, _read_regular
+        value = self.remembered('firefox_extension_dir' if browser == 'firefox' else 'extension_dir')
+        if not value:
+            return None
+        folder = Path(value)
+        try:
+            data = _read_regular(folder / 'manifest.json', 64 * 1024)
+            if data is None or len(data) > 64 * 1024:
+                return folder
+            manifest = json.loads(data)
+            other_format = (manifest.get('key') == EXTENSION_KEY if browser == 'firefox' else
+                            manifest.get('browser_specific_settings', {}).get('gecko', {}).get('id') == FIREFOX_EXTENSION_ID)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return folder
+        # Older setup versions saved unused paths too. A known build on disk
+        # takes precedence over a saved answer for the other format.
+        return None if other_format else folder
 
     def _build_extension(self, browser='chrome'):
         from .extension_host import BUILD_ID, EXTENSION_KEY, built_version, trusted_origin
