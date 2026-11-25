@@ -32,7 +32,7 @@ read back, canonical and served by GET/HEAD. The broker refreshes and invalidate
 old handles. The existing snapshot locator, crypto policy, capsule, branch,
 advisory lock, ownership, keyfile, race and uncertainty checks still apply.
 
-From **0.44.0** both profiles use the built-in broker implementation. Also require all admission capabilities in the
+From **0.45.0** both profiles use the built-in broker implementation. Also require all admission capabilities in the
 [snapshot contract](snapshot-admission.md), unlocked/writable/no recovery block,
 and these additional exact capabilities:
 

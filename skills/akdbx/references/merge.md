@@ -226,7 +226,7 @@ merely because its capsule ledger retained originals.
 
 ## Semantics and dependencies
 
-akdbx 0.44.0 and later use the built-in `akdbx-native-v1` engine on Linux, macOS and
+akdbx 0.45.0 and later use the built-in `akdbx-native-v1` engine on Linux, macOS and
 Windows. All three platforms reuse the unlocked broker's credentials in memory.
 Install the Python package and its dependencies with `pip install .`. The
 preservation verifier uses the bundled dependency on PyKeePass 4.2.0. No
