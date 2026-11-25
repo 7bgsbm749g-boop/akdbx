@@ -271,6 +271,31 @@ def test_saved_firefox_alias_of_chromium_default_is_preserved(home, vault, pair,
     assert Path(folders['chrome']).resolve() != folder.resolve()
 
 
+@pytest.mark.parametrize('error', [RuntimeError('symlink loop'), OSError('cannot resolve path')])
+def test_broken_unused_firefox_alias_does_not_stop_chrome_setup(home, vault, pair, capsys, monkeypatch, error):
+    alias = home / 'broken-firefox'
+    alias.symlink_to(alias)
+    state = home / '.config/akdbx/setup.json'
+    state.parent.mkdir(mode=0o700)
+    state.write_text(json.dumps(dict(version='0.44.0', browsers=['firefox'],
+                                    firefox_extension_dir=str(alias))))
+    state.chmod(0o600)
+    resolve = Path.resolve
+
+    def old_resolve(path, *args, **kwargs):
+        if path == alias:
+            raise error
+        return resolve(path, *args, **kwargs)
+
+    # Python 3.11/3.12 raise for loops even with strict=False; newer Python
+    # changed this behavior. Exercise the supported older versions on all CI.
+    monkeypatch.setattr(Path, 'resolve', old_resolve)
+    code, result, _ = setup(*base(vault, pair, '--start-at-login', '--browser', 'chrome'), capsys=capsys)
+    assert code == 0 and result['ok'], result
+    folder = Path(result['stages']['fill']['extension_dirs']['chrome'])
+    assert json.loads((folder / 'manifest.json').read_text())['key'] == extension_host.EXTENSION_KEY
+
+
 def test_without_a_terminal_it_needs_yes_or_dry_run(home, vault, capsys):
     code, _, runner = setup('--vault', str(vault))
     assert code == 2 and runner.calls == []

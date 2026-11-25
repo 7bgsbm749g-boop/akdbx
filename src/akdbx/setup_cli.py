@@ -1522,7 +1522,12 @@ class Setup:
         folder = (base if browser == 'chrome' or self._extension_format(base) == 'firefox'
                   else base.with_name(base.name + '-firefox'))
         for number in range(100):
-            collision = other is not None and folder.resolve() == other.resolve()
+            try:
+                collision = other is not None and folder.resolve() == other.resolve()
+            except (OSError, RuntimeError):
+                # A stale unselected path must not stop setup on Python
+                # versions that raise for symlink loops with strict=False.
+                collision = other is not None and folder.absolute() == other.absolute()
             if not collision and self._extension_format(folder) in (None, browser):
                 return folder
             suffix = '' if number == 0 else '-' + str(number + 1)
