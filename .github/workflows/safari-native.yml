@@ -11,8 +11,12 @@ permissions:
 
 jobs:
   safari-browser:
-    name: Actual Safari native extension
-    runs-on: macos-26
+    name: Actual Safari native extension (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26-arm64]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +39,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: safari-browser-results
+          name: safari-browser-results-${{ matrix.os }}
           path: |
             ${{ runner.temp }}/safari-browser.xml
             ${{ runner.temp }}/sb/**/safaridriver.log
