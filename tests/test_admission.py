@@ -15,6 +15,7 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 
+from keepassxc_reference import reference_merge
 import pytest
 from pykeepass import PyKeePass
 
@@ -144,7 +145,7 @@ def test_deletion_addition_custom_attachment_and_native_reference(case, tmp_path
     # semantics. Admission itself never calls the engine or changes input bytes.
     reference=tmp_path/'reference';reference.mkdir(mode=0o700)
     shutil.copyfile(target,reference/'candidate.kdbx');shutil.copyfile(source,reference/'source.kdbx')
-    merging.run_engine(reference,broker.vault)
+    reference_merge(reference,broker.vault)
     native=PyKeePass(reference/'candidate.kdbx',password=MASTER)
     merging.synchronize_deletions(native,broker.vault,v)
     selection.verify(v,(native, v))
@@ -164,7 +165,7 @@ def test_legitimate_native_style_entry_metadata(case,case_name,tmp_path):
     v.find_entries(title='Shared',first=True).mtime=BASE_TIME+timedelta(days=3);v.save()
     ref=tmp_path/'ref';ref.mkdir(mode=0o700)
     shutil.copyfile(target,ref/'candidate.kdbx');shutil.copyfile(source,ref/'source.kdbx')
-    merging.run_engine(ref,broker.vault)
+    reference_merge(ref,broker.vault)
     native=PyKeePass(ref/'candidate.kdbx',password=MASTER)
     selection.verify(native,(broker.vault,v))
     result=admit(case);assert result['ok'],result
@@ -494,7 +495,7 @@ def test_entry_location_and_newer_than_tombstone_follow_native_selection(case,tm
     incoming.save()
     ref=tmp_path/'reference-location';ref.mkdir(mode=0o700)
     shutil.copyfile(target,ref/'candidate.kdbx');shutil.copyfile(source,ref/'source.kdbx')
-    merging.run_engine(ref,broker.vault)
+    reference_merge(ref,broker.vault)
     native=PyKeePass(ref/'candidate.kdbx',password=MASTER)
     merging.synchronize_deletions(native,broker.vault,incoming)
     result=admit(case);assert result['ok'],result
@@ -534,7 +535,7 @@ def test_benign_database_and_group_field_order_matches_native_reference(case,tmp
     v.save();incoming=source.read_bytes()
     ref=tmp_path/'reference-order';ref.mkdir(mode=0o700)
     shutil.copyfile(target,ref/'candidate.kdbx');shutil.copyfile(source,ref/'source.kdbx')
-    merging.run_engine(ref,broker.vault)
+    reference_merge(ref,broker.vault)
     native=PyKeePass(ref/'candidate.kdbx',password=MASTER)
     result=admit(case);assert result['ok'],result
     assert target.read_bytes()==incoming==source.read_bytes()

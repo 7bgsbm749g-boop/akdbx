@@ -567,7 +567,7 @@ def parser() -> argparse.ArgumentParser:
                                 description='Exact-byte snapshot-admission-v1; explicit group verification profiles require CLI and broker 0.8.0 or newer. Policy review required.')
     admit.add_argument('source', type=Path)
     admit.add_argument('--policy', required=True, choices=('snapshot-admission-v1',))
-    admit.add_argument('--group-verification', default='group-semantic-v1', choices=('group-semantic-v1', 'group-tag-sequence-v1', 'native-group-selection-v1'), help='explicit group contract; extended profiles require exact KeePassXC 2.7.10')
+    admit.add_argument('--group-verification', default='group-semantic-v1', choices=('group-semantic-v1', 'group-tag-sequence-v1', 'native-group-selection-v1'), help='explicit group contract; extended profiles require broker group protocol 2')
     admit.add_argument('--snapshot-dir', required=True, type=Path, help='existing mode-0700 directory outside the synced vault; permanently bound for recovery')
     admit.add_argument('--if-match', help='optional current encrypted target SHA256; no quotes or wildcard')
     admit.add_argument('--check', action='store_true', help='read-only admission check; retain snapshots and receipt')
@@ -607,8 +607,8 @@ def _valid_frame_list(response):
 # CLI keeps its established behaviour, where the broker itself refuses.
 PASSWORD_BROWSER_REFUSAL = ('broker has no password browser profile (password_browser_configured is false); '
                             'the operator starts it with --password-browser-profile; target request not sent')
-MERGE_UNAVAILABLE_REFUSAL = ('merge unavailable (merge_available is false); require a safe writable vault and '
-                             'KeePassXC CLI >=2.7.10,<2.8 installed for all users; merge not sent')
+MERGE_UNAVAILABLE_REFUSAL = ('merge unavailable (merge_available is false); unlock a safe writable vault and '
+                             'resolve any pending recovery before merging')
 
 
 def default_notification_state(socket_path: Path) -> Path:

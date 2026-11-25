@@ -294,9 +294,12 @@ def collect(vaults, *, capture):
     return ledger
 
 
-def _append_capsule_binary(vault, data):
+def append_binary(vault, data):
     """Append protected KDBX4 bytes without materializing the pool for its index."""
     if vault.version < (4, 0):
+        if vault.tree.find('./Meta/Binaries') is None:
+            from lxml import etree
+            etree.SubElement(vault.tree.find('./Meta'), 'Binaries')
         return vault.add_binary(data, protected=True)
     from construct import Container
     binaries = vault.payload.inner_header.binary
@@ -361,7 +364,7 @@ def ensure(vault, ledger):
         entry.set_custom_property(CHECKSUM, hashlib.sha256(data).hexdigest(), protect=True)
         for field in ('ctime', 'mtime', 'atime'):
             setattr(entry, field, EPOCH)
-        entry.add_attachment(_append_capsule_binary(vault, data), FILENAME)
+        entry.add_attachment(append_binary(vault, data), FILENAME)
         changed = True
     verify(vault, ledger)
     return changed

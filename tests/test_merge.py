@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import base64
 import copy
+import hashlib
 import io
 import json
 import os
@@ -111,8 +112,7 @@ def test_diverged_round_trip_preview_repeated_refresh_and_receipt(pair, capsys, 
     assert not broker.dispatch({'action': 'search', 'query': 'Right only'})['entries']
     result = merge(pair)
     assert result['ok'] and result['state'] == 'saved'
-    # KeePassXC selects the minimum KDBX minor version needed by the data.
-    assert disk(target).version[0] == 4
+    assert disk(target).version == (4, 1)
     assert {e.title for e in disk(target).entries} >= {'Left only', 'Right only', 'Shared'}
     assert broker.dispatch({'action': 'search', 'query': 'Right only'})['entries']
     assert not broker.dispatch({'action': 'fill', 'handle': selected['handle']})['ok']
@@ -407,15 +407,11 @@ def test_advisory_and_in_process_concurrency(pair, monkeypatch):
     assert results[0]['ok']
 
 
-def test_missing_unsupported_engine_fails_closed(pair, monkeypatch):
-    broker, target, _ = pair
-    before = target.read_bytes()
-    monkeypatch.setattr(merging, 'ENGINE', Path('/nonexistent/synthetic-engine'))
-    broker.merges._engine_checked = False
-    assert not merge(pair)['ok'] and target.read_bytes() == before
-    monkeypatch.setattr(merging, 'ENGINE', Path('/usr/bin/keepassxc-cli'))
-    monkeypatch.setattr(subprocess, 'run', lambda *a, **kw: type('Result', (), {'stdout': b'2.6.0'})())
-    assert merging.engine_version() is None
+def test_merge_runs_without_external_programs(pair, monkeypatch):
+    monkeypatch.setenv('PATH', '')
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **kw: pytest.fail('external program invoked'))
+    assert pair[0].merges.capabilities()['merge_engine'] == 'akdbx-native-v1'
+    assert merge(pair)['state'] == 'saved'
 
 
 def test_real_cli_locked_private_unlock_merge_and_restart_status(pair, tmp_path):
@@ -468,15 +464,7 @@ def test_shared_keyfile_reused_privately_and_changed_keyfile_rejected(pair, tmp_
         v.save()
     vault = open_vault_with_password(target, MASTER, key)
     broker = Broker(vault, RecordingTyper())
-    real_run = subprocess.run
-    def private_run(args, **kwargs):
-        assert MASTER not in ' '.join(args)
-        assert MASTER not in json.dumps(kwargs.get('env', {}))
-        if 'merge' in args:
-            assert '--key-file' in args
-            assert args[args.index('--key-file') + 1].startswith('/proc/self/fd/')
-        return real_run(args, **kwargs)
-    monkeypatch.setattr(subprocess, 'run', private_run)
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **kw: pytest.fail('external program invoked'))
     result = merge((broker, target, source))
     assert result['ok'], result
     assert PyKeePass(target, password=MASTER, keyfile=str(key)).find_entries(title='Right only', first=True)
@@ -517,7 +505,7 @@ def test_full_argon2d_41_profile(pair):
     result = merge((broker, target, source))
     assert result['ok'], result
     assert disk(target).find_entries(title='Right only', first=True)
-    assert disk(target).kdf_algorithm == 'argon2'
+    assert disk(target).kdbx.header.value.dynamic_header.kdf_parameters.data.dict['$UUID'].value == kdf_uuids['argon2']
 
 
 def test_interrupted_intent_blocks_after_restart_and_receipt_remains_readable(pair, monkeypatch):
@@ -573,17 +561,13 @@ def test_cli_merge_timeout_has_recovery_id_and_never_retries(pair, monkeypatch, 
     assert MASTER not in output.out + output.err
 
 
-def test_native_timeout_discards_raw_output_and_preserves_inputs(pair, monkeypatch, capsys, caplog):
+def test_native_failure_discards_raw_output_and_preserves_inputs(pair, monkeypatch, capsys, caplog):
     broker, target, source = pair
     assert broker.merges.capabilities()['merge_available']
     before, incoming = target.read_bytes(), source.read_bytes()
-    def native_timeout(args, **kwargs):
-        assert kwargs['stdout'] == subprocess.DEVNULL
-        assert kwargs['stderr'] == subprocess.DEVNULL
-        assert kwargs['input'] == (MASTER + '\n').encode()
-        assert MASTER not in ' '.join(args)
-        raise subprocess.TimeoutExpired(args, 180, output=SECRET, stderr=MASTER)
-    monkeypatch.setattr(subprocess, 'run', native_timeout)
+    def fail(*args):
+        raise ValueError(SECRET + MASTER)
+    monkeypatch.setattr(merging.native_merge, 'merge', fail)
     result = merge(pair)
     assert not result['ok'] and 'engine failed' in result['error']
     assert target.read_bytes() == before and source.read_bytes() == incoming
@@ -591,7 +575,7 @@ def test_native_timeout_discards_raw_output_and_preserves_inputs(pair, monkeypat
     assert all(s not in json.dumps(result) + output.out + output.err + caplog.text for s in (SECRET, MASTER))
 
 
-def test_line_break_master_password_is_refused_without_native_dispatch(pair, monkeypatch):
+def test_line_break_master_password_merges_in_process(pair, monkeypatch):
     _, target, source = pair
     password = MASTER + '\n'
     for path in (target, source):
@@ -601,9 +585,83 @@ def test_line_break_master_password_is_refused_without_native_dispatch(pair, mon
     broker = Broker(open_vault_with_password(target, password), RecordingTyper())
     assert broker.merges.capabilities()['merge_available']
     def unexpected(*args, **kwargs):
-        pytest.fail('unsupported password reached native engine')
+        pytest.fail('external program invoked')
     monkeypatch.setattr(subprocess, 'run', unexpected)
-    before = target.read_bytes()
+    assert merge((broker, target, source))['state'] == 'saved'
+    assert PyKeePass(target, password=password).find_entries(title='Right only', first=True)
+
+
+@pytest.mark.parametrize('target_major,source_major', [(3, 3), (3, 4), (4, 3)])
+def test_legacy_format_and_mixed_attachments(tmp_path, target_major, source_major):
+    from akdbx.persistence import serialize_encrypted
+    # Empty synthetic 3.1 fixture from KeePassXC db-create, with a reduced test KDF.
+    password = 'synthetic format fixture'
+
+    def branch(major):
+        if major == 3:
+            return PyKeePass(Path(__file__).parent / 'fixtures/empty-3.1.kdbx', password=password)
+        return create_database(io.BytesIO(), password=password)
+
+    left, right = branch(target_major), branch(source_major)
+    for vault, label in ((left, 'left'), (right, 'right')):
+        entry = vault.add_entry(vault.root_group, label, 'username', label)
+        for field in entry._element.find('Times'):
+            if field.tag.endswith('Time') or field.tag == 'LocationChanged':
+                field.text = vault._encode_time(BASE_TIME)
+        entry.add_attachment(merging.versions.append_binary(vault, label.encode()), 'attachment')
+        entry.save_history()
+    target, source = tmp_path / 'target.kdbx', tmp_path / 'source.kdbx'
+    target.write_bytes(serialize_encrypted(left))
+    source.write_bytes(serialize_encrypted(right))
+    broker = Broker(open_vault_with_password(target, password), RecordingTyper())
     result = merge((broker, target, source))
-    assert not result['ok'] and 'line-compatible' in result['error']
-    assert target.read_bytes() == before
+    assert result['state'] == 'saved', result
+    opened = PyKeePass(target, password=password)
+    assert opened.version[0] == target_major
+    if target_major == 3:
+        assert base64.b64decode(opened.tree.findtext('./Meta/HeaderHash')) == hashlib.sha256(opened.kdbx.header.data).digest()
+    for entry in opened.entries:
+        assert entry.attachments[0].data == entry.title.encode()
+        history_ref = entry.history[0]._element.find('Binary/Value').get('Ref')
+        assert opened.binaries[int(history_ref)] == entry.title.encode()
+    assert merge((broker, target, source))['state'] == 'unchanged'
+
+
+def test_native_records_match_independent_keepassxc_merge(pair, tmp_path):
+    from keepassxc_reference import reference_merge
+    broker, target, source = pair
+    incoming = disk(source)
+    changed = incoming.find_entries(title='Shared', first=True)
+    changed.save_history()
+    changed.password = 'synthetic newer password'
+    changed.mtime = BASE_TIME + timedelta(days=1)
+    changed.add_attachment(incoming.add_binary(b'new attachment'), 'new.bin')
+    incoming.save()
+    folder = tmp_path / 'reference'
+    folder.mkdir()
+    shutil.copyfile(target, folder / 'candidate.kdbx')
+    shutil.copyfile(source, folder / 'source.kdbx')
+    reference_merge(folder, broker.vault)
+    assert merge(pair)['ok']
+    actual, expected = disk(target), disk(folder / 'candidate.kdbx')
+
+    def records(vault):
+        return {entry.uuid: (entry.group.uuid, entry.title, entry.password, entry.mtime,
+                             [(a.filename, a.data) for a in entry.attachments],
+                             [(h.password, h.mtime) for h in entry.history]) for entry in vault.entries}
+
+    assert records(actual) == records(expected)
+
+
+def test_legacy_target_refuses_group_tags_it_cannot_represent(tmp_path):
+    password = 'synthetic format fixture'
+    target, source = tmp_path / 'target.kdbx', tmp_path / 'source.kdbx'
+    shutil.copyfile(Path(__file__).parent / 'fixtures/empty-3.1.kdbx', target)
+    incoming = create_database(str(source), password=password)
+    group = incoming.add_group(incoming.root_group, 'Tagged')
+    etree.SubElement(group._element, 'Tags').text = 'synthetic'
+    incoming.save()
+    original = target.read_bytes()
+    broker = Broker(open_vault_with_password(target, password), RecordingTyper())
+    result = merge((broker, target, source))
+    assert result['state'] == 'failed' and target.read_bytes() == original

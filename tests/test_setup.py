@@ -98,7 +98,6 @@ def home(tmp_path, monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv('XDG_RUNTIME_DIR', str(tmp_path / 'run'))
     monkeypatch.setenv('DISPLAY', ':7')
-    monkeypatch.setattr(setup_cli.Setup, '_engine_version', lambda self: None)
     return home
 
 

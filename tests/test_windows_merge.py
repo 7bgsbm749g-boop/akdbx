@@ -1,11 +1,4 @@
-"""Native Windows merge and snapshot admission with the pinned KeePassXC engine.
-
-Synthetic KDBX fixtures only. The engine is the machine-installed
-`keepassxc-cli.exe` when it passes the production trust and version checks.
-A developer machine may instead name a verified portable 2.7.10 copy in
-`AKDBX_TEST_ENGINE`; only the install-location check is replaced then.
-"""
-from contextlib import contextmanager
+"""Windows integration tests for native KDBX merge and snapshot admission."""
 from datetime import datetime, timedelta, timezone
 import io
 import json
@@ -37,30 +30,6 @@ MASTER = '  synthetic !%+& punctuation é 🗝️  '
 SECRET = 'synthetic-entry-secret-never-returned'
 BASE_TIME = datetime(2024, 1, 1, tzinfo=timezone.utc)
 PUBLIC = 'D:P(A;;FA;;;WD)'
-
-
-@pytest.fixture(autouse=True)
-def engine(monkeypatch):
-    """Use the installed trusted engine, or an explicitly named verified copy."""
-    if windows_merge.engine_version() is not None:
-        return windows_merge.engine_path()
-    portable = os.environ.get('AKDBX_TEST_ENGINE')
-    if not portable or not Path(portable).is_file():
-        message = 'Windows merge tests require KeePassXC CLI 2.7.10 or newer, below 2.8'
-        if os.environ.get('AKDBX_REQUIRE_WINDOWS_ENGINE') == '1':
-            pytest.fail(message)
-        pytest.skip(message)
-
-    @contextmanager
-    def named_engine(_path):
-        # The same held, no-write-sharing handle as production; only the
-        # per-machine install location and its ownership are not required.
-        with security.managed_handle(win32file.CreateFile(
-                portable, win32con.GENERIC_READ, win32con.FILE_SHARE_READ, None, win32con.OPEN_EXISTING, 0, None)):
-            yield Path(portable)
-    monkeypatch.setattr(windows_merge, 'trusted_engine', named_engine)
-    assert windows_merge.engine_version() is not None, 'the named test engine is outside the supported series'
-    return Path(portable)
 
 
 def write(path, vault):
@@ -137,10 +106,10 @@ def assert_private(path, *, directory=False):
         pass
 
 
-def test_status_reports_the_engine_and_every_merge_capability(pair, engine):
+def test_status_reports_the_engine_and_every_merge_capability(pair):
     broker, _, _ = pair
     status = broker.dispatch({'action': 'ping'})
-    assert status['merge_available'] is True and status['merge_engine'].startswith('keepassxc-cli 2.7.')
+    assert status['merge_available'] is True and status['merge_engine'] == 'akdbx-native-v1'
     assert status['merge_same_credentials_only'] and status['merge_refresh_target_supported']
     assert status['merge_preserve_conflicts_supported'] and status['merge_preservation_policy'] == 'capsule-v1'
     assert status['merge_active_verification'] == 'semantic-v1' and status['admission_supported'] is True
@@ -338,8 +307,8 @@ def test_target_or_source_changed_during_the_engine_is_not_overwritten(pair, mon
     for victim in (target, source):
         changed = edited(victim.read_bytes(), lambda v: v.add_entry(v.root_group, 'Raced ' + victim.name, 'race', SECRET))
 
-        def racing(bundle, vault, key_path, **options):
-            real(bundle, vault, key_path, **options)
+        def racing(bundle, vault, **options):
+            real(bundle, vault, **options)
             victim.unlink()
             security.write_new(victim, changed)
         monkeypatch.setattr(windows_merge, 'run_engine', racing)
@@ -364,8 +333,8 @@ def test_save_faults_never_claim_success_or_leak(pair, monkeypatch, capsys, capl
     if failure == 'engine':
         monkeypatch.setattr(windows_merge, 'run_engine', fail)
     elif failure in {'reopen', 'public-candidate'}:
-        def corrupt(files, vault, key_path, **options):
-            real_engine(files, vault, key_path, **options)
+        def corrupt(files, vault, **options):
+            real_engine(files, vault, **options)
             candidate = Path(files) / 'candidate.kdbx'
             if failure == 'reopen':
                 candidate.unlink()
@@ -426,10 +395,10 @@ def test_disk_lock_and_in_process_concurrency(pair, monkeypatch):
     entered, release = threading.Event(), threading.Event()
     real = windows_merge.run_engine
 
-    def waiting(files, vault, key_path, **options):
+    def waiting(files, vault, **options):
         entered.set()
         assert release.wait(20)
-        real(files, vault, key_path, **options)
+        real(files, vault, **options)
     monkeypatch.setattr(windows_merge, 'run_engine', waiting)
     results = []
     thread = threading.Thread(target=lambda: results.append(merge(pair)))
@@ -501,20 +470,9 @@ def test_shared_keyfile_is_used_from_its_own_file_and_a_changed_key_is_refused(p
     security.write_new(target, edited(base, lambda v: v.add_entry(v.root_group, 'Left only', 'left', SECRET), key))
     security.write_new(source, edited(base, lambda v: v.add_entry(v.root_group, 'Right only', 'right', SECRET), key))
     broker = Broker(open_vault_with_password(target, MASTER, keyfile), object())
-    seen = []
-    real = subprocess.run
-
-    def recording(arguments, **options):
-        seen.append((list(arguments), dict(options)))
-        return real(arguments, **options)
-    monkeypatch.setattr(windows_merge.subprocess, 'run', recording)
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **kw: pytest.fail('external program invoked'))
     result = merge((broker, target, source))
     assert result['ok'] and result['state'] == 'saved', result
-    arguments, options = seen[-1]
-    assert arguments[arguments.index('--key-file') + 1] == str(keyfile)
-    # No secret in the arguments or environment; the password goes to stdin only.
-    assert MASTER not in ' '.join(arguments) and set(options['env']) == {'SystemRoot'}
-    assert options['stdout'] == options['stderr'] == subprocess.DEVNULL
     assert {e.title for e in disk(target, keyfile).entries} >= {'Left only', 'Right only'}
     assert sorted(p.name for p in private_dir.iterdir() if p.suffix == '.key') == ['synthetic.key']
     # A key file changed on disk is not the key that this broker holds.
@@ -528,7 +486,7 @@ def test_shared_keyfile_is_used_from_its_own_file_and_a_changed_key_is_refused(p
     assert not refused['ok'] and target.read_bytes() == before, refused
 
 
-def test_line_break_master_password_is_refused_without_running_the_engine(pair, monkeypatch):
+def test_line_break_master_password_merges_in_process(pair, monkeypatch):
     _, target, source = pair
     password = MASTER + '\n'
     for path in (target, source):
@@ -536,38 +494,25 @@ def test_line_break_master_password_is_refused_without_running_the_engine(pair, 
         vault.password = password
         write(path, vault)
     broker = Broker(open_vault_with_password(target, password), object())
-    assert broker.dispatch({'action': 'ping'})['merge_available']  # The version probe ran already.
-    monkeypatch.setattr(windows_merge.subprocess, 'run', lambda *a, **k: pytest.fail('engine ran'))
-    before = target.read_bytes()
-    result = merge((broker, target, source))
-    assert not result['ok'] and 'line-compatible' in result['error']
-    assert target.read_bytes() == before
+    assert broker.dispatch({'action': 'ping'})['merge_available']
+    monkeypatch.setattr(subprocess, 'run', lambda *a, **k: pytest.fail('engine ran'))
+    assert merge((broker, target, source))['state'] == 'saved'
+    assert PyKeePass(target, password=password).find_entries(title='Right only', first=True)
 
 
-def test_engine_timeout_discards_output_and_preserves_inputs(pair, monkeypatch, capsys, caplog):
+def test_engine_failure_discards_output_and_preserves_inputs(pair, monkeypatch, capsys, caplog):
     broker, target, source = pair
     before = target.read_bytes()
-    assert broker.dispatch({'action': 'ping'})['merge_available']  # The version probe ran already.
+    assert broker.dispatch({'action': 'ping'})['merge_available']
 
-    def timeout(arguments, **options):
-        raise subprocess.TimeoutExpired(arguments, 1, output=MASTER.encode(), stderr=SECRET.encode())
-    monkeypatch.setattr(windows_merge.subprocess, 'run', timeout)
+    from akdbx import native_merge
+    def fail(*args):
+        raise ValueError(MASTER + SECRET)
+    monkeypatch.setattr(native_merge, 'merge', fail)
     result = merge(pair)
     assert not result['ok'] and result['error'] == 'merge engine failed; target not replaced'
     assert target.read_bytes() == before
     assert MASTER not in json.dumps(result) + capsys.readouterr().out + caplog.text
-
-
-def test_unsupported_engine_version_fails_closed(pair, monkeypatch):
-    broker, target, _ = pair
-    for version in (b'2.7.9\r\n', b'2.8.0\r\n', b'2.7.10-snapshot\r\n', b'\xff'):
-        class Result:
-            stdout = version
-        monkeypatch.setattr(windows_merge.subprocess, 'run', lambda *a, **k: Result())
-        assert windows_merge.engine_version() is None
-    manager = windows_merge.WindowsMergeManager(broker)
-    monkeypatch.setattr(windows_merge, 'engine_version', lambda: None)
-    assert manager.capabilities()['merge_available'] is False
 
 
 def test_pending_generated_password_is_invalidated_by_a_merge(pair):
@@ -742,11 +687,9 @@ def test_interrupted_admission_in_the_external_folder_blocks_after_restart(case,
     assert status['state'] == 'uncertain' and bundle(status).parent == snapshots
 
 
-def test_installed_cli_merges_admits_and_reads_status_after_restart(case, native_https_config, engine, monkeypatch):
+def test_installed_cli_merges_admits_and_reads_status_after_restart(case, native_https_config, monkeypatch):
     """Real broker process, named pipe and private HTTPS unlock."""
     broker, target, source, snapshots = case
-    if engine != windows_merge.engine_path():
-        pytest.skip('a separate broker process needs the machine-installed engine')
     origin, certificate, key, submit = native_https_config
     newer(source)
     pipe = rpc.PREFIX + 'akdbx-test-' + uuid.uuid4().hex

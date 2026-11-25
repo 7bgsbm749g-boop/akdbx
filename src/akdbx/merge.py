@@ -1,4 +1,4 @@
-"""UUID-aware KeePassXC merges. Only encrypted files and fixed status leave here."""
+"""Native KDBX merges. Only encrypted files and fixed status leave here."""
 from __future__ import annotations
 
 import copy
@@ -7,30 +7,19 @@ import io
 import json
 import os
 import re
-import stat
+import sys
 import time
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-if os.name != 'nt':
-    import resource
+from .persistence import SaveError, VaultStore, open_encrypted, serialize_encrypted
+from . import admission, native_merge, selection, versions
 
-from .persistence import SaveError, VaultStore, open_encrypted
-from . import admission, selection, versions
-
-ENGINE = Path('/usr/bin/keepassxc-cli')
-ENGINE_TIMEOUT = 180
 ID_PATTERN = re.compile(r'[a-f0-9]{32}\Z')
 
 
 class MergeError(Exception):
     """Fixed, nonsecret messages only."""
-
-
-def supported_version(text):
-    """The tested engine release series: 2.7.10 or newer, below 2.8."""
-    return text if re.fullmatch(r'2\.7\.\d+', text) and int(text.split('.')[2]) >= 10 else None
 
 
 def create_manager(broker):
@@ -41,19 +30,11 @@ def create_manager(broker):
     return MergeManager(broker)
 
 
-def engine_version():
-    """Fail closed outside the tested engine release series; never use PATH."""
-    try:
-        info = ENGINE.stat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
-            return None
-        result = subprocess.run([str(ENGINE), '--version'], stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                timeout=5, check=True, env={'LANG': 'C.UTF-8'})
-        return supported_version(result.stdout.decode('ascii').strip())
-    except Exception:
-        pass
-    return None
+def _directory_path(fd):
+    if sys.platform == 'darwin':
+        from .macos import directory_path
+        return directory_path(fd)
+    return Path(os.readlink('/proc/self/fd/' + str(fd)))
 
 
 def _digest(data):
@@ -71,6 +52,10 @@ def _entry_signature(entry, binaries=None):
 
 def _check_ambiguity(*vaults, preserve=False):
     for vault in vaults:
+        try:
+            native_merge.validate(vault)
+        except (TypeError, ValueError, IndexError):
+            raise MergeError('invalid database header or attachment reference; merge refused') from None
         ids = [item.uuid for item in [*vault.entries, *vault.groups]]
         if len(ids) != len(set(ids)):
             raise MergeError('duplicate UUIDs; merge refused')
@@ -105,7 +90,7 @@ def _counts(vault):
 
 
 def synchronize_deletions(candidate, *originals):
-    """CLI KeepNewer omits deletion sync. Apply KeePass UUID/time semantics.
+    """Apply UUID/time deletion semantics after both merge stages.
 
     This operates on database objects, never title matches or entry XML joins.
     Keep even obsolete tombstones; an edit newer than a deletion survives.
@@ -118,7 +103,10 @@ def synchronize_deletions(candidate, *originals):
             identity = record.findtext('UUID')
             stamp = selection.decode_time(record.findtext('DeletionTime'), vault.version)
             if identity not in deleted or stamp < deleted[identity][0]:
-                deleted[identity] = (stamp, copy.deepcopy(record))
+                node = copy.deepcopy(record)
+                if vault.version[0] != candidate.version[0]:
+                    node.find('DeletionTime').text = candidate._encode_time(stamp)
+                deleted[identity] = (stamp, node)
     changed = False
     for entry in list(versions.active_entries(candidate)):
         record = deleted.get(entry._element.findtext('UUID'))
@@ -163,56 +151,43 @@ def verify_history(candidate, *originals, allow_deletions=True):
                 raise MergeError('merge would discard entry history or fields; target not replaced')
 
 
-def run_engine(bundle, vault, *, source_name='source.kdbx'):
-    """No secret argv/env/files. Raw engine output is discarded, even on error."""
-    password = vault.password
-    if not isinstance(password, str) or any(c in password for c in '\r\n\x00'):
-        raise MergeError('merge requires a line-compatible master password')
-    args = [str(ENGINE), 'merge', '--quiet', '--same-credentials']
-    key_fd = None
+def merge_images(target_bytes, source_bytes, credentials):
+    """Produce encrypted output or preserve the target bytes on a no-op."""
     try:
-        # Prevent a crashing native child from writing secrets in a core file.
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        if vault.keyfile is not None:
-            import fcntl
-            key_fd = os.memfd_create('akdbx-key', os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
-            os.write(key_fd, vault.keyfile.getvalue())
-            os.lseek(key_fd, 0, os.SEEK_SET)
-            fcntl.fcntl(key_fd, fcntl.F_ADD_SEALS, fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
-            args += ['--key-file', f'/proc/self/fd/{key_fd}']
-        args += [str(bundle / 'candidate.kdbx'), str(bundle / source_name)]
-        subprocess.run(args, input=(password + '\n').encode('utf-8'),
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       pass_fds=(() if key_fd is None else (key_fd,)),
-                       env={'LANG': 'C.UTF-8', 'QT_LOGGING_RULES': '*.debug=false'},
-                       cwd=bundle, timeout=ENGINE_TIMEOUT, check=True)
-    except MergeError:
-        raise
+        if os.name == 'posix':
+            import resource
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        target = _open(target_bytes, credentials)
+        source = _open(source_bytes, credentials)
+        if not native_merge.merge(target, source):
+            return None
+        return serialize_encrypted(target)
     except Exception:
         raise MergeError('merge engine failed; target not replaced') from None
+
+
+def run_engine(bundle, vault, *, source_name='source.kdbx'):
+    candidate = VaultStore(bundle / 'candidate.kdbx', strict_path=True)
+    source = VaultStore(bundle / source_name, strict_path=True)
+    directory = candidate._directory()
+    try:
+        data = merge_images(candidate._read(directory)[0], source._read(directory)[0], vault)
+        if data is not None:
+            VaultStore._write_file(directory, 'candidate-native.kdbx', data)
+            os.replace('candidate-native.kdbx', 'candidate.kdbx', src_dir_fd=directory, dst_dir_fd=directory)
     finally:
-        if key_fd is not None:
-            os.close(key_fd)
+        os.close(directory)
 
 
 class MergeManager:
     def __init__(self, broker):
         self.broker = broker
         self.database = None
-        # Probe lazily once per process; status must not repeatedly spawn tools.
-        self._engine_checked = False
-        self._version = None
-
-    def _engine_version(self):
-        return engine_version()
 
     def capabilities(self):
-        if not self._engine_checked:
-            self._version = self._engine_version()
-            self._engine_checked = True
         store = getattr(self.broker.vault, '_akdbx_store', None)
-        return {'merge_available': bool(self._version and store and store.merge_writable_path and not store.recovery_required),
-                'merge_engine': ('keepassxc-cli ' + self._version) if self._version else None,
+        return {'merge_available': bool(store and store.merge_writable_path and not store.recovery_required),
+                'merge_engine': native_merge.ENGINE,
                 'merge_same_credentials_only': True, 'merge_protocol': 1,
                 'merge_refresh_target_supported': True,
                 'merge_preserve_conflicts_supported': versions.supported(),
@@ -223,7 +198,7 @@ class MergeManager:
                 'admission_policy': admission.POLICY, 'admission_verification': admission.VERIFICATION,
                 'admission_group_verification': admission.GROUP_VERIFICATION,
                 'admission_group_protocol': 2,
-                'admission_group_verifiers': list(admission.GROUP_VERIFIERS if self._version == '2.7.10' else (admission.GROUP_VERIFICATION,)),
+                'admission_group_verifiers': list(admission.GROUP_VERIFIERS),
                 'admission_group_tags': 'keepassium-2.5.171-sequence-v1',
                 'admission_group_selection': 'keepassxc-2.7.10-selection-v1',
                 'admission_group_diagnostics': 'group-categories-v1'}
@@ -275,7 +250,7 @@ class MergeManager:
                     raise
                 try:
                     bundle_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=external)
-                    root = Path(os.readlink('/proc/self/fd/' + str(external)))
+                    root = _directory_path(external)
                 finally:
                     os.close(external)
             value = store.read_merge_receipt(bundle_fd, operation_id)
@@ -307,9 +282,7 @@ class MergeManager:
             raise MergeError('invalid encrypted target SHA256 precondition')
         operation_id = self._id(request.get('operation_id'))
         if not self.capabilities()['merge_available']:
-            raise MergeError('merge unavailable; require safe writable vault and KeePassXC CLI >=2.7.10,<2.8')
-        if admitting and group_verifier != admission.GROUP_VERIFICATION and self._version != '2.7.10':
-            raise MergeError('extended group verification requires exact KeePassXC CLI 2.7.10; operation not started')
+            raise MergeError('merge unavailable; require safe writable vault')
         if any(type(request.get(field, False)) is not bool for field in ('check', 'refresh_target', 'preserve_conflicts')):
             raise MergeError('invalid merge check option')
         refresh_target = admitting or request.get('refresh_target', False)
@@ -325,7 +298,7 @@ class MergeManager:
                    'check': request.get('check', False), 'refresh_target': refresh_target,
                    'preserve_conflicts': preserve, 'preservation_policy': versions.POLICY if preserve else None,
                    'active_verification': selection.VERIFICATION if preserve else None,
-                   'engine': self._version}
+                   'engine': native_merge.ENGINE}
         if admitting:
             receipt.update(mode='admission', policy=admission.POLICY, verification=admission.VERIFICATION,
                            group_protocol=2, group_verification=group_verifier,
@@ -369,7 +342,7 @@ class MergeManager:
                 except FileExistsError:
                     return self.status(operation_id)
                 bundle_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=snapshot_directory)
-                bundle = Path(os.readlink('/proc/self/fd/' + str(snapshot_directory))) / name
+                bundle = _directory_path(snapshot_directory) / name
                 self._receipt(bundle_fd, receipt)
                 os.fsync(snapshot_directory)
                 store._check_keyfile()
@@ -440,9 +413,7 @@ class MergeManager:
                             changed = synchronize_deletions(stage, *originals)
                         changed = versions.ensure(stage, ledger) or changed
                         if changed:
-                            buffer = io.BytesIO()
-                            stage.save(buffer)
-                            data = buffer.getvalue()
+                            data = serialize_encrypted(stage)
                             VaultStore._write_file(bundle_fd, 'candidate-final.kdbx', data)
                             os.replace('candidate-final.kdbx', 'candidate.kdbx', src_dir_fd=bundle_fd, dst_dir_fd=bundle_fd)
                             stage = _open(data, self.broker.vault)

@@ -231,3 +231,28 @@ def test_macos_encrypted_vault_save_and_reload(tmp_path):
 
 def stat_mode(path):
     return path.stat().st_mode & 0o777
+
+
+@native
+def test_macos_preview_merge_and_read_receipt(tmp_path, monkeypatch):
+    import shutil
+    import uuid
+    from pykeepass import create_database, PyKeePass
+    folder = tmp_path.resolve()
+    target_file, source = folder / 'target.kdbx', folder / 'source.kdbx'
+    create_database(str(target_file), password='synthetic-only master')
+    shutil.copyfile(target_file, source)
+    branch = PyKeePass(source, password='synthetic-only master')
+    branch.add_entry(branch.root_group, 'Imported', 'synthetic', 'synthetic')
+    branch.save()
+    before = target_file.read_bytes()
+    broker = Broker(VaultStore(target_file).open('synthetic-only master'), object())
+    monkeypatch.setenv('PATH', '')
+    assert broker.dispatch({'action': 'ping'})['merge_available']
+    request = {'action': 'merge', 'source': str(source)}
+    preview = broker.dispatch({**request, 'operation_id': uuid.uuid4().hex, 'check': True})
+    assert preview['state'] == 'checked' and target_file.read_bytes() == before
+    saved = broker.dispatch({**request, 'operation_id': uuid.uuid4().hex})
+    assert saved['state'] == 'saved', saved
+    assert broker.dispatch({'action': 'merge-status', 'operation_id': saved['operation_id']}) == saved
+    assert PyKeePass(target_file, password='synthetic-only master').find_entries(title='Imported', first=True)

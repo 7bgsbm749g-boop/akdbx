@@ -298,15 +298,6 @@ def test_kdbx41_delete_records_the_previous_parent_for_keepassxc_restore(tmp_pat
         server.server_close()
 
 
-def _merge_engine():
-    from akdbx import merge
-    try:
-        return merge.engine_version() is not None
-    except Exception:
-        return False
-
-
-@pytest.mark.skipif(not _merge_engine(), reason='requires the pinned KeePassXC merge engine')
 @pytest.mark.parametrize('action', ['move-entry', 'delete-entry'])
 @pytest.mark.parametrize('moved_is_target', [True, False])
 def test_default_merge_accepts_a_move_in_either_direction(tmp_path, templates, action, moved_is_target):

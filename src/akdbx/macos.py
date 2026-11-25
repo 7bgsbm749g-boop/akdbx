@@ -76,6 +76,16 @@ def peer_credentials(connection: socket.socket) -> tuple[int, int, int]:
     return pid, uid.value, gid.value
 
 
+def directory_path(directory_fd: int) -> Path:
+    """Resolve an open descriptor with Darwin F_GETPATH."""
+    import fcntl
+    raw = fcntl.fcntl(directory_fd, 50, bytes(1024))  # F_GETPATH, MAXPATHLEN
+    path = Path(os.fsdecode(raw.split(bytes(1), 1)[0]))
+    if not path.is_absolute():
+        raise PermissionError('directory descriptor has no absolute path')
+    return path
+
+
 def socket_path(directory_fd: int, name: str) -> str:
     """Resolve an open directory with F_GETPATH and recheck its trusted ancestors.
 
@@ -84,11 +94,7 @@ def socket_path(directory_fd: int, name: str) -> str:
     the documented broker boundary. The connected peer is independently checked.
     """
     from .runtime import open_private_runtime_directory
-    import fcntl
-    raw = fcntl.fcntl(directory_fd, 50, b'\0' * 1024)  # F_GETPATH, MAXPATHLEN
-    path = Path(os.fsdecode(raw.split(b'\0', 1)[0]))
-    if not path.is_absolute():
-        raise PermissionError('runtime descriptor has no absolute path')
+    path = directory_path(directory_fd)
     _, check = open_private_runtime_directory(path, owner_uid=os.getuid())
     try:
         before, after = os.fstat(directory_fd), os.fstat(check)

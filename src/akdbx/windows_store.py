@@ -13,7 +13,7 @@ import win32con
 import win32file
 import ntsecuritycon
 
-from .persistence import SaveError, open_encrypted
+from .persistence import SaveError, open_encrypted, serialize_encrypted
 from . import windows_security as security
 
 MOVEFILE_WRITE_THROUGH = 0x8
@@ -388,9 +388,7 @@ class WindowsVaultStore:
                         raise SaveError('vault changed on disk; restart and unlock')
                     candidate = copy.deepcopy(vault)
                     mutate(candidate)
-                    buffer = io.BytesIO()
-                    candidate.save(buffer)
-                    encrypted = buffer.getvalue()
+                    encrypted = serialize_encrypted(candidate)
                     if len(encrypted) > 128 * 1024 * 1024:
                         raise SaveError('encrypted vault exceeds the Windows input budget; update not saved')
                     verified = open_encrypted(encrypted, candidate.password, candidate.keyfile)

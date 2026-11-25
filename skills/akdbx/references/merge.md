@@ -66,8 +66,8 @@ is queued behind a locked response. Unlock alone does not authorize a later
 automatic merge without the repeated explicit command.
 
 Both databases must use the same master password and, if configured, the same
-key file. Different source credentials, key-file-only databases, hardware keys,
-and master passwords containing CR, LF or NUL are unsupported. Spaces,
+key file. Different source credentials, key-file-only databases and hardware keys
+are unsupported. Master passwords can contain line breaks. Spaces,
 punctuation, Unicode and emoji are preserved without trimming or normalization.
 An unreadable source does not establish that the user's password is wrong.
 Do not troubleshoot by requesting secrets in chat, arguments, or environment
@@ -226,17 +226,13 @@ merely because its capsule ledger retained originals.
 
 ## Semantics and dependencies
 
-Linux with `/proc/self/fd`, sealed `memfd`, Unix sockets, fsync and atomic rename
-is required. Install root-owned `/usr/bin/keepassxc-cli` from KeePassXC
-`>=2.7.10,<2.8`. Version 2.7.10 is the tested native engine. The Python package
-dependencies are installed by `pip install .`. PyKeePass is pinned to **4.2.0**:
-the capsule reader/writer and protected-field checks are verified for that
-version. A different installed version disables the preservation capability.
-An unavailable, unsafe or
-unsupported native executable makes merge unavailable; ordinary login behavior
-continues. No engine path or password override is accepted through RPC.
+akdbx 0.44.0 and later use the built-in `akdbx-native-v1` engine on Linux, macOS and
+Windows. All three platforms reuse the unlocked broker's credentials in memory.
+Install the Python package and its dependencies with `pip install .`. The
+preservation verifier uses the bundled dependency on PyKeePass 4.2.0. No
+KeePass or KeePassXC program is required.
 
-KeePassXC's database-aware `KeepNewer` merge matches entry/group UUIDs. It
+The merge matches entries and groups by UUID. It
 preserves the newer entry's value, fields and modification time, and merges
 older values into history. Group moves use `LocationChanged`; newer group
 properties follow the native engine's rules. Without `--preserve-conflicts`,
@@ -249,8 +245,7 @@ versions must survive native history limits or timestamp collisions. Its
 capsule verification replaces the default history-membership check; active
 selection and deletion checks still apply.
 
-The CLI's native mode omits deletion synchronization. The broker therefore
-applies a separate database-object deletion pass to the encrypted candidate:
+After merging all input branches, the broker reconciles their deletion records. It will
 union deletion UUIDs, use the earliest deletion time per UUID (KeePassXC
 Synchronize convention), delete entries whose modification time is not later
 than that time, and delete old empty groups from the bottom up. Newer edits and
@@ -259,23 +254,14 @@ retained, including obsolete records, to avoid silently dropping tombstones.
 There is no title matching, plaintext export, or entry-XML concatenation.
 
 Destination database identity, name, settings and encryption credentials remain
-authoritative. Missing source custom icons and database CustomData use native
-KeePassXC rules; that engine can replace/remove CustomData keys according to its
-dictionary modification time. Database setting changes on the source are not
-independently combined. Review application-specific metadata conflicts before
-merging. The original encrypted metadata always remains in both snapshots.
-KeePassXC can select KDBX 4.0 when no data requires 4.1; KDBX 4.1 input and
-Argon2d/AES-256 are supported. This does not change the password.
-
-The broker passes the held master password through stdin to a private native
-child. Key-file material uses a sealed, inherited anonymous memory file, never a
-disk file. Native stdout/stderr are discarded. Native core dumps are disabled
-for the broker process and its children once merge runs. Python cannot promise
-memory zeroization; a malicious process with the same OS identity remains
-outside the isolation boundary.
-
-Engine references: [CLI merge](https://github.com/keepassxreboot/keepassxc/blob/2.7.10/src/cli/Merge.cpp),
-[UUID, history and deletion rules](https://github.com/keepassxreboot/keepassxc/blob/2.7.10/src/core/Merger.cpp).
+authoritative. The broker copies missing custom icons and database CustomData
+keys. For an existing icon UUID it keeps the target icon. For an existing
+CustomData key it uses the source value only when both items have modification
+times and the source is newer. An item without its own clock uses its
+database dictionary clock when available. The target keeps its random slug. The encrypted snapshots retain both originals.
+The broker keeps the target cipher and KDF. When importing a newer KDBX 4
+minor version into a changed KDBX 4 target, it retains the higher minor version.
+A KDBX 3 target refuses changes that need KDBX 4.1, such as group tags.
 
 ## Failures and recovery
 
