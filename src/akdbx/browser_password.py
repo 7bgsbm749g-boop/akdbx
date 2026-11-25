@@ -220,7 +220,7 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
     if (tokens[0]?.startsWith('section-')) tokens.shift();
     if (tokens.length && !(tokens.length === 1 && ['one-time-code','on','off'].includes(tokens[0]))) return false;
     const hints = ['id','name','aria-label'].map(k => attribute.call(e, k) || '');
-    if (hints.some(h => /(?:credit.?card|card[-_ ]?(?:number|holder|expir|cvc|cvv)|cc[-_ ]?(?:name|number|csc|cvc|cvv|exp)|(?:^|[^a-z0-9])(?:cvc|cvv|csc)(?:$|[^a-z0-9]))/i.test(h) ||
+    if (hints.some(h => /(?:credit.?card|card[-_ ]?(?:number|holder|expir|security|verification|cvc|cvv)|cc[-_ ]?(?:name|number|csc|cvc|cvv|exp)|(?:^|[^a-z0-9])(?:cvc|cvv|csc)2?(?:$|[^a-z0-9]))/i.test(h) ||
         /password/i.test(h) && !/(?:one[-_ ]?time|totp|otp)/i.test(h))) return false;
     // Only a decimal whole-code format. Unsupported constraints fail closed.
     return !['min','max','step'].some(k => e.hasAttribute(k)) &&

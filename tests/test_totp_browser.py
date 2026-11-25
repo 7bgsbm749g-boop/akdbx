@@ -221,7 +221,8 @@ def test_bad_code_and_field_format_are_refused_before_secret_dispatch(browser, m
 def test_card_hints_never_authorize_a_totp_pin(browser):
     b = browser
     for hint in ['name=cardnumber', 'aria-label="Card number"', 'name=cvc', 'name=cvv',
-                 'aria-label="Security CVC"', 'name=cc-csc', 'name=credit_card']:
+                 'aria-label="Security CVC"', 'name=cc-csc', 'name=credit_card',
+                 'aria-label="Card security code"', 'name=CVV2', 'name=CVC2']:
         b.field('type=text ' + hint)
         assert b.pin() == failure(), hint
         assert b.evaluate('otp.value === "" && keyEvents === 0')
