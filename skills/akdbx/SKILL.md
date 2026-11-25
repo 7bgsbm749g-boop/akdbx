@@ -518,7 +518,13 @@ do anything else.
 **Authenticator codes.** If the site offers an authenticator code and the entry
 has `totp_configured: true`, fill it with `fill-totp` instead of asking for a
 phone approval. Use a fresh handle, a verified HTTPS challenge URL and a fresh
-pin. Codes and keys never appear in output. If the key is missing, the user
+pin. In a Chromium browser, use `pin-password-target --mode totp` with the
+CDP route (Linux/Windows) or paired extension route (Linux/Windows/macOS), then
+`fill-totp HANDLE --target-url EXACT_CHALLENGE_URL --target PIN [--pending]`.
+Require `browser_totp_protocol: 1`; extension also needs
+`extension_totp_protocol: 1` and fill extension 0.10.0+. Only one whole-code
+input is supported; no split fields or keyboard fallback. The exact challenge
+URL must match the pinned field document and entry origin. Codes and keys never appear in output. If the key is missing, the user
 imports it once through `setup-totp`'s private page. When the task authorizes
 adding an authenticator app to the account, enroll it yourself with
 `capture-totp` (0.35.0+): the broker reads the setup key from the site's

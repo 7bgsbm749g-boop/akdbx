@@ -887,20 +887,37 @@ is exposed on the import page. Keep recovery methods under your own control.
 Storing passwords and TOTP keys on the same host reduces their independence;
 the broker does not protect against a malicious process sharing its OS account.
 
-After import, search returns `totp_configured: true` for that entry. Confirm the
-site and account, focus the code field in the verified foreground window, then
-pin and fill using fresh single-use references:
+After import, search returns `totp_configured: true` for that entry. Verify the
+site and account, focus the whole-code input, then pin and fill using fresh
+single-use references. Browser TOTP requires `browser_totp_protocol: 1`:
 
 ```bash
+akdbx list-password-frames --route extension --top-url 'https://example.com/challenge'
+akdbx pin-password-target --route extension --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
+  --top-url 'https://example.com/challenge' --selector '#otp' --mode totp
 akdbx search example.com
-akdbx pin-target --pid VERIFIED_PID --window VERIFIED_X11_CLIENT_WINDOW
 akdbx fill-totp FRESH_SEARCH_HANDLE --target-url 'https://example.com/challenge' \
   --target FRESH_TARGET_PIN
 ```
 
-The asserted target URL and the entry URL must use ASCII HTTPS spelling
-(punycode for internationalized hosts) and match in origin; X11 does
-not attest the DOM field, browser tab or origin. The caller must verify them.
+Use `--route cdp` for the configured CDP browser on Linux/Windows. The paired
+extension route works on Linux/Windows/macOS, including the native macOS broker,
+and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. TOTP uses
+the extension's agent route; the manual popup keeps its existing workflows.
+Only a single focused visible editable `text`, `tel`, `number` or `password`
+input is supported, with stable metadata and no conflicting password/card hints.
+Split-digit inputs and unsupported format constraints refuse. Six/eight digit
+codes preserve leading zeros and must fit `maxlength`. Password and TOTP pins
+cannot cross modes. Neither browser route uses keyboard, Tab or clipboard input.
+
+The asserted challenge URL must exactly equal the pinned field document URL,
+and its ASCII HTTPS origin must be authorized by the entry before the broker
+reads OTP configuration. Child frames use the existing same-site route:
+`--frame-id CHILD_FRAME_ID --frame-origin EXACT_CHILD_ORIGIN`; `--top-url` stays
+the top URL, while `fill-totp --target-url` names the exact child challenge URL.
+See [TOTP delivery](skills/akdbx/references/totp.md) for format limits and examples.
+Current Window (`pin-target`) and Android keep their existing TOTP workflows;
+a window pin's URL is a caller assertion, not a DOM origin attestation.
 The receipt contains only `ok`, `filled: totp` and `target_delivery`.
 The broker refuses a code with less than eight seconds remaining, returning
 a non-secret `retry_after` delay. Wait for the next period, then search and pin
@@ -925,7 +942,7 @@ through a single-use read pin, the same route as
 akdbx pin-password-target --mode read --page-id PAGE --frame-id FRAME --top-url URL --selector '#setup-key'
 akdbx capture-totp --target TARGET --handle HANDLE --title T --username U --url URL --group G
 akdbx pin-target --pid CHROME_PID --window CHROME_WINDOW [--browser-slot SLOT]   # 0.35.3+: a slot's own X display
-akdbx fill-totp HANDLE --pending --target-url URL --target WINDOW_PIN   # the site's "verify the code" field
+akdbx fill-totp HANDLE --pending --target-url URL --target TOTP_PIN   # use --mode totp for a browser code field
 akdbx commit-totp --handle HANDLE --site-accepted --title T --username U --url URL --group G
 ```
 

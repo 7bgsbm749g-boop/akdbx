@@ -427,6 +427,16 @@ async function handleCall(message) {
   }
   if (message.op === "frames") return frames(message);
   if (message.op === "pin") return pin(message);
+  if (message.op === "check-totp") {
+    // Public field-format preflight only; fill still verifies sealed facts and owners.
+    try {
+      const chain = await chainFor(message.tab_id, message.document_id);
+      if (!chain || !sameChain(chain, message.chain)) return {ok: false};
+      const ok = await run(message.tab_id, message.document_id,
+        (id, digits) => globalThis.__akdbxContent.checkTotp(id, digits), [message.pin_id, message.digits]);
+      return {ok: ok === true};
+    } catch { return {ok: false}; }
+  }
   if (message.op === "fill") return fill(message);
   if (message.op === "read") return read(message);
   if (message.op === "release") return release(message);

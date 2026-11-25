@@ -1177,3 +1177,27 @@ def test_unexpected_private_handler_exception_never_logs_secret(deployed, monkey
     captured = capsys.readouterr()
     assert all(secret not in captured.out + captured.err + caplog.text for secret in (CHOSEN, MASTER))
     assert broker.dispatch({'action': 'ping'})['ok']
+
+
+@pytest.mark.parametrize('route', ['cdp', 'extension'])
+def test_generated_password_refuses_totp_pin_and_consumes_both_references(deployed, route):
+    from test_extension_route import attach, Document, pin_password
+    broker, typer, path, _ = deployed
+    before = path.read_bytes()
+    staged = begin(broker, 'generate-password', single_field=True)
+    assert staged['ok'], staged
+    reference = staged['fill_handles']['password']
+    if route == 'extension':
+        channel, extension = attach(broker, {1: [Document('main', 'https://example.test/reset')]})
+        pin = pin_password(broker, channel, 1, 'main', 'https://example.test/reset', mode='totp')
+        assert pin['ok'], pin
+        target = dict(target=pin['target'], target_protocol=1)
+    else:
+        target = target_request(broker, 'totp')
+    request = dict(action='fill-generated', handle=reference, target_url='https://example.test/reset', **target)
+    assert not broker.dispatch(request)['ok']
+    assert not broker.dispatch(request)['ok']
+    assert not commit(broker, staged)['ok']
+    assert path.read_bytes() == before and not typer.events
+    if route == 'extension':
+        assert not extension.filled and 'check-totp' not in extension.calls and 'fill' not in extension.calls

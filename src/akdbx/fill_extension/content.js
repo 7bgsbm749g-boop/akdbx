@@ -718,6 +718,10 @@
   }
 
   Object.defineProperty(globalThis, "__akdbxContent", {value: Object.freeze({
+    checkTotp: (id, digits) => {
+      const item = pins.get(id);
+      return Boolean(item && item.kind === "password" && item.mode === "totp" && item.state.check() && item.state.acceptsTotp(digits));
+    },
     pin, geometry, release, fill, read, guard, guardCheck, guardPoint, count, probe, probeFill,
     clear, challengeSpec, challengeHeld, painted,
     releaseGuard: id => guards.delete(id),

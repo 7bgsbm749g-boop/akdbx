@@ -1,4 +1,13 @@
-# Password field delivery
+# Password and authenticator field delivery
+
+For browser authenticator challenges, use `pin-password-target --mode totp`
+with the CDP or extension route, then `fill-totp --target-url EXACT_CHALLENGE_URL`.
+Require `browser_totp_protocol: 1`; extension also needs `extension_totp_protocol: 1`
+and fill extension 0.10.0+. The same retained-node, focus, expiry, single-use and
+same-site child-frame rules apply. Password and TOTP pins cannot cross modes.
+Only one whole-code input is supported, with no keyboard/Tab/clipboard fallback.
+See [TOTP](totp.md) for exact origin/URL checks, format limits and platform scope.
+
 
 For contact and address fields, use [identity workflows](identities.md).
 Identity pins use the same-origin card DOM transport with focused identity
