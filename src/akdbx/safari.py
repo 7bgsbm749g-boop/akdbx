@@ -105,6 +105,8 @@ def build_app(destination, *, unlock_origin):
             product = objects[target['productReference']]['path']
             identifier = identifiers.get(Path(product).suffix)
             if identifier is None:
+                if target.get('productType') == 'com.apple.product-type.bundle.unit-test':
+                    continue
                 details = dict(name=target.get('name'), kind=target.get('productType'),
                                product=objects[target['productReference']])
                 raise RuntimeError('the Safari project has an unexpected native target: ' + json.dumps(details))

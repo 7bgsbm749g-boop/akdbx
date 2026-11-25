@@ -166,6 +166,50 @@ def test_native_helper_is_actually_sandboxed(helper, tmp_path):
     assert checked([str(helper), '--probe-denied', str(forbidden)]).stdout.strip() == b'denied'
 
 
+@pytest.fixture(scope='module')
+def xpc_helper(tmp_path_factory):
+    folder = tmp_path_factory.mktemp('xpc')
+    app = folder / 'XPCLab.app'
+    client = app / 'Contents/MacOS/xpc-client'
+    service = app / 'Contents/XPCServices/org.akdbx.safari.bridge-probe.xpc'
+    server = service / 'Contents/MacOS/xpc-service'
+    for path in (client, server):
+        path.parent.mkdir(parents=True)
+    for bundle, binary, identifier, kind in (
+        (app, client, 'org.akdbx.safari.xpc-test', 'APPL'),
+        (service, server, 'org.akdbx.safari.bridge-probe', 'XPC!'),
+    ):
+        info = dict(CFBundleIdentifier=identifier, CFBundleExecutable=binary.name,
+                    CFBundleName=binary.name, CFBundlePackageType=kind, CFBundleVersion='1',
+                    LSMinimumSystemVersion='14.0', LSBackgroundOnly=True)
+        if kind == 'XPC!':
+            info['XPCService'] = dict(ServiceType='Application')
+        (bundle / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+    protocol = Path(__file__).with_name('safari_xpc_protocol.swift')
+    core = folder / 'BrokerBridge.swift'
+    core.write_bytes(safari.assets().joinpath('BrokerBridge.swift').read_bytes())
+    checked(['xcrun', 'swiftc', '-parse-as-library', str(protocol), str(core),
+             str(Path(__file__).with_name('safari_xpc_service.swift')), '-framework', 'Security', '-o', str(server)])
+    checked(['xcrun', 'swiftc', '-parse-as-library', str(protocol),
+             str(Path(__file__).with_name('safari_xpc_client.swift')), '-o', str(client)])
+    checked(['codesign', '--force', '--sign', '-', str(service)])
+    entitlements = folder / 'client.entitlements'
+    entitlements.write_bytes(plistlib.dumps({'com.apple.security.app-sandbox': True}))
+    checked(['codesign', '--force', '--sign', '-', '--entitlements', str(entitlements), str(app)])
+    checked(['codesign', '--verify', '--strict', '--deep', str(app)])
+    return client
+
+
+def test_sandboxed_client_reaches_local_broker_through_its_embedded_xpc_service(xpc_helper, local_broker):
+    with running_helper(xpc_helper) as call:
+        opened = call(dict(op='open', hello=hello()), profile='xpc-profile')
+        assert opened['ok'], opened
+        token = opened['session']
+        attached = call(dict(op='read', session=token), profile='xpc-profile')
+        assert attached['ok'] and attached['message']['type'] == 'attached'
+        assert call(dict(op='close', session=token), profile='xpc-profile')['ok']
+
+
 @pytest.mark.parametrize('grant', ['public-mode', 'ancestor-acl'])
 def test_native_bridge_refuses_runtime_permission_grants(helper, local_broker, grant):
     from pwd import getpwuid
