@@ -63,6 +63,10 @@ Firefox 153+ is supported from 0.47.0 with its own native host and extension
 build. See [Firefox setup](firefox.md); its macOS host manifest goes under
 `~/Library/Application Support/Mozilla/NativeMessagingHosts`.
 
+Safari 26+ uses a packaged native app from 0.48.0. Build and enable the app as
+[Safari setup](safari.md) describes; it uses the same local broker and pairing
+protocol and needs no Python native-host registration.
+
 ## Limits
 
 - The broker supports the extension route only. CDP profile options are
@@ -83,5 +87,5 @@ The `Native macOS broker` CI job uses a real Darwin runner for Unix peer
 credentials, private socket RPC, encrypted save/reopen, checked TLS loading
 and unlock, and the extension protocol tests. It installs the same wheel in
 the release workflow. Linux simulations are not evidence of native macOS
-behavior. Safari application signing, installation and live browser behavior
-belong to the separate Safari extension delivery.
+behavior. The separate Safari jobs verify the signed sandboxed native helper,
+XPC protocol, application packaging and actual Safari browser integration.

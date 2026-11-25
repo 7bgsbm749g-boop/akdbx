@@ -62,10 +62,13 @@ jobs:
   private-import:
     needs: verify
     uses: ./.github/workflows/private-import.yml
+  safari:
+    needs: verify
+    uses: ./.github/workflows/safari-native.yml
 
   build:
     name: Build sdist and wheel
-    needs: [verify, tests, card-safety, password-fields, private-import]
+    needs: [verify, tests, card-safety, password-fields, private-import, safari]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -128,6 +128,7 @@ def build_app(destination, *, unlock_origin):
             '.appex': SAFARI_EXTENSION_ID,
         }
         configured = []
+        renamed_identifiers = {}
         for target in objects.values():
             if target.get('isa') != 'PBXNativeTarget':
                 continue
@@ -142,11 +143,24 @@ def build_app(destination, *, unlock_origin):
                 raise RuntimeError('the Safari project has an unexpected native target: ' + json.dumps(details))
             configurations = objects[target['buildConfigurationList']]['buildConfigurations']
             for configuration in configurations:
-                objects[configuration]['buildSettings']['PRODUCT_BUNDLE_IDENTIFIER'] = identifier
+                settings = objects[configuration]['buildSettings']
+                previous = settings.get('PRODUCT_BUNDLE_IDENTIFIER')
+                if previous and '$' not in previous and previous != identifier:
+                    renamed_identifiers[previous] = identifier
+                settings['PRODUCT_BUNDLE_IDENTIFIER'] = identifier
             configured.append(identifier)
         if sorted(configured) != sorted(identifiers.values()):
             raise RuntimeError('the Safari project must contain one app and one extension target')
         project_file.write_bytes(plistlib.dumps(project_data, sort_keys=False))
+        # The generated app's preferences button also names the extension.
+        # Keep concrete source identifiers in step with the signed targets.
+        for path in (root / 'project').rglob('*'):
+            if path.suffix not in ('.swift', '.js') or not path.is_file():
+                continue
+            content = path.read_text()
+            for previous in sorted(renamed_identifiers, key=len, reverse=True):
+                content = content.replace(previous, renamed_identifiers[previous])
+            path.write_text(content)
         # One existing source file keeps the generated Xcode target unchanged.
         handlers[0].write_bytes(b'\n'.join(assets().joinpath(name).read_bytes() for name in
                                ('BridgeProtocol.swift', 'BridgeClient.swift', 'SafariWebExtensionHandler.swift')))

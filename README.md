@@ -98,9 +98,9 @@ pin, fill and receipt model. Agents choose with `--route extension|cdp`, and
 
 | | Extension route (0.21.0+) | CDP route |
 | --- | --- | --- |
-| Browser | The user's everyday Helium, Chrome, Edge or Firefox 153+, with the akdbx extension | A Chromium profile started with `--remote-debugging-port` |
+| Browser | The user's everyday Helium, Chrome, Edge, Firefox 153+ or Safari 26+ (macOS, 0.48.0+), with the akdbx extension | A Chromium profile started with `--remote-debugging-port` |
 | Connection | Native-messaging host; values sealed to the extension (AES-256-GCM) | Chrome DevTools Protocol over loopback |
-| Setup | Install the host, load the extension, pair once per browser session | Configure the profile at broker start |
+| Setup | Install the native host or Safari app, load the extension, pair once per browser session | Configure the profile at broker start |
 | Sites see | The user's normal browser | A browser with a debugging port, which anti-bot checks often flag |
 | Also | The user can click the extension to fill a login, card or address; secret capture from 0.32.0 | Secret capture; works without an extension |
 
@@ -153,7 +153,8 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 - **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
   checks, private HTTPS unlock and encrypted vault writes. Chrome, Edge and Firefox (0.47.0+)
   native-host locations are supported. Native window delivery, CDP and guided
-  setup are unavailable. Safari's Apple wrapper is a separate delivery. See
+  setup are unavailable. Safari 26+ uses a [native app wrapper](docs/safari.md)
+  from 0.48.0. See
   [macOS setup and limits](docs/macos.md).
 - **Linux** (X11 desktop): the original platform. The setup notes in this
   README and the [VPS setup reference](skills/akdbx/references/vps-setup.md)
