@@ -233,11 +233,11 @@ def _metadata(target, source, transfer):
         source_clock = _dictionary_time(incoming, source) if tag == 'Item' else None
         target_clock = _dictionary_time(existing, target) if tag == 'Item' else None
         generated = {'KPXC_RANDOM_SLUG', '_LAST_MODIFIED'}
-        # When no destination value inherits its dictionary clock, the imported
-        # dictionary can carry its clock directly (also representable in 3.1).
+        # An empty dictionary can inherit the clock of its first imported
+        # keys without writing per-item timestamps (also representable in 3.1).
         adopt_clock = (tag == 'Item' and source_clock is not None
-                       and bool(incoming.keys() - generated)
-                       and all(existing[k].findtext('LastModificationTime') for k in existing.keys() - generated))
+                       and not (existing.keys() - generated)
+                       and any(not incoming[k].findtext('LastModificationTime') for k in incoming.keys() - generated))
         if adopt_clock:
             target_clock = source_clock
         for identity, item in incoming.items():

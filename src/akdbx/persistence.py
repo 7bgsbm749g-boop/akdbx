@@ -49,7 +49,9 @@ def serialize_encrypted(vault):
     requires_41 = vault.tree.xpath(
         'boolean(//Group/Tags[string-length(text()) > 0] | //Entry/QualityCheck[translate(text(),"FALSE","false")="false"]'
         ' | //CustomIcons/Icon/Name[string-length(text()) > 0] | //CustomIcons/Icon/LastModificationTime'
-        ' | //CustomData/Item/LastModificationTime)')
+        ' | //CustomData/Item/LastModificationTime'
+        ' | //PreviousParentGroup[(parent::Entry or parent::Group) and normalize-space() != ""'
+        ' and normalize-space() != "AAAAAAAAAAAAAAAAAAAAAA=="])')
     if vault.version[0] >= 4:
         if requires_41:
             vault.kdbx.header.value.minor_version = max(vault.version[1], 1)
