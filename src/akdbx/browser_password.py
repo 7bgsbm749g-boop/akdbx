@@ -445,6 +445,10 @@ class BrowserPasswords:
         """Refuse new pins and close retained pins without holding the map lock."""
         with self._lock:
             self._closed = True
+        self.clear()
+
+    def clear(self):
+        with self._lock:
             pins, self.pins = self.pins, {}
         for _, pin in pins.values():
             pin.close()

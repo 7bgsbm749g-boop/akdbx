@@ -177,8 +177,9 @@ incoming webhook or event adapter: a shell listener alone does not start a new
 agent turn. If the host has no way to resume you, say so instead of claiming
 that continuation is set up.
 
-An unlock lasts until the broker process stops. There is no idle lock, and the
-link stops working after a successful unlock. Do not restart a broker just to
+Use `akdbx lock` to lock without stopping the broker. The idle timeout defaults to one hour;
+`serve --lock-timeout SECONDS` or `AKDBX_LOCK_TIMEOUT` sets it. Screen lock and sleep also lock the
+vault on supported desktops. Get a fresh unlock link from status after a lock. Do not restart a broker just to
 log in again.
 
 ### Blocked unlock link
@@ -677,7 +678,7 @@ retained encrypted originals.
 | Site check or card decline that looks like a false positive on CDP | Stop retrying. Use the extension route ([Choose the fill route](#choose-the-fill-route)). |
 | `fill denied` or a terminal approval prompt | The running broker is very old. Do not approve the prompt. Its owner must restart it on a current version (private web unlock). |
 
-There is no cancel-fill, lock or reload command. Stop the broker to lock it.
+Use `akdbx lock` to lock the vault. A lock drains operations already in progress.
 Code changes need a coordinated broker restart and a new private unlock by the
 workflow that owns the broker.
 

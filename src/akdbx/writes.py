@@ -510,6 +510,18 @@ class WriteManager:
         with self.broker._state_lock:
             self.broker._handles.clear()
 
+    def keep_receipts(self):
+        """Keep only the fields needed by write-status after the session locks."""
+        for op in self.operations.values():
+            op.token = secrets.token_urlsafe(32)
+            op.values = ({key: op.values[key] for key in ('title', 'group')}
+                         if op.kind == 'card' and op.state == 'saved' else {})
+            op.uuid = op.password = op.import_nonce = None
+            op.filled.clear()
+            op.fill_refs.clear()
+            op.import_candidates = ()
+            op.import_source = ''
+
     def _prune(self):
         now = self.broker.clock()
         for handle, op in list(self.operations.items()):
@@ -527,6 +539,8 @@ class WriteManager:
 
     def by_token(self, token, kind='password'):
         """Return a pending private operation for the current vault revision."""
+        if self.broker.session.closing or self.broker.session.due():
+            return None
         self._prune()
         return next((op for op in self.operations.values()
                      if op.revision == self.revision and secrets.compare_digest(op.token, token)
