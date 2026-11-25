@@ -1816,3 +1816,82 @@ def test_a_child_frame_read_pin_without_a_route_takes_cdp_when_the_extension_is_
     request = dict(action='pin-password-target', password_protocol=1, page_id='CDP-PAGE', frame_id='SAME', top_url=SECRET_SITE,
                    selector='#secret', mode='read', capture_protocol=1, frame_protocol=1, frame_origin='https://keys.example.com')
     assert broker.dispatch(request)['ok'] and len(calls) == 1 and 'pin' not in extension.calls
+
+
+@pytest.mark.parametrize('platform', ['win32', 'darwin', 'linux'])
+def test_totp_extension_contract_is_platform_independent(monkeypatch, platform):
+    from totp_vectors import URI
+    monkeypatch.setattr(route.sys, 'platform', platform)
+    broker = make_broker()
+    broker.vault.entries[0].otp = URI
+    broker.wall_clock = lambda: 1111111111
+    channel, extension = attach(broker, {1: [Document('main', LOGIN)]})
+    original = extension.handle
+    def handle(op, payload):
+        if op == 'check-totp':
+            extension.calls.append(op)
+            assert payload['digits'] == 6 and set(payload) == {'tab_id', 'document_id', 'pin_id', 'chain', 'digits'}
+            return {'ok': True}
+        return original(op, payload)
+    extension.handle = handle
+    pin = pin_password(broker, channel, 1, 'main', LOGIN, mode='totp')
+    assert pin['ok'], pin
+    result = broker.dispatch(dict(action='fill-totp', handle=search(broker), target_url=LOGIN,
+                                  target=pin['target'], target_protocol=1))
+    assert result == dict(ok=True, filled='totp', target_delivery=route.DELIVERY)
+    assert extension.filled == [dict(mode='totp', username='', password='050471')]
+    assert extension.calls.index('check-totp') < extension.calls.index('fill')
+    assert not broker.dispatch(dict(action='fill-totp', handle=search(broker), target_url=LOGIN,
+                                    target=pin['target'], target_protocol=1))['ok']
+    assert broker.typer.events == []
+
+
+def test_totp_pin_rejects_old_extension_before_browser_call():
+    broker = make_broker()
+    channel, extension = attach(broker, {1: [Document('main', LOGIN)]})
+    channel.version = '0.9.0.1'
+    assert pin_password(broker, channel, 1, 'main', LOGIN, mode='totp') == failure()
+    assert 'pin' not in extension.calls and not extension.filled
+
+
+def test_totp_frame_origin_must_equal_assertion_and_entry_before_otp_access(monkeypatch):
+    import akdbx.broker as module
+    broker = make_broker([Entry(url=LOGIN)])
+    channel, extension = attach(broker, {1: [Document('main', LOGIN),
+                                            Document('child', 'https://auth.example.com/challenge', 'main')]})
+    monkeypatch.setattr(module, 'read_configuration', lambda *_: pytest.fail('mismatched frame read OTP'))
+    monkeypatch.setattr(module, 'read_pending', lambda *_: pytest.fail('mismatched frame read pending OTP'))
+    for target_url, entry_url in [(LOGIN, LOGIN), ('https://auth.example.com/challenge', LOGIN),
+                                   (LOGIN, 'https://auth.example.com/login')]:
+        broker.vault.entries[0].url = entry_url
+        pin = pin_password(broker, channel, 1, 'child', LOGIN, mode='totp', frame_protocol=1,
+                           frame_origin='https://auth.example.com')
+        assert pin['ok'], pin
+        result = broker.dispatch(dict(action='fill-totp', handle=search(broker), target_url=target_url,
+                                      target=pin['target'], target_protocol=1))
+        assert not result['ok']
+    assert not extension.filled and broker.typer.events == []
+
+
+@pytest.mark.parametrize('boundary', ['preflight', 'receipt'])
+def test_totp_extension_rejects_unknown_response_fields_without_secret_output(boundary, capsys, caplog):
+    from totp_vectors import URI, KEY as OTP_KEY
+    broker = make_broker()
+    broker.vault.entries[0].otp = URI
+    broker.wall_clock = lambda: 1111111111
+    channel, extension = attach(broker, {1: [Document('main', LOGIN)]})
+    original = extension.handle
+    def handle(op, payload):
+        if op == 'check-totp':
+            return {'ok': True, **({'code': '050471'} if boundary == 'preflight' else {})}
+        result = original(op, payload)
+        return {**result, 'secret': OTP_KEY} if op == 'fill' else result
+    extension.handle = handle
+    pin = pin_password(broker, channel, 1, 'main', LOGIN, mode='totp')
+    assert pin['ok'], pin
+    result = broker.dispatch(dict(action='fill-totp', handle=search(broker), target_url=LOGIN,
+                                  target=pin['target'], target_protocol=1))
+    assert result == failure(boundary == 'receipt')
+    assert len(extension.filled) == (boundary == 'receipt')
+    assert '050471' not in json.dumps(result) and OTP_KEY not in json.dumps(result)
+    assert capsys.readouterr() == ('', '') and not caplog.records

@@ -1,4 +1,4 @@
-# TOTP authenticators (0.10.0)
+# TOTP authenticators
 
 Use the broker to generate and enter authenticator codes for an authorized
 sign-in or access-confirmation challenge. This does not authorize changing a
@@ -7,9 +7,21 @@ account, origin and focused field before filling.
 
 ## Capabilities and selection
 
-Require CLI/broker 0.10.0 or newer and `status` fields `totp_supported: true`,
-integer `totp_protocol: 1`, `target_fill_required: true`, integer
-`target_fill_protocol: 1`, and `target_fill_delivery: x11-send-event-v1`.
+Require `status` fields `totp_supported: true`, integer `totp_protocol: 1`,
+`target_fill_required: true` and integer `target_fill_protocol: 1`.
+Then check the selected route:
+
+- CDP: integer `browser_totp_protocol: 1` and a configured CDP profile.
+- Extension: integer `browser_totp_protocol: 1`, integer
+  `extension_totp_protocol: 1` and a paired extension **0.10.0** or newer.
+- Native desktop fields: `native_field_supported: true`, integer
+  `native_field_protocol: 1` and `native_field_delivery: native-field-v1`.
+  Linux X11/Wayland and supported Windows controls use the
+  [native field workflow](native-fields.md) with `--mode totp`.
+- Current Window: `target_fill_delivery: x11-send-event-v1` on Linux or
+  `win32-char-v1` on Windows. This method is unavailable on macOS; its
+  `target_fill_delivery: unavailable` does not block the paired extension.
+
 The CLI checks capabilities before sending TOTP requests. Updating installed
 source does not change an old running process; coordinate its normal restart
 and private unlock, without disrupting another live workflow.
@@ -22,29 +34,65 @@ without gaining password fill or password generation privileges.
 
 ## Fill a saved code
 
-1. Independently verify the site, account, Chrome process/profile and X11
-   client window. Focus the code field and keep the foreground stable.
-2. Search for a fresh single-use account handle, then obtain a fresh
-   `pin-target --pid VERIFIED_PID --window VERIFIED_X11_CLIENT_WINDOW` token.
-   In an agent desktop slot, add `--browser-slot "$AGENT_DESKTOP_SLOT"` (0.35.3+): see
-   [agent desktop slots](target-fill.md#agent-desktop-slots).
-3. Fill the current code directly:
+Verify the exact challenge page and account, then focus one visible editable
+whole-code input. For Chromium browser delivery, require integer
+`browser_totp_protocol: 1`. Use CDP on Linux/Windows or the paired extension on
+Linux/Windows/macOS (including the native macOS broker). Extension TOTP requires
+integer `extension_totp_protocol: 1` and fill extension **0.10.0** or newer; an
+older loaded extension is refused before pinning. These are agent/CLI routes;
+the extension's manual popup keeps its existing login/card/address workflow.
 
-   ```bash
-   akdbx fill-totp HANDLE --target-url 'https://example.com/challenge' --target TARGET
-   ```
+```bash
+akdbx list-password-frames --route extension --top-url 'https://example.com/challenge'
+akdbx pin-password-target --route extension --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
+  --top-url 'https://example.com/challenge' --selector '#otp' --mode totp
+akdbx search example.com
+akdbx fill-totp HANDLE --target-url 'https://example.com/challenge' --target PIN
+```
 
-4. Submit through the verified application and check its non-secret result.
-   The broker sends no submit key. Never inspect the filled code to confirm
-   typing or put the code into chat, logs, screenshots or notes.
+Use `--route cdp` for the configured CDP profile, with its page/frame IDs. In
+an agent desktop slot, add `--browser-slot "$AGENT_DESKTOP_SLOT"` to CDP discovery
+and pinning; see [agent desktop slots](target-fill.md#agent-desktop-slots).
+For a same-site child frame, use its frame ID and add `--frame-origin
+https://auth.example.com` to the pin command. `--top-url` remains the top page's
+exact URL; `fill-totp --target-url` must be the **exact child challenge URL**, not
+the top URL. The asserted origin must match both the entry's authorized origins
+and the pinned frame origin before any OTP configuration is read. URLs must use
+ASCII HTTPS spelling, including punycode. An exact `KP2A_URL*` origin can also
+authorize an entry.
 
-The target URL is required, must be HTTPS, and must match the entry's origin.
-Both URLs must use ASCII spelling, including punycode for internationalized
-hostnames; Unicode URLs are refused to avoid ambiguous IDNA normalization.
-This is a caller assertion: pinned X11 delivery does not verify a DOM field,
-tab, origin or site acceptance. All search handles and target pins are
-single-use, including on failure. Success returns only a dispatch receipt:
-`ok: true`, `filled: totp`, `target_delivery: x11-send-event-v1`.
+Only one input of type `text`, `tel`, `number` or `password` is supported.
+Split-digit fields, textareas, hidden/disabled/read-only fields, conflicting
+password/card hints and unsupported format constraints refuse. Metadata, URL,
+focus and the retained element must remain stable through assignment. The site
+may then consume the code and advance its form during notification. Leading
+zeros stay intact;
+`maxlength` must admit all six/eight digits. Supported patterns are `\d+`,
+`[0-9]+`, or those digit classes with `{6}`, `{8}` or `{6,8}`. Explicit `min`,
+`max` or `step` constraints and an empty `pattern` refuse. A public digit-count
+preflight checks field format before dispatch; the renderer repeats the checks
+at the setter.
+Password pins cannot accept TOTP, and TOTP pins cannot accept saved/generated
+passwords, login fills or username fills. SMS/webhook code pins are separate.
+There is no keyboard, Tab or clipboard fallback on these browser routes.
+
+Current Window still uses `pin-target --pid VERIFIED_PID --window VERIFIED_WINDOW`
+with the same `fill-totp` command. Its target URL is a caller assertion and does
+not attest a browser field or origin. Android keeps `akdbx android pin` and
+`akdbx android fill-totp`; see [Android](android.md). Use `--pending` on the
+standard `fill-totp` command to confirm an authorized pending enrollment through
+CDP, extension, native desktop fields or Current Window. Native field pins use
+`pin-native-target --mode totp` with an independently verified app and asserted
+service URL; that URL must match `fill-totp --target-url` at the origin level.
+
+All handles and pins are single-use, including failures. A success receipt
+contains only `ok: true`, `filled: totp` and `target_delivery`: browser CDP uses
+`chromium-password-dom-v1`, extension uses `extension-dom-v1`, and Current Window
+uses `x11-send-event-v1` on Linux or `win32-char-v1` on Windows. Native desktop
+fields use `native-field-v1`.
+The broker sends no submit key. Submit through the
+verified application and check its non-secret result. Never inspect or return
+the filled code, or put it in chat, logs, screenshots or notes.
 
 A code with less than eight seconds remaining is refused before dispatch.
 Wait at least the returned `retry_after` seconds, then obtain a new search
@@ -54,7 +102,9 @@ guess, try other accounts, change 2FA or use recovery codes as routine MFA.
 After timeout, disconnect or uncertain/partial delivery, inspect the site's
 non-secret state before deciding whether any deliberate retry is appropriate.
 The machine clock must be synchronized; expiry uses wall time while handles
-and delivery deadlines use monotonic time.
+and delivery deadlines use monotonic time. Browser dispatch is also bounded in
+the renderer/extension by the remaining code lifetime. An expiry, clock change
+or lost response after dispatch is uncertain; do not retry automatically.
 
 ## One-time private import
 

@@ -589,3 +589,34 @@ def test_additional_origins_keep_phishing_chain_refusals(lab, top, origin, addit
         assert values(lab, fid) == ['', ''] and not secret_anywhere(lab)
     finally:
         broker.passwords.close()
+
+
+@pytest.mark.parametrize('scenario', ['same-site-in-process', 'same-site-out-of-process'])
+def test_child_frame_totp_uses_exact_frame_url_and_retained_owner(lab, scenario, monkeypatch):
+    from totp_vectors import URI
+    top, origin, _ = SCENARIOS[scenario]
+    fid = navigate(lab, top, origin)
+    frame_eval(lab, fid, "password.id='otp';otp.type='text';otp.autocomplete='one-time-code';otp.focus()", gesture=True)
+    focus(lab, fid, 'otp')
+    broker, entry = broker_for(lab, origin + '/form')
+    entry.otp = URI
+    broker.wall_clock = lambda: 1111111111
+    monkeypatch.setattr(broker.typer, 'deliver', lambda *_: pytest.fail('TOTP frame used keyboard'))
+    spec = {**request(lab, top, fid, origin, 'totp'), 'selector': '#otp'}
+    def fill_otp(pin):
+        handle = broker.dispatch(dict(action='search'))['entries'][0]['handle']
+        return broker.dispatch(dict(action='fill-totp', handle=handle, target=pin['target'], target_protocol=1,
+                                    target_url=origin + '/form'))
+    try:
+        pin = broker.dispatch(spec)
+        assert pin['ok'], pin
+        assert fill_otp(pin) == dict(ok=True, filled='totp', target_delivery=DELIVERY)
+        assert frame_eval(lab, fid, 'otp.value === "050471" && username.value === ""')
+        frame_eval(lab, fid, 'otp.value=""')
+        pin = broker.dispatch(spec)
+        assert pin['ok'], pin
+        top_eval(lab, "document.getElementById('f').style.opacity='0'")
+        assert not fill_otp(pin)['ok']
+        assert frame_eval(lab, fid, 'otp.value === ""')
+    finally:
+        broker.passwords.close()

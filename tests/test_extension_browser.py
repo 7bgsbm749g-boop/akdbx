@@ -1675,3 +1675,33 @@ def test_a_worker_that_finds_a_newer_build_on_disk_refuses_the_pin_and_reloads_i
     assert new.version == newer and new.stale is False and new.digest != old.digest
     assert harness.hub._paired_channel() == [] and harness.broker.dispatch(dict(action='ping'))['extension_paired'] is False
     assert worker_value(harness.lab, RUNS) == [newer, True, 'function']
+
+
+def test_child_frame_totp_uses_exact_frame_origin_and_retained_owner(harness):
+    from totp_vectors import URI
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate('/framed-visible')
+    lab.wait("document.readyState === 'complete'")
+    evaluate = same_site_frame(harness, 'https://auth.example.com/login')
+    evaluate("window.focus();password.id='otp';otp.type='text';otp.autocomplete='one-time-code';otp.focus()")
+    listing = harness.frames(url)
+    child = next(f for f in listing['frames'] if f['origin'] == 'https://auth.example.com')
+    entry = next(e for e in broker.vault.entries if e.title == 'Auth')
+    entry.otp = URI
+    broker.wall_clock = lambda: 1111111111
+    spec = dict(action='pin-password-target', password_protocol=1, route='extension', mode='totp',
+                page_id=listing['page_id'], frame_id=child['frame_id'], frame_protocol=1,
+                frame_origin='https://auth.example.com', top_url=url, selector='#otp')
+    def fill(pin):
+        return broker.dispatch(dict(action='fill-totp', handle=auth_handle(broker), target=pin['target'],
+                                    target_protocol=1, target_url='https://auth.example.com/login'))
+    pin = broker.dispatch(spec)
+    assert pin['ok'], pin
+    assert fill(pin) == dict(ok=True, filled='totp', target_delivery=route.DELIVERY)
+    assert evaluate('otp.value === "050471" && username.value === ""')
+    evaluate('otp.value=""')
+    pin = broker.dispatch(spec)
+    assert pin['ok'], pin
+    lab.evaluate("document.getElementById('login-frame').style.opacity='0'")
+    assert not fill(pin)['ok']
+    assert evaluate('otp.value === ""')

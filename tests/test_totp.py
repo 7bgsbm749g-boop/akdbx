@@ -1,5 +1,4 @@
 """Public RFC vectors and synthetic vaults/targets only; no live MFA is used."""
-import base64
 import json
 import math
 import stat
@@ -15,10 +14,7 @@ from akdbx.totp import (Configuration, TotpError, code_at, configured,
 from test_broker import Entry, RecordingTyper, Vault, running_broker, x11_target_request as target_request
 from test_web_unlock import call
 from test_writes import MASTER, OLD, begin, deployed, private_post, reopened, template
-
-
-KEY = base64.b32encode(b'12345678901234567890').decode('ascii')
-URI = 'otpauth://totp/Example:synthetic-account?secret=' + KEY + '&issuer=Example'
+from totp_vectors import KEY, URI
 
 
 @pytest.mark.parametrize('timestamp,expected', [
@@ -563,3 +559,58 @@ def test_cli_rejects_invalid_totp_error_values(monkeypatch, capsys, extra):
     assert cli.main(['fill-totp', 'synthetic-handle', '--target-url', 'https://example.test', '--target', 'synthetic-pin']) == 2
     captured = capsys.readouterr()
     assert not captured.out and 'unexpected-private-value' not in captured.err
+
+
+@pytest.mark.parametrize('route', ['cdp', 'extension'])
+@pytest.mark.parametrize('capability', [None, True, 2])
+def test_cli_browser_totp_mode_requires_explicit_capability(monkeypatch, capsys, route, capability):
+    from akdbx.browser_password import DELIVERY as PASSWORD_DELIVERY
+    from akdbx.extension_route import DELIVERY as EXTENSION_DELIVERY
+    calls = []
+    state = dict(ok=True, password_fill_protocol=1, password_fill_delivery=PASSWORD_DELIVERY,
+                 extension_protocol=1, extension_delivery=EXTENSION_DELIVERY,
+                 extension_totp_protocol=1, browser_totp_protocol=capability)
+    def request(_socket, payload, **kwargs):
+        calls.append(payload)
+        return state
+    monkeypatch.setattr(cli, 'request', request)
+    assert cli.main(['pin-password-target', '--route', route, '--mode', 'totp', '--page-id', 'p',
+                     '--frame-id', 'f', '--top-url', 'https://example.com/challenge', '--selector', '#otp']) == 1
+    assert calls and all(c['action'] == 'ping' for c in calls)
+    assert 'browser TOTP' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('delivery', ['chromium-password-dom-v1', 'extension-dom-v1'])
+@pytest.mark.parametrize('extra,expected', [({}, 0), ({'code': '050471'}, 2), ({'secret': KEY}, 2)])
+def test_cli_browser_totp_receipts_are_secret_free_and_strict(monkeypatch, capsys, delivery, extra, expected):
+    def request(_socket, payload, **kwargs):
+        if payload['action'] == 'ping':
+            return dict(ok=True, totp_supported=True, totp_protocol=1,
+                        target_fill_required=True, target_fill_protocol=1, target_fill_delivery='x11-send-event-v1')
+        return dict(ok=True, filled='totp', target_delivery=delivery, **extra)
+    monkeypatch.setattr(cli, 'request', request)
+    assert cli.main(['fill-totp', 'handle', '--target-url', 'https://example.com/challenge', '--target', 'pin']) == expected
+    captured = capsys.readouterr()
+    assert '050471' not in captured.out + captured.err and KEY not in captured.out + captured.err
+
+
+@pytest.mark.parametrize('route', ['cdp', 'extension'])
+def test_cli_pins_browser_totp_only_after_capability_preflight(monkeypatch, capsys, route):
+    from akdbx.browser_password import DELIVERY as PASSWORD_DELIVERY
+    from akdbx.extension_route import DELIVERY as EXTENSION_DELIVERY
+    calls = []
+    def request(_socket, payload, **kwargs):
+        calls.append(payload)
+        if payload['action'] == 'ping':
+            return dict(ok=True, password_fill_protocol=1, password_fill_delivery=PASSWORD_DELIVERY,
+                        extension_protocol=1, extension_delivery=EXTENSION_DELIVERY,
+                        extension_totp_protocol=1, browser_totp_protocol=1)
+        return dict(ok=True, target='b' * 64, expires_in=30,
+                    target_delivery=EXTENSION_DELIVERY if route == 'extension' else PASSWORD_DELIVERY)
+    monkeypatch.setattr(cli, 'request', request)
+    assert cli.main(['pin-password-target', '--route', route, '--mode', 'totp', '--page-id', 'p',
+                     '--frame-id', 'f', '--top-url', 'https://example.com/challenge', '--selector', '#otp']) == 0
+    assert calls[-1] == dict(action='pin-password-target', password_protocol=1, page_id='p', frame_id='f',
+                              top_url='https://example.com/challenge', selector='#otp', mode='totp', route=route)
+    assert all(c['action'] == 'ping' for c in calls[:-1])
+    assert json.loads(capsys.readouterr().out)['ok'] is True

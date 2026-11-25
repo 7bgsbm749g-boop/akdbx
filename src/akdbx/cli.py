@@ -456,7 +456,7 @@ def parser() -> argparse.ArgumentParser:
     page_url.add(password_pin, 'top-url', required=True, help='exact observed top-level page URL, query and fragment included')
     password_pin.add_argument('--frame-origin', help='exact HTTPS origin of the child frame named by --frame-id (from list-password-frames); '
                               'the saved credential must match this origin; requires broker password_frame_protocol 1')
-    password_pin.add_argument('--mode', choices=('password', 'username', 'login', 'read'), default='password',
+    password_pin.add_argument('--mode', choices=('password', 'username', 'login', 'totp', 'read'), default='password',
                               help='read pins a focused element that shows a secret, for capture-secret or capture-totp; never select its text')
     password_pin.add_argument('--username-selector', help='required in login mode; no Tab traversal')
     password_pin.add_argument('--password-purpose', choices=('current-password', 'new-password'),
@@ -1281,6 +1281,13 @@ def _command(args) -> int:
                                  and capabilities.get('native_field_supported') is True)):
                     print(json.dumps({'ok': False, 'error': PASSWORD_BROWSER_REFUSAL}))
                     return 1
+            if args.command == 'pin-password-target' and args.mode == 'totp':
+                if type(capabilities.get('browser_totp_protocol')) is not int or capabilities['browser_totp_protocol'] != 1:
+                    print(json.dumps({'ok': False, 'error': 'broker lacks browser TOTP protocol 1; target request not sent'}))
+                    return 1
+                if extension_route and (type(capabilities.get('extension_totp_protocol')) is not int or capabilities['extension_totp_protocol'] != 1):
+                    print(json.dumps({'ok': False, 'error': 'broker lacks extension TOTP protocol 1; target request not sent'}))
+                    return 1
             if args.command == 'pin-password-target' and args.password_purpose is not None:
                 if type(capabilities.get('password_purpose_protocol')) is not int or capabilities['password_purpose_protocol'] != 1:
                     print(json.dumps({'ok': False, 'error': 'broker lacks explicit password purpose protocol 1; target request not sent'}))
@@ -1477,7 +1484,9 @@ def _command(args) -> int:
         expected_delivery = PASSWORD_DELIVERY if args.command == 'fill-generated' or args.command == 'fill' and args.mode != 'username' else DELIVERY
         if args.command == 'fill' and args.mode == 'username' and response.get('target_delivery') == PASSWORD_DELIVERY:
             expected_delivery = PASSWORD_DELIVERY
-        if args.command in {'fill', 'fill-generated'} and response.get('target_delivery') == EXTENSION_DELIVERY:
+        if args.command == 'fill-totp' and response.get('target_delivery') == PASSWORD_DELIVERY:
+            expected_delivery = PASSWORD_DELIVERY
+        if args.command in {'fill', 'fill-generated', 'fill-totp'} and response.get('target_delivery') == EXTENSION_DELIVERY:
             expected_delivery = EXTENSION_DELIVERY
         if (args.command in {'fill', 'fill-generated', 'fill-totp'}
                 and response.get('target_delivery') == NATIVE_DELIVERY

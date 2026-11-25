@@ -277,7 +277,16 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   `--allow-autocomplete-off`, and for child frames `--frame-origin` with the
   same-site chain policy. The field document's origin must equal the
   credential's main URL origin or one of its additional URLs.
-- `fill-generated` and `commit-password` work unchanged with an extension pin.
+- TOTP: `pin-password-target --mode totp --route extension`, then
+  `fill-totp HANDLE --target-url EXACT_CHALLENGE_URL --target PIN [--pending]`.
+  Require `browser_totp_protocol: 1`, `extension_totp_protocol: 1` and fill
+  extension 0.10.0+. One retained whole-code field only; password/TOTP pins
+  cannot cross modes. The exact challenge URL and authorized entry origin
+  must match the field document before OTP access. Deadlines and format checks
+  run in the renderer too; no keyboard fallback. This is the CLI/agent route,
+  supported on Linux/Windows/macOS; manual popup behavior is unchanged.
+  See [TOTP](totp.md), including child frames and pending enrollment.
+- `fill-generated` and `commit-password` work unchanged with a password-mode extension pin.
 - Cards: `pin-card-target --route extension` takes the same options. `--frame-url`
   is optional on this route: the broker uses the browser's own URL for the
   document. Cards go only to frames of the merchant's top origin, or with

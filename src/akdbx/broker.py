@@ -511,7 +511,7 @@ class Broker:
                     **({"relay": self.relay.status()} if self.relay is not None else {}),
                     **({"active_origin": origin} if isinstance(origin, str) else {})}
         if action == "ping":
-            return {"ok": True, "version": __version__, "lock_timeout_seconds": self.session.timeout, "lock_event_sources": self.lock_events.copy(), **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **entry_organize_capabilities(), **entry_edit_capabilities(), **secret_save_capabilities(), **target_capabilities(), **self.native.capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **sms_notification_capabilities(), **self.secrets.capabilities(), **self.android.capabilities(), **self.totp_captures.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
+            return {"ok": True, "version": __version__, "lock_timeout_seconds": self.session.timeout, "lock_event_sources": self.lock_events.copy(), **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **entry_organize_capabilities(), **entry_edit_capabilities(), **secret_save_capabilities(), **target_capabilities(), **self.native.capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **sms_notification_capabilities(), **self.secrets.capabilities(), **self.android.capabilities(), **self.totp_captures.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "browser_totp_protocol": 1, "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -801,6 +801,8 @@ class Broker:
                     # Materialize and validate every value needed by this mode
                     # before emitting any event. Entry access and validation
                     # may take time, so neither is itself the delivery boundary.
+                    if isinstance(target, (PasswordPin, ExtensionPin)) and (target.mode != mode or mode == 'read'):
+                        raise DeliveryError(False)
                     code_valid = lambda: True
                     if isinstance(target, AndroidPin):
                         # The pin verified its site; the entry must name it.
@@ -822,6 +824,10 @@ class Broker:
                         target_origin = https_origin(request.get('target_url'))
                         if target_origin not in additional_origins(entry) and target_origin != https_origin(entry.url):
                             return {'ok': False, 'error': 'autofill not started: TOTP target site mismatch'}
+                        if isinstance(target, (PasswordPin, ExtensionPin)):
+                            pinned_url = target.frame_url if isinstance(target, ExtensionPin) else target.url
+                            if request['target_url'] != pinned_url or https_origin(pinned_url) != target_origin:
+                                raise DeliveryError(False)
                         # --pending: the key a capture-totp saved for this enrollment.
                         configuration = read_pending(entry) if request.get('pending') is True else read_configuration(entry)
                         now = self.wall_clock()
@@ -872,9 +878,13 @@ class Broker:
                             return target_failure(True)
                     elif isinstance(target, FIELD_PINS):
                         if mode == 'totp':
-                            raise DeliveryError(False)
-                        (self.extension.deliver_password if isinstance(target, ExtensionPin) else self.passwords.deliver)(target, mode, username if mode != 'password' else '',
+                            # Carry the code lifetime into the renderer's monotonic deadline.
+                            # A clock change detected after dispatch is uncertain, never retried.
+                            start_deadline = min(start_deadline, self.clock() + valid_until - self.wall_clock() - 2)
+                        (self.extension.deliver_password if isinstance(target, ExtensionPin) else self.passwords.deliver)(target, mode, username if mode in {'login', 'username'} else '',
                                                password if mode != 'username' else '', allowed_origins(entry), ready, start_deadline)
+                        if mode == 'totp' and not ready():
+                            return target_failure(True)
                     elif mode == 'totp':
                         self.typer.deliver(target, steps, ready, guard=code_valid)
                         if not code_valid():

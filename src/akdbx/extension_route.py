@@ -96,6 +96,7 @@ CAPTURE_PROTOCOL = 1
 CAPTURE_DELIVERY = 'extension-dom-read-v1'
 # The first fill extension version that reads secrets and holds child-frame owners.
 CAPTURE_VERSION = (0, 4, 0)
+TOTP_VERSION = (0, 10, 0)
 # Identity pins with an explicit field purpose (pin-identity-target --field-purpose).
 FIELD_PURPOSE_VERSION = (0, 7, 0)
 ROUTES = ('cdp', 'extension')
@@ -556,6 +557,7 @@ class ExtensionHub:
             channels = list(self.channels.values())
             approved = set(self.approved)
         state = dict(extension_protocol=PROTOCOL, extension_delivery=DELIVERY, extension_id=EXTENSION_ID,
+                     extension_totp_protocol=1, extension_totp_min_version='0.10.0',
                      extension_capture_protocol=CAPTURE_PROTOCOL, extension_capture_delivery=CAPTURE_DELIVERY,
                      fill_routes=['extension'] if sys.platform == 'darwin' else list(ROUTES),
                      default_fill_route=self.default_route,
@@ -1148,7 +1150,7 @@ class ExtensionHub:
         if (set(request) != required | optional | ({'username_selector'} if mode == 'login' else set())
                 or request.get('route') != 'extension'
                 or type(request.get('password_protocol')) is not int or request['password_protocol'] != 1
-                or mode not in {'username', 'password', 'login'}
+                or mode not in {'username', 'password', 'login', 'totp'}
                 or ('password_purpose' in request and (mode != 'password'
                                                       or request['password_purpose'] not in {'current-password', 'new-password'}))
                 or ('allow_autocomplete_off' in request and (request['allow_autocomplete_off'] is not True
@@ -1171,10 +1173,11 @@ class ExtensionHub:
                     password_purpose=request.get('password_purpose'),
                     allow_autocomplete_off=request.get('allow_autocomplete_off', False), frame_origin=frame_origin)
         # A child-frame pin needs the extension that holds the frame owners.
-        return self._frame_pin('password', mode, request, spec, frame_origin, hardened=frame_origin is not None)
+        return self._frame_pin('password', mode, request, spec, frame_origin, hardened=frame_origin is not None,
+                               needs=TOTP_VERSION if mode == 'totp' else None)
 
-    def _frame_pin(self, kind, mode, request, spec, frame_origin, *, hardened):
-        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, hardened=hardened)
+    def _frame_pin(self, kind, mode, request, spec, frame_origin, *, hardened, needs=None):
+        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, hardened=hardened, needs=needs)
         try:
             if frame_origin is None:
                 # The main frame of the exact top URL, as on the CDP route.
@@ -1308,7 +1311,7 @@ class ExtensionHub:
         except ExtensionError:
             return 'uncertain'
         state = result.get('state')
-        return state if state in {'filled', 'refused'} else 'uncertain'
+        return state if set(result) == {'state'} and state in {'filled', 'refused'} else 'uncertain'
 
     def read(self, pin, site_origins, ready, start_deadline):
         """Return the read pin's checked value; the caller saves it and never returns it over RPC.
@@ -1351,13 +1354,27 @@ class ExtensionHub:
     def deliver_password(self, pin, mode, username, password, site_origins, ready, start_deadline):
         """The field document's origin must exactly equal one of the credential's origins."""
         try:
-            if mode != pin.mode or https_origin(pin.frame_url) not in site_origins:
+            if (mode not in {'username', 'password', 'login', 'totp'} or mode != pin.mode
+                    or pin.kind != 'password' or https_origin(pin.frame_url) not in site_origins):
                 raise DeliveryError(False)
         except DeliveryError:
             raise
         except Exception:
             raise DeliveryError(False) from None
-        values = dict(mode=mode, username=username if mode != 'password' else '',
+        if mode == 'totp':
+            if (not pin.channel.supports(TOTP_VERSION) or username != '' or not isinstance(password, str)
+                    or not re.fullmatch(r'(?:[0-9]{6}|[0-9]{8})', password) or not ready()):
+                raise DeliveryError(False)
+            try:
+                # Only the public digit count leaves the broker before format preflight.
+                result = pin.channel.call('check-totp', min(3, max(.001, start_deadline - self.clock())),
+                                          tab_id=pin.tab_id, document_id=pin.document_id, pin_id=pin.pin_id,
+                                          chain=pin.chain, digits=len(password))
+                if set(result) != {'ok'} or result.get('ok') is not True:
+                    raise ExtensionError()
+            except ExtensionError:
+                raise DeliveryError(False) from None
+        values = dict(mode=mode, username=username if mode in {'login', 'username'} else '',
                       password=password if mode != 'username' else '')
         state = self._deliver(pin, values, ready, start_deadline)
         values.clear()

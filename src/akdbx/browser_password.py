@@ -203,13 +203,42 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
   if (!isSecureContext || location.href !== url || !sameOrigin() || !document.hasFocus() || document.visibilityState !== 'visible') throw 0;
   const query = s => { const a = document.querySelectorAll(s); if (a.length !== 1) throw 0; return a[0]; };
   const password = mode === 'username' ? null : query(selector);
-  const username = mode === 'password' ? null : query(mode === 'username' ? selector : usernameSelector);
+  const username = ['password','totp'].includes(mode) ? null : query(mode === 'username' ? selector : usernameSelector);
   const created = performance.now();
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
   const type = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'type').get;
   const attribute = Element.prototype.getAttribute;
   const originalPasswordAutocomplete = password ? attribute.call(password, 'autocomplete') : null;
+  // Explicit OTP mode admits one whole code only. Retain all field metadata;
+  // changing it away and back taints the pin as well.
+  const otpAttributes = mode === 'totp' ? [...password.attributes].map(a => [a.name, a.value]) : null;
+  const otpMetadata = e => otpAttributes.length === e.attributes.length &&
+    otpAttributes.every(([name, value]) => attribute.call(e, name) === value);
+  const otpHints = e => {
+    const ac = (attribute.call(e, 'autocomplete') || '').trim().toLowerCase();
+    const tokens = ac.split(/[\t\n\f\r ]+/).filter(Boolean);
+    if (tokens[0]?.startsWith('section-')) tokens.shift();
+    if (tokens.length && !(tokens.length === 1 && ['one-time-code','on','off'].includes(tokens[0]))) return false;
+    const hints = ['id','name','aria-label'].map(k => attribute.call(e, k) || '');
+    if (hints.some(h => /(?:credit.?card|card[-_ ]?(?:number|holder|expir|security|verification|cvc|cvv)|cc[-_ ]?(?:name|number|csc|cvc|cvv|exp)|(?:^|[^a-z0-9])(?:cvc|cvv|csc)2?(?:$|[^a-z0-9]))/i.test(h) ||
+        /password/i.test(h) && !/(?:one[-_ ]?time|totp|otp)/i.test(h))) return false;
+    // Only a decimal whole-code format. Unsupported constraints fail closed.
+    return !['min','max','step'].some(k => e.hasAttribute(k)) &&
+      ['','numeric','decimal','tel'].includes(e.inputMode);
+  };
+  const acceptsTotp = digits => {
+    if (mode !== 'totp' || ![6,8].includes(digits)) return false;
+    const e = password, pattern = attribute.call(e, 'pattern');
+    if ((e.maxLength >= 0 && e.maxLength < digits) || e.minLength > digits) return false;
+    if (pattern !== null) {
+      // Do not evaluate arbitrary page patterns against a secret or support split codes.
+      const match = /^(?:\\d|\[0-9\])(?:\+|\{(6|8)(?:,(6|8))?\})$/.exec(pattern);
+      if (!match || match[1] && (digits < +match[1] || digits > +(match[2] || match[1]))) return false;
+    }
+    return otpMetadata(e) && otpHints(e);
+  };
   const hasAutocomplete = (e, secret) => {
+    if (mode === 'totp') return otpMetadata(e) && otpHints(e);
     // The autocomplete IDL getter can deduplicate malformed raw token lists.
     const value = attribute.call(e, 'autocomplete') || '';
     if (value.length > 4096) return false;
@@ -230,7 +259,7 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
   const valid = (e, secret) => {
     if (!(e instanceof HTMLInputElement) || !e.isConnected || e.ownerDocument !== document || e.disabled || e.readOnly || e.closest('[inert]')) return false;
     const t = type.call(e), r = e.getBoundingClientRect(), s = getComputedStyle(e);
-    return (secret ? t === 'password' : ['text','email'].includes(t)) && hasAutocomplete(e, secret) && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none' && s.opacity !== '0';
+    return (mode === 'totp' ? ['text','tel','number','password'].includes(t) : secret ? t === 'password' : ['text','email'].includes(t)) && hasAutocomplete(e, secret) && e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth && s.visibility === 'visible' && s.display !== 'none' && s.opacity !== '0';
   };
   let tainted = false;
   const dirty = () => { tainted = true; };
@@ -242,10 +271,10 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
   const observer = new MutationObserver(records => {
     for (const r of records) {
       if (r.type === 'childList' && [...r.removedNodes].some(n => n === password || n === username || n.contains(password) || n.contains(username))) dirty();
-      if (passwordPurpose && r.type === 'attributes' && r.target === password) dirty();
+      if ((passwordPurpose || mode === 'totp') && r.type === 'attributes' && r.target === password) dirty();
     }
   });
-  observer.observe(document, {childList:true, subtree:true, ...(passwordPurpose ? {attributes:true, attributeFilter:['autocomplete','type']} : {})});
+  observer.observe(document, {childList:true, subtree:true, ...((passwordPurpose || mode === 'totp') ? {attributes:true, ...(mode === 'totp' ? {} : {attributeFilter:['autocomplete','type']})} : {})});
   const dispose = () => {
     window.navigation.removeEventListener('navigate', dirty);
     window.removeEventListener('blur', dirty, true);
@@ -259,7 +288,7 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
     (!username || valid(username, false) && query(mode === 'username' ? selector : usernameSelector) === username) &&
     (!password || !username || password !== username && password.form === username.form);
   if (!check() || originalFocus !== (username || password)) { dispose(); throw 0; }
-  return {password, username, setter, check, mode, url, dispose};
+  return {password, username, setter, getter:Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').get, check, acceptsTotp, mode, url, dispose};
 })'''
 # Read pins (`mode: "read"`) retain one element that shows a secret. The caller
 # must focus it. Text selection is not accepted: on X11, Chromium publishes any
@@ -382,15 +411,20 @@ READ = r'''function(deadline) {
 }'''
 FILL = r'''function(mode, username, password, deadline) {
   if (mode !== this.mode || !this.check() || performance.now() >= deadline) return false;
+  if (mode === 'totp' && (username !== '' || typeof password !== 'string' || !/^(?:[0-9]{6}|[0-9]{8})$/.test(password) || !this.acceptsTotp(password.length))) return false;
   // Native setters do not dispatch page handlers. No key, Tab, focus change,
   // await, or re-selection occurs between validation and assignment.
   if (this.username) this.setter.call(this.username, username);
   if (this.password) this.setter.call(this.password, password);
+  if (mode === 'totp' && this.getter.call(this.password) !== password) throw 0;
   // Send compatibility notifications only after all assignments are complete.
   for (const e of [this.username, this.password]) if (e) {
     e.dispatchEvent(new Event('input', {bubbles:true}));
     e.dispatchEvent(new Event('change', {bubbles:true}));
   }
+  // A challenge may consume the code and remove its field in an input handler.
+  // Delivery was checked before page notification; expiry still makes it uncertain.
+  if (mode === 'totp' && performance.now() >= deadline) throw 0;
   return true;
 }'''
 
@@ -466,7 +500,7 @@ class BrowserPasswords:
         reading = request.get('mode') == 'read'
         if (set(request) != required | optional | ({'username_selector'} if request.get('mode') == 'login' else set())
                 or type(request.get('password_protocol')) is not int or request['password_protocol'] != PROTOCOL
-                or request.get('mode') not in {'username', 'password', 'login', 'read'}
+                or request.get('mode') not in {'username', 'password', 'login', 'totp', 'read'}
                 # Read pins need the explicit capture protocol; fill pins never carry it.
                 or reading != ('capture_protocol' in request)
                 or reading and (type(request['capture_protocol']) is not int or request['capture_protocol'] != CAPTURE_PROTOCOL)
@@ -648,7 +682,17 @@ class BrowserPasswords:
         try:
             if mode != pin.mode or pin.mode == 'read':
                 raise TargetError()
+            if mode == 'totp' and (username != '' or not isinstance(password, str) or not re.fullmatch(r'(?:[0-9]{6}|[0-9]{8})', password)):
+                raise TargetError()
             renderer_deadline = self._recheck(pin, site_origins, ready, start_deadline)
+            if mode == 'totp':
+                preflight = pin.connection.call('Runtime.callFunctionOn', {
+                    'objectId': pin.object_id,
+                    'functionDeclaration': 'function(digits) { return this.check() && this.acceptsTotp(digits); }',
+                    'arguments': [{'value': len(password)}], 'returnByValue': True,
+                }, pin.session)
+                if 'exceptionDetails' in preflight or preflight['result'].get('value') is not True or not ready():
+                    raise TargetError()
             started = True
             result = pin.connection.call('Runtime.callFunctionOn', {
                 'objectId': pin.object_id, 'functionDeclaration': FILL,

@@ -176,6 +176,25 @@ def test_broker_uses_native_password_pin_and_keeps_legacy_window_password_refusa
     assert session.closed
 
 
+def test_native_totp_cli_receipt_coexists_with_browser_routes(monkeypatch, capsys):
+    from akdbx import cli
+    from test_broker import make_broker
+    from totp_vectors import URI
+    broker, typer = make_broker()
+    broker.native, session, receipt, now = setup('totp')
+    broker.clock = lambda: now[0]
+    broker.wall_clock = lambda: 1111111111
+    entry = broker.vault.entries[0]
+    entry.url, entry.otp = SITE, URI
+    handle = broker._new_handle(entry)
+    monkeypatch.setattr(cli, 'request', lambda path, payload, **kwargs: broker.dispatch(payload))
+    assert cli.main(['fill-totp', handle, '--target-url', SITE, '--target', receipt['target']]) == 0
+    output = capsys.readouterr()
+    assert json.loads(output.out) == dict(ok=True, filled='totp', target_delivery=DELIVERY)
+    assert '050471' not in output.out + output.err
+    assert session.values == {0: '050471'} and session.closed and not typer.events
+
+
 @pytest.mark.parametrize('field,control,mode', [(None, 0, 'password'), (None, 1, 'username'),
                                              (None, 1, 'read'), ('not-a-card-field', 0, 'card')])
 def test_pin_refuses_wrong_control_role_or_field_before_delivery(field, control, mode):
