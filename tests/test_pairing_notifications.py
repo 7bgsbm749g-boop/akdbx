@@ -98,6 +98,24 @@ def test_a_browser_paired_before_registration_is_reported_at_once(events):
     assert waiting['state'] == 'subscribed'
 
 
+@pytest.mark.parametrize('already_paired', [False, True])
+def test_firefox_pairing_wakes_waits_and_has_a_valid_cli_receipt(events, already_paired):
+    from akdbx.pairing_cli import valid_receipt
+    broker, sent = events
+    channel, _ = attach(broker, {}, paired=False)
+    channel.browser = 'firefox'
+    if already_paired:
+        assert broker.extension.approve(token_for(broker))
+    receipt = broker.dispatch(request())
+    assert valid_receipt('subscribe-pairing', receipt)
+    if not already_paired:
+        assert broker.extension.approve(token_for(broker))
+    final = terminal(broker, receipt['subscription_id'])
+    assert final['state'] == 'delivered' and final['browser'] == 'firefox'
+    assert valid_receipt('pairing-subscription-status', final)
+    assert [payload['browser'] for _, payload in sent] == ['firefox']
+
+
 @pytest.mark.parametrize('extra', [dict(code='abcd-efgh'), dict(code='ABCD-EFG1'), dict(code=5), dict(other=True)])
 def test_malformed_pairing_subscriptions_are_refused(events, extra):
     broker, _ = events

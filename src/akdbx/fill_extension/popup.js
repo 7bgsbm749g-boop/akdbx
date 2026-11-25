@@ -52,9 +52,9 @@ function showTrust(state, send) {
 async function main() {
   const status = document.getElementById("status");
   const list = document.getElementById("entries");
-  const send = message => chrome.runtime.sendMessage(message);
-  document.getElementById("version").textContent = versionText(chrome.runtime.getManifest());
-  document.getElementById("settings").onclick = () => chrome.runtime.openOptionsPage().then(() => window.close());
+  const send = message => akdbxBrowser.runtime.sendMessage(message);
+  document.getElementById("version").textContent = versionText(akdbxBrowser.runtime.getManifest());
+  document.getElementById("settings").onclick = () => akdbxBrowser.runtime.openOptionsPage().then(() => window.close());
   const state = await send({op: "state"});
   if (!state || !state.connected) {
     status.textContent = "The akdbx broker is not reachable. Start the broker, then run “akdbx extension install” for this browser.";
@@ -69,7 +69,7 @@ async function main() {
       document.getElementById("code").textContent = state.code;
       document.getElementById("origin").textContent = "Pairing page: " + new URL(link).origin;
       document.getElementById("pairing").hidden = false;
-      document.getElementById("pair").onclick = () => chrome.tabs.create({url: link});
+      document.getElementById("pair").onclick = () => akdbxBrowser.tabs.create({url: link});
     }
     return;
   }
@@ -79,14 +79,14 @@ async function main() {
     if (link) {
       const unlock = document.getElementById("unlock");
       unlock.hidden = false;
-      unlock.onclick = () => chrome.tabs.create({url: link});
+      unlock.onclick = () => akdbxBrowser.tabs.create({url: link});
       const origin = document.getElementById("unlock-origin");
       origin.textContent = "Unlock page: " + new URL(link).origin;
       origin.hidden = false;
     }
     return;
   }
-  const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
+  const [tab] = await akdbxBrowser.tabs.query({active: true, currentWindow: true});
   if (!tab) return;
   const found = await send({op: "probe", tab_id: tab.id});
   if (!found || !found.ok) {
@@ -119,7 +119,7 @@ async function main() {
   }
 }
 
-if (typeof document !== "undefined" && typeof chrome !== "undefined" && chrome.runtime) {
+if (typeof document !== "undefined" && typeof akdbxBrowser !== "undefined" && akdbxBrowser.runtime) {
   main().catch(() => {
     document.getElementById("status").textContent = "akdbx request failed.";
   });

@@ -26,7 +26,7 @@ from test_windows_unlock import certificates  # noqa: F401
 
 pytestmark = pytest.mark.skipif(os.name == 'nt', reason='Linux paths and modes; Windows parts are native tests')
 EXECUTABLE = str(Path(sys.executable).absolute())
-LOCKED = {'ok': True, 'locked': True, 'version': '0.46.0', 'unlock_url': 'https://localhost:9443/?token=synthetic',
+LOCKED = {'ok': True, 'locked': True, 'version': '0.47.0', 'unlock_url': 'https://localhost:9443/?token=synthetic',
           'fill_routes': ['cdp', 'extension'], 'default_fill_route': 'extension'}
 
 
@@ -143,6 +143,157 @@ def setup(*argv, runner=None, status=None, which=None, ask=None, interactive=Fal
 
 def base(vault, pair, *extra):
     return ('--yes', '--json', '--vault', str(vault), '--tls-cert', str(pair[0]), '--tls-key', str(pair[1]), *extra)
+
+
+@pytest.mark.parametrize('browsers', [('firefox',), ('firefox', 'chrome')])
+def test_setup_reports_the_actual_folders_for_each_extension_format(home, vault, pair, capsys, browsers):
+    folder = home / 'custom-addon'
+    flags = [part for browser in browsers for part in ('--browser', browser)]
+    code, result, _ = setup(*base(vault, pair, '--start-at-login', '--extension-dir', str(folder), *flags),
+                            capsys=capsys)
+    assert code == 0 and result['ok'], result
+    firefox = folder if browsers == ('firefox',) else folder.with_name(folder.name + '-firefox')
+    assert (firefox / 'manifest.json').is_file()
+    expected = {browser: str(firefox if browser == 'firefox' else folder) for browser in browsers}
+    assert result['stages']['fill']['extension_dir'] == str(folder)
+    assert result['stages']['fill']['extension_dirs'] == expected
+    for browser, path in expected.items():
+        manifest = json.loads((Path(path) / 'manifest.json').read_text())
+        assert ('gecko' in manifest.get('browser_specific_settings', {})) is (browser == 'firefox')
+
+
+@pytest.mark.parametrize('explicit', [None, 'custom', 'default'])
+def test_adding_chromium_keeps_the_saved_firefox_folder(home, vault, pair, capsys, explicit):
+    folder = (home / 'custom-addon' if explicit == 'custom' else
+              home / '.local/share/akdbx/extension')
+    first_flags = ['--browser', 'firefox', '--start-at-login']
+    if explicit:
+        first_flags += ['--extension-dir', str(folder)]
+    code, first, _ = setup(*base(vault, pair, *first_flags), capsys=capsys)
+    assert code == 0 and first['ok'], first
+    firefox = first['stages']['fill']['extension_dirs']['firefox']
+    code, second, _ = setup(*base(vault, pair, '--browser', 'firefox', '--browser', 'chrome',
+                                  '--start-at-login'), capsys=capsys)
+    assert code == 0 and second['ok'], second
+    folders = second['stages']['fill']['extension_dirs']
+    assert folders['firefox'] == firefox and folders['chrome'] != firefox
+    if explicit:
+        assert Path(firefox) == folder
+    for browser, path in folders.items():
+        manifest = json.loads((Path(path) / 'manifest.json').read_text())
+        assert ('gecko' in manifest.get('browser_specific_settings', {})) is (browser == 'firefox')
+
+
+def test_chromium_keeps_its_folder_when_it_matches_the_firefox_default(home, vault, pair, capsys):
+    folder = home / '.local/share/akdbx/extension-firefox'
+    code, first, _ = setup(*base(vault, pair, '--browser', 'chrome', '--start-at-login',
+                                '--extension-dir', str(folder)), capsys=capsys)
+    assert code == 0 and first['ok'], first
+    for browsers in [('chrome',), ('chrome', 'firefox')]:
+        flags = [part for browser in browsers for part in ('--browser', browser)]
+        code, result, _ = setup(*base(vault, pair, '--start-at-login', *flags), capsys=capsys)
+        assert code == 0 and result['ok'], result
+        folders = result['stages']['fill']['extension_dirs']
+        assert folders['chrome'] == str(folder)
+        if 'firefox' in browsers:
+            assert folders['firefox'] != str(folder)
+            manifest = json.loads((Path(folders['firefox']) / 'manifest.json').read_text())
+            assert manifest['browser_specific_settings']['gecko']['id'] == 'akdbx@akdbx.org'
+
+
+def test_adding_firefox_with_a_relative_current_chromium_folder(home, vault, pair, capsys, monkeypatch):
+    folder = home / 'existing-addon'
+    code, first, _ = setup(*base(vault, pair, '--browser', 'chrome', '--start-at-login',
+                                '--extension-dir', str(folder)), capsys=capsys)
+    assert code == 0 and first['ok'], first
+    monkeypatch.chdir(folder)
+    code, result, _ = setup(*base(vault, pair, '--browser', 'chrome', '--browser', 'firefox',
+                                 '--start-at-login', '--extension-dir', '.'), capsys=capsys)
+    assert code == 0 and result['ok'], result
+    assert result['stages']['fill']['extension_dirs'] == {
+        'chrome': str(folder), 'firefox': str(folder.with_name(folder.name + '-firefox'))}
+
+
+@pytest.mark.parametrize('custom', [False, True])
+def test_legacy_unused_chromium_path_does_not_displace_a_later_firefox_build(home, vault, pair, capsys, custom):
+    folder = home / ('custom-addon' if custom else '.local/share/akdbx/extension')
+    state = home / '.config/akdbx/setup.json'
+    state.parent.mkdir(mode=0o700)
+    state.write_text(json.dumps(dict(version='0.44.0', browsers=[], extension_dir=str(folder))))
+    state.chmod(0o600)
+    code, first, _ = setup(*base(vault, pair, '--browser', 'firefox', '--start-at-login',
+                                '--extension-dir', str(folder)), capsys=capsys)
+    assert code == 0 and first['ok'], first
+    code, second, _ = setup(*base(vault, pair, '--browser', 'firefox', '--browser', 'chrome',
+                                 '--start-at-login'), capsys=capsys)
+    assert code == 0 and second['ok'], second
+    folders = second['stages']['fill']['extension_dirs']
+    assert folders['firefox'] == str(folder) and folders['chrome'] != str(folder)
+    for browser, path in folders.items():
+        manifest = json.loads((Path(path) / 'manifest.json').read_text())
+        assert ('gecko' in manifest.get('browser_specific_settings', {})) is (browser == 'firefox')
+
+
+@pytest.mark.parametrize('browsers', [('chrome',), ('chrome', 'firefox')])
+def test_legacy_default_holding_a_standalone_firefox_build_is_preserved(home, vault, pair, capsys, browsers):
+    folder = home / '.local/share/akdbx/extension'
+    extension_host.build(folder, browser='firefox', unlock_origin='https://localhost:9443')
+    state = home / '.config/akdbx/setup.json'
+    state.parent.mkdir(mode=0o700)
+    state.write_text(json.dumps(dict(version='0.44.0', browsers=[], extension_dir=str(folder))))
+    state.chmod(0o600)
+    flags = [part for browser in browsers for part in ('--browser', browser)]
+    code, result, _ = setup(*base(vault, pair, '--start-at-login', *flags), capsys=capsys)
+    assert code == 0 and result['ok'], result
+    folders = result['stages']['fill']['extension_dirs']
+    assert Path(folders['chrome']).resolve() != folder.resolve()
+    if 'firefox' in browsers:
+        assert Path(folders['firefox']).resolve() == folder.resolve()
+    manifest = json.loads((folder / 'manifest.json').read_text())
+    assert manifest['browser_specific_settings']['gecko']['id'] == 'akdbx@akdbx.org'
+
+
+def test_saved_firefox_alias_of_chromium_default_is_preserved(home, vault, pair, capsys):
+    folder = home / '.local/share/akdbx/extension'
+    extension_host.build(folder, browser='firefox', unlock_origin='https://localhost:9443')
+    alias = home / 'firefox-alias'
+    alias.symlink_to(folder, target_is_directory=True)
+    state = home / '.config/akdbx/setup.json'
+    state.parent.mkdir(mode=0o700)
+    state.write_text(json.dumps(dict(version='0.44.0', browsers=['firefox'],
+                                    extension_dir=str(folder), firefox_extension_dir=str(alias))))
+    state.chmod(0o600)
+    code, result, _ = setup(*base(vault, pair, '--start-at-login', '--browser', 'chrome',
+                                 '--browser', 'firefox'), capsys=capsys)
+    assert code == 0 and result['ok'], result
+    folders = result['stages']['fill']['extension_dirs']
+    assert folders['firefox'] == str(alias)
+    assert Path(folders['chrome']).resolve() != folder.resolve()
+
+
+@pytest.mark.parametrize('error', [RuntimeError('symlink loop'), OSError('cannot resolve path')])
+def test_broken_unused_firefox_alias_does_not_stop_chrome_setup(home, vault, pair, capsys, monkeypatch, error):
+    alias = home / 'broken-firefox'
+    alias.symlink_to(alias)
+    state = home / '.config/akdbx/setup.json'
+    state.parent.mkdir(mode=0o700)
+    state.write_text(json.dumps(dict(version='0.44.0', browsers=['firefox'],
+                                    firefox_extension_dir=str(alias))))
+    state.chmod(0o600)
+    resolve = Path.resolve
+
+    def old_resolve(path, *args, **kwargs):
+        if path == alias:
+            raise error
+        return resolve(path, *args, **kwargs)
+
+    # Python 3.11/3.12 raise for loops even with strict=False; newer Python
+    # changed this behavior. Exercise the supported older versions on all CI.
+    monkeypatch.setattr(Path, 'resolve', old_resolve)
+    code, result, _ = setup(*base(vault, pair, '--start-at-login', '--browser', 'chrome'), capsys=capsys)
+    assert code == 0 and result['ok'], result
+    folder = Path(result['stages']['fill']['extension_dirs']['chrome'])
+    assert json.loads((folder / 'manifest.json').read_text())['key'] == extension_host.EXTENSION_KEY
 
 
 def test_without_a_terminal_it_needs_yes_or_dry_run(home, vault, capsys):

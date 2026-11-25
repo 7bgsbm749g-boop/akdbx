@@ -53,7 +53,7 @@ function unreadable() {
 async function main() {
   const toggle = document.getElementById("enhanced");
   const status = document.getElementById("enhanced-status");
-  document.getElementById("version").textContent = versionText(chrome.runtime.getManifest());
+  document.getElementById("version").textContent = versionText(akdbxBrowser.runtime.getManifest());
   const show = state => {
     toggle.checked = state.on;
     const [kind, text] = statusText(state);
@@ -80,14 +80,14 @@ async function main() {
   });
   // Site access can also change on the browser's own extension page.
   const changed = () => refresh().catch(unreadable);
-  chrome.permissions.onAdded.addListener(changed);
-  chrome.permissions.onRemoved.addListener(changed);
-  chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && SETTINGS_KEY in changes) changed(); });
+  akdbxBrowser.permissions.onAdded.addListener(changed);
+  akdbxBrowser.permissions.onRemoved.addListener(changed);
+  akdbxBrowser.storage.onChanged.addListener((changes, area) => { if (area === "local" && SETTINGS_KEY in changes) changed(); });
   await refresh();
   toggle.disabled = false;
 }
 
-if (typeof document !== "undefined" && typeof chrome !== "undefined" && chrome.runtime) {
+if (typeof document !== "undefined" && typeof akdbxBrowser !== "undefined" && akdbxBrowser.runtime) {
   main().catch(unreadable);
 }
 if (typeof module !== "undefined") module.exports = {setEnhanced, currentState, statusText, readSettings, SETTINGS_KEY, ALL_SITES};

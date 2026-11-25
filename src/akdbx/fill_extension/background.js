@@ -15,7 +15,7 @@
  * Every identity the host sends is checked when it arrives, one at a time.
  */
 "use strict";
-importScripts("config.js", "trust.js");
+if (typeof importScripts === "function") importScripts("api.js", "config.js", "trust.js");
 const HOST = "org.akdbx.extension";
 const PROTOCOL = 1;
 const RECONNECT_MINUTES = [0.5, 1, 2, 5, 10];
@@ -41,13 +41,13 @@ const processorGuards = new Map();
  * config.js is cached with this worker, so its version names the code that
  * runs here; manifest.json on disk names the newest build. */
 const VERSION = typeof globalThis.AKDBX_EXTENSION_VERSION === "string" ? globalThis.AKDBX_EXTENSION_VERSION
-  : chrome.runtime.getManifest().version;
+  : akdbxBrowser.runtime.getManifest().version;
 const RELOAD_KEY = "stale_reload";  // The disk version that this extension last reloaded for.
 
 // The version of the build on disk, or null when it cannot be read.
 async function diskVersion() {
   try {
-    const response = await fetch(chrome.runtime.getURL("manifest.json"), {cache: "no-store"});
+    const response = await fetch(akdbxBrowser.runtime.getURL("manifest.json"), {cache: "no-store"});
     const version = (await response.json()).version;
     return typeof version === "string" ? version : null;
   } catch {
@@ -65,17 +65,20 @@ async function staleBuild() {
 // pairing (the pairing key lives in session storage). If that worker still runs
 // old code, there is no second reload: it reports itself stale.
 async function reloadFor(disk) {
-  if ((await chrome.storage.local.get(RELOAD_KEY))[RELOAD_KEY] === disk) return false;
-  await chrome.storage.local.set({[RELOAD_KEY]: disk});
-  chrome.runtime.reload();
+  if ((await akdbxBrowser.storage.local.get(RELOAD_KEY))[RELOAD_KEY] === disk) return false;
+  await akdbxBrowser.storage.local.set({[RELOAD_KEY]: disk});
+  akdbxBrowser.runtime.reload();
   return true;
 }
 
 // Only extension pages may read session storage; content scripts may not.
-chrome.storage.session.setAccessLevel?.({accessLevel: "TRUSTED_CONTEXTS"});
+// Chromium148+ also exposes browser: the manifest format, not the namespace, selects the signature.
+const storageAccess = akdbxBrowser.runtime.getManifest().browser_specific_settings?.gecko
+  ? "TRUSTED_CONTEXTS" : {accessLevel: "TRUSTED_CONTEXTS"};
+Promise.resolve(akdbxBrowser.storage.session.setAccessLevel?.(storageAccess)).catch(() => {});
 // The broker trust lives in local storage: keep content scripts out of it too where the browser allows it.
 try {
-  Promise.resolve(chrome.storage.local.setAccessLevel?.({accessLevel: "TRUSTED_CONTEXTS"})).catch(() => {});
+  Promise.resolve(akdbxBrowser.storage.local.setAccessLevel?.(storageAccess)).catch(() => {});
 } catch {
   // Older browsers keep local storage open to content scripts; this extension's content script never reads it.
 }
@@ -120,7 +123,7 @@ function pairingKeys() {
 async function loadPairingKeys() {
   // An ECDH P-256 key pair, in memory only for this browser session: a
   // restart needs a new pairing. Only the public key ever leaves the worker.
-  const stored = (await chrome.storage.session.get("pairing")).pairing;
+  const stored = (await akdbxBrowser.storage.session.get("pairing")).pairing;
   if (stored && stored.jwk && typeof stored.publicKey === "string") {
     const privateKey = await crypto.subtle.importKey("jwk", stored.jwk, {name: "ECDH", namedCurve: "P-256"}, false,
       ["deriveBits"]);
@@ -129,7 +132,7 @@ async function loadPairingKeys() {
   const pair = await crypto.subtle.generateKey({name: "ECDH", namedCurve: "P-256"}, true, ["deriveBits"]);
   const publicKey = base64url(await crypto.subtle.exportKey("raw", pair.publicKey));
   const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
-  await chrome.storage.session.set({pairing: {jwk, publicKey}});
+  await akdbxBrowser.storage.session.set({pairing: {jwk, publicKey}});
   return {privateKey: pair.privateKey, publicKey};
 }
 
@@ -205,12 +208,12 @@ async function connect() {
   if (port) return;
   const disk = await staleBuild();
   if (disk && await reloadFor(disk).catch(() => false)) return;
-  if (!disk) await chrome.storage.local.remove(RELOAD_KEY).catch(() => {});
+  if (!disk) await akdbxBrowser.storage.local.remove(RELOAD_KEY).catch(() => {});
   const key = (await pairingKeys()).publicKey;
   if (port) return;
   let current;
   try {
-    current = chrome.runtime.connectNative(HOST);
+    current = akdbxBrowser.runtime.connectNative(HOST);
   } catch {
     scheduleReconnect();
     return;
@@ -218,7 +221,7 @@ async function connect() {
   port = current;
   current.onMessage.addListener(message => onHost(current, message));
   current.onDisconnect.addListener(() => {
-    void chrome.runtime.lastError;
+    void akdbxBrowser.runtime.lastError;
     if (port !== current) return;
     port = null;
     sealKey = null;
@@ -237,22 +240,22 @@ async function connect() {
 function scheduleReconnect() {
   const delay = RECONNECT_MINUTES[Math.min(reconnects, RECONNECT_MINUTES.length - 1)];
   reconnects += 1;
-  chrome.alarms.create("akdbx-reconnect", {delayInMinutes: delay});
+  akdbxBrowser.alarms.create("akdbx-reconnect", {delayInMinutes: delay});
 }
 
-chrome.alarms.onAlarm.addListener(alarm => {
+akdbxBrowser.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === "akdbx-reconnect") connect();
 });
-chrome.runtime.onStartup.addListener(() => connect());
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({id: "akdbx-fill", title: "Fill with akdbx…", contexts: ["editable"]}, () => {
-    void chrome.runtime.lastError;
+akdbxBrowser.runtime.onStartup.addListener(() => connect());
+akdbxBrowser.runtime.onInstalled.addListener(() => {
+  (akdbxBrowser.menus || akdbxBrowser.contextMenus).create({id: "akdbx-fill", title: "Fill with akdbx…", contexts: ["editable"]}, () => {
+    void akdbxBrowser.runtime.lastError;
   });
   connect();
 });
-chrome.contextMenus.onClicked.addListener(info => {
+(akdbxBrowser.menus || akdbxBrowser.contextMenus).onClicked.addListener(info => {
   // The popup is the only place where an entry is chosen.
-  if (info.menuItemId === "akdbx-fill") chrome.action.openPopup().catch(() => {});
+  if (info.menuItemId === "akdbx-fill") akdbxBrowser.action.openPopup().catch(() => {});
 });
 
 function onHost(current, message) {
@@ -263,7 +266,7 @@ function onHost(current, message) {
       return;
     }
     reconnects = 0;
-    chrome.alarms.clear("akdbx-reconnect");
+    akdbxBrowser.alarms.clear("akdbx-reconnect");
     // One broker key per port: a host cannot swap keys under a running read or fill.
     if (message.type === "attached" && typeof message.broker_public_key === "string" && port === current &&
         !channel.brokerKey) {
@@ -317,7 +320,7 @@ function builtConfig() {
 const MOVE_KEY = "broker_trust_moved";
 
 async function storedTrust() {
-  return (await chrome.storage.local.get(akdbxTrust.STORAGE_KEY))[akdbxTrust.STORAGE_KEY] ?? null;
+  return (await akdbxBrowser.storage.local.get(akdbxTrust.STORAGE_KEY))[akdbxTrust.STORAGE_KEY] ?? null;
 }
 
 // Run only inside withTrust: decide against the saved record as it is now, so an older
@@ -335,7 +338,7 @@ async function trustNow(current) {
   if (decision.store) {
     const items = {[akdbxTrust.STORAGE_KEY]: decision.store};
     if (decision.changed) items[MOVE_KEY] = {from: decision.from, to: decision.origin};
-    await chrome.storage.local.set(items);
+    await akdbxBrowser.storage.local.set(items);
   }
   return decision;
 }
@@ -344,9 +347,9 @@ async function trustNow(current) {
 // and the notice waits; the next decision with no error clears it, and shows it if it names the trusted origin.
 async function takeMove(trust) {
   if (trust.error) return null;
-  const notice = (await chrome.storage.local.get(MOVE_KEY))[MOVE_KEY];
+  const notice = (await akdbxBrowser.storage.local.get(MOVE_KEY))[MOVE_KEY];
   if (!notice) return null;
-  await chrome.storage.local.remove(MOVE_KEY);
+  await akdbxBrowser.storage.local.remove(MOVE_KEY);
   return akdbxTrust.validOrigin(notice.from) && notice.to === trust.origin ? notice : null;
 }
 
@@ -376,7 +379,7 @@ function brokerRequest(op, payload = {}, timeout = 10000) {
 
 // ----- browser facts ---------------------------------------------------
 async function chainFor(tabId, documentId) {
-  const frames = await chrome.webNavigation.getAllFrames({tabId});
+  const frames = await akdbxBrowser.webNavigation.getAllFrames({tabId});
   if (!frames) return null;
   const byDocument = new Map(frames.filter(f => f.documentId).map(f => [f.documentId, f]));
   let frame = byDocument.get(documentId);
@@ -404,11 +407,11 @@ function canonical(value) {
 const pinSpecs = new Map();
 
 async function inject(tabId, documentId) {
-  await chrome.scripting.executeScript({target: {tabId, documentIds: [documentId]}, files: ["content.js"]});
+  await akdbxBrowser.scripting.executeScript({target: {tabId, documentIds: [documentId]}, files: ["content.js"]});
 }
 
 async function run(tabId, documentId, func, args = []) {
-  const [result] = await chrome.scripting.executeScript({target: {tabId, documentIds: [documentId]}, func, args});
+  const [result] = await akdbxBrowser.scripting.executeScript({target: {tabId, documentIds: [documentId]}, func, args});
   return result ? result.result : undefined;
 }
 
@@ -421,7 +424,7 @@ async function handleCall(message) {
       setTimeout(() => reloadFor(disk).catch(() => {}), 200);  // After the reply has gone out.
       if (message.op === "pin") return {ok: false, error: "stale"};
       // The broker still counts this browser's tabs with the URL: a URL open in two browsers stays ambiguous.
-      return {ok: false, error: "stale", tabs: (await chrome.tabs.query({})).filter(tab => tab.url === message.top_url &&
+      return {ok: false, error: "stale", tabs: (await akdbxBrowser.tabs.query({})).filter(tab => tab.url === message.top_url &&
         (message.tab_id === null || message.tab_id === undefined || tab.id === message.tab_id)).length};
     }
   }
@@ -444,12 +447,12 @@ async function handleCall(message) {
 }
 
 async function frames(message) {
-  const tabs = (await chrome.tabs.query({})).filter(tab => tab.url === message.top_url &&
+  const tabs = (await akdbxBrowser.tabs.query({})).filter(tab => tab.url === message.top_url &&
     (message.tab_id === null || message.tab_id === undefined || tab.id === message.tab_id));
   if (tabs.length > MAX_TABS) return {ok: false};
   const result = [];
   for (const tab of tabs) {
-    const all = (await chrome.webNavigation.getAllFrames({tabId: tab.id})) || [];
+    const all = (await akdbxBrowser.webNavigation.getAllFrames({tabId: tab.id})) || [];
     const listed = [];
     for (const frame of all.filter(f => f.documentId && (!f.documentLifecycle || f.documentLifecycle === "active"))
       .slice(0, MAX_FRAMES + 1)) {
@@ -489,7 +492,7 @@ const SETTINGS_KEY = "settings";
 // browser did not grant the screenshot access.
 async function enhancedSecurity() {
   try {
-    const settings = (await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY];
+    const settings = (await akdbxBrowser.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY];
     return Boolean(settings && settings.enhanced_security === true);
   } catch {
     return true;
@@ -577,7 +580,7 @@ async function challenge(tabId, chain, pinId, guardId) {
       !Array.isArray(placed.view) || placed.view.length !== 2 || !placed.view.every(value => finite(value) && value > 0)) {
     return false;
   }
-  const tab = await bounded(chrome.tabs.get(tabId), STEP_MS);
+  const tab = await bounded(akdbxBrowser.tabs.get(tabId), STEP_MS);
   if (!tab || !tab.active) return false;
   const rgb = randomColour();
   const colour = `rgb(${rgb.join(", ")})`;
@@ -585,14 +588,14 @@ async function challenge(tabId, chain, pinId, guardId) {
   const css = challengeCSS(spec.path, colour, `rgb(${rgb.map(c => (c + 128) % 256).join(", ")})`);
   const target = {tabId, documentIds: [documentId]};
   try {
-    await bounded(chrome.scripting.insertCSS({target, css, origin: "USER"}), STEP_MS);
+    await bounded(akdbxBrowser.scripting.insertCSS({target, css, origin: "USER"}), STEP_MS);
     // A screenshot can be one frame behind the page: look twice before refusing.
     for (let attempt = 0; attempt < 2; ++attempt) {
       if ((await bounded(run(tabId, documentId, () => globalThis.__akdbxContent.painted()), STEP_MS)) !== true) return false;
       const wait = lastCapture + CAPTURE_GAP_MS - Date.now();
       if (wait > 0) await pause(wait);
       lastCapture = Date.now();
-      const image = await bounded(chrome.tabs.captureVisibleTab(tab.windowId, {format: "png"}), STEP_MS);
+      const image = await bounded(akdbxBrowser.tabs.captureVisibleTab(tab.windowId, {format: "png"}), STEP_MS);
       // The colour in the screenshot counts only if the rule was on the pinned element, still valid, at that time.
       const held = await bounded(run(tabId, documentId,
         (id, path, value) => globalThis.__akdbxContent.challengeHeld(id, path, value), [pinId, spec.path, colour]), STEP_MS);
@@ -606,7 +609,7 @@ async function challenge(tabId, chain, pinId, guardId) {
     }
     return false;
   } finally {
-    await bounded(chrome.scripting.removeCSS({target, css, origin: "USER"}), STEP_MS).catch(() => {});
+    await bounded(akdbxBrowser.scripting.removeCSS({target, css, origin: "USER"}), STEP_MS).catch(() => {});
   }
 }
 
@@ -703,7 +706,7 @@ async function releaseOwners(tabId, held) {
 async function pin(message) {
   // What this browser pinned, before any local completion of the spec.
   const pinned = canonical({kind: message.kind, spec: message.spec});
-  const tab = await chrome.tabs.get(message.tab_id);
+  const tab = await akdbxBrowser.tabs.get(message.tab_id);
   if (!tab || tab.url !== message.top_url) return {ok: false};
   const chain = await chainFor(message.tab_id, message.document_id);
   if (!chain || chain[0].url !== message.top_url) return {ok: false};
@@ -778,7 +781,7 @@ async function pin(message) {
 
 // The facts the broker sealed must equal what this browser reports now.
 async function currentFacts(message, facts) {
-  const tab = await chrome.tabs.get(facts.tab_id);
+  const tab = await akdbxBrowser.tabs.get(facts.tab_id);
   const chain = await chainFor(facts.tab_id, facts.document_id);
   const pinned = pinSpecs.get(facts.pin_id);
   pinSpecs.delete(facts.pin_id);
@@ -896,7 +899,7 @@ async function release(message) {
 // ----- popup (user-click route) ------------------------------------------
 function fromPopup(sender) {
   // Web pages cannot reach this listener, and content scripts carry a tab.
-  return sender.id === chrome.runtime.id && !sender.tab && sender.url === chrome.runtime.getURL("popup.html");
+  return sender.id === akdbxBrowser.runtime.id && !sender.tab && sender.url === akdbxBrowser.runtime.getURL("popup.html");
 }
 
 async function popupState() {
@@ -926,11 +929,11 @@ async function popupReset() {
   // and pair again with a new browser key. The next key is bound only through that origin's HTTPS page.
   await withTrust(async () => {
     const origin = akdbxTrust.trustedOrigin(await storedTrust(), builtConfig());
-    if (origin) await chrome.storage.local.set({[akdbxTrust.STORAGE_KEY]: akdbxTrust.saveRecord({reset: true, origin}, builtConfig())});
-    else await chrome.storage.local.remove(akdbxTrust.STORAGE_KEY);
+    if (origin) await akdbxBrowser.storage.local.set({[akdbxTrust.STORAGE_KEY]: akdbxTrust.saveRecord({reset: true, origin}, builtConfig())});
+    else await akdbxBrowser.storage.local.remove(akdbxTrust.STORAGE_KEY);
   });
   keysPromise = null;
-  await chrome.storage.session.remove("pairing");
+  await akdbxBrowser.storage.session.remove("pairing");
   const current = port;
   if (current) {
     port = null;
@@ -950,10 +953,10 @@ async function popupReset() {
 }
 
 async function popupProbe(message) {
-  const tab = await chrome.tabs.get(message.tab_id);
+  const tab = await akdbxBrowser.tabs.get(message.tab_id);
   if (!tab || typeof tab.url !== "string" || !tab.url.startsWith("https://")) return {ok: false, error: "open an HTTPS page first"};
-  await chrome.scripting.executeScript({target: {tabId: tab.id, allFrames: true}, files: ["content.js"]}).catch(() => {});
-  const results = await chrome.scripting.executeScript({target: {tabId: tab.id, allFrames: true},
+  await akdbxBrowser.scripting.executeScript({target: {tabId: tab.id, allFrames: true}, files: ["content.js"]}).catch(() => {});
+  const results = await akdbxBrowser.scripting.executeScript({target: {tabId: tab.id, allFrames: true},
     func: () => globalThis.__akdbxContent ? globalThis.__akdbxContent.probe() : null});
   const best = results.filter(r => r.result && r.documentId).sort((a, b) => b.result.t - a.result.t)[0];
   if (!best) return {ok: false, error: "click into a login, card or address field first"};
@@ -987,7 +990,7 @@ async function popupFill(message) {
   sessions.delete(message.session);
   if (!session || Date.now() - session.created >= SESSION_MS || !Number.isInteger(message.index) ||
       !session.handles[message.index]) return {ok: false, error: "selection expired; open akdbx again"};
-  const tab = await chrome.tabs.get(session.tabId);
+  const tab = await akdbxBrowser.tabs.get(session.tabId);
   const chain = await chainFor(session.tabId, session.documentId);
   if (!tab || tab.url !== session.topUrl || !chain || !sameChain(chain, session.chain)) {
     return {ok: false, error: "page changed; nothing filled"};
@@ -1007,7 +1010,7 @@ async function popupFill(message) {
         canonical(facts.formats) !== canonical(session.formats)) throw new Error();
     values = sealed.values;
     // The page may have navigated while the broker answered.
-    const [liveTab, liveChain] = await Promise.all([chrome.tabs.get(session.tabId), chainFor(session.tabId, session.documentId)]);
+    const [liveTab, liveChain] = await Promise.all([akdbxBrowser.tabs.get(session.tabId), chainFor(session.tabId, session.documentId)]);
     if (!liveTab || liveTab.url !== session.topUrl || !liveChain || !sameChain(liveChain, session.chain)) throw new Error();
   } catch {
     return {ok: false, error: "akdbx answer could not be verified; nothing filled"};
@@ -1024,7 +1027,7 @@ async function popupFill(message) {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, sender, respond) => {
+akdbxBrowser.runtime.onMessage.addListener((message, sender, respond) => {
   if (!fromPopup(sender) || !message || typeof message !== "object") return false;
   const handler = {state: popupState, probe: popupProbe, fill: popupFill, "reset-trust": popupReset}[message.op];
   if (!handler) return false;

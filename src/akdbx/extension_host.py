@@ -36,7 +36,7 @@ import tempfile
 import threading
 from importlib.resources import files
 
-from .extension_route import (BROWSERS, EXTENSION_ID, EXTENSION_ORIGIN, EXTENSION_VERSION, HOST_NAME, PUBLIC_KEY,
+from .extension_route import (BROWSERS, FIREFOX_EXTENSION_ID, EXTENSION_ID, EXTENSION_ORIGIN, EXTENSION_VERSION, HOST_NAME, PUBLIC_KEY,
                               PROTOCOL, valid_extension_version)
 from .protocol import MAX_MESSAGE, ProtocolError, receive_message, send_message
 
@@ -51,6 +51,7 @@ WINDOWS_KEYS = {
     'chrome': r'Software\Google\Chrome\NativeMessagingHosts',
     'edge': r'Software\Microsoft\Edge\NativeMessagingHosts',
     'helium': r'Software\Chromium\NativeMessagingHosts',
+    'firefox': r'Software\Mozilla\NativeMessagingHosts',
 }
 LINUX_DIRS = {'chrome': 'google-chrome', 'edge': 'microsoft-edge', 'helium': 'net.imput.helium'}
 
@@ -126,7 +127,8 @@ def connect_broker(socket_path=None):
 
 def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
     """Run one host session. Returns the process exit status."""
-    if origin != EXTENSION_ORIGIN or browser not in BROWSERS:
+    expected = FIREFOX_EXTENSION_ID if browser == 'firefox' else EXTENSION_ORIGIN
+    if origin != expected or browser not in BROWSERS:
         return 1
     try:
         hello = read_frame(incoming)
@@ -223,10 +225,14 @@ def main(argv=None):
     parser.add_argument('--browser', choices=BROWSERS, required=True)
     parser.add_argument('--socket')
     parser.add_argument('origin', nargs='?', default='')
+    parser.add_argument('addon_id', nargs='?', default='')
     # Chrome on Windows appends --parent-window=HWND; it is not used.
     args, _ = parser.parse_known_args(argv)
     incoming, outgoing = _binary_stdio()
-    return relay(incoming, outgoing, args.origin, args.browser, lambda: connect_broker(args.socket),
+    # Firefox supplies manifest path, then the manifest's fixed add-on ID.
+    # The browser's allowed_extensions check and this exact caller check both apply.
+    caller = args.addon_id if args.browser == 'firefox' else args.origin
+    return relay(incoming, outgoing, caller, args.browser, lambda: connect_broker(args.socket),
                  on_broker_closed=lambda: os._exit(0))
 
 
@@ -240,8 +246,11 @@ def data_home():
 
 def linux_manifest_dir(browser):
     if sys.platform == 'darwin':
-        names = {'chrome': 'Google/Chrome', 'edge': 'Microsoft Edge', 'helium': 'net.imput.helium'}
+        names = {'chrome': 'Google/Chrome', 'edge': 'Microsoft Edge', 'helium': 'net.imput.helium',
+                 'firefox': 'Mozilla'}
         return Path.home() / 'Library' / 'Application Support' / names[browser] / 'NativeMessagingHosts'
+    if browser == 'firefox':
+        return Path.home() / '.mozilla' / 'native-messaging-hosts'
     if browser == 'helium':
         # Helium uses CHROME_CONFIG_HOME before XDG_CONFIG_HOME, like Chromium.
         base = os.environ.get('CHROME_CONFIG_HOME') or os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
@@ -315,9 +324,10 @@ def check_python(python, source):
                          'pass --python with the interpreter of this akdbx installation')
 
 
-def _manifest(launcher, name=HOST_NAME):
+def _manifest(launcher, name=HOST_NAME, *, browser='chrome'):
     return dict(name=name, description='akdbx password manager extension host', path=str(launcher),
-                type='stdio', allowed_origins=[EXTENSION_ORIGIN])
+                type='stdio', **({'allowed_extensions': [FIREFOX_EXTENSION_ID]} if browser == 'firefox'
+                                else {'allowed_origins': [EXTENSION_ORIGIN]}))
 
 
 LAUNCHER_LIMIT = 4096
@@ -428,7 +438,7 @@ def _replace_file(path, text, mode):
 def install(browser, *, socket_path=None, manifest_dir=None, python=None):
     """Write the launcher and manifest, then register the host for one browser."""
     if browser not in BROWSERS:
-        raise ValueError('browser must be helium, chrome or edge')
+        raise ValueError('unsupported extension browser')
     python = str(Path(python or sys.executable).absolute())
     socket_path = (str(socket_path) if os.name == 'nt' else str(Path(socket_path).absolute())) if socket_path else None
     source = None if os.name == 'nt' else package_root()
@@ -457,7 +467,7 @@ def install(browser, *, socket_path=None, manifest_dir=None, python=None):
     launcher.parent.mkdir(parents=True, exist_ok=True)
     manifest.parent.mkdir(parents=True, exist_ok=True)
     _replace_file(launcher, text, 0o700)
-    _replace_file(manifest, json.dumps(_manifest(launcher), indent=2), 0o644)
+    _replace_file(manifest, json.dumps(_manifest(launcher, browser=browser), indent=2), 0o644)
     if os.name == 'nt':
         import winreg
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, WINDOWS_KEYS[browser] + '\\' + HOST_NAME) as handle:
@@ -602,7 +612,7 @@ def built_version():
     return EXTENSION_VERSION + '.' + str(int.from_bytes(digest.digest()[:2], 'big'))
 
 
-def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
+def build(destination, *, host_name=HOST_NAME, unlock_origin=None, browser='chrome'):
     """Write the unpacked extension. An existing folder must already hold this extension.
 
     The popup opens pairing and unlock links only on a trusted origin, so a
@@ -620,18 +630,31 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None):
     worker reports that copy, not the manifest on disk (see background.js).
     """
     destination = Path(destination)
+    if browser not in BROWSERS:
+        raise ValueError('unsupported extension browser')
     origin = trusted_origin(unlock_origin) if unlock_origin is not None else None
     if destination.exists():
         try:
             current = json.loads((destination / 'manifest.json').read_text(encoding='utf-8'))
         except Exception:
             current = {}
-        if current.get('key') != EXTENSION_KEY:
+        owned = (current.get('browser_specific_settings', {}).get('gecko', {}).get('id') == FIREFOX_EXTENSION_ID
+                 if browser == 'firefox' else current.get('key') == EXTENSION_KEY)
+        if not owned:
             raise ValueError('destination exists and does not hold the akdbx extension; choose a new folder')
     written = _source_files(host_name)
     version = built_version()
     manifest = json.loads(written['manifest.json'])
     manifest['version'] = version
+    if browser == 'firefox':
+        manifest.pop('key', None)
+        manifest.pop('minimum_chrome_version', None)
+        manifest['browser_specific_settings'] = {'gecko': {
+            'id': FIREFOX_EXTENSION_ID, 'strict_min_version': '153.0',
+            'data_collection_permissions': {'required': ['none']}}}
+        manifest['background'] = {'scripts': ['api.js', 'config.js', 'trust.js', 'background.js']}
+        # The browser's native document IDs are required, including for child frames.
+        manifest['permissions'] = [p for p in manifest['permissions'] if p != 'contextMenus'] + ['menus']
     written['manifest.json'] = json.dumps(manifest, indent=2).encode('utf-8')
     destination.mkdir(parents=True, exist_ok=True)
     for name, data in written.items():
@@ -670,6 +693,8 @@ def add_parser(commands):
     refresh_command.add_argument('--python', type=Path, help=python_help)
     build_command = actions.add_parser('build', help='write the unpacked extension to a folder (load it unpacked)')
     build_command.add_argument('--output', required=True, type=Path)
+    build_command.add_argument('--browser', choices=BROWSERS, default='chrome',
+                               help='extension format to build (default: chrome; Firefox requires 153+)')
     actions.add_parser('info', help='show the extension ID, host name and per-browser host locations')
 
 
@@ -678,7 +703,9 @@ def run(args, socket_path=None, unlock_origin=None):
         if args.extension_command == 'install':
             where = install(args.browser, socket_path=socket_path, manifest_dir=getattr(args, 'manifest_dir', None),
                             python=args.python)
-            print(json.dumps(dict(ok=True, browser=args.browser, extension_id=EXTENSION_ID, host=HOST_NAME,
+            print(json.dumps(dict(ok=True, browser=args.browser,
+                                  extension_id=FIREFOX_EXTENSION_ID if args.browser == 'firefox' else EXTENSION_ID,
+                                  host=HOST_NAME,
                                   akdbx_source=package_root(), **where), indent=2))
         elif args.extension_command == 'refresh':
             refreshed = refresh(python=args.python, socket_path=socket_path)
@@ -687,14 +714,17 @@ def run(args, socket_path=None, unlock_origin=None):
             removed = uninstall(args.browser, manifest_dir=getattr(args, 'manifest_dir', None))
             print(json.dumps(dict(ok=True, browser=args.browser, removed=removed), indent=2))
         elif args.extension_command == 'build':
-            path = build(args.output, unlock_origin=unlock_origin)
-            print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, extension_version=built_version(),
+            browser = getattr(args, 'browser', 'chrome')
+            path = build(args.output, unlock_origin=unlock_origin, browser=browser)
+            print(json.dumps(dict(ok=True, extension_id=FIREFOX_EXTENSION_ID if browser == 'firefox' else EXTENSION_ID,
+                                  extension_version=built_version(),
                                   path=str(path.absolute()), trusted_origin=trusted_origin(unlock_origin)), indent=2))
         else:
             print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, extension_version=built_version(),
                                   host=HOST_NAME, protocol=PROTOCOL,
                                   akdbx_source=package_root(),
                                   browsers={b: {**{k: str(v) for k, v in paths(b).items()},
+                                                'extension_id': FIREFOX_EXTENSION_ID if b == 'firefox' else EXTENSION_ID,
                                                 'launcher_state': launcher_state(b)} for b in BROWSERS}), indent=2))
         return 0
     except (OSError, ValueError, RuntimeError) as exc:
