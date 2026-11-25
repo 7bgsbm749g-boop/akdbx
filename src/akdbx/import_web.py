@@ -112,7 +112,10 @@ def handle_import(handler, state):
             elif route == '/totp/review':
                 if set(values) != {'choice', 'nonce', 'confirmed'} or not values['choice'][0].isascii() or not values['choice'][0].isdigit():
                     raise ValueError
-                result = state.broker.writes.confirm_totp_import(op, int(values['choice'][0]), values['nonce'][0], values['confirmed'] == ['yes'])
+                result = state.broker.session.run(
+                    lambda: state.broker.writes.confirm_totp_import(
+                        op, int(values['choice'][0]), values['nonce'][0], values['confirmed'] == ['yes']),
+                    lambda: {'ok': False})
                 # The same Success or Failure result page as the other saves.
                 handler._send(HTTPStatus.OK if result['ok'] else HTTPStatus.CONFLICT, _page(
                     'Success', '<p>Authenticator saved to vault. You may close this page.</p>'

@@ -764,18 +764,10 @@ def handler_for(state: UnlockState):
                 elif op is None or self._expired():
                     self._send(HTTPStatus.NOT_FOUND, _result_page(kind, _gone(kind, ('expired', None))))
                     return True
-                elif kind == 'card':
-                    # The page may change the prepared title and group.
-                    chosen = {key: values[key][0] for key in ('title', 'group') if key in values}
-                    result = state.broker.cards.submit(op, {k: values[k][0] for k in ('name', 'number', 'month', 'year', 'csc')},
-                                                       values.get('confirmed') == ['yes'], chosen)
-                elif kind == 'identity':
-                    result = state.broker.identities.submit(op, {key: values[key][0] for key in op.fields},
-                                                            values['confirmed'] == ['yes'])
-                elif kind == 'totp':
-                    result = state.broker.writes.submit_totp(op, values.get('setup', [''])[0], values.get('confirmed') == ['yes'])
                 else:
-                    result = state.broker.writes.submit(op, values.get('password', [''])[0], values.get('confirmation', [''])[0], values.get('confirmed') == ['yes'])
+                    result = state.broker.session.run(
+                        lambda: self._submit_write(kind, op, values),
+                        lambda: _gone(kind, ('expired', None)))
             # No submitted fields, parser exceptions or secrets enter the page.
             if kind != 'card' and not result.get('gone'):
                 result = _save_reason(op, result)
@@ -783,6 +775,20 @@ def handler_for(state: UnlockState):
                       if result.get('gone') or result['reason'] == 'expired' else HTTPStatus.CONFLICT)
             self._send(status, _result_page(kind, result))
             return True
+
+        def _submit_write(self, kind, op, values):
+            if kind == 'card':
+                # The page may change the prepared title and group.
+                chosen = {key: values[key][0] for key in ('title', 'group') if key in values}
+                return state.broker.cards.submit(op, {k: values[k][0] for k in ('name', 'number', 'month', 'year', 'csc')},
+                                                   values.get('confirmed') == ['yes'], chosen)
+            elif kind == 'identity':
+                return state.broker.identities.submit(op, {key: values[key][0] for key in op.fields},
+                                                        values['confirmed'] == ['yes'])
+            elif kind == 'totp':
+                return state.broker.writes.submit_totp(op, values.get('setup', [''])[0], values.get('confirmed') == ['yes'])
+            else:
+                return state.broker.writes.submit(op, values.get('password', [''])[0], values.get('confirmation', [''])[0], values.get('confirmed') == ['yes'])
 
         def _identity_route(self) -> bool:
             """``/.well-known/akdbx-identity``: the broker's public signed origin statement.

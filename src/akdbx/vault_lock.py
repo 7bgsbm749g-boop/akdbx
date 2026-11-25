@@ -15,6 +15,7 @@ class VaultSession:
         self.timeout = timeout_seconds(timeout)
         self.condition = threading.Condition()
         self.active = 0
+        self.active_work = 0
         self.closing = False
         self.stopped = False
         self.deadline = time.monotonic() + self.timeout if unlocked else None
@@ -32,6 +33,8 @@ class VaultSession:
             admitted = not self.closing and not self.due() and self.deadline is not None
             if admitted:
                 self.active += 1
+                if activity:
+                    self.active_work += 1
         if not admitted:
             return refused()
         result = None
@@ -41,13 +44,18 @@ class VaultSession:
         finally:
             with self.condition:
                 self.active -= 1
-                if activity and not self.closing and result and result.get('ok') and not self.due():
-                    self.deadline = time.monotonic() + self.timeout
+                if activity:
+                    self.active_work -= 1
+                    if not self.closing and result and result.get('ok'):
+                        self.deadline = time.monotonic() + self.timeout
                 self.condition.notify_all()
 
     def monitor(self, lock):
         with self.condition:
             while not self.stopped:
+                if self.due() and self.active_work:
+                    self.condition.wait()
+                    continue
                 if self.due():
                     # Never acquire the unlock mutex while holding this condition.
                     break

@@ -95,6 +95,7 @@ def test_private_update_preserves_vault_and_is_immediately_fillable(deployed, ca
     broker, typer, path, socket = deployed
     stale = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]['handle']
     prepared = begin(broker)
+    old_deadline = broker.session.deadline
     parts = urlsplit(prepared['private_url'])
     pagepath = parts.path + '?' + parts.query
     code, headers, page = call(socket, 'GET', pagepath)
@@ -104,7 +105,9 @@ def test_private_update_preserves_vault_and_is_immediately_fillable(deployed, ca
     assert private_post(socket, prepared, confirmation='mismatch')[0] == 409
     assert private_post(socket, prepared, confirmed='no')[0] == 409
     assert reopened(path).find_entries(title='Synthetic site', first=True).password == OLD
+    assert broker.session.deadline == old_deadline
     code, _, page = private_post(socket, prepared)
+    assert broker.session.deadline > old_deadline
     assert code == 200 and CHOSEN.encode() not in page and MASTER.encode() not in page
     assert private_post(socket, prepared)[0] == 404
     assert broker.dispatch({'action': 'write-status', 'write_handle': prepared['write_handle']}) == {'ok': True, 'state': 'saved'}
@@ -118,6 +121,9 @@ def test_private_update_preserves_vault_and_is_immediately_fillable(deployed, ca
     fresh = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]['handle']
     assert broker.dispatch({'action': 'fill', **target_request(broker, 'password'), 'handle': fresh, 'mode': 'password'})['ok']
     assert typer.events == [('type', CHOSEN)]
+    broker.lock()
+    assert broker.unlock(open_vault_with_password(path, MASTER))
+    assert broker.dispatch({'action': 'write-status', 'write_handle': prepared['write_handle']}) == {'ok': True, 'state': 'saved'}
     backups = list(path.parent.glob('.*.akdbx-backup-*'))
     assert len(backups) == 1
     assert reopened(backups[0]).find_entries(title='Synthetic site', first=True).password == OLD

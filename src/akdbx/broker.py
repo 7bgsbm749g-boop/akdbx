@@ -259,7 +259,7 @@ class Broker:
         link = self.unlock_link
         with (link.unlock_lock if link is not None else nullcontext()):
             with self.session.condition:
-                if only_if_due and not self.session.due():
+                if only_if_due and (not self.session.due() or self.session.active_work):
                     return
                 if self.session.deadline is None:
                     return
@@ -276,7 +276,7 @@ class Broker:
                             if link is not None:
                                 self.unlock_url = link.url if link.public_base else None
                     self.writes.invalidate_revision(all_pending=True)
-                    self.writes.operations.clear()
+                    self.writes.keep_receipts()
                     self.targets.pins.clear()
                     self.passwords.clear()
                     self.android.clear()

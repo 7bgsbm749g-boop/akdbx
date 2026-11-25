@@ -7,7 +7,7 @@ import struct
 import subprocess
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 
 def _logind_lock(line):
@@ -32,10 +32,32 @@ def _logind_lock(line):
     return owner is None or int(owner[1]) == os.getuid()
 
 
+@contextmanager
+def _sleep_delay():
+    """Hold logind's bounded delay until stdin closes, including on broker exit."""
+    try:
+        helper = subprocess.Popen(['/usr/bin/systemd-inhibit', '--what=sleep', '--mode=delay',
+                                   '--who=akdbx', '--why=Lock the open vault', '/usr/bin/cat'],
+                                  stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        # Minimal installations can still process logind's sleep and resume events.
+        yield
+        return
+    try:
+        yield
+    finally:
+        helper.stdin.close()
+        try:
+            helper.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            helper.kill()
+            helper.wait()
+
+
 def _logind(lock, stop, ready):
     with subprocess.Popen(['/usr/bin/gdbus', 'monitor', '--system', '--dest', 'org.freedesktop.login1'],
                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                          env={**os.environ, 'LC_ALL': 'C'}) as proc:
+                          env={**os.environ, 'LC_ALL': 'C'}) as proc, ExitStack() as awake:
         try:
             pending = b''
             while not stop.is_set():
@@ -51,11 +73,17 @@ def _logind(lock, stop, ready):
                 for line in lines:
                     msg = line.decode('utf-8', 'replace')
                     if ' is owned by ' in msg:
+                        awake.close()
+                        awake.enter_context(_sleep_delay())
                         ready()
                     elif 'does not have an owner' in msg:
                         return
                     elif _logind_lock(msg):
                         lock()
+                        if msg.startswith('/org/freedesktop/login1: org.freedesktop.login1.Manager.PrepareForSleep '):
+                            awake.close()
+                            if msg.endswith('(false,)'):
+                                awake.enter_context(_sleep_delay())
         finally:
             proc.kill()
 
@@ -72,7 +100,7 @@ def _hyprland(lock, stop, ready):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
         stream.connect(path)
         _request(stream, 1, 1, struct.pack('=I', 2))  # wl_display.get_registry
-        _request(stream, 1, 0, struct.pack('=I', 5))  # sync after initial globals
+        _request(stream, 1, 0, struct.pack('=I', 3))  # sync after initial globals
         data = bytearray()
         bound = False
         while not stop.is_set():
@@ -95,15 +123,36 @@ def _hyprland(lock, stop, ready):
                     name, length = struct.unpack_from('=II', payload)
                     if payload[8:8 + length] == interface:
                         args = struct.pack('=II', name, length) + interface.ljust((length+3)//4*4, b'\0')
-                        _request(stream, 2, 0, args + struct.pack('=II', 1, 3))  # bind v1
-                        _request(stream, 3, 1, struct.pack('=I', 4))  # get_lock_notification
+                        _request(stream, 2, 0, args + struct.pack('=II', 1, 4))  # bind v1
+                        _request(stream, 4, 1, struct.pack('=I', 5))  # get_lock_notification
                         bound = True
-                elif obj == 5 and not bound:
+                elif obj == 3 and not bound:
                     raise ValueError('compositor does not advertise lock notifications')
-                elif obj == 5:
+                elif obj == 3:
                     ready()
-                elif obj == 4 and opcode == 0:  # locked (also sent for an initially locked screen)
+                elif obj == 5 and opcode == 0:  # locked (also sent for an initially locked screen)
                     lock()
+
+
+@contextmanager
+def _windows_power_events(hwnd):
+    """Opt this window into suspend/resume delivery, including Modern Standby."""
+    import ctypes
+    from ctypes import wintypes
+    api = ctypes.WinDLL('user32', use_last_error=True)
+    register = api.RegisterSuspendResumeNotification
+    register.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    register.restype = wintypes.HANDLE
+    unregister = api.UnregisterSuspendResumeNotification
+    unregister.argtypes = [wintypes.HANDLE]
+    unregister.restype = wintypes.BOOL
+    handle = register(hwnd, 0)  # DEVICE_NOTIFY_WINDOW_HANDLE
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        yield
+    finally:
+        unregister(handle)
 
 
 def _windows(lock, stop, ready):
@@ -132,11 +181,12 @@ def _windows(lock, stop, ready):
         try:
             win32ts.WTSRegisterSessionNotification(hwnd, 0)  # this session only
             try:
-                ready()
-                while not stop.is_set():
-                    win32event.MsgWaitForMultipleObjects((), False, 500, win32con.QS_ALLINPUT)
-                    if win32gui.PumpWaitingMessages():
-                        break
+                with _windows_power_events(hwnd):
+                    ready()
+                    while not stop.is_set():
+                        win32event.MsgWaitForMultipleObjects((), False, 500, win32con.QS_ALLINPUT)
+                        if win32gui.PumpWaitingMessages():
+                            break
             finally:
                 win32ts.WTSUnRegisterSessionNotification(hwnd)
         finally:

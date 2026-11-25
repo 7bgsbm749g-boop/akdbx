@@ -30,6 +30,31 @@ def test_idle_lock_does_not_need_a_request(monkeypatch):
         assert broker.dispatch({'action': 'lock'}) == {'ok': True, 'locked': True}
 
 
+def test_successful_work_that_crosses_deadline_gets_full_idle_interval():
+    broker = Broker(Vault([Entry()]), RecordingTyper())
+    entered, finish = threading.Event(), threading.Event()
+
+    def pending():
+        entered.set()
+        assert finish.wait(4)
+        return {'ok': True}
+
+    worker = threading.Thread(target=lambda: broker.session.run(pending, pytest.fail))
+    worker.start()
+    assert entered.wait(3)
+    try:
+        with broker.session.condition:
+            broker.session.deadline = 0
+        expiry = threading.Thread(target=lambda: broker.lock(only_if_due=True))
+        expiry.start()
+        expiry.join(2)
+        assert not expiry.is_alive()
+    finally:
+        finish.set()
+        worker.join(3)
+    assert broker.dispatch({'action': 'search', 'query': 'Example'})['entries']
+
+
 def test_lock_drains_work_and_refuses_new_operations():
     broker = Broker(Vault([Entry()]), RecordingTyper())
     entered, finish = threading.Event(), threading.Event()
@@ -91,12 +116,22 @@ def test_hyprland_compositor_lock(tmp_path, monkeypatch):
         worker.start()
         with server.accept()[0] as peer:
             try:
+                peer.settimeout(3)
+                wire = peer.makefile('rb')
+                def request(obj, opcode, body):
+                    assert wire.read(8) == struct.pack('=II', obj, (8 + len(body)) << 16 | opcode)
+                    assert wire.read(len(body)) == body
+
+                request(1, 1, struct.pack('=I', 2))  # registry
+                request(1, 0, struct.pack('=I', 3))  # callback: next new ID
                 iface = b'hyprland_lock_notifier_v1\0'
                 arg = struct.pack('=II', 15, len(iface)) + iface.ljust((len(iface)+3)//4*4, b'\0') + struct.pack('=I', 1)
                 desktop_lock._request(peer, 2, 0, arg)
-                desktop_lock._request(peer, 5, 0, struct.pack('=I', 42))
+                request(2, 0, arg + struct.pack('=I', 4))  # bind notifier
+                request(4, 1, struct.pack('=I', 5))  # notification object
+                desktop_lock._request(peer, 3, 0, struct.pack('=I', 42))
                 assert ready.wait(3)
-                desktop_lock._request(peer, 4, 0, b'')
+                desktop_lock._request(peer, 5, 0, b'')
                 with broker.session.condition:
                     assert broker.session.condition.wait_for(lambda: broker.session.deadline is None, 3)
                 assert broker.locked
