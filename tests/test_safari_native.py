@@ -247,6 +247,10 @@ def test_xcode_builds_the_native_safari_app(tmp_path):
     appex, = (app / 'Contents/PlugIns').glob('*.appex')
     info = plistlib.loads((appex / 'Contents/Info.plist').read_bytes())
     assert info['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.Safari.web-extension'
+    for bundle in (app, appex):
+        entitlements = plistlib.loads(checked(['codesign', '-d', '--entitlements', ':-', str(bundle)]).stdout)
+        assert entitlements['com.apple.security.app-sandbox'] is True
+        assert not any(key.startswith('com.apple.security.temporary-exception.files.') for key in entitlements)
     bridge = appex / 'Contents/XPCServices' / (safari.BRIDGE_ID + '.xpc')
     assert plistlib.loads((bridge / 'Contents/Info.plist').read_bytes())['CFBundleIdentifier'] == safari.BRIDGE_ID
     resource = appex / 'Contents/Resources/manifest.json'

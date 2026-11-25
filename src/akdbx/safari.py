@@ -129,6 +129,8 @@ def build_app(destination, *, unlock_origin):
         }
         configured = []
         renamed_identifiers = {}
+        entitlement_file = root / 'Native.entitlements'
+        entitlement_file.write_bytes(assets().joinpath('Extension.entitlements').read_bytes())
         for target in objects.values():
             if target.get('isa') != 'PBXNativeTarget':
                 continue
@@ -148,6 +150,14 @@ def build_app(destination, *, unlock_origin):
                 if previous and '$' not in previous and previous != identifier:
                     renamed_identifiers[previous] = identifier
                 settings['PRODUCT_BUNDLE_IDENTIFIER'] = identifier
+                # New packagers express sandboxing as build settings and do
+                # not create .entitlements files. Both bundle formats use the
+                # same explicit sandbox; the embedded XPC helper is separate.
+                settings['ENABLE_APP_SANDBOX'] = 'YES'
+                settings['CODE_SIGN_ENTITLEMENTS'] = str(entitlement_file)
+                if identifier == SAFARI_EXTENSION_ID:
+                    settings['SWIFT_VERSION'] = '5.0'
+                    settings['SWIFT_DEFAULT_ACTOR_ISOLATION'] = 'nonisolated'
             configured.append(identifier)
         if sorted(configured) != sorted(identifiers.values()):
             raise RuntimeError('the Safari project must contain one app and one extension target')
@@ -164,22 +174,6 @@ def build_app(destination, *, unlock_origin):
         # One existing source file keeps the generated Xcode target unchanged.
         handlers[0].write_bytes(b'\n'.join(assets().joinpath(name).read_bytes() for name in
                                ('BridgeProtocol.swift', 'BridgeClient.swift', 'SafariWebExtensionHandler.swift')))
-        entitlements = list((root / 'project').rglob('*.entitlements'))
-        if not entitlements:
-            raise RuntimeError('the generated Safari targets have no sandbox entitlements')
-        extension_entitlements = plistlib.loads(assets().joinpath('Extension.entitlements').read_bytes())
-        extension_targets = 0
-        for path in entitlements:
-            value = plistlib.loads(path.read_bytes())
-            # The extension needs only its sandbox. Socket access belongs to
-            # the embedded native-host helper, not the Safari process.
-            if 'extension' in str(path.relative_to(root / 'project')).lower():
-                value.update(extension_entitlements)
-                extension_targets += 1
-            value['com.apple.security.app-sandbox'] = True
-            path.write_bytes(plistlib.dumps(value))
-        if extension_targets != 1:
-            raise RuntimeError('the Safari project must have exactly one native extension entitlement file')
         listing = json.loads(_run(['xcodebuild', '-list', '-json', '-project', str(project)]))
         schemes = listing.get('project', {}).get('schemes', [])
         mac_schemes = [name for name in schemes if 'macos' in name.lower()]
