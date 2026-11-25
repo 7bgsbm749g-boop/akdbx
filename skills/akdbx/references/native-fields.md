@@ -1,0 +1,111 @@
+# Native desktop fields (0.44.0)
+
+Native field protocol 1 adds password, combined login, generated-password,
+username, TOTP, card and address fills, and read-only secret capture outside a
+browser. Check `native_field_supported: true`, integer `native_field_protocol: 1`
+and `native_field_delivery: "native-field-v1"` in `status`.
+
+Supported controls:
+
+- Linux: AT-SPI text/entry controls, including password text, in the active
+  native window. The `libatspi` runtime and the app's accessibility bridge must
+  be available. X11 and Wayland use the same accessibility transport. Tests use
+  real GTK delivery and Qt read-only capture on X11 and native Wayland under a nested Weston compositor;
+  this is not certification of every toolkit or compositor.
+- Windows 10/11: visible, enabled, Unicode Win32 `Edit` controls in the active
+  window, in the broker's user and desktop session. Custom controls, browser
+  controls, secure desktop and higher-integrity targets are unsupported.
+- macOS native controls are not implemented. Its extension route is unchanged.
+
+This is directed **control** delivery: Linux uses the retained AT-SPI editable
+text object, and Windows uses `WM_SETTEXT` to the exact child HWND. There are
+no global keys, Tab, clipboard or automatic submit actions. Legacy numeric
+`pin-target` X11/HWND pins still accept only username and TOTP delivery. They
+cannot authorize passwords or the other native field operations.
+
+## Verify the destination
+
+Independently verify the app, process, intended account and field through the
+GUI tools. Native apps have no DOM, browser tab or browser origin. The required
+`--service-url` is the caller's assertion of the service used in that app,
+not a URL discovered or attested by the OS. Login, generated-password and TOTP
+fills and secret capture require that assertion to match the selected entry's
+allowed HTTPS origins. Cards and addresses use an explicitly asserted field
+purpose, as these controls have no browser autocomplete semantics.
+
+Do not use native pins to fill browser pages, browser chrome, terminals, custom
+web views or unsupported controls. Known browser processes and accessible web
+documents are refused. Use the browser CDP or Extension route for pages; those
+routes retain their tab, URL, document, frame and DOM-field checks.
+
+The process, window, controls, field roles, editability, mask and focus must
+remain unchanged. Native UI visibility flags are checked; this is not a browser
+occlusion or native screenshot-attestation claim. A trusted app can change its
+own behavior or server connection; same-user compromise and a malicious target
+app are outside this boundary, as on the browser routes.
+
+## Discover and pin
+
+Focus the intended native field, then discover that verified process:
+
+```sh
+akdbx list-native-fields --pid VERIFIED_PID
+```
+
+The response contains only opaque window tokens and control indices with
+password/read-only flags and exactly one `focused` flag. It reads no values,
+labels or titles. Select the field through the GUI first and use its `focused`
+index; never infer purpose from an index alone. Tokens expire after 30 seconds.
+
+Pin the selected control:
+
+```sh
+akdbx pin-native-target --window OPAQUE_WINDOW --control PASSWORD_INDEX \
+  --mode password --service-url https://example.com/
+```
+
+Password mode requires a still-masked password control. For combined login,
+first focus the username field through the GUI, then discover. Save its
+`focused` index as `USERNAME_INDEX`. Next focus the password field through the
+GUI, and pin the same discovery token with `--mode login
+--username-control USERNAME_INDEX --control PASSWORD_INDEX`. The username must
+have held focus during discovery and the password must hold focus at pinning
+and through delivery. Both controls are pinned explicitly; Tab order is irrelevant. Username mode requires an editable, unmasked text control.
+
+Use the returned target with the existing commands:
+
+```sh
+akdbx fill FRESH_SEARCH_HANDLE --mode password --target NATIVE_TARGET
+akdbx fill FRESH_SEARCH_HANDLE --mode login --target NATIVE_LOGIN_TARGET
+akdbx fill-generated GENERATED_REF --target-url https://example.com/ --target NATIVE_PASSWORD_TARGET
+```
+
+Generate and commit passwords through the normal staged write flow. Each
+password and confirmation fill needs a fresh discovery and pin. Commit only
+after independently confirming that the intended app accepted the password.
+
+For a card, pin `--mode card --field cc-number` (or another supported card
+field), then use `fill-card --target NATIVE_TARGET --field cc-number`. For an
+address, pin `--mode identity --field address-line1`, then use `fill-identity`
+with the same field. The existing expiry/year and telephone formats still
+apply. Multiline street addresses require a multiline native control.
+`--notify-page` is unavailable for native controls.
+
+For TOTP, pin `--mode totp`, then use the normal `fill-totp` command with its
+matching `--target-url`. Clock/expiry checks remain active through delivery.
+
+## Capture a displayed native secret
+
+Use `--mode read` only on an independently verified, visible, read-only,
+unmasked text control. Editable fields and password controls are refused.
+Focus that control before discovery, obtain a fresh native read target, then
+use `capture-secret` as usual. The broker reads only that pinned control and
+saves its value into the verified encrypted vault; it never returns the value.
+The receipt identifies `capture_delivery: "native-field-read-v1"`. Existing
+single-line secret validation and configured sink rules are unchanged.
+
+All pins and entry handles are single-use. A changed destination refuses before
+dispatch, or reports an uncertain result if a write may already have started.
+Do not retry an uncertain fill automatically. A length check detects truncation;
+it does not prove authentication or server-side acceptance. Check the app's
+non-secret result, and never read a filled real password back with GUI tools.

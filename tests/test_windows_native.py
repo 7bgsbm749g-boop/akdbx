@@ -785,7 +785,7 @@ def status_of(broker, **changes):
 @pytest.mark.parametrize('missing', ['profile', 'delivery'])
 def test_windows_cli_refuses_password_requests_the_broker_cannot_deliver(monkeypatch, capsys, argv, missing):
     """Only the capability check reaches the broker; the credential request is never sent."""
-    capabilities = status_of(Broker(type('Vault', (), {'entries': []})(), object()))
+    capabilities = status_of(Broker(type('Vault', (), {'entries': []})(), object()), native_field_supported=False)
     assert capabilities['password_browser_configured'] is False
     if missing == 'delivery':
         capabilities = {**capabilities, 'password_browser_configured': True, 'password_fill_delivery': 'win32-char-v1'}
@@ -809,7 +809,7 @@ def test_windows_cli_refuses_password_requests_the_broker_cannot_deliver(monkeyp
                                   ['admit', 'synthetic.kdbx', '--policy', 'snapshot-admission-v1',
                                    '--snapshot-dir', 'synthetic']])
 def test_windows_cli_refuses_card_and_merge_requests_the_broker_cannot_deliver(monkeypatch, capsys, argv):
-    capabilities = status_of(Broker(type('Vault', (), {'entries': []})(), object()))
+    capabilities = status_of(Broker(type('Vault', (), {'entries': []})(), object()), native_field_supported=False)
     assert capabilities['card_browser_configured'] is False and capabilities['merge_available'] is False
     sent = []
     def request(_socket, payload, **_options):
@@ -1327,3 +1327,19 @@ def test_top_url_file_refuses_a_public_windows_file_without_echoing_it(private_d
     captured = capsys.readouterr()
     assert captured.err.startswith('--top-url-file: could not read it as a private Windows file')
     assert PAGE_URL_TOKEN not in captured.out + captured.err
+
+
+def test_windows_cli_accepts_native_password_delivery_without_browser_profile(monkeypatch, capsys):
+    capabilities = status_of(Broker(type('Vault', (), {'entries': []})(), object()))
+    assert capabilities['native_field_supported'] and not capabilities['password_browser_configured']
+    sent = []
+    def request(_socket, payload, **_options):
+        sent.append(payload['action'])
+        if payload['action'] == 'ping':
+            return capabilities
+        assert payload['action'] == 'fill' and payload['mode'] == 'password'
+        return dict(ok=True, filled='password', target_delivery='native-field-v1')
+    monkeypatch.setattr(cli, 'request', request)
+    assert cli.main(['fill', 'synthetic', '--mode', 'password', '--target', 'synthetic']) == 0
+    assert sent == ['ping', 'fill']
+    assert json.loads(capsys.readouterr().out)['target_delivery'] == 'native-field-v1'

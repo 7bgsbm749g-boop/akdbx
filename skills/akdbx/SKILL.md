@@ -37,6 +37,16 @@ session.
 | Broker missing, socket or Tailscale problems (Linux/VPS) | [VPS setup and recovery](references/vps-setup.md) |
 | akdbx itself is broken or lacks support | [Fixing akdbx](#when-akdbx-is-missing-something-or-broken), [repair-thread handoff](references/repair-thread.md) |
 
+## Native desktop apps
+
+For authorized password, combined login, generated-password, card, address or
+read-only secret capture in a native desktop app, use native field protocol 1
+and [the native field workflow](references/native-fields.md). Verify the app and
+service independently. `list-native-fields` returns only opaque IDs and flags;
+`pin-native-target` retains the exact controls. Never use a legacy numeric
+window pin for passwords, and never use native pins for browser pages. Native
+apps have no DOM; their service URL is a caller assertion, not URL attestation.
+
 ## Rules that always apply
 
 - **Never handle the master password.** The user enters it on the broker's

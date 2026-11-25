@@ -24,7 +24,8 @@ from .web_unlock import start_unlock_server
 from .local_https import is_loopback_origin, reload_certificate, start_local_unlock_server
 from .notifications import validate_webhook_url
 from . import capture_cli, card_cli, extension_host, identity_cli, pairing_cli, relay as relay_module, relay_cli, secret_cli, sms_cli
-from . import android_cli, android_route, browser_slots, page_url, setup_cli
+from . import android_cli, android_route, browser_slots, page_url, setup_cli, native_cli
+from .native_fields import DELIVERY as NATIVE_DELIVERY
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
 from .sink_helper import SinkError
 
@@ -385,6 +386,7 @@ def parser() -> argparse.ArgumentParser:
     pairing_cli.add_parsers(commands)
     identity_cli.add_parsers(commands)
     extension_host.add_parser(commands)
+    native_cli.add_parsers(commands)
     secret_cli.add_parser(commands)
     capture_cli.add_parsers(commands)
     sms_cli.add_parsers(commands)
@@ -1024,6 +1026,9 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
 
 
 def _command(args) -> int:
+    if args.command in native_cli.COMMANDS:
+        return native_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
+                                                          expected_unlock_origin=args.unlock_origin))
     if args.command in card_cli.COMMANDS:
         return card_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                         expected_unlock_origin=args.unlock_origin))
@@ -1269,7 +1274,11 @@ def _command(args) -> int:
                         or capabilities.get('password_fill_delivery') != PASSWORD_DELIVERY):
                     print(json.dumps({'ok': False, 'error': 'broker lacks DOM password delivery; target request not sent'}))
                     return 1
-                if os.name == 'nt' and capabilities.get('password_browser_configured') is False and not extension_route:
+                if (os.name == 'nt' and capabilities.get('password_browser_configured') is False and not extension_route
+                        and not (args.command in {'fill', 'fill-generated'}
+                                 and type(capabilities.get('native_field_protocol')) is int
+                                 and capabilities['native_field_protocol'] == 1
+                                 and capabilities.get('native_field_supported') is True)):
                     print(json.dumps({'ok': False, 'error': PASSWORD_BROWSER_REFUSAL}))
                     return 1
             if args.command == 'pin-password-target' and args.password_purpose is not None:
@@ -1470,6 +1479,11 @@ def _command(args) -> int:
             expected_delivery = PASSWORD_DELIVERY
         if args.command in {'fill', 'fill-generated'} and response.get('target_delivery') == EXTENSION_DELIVERY:
             expected_delivery = EXTENSION_DELIVERY
+        if (args.command in {'fill', 'fill-generated', 'fill-totp'}
+                and response.get('target_delivery') == NATIVE_DELIVERY
+                and type(capabilities.get('native_field_protocol')) is int
+                and capabilities['native_field_protocol'] == 1 and capabilities.get('native_field_supported') is True):
+            expected_delivery = NATIVE_DELIVERY
         if response.get('target_delivery') != expected_delivery or invalid_pin or invalid_fill:
             print('target operation outcome unconfirmed: receipt rejected; do not retry automatically', file=sys.stderr)
             return 2

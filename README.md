@@ -136,8 +136,17 @@ From 0.35.0 (fill extension 0.6.0) read pins on both routes also accept an
 authenticator setup key printed in space-separated Base32 groups, for
 `capture-totp`. `capture-secret` still refuses any value with a space.
 
-Native applications (username and TOTP fields outside a browser) use window
-pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
+From 0.44.0, native apps can use **native field pins** for passwords, combined logins,
+generated passwords, usernames, TOTP codes, cards, addresses and read-only
+secret capture. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
+uses exact Unicode Win32 Edit controls. Native apps have no browser origin:
+the service URL is a caller assertion and is matched to login/capture origins,
+not claimed as OS URL verification. See [Native desktop fields](skills/akdbx/references/native-fields.md)
+for supported controls, explicit field selection and limits.
+
+Legacy numeric window pins (`pin-target`) still use X11 on Linux and HWNDs on
+Windows for username and TOTP only. They never receive a password. Browser
+pages keep using the CDP or Extension route with tab, URL and DOM verification.
 
 ## Platforms
 
@@ -230,10 +239,10 @@ limits are in [Android devices](skills/akdbx/references/android.md).
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
   peer UID before sending a request.
 - The broker starts locked. The user enters the master password only on the private HTTPS unlock page, never in chat, terminal input, arguments, or environment variables. The page is HTTPS on `127.0.0.1` with the broker's own certificate, or (Linux only) a Unix socket behind Tailscale Serve; it never binds the LAN or tailnet and never serves plain HTTP over TCP. Through the optional akdbx relay, TLS still ends in the broker: the relay forwards only encrypted bytes, and the broker trusts no name, certificate or header from it without checking.
-- After unlock, password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. They never send password keys or Tab. Unsupported targets refuse delivery without terminal approval.
+- After unlock, browser password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. Native field pins use retained masked native controls. Neither path sends password keys or Tab. Unsupported targets refuse delivery without terminal approval.
 - Errors are deliberately generic after the typing boundary.
 
-This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Password fills require a short-lived DOM target pin; see [the target contract](skills/akdbx/references/target-fill.md). The broker verifies the exact HTTPS page, main frame and retained editable password input. X11 window pins refuse password/login delivery. Application acceptance remains a caller check; malicious pages and compromised local processes are outside this boundary. Python cannot guarantee memory zeroization.
+This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Browser password fills require a short-lived DOM target pin; see [the target contract](skills/akdbx/references/target-fill.md). The broker verifies the exact HTTPS page, main frame and retained editable password input. X11 window pins refuse password/login delivery. Application acceptance remains a caller check; malicious pages and compromised local processes are outside this boundary. Python cannot guarantee memory zeroization.
 
 ## Browser extension route (0.21.0)
 
