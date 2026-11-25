@@ -162,6 +162,28 @@ def test_setup_reports_the_actual_folders_for_each_extension_format(home, vault,
         assert ('gecko' in manifest.get('browser_specific_settings', {})) is (browser == 'firefox')
 
 
+@pytest.mark.parametrize('explicit', [None, 'custom', 'default'])
+def test_adding_chromium_keeps_the_saved_firefox_folder(home, vault, pair, capsys, explicit):
+    folder = (home / 'custom-addon' if explicit == 'custom' else
+              home / '.local/share/akdbx/extension')
+    first_flags = ['--browser', 'firefox', '--start-at-login']
+    if explicit:
+        first_flags += ['--extension-dir', str(folder)]
+    code, first, _ = setup(*base(vault, pair, *first_flags), capsys=capsys)
+    assert code == 0 and first['ok'], first
+    firefox = first['stages']['fill']['extension_dirs']['firefox']
+    code, second, _ = setup(*base(vault, pair, '--browser', 'firefox', '--browser', 'chrome',
+                                  '--start-at-login'), capsys=capsys)
+    assert code == 0 and second['ok'], second
+    folders = second['stages']['fill']['extension_dirs']
+    assert folders['firefox'] == firefox and folders['chrome'] != firefox
+    if explicit:
+        assert Path(firefox) == folder
+    for browser, path in folders.items():
+        manifest = json.loads((Path(path) / 'manifest.json').read_text())
+        assert ('gecko' in manifest.get('browser_specific_settings', {})) is (browser == 'firefox')
+
+
 def test_without_a_terminal_it_needs_yes_or_dry_run(home, vault, capsys):
     code, _, runner = setup('--vault', str(vault))
     assert code == 2 and runner.calls == []

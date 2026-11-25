@@ -77,7 +77,7 @@ LINUX_BROWSERS = {
     'chromium': ('chromium', 'chromium-browser'),
 }
 STATE_KEYS = ('vault', 'keyfile', 'tls_cert', 'tls_key', 'access', 'tailscale_name', 'tailnet_port',
-              'local_port', 'start_at_login', 'browsers', 'extension_dir', 'cdp_profile', 'capture_host',
+              'local_port', 'start_at_login', 'browsers', 'extension_dir', 'firefox_extension_dir', 'cdp_profile', 'capture_host',
               'capture_browser', 'capture_dir', 'capture_extension_id', 'link_skill', 'skill_dirs')
 NOTIFICATIONS = ('Unlock notifications: an agent can register a one-shot HTTPS webhook with '
                  "'akdbx subscribe-unlock --webhook-url-file FILE' and end its turn; the broker posts one "
@@ -814,7 +814,7 @@ class Setup:
             self.ui.say('Fill route. The extension route works in your everyday browser and is preferred; the '
                         'CDP route needs a browser profile with a debugging port.')
             detected = [b for b in BROWSERS if b in self.tools.get('browsers', {})]
-            answer = ui.text("Browsers for the extension route (helium, chrome, edge; comma-separated; 'none')",
+            answer = ui.text("Browsers for the extension route (" + ', '.join(BROWSERS) + "; comma-separated; 'none')",
                              ','.join(browsers or detected) or 'none')
             browsers = [] if answer.lower() == 'none' else [b.strip() for b in answer.split(',') if b.strip()]
             unknown = [b for b in browsers if b not in BROWSERS]
@@ -822,8 +822,21 @@ class Setup:
             for name in unknown:
                 ui.say(f'  Ignored unknown browser {name!r}.')
         choice['browsers'] = list(dict.fromkeys(browsers))
-        choice['extension_dir'] = str(Path(self.remembered('extension_dir', args.extension_dir)
+        chromium = any(b in CHROMIUM_BROWSERS for b in choice['browsers'])
+        firefox_only = choice['browsers'] == ['firefox']
+        choice['extension_dir'] = str(Path(self.remembered('extension_dir', None if firefox_only else args.extension_dir)
                                            or self.default_extension_dir()).expanduser().absolute())
+        firefox_flag = args.extension_dir if 'firefox' in choice['browsers'] else None
+        if firefox_flag is not None and chromium:
+            firefox_flag = firefox_flag.with_name(firefox_flag.name + '-firefox')
+        default_firefox = self.default_extension_dir().with_name(self.default_extension_dir().name + '-firefox')
+        choice['firefox_extension_dir'] = str(Path(self.remembered('firefox_extension_dir', firefox_flag)
+                                                   or default_firefox).expanduser().absolute())
+        if (chromium and args.extension_dir is None
+                and Path(choice['extension_dir']) == Path(choice['firefox_extension_dir'])):
+            # A prior explicit Firefox folder can occupy Chromium's default. Keep it in place.
+            base = self.default_extension_dir()
+            choice['extension_dir'] = str(base.with_name(base.name + '-chromium'))
         cdp = None if args.no_cdp else self.selected('cdp_profile', args.cdp_profile, None)
         if 'fill' not in skip and ui.interactive:
             answer = ui.text("Private Chromium profile folder for the CDP route ('none' to skip)",
@@ -1432,7 +1445,8 @@ class Setup:
         if cdp:
             state = self._merge_state(state, self._cdp(Path(cdp)))
         folders = {browser: str(self._extension_folder(browser)) for browser in browsers}
-        self.record('fill', state, browsers=browsers, extension_dir=self.choice['extension_dir'] if browsers else None,
+        primary = self.choice['extension_dir'] if any(b in CHROMIUM_BROWSERS for b in browsers) else folders.get('firefox')
+        self.record('fill', state, browsers=browsers, extension_dir=primary,
                     extension_dirs=folders, cdp_profile=cdp)
 
     @staticmethod
@@ -1472,10 +1486,7 @@ class Setup:
             raise RuntimeError(error)
 
     def _extension_folder(self, browser):
-        folder = Path(self.choice['extension_dir'])
-        if browser == 'firefox' and any(b in CHROMIUM_BROWSERS for b in self.choice['browsers']):
-            folder = folder.with_name(folder.name + '-firefox')
-        return folder
+        return Path(self.choice['firefox_extension_dir' if browser == 'firefox' else 'extension_dir'])
 
     def _build_extension(self, browser='chrome'):
         from .extension_host import BUILD_ID, EXTENSION_KEY, built_version, trusted_origin
@@ -1780,11 +1791,15 @@ class Setup:
                 if self.started_service and self.choice['access'] == 'relay':
                     # Later stages build the extension for the origin the broker serves.
                     if self.wait_for_started_broker()['running'] is False:
-                        folder = self.choice.get('extension_dir') or 'FOLDER'
-                        build = shell_command(self.akdbx_argv('extension', 'build', '--output', str(folder)),
-                                              self.windows)
-                        self.step('The broker has not started yet. When it runs, build the extension again so it '
-                                  f'uses the relay origin the broker serves: {build}', 'login')
+                        browsers = self.choice['browsers']
+                        formats = (['chrome'] if any(b in CHROMIUM_BROWSERS for b in browsers) else [])
+                        formats += ['firefox'] if 'firefox' in browsers else []
+                        for browser in formats:
+                            argv = self.akdbx_argv('extension', 'build', '--output', str(self._extension_folder(browser)),
+                                                  '--browser', browser)
+                            build = shell_command(argv, self.windows)
+                            self.step('The broker has not started yet. When it runs, build the extension again so it '
+                                      f'uses the relay origin the broker serves: {build}', 'login')
             else:
                 getattr(self, 'stage_' + name)()
         self.save_state()

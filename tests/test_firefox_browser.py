@@ -68,9 +68,19 @@ class NoKeys:
 def firefox_lab(private_dir, certificates):
     cert, key = private_dir / 'cert.pem', private_dir / 'key.pem'
     if os.name == 'nt':
-        from akdbx.windows_security import write_new
-        write_new(cert, certificates[0].read_bytes())
-        write_new(key, certificates[1].read_bytes())
+        from akdbx.windows_security import write_new, trusted_directory
+        try:
+            write_new(cert, certificates[0].read_bytes())
+            write_new(key, certificates[1].read_bytes())
+        except PermissionError:
+            # Name the first rejected ancestor without exposing any file contents.
+            for parent in reversed((private_dir, *private_dir.parents)):
+                try:
+                    with trusted_directory(parent):
+                        pass
+                except PermissionError as error:
+                    raise PermissionError(f'Firefox test directory rejected at {parent}: {error}') from None
+            raise
     else:
         cert.write_bytes(certificates[0].read_bytes())
         key.write_bytes(certificates[1].read_bytes())

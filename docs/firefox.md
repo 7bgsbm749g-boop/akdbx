@@ -42,6 +42,8 @@ Guided setup with `--browser firefox --extension-dir FOLDER` uses that exact
 folder. If Chromium is selected too, Firefox uses `FOLDER-firefox` and Chromium
 uses `FOLDER`. The setup JSON's `stages.fill.extension_dirs` reports the folder
 for each browser.
+Each format's folder is saved separately, so adding another browser later
+keeps the existing Firefox folder in place.
 
 ## Native host locations
 
