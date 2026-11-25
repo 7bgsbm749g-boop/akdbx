@@ -6,6 +6,7 @@ sandboxed app/XPC and packaging tests. It never uses a real vault or account.
 import json
 import os
 from pathlib import Path
+import platform
 import subprocess
 import sys
 import time
@@ -23,10 +24,41 @@ from akdbx import safari
 from test_safari_native import local_broker  # noqa: F401
 
 
+def startup_diagnostics(folder):
+    """Bounded diagnostics from this disposable, account-free browser test."""
+    screenshot = folder / 'safari-startup.png'
+    capture = subprocess.run(['/usr/sbin/screencapture', '-x', str(screenshot)],
+                             capture_output=True, timeout=10)
+    processes = subprocess.run(['pgrep', '-l', '-x', 'Safari'], capture_output=True, text=True, timeout=10)
+    (folder / 'safari-startup.json').write_text(json.dumps(dict(
+        macos=platform.mac_ver()[0], safari_processes=processes.stdout[:2048],
+        screenshot_status=capture.returncode), indent=2))
+    # Safari's --diagnose logs are useful when session creation fails. Scrub
+    # inherited CI values before retaining any of those logs as artifacts.
+    destination = folder / 'safari-diagnostics'
+    destination.mkdir(exist_ok=True)
+    values = sorted({value for value in os.environ.values() if len(value) >= 12}, key=len, reverse=True)
+    root = Path.home() / 'Library/Logs/com.apple.WebDriver'
+    count = 0
+    for path in root.rglob('*'):
+        if path.is_symlink() or not path.is_file() or path.suffix not in ('.log', '.txt', '.json'):
+            continue
+        with path.open('rb') as stream:
+            content = stream.read(160 * 1024).decode(errors='replace')
+        for value in values:
+            content = content.replace(value, '<CI value>')
+        (destination / f'{count}-{path.name}').write_text(content)
+        count += 1
+        if count == 10:
+            break
+
+
 def test_actual_safari_loads_the_native_app_and_attaches_to_its_local_broker(tmp_path, local_broker):
     app = safari.build_app(tmp_path / 'Safari.app', unlock_origin='https://localhost:9443')
+    subprocess.run(['open', '-a', 'Safari'], check=True, timeout=30)
     subprocess.run(['open', '-g', str(app)], check=True, timeout=30)
-    service = Service(executable_path='/usr/bin/safaridriver', log_output=str(tmp_path / 'safaridriver.log'))
+    service = Service(executable_path='/usr/bin/safaridriver', enable_logging=True,
+                      log_output=str(tmp_path / 'safaridriver.log'))
     driver = None
     attempts = []
     try:
@@ -61,6 +93,9 @@ def test_actual_safari_loads_the_native_app_and_attaches_to_its_local_broker(tmp
         print('Native installation attempts: ' + json.dumps(attempts, sort_keys=True))
         pytest.fail('Safari did not attach its native extension to the synthetic local broker')
     finally:
-        if driver:
-            driver.quit()
-        service.stop()
+        try:
+            if driver:
+                driver.quit()
+        finally:
+            service.stop()
+            startup_diagnostics(tmp_path)

@@ -40,6 +40,9 @@ jobs:
             ${{ runner.temp }}/safari-browser.xml
             ${{ runner.temp }}/sb/**/safaridriver.log
             ${{ runner.temp }}/sb/**/actual-safari-native.png
+            ${{ runner.temp }}/sb/**/safari-startup.png
+            ${{ runner.temp }}/sb/**/safari-startup.json
+            ${{ runner.temp }}/sb/**/safari-diagnostics/*
   safari-native:
     name: Native Safari bridge and developer app
     runs-on: macos-15
