@@ -1,4 +1,4 @@
-# macOS broker (0.42.0)
+# macOS broker (0.43.0)
 
 The macOS broker runs locally as your normal user with Python 3.11 or newer.
 It uses the shared encrypted KeePass vault, metadata search, private HTTPS
@@ -20,7 +20,7 @@ python3 -m venv .venv
 Use an existing local KDBX file in a directory owned by your user, without
 symlink components or writable ancestors owned by other users. Vaults and
 private keys must be regular private files (mode 0600); the vault must have
-one hard link. Keep other editors and sync writers away during saves, as on
+one hard link. Extended allow ACLs on private files or their trusted path components are refused, including inherited grants; deny-only ACLs are accepted. Keep other editors and sync writers away during saves, as on
 Linux. The broker never changes permissions on an existing vault for you.
 Do not use a path through `/tmp` or `/var`, which are symlinks on macOS; use
 the actual home directory or the physical path returned by `pwd -P`.
@@ -35,11 +35,11 @@ certificate authority is a separate setup decision. Then start the broker:
   --default-fill-route extension
 ```
 
-The default socket is `~/Library/Application Support/akdbx/run/s`, with mode
+The first launch creates and verifies missing default runtime parents with mode 0700. The default socket is `~/Library/Application Support/akdbx/run/s`, with mode
 0600 in an owned mode-0700 runtime directory. `akdbx status` discovers that
 same socket without XDG environment variables. An explicit global `--socket`
 selects another private endpoint; macOS socket paths must be shorter than
-104 bytes. Every connection checks the actual peer's effective user through
+104 bytes. Each accepted RPC is checked before reading a request. Every client connection checks the actual peer's effective user through
 Darwin `getpeereid` and its kernel-reported PID. Socket path resolution uses
 `F_GETPATH` on the validated directory descriptor and checks its ancestry and
 identity again. Same-user compromise remains outside the broker's boundary.

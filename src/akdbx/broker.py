@@ -9,6 +9,7 @@ import secrets
 import select
 import socket
 import stat
+import sys
 import time
 import threading
 import unicodedata
@@ -118,7 +119,7 @@ class Broker:
         unlock_block_path=None,
         password_browser_profile=None,
         secret_sinks_path=None,
-        default_fill_route='cdp',
+        default_fill_route=None,
         browser_profile_root=None,
         sms_sources_path=None,
         android_devices_path=None,
@@ -908,6 +909,10 @@ def _serve_connection(connection: socket.socket, broker: Broker) -> None:
     with connection:
         connection.settimeout(CONNECTION_TIMEOUT)
         try:
+            if sys.platform == 'darwin':
+                from .macos import peer_credentials
+                if peer_credentials(connection)[1] != os.getuid():
+                    return
             request = receive_message(
                 connection,
                 deadline=time.monotonic() + CONNECTION_TIMEOUT,

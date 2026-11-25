@@ -141,7 +141,7 @@ pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
 
 ## Platforms
 
-- **macOS** (0.42.0+): local browser-extension broker, with native Unix peer
+- **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
   checks, private HTTPS unlock and encrypted vault writes. Chrome and Edge
   native-host locations are supported. Native window delivery, CDP and guided
   setup are unavailable. Safari's Apple wrapper is a separate delivery. See

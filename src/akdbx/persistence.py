@@ -205,6 +205,10 @@ class VaultStore:
                 os.close(current)
                 current = child
                 info = os.fstat(current)
+                import sys
+                if sys.platform == 'darwin':
+                    from .macos import require_private_acl
+                    require_private_acl(current)
                 if writing and (info.st_uid not in {0, os.getuid()} or (
                     info.st_mode & 0o022
                     and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX)
@@ -217,6 +221,10 @@ class VaultStore:
                 os.close(current)
 
     def _file_info(self, fd, *, writing=True):
+        import sys
+        if sys.platform == 'darwin':
+            from .macos import require_private_acl
+            require_private_acl(fd)
         return self._checked_info(os.fstat(fd), writing=writing)
 
     @staticmethod
@@ -303,6 +311,10 @@ class VaultStore:
         """Refuse nonregular key artifacts without waiting for a FIFO or following a replaced leaf."""
         fd = os.open(self.keyfile_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         try:
+            import sys
+            if sys.platform == 'darwin':
+                from .macos import require_private_acl
+                require_private_acl(fd)
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise SaveError('key file must be a regular file')
             return fd

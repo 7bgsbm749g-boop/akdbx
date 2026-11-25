@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import socket
 import sys
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from akdbx import cli, macos, runtime, target
 from akdbx.broker import Broker, serve
 from akdbx.persistence import VaultStore
 from akdbx.target import DeliveryError, TargetError
+from test_local_https import private_pair  # noqa: F401
 
 native = pytest.mark.skipif(sys.platform != 'darwin', reason='requires the real Darwin kernel')
 
@@ -26,9 +28,10 @@ def test_macos_never_falls_back_to_window_input():
     assert error.value.started is False
 
 
-def test_macos_refuses_cdp_configuration_before_startup(monkeypatch, capsys):
+@pytest.mark.parametrize('profile, route', [(Path('/synthetic/profile'), 'extension'), (None, 'cdp')])
+def test_macos_refuses_cdp_configuration_before_startup(monkeypatch, capsys, profile, route):
     monkeypatch.setattr(sys, 'platform', 'darwin')
-    args = SimpleNamespace(password_browser_profile=Path('/synthetic/profile'),
+    args = SimpleNamespace(password_browser_profile=profile, default_fill_route=route,
                            card_browser_profile=None, browser_profile_root=None)
     assert cli._serve(args, None, None, None, None) == 2
     assert 'extension route only' in capsys.readouterr().err
@@ -48,6 +51,88 @@ def test_macos_default_socket_and_capabilities(monkeypatch, tmp_path):
     assert cli.default_socket() == tmp_path / 'Library/Application Support/akdbx/run/s'
     assert target.capabilities()['target_fill_delivery'] == 'unavailable'
     assert target.capabilities()['target_fill_modes'] == []
+
+
+@native
+def test_fresh_home_runtime_is_created_through_trusted_components(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path.resolve())
+    path = cli.default_socket()
+    macos.prepare_runtime(path, create_ancestors=True)
+    for folder in (tmp_path / 'Library', tmp_path / 'Library/Application Support',
+                   path.parent.parent, path.parent):
+        assert stat_mode(folder) == 0o700
+
+
+@native
+def test_tls_key_allow_acl_is_refused_even_with_private_mode(tmp_path):
+    from akdbx.local_https import _posix_checked_file
+    key = tmp_path / 'synthetic-key'
+    key.write_text('not a real key')
+    key.chmod(0o600)
+    subprocess.run(['/bin/chmod', '+a', 'everyone allow read', str(key)], check=True)
+    assert stat_mode(key) == 0o600
+    with pytest.raises(PermissionError, match='ACL'):
+        with _posix_checked_file(key, private=True):
+            pass
+
+
+@native
+def test_runtime_allow_acl_is_refused_even_with_private_mode(tmp_path):
+    folder = tmp_path.resolve() / 'runtime'
+    folder.mkdir(mode=0o700)
+    subprocess.run(['/bin/chmod', '+a', 'everyone allow search,read', str(folder)], check=True)
+    assert stat_mode(folder) == 0o700
+    with pytest.raises(PermissionError, match='ACL'):
+        runtime.open_private_runtime_directory(folder)
+
+
+def test_foreign_rpc_peer_is_refused_before_dispatch(monkeypatch):
+    from akdbx.broker import _serve_connection
+    from akdbx.protocol import send_message
+    left, right = socket.socketpair()
+    calls = []
+    broker = SimpleNamespace(dispatch=lambda *args, **kwargs: calls.append(True) or {'ok': True})
+    monkeypatch.setattr(sys, 'platform', 'darwin')
+    monkeypatch.setattr(macos, 'peer_credentials', lambda connection: (os.getpid(), os.getuid() + 1, os.getgid()))
+    try:
+        send_message(right, {'action': 'ping'})
+        _serve_connection(left, broker)
+        assert not calls
+    finally:
+        left.close()
+        right.close()
+
+
+@native
+@pytest.mark.parametrize('custom_socket', [False, True])
+def test_documented_first_launch_uses_extension_route(tmp_path, monkeypatch, private_pair, custom_socket):
+    from pykeepass import create_database
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path.resolve())
+    monkeypatch.setenv('XDG_STATE_HOME', str(tmp_path / 'state'))
+    monkeypatch.delenv('AKDBX_DEFAULT_FILL_ROUTE', raising=False)
+    monkeypatch.delenv('AKDBX_UNLOCK_ORIGIN', raising=False)
+    database = tmp_path / 'synthetic.kdbx'
+    create_database(str(database), password='synthetic only master').save()
+    database.chmod(0o600)
+    options = []
+    expected_socket = cli.default_socket()
+    if custom_socket:
+        # A valid main path must not grow when deriving the capture path.
+        padding = 99 - len(os.fsencode(tmp_path.resolve() / 'r' / 's'))
+        assert padding >= 0
+        expected_socket = tmp_path.resolve() / ('r' + 'x' * padding) / 's'
+        options = ['--socket', str(expected_socket)]
+    seen = []
+    def exercise(path, broker):
+        seen.append(broker.dispatch({'action': 'ping'}))
+        assert path == expected_socket
+        assert path.parent.is_dir()
+        assert (path.parent / 'u').is_socket()
+    monkeypatch.setattr(cli, 'serve', exercise)
+    cert, key = private_pair
+    assert cli.main([*options, '--unlock-origin', 'https://localhost:9443', 'serve', str(database),
+                     '--tls-cert', str(cert), '--tls-key', str(key)]) == 0
+    assert seen[0]['fill_routes'] == ['extension'] and seen[0]['default_fill_route'] == 'extension'
 
 
 @native

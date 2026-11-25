@@ -14,11 +14,16 @@ if os.name != 'nt':
 SOCKET_PROBE_TIMEOUT = 0.2
 
 
-def _validate_trusted_ancestor(info: os.stat_result, path: Path, owner_uid: int) -> None:
+def _validate_trusted_ancestor(info: os.stat_result, path: Path, owner_uid: int, fd=None) -> None:
     if not stat.S_ISDIR(info.st_mode):
         raise RuntimeError(f"runtime ancestor is not a directory: {path}")
     if info.st_uid not in {0, owner_uid}:
         raise RuntimeError(f"runtime ancestor has an untrusted owner: {path}")
+    if sys.platform == 'darwin':
+        from .macos import require_private_acl
+        if fd is None:
+            raise RuntimeError('macOS ancestry checks require an open descriptor')
+        require_private_acl(fd)
     if info.st_mode & 0o022:
         # Root-owned sticky directories such as /tmp prevent another UID from
         # renaming a child it does not own. Other writable ancestors can be
@@ -28,7 +33,7 @@ def _validate_trusted_ancestor(info: os.stat_result, path: Path, owner_uid: int)
 
 
 def prepare_private_runtime_directory(
-    directory: Path, *, owner_uid: int | None = None,
+    directory: Path, *, owner_uid: int | None = None, create_ancestors=False,
 ) -> tuple[Path, int]:
     """Create/verify a private leaf below trusted, non-symlinked ancestry.
 
@@ -36,7 +41,7 @@ def prepare_private_runtime_directory(
     the verified leaf even if a pathname is concurrently changed.
     """
     return _open_private_runtime_directory(
-        directory, owner_uid=owner_uid, create=True,
+        directory, owner_uid=owner_uid, create=True, create_ancestors=create_ancestors,
     )
 
 
@@ -50,7 +55,7 @@ def open_private_runtime_directory(
 
 
 def _open_private_runtime_directory(
-    directory: Path, *, owner_uid: int | None, create: bool,
+    directory: Path, *, owner_uid: int | None, create: bool, create_ancestors=False,
 ) -> tuple[Path, int]:
     owner_uid = os.getuid() if owner_uid is None else owner_uid
     directory = Path(os.path.abspath(os.fspath(directory)))
@@ -66,9 +71,14 @@ def _open_private_runtime_directory(
     current_path = Path(directory.anchor)
     current_fd = os.open(directory.anchor, flags)
     try:
-        _validate_trusted_ancestor(os.fstat(current_fd), current_path, owner_uid)
+        _validate_trusted_ancestor(os.fstat(current_fd), current_path, owner_uid, current_fd)
         parts = directory.parts[1:]
         for part in parts[:-1]:
+            if create and create_ancestors:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
             try:
                 child_fd = os.open(part, flags, dir_fd=current_fd)
             except OSError as exc:
@@ -79,7 +89,7 @@ def _open_private_runtime_directory(
             os.close(current_fd)
             current_fd = child_fd
             current_path /= part
-            _validate_trusted_ancestor(os.fstat(current_fd), current_path, owner_uid)
+            _validate_trusted_ancestor(os.fstat(current_fd), current_path, owner_uid, current_fd)
 
         leaf = parts[-1]
         if create:
@@ -96,6 +106,13 @@ def _open_private_runtime_directory(
                 "runtime path must be a real, non-symlinked directory"
             ) from exc
         info = os.fstat(leaf_fd)
+        if sys.platform == 'darwin':
+            from .macos import require_private_acl
+            try:
+                require_private_acl(leaf_fd)
+            except BaseException:
+                os.close(leaf_fd)
+                raise
         if info.st_uid != owner_uid:
             os.close(leaf_fd)
             raise RuntimeError("runtime directory is not owned by the broker user")

@@ -6,9 +6,55 @@ The same private Unix socket and encrypted vault persistence contract applies.
 from __future__ import annotations
 
 import ctypes
+import errno
 import os
 from pathlib import Path
 import socket
+
+
+def require_private_acl(fd: int) -> None:
+    """Refuse extended allow ACEs, including inherited grants, on an open object.
+
+    Deny-only ACLs (such as the normal home-directory delete protection) are
+    accepted. This deliberately supports a narrower, auditable private-file
+    contract instead of trying to reproduce Darwin's group/ACL evaluator.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    signatures = {
+        'acl_get_fd_np': (ctypes.c_void_p, [ctypes.c_int, ctypes.c_int]),
+        'acl_get_entry': (ctypes.c_int, [ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)]),
+        'acl_get_tag_type': (ctypes.c_int, [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]),
+        'acl_free': (ctypes.c_int, [ctypes.c_void_p]),
+    }
+    for name, (result, arguments) in signatures.items():
+        function = getattr(libc, name)
+        function.restype, function.argtypes = result, arguments
+    acl = libc.acl_get_fd_np(fd, 0x100)  # ACL_TYPE_EXTENDED
+    if not acl:
+        raise PermissionError('cannot verify macOS ACL')
+    try:
+        entry, tag = ctypes.c_void_p(), ctypes.c_int()
+        # Darwin permits at most 169 ACEs. Unknown types and iteration errors refuse.
+        for index in range(170):
+            ctypes.set_errno(0)
+            if libc.acl_get_entry(acl, 0 if index == 0 else -1, ctypes.byref(entry)) != 0:
+                if ctypes.get_errno() == errno.EINVAL:
+                    return
+                raise PermissionError('cannot inspect macOS ACL')
+            if libc.acl_get_tag_type(entry, ctypes.byref(tag)) != 0 or tag.value != 2:  # ACL_EXTENDED_DENY
+                raise PermissionError('extended allow ACLs are not supported on private macOS paths')
+        raise PermissionError('macOS ACL exceeds the supported limit')
+    finally:
+        libc.acl_free(acl)
+
+
+def prepare_runtime(path: Path, *, create_ancestors=False) -> None:
+    from .runtime import prepare_private_runtime_directory
+    _, fd = prepare_private_runtime_directory(path.parent, create_ancestors=create_ancestors)
+    try:
+        socket_path(fd, path.name)  # Preflight the actual Darwin path limit before opening listeners.
+    finally:
+        os.close(fd)
 
 
 def peer_credentials(connection: socket.socket) -> tuple[int, int, int]:
