@@ -145,6 +145,23 @@ def base(vault, pair, *extra):
     return ('--yes', '--json', '--vault', str(vault), '--tls-cert', str(pair[0]), '--tls-key', str(pair[1]), *extra)
 
 
+@pytest.mark.parametrize('browsers', [('firefox',), ('firefox', 'chrome')])
+def test_setup_reports_the_actual_folders_for_each_extension_format(home, vault, pair, capsys, browsers):
+    folder = home / 'custom-addon'
+    flags = [part for browser in browsers for part in ('--browser', browser)]
+    code, result, _ = setup(*base(vault, pair, '--start-at-login', '--extension-dir', str(folder), *flags),
+                            capsys=capsys)
+    assert code == 0 and result['ok'], result
+    firefox = folder if browsers == ('firefox',) else folder.with_name(folder.name + '-firefox')
+    assert (firefox / 'manifest.json').is_file()
+    expected = {browser: str(firefox if browser == 'firefox' else folder) for browser in browsers}
+    assert result['stages']['fill']['extension_dir'] == str(folder)
+    assert result['stages']['fill']['extension_dirs'] == expected
+    for browser, path in expected.items():
+        manifest = json.loads((Path(path) / 'manifest.json').read_text())
+        assert ('gecko' in manifest.get('browser_specific_settings', {})) is (browser == 'firefox')
+
+
 def test_without_a_terminal_it_needs_yes_or_dry_run(home, vault, capsys):
     code, _, runner = setup('--vault', str(vault))
     assert code == 2 and runner.calls == []

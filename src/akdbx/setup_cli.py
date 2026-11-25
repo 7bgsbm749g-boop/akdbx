@@ -1431,8 +1431,9 @@ class Setup:
                 state = self._merge_state(state, self._build_extension('firefox'))
         if cdp:
             state = self._merge_state(state, self._cdp(Path(cdp)))
+        folders = {browser: str(self._extension_folder(browser)) for browser in browsers}
         self.record('fill', state, browsers=browsers, extension_dir=self.choice['extension_dir'] if browsers else None,
-                    cdp_profile=cdp)
+                    extension_dirs=folders, cdp_profile=cdp)
 
     @staticmethod
     def _merge_state(current, new):
@@ -1470,11 +1471,15 @@ class Setup:
         if not ok:
             raise RuntimeError(error)
 
+    def _extension_folder(self, browser):
+        folder = Path(self.choice['extension_dir'])
+        if browser == 'firefox' and any(b in CHROMIUM_BROWSERS for b in self.choice['browsers']):
+            folder = folder.with_name(folder.name + '-firefox')
+        return folder
+
     def _build_extension(self, browser='chrome'):
         from .extension_host import BUILD_ID, EXTENSION_KEY, built_version, trusted_origin
-        folder = Path(self.choice['extension_dir'])
-        if browser == 'firefox':
-            folder = folder.with_name(folder.name + '-firefox')
+        folder = self._extension_folder(browser)
         try:
             origin = trusted_origin(self.origin)
             manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))

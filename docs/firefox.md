@@ -38,6 +38,11 @@ folder, reload the temporary add-on, and pair again. Keep Chromium and
 Firefox builds in separate folders; the builder refuses to replace the other
 format.
 
+Guided setup with `--browser firefox --extension-dir FOLDER` uses that exact
+folder. If Chromium is selected too, Firefox uses `FOLDER-firefox` and Chromium
+uses `FOLDER`. The setup JSON's `stages.fill.extension_dirs` reports the folder
+for each browser.
+
 ## Native host locations
 
 | Platform | Per-user registration |

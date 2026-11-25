@@ -17,9 +17,9 @@ from __future__ import annotations
 import re
 
 from .notifications import UnlockNotifications
+from .extension_route import BROWSERS
 
 CODE = re.compile(r'[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}')
-BROWSERS = ('helium', 'chrome', 'edge')
 
 
 def capabilities():

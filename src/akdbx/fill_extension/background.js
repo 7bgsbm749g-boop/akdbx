@@ -72,10 +72,13 @@ async function reloadFor(disk) {
 }
 
 // Only extension pages may read session storage; content scripts may not.
-Promise.resolve(akdbxBrowser.storage.session.setAccessLevel?.(globalThis.browser ? "TRUSTED_CONTEXTS" : {accessLevel: "TRUSTED_CONTEXTS"})).catch(() => {});
+// Chromium148+ also exposes browser: the manifest format, not the namespace, selects the signature.
+const storageAccess = akdbxBrowser.runtime.getManifest().browser_specific_settings?.gecko
+  ? "TRUSTED_CONTEXTS" : {accessLevel: "TRUSTED_CONTEXTS"};
+Promise.resolve(akdbxBrowser.storage.session.setAccessLevel?.(storageAccess)).catch(() => {});
 // The broker trust lives in local storage: keep content scripts out of it too where the browser allows it.
 try {
-  Promise.resolve(akdbxBrowser.storage.local.setAccessLevel?.(globalThis.browser ? "TRUSTED_CONTEXTS" : {accessLevel: "TRUSTED_CONTEXTS"})).catch(() => {});
+  Promise.resolve(akdbxBrowser.storage.local.setAccessLevel?.(storageAccess)).catch(() => {});
 } catch {
   // Older browsers keep local storage open to content scripts; this extension's content script never reads it.
 }

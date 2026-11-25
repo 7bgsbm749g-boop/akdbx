@@ -22,13 +22,17 @@ const recordOf = (message, build = BUILD) => ({v: 1, public_key: message.public_
   origin: message.statement.origin, seq: message.statement.seq, ...(build === null ? {} : {build})});
 
 // `disk`: the version in manifest.json on disk (default: what this worker runs); `version`: what config.js says.
-function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, session, version, disk} = {}) {
+function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, session, version, disk,
+  browserNamespace = false} = {}) {
   const posted = [];
   const listeners = {};
   const event = name => ({addListener: fn => { listeners[name] = fn; }});
   const area = store => ({get: async key => (key in store ? {[key]: copy(store[key])} : {}),
     set: async items => { Object.assign(store, copy(items)); }, remove: async key => { delete store[key]; },
-    setAccessLevel: async () => {}});
+    setAccessLevel: options => {
+      assert.deepEqual(copy(options), {accessLevel: "TRUSTED_CONTEXTS"});
+      return Promise.resolve();
+    }});
   // Session storage outlives one service worker: pass the same object to model a restart.
   session = session ?? {};
   const port = {postMessage: m => {
@@ -63,6 +67,7 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, 
   const sandbox = {chrome, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, TextEncoder,
     TextDecoder, Uint8Array, AbortController, module: {exports: {}}, AKDBX_TRUSTED_ORIGIN: builtOrigin ?? null,
     AKDBX_BUILD_ID: build, Blob, OffscreenCanvas, createImageBitmap: async () => ({width: 100, height: 100, close() {}})};
+  if (browserNamespace) sandbox.browser = chrome;  // Chromium148+ exposes both as the same API objects.
   if (version !== undefined) sandbox.AKDBX_EXTENSION_VERSION = version;
   // No network in these tests: the broker's HTTPS statement comes only from a scripted fetch,
   // and the worker's own manifest.json from `disk`.
@@ -86,6 +91,11 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, 
   vm.runInContext(fs.readFileSync(path.join(root, "background.js"), "utf8"), sandbox);
   return {exports: sandbox.module.exports, listeners, posted, chrome, local, session, port, screen};
 }
+
+test("a Chromium worker starts when browser and chrome namespaces are both present", () => {
+  const {listeners} = loadBackground({browserNamespace: true});
+  assert.equal(typeof listeners.message, "function");
+});
 
 // What content.js answers to the cover checks of a pin, fill or read (undefined: another call).
 function coverAnswer(source, clear = true) {

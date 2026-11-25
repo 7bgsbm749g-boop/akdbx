@@ -70,12 +70,15 @@ jobs:
               print(folder, file=stream)
           PY
       - name: Firefox host, exact documents, iframe fills and navigation refusal
+        shell: bash
         env:
           AKDBX_REQUIRE_FIREFOX_BROWSER: '1'
           AKDBX_TEST_FIREFOX: ${{ steps.firefox.outputs.firefox-path }}
-        run: >-
-          python -m pytest -q -rs tests/test_firefox_browser.py tests/test_firefox_extension.py
-          --basetemp="${{ runner.temp }}/f" --junitxml="${{ runner.temp }}/firefox.xml"
+        run: |
+          firefox_test_base="$RUNNER_TEMP/f"
+          if [ "$RUNNER_OS" = Windows ]; then firefox_test_base="$LOCALAPPDATA/akdbx-firefox-tests"; fi
+          python -m pytest -q -rs tests/test_firefox_browser.py tests/test_firefox_extension.py \
+            --basetemp="$firefox_test_base" --junitxml="$RUNNER_TEMP/firefox.xml"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
