@@ -73,6 +73,9 @@ def _private_system_runtime() -> Path | None:
 
 
 def default_socket() -> Path:
+    if sys.platform == 'darwin':
+        # /tmp is a symlink on macOS; keep the default under the user's real home.
+        return Path.home() / 'Library' / 'Application Support' / 'akdbx' / 'run' / 's'
     if os.name == 'nt':
         from .windows_rpc import default_pipe
         return default_pipe()
@@ -127,6 +130,9 @@ def _validate_socket_path(socket_path: Path, broker_uid: int) -> tuple[Path, int
 
 
 def _peer_credentials(client: socket.socket) -> tuple[int, int, int]:
+    if sys.platform == 'darwin':
+        from .macos import peer_credentials
+        return peer_credentials(client)
     if not hasattr(socket, "SO_PEERCRED"):
         raise RuntimeError("Unix peer credential verification is unavailable on this platform")
     size = struct.calcsize("3i")
@@ -860,6 +866,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -> int:
+    if sys.platform == 'darwin' and any((args.password_browser_profile, args.card_browser_profile,
+                                       args.browser_profile_root)):
+        print('macOS currently supports the extension route only; omit CDP browser-profile options', file=sys.stderr)
+        return 2
     if args.browser_profile_root is not None and (args.password_browser_profile is not None
                                                   or args.card_browser_profile is not None):
         print('--browser-profile-root replaces --password-browser-profile and --card-browser-profile '
@@ -917,7 +927,12 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
             print('a loopback unlock origin or --local-port needs --tls-cert and --tls-key', file=sys.stderr)
             return 2
         try:
-            broker = Broker(None, X11Typer(), lock_timeout=args.lock_timeout, card_browser_profile=args.card_browser_profile,
+            if sys.platform == 'darwin':
+                from .macos import NoWindowDelivery
+                typer = NoWindowDelivery()
+            else:
+                typer = X11Typer()
+            broker = Broker(None, typer, lock_timeout=args.lock_timeout, card_browser_profile=args.card_browser_profile,
                             password_browser_profile=args.password_browser_profile,
                             browser_profile_root=args.browser_profile_root,
                             notification_state_path=args.notification_state or default_notification_state(args.socket),

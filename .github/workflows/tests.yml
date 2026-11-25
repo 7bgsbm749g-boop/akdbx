@@ -11,6 +11,23 @@ permissions:
   contents: read
 
 jobs:
+  macos-broker:
+    name: Native macOS broker
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[test]'
+      - name: Darwin IPC, TLS, encrypted persistence, and extension contract
+        run: >-
+          python -m pytest -q -rs tests/test_macos_native.py tests/test_protocol.py
+          tests/test_local_https.py tests/test_extension_route.py
+          --basetemp="${{ runner.temp }}/m"
   linux:
     runs-on: ubuntu-latest
     timeout-minutes: 15

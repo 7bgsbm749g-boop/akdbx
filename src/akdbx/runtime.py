@@ -4,6 +4,7 @@ import errno
 import os
 import socket
 import stat
+import sys
 from pathlib import Path
 
 if os.name != 'nt':
@@ -110,6 +111,9 @@ def anchored_socket_path(directory_fd: int, socket_name: str) -> str:
     """Name a socket relative to an already verified directory descriptor."""
     if not socket_name or Path(socket_name).name != socket_name:
         raise ValueError("socket name must be a single path component")
+    if sys.platform == 'darwin':
+        from .macos import socket_path
+        return socket_path(directory_fd, socket_name)
     return f"/proc/self/fd/{directory_fd}/{socket_name}"
 
 
