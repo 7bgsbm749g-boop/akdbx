@@ -26,11 +26,19 @@ def tick():
     if 'value' in data:
         field.setPlainText(data['value'])
     field.setFocus()
-    (directory / 'result.json').write_text(json.dumps([field.toPlainText()]))
+    pending = directory / 'result.tmp'
+    pending.write_text(json.dumps([field.toPlainText()]))
+    pending.replace(directory / 'result.json')
+
+
+def ready():
+    pending = directory / 'ready.tmp'
+    pending.write_text(app.platformName())
+    pending.replace(directory / 'ready')
 
 
 timer = QTimer()
 timer.timeout.connect(tick)
 timer.start(40)
-QTimer.singleShot(100, lambda: (directory / 'ready').write_text(app.platformName()))
+QTimer.singleShot(100, ready)
 app.exec()

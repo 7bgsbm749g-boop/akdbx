@@ -92,7 +92,9 @@ def lab(tmp_path, monkeypatch, request):
 def command(directory, **values):
     result = directory / 'result.json'
     result.unlink(missing_ok=True)
-    (directory / 'command.json').write_text(json.dumps(values))
+    pending = directory / 'command.tmp'
+    pending.write_text(json.dumps(values))
+    pending.replace(directory / 'command.json')
     deadline = time.monotonic() + 5
     while not result.exists():
         assert time.monotonic() < deadline

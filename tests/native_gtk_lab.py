@@ -60,7 +60,9 @@ def tick(_):
         visible(entries[1], not data['mask'])
     # This is an isolated synthetic fixture: test assertions may inspect it.
     values = [get_text(entry).decode('utf-8') for entry in entries]
-    (directory / 'result.json').write_text(json.dumps(values))
+    pending = directory / 'result.tmp'
+    pending.write_text(json.dumps(values))
+    pending.replace(directory / 'result.json')
     return 1
 
 
@@ -69,5 +71,7 @@ gdk = C.CDLL('libgdk-3.so.0')
 get_display = bind(gdk, 'gdk_display_get_default', C.c_void_p, [])
 obj = C.CDLL('libgobject-2.0.so.0')
 get_name = bind(obj, 'g_type_name_from_instance', C.c_char_p, [C.c_void_p])
-(directory / 'ready').write_text(get_name(get_display()).decode())
+pending = directory / 'ready.tmp'
+pending.write_text(get_name(get_display()).decode())
+pending.replace(directory / 'ready')
 main()
