@@ -8,6 +8,7 @@ from importlib.resources import files
 import json
 from pathlib import Path
 import plistlib
+import platform
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from .extension_route import SAFARI_EXTENSION_ID
 
 APP_ID = 'org.akdbx.safari'
 APP_NAME = 'akdbx Safari'
+BRIDGE_ID = 'org.akdbx.safari.Extension.Bridge'
 
 
 def assets():
@@ -51,6 +53,33 @@ def _owned_app(path):
         return plistlib.loads(info.read_bytes()).get('CFBundleIdentifier') == APP_ID
     except (OSError, ValueError, plistlib.InvalidFileException):
         return False
+
+
+def _embed_bridge(bundle, staging):
+    """Embed the same-user socket adapter as this bundle's private XPC service.
+
+    Safari's app extension stays sandboxed with no runtime-file exceptions.
+    The service has the normal native-host process boundary and no vault API.
+    """
+    service = bundle / 'Contents/XPCServices' / (BRIDGE_ID + '.xpc')
+    binary = service / 'Contents/MacOS/akdbx-safari-bridge'
+    binary.parent.mkdir(parents=True)
+    info = dict(CFBundleIdentifier=BRIDGE_ID, CFBundleExecutable=binary.name,
+                CFBundleName='akdbx Safari Bridge', CFBundlePackageType='XPC!', CFBundleVersion='1',
+                LSMinimumSystemVersion='14.0', XPCService=dict(ServiceType='Application'))
+    (service / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+    source_files = []
+    for name in ('BridgeProtocol.swift', 'BrokerBridge.swift', 'BridgeService.swift'):
+        path = staging / name
+        path.write_bytes(assets().joinpath(name).read_bytes())
+        source_files.append(str(path))
+    architecture = platform.machine()
+    if architecture not in ('arm64', 'x86_64'):
+        raise RuntimeError('the Safari app requires an arm64 or x86_64 Mac')
+    _run(['xcrun', 'swiftc', '-O', '-parse-as-library', '-target', architecture + '-apple-macos14.0',
+          *source_files, '-framework', 'Foundation', '-framework', 'Security', '-o', str(binary)])
+    _run(['codesign', '--force', '--sign', '-', str(service)])
+    return service
 
 
 def build_app(destination, *, unlock_origin):
@@ -105,7 +134,8 @@ def build_app(destination, *, unlock_origin):
             product = objects[target['productReference']]['path']
             identifier = identifiers.get(Path(product).suffix)
             if identifier is None:
-                if target.get('productType') == 'com.apple.product-type.bundle.unit-test':
+                if target.get('productType') in ('com.apple.product-type.bundle.unit-test',
+                                                'com.apple.product-type.bundle.ui-testing'):
                     continue
                 details = dict(name=target.get('name'), kind=target.get('productType'),
                                product=objects[target['productReference']])
@@ -118,8 +148,8 @@ def build_app(destination, *, unlock_origin):
             raise RuntimeError('the Safari project must contain one app and one extension target')
         project_file.write_bytes(plistlib.dumps(project_data, sort_keys=False))
         # One existing source file keeps the generated Xcode target unchanged.
-        handlers[0].write_bytes(assets().joinpath('BrokerBridge.swift').read_bytes() + b'\n' +
-                               assets().joinpath('SafariWebExtensionHandler.swift').read_bytes())
+        handlers[0].write_bytes(b'\n'.join(assets().joinpath(name).read_bytes() for name in
+                               ('BridgeProtocol.swift', 'BridgeClient.swift', 'SafariWebExtensionHandler.swift')))
         entitlements = list((root / 'project').rglob('*.entitlements'))
         if not entitlements:
             raise RuntimeError('the generated Safari targets have no sandbox entitlements')
@@ -127,8 +157,8 @@ def build_app(destination, *, unlock_origin):
         extension_targets = 0
         for path in entitlements:
             value = plistlib.loads(path.read_bytes())
-            # The native app extension needs the narrow socket-directory grant.
-            # The containing app keeps its generated sandbox settings.
+            # The extension needs only its sandbox. Socket access belongs to
+            # the embedded native-host helper, not the Safari process.
             if 'extension' in str(path.relative_to(root / 'project')).lower():
                 value.update(extension_entitlements)
                 extension_targets += 1
@@ -164,6 +194,10 @@ def build_app(destination, *, unlock_origin):
         info = plistlib.loads((extensions[0] / 'Contents' / 'Info.plist').read_bytes())
         if info.get('CFBundleIdentifier') != SAFARI_EXTENSION_ID:
             raise RuntimeError('the generated Safari extension has an unexpected bundle identifier')
+        _embed_bridge(extensions[0], root)
+        for bundle in (extensions[0], built):
+            _run(['codesign', '--force', '--sign', '-', '--preserve-metadata=identifier,entitlements', str(bundle)])
+        _run(['codesign', '--verify', '--strict', '--deep', str(built)])
         # The parent is user-selected. Move only the complete, checked build;
         # an output path created while the build ran must not be replaced.
         if destination.exists() or destination.is_symlink():

@@ -9,8 +9,9 @@ enum BridgeError: Error { case refused, unavailable }
 private let frameLimit = 64 * 1024 // akdbx.protocol.MAX_MESSAGE
 private func now() -> Double { ProcessInfo.processInfo.systemUptime }
 
-private func checkACL(_ value: acl_t?) throws {
-    guard let acl = value else {
+private func privateACL(_ fd: Int32) throws {
+    errno = 0
+    guard let acl = acl_get_fd_np(fd, ACL_TYPE_EXTENDED) else {
         if errno == ENOENT { return }
         throw BridgeError.refused
     }
@@ -30,13 +31,9 @@ private func checkACL(_ value: acl_t?) throws {
     throw BridgeError.refused
 }
 
-private func privateACL(_ fd: Int32) throws {
-    errno = 0
-    try checkACL(acl_get_fd_np(fd, ACL_TYPE_EXTENDED))
-}
-
-private func checkDirectoryInfo(_ info: stat, leaf: Bool) throws {
-    guard info.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
+private func checkDirectory(_ fd: Int32, leaf: Bool) throws {
+    var info = stat()
+    guard fstat(fd, &info) == 0, info.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
         throw BridgeError.refused
     }
     let uid = getuid()
@@ -48,6 +45,7 @@ private func checkDirectoryInfo(_ info: stat, leaf: Bool) throws {
             throw BridgeError.refused
         }
     }
+    try privateACL(fd)
 }
 
 private func jsonData(_ value: [String: Any]) throws -> Data {
@@ -72,29 +70,20 @@ final class BrokerConnection {
         guard path.hasPrefix("/"), !path.utf8.contains(0), path.utf8.count < 104 else { throw BridgeError.refused }
         let parts = path.split(separator: "/").map(String.init)
         guard parts.count >= 2, !parts.contains("."), !parts.contains("..") else { throw BridgeError.refused }
-        // The sandbox grants the runtime leaf, not permission to open its
-        // private ancestors. Inspect metadata from the root down: each checked
-        // parent refuses symlinks and other-user write/ACL grants before the
-        // next child is inspected. Same-user mutation is outside this boundary.
-        var ancestor = ""
-        var leafInfo = stat()
-        for index in -1..<(parts.count - 1) {
-            ancestor = index < 0 ? "/" : (ancestor == "/" ? "/" : ancestor + "/") + parts[index]
-            var metadata = stat()
-            guard lstat(ancestor, &metadata) == 0 else { throw BridgeError.refused }
-            try checkDirectoryInfo(metadata, leaf: index == parts.count - 2)
-            errno = 0
-            try checkACL(acl_get_link_np(ancestor, ACL_TYPE_EXTENDED))
-            leafInfo = metadata
-        }
-        let directory = Darwin.open(ancestor, O_EVTONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        var held: [Int32] = []
+        defer { held.forEach { Darwin.close($0) } }
+        // Verify every opened ancestor before connecting to the local broker.
+        let flags = O_EVTONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        var directory = Darwin.open("/", flags)
         guard directory >= 0 else { throw BridgeError.refused }
-        defer { Darwin.close(directory) }
-        var openedInfo = stat()
-        guard fstat(directory, &openedInfo) == 0, openedInfo.st_dev == leafInfo.st_dev,
-              openedInfo.st_ino == leafInfo.st_ino else { throw BridgeError.refused }
-        try checkDirectoryInfo(openedInfo, leaf: true)
-        try privateACL(directory)
+        held.append(directory)
+        try checkDirectory(directory, leaf: false)
+        for (index, part) in parts.dropLast().enumerated() {
+            directory = openat(directory, part, flags)
+            guard directory >= 0 else { throw BridgeError.refused }
+            held.append(directory)
+            try checkDirectory(directory, leaf: index == parts.count - 2)
+        }
         var info = stat()
         guard fstatat(directory, parts.last!, &info, AT_SYMLINK_NOFOLLOW) == 0,
               info.st_mode & mode_t(S_IFMT) == mode_t(S_IFSOCK), info.st_uid == getuid(),
@@ -225,6 +214,13 @@ final class BridgeSessions {
     private let socketPath: String
 
     init(socketPath: String) { self.socketPath = socketPath }
+
+    func close() {
+        lock.lock()
+        defer { lock.unlock() }
+        for session in sessions.values { session.connection.close() }
+        sessions.removeAll()
+    }
 
     func handle(_ request: [String: Any], profile: String) -> [String: Any] {
         // Requests contain only sealed messages and opaque transport state.

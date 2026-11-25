@@ -45,8 +45,6 @@ def helper(tmp_path_factory):
     instrumented = instrumented.replace('"error": "local broker unavailable"',
                                         '"error": "local broker unavailable (\\(error))"')
     source.write_text(instrumented)
-    entitlement = folder / 'native.entitlements'
-    entitlement.write_bytes(safari.assets().joinpath('Extension.entitlements').read_bytes())
     app = folder / 'NativeLab.app'
     executable = app / 'Contents/MacOS'
     executable.mkdir(parents=True)
@@ -60,8 +58,7 @@ def helper(tmp_path_factory):
     checked(['xcrun', 'swiftc', '-parse-as-library', str(source),
              str(Path(__file__).with_name('safari_bridge_main.swift')), '-framework', 'Foundation',
              '-framework', 'Security', '-o', str(binary)])
-    checked(['codesign', '--force', '--sign', '-', '--identifier', 'org.akdbx.safari.native-test',
-             '--entitlements', str(entitlement), str(app)])
+    checked(['codesign', '--force', '--sign', '-', '--identifier', 'org.akdbx.safari.native-test', str(app)])
     checked(['codesign', '--verify', '--strict', str(app)])
     return binary
 
@@ -137,7 +134,7 @@ def hello():
     return dict(type='hello', protocol=1, public_key=b64url(point), version=extension_host.built_version())
 
 
-def test_sandboxed_native_bridge_attaches_and_preserves_profile_isolation(helper, local_broker):
+def test_native_core_attaches_and_preserves_profile_isolation(helper, local_broker):
     with running_helper(helper) as call:
         initial_fds = call(dict(op='test-fd-count'))['count']
         for _ in range(8):
@@ -160,10 +157,10 @@ def test_sandboxed_native_bridge_attaches_and_preserves_profile_isolation(helper
         assert call(dict(op='test-fd-count'))['count'] <= initial_fds + 1
 
 
-def test_native_helper_is_actually_sandboxed(helper, tmp_path):
+def test_native_helper_is_actually_sandboxed(xpc_helper, tmp_path):
     forbidden = tmp_path / 'synthetic-outside-runtime.txt'
     forbidden.write_text('synthetic sandbox probe, no secret')
-    assert checked([str(helper), '--probe-denied', str(forbidden)]).stdout.strip() == b'denied'
+    assert checked([str(xpc_helper), '--probe-denied', str(forbidden)]).stdout.strip() == b'denied'
 
 
 @pytest.fixture(scope='module')
@@ -171,28 +168,19 @@ def xpc_helper(tmp_path_factory):
     folder = tmp_path_factory.mktemp('xpc')
     app = folder / 'XPCLab.app'
     client = app / 'Contents/MacOS/xpc-client'
-    service = app / 'Contents/XPCServices/org.akdbx.safari.bridge-probe.xpc'
-    server = service / 'Contents/MacOS/xpc-service'
-    for path in (client, server):
-        path.parent.mkdir(parents=True)
-    for bundle, binary, identifier, kind in (
-        (app, client, 'org.akdbx.safari.xpc-test', 'APPL'),
-        (service, server, 'org.akdbx.safari.bridge-probe', 'XPC!'),
-    ):
-        info = dict(CFBundleIdentifier=identifier, CFBundleExecutable=binary.name,
-                    CFBundleName=binary.name, CFBundlePackageType=kind, CFBundleVersion='1',
-                    LSMinimumSystemVersion='14.0', LSBackgroundOnly=True)
-        if kind == 'XPC!':
-            info['XPCService'] = dict(ServiceType='Application')
-        (bundle / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
-    protocol = Path(__file__).with_name('safari_xpc_protocol.swift')
-    core = folder / 'BrokerBridge.swift'
-    core.write_bytes(safari.assets().joinpath('BrokerBridge.swift').read_bytes())
-    checked(['xcrun', 'swiftc', '-parse-as-library', str(protocol), str(core),
-             str(Path(__file__).with_name('safari_xpc_service.swift')), '-framework', 'Security', '-o', str(server)])
-    checked(['xcrun', 'swiftc', '-parse-as-library', str(protocol),
+    client.parent.mkdir(parents=True)
+    info = dict(CFBundleIdentifier='org.akdbx.safari.xpc-test', CFBundleExecutable=client.name,
+                CFBundleName=client.name, CFBundlePackageType='APPL', CFBundleVersion='1',
+                LSMinimumSystemVersion='14.0', LSBackgroundOnly=True)
+    (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+    sources = []
+    for name in ('BridgeProtocol.swift', 'BridgeClient.swift'):
+        path = folder / name
+        path.write_bytes(safari.assets().joinpath(name).read_bytes())
+        sources.append(str(path))
+    checked(['xcrun', 'swiftc', '-parse-as-library', *sources,
              str(Path(__file__).with_name('safari_xpc_client.swift')), '-o', str(client)])
-    checked(['codesign', '--force', '--sign', '-', str(service)])
+    safari._embed_bridge(app, folder)
     entitlements = folder / 'client.entitlements'
     entitlements.write_bytes(plistlib.dumps({'com.apple.security.app-sandbox': True}))
     checked(['codesign', '--force', '--sign', '-', '--entitlements', str(entitlements), str(app)])
@@ -202,16 +190,24 @@ def xpc_helper(tmp_path_factory):
 
 def test_sandboxed_client_reaches_local_broker_through_its_embedded_xpc_service(xpc_helper, local_broker):
     with running_helper(xpc_helper) as call:
-        opened = call(dict(op='open', hello=hello()), profile='xpc-profile')
-        assert opened['ok'], opened
-        token = opened['session']
-        attached = call(dict(op='read', session=token), profile='xpc-profile')
-        assert attached['ok'] and attached['message']['type'] == 'attached'
-        assert call(dict(op='close', session=token), profile='xpc-profile')['ok']
+        for _ in range(8):
+            opened = call(dict(op='open', hello=hello()), profile='xpc-profile')
+            assert opened['ok'], opened
+            token = opened['session']
+            assert not call(dict(op='read', session=token), profile='other-profile')['ok']
+            attached = call(dict(op='read', session=token), profile='xpc-profile')
+            assert attached['ok'] and attached['message']['type'] == 'attached'
+            assert call(dict(op='write', session=token, message=dict(type='request', id='s', op='state')),
+                        profile='xpc-profile')['ok']
+            response = call(dict(op='read', session=token), profile='xpc-profile')
+            assert response['ok'] and response['message']['id'] == 's'
+            assert call(dict(op='close', session=token), profile='xpc-profile')['ok']
 
 
 @pytest.mark.parametrize('grant', ['public-mode', 'ancestor-acl'])
-def test_native_bridge_refuses_runtime_permission_grants(helper, local_broker, grant):
+@pytest.mark.parametrize('transport', ['helper', 'xpc_helper'])
+def test_native_bridge_refuses_runtime_permission_grants(request, local_broker, grant, transport):
+    helper = request.getfixturevalue(transport)
     from pwd import getpwuid
     app = Path(getpwuid(os.getuid()).pw_dir) / 'Library/Application Support/akdbx'
     runtime = app / 'run'
@@ -228,7 +224,9 @@ def test_native_bridge_refuses_runtime_permission_grants(helper, local_broker, g
             checked(['chmod', '-N', str(app)])
 
 
-def test_native_bridge_refuses_a_symlinked_runtime_ancestor(helper, local_broker):
+@pytest.mark.parametrize('transport', ['helper', 'xpc_helper'])
+def test_native_bridge_refuses_a_symlinked_runtime_ancestor(request, local_broker, transport):
+    helper = request.getfixturevalue(transport)
     from pwd import getpwuid
     app = Path(getpwuid(os.getuid()).pw_dir) / 'Library/Application Support/akdbx'
     moved = app.with_name('akdbx-safari-native-test')
@@ -249,5 +247,7 @@ def test_xcode_builds_the_native_safari_app(tmp_path):
     appex, = (app / 'Contents/PlugIns').glob('*.appex')
     info = plistlib.loads((appex / 'Contents/Info.plist').read_bytes())
     assert info['NSExtension']['NSExtensionPointIdentifier'] == 'com.apple.Safari.web-extension'
+    bridge = appex / 'Contents/XPCServices' / (safari.BRIDGE_ID + '.xpc')
+    assert plistlib.loads((bridge / 'Contents/Info.plist').read_bytes())['CFBundleIdentifier'] == safari.BRIDGE_ID
     resource = appex / 'Contents/Resources/manifest.json'
     assert json.loads(resource.read_text())['browser_specific_settings']['safari']['strict_min_version'] == '26.0'
