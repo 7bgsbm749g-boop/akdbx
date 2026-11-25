@@ -15,15 +15,15 @@ private func privateACL(_ fd: Int32) throws {
         if errno == ENOENT { return }
         throw BridgeError.refused
     }
-    defer { acl_free(acl) }
+    defer { acl_free(UnsafeMutableRawPointer(acl)) }
     var entry: acl_entry_t?
     for index in 0..<170 {
         errno = 0
-        if acl_get_entry(acl, index == 0 ? ACL_FIRST_ENTRY : ACL_NEXT_ENTRY, &entry) != 0 {
+        if acl_get_entry(acl, (index == 0 ? ACL_FIRST_ENTRY : ACL_NEXT_ENTRY).rawValue, &entry) != 0 {
             if errno == EINVAL { return }
             throw BridgeError.refused
         }
-        var tag: acl_tag_t = 0
+        var tag = ACL_UNDEFINED_TAG
         guard let entry, acl_get_tag_type(entry, &tag) == 0, tag == ACL_EXTENDED_DENY else {
             throw BridgeError.refused
         }
