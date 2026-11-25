@@ -98,7 +98,7 @@ jobs:
     needs: [verify, build]
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/download-artifact@v4
@@ -120,7 +120,13 @@ jobs:
           installed=$("$py" -m akdbx.cli --version | tr -d '\r')
           test "$installed" = "$VERSION"
           # The platform dependency comes from the same wheel's markers.
-          if [ "$RUNNER_OS" = Windows ]; then "$py" -c "import win32api, akdbx.windows_rpc"; else "$py" -c "import Xlib, akdbx.target"; fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            "$py" -c "import win32api, akdbx.windows_rpc"
+          elif [ "$RUNNER_OS" = macOS ]; then
+            "$py" -c "import akdbx.macos, akdbx.cli"
+          else
+            "$py" -c "import Xlib, akdbx.target"
+          fi
 
   publish:
     name: Publish GitHub release

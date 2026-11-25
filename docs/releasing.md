@@ -1,7 +1,7 @@
 # Releasing akdbx
 
 Each version has one GitHub release for every platform. akdbx is pure Python,
-so one `py3-none-any` wheel installs on Linux and Windows. Environment markers
+so one `py3-none-any` wheel installs on Linux, Windows and macOS. Environment markers
 in `pyproject.toml` select `python-xlib` or `pywin32`. Do not make separate
 Linux and Windows releases: the CLI and broker check each other's version and
 capabilities, and one version must mean the same code everywhere. If a frozen
@@ -50,10 +50,10 @@ The `Release` workflow then:
 
 - refuses a tag that is not `vX.Y.Z`, that does not match both version
   strings, or whose commit is not on `main`;
-- reruns the `Tests` (Linux and Windows), `Card safety`, `Password field
+- reruns the `Tests` (Linux, Windows and the native macOS broker), `Card safety`, `Password field
   safety` and `Private authenticator import` workflows on the tagged commit;
 - builds one sdist and one universal wheel, writes `SHA256SUMS`, and installs
-  the wheel into clean Linux and Windows environments;
+  the wheel into clean Linux, Windows and macOS environments;
 - records a GitHub build-provenance attestation for both files;
 - publishes the release with the platform table from
   `.github/release-notes.md` and generated change notes.

@@ -230,7 +230,8 @@ def pin_password(broker, channel, tab, document, top, **extra):
 def test_status_advertises_the_extension_route_without_a_connection():
     status = make_broker().dispatch(dict(action='ping'))
     assert status['extension_protocol'] == 1 and status['extension_delivery'] == route.DELIVERY
-    assert status['fill_routes'] == ['cdp', 'extension'] and status['default_fill_route'] == 'cdp'
+    assert status['fill_routes'] == (['extension'] if sys.platform == 'darwin' else ['cdp', 'extension'])
+    assert status['default_fill_route'] == ('extension' if sys.platform == 'darwin' else 'cdp')
     assert status['extension_connected'] is False and status['extension_paired'] is False
     assert status['extension_id'] == route.EXTENSION_ID and 'extension_pairing' not in status
 
@@ -990,12 +991,14 @@ def test_cli_lists_pins_and_fills_through_the_extension_route(monkeypatch, capsy
 
 
 
-def test_cli_pins_cards_on_the_extension_route_without_a_frame_url(monkeypatch, capsys):
+@pytest.mark.parametrize('default_route', route.ROUTES)
+def test_cli_pins_cards_on_the_extension_route_without_a_frame_url(monkeypatch, capsys, default_route):
     broker = make_broker([CardEntry()])
+    broker.extension.default_route = default_route
     channel, extension = attach(broker, {5: [Document('TOP', TOP)]})
     base = ['pin-card-target', '--page-id', f'{channel.id}.5', '--frame-id', 'TOP', '--top-url', TOP,
             '--selector', '#number', '--field', 'cc-number']
-    status, refused, _ = run_cli(monkeypatch, capsys, broker, base)
+    status, refused, _ = run_cli(monkeypatch, capsys, broker, base + ['--route', 'cdp'])
     assert status == 1 and 'frame-url' in refused['error']  # The cdp route still needs it.
     status, pin, _ = run_cli(monkeypatch, capsys, broker, base + ['--route', 'extension'])
     assert status == 0 and pin['card_delivery'] == route.DELIVERY
@@ -1026,6 +1029,7 @@ def test_install_and_uninstall_touch_only_their_own_files(tmp_path, monkeypatch)
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
     monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'data'))
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'config'))
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.delenv('CHROME_CONFIG_HOME', raising=False)
     test_key = None
     if os.name == 'nt':
@@ -1041,8 +1045,9 @@ def test_install_and_uninstall_touch_only_their_own_files(tmp_path, monkeypatch)
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, test_key + '\\NativeMessagingHosts\\' + route.HOST_NAME) as h:
                 assert winreg.QueryValueEx(h, '')[0] == where['manifest']
         else:
-            assert where['manifest'] == str(tmp_path / 'config' / 'net.imput.helium' / 'NativeMessagingHosts'
-                                            / (route.HOST_NAME + '.json'))
+            parent = (tmp_path / 'Library/Application Support/net.imput.helium' if sys.platform == 'darwin'
+                      else tmp_path / 'config/net.imput.helium')
+            assert where['manifest'] == str(parent / 'NativeMessagingHosts' / (route.HOST_NAME + '.json'))
             assert os.stat(where['launcher']).st_mode & 0o777 == 0o700
         extension_host.install('helium')  # Reinstalling the same registration is allowed.
         assert set(extension_host.uninstall('helium')) == ({'registry', 'manifest', 'launcher'} if os.name == 'nt'
@@ -1065,6 +1070,7 @@ def test_install_replaces_only_its_own_launcher_and_never_writes_through_a_link(
     monkeypatch.setenv('LOCALAPPDATA', str(tmp_path / 'local'))
     monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'data'))
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'config'))
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.delenv('CHROME_CONFIG_HOME', raising=False)
     if os.name == 'nt':
         # Never registered: every refusal comes before the registry write.

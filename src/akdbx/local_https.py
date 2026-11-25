@@ -170,7 +170,11 @@ def _posix_checked_file(path, *, private):
         if private and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & ~0o600):
             raise PermissionError("TLS key must be this user's file with mode 0600")
         # OpenSSL reopens this exact checked file, not a pathname that can change.
-        yield f'/proc/self/fd/{fd}'
+        import sys
+        if private and sys.platform == 'darwin':
+            from .macos import require_private_acl
+            require_private_acl(fd)
+        yield f'/dev/fd/{fd}' if sys.platform == 'darwin' else f'/proc/self/fd/{fd}'
     finally:
         os.close(fd)
 

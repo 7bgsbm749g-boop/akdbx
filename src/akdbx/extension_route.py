@@ -74,6 +74,7 @@ import os
 import re
 import secrets
 import select
+import sys
 import threading
 import time
 import unicodedata
@@ -523,7 +524,9 @@ class Selection:
 class ExtensionHub:
     """Channels, pairings, pins and popup selections for the extension route."""
 
-    def __init__(self, broker, *, default_route='cdp'):
+    def __init__(self, broker, *, default_route=None):
+        if default_route is None:
+            default_route = 'extension' if sys.platform == 'darwin' else 'cdp'
         if default_route not in ROUTES:
             raise ValueError('default fill route must be cdp or extension')
         self.broker = broker
@@ -554,7 +557,8 @@ class ExtensionHub:
             approved = set(self.approved)
         state = dict(extension_protocol=PROTOCOL, extension_delivery=DELIVERY, extension_id=EXTENSION_ID,
                      extension_capture_protocol=CAPTURE_PROTOCOL, extension_capture_delivery=CAPTURE_DELIVERY,
-                     fill_routes=list(ROUTES), default_fill_route=self.default_route,
+                     fill_routes=['extension'] if sys.platform == 'darwin' else list(ROUTES),
+                     default_fill_route=self.default_route,
                      extension_connected=bool(channels),
                      extension_paired=any(c.digest in approved for c in channels),
                      extension_version_expected=built_version(),

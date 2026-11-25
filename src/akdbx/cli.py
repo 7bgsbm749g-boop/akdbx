@@ -73,6 +73,9 @@ def _private_system_runtime() -> Path | None:
 
 
 def default_socket() -> Path:
+    if sys.platform == 'darwin':
+        # /tmp is a symlink on macOS; keep the default under the user's real home.
+        return Path.home() / 'Library' / 'Application Support' / 'akdbx' / 'run' / 's'
     if os.name == 'nt':
         from .windows_rpc import default_pipe
         return default_pipe()
@@ -127,6 +130,9 @@ def _validate_socket_path(socket_path: Path, broker_uid: int) -> tuple[Path, int
 
 
 def _peer_credentials(client: socket.socket) -> tuple[int, int, int]:
+    if sys.platform == 'darwin':
+        from .macos import peer_credentials
+        return peer_credentials(client)
     if not hasattr(socket, "SO_PEERCRED"):
         raise RuntimeError("Unix peer credential verification is unavailable on this platform")
     size = struct.calcsize("3i")
@@ -423,7 +429,8 @@ def parser() -> argparse.ArgumentParser:
                        help=('do not print the private unlock link at start; print only that the vault is locked '
                              "and to run 'akdbx status'. Recommended for a service or task, whose output a log "
                              'such as the systemd journal keeps'))
-    start.add_argument('--default-fill-route', choices=FILL_ROUTES, default=os.environ.get('AKDBX_DEFAULT_FILL_ROUTE', 'cdp'),
+    start.add_argument('--default-fill-route', choices=FILL_ROUTES,
+                       default=os.environ.get('AKDBX_DEFAULT_FILL_ROUTE', 'extension' if sys.platform == 'darwin' else 'cdp'),
                        help='route for pins that name none: cdp (debugging port) or extension (paired browser extension)')
     start.add_argument('--android-devices', type=Path,
                        default=os.environ.get(android_route.CONFIG_ENV) or android_route.default_config_path(),
@@ -860,6 +867,22 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -> int:
+    if sys.platform == 'darwin':
+        from .macos import prepare_runtime
+        if (any((args.password_browser_profile, args.card_browser_profile, args.browser_profile_root))
+                or args.default_fill_route != 'extension'):
+            print('macOS currently supports the extension route only; omit CDP options and use '
+                  '--default-fill-route extension', file=sys.stderr)
+            return 2
+        try:
+            prepare_runtime(args.socket, create_ancestors=args.socket == default_socket())
+            capture = args.unlock_socket or args.socket.with_name('u' if args.socket.name.casefold() != 'u' else 's')
+            if capture == args.socket:
+                raise ValueError('capture socket must differ from the broker socket')
+            prepare_runtime(capture)
+        except (ValueError, OSError, RuntimeError) as exc:
+            print('macOS runtime directory refused: ' + str(exc), file=sys.stderr)
+            return 2
     if args.browser_profile_root is not None and (args.password_browser_profile is not None
                                                   or args.card_browser_profile is not None):
         print('--browser-profile-root replaces --password-browser-profile and --card-browser-profile '
@@ -917,7 +940,12 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
             print('a loopback unlock origin or --local-port needs --tls-cert and --tls-key', file=sys.stderr)
             return 2
         try:
-            broker = Broker(None, X11Typer(), lock_timeout=args.lock_timeout, card_browser_profile=args.card_browser_profile,
+            if sys.platform == 'darwin':
+                from .macos import NoWindowDelivery
+                typer = NoWindowDelivery()
+            else:
+                typer = X11Typer()
+            broker = Broker(None, typer, lock_timeout=args.lock_timeout, card_browser_profile=args.card_browser_profile,
                             password_browser_profile=args.password_browser_profile,
                             browser_profile_root=args.browser_profile_root,
                             notification_state_path=args.notification_state or default_notification_state(args.socket),
@@ -938,7 +966,8 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
     unlock_name = ("agentic-kdbx-unlock.sock"
                    if args.socket.name == "agentic-kdbx.sock"
                    else "akdbx-unlock.sock")
-    unlock_socket = args.unlock_socket or args.socket.with_name(unlock_name)
+    unlock_socket = (capture if sys.platform == 'darwin' else
+                     args.unlock_socket or args.socket.with_name(unlock_name))
     if os.name != 'nt' and local_https:
         try:
             # The unlock socket path then serves only the browser native

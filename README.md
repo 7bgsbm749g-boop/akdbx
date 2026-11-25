@@ -141,6 +141,11 @@ pins: X11 on Linux, HWND on Windows. A window pin never receives a password.
 
 ## Platforms
 
+- **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
+  checks, private HTTPS unlock and encrypted vault writes. Chrome and Edge
+  native-host locations are supported. Native window delivery, CDP and guided
+  setup are unavailable. Safari's Apple wrapper is a separate delivery. See
+  [macOS setup and limits](docs/macos.md).
 - **Linux** (X11 desktop): the original platform. The setup notes in this
   README and the [VPS setup reference](skills/akdbx/references/vps-setup.md)
   describe it. The unlock page is the same loopback HTTPS page as on Windows

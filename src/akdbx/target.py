@@ -6,10 +6,12 @@ import os
 from pathlib import Path
 import secrets
 import socket
+import sys
 import threading
 import time
 
-DELIVERY = 'win32-char-v1' if os.name == 'nt' else 'x11-send-event-v1'
+DELIVERY = ('unavailable' if sys.platform == 'darwin' else
+            'win32-char-v1' if os.name == 'nt' else 'x11-send-event-v1')
 PIN_TTL = 30.0
 MAX_PINS = 128
 DELIVERY_TIMEOUT = 3.0
@@ -24,6 +26,9 @@ SLOT_X_DEADLINE = 10.0
 
 
 def capabilities():
+    if sys.platform == 'darwin':
+        return dict(target_fill_required=True, target_fill_protocol=1, target_fill_delivery=DELIVERY,
+                    target_fill_modes=[])
     # Linux: `pin-target --browser-slot` pins a window of an agent desktop slot's Chrome on that slot's display.
     return dict(target_fill_required=True, target_fill_protocol=1, target_fill_delivery=DELIVERY,
                 **({'target_fill_modes': ['username']} if os.name == 'nt' else {'target_slot_protocol': SLOT_PROTOCOL}))

@@ -121,7 +121,10 @@ def test_listener_binds_only_loopback_and_refuses_plaintext(private_pair, tmp_pa
                                       f'https://127.0.0.1:{port}', cert, key)
         with socket.create_connection(('127.0.0.1', port), timeout=5) as plain:
             plain.sendall(b'GET /?token=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n')
-            assert b'HTTP/1.' not in plain.recv(4096)
+            try:
+                assert b'HTTP/1.' not in plain.recv(4096)
+            except ConnectionResetError:
+                pass  # Darwin can reject non-TLS input with RST instead of EOF.
     finally:
         server.shutdown()
         server.server_close()

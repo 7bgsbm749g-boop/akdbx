@@ -239,6 +239,9 @@ def data_home():
 
 
 def linux_manifest_dir(browser):
+    if sys.platform == 'darwin':
+        names = {'chrome': 'Google/Chrome', 'edge': 'Microsoft Edge', 'helium': 'net.imput.helium'}
+        return Path.home() / 'Library' / 'Application Support' / names[browser] / 'NativeMessagingHosts'
     if browser == 'helium':
         # Helium uses CHROME_CONFIG_HOME before XDG_CONFIG_HOME, like Chromium.
         base = os.environ.get('CHROME_CONFIG_HOME') or os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
