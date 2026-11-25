@@ -110,7 +110,7 @@ field, another for the confirmation field (none for a write staged with
   `card_browser_configured: true`.
 - Merge and admission follow [the merge workflow](merge.md) and
   [the admission contract](snapshot-admission.md). Require `merge_available:
-  true` and read `merge_engine`. With akdbx 0.45.0 and later, this is
+  true` and read `merge_engine`. With akdbx 0.46.0 and later, this is
   `akdbx-native-v1`. Unlock the vault and check its write and recovery status
   if merge is unavailable.
 - `subscribe-unlock` and `subscribe-card-save` read the callback from a file

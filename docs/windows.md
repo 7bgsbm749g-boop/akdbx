@@ -599,7 +599,7 @@ references: the same request checks, receipts, verification order and failure
 states. Snapshot admission keeps its review status: read that reference before
 any use.
 
-- **Engine.** From version 0.45.0 the broker merges in process. Status reports
+- **Engine.** From version 0.46.0 the broker merges in process. Status reports
   `merge_engine: "akdbx-native-v1"` and `merge_available`.
 - **Secrets.** The broker opens the encrypted inputs with the master password
   and key-file bytes it holds in memory.

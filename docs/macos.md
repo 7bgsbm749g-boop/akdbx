@@ -66,7 +66,7 @@ Pairing and sealed values use the same protocol as Linux and Windows.
 - Native application/window fills are unavailable. Status reports
   `target_fill_delivery: "unavailable"` and an empty `target_fill_modes` list;
   there is no keyboard or clipboard fallback.
-- From 0.45.0, `merge`, `admit` and `merge-status` use the built-in
+- From 0.46.0, `merge`, `admit` and `merge-status` use the built-in
   engine and the same encrypted snapshot and recovery protocol as Linux.
 - The guided `akdbx setup` command and login-service installation are not yet
   implemented on macOS. Use the explicit commands above; no system service,

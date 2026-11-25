@@ -973,7 +973,7 @@ block. The broker privately reuses its held password and key file. Locked
 operation returns the existing private HTTPS unlock link and a clear command
 continuation. Different source credentials are not supported in this release.
 
-From akdbx 0.45.0, the broker merges KDBX files directly on Linux, macOS and Windows.
+From akdbx 0.46.0, the broker merges KDBX files directly on Linux, macOS and Windows.
 No KeePass or KeePassXC installation is required. The built-in engine matches
 entries by UUID, keeps the newer entry version and combines
 history. A broker deletion pass applies timestamped UUID tombstones; newer edits
