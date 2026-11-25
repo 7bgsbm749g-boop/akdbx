@@ -39,14 +39,21 @@ from akdbx.local_https import start_local_unlock_server
 from test_broker import Entry, Vault
 from test_windows_unlock import certificates  # noqa: F401
 
-if os.name == 'nt':
-    from test_windows_native import private_dir  # noqa: F401
-else:
-    @pytest.fixture
-    def private_dir(tmp_path):
+@pytest.fixture
+def private_dir(tmp_path):
+    if os.name == 'nt':
+        from akdbx.windows_security import ensure_private_directory
+        # Python 3.12's mode-0700 pytest folders use OWNER RIGHTS ACEs. Use
+        # the broker's explicit per-user DACL for this native integration lab.
+        folder = Path(os.environ['LOCALAPPDATA']) / ('akdbx-firefox-' + uuid.uuid4().hex)
+        ensure_private_directory(folder)
+    else:
         folder = tmp_path.resolve() / 'p'
         folder.mkdir(mode=0o700)
-        return folder
+    try:
+        yield folder
+    finally:
+        shutil.rmtree(folder)
 
 PASSWORD = 'SYNTHETIC-Firefox-Only-42!'
 DIGEST = """<script>async function digest(id) {
