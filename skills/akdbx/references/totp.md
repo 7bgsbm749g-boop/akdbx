@@ -14,6 +14,10 @@ Then check the selected route:
 - CDP: integer `browser_totp_protocol: 1` and a configured CDP profile.
 - Extension: integer `browser_totp_protocol: 1`, integer
   `extension_totp_protocol: 1` and a paired extension **0.10.0** or newer.
+- Native desktop fields: `native_field_supported: true`, integer
+  `native_field_protocol: 1` and `native_field_delivery: native-field-v1`.
+  Linux X11/Wayland and supported Windows controls use the
+  [native field workflow](native-fields.md) with `--mode totp`.
 - Current Window: `target_fill_delivery: x11-send-event-v1` on Linux or
   `win32-char-v1` on Windows. This method is unavailable on macOS; its
   `target_fill_delivery: unavailable` does not block the paired extension.
@@ -77,12 +81,15 @@ with the same `fill-totp` command. Its target URL is a caller assertion and does
 not attest a browser field or origin. Android keeps `akdbx android pin` and
 `akdbx android fill-totp`; see [Android](android.md). Use `--pending` on the
 standard `fill-totp` command to confirm an authorized pending enrollment through
-CDP, extension or Current Window.
+CDP, extension, native desktop fields or Current Window. Native field pins use
+`pin-native-target --mode totp` with an independently verified app and asserted
+service URL; that URL must match `fill-totp --target-url` at the origin level.
 
 All handles and pins are single-use, including failures. A success receipt
 contains only `ok: true`, `filled: totp` and `target_delivery`: browser CDP uses
 `chromium-password-dom-v1`, extension uses `extension-dom-v1`, and Current Window
-uses `x11-send-event-v1` on Linux or `win32-char-v1` on Windows.
+uses `x11-send-event-v1` on Linux or `win32-char-v1` on Windows. Native desktop
+fields use `native-field-v1`.
 The broker sends no submit key. Submit through the
 verified application and check its non-secret result. Never inspect or return
 the filled code, or put it in chat, logs, screenshots or notes.

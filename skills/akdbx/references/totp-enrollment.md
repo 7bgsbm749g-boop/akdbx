@@ -22,8 +22,9 @@ or recovery options to finish it.
   (an older one reads only a key printed as one token).
 
 The pending code fill uses the same TOTP pins as a saved code: retained DOM
-pins on CDP (Linux/Windows), the paired extension (Linux/Windows/macOS), or
-Current Window pins on Linux X11/Windows. Browser pins require integer
+pins on CDP (Linux/Windows), the paired extension (Linux/Windows/macOS), native
+field pins (Linux X11/Wayland and supported Windows controls), or Current Window
+pins on Linux X11/Windows. Browser pins require integer
 `browser_totp_protocol: 1`; extension pins also require integer
 `extension_totp_protocol: 1` and fill extension 0.10.0 or newer. See
 [TOTP delivery](totp.md#capabilities-and-selection) for route-specific checks.
