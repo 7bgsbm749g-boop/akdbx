@@ -35,7 +35,16 @@ def checked(argv, *, timeout=120):
 def helper(tmp_path_factory):
     folder = tmp_path_factory.mktemp('swift')
     source = folder / 'BrokerBridge.swift'
-    source.write_bytes(safari.assets().joinpath('BrokerBridge.swift').read_bytes())
+    # Instrument only this disposable source copy. The shipped handler keeps
+    # generic errors; CI needs the rejected operation and errno to diagnose
+    # actual sandbox failures without removing any trust checks.
+    instrumented = safari.assets().joinpath('BrokerBridge.swift').read_text()
+    for kind in ('refused', 'unavailable'):
+        instrumented = instrumented.replace('throw BridgeError.' + kind,
+                                            'throw NativeProbeFailure(line: #line, code: errno)')
+    instrumented = instrumented.replace('"error": "local broker unavailable"',
+                                        '"error": "local broker unavailable (\\(error))"')
+    source.write_text(instrumented)
     entitlement = folder / 'native.entitlements'
     entitlement.write_bytes(safari.assets().joinpath('Extension.entitlements').read_bytes())
     app = folder / 'NativeLab.app'

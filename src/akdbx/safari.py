@@ -87,6 +87,31 @@ def build_app(destination, *, unlock_origin):
         handlers = list((root / 'project').rglob('SafariWebExtensionHandler.swift'))
         if len(projects) != 1 or len(handlers) != 1:
             raise RuntimeError('the Safari packager returned an unsupported project layout')
+        project = projects[0]
+        # Older converters derive identifiers from the app name even when a
+        # bundle identifier was supplied. Set both native target identifiers
+        # explicitly before signing; changing Info.plist afterwards breaks it.
+        project_file = project / 'project.pbxproj'
+        project_data = plistlib.loads(_run(['plutil', '-convert', 'xml1', '-o', '-', str(project_file)]))
+        objects = project_data['objects']
+        identifiers = {
+            'com.apple.product-type.application': APP_ID,
+            'com.apple.product-type.app-extension': SAFARI_EXTENSION_ID,
+        }
+        configured = []
+        for target in objects.values():
+            if target.get('isa') != 'PBXNativeTarget':
+                continue
+            identifier = identifiers.get(target.get('productType'))
+            if identifier is None:
+                raise RuntimeError('the Safari project has an unexpected native target')
+            configurations = objects[target['buildConfigurationList']]['buildConfigurations']
+            for configuration in configurations:
+                objects[configuration]['buildSettings']['PRODUCT_BUNDLE_IDENTIFIER'] = identifier
+            configured.append(identifier)
+        if sorted(configured) != sorted(identifiers.values()):
+            raise RuntimeError('the Safari project must contain one app and one extension target')
+        project_file.write_bytes(plistlib.dumps(project_data, sort_keys=False))
         # One existing source file keeps the generated Xcode target unchanged.
         handlers[0].write_bytes(assets().joinpath('BrokerBridge.swift').read_bytes() + b'\n' +
                                assets().joinpath('SafariWebExtensionHandler.swift').read_bytes())
@@ -106,7 +131,6 @@ def build_app(destination, *, unlock_origin):
             path.write_bytes(plistlib.dumps(value))
         if extension_targets != 1:
             raise RuntimeError('the Safari project must have exactly one native extension entitlement file')
-        project = projects[0]
         listing = json.loads(_run(['xcodebuild', '-list', '-json', '-project', str(project)]))
         schemes = listing.get('project', {}).get('schemes', [])
         mac_schemes = [name for name in schemes if 'macos' in name.lower()]

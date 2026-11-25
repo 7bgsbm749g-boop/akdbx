@@ -2,6 +2,12 @@
 import Foundation
 import Darwin
 
+struct NativeProbeFailure: Error, CustomStringConvertible {
+    let line: Int
+    let code: Int32
+    var description: String { "line=\(line), errno=\(code)" }
+}
+
 @main
 struct BridgeMain {
     static func main() throws {
