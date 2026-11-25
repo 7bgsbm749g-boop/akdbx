@@ -98,7 +98,7 @@ pin, fill and receipt model. Agents choose with `--route extension|cdp`, and
 
 | | Extension route (0.21.0+) | CDP route |
 | --- | --- | --- |
-| Browser | The user's everyday Helium, Chrome or Edge, with the akdbx extension | A Chromium profile started with `--remote-debugging-port` |
+| Browser | The user's everyday Helium, Chrome, Edge or Firefox 153+, with the akdbx extension | A Chromium profile started with `--remote-debugging-port` |
 | Connection | Native-messaging host; values sealed to the extension (AES-256-GCM) | Chrome DevTools Protocol over loopback |
 | Setup | Install the host, load the extension, pair once per browser session | Configure the profile at broker start |
 | Sites see | The user's normal browser | A browser with a debugging port, which anti-bot checks often flag |
@@ -151,7 +151,7 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 ## Platforms
 
 - **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
-  checks, private HTTPS unlock and encrypted vault writes. Chrome and Edge
+  checks, private HTTPS unlock and encrypted vault writes. Chrome, Edge and Firefox (0.44.0+)
   native-host locations are supported. Native window delivery, CDP and guided
   setup are unavailable. Safari's Apple wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).
@@ -247,7 +247,7 @@ This prevents accidental disclosure into chat, command output, logs, process arg
 ## Browser extension route (0.21.0)
 
 The broker can also fill through the akdbx browser extension in the user's
-everyday Helium, Chrome or Edge, reached through a native-messaging host. The
+everyday Helium, Chrome, Edge or Firefox (0.44.0+), reached through a native-messaging host. The
 browser then needs no remote-debugging port, which would give every process
 of the same user full control of that profile. Agents add `--route extension`
 to `list-password-frames`, `pin-password-target`, `pin-card-target` and
@@ -274,6 +274,11 @@ akdbx extension install --browser helium   # or chrome, edge; Windows and Linux;
 akdbx extension refresh                    # 0.31.1+: after an update moves akdbx to another folder
 akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" extension build --output /path/to/akdbx-extension   # then Load unpacked
 ```
+
+Firefox 153+ uses `extension install --browser firefox` and a separate build
+with `extension build --browser firefox --output FOLDER` (0.44.0+).
+See [Firefox setup](docs/firefox.md) for temporary add-on loading, the signed
+XPI requirement for permanent installation, and native host locations.
 
 The extension pairs its ECDH public key with the broker once per browser
 session: the popup shows a code computed from that key, and the broker's

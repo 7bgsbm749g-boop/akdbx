@@ -1156,6 +1156,6 @@ test("the popup and its reset are reachable only from the popup page", () => {
   assert.ok(html.indexOf('src="trust.js"') < html.indexOf('src="popup.js"'));
   assert.match(html, /id="reset-yes"/);
   const source = fs.readFileSync(path.join(root, "background.js"), "utf8");
-  assert.match(source, /importScripts\("config.js", "trust.js"\)/);
+  assert.match(source, /importScripts\("api.js", "config.js", "trust.js"\)/);
   assert.match(source, /"reset-trust": popupReset/);
 });

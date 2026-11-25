@@ -22,9 +22,11 @@ The extension is the user's browser, not a disguise. Do not use it to
 impersonate anyone, to get past a block a site applied to this user or account
 on purpose, or with someone else's account or card.
 
-Supported browsers: Helium, Google Chrome and Microsoft Edge, on Windows and
-Linux. The extension has the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg` and
-the host name `org.akdbx.extension`.
+Supported browsers: Helium, Google Chrome and Microsoft Edge on Windows and
+Linux; Chrome and Edge on macOS; and Firefox 153+ on all three platforms
+(0.44.0+). Chromium uses the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg`;
+Firefox uses `akdbx@akdbx.org`. Both use host name `org.akdbx.extension`.
+See [Firefox setup and installation limits](../../../docs/firefox.md).
 
 ## Capabilities
 
@@ -40,6 +42,7 @@ Require these values in `status` before you use the route:
 
 `default_fill_route` is `"cdp"` unless the operator started the broker with
 `serve --default-fill-route extension` (or `AKDBX_DEFAULT_FILL_ROUTE`).
+On macOS it defaults to `"extension"`, the only supported route.
 `extension_browsers` lists attached browsers and whether each is paired.
 Each item also has the extension version that browser loaded and how it
 compares with this broker (see [Extension version](#extension-version)).

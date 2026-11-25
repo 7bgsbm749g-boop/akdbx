@@ -263,7 +263,10 @@
       const root = pending.pop();
       for (const el of root.querySelectorAll("*")) {
         if (++seen > MAX_NODES) return null;
-        const shadow = (globalThis.browser || globalThis.chrome).dom.openOrClosedShadowRoot(el);
+        const dom = (globalThis.browser || globalThis.chrome)?.dom;
+        const shadow = typeof dom?.openOrClosedShadowRoot === "function"
+          ? dom.openOrClosedShadowRoot(el) : el.openOrClosedShadowRoot;
+        if (shadow === undefined) return null;  // An unavailable closed-root check refuses the pin.
         if (shadow) {
           found.push(shadow);
           pending.push(shadow);

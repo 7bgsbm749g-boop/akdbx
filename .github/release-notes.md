@@ -2,9 +2,9 @@ akdbx {{VERSION}} is one release for every platform. Install the same wheel on L
 
 | Platform | Status | Fills | Not available |
 | --- | --- | --- | --- |
-| macOS | Local extension-only broker from 0.43.0; native Darwin IPC, TLS and encrypted save checks | The shared paired-extension protocol; Chrome and Edge native hosts | Native window delivery, CDP, guided setup and the Safari wrapper (separate delivery) |
-| Linux (X11 + Chromium) | Established; the loopback HTTPS unlock page, with or without Tailscale Serve, from 0.23.0; the akdbx relay from 0.26.0 | Passwords and logins to verified Chromium DOM inputs; usernames and TOTP to pinned X11 windows; cards and identity fields in Chromium; the browser extension route | — |
-| Windows 10/11 | Same feature set from 0.17.0; unlock from another device and authenticator capture from 0.22.0; the akdbx relay from 0.26.0 | Passwords and logins to verified Chromium DOM inputs; usernames and TOTP to pinned windows; cards and identity fields in Chromium; the browser extension route (Helium, Chrome, Edge); authenticator capture through the browser native host | — |
+| macOS | Local extension-only broker from 0.43.0; native Darwin IPC, TLS and encrypted save checks | The shared paired-extension protocol; Chrome, Edge and Firefox 153+ (0.44.0) native hosts | Native window delivery, CDP, guided setup and the Safari wrapper (separate delivery) |
+| Linux | Established; loopback HTTPS unlock from 0.23.0; relay from 0.26.0; X11 window delivery; browser extensions also work on Wayland | Passwords and logins to verified Chromium DOM inputs; usernames and TOTP to pinned X11 windows; cards and identity fields; the extension route in Helium, Chrome, Edge and Firefox 153+ (0.44.0) | Native window delivery on Wayland |
+| Windows 10/11 | Same feature set from 0.17.0; unlock from another device and authenticator capture from 0.22.0; the akdbx relay from 0.26.0 | Passwords and logins to verified Chromium DOM inputs; usernames and TOTP to pinned windows; cards and identity fields; the extension route (Helium, Chrome, Edge, Firefox 153+ from 0.44.0); authenticator capture through the Chromium native host | — |
 
 Verify a download before installing it:
 

@@ -703,7 +703,9 @@ def run(args, socket_path=None, unlock_origin=None):
         if args.extension_command == 'install':
             where = install(args.browser, socket_path=socket_path, manifest_dir=getattr(args, 'manifest_dir', None),
                             python=args.python)
-            print(json.dumps(dict(ok=True, browser=args.browser, extension_id=EXTENSION_ID, host=HOST_NAME,
+            print(json.dumps(dict(ok=True, browser=args.browser,
+                                  extension_id=FIREFOX_EXTENSION_ID if args.browser == 'firefox' else EXTENSION_ID,
+                                  host=HOST_NAME,
                                   akdbx_source=package_root(), **where), indent=2))
         elif args.extension_command == 'refresh':
             refreshed = refresh(python=args.python, socket_path=socket_path)
@@ -722,6 +724,7 @@ def run(args, socket_path=None, unlock_origin=None):
                                   host=HOST_NAME, protocol=PROTOCOL,
                                   akdbx_source=package_root(),
                                   browsers={b: {**{k: str(v) for k, v in paths(b).items()},
+                                                'extension_id': FIREFOX_EXTENSION_ID if b == 'firefox' else EXTENSION_ID,
                                                 'launcher_state': launcher_state(b)} for b in BROWSERS}), indent=2))
         return 0
     except (OSError, ValueError, RuntimeError) as exc:

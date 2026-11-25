@@ -3,6 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -44,7 +45,9 @@ def test_firefox_host_is_installed_in_mozilla_folder(tmp_path, monkeypatch):
     monkeypatch.setenv('XDG_DATA_HOME', str(tmp_path / 'data'))
     monkeypatch.setattr(host, 'check_python', lambda *args: None)
     where = host.install('firefox')
-    assert Path(where['manifest']) == tmp_path / '.mozilla/native-messaging-hosts/org.akdbx.extension.json'
+    expected = (tmp_path / 'Library/Application Support/Mozilla/NativeMessagingHosts'
+                if sys.platform == 'darwin' else tmp_path / '.mozilla/native-messaging-hosts')
+    assert Path(where['manifest']) == expected / 'org.akdbx.extension.json'
     assert json.loads(Path(where['manifest']).read_text())['allowed_extensions'] == [FIREFOX_EXTENSION_ID]
     assert host._owned_launcher(Path(where['launcher']), 'firefox')
     assert host.uninstall('firefox') == ['manifest', 'launcher']
@@ -64,3 +67,18 @@ def test_firefox_command_uses_second_browser_argument(monkeypatch):
                         seen.append((origin, browser)) or 0)
     assert host.main(['--browser', 'firefox', '/synthetic/manifest.json', FIREFOX_EXTENSION_ID]) == 0
     assert seen == [(FIREFOX_EXTENSION_ID, 'firefox')]
+
+
+def test_firefox_native_document_ids_support_discovery_and_pinning():
+    from test_extension_route import make_broker, attach, Document, LOGIN
+    from akdbx import extension_route as route
+    broker = make_broker()
+    document_id = 'e607bd18-76b3-416f-bf73-fcae49ec5cc2'
+    channel, _ = attach(broker, {3: [Document(document_id, LOGIN)]})
+    listing = broker.dispatch(dict(action='list-password-frames', password_protocol=1,
+                                   frame_protocol=1, top_url=LOGIN, route='extension'))
+    assert listing['ok'] and listing['main_frame_id'] == document_id
+    pin = broker.dispatch(dict(action='pin-password-target', password_protocol=1,
+                               page_id=listing['page_id'], frame_id=document_id, top_url=LOGIN,
+                               selector='#password', mode='password', route='extension'))
+    assert pin['ok'] and pin['target_delivery'] == route.DELIVERY
