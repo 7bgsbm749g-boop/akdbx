@@ -234,6 +234,43 @@ def test_legacy_unused_chromium_path_does_not_displace_a_later_firefox_build(hom
         assert ('gecko' in manifest.get('browser_specific_settings', {})) is (browser == 'firefox')
 
 
+@pytest.mark.parametrize('browsers', [('chrome',), ('chrome', 'firefox')])
+def test_legacy_default_holding_a_standalone_firefox_build_is_preserved(home, vault, pair, capsys, browsers):
+    folder = home / '.local/share/akdbx/extension'
+    extension_host.build(folder, browser='firefox', unlock_origin='https://localhost:9443')
+    state = home / '.config/akdbx/setup.json'
+    state.parent.mkdir(mode=0o700)
+    state.write_text(json.dumps(dict(version='0.44.0', browsers=[], extension_dir=str(folder))))
+    state.chmod(0o600)
+    flags = [part for browser in browsers for part in ('--browser', browser)]
+    code, result, _ = setup(*base(vault, pair, '--start-at-login', *flags), capsys=capsys)
+    assert code == 0 and result['ok'], result
+    folders = result['stages']['fill']['extension_dirs']
+    assert Path(folders['chrome']).resolve() != folder.resolve()
+    if 'firefox' in browsers:
+        assert Path(folders['firefox']).resolve() == folder.resolve()
+    manifest = json.loads((folder / 'manifest.json').read_text())
+    assert manifest['browser_specific_settings']['gecko']['id'] == 'akdbx@akdbx.org'
+
+
+def test_saved_firefox_alias_of_chromium_default_is_preserved(home, vault, pair, capsys):
+    folder = home / '.local/share/akdbx/extension'
+    extension_host.build(folder, browser='firefox', unlock_origin='https://localhost:9443')
+    alias = home / 'firefox-alias'
+    alias.symlink_to(folder, target_is_directory=True)
+    state = home / '.config/akdbx/setup.json'
+    state.parent.mkdir(mode=0o700)
+    state.write_text(json.dumps(dict(version='0.44.0', browsers=['firefox'],
+                                    extension_dir=str(folder), firefox_extension_dir=str(alias))))
+    state.chmod(0o600)
+    code, result, _ = setup(*base(vault, pair, '--start-at-login', '--browser', 'chrome',
+                                 '--browser', 'firefox'), capsys=capsys)
+    assert code == 0 and result['ok'], result
+    folders = result['stages']['fill']['extension_dirs']
+    assert folders['firefox'] == str(alias)
+    assert Path(folders['chrome']).resolve() != folder.resolve()
+
+
 def test_without_a_terminal_it_needs_yes_or_dry_run(home, vault, capsys):
     code, _, runner = setup('--vault', str(vault))
     assert code == 2 and runner.calls == []

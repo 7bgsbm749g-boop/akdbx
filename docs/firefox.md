@@ -44,8 +44,10 @@ uses `FOLDER`. The setup JSON's `stages.fill.extension_dirs` reports the folder
 for each browser.
 Each format's folder is saved separately, so adding another browser later
 keeps the existing Firefox folder in place.
-An existing akdbx manifest establishes which format owns a saved folder. This
-also handles unused Chromium paths saved by older setup versions.
+An existing akdbx manifest establishes which format owns a saved or default
+folder. This also handles unused Chromium paths saved by older setup versions
+and Firefox builds made with the standalone command. Path aliases do not make
+the two formats share one folder.
 
 ## Native host locations
 
@@ -67,10 +69,10 @@ does not change the Firefox fill extension's shown-once secret read pins.
 
 `tests/test_firefox_browser.py` loads the actual built add-on into a fresh
 Firefox profile and connects through a unique native host to a synthetic
-broker. It checks real document IDs, main-frame and child-frame password
-fills, hidden-field refusal, and refusal of a target after navigation. CI
-runs it on Linux, Windows and macOS. Field checks read only SHA-256 digests;
-the test never reads a password value back from the page.
+broker. It checks real document IDs, main-frame and child-frame password and
+TOTP fills, no keyboard delivery, hidden-field refusal, and refusal of a target
+after navigation. CI runs it on Linux, Windows and macOS. Field checks read
+only SHA-256 digests; the test never reads a password value back from the page.
 
 The Firefox integration follows Mozilla's
 [native-messaging contract](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging)
