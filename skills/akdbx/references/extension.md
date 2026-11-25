@@ -24,7 +24,7 @@ on purpose, or with someone else's account or card.
 
 Supported browsers: Helium, Google Chrome and Microsoft Edge on Windows and
 Linux; Chrome and Edge on macOS; and Firefox 153+ on all three platforms
-(0.45.0+). Chromium uses the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg`;
+(0.46.0+). Chromium uses the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg`;
 Firefox uses `akdbx@akdbx.org`. Both use host name `org.akdbx.extension`.
 See [Firefox setup and installation limits](../../../docs/firefox.md).
 

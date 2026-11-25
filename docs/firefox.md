@@ -1,4 +1,4 @@
-# Firefox extension (0.45.0+)
+# Firefox extension (0.46.0+)
 
 Firefox 153 or newer uses the same local broker, master-password pairing,
 sealed values and retained DOM targets as the Chromium extension. It needs no

@@ -151,7 +151,7 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 ## Platforms
 
 - **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
-  checks, private HTTPS unlock and encrypted vault writes. Chrome, Edge and Firefox (0.45.0+)
+  checks, private HTTPS unlock and encrypted vault writes. Chrome, Edge and Firefox (0.46.0+)
   native-host locations are supported. Native window delivery, CDP and guided
   setup are unavailable. Safari's Apple wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).
@@ -247,7 +247,7 @@ This prevents accidental disclosure into chat, command output, logs, process arg
 ## Browser extension route (0.21.0)
 
 The broker can also fill through the akdbx browser extension in the user's
-everyday Helium, Chrome, Edge or Firefox (0.45.0+), reached through a native-messaging host. The
+everyday Helium, Chrome, Edge or Firefox (0.46.0+), reached through a native-messaging host. The
 browser then needs no remote-debugging port, which would give every process
 of the same user full control of that profile. Agents add `--route extension`
 to `list-password-frames`, `pin-password-target`, `pin-card-target` and
@@ -276,7 +276,7 @@ akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" extension build --output /path/to/a
 ```
 
 Firefox 153+ uses `extension install --browser firefox` and a separate build
-with `extension build --browser firefox --output FOLDER` (0.45.0+).
+with `extension build --browser firefox --output FOLDER` (0.46.0+).
 See [Firefox setup](docs/firefox.md) for temporary add-on loading, the signed
 XPI requirement for permanent installation, and native host locations.
 

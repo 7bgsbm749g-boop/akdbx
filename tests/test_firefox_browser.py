@@ -60,7 +60,7 @@ DIGEST = """<script>async function digest(id) {
 const bytes = new TextEncoder().encode(document.getElementById(id).value);
 const hash = await crypto.subtle.digest('SHA-256', bytes);
 return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2,'0')).join('');
-}</script>"""
+} window.keyEvents=0;document.addEventListener('keydown',()=>keyEvents++);</script>"""
 
 
 class NoKeys:
@@ -92,7 +92,8 @@ def firefox_lab(private_dir, certificates):
                     ('<input id=child type=password autocomplete=current-password>' if self.path == '/frame' else
                      '<input id=password type=password autocomplete=current-password>'
                      '<input id=hidden type=password style="display:none">'
-                     '<iframe id=frame src=/frame style="width:500px;height:150px"></iframe>') + DIGEST).encode()
+                     '<iframe id=frame src=/frame style="width:500px;height:150px"></iframe>') +
+                    '<input id=otp type=text autocomplete=one-time-code maxlength=6>' + DIGEST).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
@@ -241,3 +242,36 @@ def test_firefox_local_host_document_pins_and_secret_delivery(firefox_lab):
     driver.refresh()
     driver.find_element('id', 'password').click()
     assert not fill(target['target'])['ok']
+
+
+def test_firefox_totp_uses_exact_main_and_child_documents_without_keyboard(firefox_lab):
+    from akdbx.extension_route import DELIVERY
+    from totp_vectors import URI
+    driver, broker, url = firefox_lab.driver, firefox_lab.broker, firefox_lab.url
+    broker.vault.entries[0].otp = URI
+    broker.wall_clock = lambda: 1111111111
+    listing = broker.dispatch(dict(action='list-password-frames', password_protocol=1,
+                                   frame_protocol=1, top_url=url, route='extension'))
+    assert listing['ok']
+    top = listing['main_frame_id']
+    child = next(frame['frame_id'] for frame in listing['frames'] if frame['depth'] == 1)
+    for frame in (top, child):
+        target_url = url
+        if frame == child:
+            element = driver.find_element('id', 'frame')
+            target_url = element.get_attribute('src')
+            driver.switch_to.frame(element)
+        driver.find_element('id', 'otp').click()
+        request = dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                       frame_id=frame, top_url=url, selector='#otp', mode='totp', route='extension')
+        if frame == child:
+            request.update(frame_protocol=1, frame_origin='https://' + urlsplit(url).netloc)
+        pin = broker.dispatch(request)
+        assert pin['ok'], pin
+        handle = broker.dispatch(dict(action='search', query='localhost'))['entries'][0]['handle']
+        receipt = broker.dispatch(dict(action='fill-totp', handle=handle, target_url=target_url,
+                                       target=pin['target'], target_protocol=1))
+        assert receipt == dict(ok=True, filled='totp', target_delivery=DELIVERY)
+        digest = driver.execute_async_script('const done=arguments[arguments.length-1];digest("otp").then(done)')
+        assert digest == hashlib.sha256(b'050471').hexdigest()
+        assert driver.execute_script('return window.keyEvents') == 0
