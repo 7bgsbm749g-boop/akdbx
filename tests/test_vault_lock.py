@@ -49,6 +49,7 @@ def test_successful_work_that_crosses_deadline_gets_full_idle_interval():
         expiry.start()
         expiry.join(2)
         assert not expiry.is_alive()
+        assert 'retry' in broker.dispatch({'action': 'search', 'query': 'Example'})['error']
     finally:
         finish.set()
         worker.join(3)
@@ -72,7 +73,7 @@ def test_lock_drains_work_and_refuses_new_operations():
     try:
         with broker.session.condition:
             assert broker.session.condition.wait_for(lambda: broker.session.closing, 2)
-        assert broker.dispatch({'action': 'search', 'query': ''})['error'] == 'vault locked'
+        assert 'retry' in broker.dispatch({'action': 'search', 'query': ''})['error']
         assert locker.is_alive()
     finally:
         finish.set()
@@ -85,6 +86,15 @@ def test_lock_drains_work_and_refuses_new_operations():
 def test_invalid_timeout(value):
     with pytest.raises(ValueError):
         timeout_seconds(value)
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='logind helper')
+@pytest.mark.parametrize('command, granted', [('/usr/bin/cat', True), ('/usr/bin/false', False)])
+def test_sleep_delay_requires_child_acknowledgement(monkeypatch, command, granted):
+    popen = desktop_lock.subprocess.Popen
+    monkeypatch.setattr(desktop_lock.subprocess, 'Popen', lambda args, **kw: popen([command], **kw))
+    with desktop_lock._sleep_delay() as acquired:
+        assert acquired is granted
 
 
 @pytest.mark.skipif(os.name == 'nt', reason='Linux desktop notifications')

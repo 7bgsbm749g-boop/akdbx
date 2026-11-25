@@ -436,7 +436,8 @@ On Linux it listens to systemd-logind through `/usr/bin/gdbus` for the user's se
 sleep-delay permission, the broker holds a bounded delay while it locks. It also locks on resume.
 On Hyprland it also subscribes directly to the compositor's lock notification. Run the broker with
 the desktop's `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and `XDG_CURRENT_DESKTOP=Hyprland` for that route.
-The `lock_event_sources` field in `akdbx status` shows which listeners are ready.
+The `lock_event_sources` field in `akdbx status` shows which listeners are ready. For logind, `signals-only` means the broker receives
+events without a confirmed sleep delay.
 For a locker that reports neither event, configure its lock hook to run `akdbx lock`.
 
 Key-file databases are supported with `serve DB --keyfile KEY`. Ctrl-C stops the broker and removes its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.

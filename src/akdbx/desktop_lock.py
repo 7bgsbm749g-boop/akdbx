@@ -38,14 +38,24 @@ def _sleep_delay():
     try:
         helper = subprocess.Popen(['/usr/bin/systemd-inhibit', '--what=sleep', '--mode=delay',
                                    '--who=akdbx', '--why=Lock the open vault', '/usr/bin/cat'],
-                                  stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except OSError:
         # Minimal installations can still process logind's sleep and resume events.
-        yield
+        yield False
         return
     try:
-        yield
+        # systemd-inhibit starts cat only after logind grants the delay.
+        try:
+            os.write(helper.stdin.fileno(), b'1')
+            granted = bool(select.select([helper.stdout], [], [], 1)[0]
+                           and os.read(helper.stdout.fileno(), 1) == b'1')
+        except OSError:
+            granted = False
+        if not granted:
+            helper.stdin.close()
+        yield granted
     finally:
+        helper.stdout.close()
         helper.stdin.close()
         try:
             helper.wait(timeout=2)
@@ -74,16 +84,16 @@ def _logind(lock, stop, ready):
                     msg = line.decode('utf-8', 'replace')
                     if ' is owned by ' in msg:
                         awake.close()
-                        awake.enter_context(_sleep_delay())
-                        ready()
+                        ready('listening' if awake.enter_context(_sleep_delay()) else 'signals-only')
                     elif 'does not have an owner' in msg:
                         return
                     elif _logind_lock(msg):
                         lock()
                         if msg.startswith('/org/freedesktop/login1: org.freedesktop.login1.Manager.PrepareForSleep '):
                             awake.close()
+                            ready('signals-only')
                             if msg.endswith('(false,)'):
-                                awake.enter_context(_sleep_delay())
+                                ready('listening' if awake.enter_context(_sleep_delay()) else 'signals-only')
         finally:
             proc.kill()
 
@@ -205,8 +215,8 @@ def watch_locks(broker):
 
     def listen(source):
         name = source.__name__[1:]
-        def ready():
-            broker.lock_events[name] = 'listening'
+        def ready(state='listening'):
+            broker.lock_events[name] = state
 
         while not stop.is_set():
             try:
@@ -218,7 +228,7 @@ def watch_locks(broker):
                 return
             previous = broker.lock_events[name]
             broker.lock_events[name] = 'unavailable'
-            if previous == 'listening':
+            if previous in {'listening', 'signals-only'}:
                 broker.lock()
             if previous != 'unavailable':
                 print(f'akdbx: {name} lock notifications unavailable; retrying in 5 seconds',

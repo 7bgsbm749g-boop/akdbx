@@ -295,6 +295,8 @@ class Broker:
             self.extension.refresh()
 
     def _locked_response(self):
+        if not self.locked:
+            return {"ok": False, "error": "vault busy at lock boundary; retry after the current operation"}
         return {"ok": False, "error": "vault locked", **self.unlock_fields()}
 
     def _new_handle(self, entry: EntryLike) -> str:

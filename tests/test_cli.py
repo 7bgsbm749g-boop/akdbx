@@ -276,7 +276,7 @@ def test_serve_web_unlock_and_explicit_fill_without_approval(
             assert MASTER.encode() not in page and SECRET.encode() not in page
             status = command("status")
             # serve signs its page origin for the browser extension (broker_identity).
-            assert status["lock_event_sources"].get("logind") in {"starting", "listening", "unavailable"}
+            assert status["lock_event_sources"].get("logind") in {"starting", "listening", "signals-only", "unavailable"}
             status["lock_event_sources"] = {}
             trust = status.pop("extension_trust")
             assert set(trust) == {"key_id", "origin", "seq"} and trust["seq"] == 1
