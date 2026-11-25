@@ -31,7 +31,7 @@ import time
 from xml.sax.saxutils import escape
 
 from . import __version__, native_merge
-from .extension_route import BROWSERS, EXTENSION_ID, EXTENSION_VERSION
+from .extension_route import BROWSERS, CHROMIUM_BROWSERS, FIREFOX_EXTENSION_ID, EXTENSION_ID, EXTENSION_VERSION
 
 COMMAND = 'setup'
 STAGES = ('system', 'vault', 'page', 'access', 'login', 'fill', 'features', 'skill')
@@ -70,6 +70,7 @@ MARKER = 'akdbx-setup'
 SAFE_WORD = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./:=\\')
 STATE_LIMIT = 64 * 1024
 LINUX_BROWSERS = {
+    'firefox': ('firefox',),
     'helium': ('helium', 'helium-browser'),
     'chrome': ('google-chrome', 'google-chrome-stable'),
     'edge': ('microsoft-edge', 'microsoft-edge-stable'),
@@ -129,7 +130,7 @@ def add_parser(commands):
     command.add_argument('--capture-host', action='store_true', default=None,
                          help='set up the authenticator capture extension and native host')
     command.add_argument('--no-capture-host', action='store_false', dest='capture_host')
-    command.add_argument('--capture-browser', choices=BROWSERS, help='browser for the capture host (default chrome)')
+    command.add_argument('--capture-browser', choices=CHROMIUM_BROWSERS, help='browser for the capture host (default chrome)')
     command.add_argument('--capture-extension-id',
                          help='ID of the loaded capture extension (32 letters a-p), shown in chrome://extensions')
     command.add_argument('--capture-dir', type=Path, help='folder for the unpacked capture extension')
@@ -722,6 +723,7 @@ class Setup:
             local = self.env.get('LOCALAPPDATA', '')
             programs = [self.env.get(name, '') for name in ('ProgramFiles', 'ProgramFiles(x86)')]
             candidates = {
+                'firefox': [Path(base) / 'Mozilla Firefox' / 'firefox.exe' for base in programs if base],
                 'helium': [Path(local) / 'imput' / 'Helium' / 'Application' / 'chrome.exe'],
                 'chrome': [Path(base) / 'Google' / 'Chrome' / 'Application' / 'chrome.exe'
                            for base in (*programs, local) if base],
@@ -1423,7 +1425,10 @@ class Setup:
         for browser in browsers:
             state = self._merge_state(state, self._install_host(browser))
         if browsers:
-            state = self._merge_state(state, self._build_extension())
+            if any(browser in CHROMIUM_BROWSERS for browser in browsers):
+                state = self._merge_state(state, self._build_extension())
+            if 'firefox' in browsers:
+                state = self._merge_state(state, self._build_extension('firefox'))
         if cdp:
             state = self._merge_state(state, self._cdp(Path(cdp)))
         self.record('fill', state, browsers=browsers, extension_dir=self.choice['extension_dir'] if browsers else None,
@@ -1465,20 +1470,26 @@ class Setup:
         if not ok:
             raise RuntimeError(error)
 
-    def _build_extension(self):
+    def _build_extension(self, browser='chrome'):
         from .extension_host import BUILD_ID, EXTENSION_KEY, built_version, trusted_origin
         folder = Path(self.choice['extension_dir'])
+        if browser == 'firefox':
+            folder = folder.with_name(folder.name + '-firefox')
         try:
             origin = trusted_origin(self.origin)
             manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
             config = (folder / 'config.js').read_text(encoding='utf-8')
             # An unchanged folder is not rebuilt, so it keeps its build ID and the extension its saved trust.
-            built = (manifest.get('key') == EXTENSION_KEY and manifest.get('version') == built_version()
+            own = (manifest.get('browser_specific_settings', {}).get('gecko', {}).get('id') == FIREFOX_EXTENSION_ID
+                   if browser == 'firefox' else manifest.get('key') == EXTENSION_KEY)
+            built = (own and manifest.get('version') == built_version()
                      and f'globalThis.AKDBX_EXTENSION_VERSION = {json.dumps(built_version())};' in config
                      and json.dumps(origin) in config and BUILD_ID.search(config) is not None)
         except Exception:
             built = False
         argv = self.akdbx_argv('extension', 'build', '--output', str(folder), origin=self.origin)
+        if browser == 'firefox':
+            argv += ['--browser', 'firefox']
         result = 'done'
         if built:
             self.say(f'The extension {EXTENSION_VERSION} for {self.origin} is already built in {folder}.')
@@ -1489,7 +1500,13 @@ class Setup:
             result = self.outcome(applied)
             if not applied:
                 return result
-        self.step(f'Load the extension once in each browser: open chrome://extensions, turn on Developer mode, '
+        if browser == 'firefox':
+            self.step(f'Firefox 153 or newer: open about:debugging#/runtime/this-firefox, choose Load Temporary '
+                      f'Add-on and select {folder / "manifest.json"}. The add-on ID is {FIREFOX_EXTENSION_ID}. '
+                      'A temporary add-on must be loaded again after Firefox restarts. Permanent installation '
+                      'requires a Mozilla-signed XPI.', 'fill')
+        else:
+            self.step(f'Load the extension once in each Chromium browser: open chrome://extensions, turn on Developer mode, '
                   f'choose Load unpacked and select {folder} (extension ID {EXTENSION_ID}). After an akdbx update, '
                   'setup rebuilds it: click reload on the akdbx card.', 'fill')
         self.step('Pair the extension once per browser session: click the akdbx toolbar button, choose Open the '

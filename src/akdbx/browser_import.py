@@ -291,7 +291,7 @@ def uninstall_host_windows(args):
     can use another origin, extension ID or pipe.
     """
     import winreg
-    from .extension_route import BROWSERS
+    from .extension_route import CHROMIUM_BROWSERS as BROWSERS
     where = windows_paths(args.browser)
     if _registered(where['key']) == str(where['manifest']):
         winreg.DeleteKey(winreg.HKEY_CURRENT_USER, where['key'])
@@ -313,7 +313,7 @@ def main(argv=None):
             config = {'extension_id': ''}
         native_session(incoming, outgoing, config, argv[0] if argv else '')
         return 0
-    from .extension_route import BROWSERS
+    from .extension_route import CHROMIUM_BROWSERS as BROWSERS
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     build = commands.add_parser('build-extension')

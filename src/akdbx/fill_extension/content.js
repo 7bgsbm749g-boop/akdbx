@@ -263,7 +263,7 @@
       const root = pending.pop();
       for (const el of root.querySelectorAll("*")) {
         if (++seen > MAX_NODES) return null;
-        const shadow = chrome.dom.openOrClosedShadowRoot(el);
+        const shadow = (globalThis.browser || globalThis.chrome).dom.openOrClosedShadowRoot(el);
         if (shadow) {
           found.push(shadow);
           pending.push(shadow);
