@@ -823,20 +823,28 @@ class Setup:
                 ui.say(f'  Ignored unknown browser {name!r}.')
         choice['browsers'] = list(dict.fromkeys(browsers))
         chromium = any(b in CHROMIUM_BROWSERS for b in choice['browsers'])
-        firefox_only = choice['browsers'] == ['firefox']
-        choice['extension_dir'] = str(Path(self.remembered('extension_dir', None if firefox_only else args.extension_dir)
-                                           or self.default_extension_dir()).expanduser().absolute())
-        firefox_flag = args.extension_dir if 'firefox' in choice['browsers'] else None
-        if firefox_flag is not None and chromium:
-            firefox_flag = firefox_flag.with_name(firefox_flag.name + '-firefox')
-        default_firefox = self.default_extension_dir().with_name(self.default_extension_dir().name + '-firefox')
-        choice['firefox_extension_dir'] = str(Path(self.remembered('firefox_extension_dir', firefox_flag)
-                                                   or default_firefox).expanduser().absolute())
-        if (chromium and args.extension_dir is None
-                and Path(choice['extension_dir']) == Path(choice['firefox_extension_dir'])):
-            # A prior explicit Firefox folder can occupy Chromium's default. Keep it in place.
-            base = self.default_extension_dir()
-            choice['extension_dir'] = str(base.with_name(base.name + '-chromium'))
+        firefox = 'firefox' in choice['browsers']
+        chrome_dir = self.remembered('extension_dir')
+        firefox_dir = self.remembered('firefox_extension_dir')
+        chrome_dir = Path(chrome_dir) if chrome_dir else None
+        firefox_dir = Path(firefox_dir) if firefox_dir else None
+        if args.extension_dir is not None:
+            folder = Path(os.path.abspath(args.extension_dir.expanduser()))
+            if chromium or not firefox:
+                chrome_dir = folder
+            if firefox:
+                firefox_dir = folder.with_name(folder.name + '-firefox') if chromium else folder
+        # Assign a default only when that format is selected. An established
+        # folder stays in place; a new format gets a distinct default.
+        base = self.default_extension_dir()
+        if chromium and chrome_dir is None:
+            chrome_dir = base if base != firefox_dir else base.with_name(base.name + '-chromium')
+        if firefox and firefox_dir is None:
+            firefox_dir = base.with_name(base.name + '-firefox')
+            if firefox_dir == chrome_dir:
+                firefox_dir = firefox_dir.with_name(firefox_dir.name + '-firefox')
+        choice['extension_dir'] = str(chrome_dir) if chrome_dir is not None else None
+        choice['firefox_extension_dir'] = str(firefox_dir) if firefox_dir is not None else None
         cdp = None if args.no_cdp else self.selected('cdp_profile', args.cdp_profile, None)
         if 'fill' not in skip and ui.interactive:
             answer = ui.text("Private Chromium profile folder for the CDP route ('none' to skip)",

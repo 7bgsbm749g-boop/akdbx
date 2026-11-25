@@ -184,6 +184,36 @@ def test_adding_chromium_keeps_the_saved_firefox_folder(home, vault, pair, capsy
         assert ('gecko' in manifest.get('browser_specific_settings', {})) is (browser == 'firefox')
 
 
+def test_chromium_keeps_its_folder_when_it_matches_the_firefox_default(home, vault, pair, capsys):
+    folder = home / '.local/share/akdbx/extension-firefox'
+    code, first, _ = setup(*base(vault, pair, '--browser', 'chrome', '--start-at-login',
+                                '--extension-dir', str(folder)), capsys=capsys)
+    assert code == 0 and first['ok'], first
+    for browsers in [('chrome',), ('chrome', 'firefox')]:
+        flags = [part for browser in browsers for part in ('--browser', browser)]
+        code, result, _ = setup(*base(vault, pair, '--start-at-login', *flags), capsys=capsys)
+        assert code == 0 and result['ok'], result
+        folders = result['stages']['fill']['extension_dirs']
+        assert folders['chrome'] == str(folder)
+        if 'firefox' in browsers:
+            assert folders['firefox'] != str(folder)
+            manifest = json.loads((Path(folders['firefox']) / 'manifest.json').read_text())
+            assert manifest['browser_specific_settings']['gecko']['id'] == 'akdbx@akdbx.org'
+
+
+def test_adding_firefox_with_a_relative_current_chromium_folder(home, vault, pair, capsys, monkeypatch):
+    folder = home / 'existing-addon'
+    code, first, _ = setup(*base(vault, pair, '--browser', 'chrome', '--start-at-login',
+                                '--extension-dir', str(folder)), capsys=capsys)
+    assert code == 0 and first['ok'], first
+    monkeypatch.chdir(folder)
+    code, result, _ = setup(*base(vault, pair, '--browser', 'chrome', '--browser', 'firefox',
+                                 '--start-at-login', '--extension-dir', '.'), capsys=capsys)
+    assert code == 0 and result['ok'], result
+    assert result['stages']['fill']['extension_dirs'] == {
+        'chrome': str(folder), 'firefox': str(folder.with_name(folder.name + '-firefox'))}
+
+
 def test_without_a_terminal_it_needs_yes_or_dry_run(home, vault, capsys):
     code, _, runner = setup('--vault', str(vault))
     assert code == 2 and runner.calls == []
