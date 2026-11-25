@@ -219,9 +219,12 @@ class LinuxFields:
                 count = self.api.call('text_get_character_count', iface)
                 if not 0 < count <= 65536:
                     raise TargetError()
-                value = self.api.string('text_get_text', iface, 0, 65537)
+                # Qt rejects an end beyond the document. The reported end is
+                # bounded above; a growing field is refused by the second count.
+                value = self.api.string('text_get_text', iface, 0, count)
                 after = self.api.call('text_get_character_count', iface)
-                if len(value) != count or after != count:
+                # GTK counts code points; Qt text cursors count UTF-16 units.
+                if after != count or count not in {len(value), len(value.encode('utf-16-le')) // 2}:
                     raise TargetError()
                 return value
             finally:

@@ -10,7 +10,7 @@ Supported controls:
 - Linux: AT-SPI text/entry controls, including password text, in the active
   native window. The `libatspi` runtime and the app's accessibility bridge must
   be available. X11 and Wayland use the same accessibility transport. Tests use
-  real GTK controls on X11 and native Wayland under a nested Weston compositor;
+  real GTK delivery and Qt read-only capture on X11 and native Wayland under a nested Weston compositor;
   this is not certification of every toolkit or compositor.
 - Windows 10/11: visible, enabled, Unicode Win32 `Edit` controls in the active
   window, in the broker's user and desktop session. Custom controls, browser

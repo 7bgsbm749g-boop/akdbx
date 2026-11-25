@@ -279,8 +279,8 @@ def test_linux_read_is_bounded_and_refuses_a_growing_field(changed):
         assert name == 'text_get_character_count'
         return next(counts)
     def string(name, iface, start, end):
-        assert (name, start, end) == ('text_get_text', 0, 65537)
-        return 'secret!' if changed else 'key'
+        assert (name, start, end) == ('text_get_text', 0, 3)
+        return 'sec' if changed else 'key'
     session.api = SimpleNamespace(accessible_get_text_iface=lambda node: 2, call=call, string=string,
                                   obj=SimpleNamespace(g_object_unref=lambda node: None))
     if changed:

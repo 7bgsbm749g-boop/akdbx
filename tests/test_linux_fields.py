@@ -21,6 +21,8 @@ pytestmark = pytest.mark.skipif(not sys.platform.startswith('linux') or os.envir
 
 @pytest.fixture(params=['x11', 'wayland'])
 def lab(tmp_path, monkeypatch, request):
+    display = request.param.removeprefix('qt-')
+    qt = request.param.startswith('qt-')
     assert os.environ.get('DBUS_SESSION_BUS_ADDRESS'), 'run this suite through dbus-run-session'
     for program in ('Xvfb', 'openbox'):
         assert shutil.which(program), f'native Linux lab requires {program}'
@@ -38,7 +40,7 @@ def lab(tmp_path, monkeypatch, request):
         monkeypatch.setenv('GTK_MODULES', 'atk-bridge')
         monkeypatch.setenv('NO_AT_BRIDGE', '0')
         children.append(subprocess.Popen(['openbox'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        if request.param == 'wayland':
+        if display == 'wayland':
             assert shutil.which('weston'), 'native Wayland lab requires Weston'
             runtime = tmp_path / 'runtime'
             runtime.mkdir(mode=0o700)
@@ -56,7 +58,11 @@ def lab(tmp_path, monkeypatch, request):
                 time.sleep(.05)
         else:
             monkeypatch.setenv('GDK_BACKEND', 'x11')
-        process = subprocess.Popen([sys.executable, str(Path(__file__).with_name('native_gtk_lab.py')), str(tmp_path)],
+        executable = os.environ.get('AKDBX_QT_TEST_PYTHON', sys.executable) if qt else sys.executable
+        if qt:
+            monkeypatch.setenv('QT_QPA_PLATFORM', 'wayland' if display == 'wayland' else 'xcb')
+            monkeypatch.setenv('QT_LINUX_ACCESSIBILITY_ALWAYS_ON', '1')
+        process = subprocess.Popen([executable, str(Path(__file__).with_name('native_qt_lab.py' if qt else 'native_gtk_lab.py')), str(tmp_path)],
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         children.append(process)
         deadline = time.monotonic() + 10
@@ -65,7 +71,10 @@ def lab(tmp_path, monkeypatch, request):
             assert time.monotonic() < deadline
             time.sleep(.05)
         backend_name = (tmp_path / 'ready').read_text()
-        assert ('Wayland' if request.param == 'wayland' else 'X11') in backend_name
+        if qt:
+            assert backend_name == ('wayland' if display == 'wayland' else 'xcb')
+        else:
+            assert ('Wayland' if display == 'wayland' else 'X11') in backend_name
         manager = NativeFields()
         yield manager, process.pid, tmp_path
         manager.close()
@@ -100,6 +109,20 @@ def listing(manager, pid):
             if time.monotonic() >= deadline:
                 raise
             time.sleep(.1)
+
+
+@pytest.mark.parametrize('lab', ['qt-x11', 'qt-wayland'], indirect=True)
+@pytest.mark.parametrize('value', ['abc', 'a\U0001f5ddb'])
+def test_real_qt_readonly_capture_handles_reported_range_and_utf16_units(lab, value):
+    manager, pid, directory = lab
+    command(directory, value=value)
+    window = listing(manager, pid)['windows'][0]
+    control = next(f['control'] for f in window['controls'] if f['focused'])
+    receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                               control=control, mode='read', service_url='https://example.test/'))
+    pin = manager.take(receipt['target'], 'read')
+    assert manager.read(pin, {https_origin('https://example.test/')}, lambda: True, time.monotonic() + 4) == value
+    pin.close()
 
 
 def test_real_gtk_login_and_readonly_secret_capture(lab):

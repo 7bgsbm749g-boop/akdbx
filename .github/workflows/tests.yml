@@ -50,7 +50,7 @@ jobs:
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0" "platforms;android-35" > /dev/null
           JAVA_HOME="$JAVA_HOME_17_X64" ANDROID_SDK="$ANDROID_SDK_ROOT" python -m pytest -q -rs tests/test_android_route.py -k "helper" --basetemp="${{ runner.temp }}/akdbx-android"
   linux-native-fields:
-    name: Native GTK controls (X11 and Wayland)
+    name: Native Linux controls (X11 and Wayland)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -61,7 +61,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[test]'
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb openbox weston at-spi2-core dbus-x11 libgtk-3-0t64
+      - run: python -m pip install 'PyQt6==6.8.1' 'PyQt6-Qt6==6.8.2'
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb openbox weston at-spi2-core dbus-x11 libgtk-3-0t64 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libxkbcommon-x11-0
       - name: Native delivery and encrypted saves on both Linux display systems
         env:
           AKDBX_TEST_NATIVE_LINUX: '1'
