@@ -36,7 +36,8 @@ import tempfile
 import threading
 from importlib.resources import files
 
-from .extension_route import (BROWSERS, FIREFOX_EXTENSION_ID, EXTENSION_ID, EXTENSION_ORIGIN, EXTENSION_VERSION, HOST_NAME, PUBLIC_KEY,
+from .extension_route import (HOST_BROWSERS as BROWSERS, BROWSERS as BUILD_BROWSERS, SAFARI_EXTENSION_ID,
+                              FIREFOX_EXTENSION_ID, EXTENSION_ID, EXTENSION_ORIGIN, EXTENSION_VERSION, HOST_NAME, PUBLIC_KEY,
                               PROTOCOL, valid_extension_version)
 from .protocol import MAX_MESSAGE, ProtocolError, receive_message, send_message
 
@@ -630,7 +631,7 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None, browser='chro
     worker reports that copy, not the manifest on disk (see background.js).
     """
     destination = Path(destination)
-    if browser not in BROWSERS:
+    if browser not in BUILD_BROWSERS:
         raise ValueError('unsupported extension browser')
     origin = trusted_origin(unlock_origin) if unlock_origin is not None else None
     if destination.exists():
@@ -638,21 +639,32 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None, browser='chro
             current = json.loads((destination / 'manifest.json').read_text(encoding='utf-8'))
         except Exception:
             current = {}
-        owned = (current.get('browser_specific_settings', {}).get('gecko', {}).get('id') == FIREFOX_EXTENSION_ID
-                 if browser == 'firefox' else current.get('key') == EXTENSION_KEY)
+        if browser == 'safari':
+            owned = (current.get('name') == 'akdbx' and
+                     'safari' in current.get('browser_specific_settings', {}) and
+                     'safari-port.js' in current.get('background', {}).get('scripts', []))
+        else:
+            owned = (current.get('browser_specific_settings', {}).get('gecko', {}).get('id') == FIREFOX_EXTENSION_ID
+                     if browser == 'firefox' else current.get('key') == EXTENSION_KEY)
         if not owned:
             raise ValueError('destination exists and does not hold the akdbx extension; choose a new folder')
     written = _source_files(host_name)
     version = built_version()
     manifest = json.loads(written['manifest.json'])
     manifest['version'] = version
-    if browser == 'firefox':
+    if browser in ('firefox', 'safari'):
         manifest.pop('key', None)
         manifest.pop('minimum_chrome_version', None)
-        manifest['browser_specific_settings'] = {'gecko': {
-            'id': FIREFOX_EXTENSION_ID, 'strict_min_version': '153.0',
-            'data_collection_permissions': {'required': ['none']}}}
-        manifest['background'] = {'scripts': ['api.js', 'config.js', 'trust.js', 'background.js']}
+        if browser == 'firefox':
+            manifest['browser_specific_settings'] = {'gecko': {
+                'id': FIREFOX_EXTENSION_ID, 'strict_min_version': '153.0',
+                'data_collection_permissions': {'required': ['none']}}}
+        else:
+            manifest['browser_specific_settings'] = {'safari': {'strict_min_version': '26.0'}}
+        scripts = ['api.js', 'config.js', 'trust.js']
+        if browser == 'safari':
+            scripts.append('safari-port.js')
+        manifest['background'] = {'scripts': [*scripts, 'background.js']}
         # The browser's native document IDs are required, including for child frames.
         manifest['permissions'] = [p for p in manifest['permissions'] if p != 'contextMenus'] + ['menus']
     written['manifest.json'] = json.dumps(manifest, indent=2).encode('utf-8')
@@ -693,8 +705,10 @@ def add_parser(commands):
     refresh_command.add_argument('--python', type=Path, help=python_help)
     build_command = actions.add_parser('build', help='write the unpacked extension to a folder (load it unpacked)')
     build_command.add_argument('--output', required=True, type=Path)
-    build_command.add_argument('--browser', choices=BROWSERS, default='chrome',
-                               help='extension format to build (default: chrome; Firefox requires 153+)')
+    build_command.add_argument('--browser', choices=BUILD_BROWSERS, default='chrome',
+                               help='extension format (default chrome; Firefox 153+; Safari 26+ also needs its native app)')
+    safari_command = actions.add_parser('safari-app', help='build the Safari native app (macOS and Xcode required)')
+    safari_command.add_argument('--output', required=True, type=Path, help='new .app output path')
     actions.add_parser('info', help='show the extension ID, host name and per-browser host locations')
 
 
@@ -713,10 +727,20 @@ def run(args, socket_path=None, unlock_origin=None):
         elif args.extension_command == 'uninstall':
             removed = uninstall(args.browser, manifest_dir=getattr(args, 'manifest_dir', None))
             print(json.dumps(dict(ok=True, browser=args.browser, removed=removed), indent=2))
+        elif args.extension_command == 'safari-app':
+            from .cli import default_socket
+            from .safari import build_app
+            if socket_path and Path(socket_path).absolute() != default_socket().absolute():
+                raise ValueError('the Safari native app currently requires the default macOS broker socket')
+            path = build_app(args.output, unlock_origin=unlock_origin)
+            print(json.dumps(dict(ok=True, path=str(path), extension_id=SAFARI_EXTENSION_ID,
+                                  extension_version=built_version(), developer_build=True), indent=2))
         elif args.extension_command == 'build':
             browser = getattr(args, 'browser', 'chrome')
             path = build(args.output, unlock_origin=unlock_origin, browser=browser)
-            print(json.dumps(dict(ok=True, extension_id=FIREFOX_EXTENSION_ID if browser == 'firefox' else EXTENSION_ID,
+            extension_id = (SAFARI_EXTENSION_ID if browser == 'safari' else
+                            FIREFOX_EXTENSION_ID if browser == 'firefox' else EXTENSION_ID)
+            print(json.dumps(dict(ok=True, extension_id=extension_id,
                                   extension_version=built_version(),
                                   path=str(path.absolute()), trusted_origin=trusted_origin(unlock_origin)), indent=2))
         else:

@@ -31,7 +31,7 @@ import time
 from xml.sax.saxutils import escape
 
 from . import __version__, native_merge
-from .extension_route import BROWSERS, CHROMIUM_BROWSERS, FIREFOX_EXTENSION_ID, EXTENSION_ID, EXTENSION_VERSION
+from .extension_route import HOST_BROWSERS as BROWSERS, CHROMIUM_BROWSERS, FIREFOX_EXTENSION_ID, EXTENSION_ID, EXTENSION_VERSION
 
 COMMAND = 'setup'
 STAGES = ('system', 'vault', 'page', 'access', 'login', 'fill', 'features', 'skill')

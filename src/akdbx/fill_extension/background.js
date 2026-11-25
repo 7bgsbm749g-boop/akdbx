@@ -213,7 +213,8 @@ async function connect() {
   if (port) return;
   let current;
   try {
-    current = akdbxBrowser.runtime.connectNative(HOST);
+    current = typeof globalThis.akdbxConnectNative === "function"
+      ? globalThis.akdbxConnectNative(HOST) : akdbxBrowser.runtime.connectNative(HOST);
   } catch {
     scheduleReconnect();
     return;
