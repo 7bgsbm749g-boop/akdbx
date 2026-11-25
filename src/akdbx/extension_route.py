@@ -630,6 +630,14 @@ class ExtensionHub:
             digest = found[0]
         return pairing_code(digest)
 
+    def clear_targets(self):
+        with self._lock:
+            pins, self.pins = self.pins, {}
+            self.selections.clear()
+            self.pairings.clear()
+        for pin in pins.values():
+            pin.close()
+
     def revoke_pairings(self):
         """Invalidate every pending pairing link.
 
@@ -806,12 +814,11 @@ class ExtensionHub:
                 return dict(ok=False, error='vault locked', **({'unlock_url': self.broker.unlock_url}
                                                              if self.broker.unlock_url and not self.broker.unlock_blocked
                                                              else {}))
-            if op == 'match':
-                with self.broker._vault_lock:
-                    return self._match(channel, message)
-            if op == 'release':
-                with self.broker._vault_lock:
-                    return self._release(channel, message)
+            if op in {'match', 'release'}:
+                def perform():
+                    with self.broker._vault_lock:
+                        return (self._match if op == 'match' else self._release)(channel, message)
+                return self.broker.session.run(perform, self.broker._locked_response)
         except ExtensionError:
             pass
         except Exception:

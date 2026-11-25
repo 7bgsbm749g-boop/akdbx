@@ -527,6 +527,8 @@ class WriteManager:
 
     def by_token(self, token, kind='password'):
         """Return a pending private operation for the current vault revision."""
+        if self.broker.session.closing or self.broker.session.due():
+            return None
         self._prune()
         return next((op for op in self.operations.values()
                      if op.revision == self.revision and secrets.compare_digest(op.token, token)

@@ -12,6 +12,7 @@ import stat
 import time
 import threading
 import unicodedata
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -28,6 +29,7 @@ from .versions import active_entries
 from .totp import (MIN_VALIDITY, TotpError, capabilities as totp_capabilities,
                    configured as totp_configured, read_configuration, code_at, https_origin)
 from .browser_password import BrowserPasswords, PasswordPin, DELIVERY as PASSWORD_DELIVERY, endpoint as browser_endpoint
+from .vault_lock import VaultSession
 from . import browser_slots
 from .browser_slots import BrowserSlots, SlotError
 from .password_frames import PROTOCOL as PASSWORD_FRAME_PROTOCOL, POLICY as PASSWORD_FRAME_POLICY
@@ -108,6 +110,7 @@ class Broker:
         typer: Typer,
         *,
         handle_ttl: float = 300,
+        lock_timeout: int = 3600,
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         card_browser_profile: Path | None = None,
@@ -120,6 +123,8 @@ class Broker:
         sms_sources_path=None,
         android_devices_path=None,
     ) -> None:
+        self.session = VaultSession(lock_timeout, unlocked=vault is not None)
+        self.lock_events = {}
         self.vault = vault
         self.typer = typer
         self.targets = TargetPins(typer, clock)
@@ -244,9 +249,53 @@ class Broker:
             if self.vault is not None:
                 return False
             self.vault = vault
+            self.session.opened()
             self.unlock_notifications.publish()
         self.extension.refresh()
         return True
+
+    def lock(self, *, only_if_due=False):
+        """Drain admitted work before dropping the vault and its transient credentials."""
+        link = self.unlock_link
+        with (link.unlock_lock if link is not None else nullcontext()):
+            with self.session.condition:
+                if only_if_due and not self.session.due():
+                    return
+                if self.session.deadline is None:
+                    return
+                self.session.closing = True
+                self.session.condition.notify_all()
+                self.session.condition.wait_for(lambda: self.session.active == 0)
+            try:
+                with self._vault_lock:
+                    # Read the rotated token from the most recent successful unlock.
+                    with (link.lock if link is not None else nullcontext()):
+                        with self._state_lock:
+                            self.vault = None
+                            self._handles.clear()
+                            if link is not None:
+                                self.unlock_url = link.url if link.public_base else None
+                    self.writes.invalidate_revision(all_pending=True)
+                    self.writes.operations.clear()
+                    self.targets.pins.clear()
+                    self.passwords.clear()
+                    self.android.clear()
+                    self.card_targets.close()
+                    self.identity_targets.close()
+                    self.code_targets.close()
+                    self.extension.clear_targets()
+                    with self.sms.condition:
+                        self.sms.messages.clear()
+                        self.sms.setups.clear()
+            finally:
+                with self.session.condition:
+                    self.session.deadline = None
+                    self.session.closing = False
+                    self.session.condition.notify_all()
+            self.extension.refresh()
+
+    def _locked_response(self):
+        return {"ok": False, "error": "vault locked", **self.unlock_fields()}
 
     def _new_handle(self, entry: EntryLike) -> str:
         nonce = secrets.token_bytes(16)
@@ -329,6 +378,22 @@ class Broker:
             return self.unlock_notifications.status(
                 request.get("subscription_id"), cancel=action == "unsubscribe-unlock",
             )
+        if action == 'lock':
+            if set(request) != {'action'}:
+                return {'ok': False, 'error': 'invalid lock request'}
+            self.lock()
+            return {'ok': True, 'locked': True}
+        if action in {'ping', 'relay-status', 'list-password-frames', 'android-devices', 'android-inspect', 'merge-status'}:
+            return self._dispatch_operation(request, delivery_ready)
+        if action == 'sms-wait':
+            connected = delivery_ready or (lambda: True)
+            delivery_ready = lambda: not self.session.closing and connected()
+        return self.session.run(lambda: self._dispatch_operation(request, delivery_ready),
+                                self._locked_response, activity=action not in {
+                                    'write-status', 'sms-wait', 'sms-subscription-status'})
+
+    def _dispatch_operation(self, request, delivery_ready):
+        action = request.get('action')
         if action in {'merge', 'admit', 'merge-status'}:
             if not self._vault_lock.acquire(blocking=False):
                 return {'ok': False, 'error': 'vault busy; merge not started; check merge-status before retry'}
@@ -439,7 +504,7 @@ class Broker:
                     **({"relay": self.relay.status()} if self.relay is not None else {}),
                     **({"active_origin": origin} if isinstance(origin, str) else {})}
         if action == "ping":
-            return {"ok": True, "version": __version__, **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **entry_organize_capabilities(), **entry_edit_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **sms_notification_capabilities(), **self.secrets.capabilities(), **self.android.capabilities(), **self.totp_captures.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
+            return {"ok": True, "version": __version__, "lock_timeout_seconds": self.session.timeout, "lock_event_sources": self.lock_events.copy(), **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **entry_organize_capabilities(), **entry_edit_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **sms_notification_capabilities(), **self.secrets.capabilities(), **self.android.capabilities(), **self.totp_captures.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:

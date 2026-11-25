@@ -1228,6 +1228,12 @@ class AndroidTargets:
                 'mode': mode, 'origin': serialize_origin(origin), 'site_source': source,
                 'package': context['package']}
 
+    def clear(self):
+        with self._lock:
+            pins, self._pins = self._pins, {}
+        for pin in pins.values():
+            pin.close()
+
     def take(self, token) -> AndroidPin | None:
         if not isinstance(token, str):
             return None

@@ -269,6 +269,8 @@ def _read_route(args, capabilities):
 def _request_timeout(payload: dict) -> int:
     """One response budget for both transports; the broker bounds its own work."""
     action = payload.get('action')
+    if action == 'lock':
+        return 490  # A lock waits for an admitted merge to finish.
     if action in {'merge', 'admit'}:
         return 480 if payload.get('refresh_target') or payload.get('preserve_conflicts') else 240
     # Frame routes resolve bounded out-of-process iframe targets first.
@@ -384,6 +386,10 @@ def parser() -> argparse.ArgumentParser:
     setup_cli.add_parser(commands)
     android_cli.add_parser(commands)
     start = commands.add_parser("serve", help="unlock a KDBX and run the local broker")
+    from .vault_lock import timeout_seconds
+    start.add_argument('--lock-timeout', type=timeout_seconds,
+                       default=os.environ.get('AKDBX_LOCK_TIMEOUT', '3600'), metavar='SECONDS',
+                       help='lock after this many seconds of vault inactivity (default 3600)')
     start.add_argument("database", type=Path)
     start.add_argument('--card-browser-profile', type=Path, default=os.environ.get('AKDBX_CARD_BROWSER_PROFILE'),
                        help='existing private Chrome user-data directory with local CDP enabled; no browser is launched')
@@ -522,6 +528,7 @@ def parser() -> argparse.ArgumentParser:
                       help='fill a code of the pending authenticator that capture-totp saved, to confirm a website enrollment')
     for command in (fill, generated, totp):
         command.add_argument('--target', required=True, help='fresh single-use pin-target token; no global fallback')
+    commands.add_parser("lock", help="lock the vault and keep the broker running")
     commands.add_parser("status", help="check broker status")
     new_link = commands.add_parser(
         "new-unlock-link",
@@ -867,7 +874,7 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
         try:
             state = (args.notification_state.expanduser() if args.notification_state is not None
                      else default_notification_state(args.socket))
-            broker = Broker(None, WindowsTyper(), card_browser_profile=args.card_browser_profile,
+            broker = Broker(None, WindowsTyper(), lock_timeout=args.lock_timeout, card_browser_profile=args.card_browser_profile,
                             password_browser_profile=args.password_browser_profile,
                             browser_profile_root=args.browser_profile_root,
                             notification_state_path=state, secret_sinks_path=args.secret_sinks,
@@ -910,7 +917,7 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
             print('a loopback unlock origin or --local-port needs --tls-cert and --tls-key', file=sys.stderr)
             return 2
         try:
-            broker = Broker(None, X11Typer(), card_browser_profile=args.card_browser_profile,
+            broker = Broker(None, X11Typer(), lock_timeout=args.lock_timeout, card_browser_profile=args.card_browser_profile,
                             password_browser_profile=args.password_browser_profile,
                             browser_profile_root=args.browser_profile_root,
                             notification_state_path=args.notification_state or default_notification_state(args.socket),
@@ -973,7 +980,9 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
               file=sys.stderr)
     print(f"Broker ready at {args.socket}; Ctrl-C locks it.", file=sys.stderr)
     try:
-        serve(args.socket, broker)
+        from .desktop_lock import watch_locks
+        with watch_locks(broker):
+            serve(args.socket, broker)
     except KeyboardInterrupt:
         print("\nBroker locked.", file=sys.stderr)
     finally:

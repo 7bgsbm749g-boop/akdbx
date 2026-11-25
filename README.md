@@ -423,9 +423,21 @@ subcommand. With neither, the CLI uses the origin of an enabled akdbx relay
 (0.26.0+), then `https://localhost:9443`. The same setting configures the broker's private-page origin at startup; the built-in default is `https://localhost:9443` on both platforms (before 0.23.0, Linux used a non-routable example). Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
 requires global `--broker-uid UID` (or `AKDBX_BROKER_UID`).
 
-The master password travels inside the HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Unlock remains valid for the lifetime of the broker process.
+The master password travels inside the HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Run `akdbx lock` to lock immediately and keep the broker available for a fresh private unlock.
+By default the broker locks after one hour of vault inactivity. Set `serve --lock-timeout SECONDS`
+or `AKDBX_LOCK_TIMEOUT` to a positive number of seconds. Successful vault operations renew the timer.
+Checking broker status does not. A lock lets admitted operations finish, discards pending writes,
+handles and fill targets, and keeps the saved database and paired browsers. Get the new link with
+`akdbx status`. Unlocking the desktop leaves the vault locked.
 
-Key-file databases are supported with `serve DB --keyfile KEY`. Stop the broker with Ctrl-C to lock it and remove its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
+On Windows the broker listens for session-lock and suspend/resume messages in its desktop session.
+On Linux it listens to systemd-logind through `/usr/bin/gdbus` for the user's session lock and system sleep.
+On Hyprland it also subscribes directly to the compositor's lock notification. Run the broker with
+the desktop's `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and `XDG_CURRENT_DESKTOP=Hyprland` for that route.
+The `lock_event_sources` field in `akdbx status` shows which listeners are ready.
+For a locker that reports neither event, configure its lock hook to run `akdbx lock`.
+
+Key-file databases are supported with `serve DB --keyfile KEY`. Ctrl-C stops the broker and removes its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
 ## Unlock from the internet
 
