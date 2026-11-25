@@ -31,14 +31,44 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[test]' selenium==4.38.0
-      - uses: browser-actions/setup-firefox@2ddc1281882c66dd6a359947714eed0a4b91afc1 # v1
+      - uses: browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795 # v1.7.2
         id: firefox
         with:
           firefox-version: ${{ matrix.firefox }}
-      - uses: browser-actions/setup-geckodriver@617ad6f7b2f162033adf38138d619be5101af52e
-        with:
-          geckodriver-version: '0.36.0'
-          token: ${{ github.token }}
+      - name: Install pinned geckodriver from Mozilla
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, io, os, platform, tarfile, urllib.request, zipfile
+          from pathlib import Path
+          suffix = ('win64.zip' if os.name == 'nt' else
+                    ('macos-aarch64.tar.gz' if platform.machine() == 'arm64' else 'macos.tar.gz')
+                    if platform.system() == 'Darwin' else 'linux64.tar.gz')
+          checksums = {
+              'linux64.tar.gz': '0bde38707eb0a686a20c6bd50f4adcc7d60d4f73c60eb83ee9e0db8f65823e04',
+              'macos-aarch64.tar.gz': 'c045c8c0d859e6045defbb1c31b37ebeb3c942fc61daaf11e21fc634f2d71c52',
+              'macos.tar.gz': 'b5627bfc29801b8752c9f1e7699018963c39c076aab6576dc14fcb1ce7a256f6',
+              'win64.zip': '4c23d54681d431b42575a66c3c89202a40add3ef45e64b94acac620a89774ad2',
+          }
+          url = 'https://github.com/mozilla/geckodriver/releases/download/v0.36.0/geckodriver-v0.36.0-' + suffix
+          with urllib.request.urlopen(url, timeout=60) as response:
+              data = response.read(16 * 1024 * 1024)
+          assert hashlib.sha256(data).hexdigest() == checksums[suffix], 'geckodriver checksum mismatch'
+          name = 'geckodriver.exe' if os.name == 'nt' else 'geckodriver'
+          archive = zipfile.ZipFile(io.BytesIO(data)) if suffix.endswith('.zip') else tarfile.open(fileobj=io.BytesIO(data))
+          with archive:
+              member = archive.open(name) if suffix.endswith('.zip') else archive.extractfile(name)
+              with member:
+                  binary = member.read(16 * 1024 * 1024 + 1)
+          assert len(binary) <= 16 * 1024 * 1024, 'geckodriver exceeds size limit'
+          folder = Path(os.environ['RUNNER_TEMP']) / 'geckodriver'
+          folder.mkdir()
+          path = folder / name
+          path.write_bytes(binary)
+          path.chmod(0o755)
+          with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as stream:
+              print(folder, file=stream)
+          PY
       - name: Firefox host, exact documents, iframe fills and navigation refusal
         env:
           AKDBX_REQUIRE_FIREFOX_BROWSER: '1'
