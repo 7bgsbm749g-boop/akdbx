@@ -1,5 +1,4 @@
 """Public RFC vectors and synthetic vaults/targets only; no live MFA is used."""
-import base64
 import json
 import math
 import stat
@@ -15,10 +14,7 @@ from akdbx.totp import (Configuration, TotpError, code_at, configured,
 from test_broker import Entry, RecordingTyper, Vault, running_broker, x11_target_request as target_request
 from test_web_unlock import call
 from test_writes import MASTER, OLD, begin, deployed, private_post, reopened, template
-
-
-KEY = base64.b32encode(b'12345678901234567890').decode('ascii')
-URI = 'otpauth://totp/Example:synthetic-account?secret=' + KEY + '&issuer=Example'
+from totp_vectors import KEY, URI
 
 
 @pytest.mark.parametrize('timestamp,expected', [

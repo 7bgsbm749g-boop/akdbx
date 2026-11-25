@@ -593,7 +593,7 @@ def test_additional_origins_keep_phishing_chain_refusals(lab, top, origin, addit
 
 @pytest.mark.parametrize('scenario', ['same-site-in-process', 'same-site-out-of-process'])
 def test_child_frame_totp_uses_exact_frame_url_and_retained_owner(lab, scenario, monkeypatch):
-    from test_totp import URI
+    from totp_vectors import URI
     top, origin, _ = SCENARIOS[scenario]
     fid = navigate(lab, top, origin)
     frame_eval(lab, fid, "password.id='otp';otp.type='text';otp.autocomplete='one-time-code';otp.focus()", gesture=True)

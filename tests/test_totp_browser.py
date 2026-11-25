@@ -13,7 +13,7 @@ from test_broker import Entry, Vault
 from test_target import isolated_x11  # noqa: F401
 from test_target_chromium import synthetic_chromium  # noqa: F401
 from test_extension_browser import harness, private_dir, certificates  # noqa: F401
-from test_totp import URI, KEY
+from totp_vectors import URI, KEY
 
 
 @pytest.fixture(params=['cdp', 'extension'])
@@ -133,12 +133,13 @@ def test_cross_mode_refusal_consumes_pin_without_credential_access(browser, monk
     import akdbx.broker as module
     b = browser
     monkeypatch.setattr(module, 'read_configuration', lambda *_: pytest.fail('password pin read OTP configuration'))
-    pin = b.pin()
-    assert pin['ok']
     for mode in ['password', 'login', 'username']:
+        pin = b.pin()
+        assert pin['ok']
         result = b.broker.dispatch(dict(action='fill', mode=mode, handle=b.handle(),
                                        target=pin['target'], target_protocol=1))
         assert result == failure()
+        assert b.fill(pin) == failure()  # The rejected mode consumed this live pin.
     b.field('type=password autocomplete=current-password')
     pin = b.pin(mode='password')
     assert pin['ok'], pin
@@ -186,18 +187,20 @@ def test_pending_enrollment_uses_same_dom_guards(browser, monkeypatch):
 def test_bad_code_and_field_format_are_refused_before_secret_dispatch(browser, monkeypatch):
     import akdbx.broker as module
     b = browser
+    attempted = []
     if b.route == 'extension':
         [channel] = b.broker.extension.channels.values()
         call = channel.call
         def never_fill(op, *args, **kwargs):
-            assert op != 'fill', 'known bad format dispatched a code to extension'
+            if op == 'fill':
+                attempted.append(op)
             return call(op, *args, **kwargs)
         monkeypatch.setattr(channel, 'call', never_fill)
     else:
         # Wrap each captured pin's connection after pinning below.
         pass
     for attributes, code in [('type=text maxlength=5', '050471'), ('type=text', 'not-a-code'),
-                              ('type=text pattern="[A-Z]{6}"', '050471')]:
+                              ('type=text pattern="[A-Z]{6}"', '050471'), ('type=text pattern=""', '050471')]:
         b.field(attributes)
         pin = b.pin()
         assert pin['ok'], pin
@@ -205,12 +208,34 @@ def test_bad_code_and_field_format_are_refused_before_secret_dispatch(browser, m
             retained = b.broker.passwords.pins[pin['target']][1]
             call = retained.connection.call
             def never_fill(method, params=None, *args, **kwargs):
-                assert not (method == 'Runtime.callFunctionOn' and params.get('functionDeclaration') == FILL)
+                if method == 'Runtime.callFunctionOn' and params.get('functionDeclaration') == FILL:
+                    attempted.append(method)
                 return call(method, params, *args, **kwargs)
             monkeypatch.setattr(retained.connection, 'call', never_fill)
         monkeypatch.setattr(module, 'code_at', lambda *_, code=code: code)
         assert not b.fill(pin)['ok']
+        assert attempted == [], 'known bad format dispatched a code'
         assert b.evaluate('otp.value === ""')
+
+
+def test_card_hints_never_authorize_a_totp_pin(browser):
+    b = browser
+    for hint in ['name=cardnumber', 'aria-label="Card number"', 'name=cvc', 'name=cvv',
+                 'aria-label="Security CVC"', 'name=cc-csc', 'name=credit_card']:
+        b.field('type=text ' + hint)
+        assert b.pin() == failure(), hint
+        assert b.evaluate('otp.value === "" && keyEvents === 0')
+
+
+def test_accepted_code_can_advance_the_challenge_during_input(browser):
+    b = browser
+    b.evaluate('window.acceptedCode=false;otp.addEventListener("input",event=>{'
+               'acceptedCode=event.target.value === "050471";event.target.remove();other.focus()},{once:true})')
+    pin = b.pin()
+    assert pin['ok'], pin
+    assert b.fill(pin) == dict(ok=True, filled='totp', target_delivery=b.delivery)
+    assert b.evaluate('acceptedCode && !document.getElementById("otp") && document.activeElement === other && keyEvents === 0')
+    assert b.fill(pin) == failure()
 
 
 def test_renderer_queue_cannot_outlive_totp_dispatch_deadline(browser, monkeypatch):

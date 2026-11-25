@@ -220,7 +220,7 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
     if (tokens[0]?.startsWith('section-')) tokens.shift();
     if (tokens.length && !(tokens.length === 1 && ['one-time-code','on','off'].includes(tokens[0]))) return false;
     const hints = ['id','name','aria-label'].map(k => attribute.call(e, k) || '');
-    if (hints.some(h => /(?:credit.?card|cc[-_ ]?(?:number|csc|cvv|exp))/i.test(h) ||
+    if (hints.some(h => /(?:credit.?card|card[-_ ]?(?:number|holder|expir|cvc|cvv)|cc[-_ ]?(?:name|number|csc|cvc|cvv|exp)|(?:^|[^a-z0-9])(?:cvc|cvv|csc)(?:$|[^a-z0-9]))/i.test(h) ||
         /password/i.test(h) && !/(?:one[-_ ]?time|totp|otp)/i.test(h))) return false;
     // Only a decimal whole-code format. Unsupported constraints fail closed.
     return !['min','max','step'].some(k => e.hasAttribute(k)) &&
@@ -230,7 +230,7 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
     if (mode !== 'totp' || ![6,8].includes(digits)) return false;
     const e = password, pattern = attribute.call(e, 'pattern');
     if ((e.maxLength >= 0 && e.maxLength < digits) || e.minLength > digits) return false;
-    if (pattern !== null && pattern !== '') {
+    if (pattern !== null) {
       // Do not evaluate arbitrary page patterns against a secret or support split codes.
       const match = /^(?:\\d|\[0-9\])(?:\+|\{(6|8)(?:,(6|8))?\})$/.exec(pattern);
       if (!match || match[1] && (digits < +match[1] || digits > +(match[2] || match[1]))) return false;
@@ -416,12 +416,15 @@ FILL = r'''function(mode, username, password, deadline) {
   // await, or re-selection occurs between validation and assignment.
   if (this.username) this.setter.call(this.username, username);
   if (this.password) this.setter.call(this.password, password);
+  if (mode === 'totp' && this.getter.call(this.password) !== password) throw 0;
   // Send compatibility notifications only after all assignments are complete.
   for (const e of [this.username, this.password]) if (e) {
     e.dispatchEvent(new Event('input', {bubbles:true}));
     e.dispatchEvent(new Event('change', {bubbles:true}));
   }
-  if (mode === 'totp' && (performance.now() >= deadline || !this.check() || this.getter.call(this.password) !== password)) throw 0;
+  // A challenge may consume the code and remove its field in an input handler.
+  // Delivery was checked before page notification; expiry still makes it uncertain.
+  if (mode === 'totp' && performance.now() >= deadline) throw 0;
   return true;
 }'''
 

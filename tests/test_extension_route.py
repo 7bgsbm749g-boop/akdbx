@@ -1820,7 +1820,7 @@ def test_a_child_frame_read_pin_without_a_route_takes_cdp_when_the_extension_is_
 
 @pytest.mark.parametrize('platform', ['win32', 'darwin', 'linux'])
 def test_totp_extension_contract_is_platform_independent(monkeypatch, platform):
-    from test_totp import URI
+    from totp_vectors import URI
     monkeypatch.setattr(route.sys, 'platform', platform)
     broker = make_broker()
     broker.vault.entries[0].otp = URI
@@ -1875,7 +1875,7 @@ def test_totp_frame_origin_must_equal_assertion_and_entry_before_otp_access(monk
 
 @pytest.mark.parametrize('boundary', ['preflight', 'receipt'])
 def test_totp_extension_rejects_unknown_response_fields_without_secret_output(boundary, capsys, caplog):
-    from test_totp import URI, KEY as OTP_KEY
+    from totp_vectors import URI, KEY as OTP_KEY
     broker = make_broker()
     broker.vault.entries[0].otp = URI
     broker.wall_clock = lambda: 1111111111

@@ -1678,7 +1678,7 @@ def test_a_worker_that_finds_a_newer_build_on_disk_refuses_the_pin_and_reloads_i
 
 
 def test_child_frame_totp_uses_exact_frame_origin_and_retained_owner(harness):
-    from test_totp import URI
+    from totp_vectors import URI
     lab, broker = harness.lab, harness.broker
     url = lab.navigate('/framed-visible')
     lab.wait("document.readyState === 'complete'")

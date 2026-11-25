@@ -21,11 +21,14 @@ or recovery options to finish it.
   A setup key printed in space-separated groups needs extension 0.6.0 or newer
   (an older one reads only a key printed as one token).
 
-The code fill uses a window pin (`pin-target`), as every `fill-totp` does: the
-verified X11 client window on Linux, the verified top-level HWND on Windows
-(see [Windows operation](windows.md)).
+The pending code fill uses the same TOTP pins as a saved code: retained DOM
+pins on CDP (Linux/Windows), the paired extension (Linux/Windows/macOS), or
+Current Window pins on Linux X11/Windows. Browser pins require integer
+`browser_totp_protocol: 1`; extension pins also require integer
+`extension_totp_protocol: 1` and fill extension 0.10.0 or newer. See
+[TOTP delivery](totp.md#capabilities-and-selection) for route-specific checks.
 
-On an agent desktop slot (`status` shows `browser_profile_root`), the slot's
+For Current Window on an agent desktop slot (`status` shows `browser_profile_root`), the slot's
 Chrome runs on the slot's own X display, not the broker's. Pin its window with
 `--browser-slot SLOT` (0.35.3+, `target_slot_protocol: 1`; pass it explicitly,
 for example `--browser-slot "$AGENT_DESKTOP_SLOT"`): the broker finds that slot's Chrome from its
@@ -98,9 +101,16 @@ boxes, never text. Do not select or drag over the text.
    (GitHub: "Verify the code from the app"), and fill a code of the pending key:
 
    ```bash
-   akdbx pin-target --pid VERIFIED_PID --window VERIFIED_WINDOW [--browser-slot SLOT]  # X11 client window, or HWND on Windows
+   akdbx pin-password-target --route extension --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
+     --top-url 'EXACT_HTTPS_URL' --selector '#otp' --mode totp
    akdbx fill-totp FRESH_HANDLE --pending --target-url 'EXACT_HTTPS_URL' --target FRESH_TARGET
    ```
+
+   Use `--route cdp` for a configured CDP browser; add `--browser-slot SLOT`
+   when needed. For a child challenge frame, add `--frame-origin ORIGIN` and
+   its frame ID; the fill's target URL is that exact child challenge URL.
+   Current Window can instead use `pin-target --pid VERIFIED_PID --window
+   VERIFIED_WINDOW` (plus `--browser-slot SLOT` for an agent desktop slot).
 
    On `retry_after`, wait that many seconds, then take a fresh handle and pin.
    Submit if the site needs a click, then check the site's non-secret result

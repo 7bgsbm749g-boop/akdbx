@@ -7,9 +7,17 @@ account, origin and focused field before filling.
 
 ## Capabilities and selection
 
-Require CLI/broker 0.10.0 or newer and `status` fields `totp_supported: true`,
-integer `totp_protocol: 1`, `target_fill_required: true`, integer
-`target_fill_protocol: 1`, and `target_fill_delivery: x11-send-event-v1`.
+Require `status` fields `totp_supported: true`, integer `totp_protocol: 1`,
+`target_fill_required: true` and integer `target_fill_protocol: 1`.
+Then check the selected route:
+
+- CDP: integer `browser_totp_protocol: 1` and a configured CDP profile.
+- Extension: integer `browser_totp_protocol: 1`, integer
+  `extension_totp_protocol: 1` and a paired extension **0.10.0** or newer.
+- Current Window: `target_fill_delivery: x11-send-event-v1` on Linux or
+  `win32-char-v1` on Windows. This method is unavailable on macOS; its
+  `target_fill_delivery: unavailable` does not block the paired extension.
+
 The CLI checks capabilities before sending TOTP requests. Updating installed
 source does not change an old running process; coordinate its normal restart
 and private unlock, without disrupting another live workflow.
@@ -52,11 +60,14 @@ authorize an entry.
 Only one input of type `text`, `tel`, `number` or `password` is supported.
 Split-digit fields, textareas, hidden/disabled/read-only fields, conflicting
 password/card hints and unsupported format constraints refuse. Metadata, URL,
-focus and the retained element must remain stable. Leading zeros stay intact;
+focus and the retained element must remain stable through assignment. The site
+may then consume the code and advance its form during notification. Leading
+zeros stay intact;
 `maxlength` must admit all six/eight digits. Supported patterns are `\d+`,
 `[0-9]+`, or those digit classes with `{6}`, `{8}` or `{6,8}`. Explicit `min`,
-`max` or `step` constraints refuse. A public digit-count preflight checks field
-format before dispatch; the renderer repeats the checks at the setter.
+`max` or `step` constraints and an empty `pattern` refuse. A public digit-count
+preflight checks field format before dispatch; the renderer repeats the checks
+at the setter.
 Password pins cannot accept TOTP, and TOTP pins cannot accept saved/generated
 passwords, login fills or username fills. SMS/webhook code pins are separate.
 There is no keyboard, Tab or clipboard fallback on these browser routes.
@@ -71,7 +82,8 @@ CDP, extension or Current Window.
 All handles and pins are single-use, including failures. A success receipt
 contains only `ok: true`, `filled: totp` and `target_delivery`: browser CDP uses
 `chromium-password-dom-v1`, extension uses `extension-dom-v1`, and Current Window
-uses `x11-send-event-v1`. The broker sends no submit key. Submit through the
+uses `x11-send-event-v1` on Linux or `win32-char-v1` on Windows.
+The broker sends no submit key. Submit through the
 verified application and check its non-secret result. Never inspect or return
 the filled code, or put it in chat, logs, screenshots or notes.
 

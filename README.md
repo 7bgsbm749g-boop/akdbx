@@ -889,7 +889,7 @@ the broker does not protect against a malicious process sharing its OS account.
 
 After import, search returns `totp_configured: true` for that entry. Verify the
 site and account, focus the whole-code input, then pin and fill using fresh
-single-use references. Browser TOTP requires `browser_totp_protocol: 1`:
+single-use references. Browser TOTP (0.44.0+) requires `browser_totp_protocol: 1`:
 
 ```bash
 akdbx list-password-frames --route extension --top-url 'https://example.com/challenge'
