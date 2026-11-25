@@ -59,7 +59,7 @@ describes. Chrome's host manifest is under
 under `~/Library/Application Support/Microsoft Edge/NativeMessagingHosts`.
 Pairing and sealed values use the same protocol as Linux and Windows.
 
-Firefox 153+ is supported from 0.46.0 with its own native host and extension
+Firefox 153+ is supported from 0.47.0 with its own native host and extension
 build. See [Firefox setup](firefox.md); its macOS host manifest goes under
 `~/Library/Application Support/Mozilla/NativeMessagingHosts`.
 
