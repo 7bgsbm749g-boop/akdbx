@@ -39,7 +39,8 @@ class Session:
         if self.preflight_error:
             raise RuntimeError(value)
 
-    def write(self, index, value):
+    def write(self, index, value, before_write):
+        before_write()
         self.values[index] = value
         if self.reject_after_write:
             self.focused = 2
@@ -57,7 +58,11 @@ def setup(mode='password', **extra):
     session.focused = 2 if mode == 'read' else 0 if mode in {'card', 'identity', 'username', 'totp'} else 1
     now = [10.0]
     manager = NativeFields(scan=lambda pid: [session], clock=lambda: now[0])
+    if mode == 'login':
+        session.focused = 0
     listing = manager.discover(dict(action='list-native-fields', native_protocol=1, pid=123))
+    if mode == 'login':
+        session.focused = 1
     window = listing['windows'][0]['window']
     args = dict(action='pin-native-target', native_protocol=1, window=window,
                 control=session.focused, mode=mode, service_url=SITE, **extra)
@@ -149,8 +154,8 @@ def test_listing_and_receipts_never_include_values_or_names():
     result = manager.discover(dict(action='list-native-fields', native_protocol=1, pid=123))
     assert set(result['windows'][0]) == {'window', 'controls'}
     assert result['windows'][0]['controls'] == [
-        dict(control=0, password=False, readonly=False), dict(control=1, password=True, readonly=False),
-        dict(control=2, password=False, readonly=True)]
+        dict(control=0, password=False, readonly=False, focused=False), dict(control=1, password=True, readonly=False, focused=True),
+        dict(control=2, password=False, readonly=True, focused=False)]
     assert session.read_value not in json.dumps(result)
     manager.close()
     assert session.closed and not manager.views
@@ -216,3 +221,111 @@ def test_native_cli_rejects_extra_values_in_discovery_receipt(monkeypatch, capsy
     monkeypatch.setattr(cli, 'request', request)
     assert cli.main(['list-native-fields', '--pid', '123']) == 2
     assert 'must-not-print' not in str(capsys.readouterr())
+
+
+
+@pytest.mark.parametrize('value', ['Shah\u200cr', 'Deva\u200dnagar'])
+def test_native_identity_fields_accept_saved_unicode_joiners(value):
+    manager, session, receipt, _ = setup('identity', field='address-level2')
+    pin = manager.take(receipt['target'])
+    assert manager.fill(pin, value, 'address-level2', lambda: True, 14)['ok']
+    assert session.values == {0: value}
+    pin.close()
+
+
+@pytest.mark.parametrize('change', ['deadline', 'caller', 'focus'])
+def test_authorization_rechecked_inside_backend_before_dispatch(change):
+    manager, session, receipt, now = setup()
+    pin = manager.take(receipt['target'])
+    ready = [True]
+    original = session.write
+    def delayed_write(index, value, before_write):
+        # Models time spent waiting for the backend lock or editable interface.
+        if change == 'deadline': now[0] = 15
+        if change == 'caller': ready[0] = False
+        if change == 'focus': session.focused = 0
+        original(index, value, before_write)
+    session.write = delayed_write
+    with pytest.raises(DeliveryError) as error:
+        manager.deliver_password(pin, 'password', '', 'must-not-arrive', ORIGINS, lambda: ready[0], 14)
+    assert not error.value.started and not session.values
+    pin.close()
+
+
+def test_login_requires_username_focus_at_discovery_and_password_focus_at_pin():
+    session = Session()
+    session.controls.append(3)
+    session.facts.append((False, False, False))  # Another plain account edit.
+    session.focused = 3
+    manager = NativeFields(scan=lambda pid: [session])
+    window = manager.discover(dict(action='list-native-fields', native_protocol=1, pid=123))['windows'][0]
+    assert next(f['control'] for f in window['controls'] if f['focused']) == 3
+    session.focused = 1
+    with pytest.raises(TargetError):
+        manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                         control=1, username_control=0, mode='login', service_url=SITE))
+    assert not session.values and session.closed
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_linux_read_is_bounded_and_refuses_a_growing_field(changed):
+    from types import SimpleNamespace
+    from akdbx.linux_fields import LinuxFields
+    session = object.__new__(LinuxFields)
+    session.controls = [1]
+    session.describe = lambda index: (False, True)
+    counts = iter([3, 7 if changed else 3])
+    def call(name, iface):
+        assert name == 'text_get_character_count'
+        return next(counts)
+    def string(name, iface, start, end):
+        assert (name, start, end) == ('text_get_text', 0, 65537)
+        return 'secret!' if changed else 'key'
+    session.api = SimpleNamespace(accessible_get_text_iface=lambda node: 2, call=call, string=string,
+                                  obj=SimpleNamespace(g_object_unref=lambda node: None))
+    if changed:
+        with pytest.raises(TargetError): session.read(0)
+    else:
+        assert session.read(0) == 'key'
+
+
+@pytest.mark.parametrize('changed', [False, True])
+def test_windows_read_is_bounded_and_refuses_a_growing_field(changed):
+    import ctypes as C
+    from akdbx.windows_fields import WindowsFields
+    session = object.__new__(WindowsFields)
+    session.controls = [1]
+    session.describe = lambda index: (False, True)
+    lengths = iter([3, 7 if changed else 3])
+    def message(hwnd, kind, size=0, pointer=0):
+        if kind == 0x000E: return next(lengths)
+        assert kind == 0x000D and size == 65538
+        value = 'secret!' if changed else 'key'
+        C.memmove(pointer, C.create_unicode_buffer(value), (len(value) + 1) * C.sizeof(C.c_wchar))
+        return len(value)
+    session.message = message
+    if changed:
+        with pytest.raises(TargetError): session.read(0)
+    else:
+        assert session.read(0) == 'key'
+
+
+def test_linux_dispatch_guard_runs_after_editable_interface_acquisition():
+    from types import SimpleNamespace
+    from akdbx.linux_fields import LinuxFields
+    manager, session, receipt, now = setup()
+    pin = manager.take(receipt['target'])
+    backend = object.__new__(LinuxFields)
+    backend.controls = [0, 1, 2]
+    def get_iface(node):
+        now[0] = 15  # Time expires while acquiring the interface.
+        return 42
+    def forbidden(*args):
+        pytest.fail('expired operation reached the write API')
+    backend.api = SimpleNamespace(accessible_get_editable_text_iface=get_iface, call=forbidden,
+                                  obj=SimpleNamespace(g_object_unref=lambda node: None))
+    session.write = backend.write
+    with pytest.raises(DeliveryError) as error:
+        manager.deliver_password(pin, 'password', '', 'must-not-arrive', ORIGINS, lambda: True, 14)
+    assert not error.value.started and not session.values
+    pin.close()

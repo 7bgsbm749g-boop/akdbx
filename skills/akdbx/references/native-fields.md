@@ -53,9 +53,9 @@ akdbx list-native-fields --pid VERIFIED_PID
 ```
 
 The response contains only opaque window tokens and control indices with
-password/read-only flags. It reads no values, labels or titles. Verify the
-indices against the independently inspected controls; never infer purpose
-from an index alone. Tokens expire after 30 seconds.
+password/read-only flags and exactly one `focused` flag. It reads no values,
+labels or titles. Select the field through the GUI first and use its `focused`
+index; never infer purpose from an index alone. Tokens expire after 30 seconds.
 
 Pin the selected control:
 
@@ -65,9 +65,12 @@ akdbx pin-native-target --window OPAQUE_WINDOW --control PASSWORD_INDEX \
 ```
 
 Password mode requires a still-masked password control. For combined login,
-use `--mode login --username-control USERNAME_INDEX` and select the password
-control with `--control`. Both controls are pinned explicitly; Tab order is
-irrelevant. Username mode requires an editable, unmasked text control.
+first focus the username field through the GUI, then discover. Save its
+`focused` index as `USERNAME_INDEX`. Next focus the password field through the
+GUI, and pin the same discovery token with `--mode login
+--username-control USERNAME_INDEX --control PASSWORD_INDEX`. The username must
+have held focus during discovery and the password must hold focus at pinning
+and through delivery. Both controls are pinned explicitly; Tab order is irrelevant. Username mode requires an editable, unmasked text control.
 
 Use the returned target with the existing commands:
 

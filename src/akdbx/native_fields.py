@@ -38,9 +38,10 @@ def backend():
     return scan
 
 
-def text(value, multiline=False):
+def text(value, multiline=False, identity=False):
     return (isinstance(value, str) and len(value) <= MAX_TEXT
-            and not any(unicodedata.category(c).startswith('C') and not (multiline and c == '\n') for c in value))
+            and not any(unicodedata.category(c).startswith('C')
+                        and not (multiline and c == '\n' or identity and c in '\u200c\u200d') for c in value))
 
 
 @dataclass
@@ -81,7 +82,7 @@ class NativeFields:
 
     def prune(self):
         with self.lock:
-            for token, (expiry, session) in list(self.views.items()):
+            for token, (expiry, session, _) in list(self.views.items()):
                 if expiry <= self.clock():
                     self.views.pop(token)
                     session.close()
@@ -92,7 +93,7 @@ class NativeFields:
 
     def close(self):
         with self.lock:
-            sessions = [s for _, s in self.views.values()]
+            sessions = [s for _, s, _ in self.views.values()]
             pins = list(self.pins.values())
             self.views.clear()
             self.pins.clear()
@@ -117,12 +118,13 @@ class NativeFields:
                     fields = []
                     if not 0 < len(session.controls) <= 128:
                         raise TargetError()
+                    focused = session.focus(range(len(session.controls)))
                     for index in range(len(session.controls)):
                         facts = session.describe(index)
                         # No names, labels, titles, selected text or field values.
-                        fields.append(dict(control=index, password=facts[0], readonly=facts[1]))
+                        fields.append(dict(control=index, password=facts[0], readonly=facts[1], focused=index == focused))
                     token = secrets.token_hex(32)
-                    self.views[token] = (self.clock() + TTL, session)
+                    self.views[token] = (self.clock() + TTL, session, focused)
                     result.append(dict(window=token, controls=fields))
             return dict(ok=True, pid=request['pid'], windows=result, expires_in=TTL)
         except BaseException:
@@ -142,7 +144,7 @@ class NativeFields:
             found = self.views.pop(token, None) if isinstance(token, str) else None
         if found is None:
             raise TargetError()
-        expiry, session = found
+        expiry, session, discovery_focus = found
         try:
             required = {'action', 'native_protocol', 'window', 'control', 'mode', 'service_url'}
             mode = request.get('mode')
@@ -155,7 +157,7 @@ class NativeFields:
             if mode == 'login':
                 indices = (request['username_control'], request['control'])
             if (any(type(i) is not int or not 0 <= i < len(session.controls) for i in indices)
-                    or len(set(indices)) != len(indices)):
+                    or len(set(indices)) != len(indices) or indices[0] != discovery_focus):
                 raise TargetError()
             field = request.get('field')
             if mode == 'card' and field not in CARD_FIELDS or mode == 'identity' and field not in IDENTITY_FIELDS:
@@ -170,6 +172,8 @@ class NativeFields:
                 elif readonly or password and not masked or not password and mode not in {'card'} and masked:
                     raise TargetError()
             focus = session.focus(indices)
+            if focus != request['control']:
+                raise TargetError()
             kind = 'password' if mode in {'username', 'password', 'login'} else mode
             pin = NativePin(session, mode, kind, indices, facts, focus, origin, field, self.clock() + TTL)
             self.check(pin, lambda: True, pin.expires)
@@ -202,17 +206,20 @@ class NativeFields:
     def _write(self, pin, values, ready, deadline):
         started = False
         try:
-            if len(values) != len(pin.indices) or any(not text(v, pin.kind == 'identity' and pin.field == 'street-address' and bool(f[2]))
+            if len(values) != len(pin.indices) or any(not text(v, pin.kind == 'identity' and pin.field == 'street-address' and bool(f[2]),
+                                                            pin.kind == 'identity')
                                                        for v, f in zip(values, pin.facts)):
                 raise TargetError()
             self.check(pin, ready, deadline)
             # Preflight the whole login before setting either field.
             for index, value in zip(pin.indices, values):
                 pin.session.prepare(index, value)
-            for index, value in zip(pin.indices, values):
+            def before_write():
+                nonlocal started
                 self.check(pin, ready, deadline)
                 started = True
-                pin.session.write(index, value)
+            for index, value in zip(pin.indices, values):
+                pin.session.write(index, value, before_write)
                 self.check(pin, ready, deadline)
         except Exception:
             raise DeliveryError(started) from None

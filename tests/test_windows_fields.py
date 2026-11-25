@@ -33,7 +33,7 @@ def lab():
     entries = []
     manager = NativeFields()
     try:
-        for i, style in enumerate((0, win32con.ES_PASSWORD, win32con.ES_READONLY)):
+        for i, style in enumerate((0, win32con.ES_PASSWORD, win32con.ES_READONLY, 0)):
             entries.append(win32gui.CreateWindowEx(0, 'Edit', 'invented-capture-key' if i == 2 else '',
                 win32con.WS_CHILD | win32con.WS_VISIBLE | win32con.WS_BORDER | win32con.WS_TABSTOP | style,
                 10, 10 + i * 45, 420, 35, window, 100 + i, cls.hInstance, None))
@@ -53,10 +53,12 @@ def discover(manager):
 
 def test_real_win32_login_and_readonly_secret_capture(lab):
     manager, entries = lab
+    win32gui.SetFocus(entries[0])
     window = discover(manager)
     fields = window['controls']
     password = next(f['control'] for f in fields if f['password'])
-    username = next(f['control'] for f in fields if not f['password'] and not f['readonly'])
+    username = next(f['control'] for f in fields if f['focused'])
+    win32gui.SetFocus(entries[1])
     receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
                                control=password, username_control=username, mode='login', service_url=SITE))
     pin = manager.take(receipt['target'], 'password')
@@ -87,4 +89,25 @@ def test_real_win32_refuses_when_focus_or_password_style_changes(lab):
         manager.deliver_password(pin, 'password', '', 'must-not-arrive', {https_origin(SITE)},
                                  lambda: True, time.monotonic() + 4)
     assert not error.value.started and win32gui.GetWindowText(entries[0]) == win32gui.GetWindowText(entries[1]) == ''
+    pin.close()
+
+
+@pytest.mark.parametrize('style', [0x8, 0x10, 0x400])
+@pytest.mark.parametrize('member', [0, 1])
+def test_case_converting_styles_refuse_before_either_login_field_changes(lab, style, member):
+    manager, entries = lab
+    win32gui.SetWindowLong(entries[member], -16, win32gui.GetWindowLong(entries[member], -16) | style)
+    win32gui.SetFocus(entries[0])
+    window = discover(manager)
+    username = next(f['control'] for f in window['controls'] if f['focused'])
+    password = next(f['control'] for f in window['controls'] if f['password'])
+    win32gui.SetFocus(entries[1])
+    receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                               control=password, username_control=username, mode='login', service_url=SITE))
+    pin = manager.take(receipt['target'], 'password')
+    with pytest.raises(DeliveryError) as error:
+        manager.deliver_password(pin, 'login', 'MixedUser', 'MixedPassword', {https_origin(SITE)},
+                                 lambda: True, time.monotonic() + 4)
+    assert not error.value.started
+    assert win32gui.GetWindowText(entries[0]) == win32gui.GetWindowText(entries[1]) == ''
     pin.close()

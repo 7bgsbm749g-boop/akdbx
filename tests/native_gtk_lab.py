@@ -36,7 +36,7 @@ init(None, None)
 window = window_new(0)
 box = box_new(1, 8)
 add(window, box)
-entries = [entry_new() for _ in range(3)]
+entries = [entry_new() for _ in range(4)]
 for entry in entries:
     pack(box, entry, 0, 0, 0)
 visible(entries[1], 0)

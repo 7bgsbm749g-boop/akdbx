@@ -14,6 +14,7 @@ from .target import TargetError, process_identity
 
 LOCK = threading.RLock()
 _API = None
+_INIT_FAILED = False
 # Stable AT-SPI StateType enum values.
 ACTIVE, DEFUNCT, EDITABLE, ENABLED = 1, 6, 7, 8
 FOCUSED, MULTILINE, SENSITIVE, SHOWING, VISIBLE = 12, 17, 24, 25, 30
@@ -99,9 +100,17 @@ class API:
 
 
 def api():
-    global _API
+    global _API, _INIT_FAILED
+    # libatspi can report "already initialized" after a failed initialization,
+    # then abort in get_desktop. Never reuse that failed process-global state.
+    if _INIT_FAILED:
+        raise TargetError()
     if _API is None:
-        _API = API()
+        try:
+            _API = API()
+        except Exception:
+            _INIT_FAILED = True
+            raise TargetError() from None
     return _API
 
 
@@ -177,13 +186,14 @@ class LinuxFields:
                     raise TargetError()
                 self.api.obj.g_object_unref(iface)
 
-    def write(self, index, value):
+    def write(self, index, value, before_write):
         with LOCK:
             node = self.controls[index]
             iface = self.api.accessible_get_editable_text_iface(node)
             if not iface:
                 raise TargetError()
             try:
+                before_write()
                 if not self.api.call('editable_text_set_text_contents', iface, value.encode('utf-8')):
                     raise TargetError()
             finally:
@@ -209,7 +219,11 @@ class LinuxFields:
                 count = self.api.call('text_get_character_count', iface)
                 if not 0 < count <= 65536:
                     raise TargetError()
-                return self.api.string('text_get_text', iface, 0, count)
+                value = self.api.string('text_get_text', iface, 0, 65537)
+                after = self.api.call('text_get_character_count', iface)
+                if len(value) != count or after != count:
+                    raise TargetError()
+                return value
             finally:
                 self.api.obj.g_object_unref(iface)
 

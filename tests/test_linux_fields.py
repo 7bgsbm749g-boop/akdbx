@@ -104,17 +104,20 @@ def listing(manager, pid):
 
 def test_real_gtk_login_and_readonly_secret_capture(lab):
     manager, pid, directory = lab
+    command(directory, focus=0)
     result = listing(manager, pid)
     window = result['windows'][0]
-    assert len(window['controls']) == 3
+    assert len(window['controls']) == 4
+    username = next(f['control'] for f in window['controls'] if f['focused'])
+    command(directory, focus=1)
     assert 'invented-capture-key' not in json.dumps(result)
     receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
-                               control=1, username_control=0, mode='login', service_url='https://example.test/'))
+                               control=1, username_control=username, mode='login', service_url='https://example.test/'))
     pin = manager.take(receipt['target'], 'password')
     manager.deliver_password(pin, 'login', 'invented-user', 'invented-pássword-✓',
                              {https_origin('https://example.test/')}, lambda: True, time.monotonic() + 4)
     pin.close()
-    assert command(directory) == ['invented-user', 'invented-pássword-✓', 'invented-capture-key']
+    assert command(directory) == ['invented-user', 'invented-pássword-✓', 'invented-capture-key', '']
     command(directory, focus=2)
     window = listing(manager, pid)['windows'][0]
     receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
@@ -196,3 +199,27 @@ def test_native_vault_workflows_keep_values_out_of_receipts_and_reopen(lab, depl
     captured = reopened.find_entries(title='Native captured secret', first=True)
     assert captured.get_custom_property('NativeKey') == 'invented-capture-key'
     assert captured.is_custom_property_protected('NativeKey')
+
+def test_linux_failed_accessibility_init_cannot_abort_on_second_discovery():
+    import os
+    import subprocess
+    import sys
+    if not sys.platform.startswith('linux'):
+        pytest.skip('Linux libatspi initialization regression')
+    script = """
+import os
+from akdbx.linux_fields import scan
+from akdbx.target import TargetError
+for attempt in range(2):
+    try:
+        scan(os.getpid())
+    except TargetError:
+        continue
+    raise AssertionError('unexpected discovery without accessibility bus')
+print('both-refused')
+"""
+    env = dict(os.environ, DBUS_SESSION_BUS_ADDRESS='unix:path=/tmp/akdbx-no-such-accessibility-bus', DISPLAY='', WAYLAND_DISPLAY='')
+    result = subprocess.run([sys.executable, '-c', script], env=env, capture_output=True, text=True, timeout=10,
+                            preexec_fn=lambda: __import__('resource').setrlimit(__import__('resource').RLIMIT_CORE, (0, 0)))
+    assert result.returncode == 0, (result.returncode, result.stderr)
+    assert result.stdout.strip() == 'both-refused'

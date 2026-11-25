@@ -15,8 +15,8 @@ def add_parsers(commands):
     command.add_argument('--pid', type=int, required=True, help='independently verified native application process')
     command = commands.add_parser('pin-native-target', help='pin exact native controls; no Tab, global keyboard or clipboard')
     command.add_argument('--window', required=True, help='fresh opaque window token from list-native-fields')
-    command.add_argument('--control', required=True, type=int, help='control index in that window; password control for login')
-    command.add_argument('--username-control', type=int, help='separate username control index, required only for login')
+    command.add_argument('--control', required=True, type=int, help='focused control index; for login, focus password after discovering username')
+    command.add_argument('--username-control', type=int, help='index focused during discovery, required only for login')
     command.add_argument('--mode', choices=MODES, required=True)
     command.add_argument('--field', help='exact card or identity field purpose; required only for those modes')
     command.add_argument('--service-url', required=True,
@@ -43,10 +43,13 @@ def valid(response, command, args):
                 or not isinstance(window['controls'], list) or not 1 <= len(window['controls']) <= 128):
             return False
         for index, field in enumerate(window['controls']):
-            if (not isinstance(field, dict) or set(field) != {'control', 'password', 'readonly'}
+            if (not isinstance(field, dict) or set(field) != {'control', 'password', 'readonly', 'focused'}
                     or type(field['control']) is not int or field['control'] != index
-                    or type(field['password']) is not bool or type(field['readonly']) is not bool):
+                    or type(field['password']) is not bool or type(field['readonly']) is not bool
+                    or type(field['focused']) is not bool):
                 return False
+        if sum(f['focused'] for f in window['controls']) != 1:
+            return False
     return True
 
 

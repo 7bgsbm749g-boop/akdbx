@@ -5,6 +5,7 @@ require an Edit control whose password style and mask remain set. Read capture
 requires an unmasked, read-only Edit control.
 """
 import ctypes as C
+from dataclasses import replace
 from ctypes import wintypes as W
 from pathlib import PureWindowsPath
 
@@ -14,6 +15,7 @@ from .windows_target import NativeWindows
 BROWSERS = {'chrome.exe', 'chromium.exe', 'firefox.exe', 'msedge.exe', 'helium.exe',
             'brave.exe', 'opera.exe'}
 READONLY, PASSWORD = 0x800, 0x20
+CONVERTING = 0x8 | 0x10 | 0x400  # ES_UPPERCASE, ES_LOWERCASE, ES_OEMCONVERT
 
 
 class WindowsFields:
@@ -36,8 +38,14 @@ class WindowsFields:
         return True
 
     def _base(self):
-        if self.closed or self.native.snapshot(self.pid, self.window) != self.identity:
+        if self.closed:
             raise TargetError()
+        current = self.native.snapshot(self.pid, self.window)
+        # Discovery binds the username by focus, then login pinning binds the
+        # password by focus. Delivery's check() locks that final focus.
+        if replace(current, focus=self.identity.focus, focus_class=self.identity.focus_class) != self.identity:
+            raise TargetError()
+        return current
 
     def describe(self, index):
         self._base()
@@ -54,8 +62,8 @@ class WindowsFields:
         return bool(style & PASSWORD), bool(style & READONLY), bool(style & 4), style, self.gui.GetParent(hwnd), self.gui.GetDlgCtrlID(hwnd)
 
     def focus(self, indices):
-        self._base()
-        found = [i for i in indices if self.controls[i] == self.identity.focus]
+        current = self._base()
+        found = [i for i in indices if self.controls[i] == current.focus]
         if len(found) != 1:
             raise TargetError()
         return found[0]
@@ -72,11 +80,12 @@ class WindowsFields:
 
     def prepare(self, index, value):
         count = len(value.encode('utf-16-le', errors='strict')) // 2
-        if count > self.message(self.controls[index], 0xD5):  # EM_GETLIMITTEXT
+        if self.describe(index)[3] & CONVERTING or count > self.message(self.controls[index], 0xD5):  # EM_GETLIMITTEXT
             raise TargetError()
 
-    def write(self, index, value):
+    def write(self, index, value, before_write):
         buffer = C.create_unicode_buffer(value)
+        before_write()
         if not self.message(self.controls[index], 0x000C, 0, C.addressof(buffer)):  # WM_SETTEXT
             raise TargetError()
         if self.message(self.controls[index], 0x000E) != len(value.encode('utf-16-le')) // 2:
@@ -89,9 +98,9 @@ class WindowsFields:
         size = self.message(hwnd, 0x000E)  # WM_GETTEXTLENGTH
         if not 0 < size <= 65536:
             raise TargetError()
-        buffer = C.create_unicode_buffer(size + 1)
-        count = self.message(hwnd, 0x000D, size + 1, C.addressof(buffer))  # WM_GETTEXT
-        if count != size:
+        buffer = C.create_unicode_buffer(65538)
+        count = self.message(hwnd, 0x000D, len(buffer), C.addressof(buffer))  # WM_GETTEXT
+        if count != size or self.message(hwnd, 0x000E) != size:
             raise TargetError()
         return buffer.value
 
