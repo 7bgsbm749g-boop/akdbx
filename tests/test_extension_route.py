@@ -991,12 +991,14 @@ def test_cli_lists_pins_and_fills_through_the_extension_route(monkeypatch, capsy
 
 
 
-def test_cli_pins_cards_on_the_extension_route_without_a_frame_url(monkeypatch, capsys):
+@pytest.mark.parametrize('default_route', route.ROUTES)
+def test_cli_pins_cards_on_the_extension_route_without_a_frame_url(monkeypatch, capsys, default_route):
     broker = make_broker([CardEntry()])
+    broker.extension.default_route = default_route
     channel, extension = attach(broker, {5: [Document('TOP', TOP)]})
     base = ['pin-card-target', '--page-id', f'{channel.id}.5', '--frame-id', 'TOP', '--top-url', TOP,
             '--selector', '#number', '--field', 'cc-number']
-    status, refused, _ = run_cli(monkeypatch, capsys, broker, base)
+    status, refused, _ = run_cli(monkeypatch, capsys, broker, base + ['--route', 'cdp'])
     assert status == 1 and 'frame-url' in refused['error']  # The cdp route still needs it.
     status, pin, _ = run_cli(monkeypatch, capsys, broker, base + ['--route', 'extension'])
     assert status == 0 and pin['card_delivery'] == route.DELIVERY
