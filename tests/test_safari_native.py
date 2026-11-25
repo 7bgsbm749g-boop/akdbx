@@ -144,6 +144,7 @@ def test_sandboxed_native_bridge_attaches_and_preserves_profile_isolation(helper
             opened = call(dict(op='open', hello=hello()), profile='profile-a')
             if not opened['ok']:
                 opened['test_runtime_probe'] = call(dict(op='test-runtime-probe'))
+                print(json.dumps(opened, sort_keys=True))
             assert opened['ok'], opened
             token = opened['session']
             assert call(dict(op='read', session=token), profile='profile-b')['ok'] is False
@@ -163,6 +164,39 @@ def test_native_helper_is_actually_sandboxed(helper, tmp_path):
     forbidden = tmp_path / 'synthetic-outside-runtime.txt'
     forbidden.write_text('synthetic sandbox probe, no secret')
     assert checked([str(helper), '--probe-denied', str(forbidden)]).stdout.strip() == b'denied'
+
+
+@pytest.mark.parametrize('grant', ['public-mode', 'ancestor-acl'])
+def test_native_bridge_refuses_runtime_permission_grants(helper, local_broker, grant):
+    from pwd import getpwuid
+    app = Path(getpwuid(os.getuid()).pw_dir) / 'Library/Application Support/akdbx'
+    runtime = app / 'run'
+    try:
+        if grant == 'public-mode':
+            runtime.chmod(0o755)
+        else:
+            checked(['chmod', '+a', 'everyone allow read', str(app)])
+        with running_helper(helper) as call:
+            assert call(dict(op='open', hello=hello()))['ok'] is False
+    finally:
+        runtime.chmod(0o700)
+        if grant == 'ancestor-acl':
+            checked(['chmod', '-N', str(app)])
+
+
+def test_native_bridge_refuses_a_symlinked_runtime_ancestor(helper, local_broker):
+    from pwd import getpwuid
+    app = Path(getpwuid(os.getuid()).pw_dir) / 'Library/Application Support/akdbx'
+    moved = app.with_name('akdbx-safari-native-test')
+    assert not moved.exists() and not moved.is_symlink()
+    app.rename(moved)
+    try:
+        app.symlink_to(moved, target_is_directory=True)
+        with running_helper(helper) as call:
+            assert call(dict(op='open', hello=hello()))['ok'] is False
+    finally:
+        app.unlink()
+        moved.rename(app)
 
 
 def test_xcode_builds_the_native_safari_app(tmp_path):
