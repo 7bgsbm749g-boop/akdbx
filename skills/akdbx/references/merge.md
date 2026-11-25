@@ -258,10 +258,13 @@ authoritative. The broker copies missing custom icons and database CustomData
 keys. For an existing icon UUID it keeps the target icon. For an existing
 CustomData key it uses the source value only when both items have modification
 times and the source is newer. An item without its own clock uses its
-database dictionary clock when available. The target keeps its random slug. The encrypted snapshots retain both originals.
+database dictionary clock when available. Imported keys retain their effective
+modification times. The target keeps its dictionary clock and its random slug. The encrypted snapshots retain both originals.
 The broker keeps the target cipher and KDF. When importing a newer KDBX 4
 minor version into a changed KDBX 4 target, it retains the higher minor version.
-A KDBX 3 target refuses changes that need KDBX 4.1, such as group tags.
+A KDBX 3 target refuses changes that need KDBX 4 or 4.1, including entry or
+group plugin data, per-item metadata clocks, and group tags. Conflict
+preservation stores plugin data and therefore needs a KDBX 4 destination.
 
 ## Failures and recovery
 

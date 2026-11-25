@@ -8,9 +8,11 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import gzip
 import json
 import struct
 import uuid
+import zlib
 from datetime import datetime, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version
 
@@ -165,15 +167,39 @@ def _canonical(node, binaries, version, *, times):
         visit = None
 
 
-def entry_signature(entry, binaries=None):
+def legacy_binary_table(vault):
+    """KDBX 3 uses explicit IDs. XML order and gaps have no meaning."""
+    table = {}
+    for node in vault.tree.findall('./Meta/Binaries/Binary'):
+        raw = node.get('ID', '')
+        if not raw.isascii() or not raw.isdecimal() or int(raw) in table:
+            raise ValueError('invalid binary table')
+        table[int(raw)] = node
+    return table
+
+
+def binary_pool(vault):
+    if vault.version[0] >= 4:
+        return dict(enumerate(vault.binaries))
+    pool = {}
+    for identity, node in legacy_binary_table(vault).items():
+        data = base64.b64decode(node.text or '')
+        pool[identity] = zlib.decompress(data, zlib.MAX_WBITS | 32) if data and node.get('Compressed') == 'True' else data
+    return pool
+
+
+def entry_signature(entry, binaries=None, *, ignore_previous_parent=False):
     node = copy.deepcopy(entry._element)
+    if ignore_previous_parent:
+        for previous in node.findall('PreviousParentGroup'):
+            node.remove(previous)
     timeinfo = node.find('Times')
     if timeinfo is not None:
         for child in list(timeinfo):
             if child.tag in {'LastAccessTime', 'UsageCount'}:
                 timeinfo.remove(child)
     if binaries is None:
-        binaries = entry._kp.binaries
+        binaries = binary_pool(entry._kp)
     return _json(_canonical(node, binaries, entry._kp.version, times=True))
 
 
@@ -204,7 +230,7 @@ def _capsule(entry, group, binaries=None):
     # element argument is a HistoryEntry. Resolve each original Binary directly.
     for attachment in element.findall('Binary'):
         reference = int(attachment.find('Value').get('Ref'))
-        data = (entry._kp.binaries if binaries is None else binaries)[reference]
+        data = (binary_pool(entry._kp) if binaries is None else binaries)[reference]
         attachments.append({'ref': reference, 'data': base64.b64encode(data).decode('ascii')})
     icon_uuid = element.findtext('CustomIconUUID')
     icons = [_packed(icon) for icon in entry._kp.tree.findall('./Meta/CustomIcons/Icon')
@@ -255,7 +281,7 @@ def archives(vault, *, trusted=None):
     validated = {_alias(key): (key, data) for key, data in (trusted or {}).items()}
     # PyKeePass.binaries copies the entire binary pool. Resolve it once, not
     # once per capsule (quadratic work for ordinary phone uploads).
-    binaries = vault.binaries
+    binaries = binary_pool(vault)
     for entry in groups[0].entries:
         try:
             if entry.history or len(entry.attachments) != 1 or entry.attachments[0].filename != FILENAME:
@@ -286,7 +312,7 @@ def collect(vaults, *, capture):
         for identity, data in archives(vault).items():
             ledger.setdefault(identity, data)
         if capture:
-            binaries = vault.binaries
+            binaries = binary_pool(vault)
             for entry in active_entries(vault):
                 for version in [entry, *entry.history]:
                     payload = _capsule(version, entry.group, binaries)
@@ -297,10 +323,15 @@ def collect(vaults, *, capture):
 def append_binary(vault, data):
     """Append protected KDBX4 bytes without materializing the pool for its index."""
     if vault.version < (4, 0):
-        if vault.tree.find('./Meta/Binaries') is None:
-            from lxml import etree
-            etree.SubElement(vault.tree.find('./Meta'), 'Binaries')
-        return vault.add_binary(data, protected=True)
+        from lxml import etree
+        table = legacy_binary_table(vault)
+        container = vault.tree.find('./Meta/Binaries')
+        if container is None:
+            container = etree.SubElement(vault.tree.find('./Meta'), 'Binaries')
+        identity = max(table, default=-1) + 1
+        child = etree.SubElement(container, 'Binary', ID=str(identity), Compressed='True')
+        child.text = base64.b64encode(gzip.compress(data)).decode('ascii')
+        return identity
     from construct import Container
     binaries = vault.payload.inner_header.binary
     reference = len(binaries)
@@ -341,7 +372,7 @@ def ensure(vault, ledger):
     existing = {entry.uuid: entry for entry in vault.entries}
     group_ids = {group.uuid for group in vault.groups}
     aliases = {}
-    binaries = vault.binaries
+    binaries = binary_pool(vault)
     for identity, data in ledger.items():
         alias = _alias(identity)
         if alias in group_ids or alias in aliases and aliases[alias] != identity:

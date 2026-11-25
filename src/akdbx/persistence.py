@@ -46,10 +46,31 @@ else:
 
 def serialize_encrypted(vault):
     """Serialize a candidate using fresh encryption seeds and the target KDF."""
+    requires_41 = vault.tree.xpath(
+        'boolean(//Group/Tags[string-length(text()) > 0] | //Entry/QualityCheck[translate(text(),"FALSE","false")="false"]'
+        ' | //CustomIcons/Icon/Name[string-length(text()) > 0] | //CustomIcons/Icon/LastModificationTime'
+        ' | //CustomData/Item/LastModificationTime)')
     if vault.version[0] >= 4:
+        if requires_41:
+            vault.kdbx.header.value.minor_version = max(vault.version[1], 1)
         output = io.BytesIO()
         vault.save(output)
         return output.getvalue()
+    if requires_41 or vault.tree.xpath('boolean(//Entry/CustomData/Item | //Group/CustomData/Item)'):
+        raise SaveError('metadata requires KDBX 4; target not replaced')
+    # Write a compact ordered binary table for compatibility with clients
+    # that index it by position. References in active and historical entries
+    # use the same remapping. Input images and captured records are untouched.
+    from .versions import legacy_binary_table
+    table = legacy_binary_table(vault)
+    if list(table) != list(range(len(table))):
+        indices = {old: new for new, old in enumerate(sorted(table))}
+        for value in vault.tree.xpath('//Entry/Binary/Value'):
+            value.set('Ref', str(indices[int(value.get('Ref'))]))
+        for old, new in indices.items():
+            node = table[old]
+            node.set('ID', str(new))
+            node.getparent().append(node)
     # PyKeePass rotates the 3.1 header on save but does not update the hash
     # inside its encrypted XML. KeePass verifies that hash when reopening.
     from lxml import etree

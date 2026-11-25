@@ -20,15 +20,12 @@ def validate(vault):
         header_hash = vault.tree.findtext('./Meta/HeaderHash')
         if header_hash and base64.b64decode(header_hash, validate=True) != hashlib.sha256(vault.kdbx.header.data).digest():
             raise ValueError('incorrect KDBX header hash')
-        binaries = vault.tree.findall('./Meta/Binaries/Binary')
-        if any(node.get('ID') != str(index) for index, node in enumerate(binaries)):
-            raise ValueError('unsupported KDBX binary table')
-        count = len(binaries)
+        ids = versions.legacy_binary_table(vault)
     else:
-        count = len(vault.payload.inner_header.binary)
+        ids = range(len(vault.payload.inner_header.binary))
     for node in vault.tree.xpath('//Entry/Binary/Value'):
         ref = node.get('Ref', '')
-        if not ref.isascii() or not ref.isdecimal() or int(ref) >= count:
+        if not ref.isascii() or not ref.isdecimal() or int(ref) not in ids:
             raise ValueError('invalid attachment reference')
 
 
@@ -54,12 +51,12 @@ class _Transfer:
     def __init__(self, target, source):
         self.target = target
         self.source = source
-        self.source_pool = source.binaries
-        self.target_pool = target.binaries
-        self.target_ids = {data: index for index, data in enumerate(self.target_pool)}
+        self.source_pool = versions.binary_pool(source)
+        self.target_pool = versions.binary_pool(target)
+        self.target_ids = {data: index for index, data in self.target_pool.items()}
         self.protected_ids = {}
         if target.version[0] >= 4:
-            self.protected_ids = {data: index for index, data in enumerate(self.target_pool)
+            self.protected_ids = {data: index for index, data in self.target_pool.items()
                                   if target.payload.inner_header.binary[index].data[0] & 1}
 
     def translate(self, node):
@@ -72,7 +69,7 @@ class _Transfer:
             if data not in indices:
                 index = versions.append_binary(self.target, data)
                 self.target_ids[data] = self.protected_ids[data] = index
-                self.target_pool.append(data)
+                self.target_pool[index] = data
             value.set('Ref', str(indices[data]))
         if self.source.version[0] != self.target.version[0]:
             for field in node.xpath('./Times/* | ./History/Entry/Times/* | ./CustomData/Item/LastModificationTime | ./History/Entry/CustomData/Item/LastModificationTime | ./LastModificationTime'):
@@ -140,8 +137,11 @@ def _groups(target, source, transfer):
 
 
 def _history_bytes(node, pool):
-    fields = node.xpath('./String/Key | ./String/Value | ./Binary/Key | ./AutoType/Association/* | ./CustomData/Item/Key | ./CustomData/Item/Value | ./Tags')
+    fields = node.xpath('./String/Key | ./String/Value | ./Binary/Key | ./AutoType/Association/* | ./CustomData/Item/Key | ./CustomData/Item/Value')
     size = sum(len((field.text or '').encode('utf-8')) for field in fields)
+    # The reference size uses each normalized tag once, without delimiters.
+    tags = selection._tags(node.findtext('Tags') or '')
+    size += sum(len(tag.encode('utf-8')) for tag in tags.split(';'))
     return size + sum(len(pool[int(value.get('Ref'))]) for value in node.findall('./Binary/Value'))
 
 
@@ -232,19 +232,35 @@ def _metadata(target, source, transfer):
         incoming = _keyed(source.tree.find('./Meta/' + collection), tag, key)
         source_clock = _dictionary_time(incoming, source) if tag == 'Item' else None
         target_clock = _dictionary_time(existing, target) if tag == 'Item' else None
+        generated = {'KPXC_RANDOM_SLUG', '_LAST_MODIFIED'}
+        # When no destination value inherits its dictionary clock, the imported
+        # dictionary can carry its clock directly (also representable in 3.1).
+        adopt_clock = (tag == 'Item' and source_clock is not None
+                       and bool(incoming.keys() - generated)
+                       and all(existing[k].findtext('LastModificationTime') for k in existing.keys() - generated))
+        if adopt_clock:
+            target_clock = source_clock
         for identity, item in incoming.items():
+            dictionary_clock = tag == 'Item' and identity == '_LAST_MODIFIED'
+            if (tag == 'Item' and identity == 'KPXC_RANDOM_SLUG') or (dictionary_clock and not adopt_clock):
+                continue
             old = existing.get(identity)
-            if old is not None:
+            source_item_clock = item.findtext('LastModificationTime')
+            right = selection.decode_time(source_item_clock, source.version) if source_item_clock else source_clock
+            if old is not None and not dictionary_clock:
                 if tag == 'Icon':
                     continue
-                ltime, rtime = old.findtext('LastModificationTime'), item.findtext('LastModificationTime')
+                ltime = old.findtext('LastModificationTime')
                 left = selection.decode_time(ltime, target.version) if ltime else target_clock
-                right = selection.decode_time(rtime, source.version) if rtime else source_clock
-                if left is None or right is None or right <= left or identity == 'KPXC_RANDOM_SLUG':
+                if left is None or right is None or right <= left:
                     continue
             if container is None:
                 container = etree.SubElement(target.tree.find('./Meta'), collection)
             node = transfer.translate(copy.deepcopy(item))
+            if tag == 'Item' and not source_item_clock and right is not None and right != target_clock:
+                # Keep the target dictionary clock for its retained keys. An
+                # imported key keeps its own effective age across later merges.
+                _set(node, 'LastModificationTime', target._encode_time(right))
             if old is not None and etree.tostring(old, with_tail=False) == etree.tostring(node, with_tail=False):
                 continue
             if old is None:
@@ -270,14 +286,6 @@ def merge(target, source):
         else:
             changed = _merge_entry(current, incoming, parent, transfer, history_limit, size_limit) or changed
     changed = _metadata(target, source, transfer) or changed
-    if changed:
-        requires_41 = target.tree.xpath(
-            'boolean(//Group/Tags[string-length(text()) > 0] | //Entry/QualityCheck[text()="False"]'
-            ' | //CustomIcons/Icon/Name[string-length(text()) > 0] | //CustomIcons/Icon/LastModificationTime'
-            ' | //CustomData/Item/LastModificationTime)')
-        if target.version[0] == 3 and requires_41:
-            raise ValueError('merged data requires KDBX 4.1')
-        if target.version[0] == 4:
-            minor = source.version[1] if source.version[0] == 4 else 0
-            target.kdbx.header.value.minor_version = max(target.version[1], minor, int(requires_41))
+    if changed and target.version[0] == source.version[0] == 4:
+        target.kdbx.header.value.minor_version = max(target.version[1], source.version[1])
     return changed

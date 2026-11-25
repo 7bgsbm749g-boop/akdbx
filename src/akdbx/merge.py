@@ -69,11 +69,14 @@ def _check_ambiguity(*vaults, preserve=False):
                 for item in [entry, *entry.history]:
                     selection.modification_time(item)
             continue
-        binaries = vault.binaries
+        binaries = versions.binary_pool(vault)
         for entry in versions.active_entries(vault):
             for item in [entry, *entry.history]:
                 key = (item.uuid, selection.modification_time(item))
-                signature = _entry_signature(item, binaries)
+                # A move may give the active record a different previous parent
+                # than its same-time backup. Full history verification below
+                # still requires every original version, including its location.
+                signature = versions.entry_signature(item, binaries, ignore_previous_parent=True)
                 if key in records and records[key] != signature:
                     raise MergeError('conflicting same-second records; merge refused; originals retained')
                 records[key] = signature
@@ -135,12 +138,12 @@ def synchronize_deletions(candidate, *originals):
 
 def verify_history(candidate, *originals, allow_deletions=True):
     """Refuse engine history pruning instead of silently losing old values."""
-    binaries = candidate.binaries
+    binaries = versions.binary_pool(candidate)
     retained = {e.uuid: {(selection.modification_time(h), _entry_signature(h, binaries)) for h in [e, *e.history]} for e in candidate.entries}
     deletions = {r.findtext('UUID'): selection.decode_time(r.findtext('DeletionTime'), candidate.version)
                  for r in candidate.tree.findall('./Root/DeletedObjects/DeletedObject')}
     for vault in originals:
-        binaries = vault.binaries
+        binaries = versions.binary_pool(vault)
         for entry in vault.entries:
             if entry.uuid not in retained:
                 deleted = deletions.get(entry._element.findtext('UUID'))
@@ -162,6 +165,8 @@ def merge_images(target_bytes, source_bytes, credentials):
         if not native_merge.merge(target, source):
             return None
         return serialize_encrypted(target)
+    except SaveError as exc:
+        raise MergeError(str(exc)) from None
     except Exception:
         raise MergeError('merge engine failed; target not replaced') from None
 
