@@ -14,9 +14,28 @@ from akdbx import cli, macos, runtime, target
 from akdbx.broker import Broker, serve
 from akdbx.persistence import VaultStore
 from akdbx.target import DeliveryError, TargetError
-from test_local_https import private_pair  # noqa: F401
+from test_local_https import certificates, private_pair  # noqa: F401
 
 native = pytest.mark.skipif(sys.platform != 'darwin', reason='requires the real Darwin kernel')
+
+
+@pytest.mark.parametrize('error', [0, 2, 9, 13])
+def test_acl_absence_is_distinct_from_lookup_failure(monkeypatch, error):
+    import ctypes
+    import errno
+    def lookup(*args):
+        assert ctypes.get_errno() == 0
+        ctypes.set_errno(error)
+        return None
+    libc = SimpleNamespace(acl_get_fd_np=lookup, acl_get_entry=lambda *args: None,
+                           acl_get_tag_type=lambda *args: None, acl_free=lambda *args: None)
+    monkeypatch.setattr(ctypes, 'CDLL', lambda *args, **kwargs: libc)
+    ctypes.set_errno(errno.ENOENT)  # An old errno must not turn an unknown failure into success.
+    if error == errno.ENOENT:
+        macos.require_private_acl(123)
+    else:
+        with pytest.raises(PermissionError):
+            macos.require_private_acl(123)
 
 
 def test_macos_never_falls_back_to_window_input():
@@ -104,7 +123,7 @@ def test_foreign_rpc_peer_is_refused_before_dispatch(monkeypatch):
 
 
 @native
-@pytest.mark.parametrize('custom_socket', [False, True])
+@pytest.mark.parametrize('custom_socket', [None, 's', 'U'])
 def test_documented_first_launch_uses_extension_route(tmp_path, monkeypatch, private_pair, custom_socket):
     from pykeepass import create_database
     monkeypatch.setattr(Path, 'home', lambda: tmp_path.resolve())
@@ -120,14 +139,15 @@ def test_documented_first_launch_uses_extension_route(tmp_path, monkeypatch, pri
         # A valid main path must not grow when deriving the capture path.
         padding = 99 - len(os.fsencode(tmp_path.resolve() / 'r' / 's'))
         assert padding >= 0
-        expected_socket = tmp_path.resolve() / ('r' + 'x' * padding) / 's'
+        expected_socket = tmp_path.resolve() / ('r' + 'x' * padding) / custom_socket
         options = ['--socket', str(expected_socket)]
     seen = []
     def exercise(path, broker):
         seen.append(broker.dispatch({'action': 'ping'}))
         assert path == expected_socket
         assert path.parent.is_dir()
-        assert (path.parent / 'u').is_socket()
+        capture_name = 's' if path.name.casefold() == 'u' else 'u'
+        assert (path.parent / capture_name).is_socket()
     monkeypatch.setattr(cli, 'serve', exercise)
     cert, key = private_pair
     assert cli.main([*options, '--unlock-origin', 'https://localhost:9443', 'serve', str(database),

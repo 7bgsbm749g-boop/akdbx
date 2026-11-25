@@ -29,8 +29,11 @@ def require_private_acl(fd: int) -> None:
     for name, (result, arguments) in signatures.items():
         function = getattr(libc, name)
         function.restype, function.argtypes = result, arguments
+    ctypes.set_errno(0)
     acl = libc.acl_get_fd_np(fd, 0x100)  # ACL_TYPE_EXTENDED
     if not acl:
+        if ctypes.get_errno() == errno.ENOENT:  # This open object has no extended ACL.
+            return
         raise PermissionError('cannot verify macOS ACL')
     try:
         entry, tag = ctypes.c_void_p(), ctypes.c_int()

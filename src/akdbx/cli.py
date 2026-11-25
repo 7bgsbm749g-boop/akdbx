@@ -876,7 +876,7 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
             return 2
         try:
             prepare_runtime(args.socket, create_ancestors=args.socket == default_socket())
-            capture = args.unlock_socket or args.socket.with_name('u' if args.socket.name != 'u' else 's')
+            capture = args.unlock_socket or args.socket.with_name('u' if args.socket.name.casefold() != 'u' else 's')
             if capture == args.socket:
                 raise ValueError('capture socket must differ from the broker socket')
             prepare_runtime(capture)
