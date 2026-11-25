@@ -106,7 +106,7 @@ def _attachments(entry, pools=None):
             pools = {}
         identity = id(entry._kp)
         if identity not in pools:
-            pools[identity] = entry._kp.binaries
+            pools[identity] = versions.binary_pool(entry._kp)
         return {key: pools[identity][int(node.get('Ref'))] for key, (_, node) in values.items()}
     except Exception:
         raise SelectionError(['unsupported_structure']) from None

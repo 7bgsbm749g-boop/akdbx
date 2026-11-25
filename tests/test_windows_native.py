@@ -302,34 +302,11 @@ def test_alternate_data_streams_are_refused(synthetic_vault):
         security.read_private(str(synthetic_vault) + ':stream')
 
 
-def test_merge_without_a_trusted_engine_is_unavailable_and_refuses(synthetic_vault, monkeypatch):
-    from akdbx import windows_merge
-    monkeypatch.setattr(windows_merge, 'engine_version', lambda: None)
+def test_merge_capability_uses_built_in_engine(synthetic_vault, monkeypatch):
+    monkeypatch.setenv('PATH', '')
     broker = Broker(open_vault_with_password(synthetic_vault, 'synthetic master'), object())
     status = broker.dispatch({'action': 'ping'})
-    assert status['merge_available'] is False and status['merge_engine'] is None
-    before = synthetic_vault.read_bytes()
-    for action in ('merge', 'admit'):
-        result = broker.dispatch({'action': action, 'source': str(synthetic_vault), 'operation_id': 'a' * 32,
-                                  'policy': 'snapshot-admission-v1', 'verification': 'native-containment-v1',
-                                  'snapshot_directory': str(synthetic_vault.parent)})
-        assert not result['ok'] and 'merge unavailable' in result['error'], result
-    assert 'receipt not found' in broker.dispatch({'action': 'merge-status', 'operation_id': 'a' * 32})['error']
-    assert synthetic_vault.read_bytes() == before
-    assert sorted(p.name for p in synthetic_vault.parent.iterdir() if 'akdbx-merge' in p.name) == []
-
-
-def test_user_owned_engine_is_not_trusted(private_dir):
-    """A program that this account can replace is never run as the merge engine."""
-    from akdbx import windows_merge
-    engine = private_dir / 'keepassxc-cli.exe'
-    security.write_new(engine, b'MZ synthetic')
-    with pytest.raises(PermissionError):
-        with windows_merge.trusted_engine(engine):
-            pytest.fail('a user-owned engine was accepted')
-    # The installed engine, when present, is the only candidate; never PATH.
-    assert windows_merge.engine_path().name == 'keepassxc-cli.exe'
-    assert 'KeePassXC' in windows_merge.engine_path().parts
+    assert status['merge_available'] and status['merge_engine'] == 'akdbx-native-v1'
 
 
 def test_until_unlock_subscriptions_survive_a_broker_restart(private_dir):

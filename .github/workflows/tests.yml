@@ -40,8 +40,6 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install -e '.[test]'
       - run: sudo apt-get update && sudo apt-get install -y xvfb
-      # Native merge/benchmark tests need the separately provisioned, pinned
-      # KeePassXC engine. This job covers shared core and both delivery contracts.
       - run: python -m pytest -q tests/test_vault_lock.py tests/test_protocol.py tests/test_cli.py tests/test_broker.py tests/test_writes.py tests/test_web_unlock.py tests/test_totp.py tests/test_target.py tests/test_target_guards.py tests/test_password_frames_policy.py tests/test_additional_urls.py tests/test_save_secret.py tests/test_secret_sinks.py tests/test_generated_native_clock.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_local_https.py tests/test_windows_native.py tests/test_extension_route.py tests/test_relay.py tests/test_relay_integration.py tests/test_setup.py tests/test_page_url_file.py tests/test_broker_identity.py tests/test_browser_slots.py tests/test_extension_launcher.py tests/test_pairing_notifications.py tests/test_android_route.py tests/test_android_lifecycle.py tests/test_entry_organize.py tests/test_entry_edit.py --basetemp="${{ runner.temp }}/akdbx-tests"
       - run: node --test tests/test_fill_extension.js
       # The bundled Android helper dex must be the build of its Java source.
@@ -67,6 +65,23 @@ jobs:
         env:
           AKDBX_TEST_NATIVE_LINUX: '1'
         run: dbus-run-session -- python -m pytest -q -rs tests/test_linux_fields.py tests/test_native_fields.py --basetemp="${{ runner.temp }}/native-fields"
+  native-merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Compatibility cases run historical broker code.
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[test]'
+      - name: Merge encrypted vaults without an external engine
+        run: >-
+          python -m pytest -q tests/test_merge.py tests/test_native_merge_edges.py tests/test_refresh_merge.py tests/test_selection.py
+          tests/test_versions.py tests/test_signature_resources.py
+          --basetemp="${{ runner.temp }}/native-merge"
   linux-extension-browser:
     # The extension route in a real browser: secret capture and frame owners.
     # Google Chrome 137+ ignores --load-extension; Chrome
@@ -132,32 +147,9 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install -e '.[test]'
       - run: python -m akdbx.cli --version
-      - name: Install the pinned native merge engine for all users
-        shell: pwsh
-        run: |
-          # The broker runs only a machine-installed, system-owned engine. The
-          # runner is elevated, so this is the same location a user install has.
-          $zip = Join-Path $env:RUNNER_TEMP 'KeePassXC.zip'
-          curl.exe --fail --location --max-time 180 --max-filesize 67108864 --output $zip `
-            https://github.com/keepassxreboot/keepassxc/releases/download/2.7.10/KeePassXC-2.7.10-Win64.zip
-          $expected = '1769e49bec7a5681e047808876623d525a3741b58959c253e5963476d4cba217'
-          if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'KeePassXC archive checksum mismatch' }
-          $unpacked = Join-Path $env:RUNNER_TEMP 'keepassxc'
-          Expand-Archive -Path $zip -DestinationPath $unpacked
-          $target = Join-Path $env:ProgramFiles 'KeePassXC'
-          if (Test-Path $target) { throw 'KeePassXC is already installed on this runner' }
-          Move-Item (Join-Path $unpacked 'KeePassXC-2.7.10-Win64') $target
-          # Files moved from the runner's temp folder keep its permissions:
-          # take the Program Files defaults instead, owned by Administrators.
-          icacls $target /setowner '*S-1-5-32-544' /T /C /Q | Out-Null
-          icacls $target /reset /T /C /Q | Out-Null
-          $version = & (Join-Path $target 'keepassxc-cli.exe') --version
-          if ($version -ne '2.7.10') { throw "unexpected engine version $version" }
-          python -c "from akdbx import windows_merge; assert windows_merge.engine_version() == '2.7.10', 'the installed engine did not pass the production trust check'"
       - name: Native pipe, saves, DOM and extension routes in real Chromium, merge and admission
         env:
           AKDBX_REQUIRE_WINDOWS_CHROMIUM: '1'
-          AKDBX_REQUIRE_WINDOWS_ENGINE: '1'
           # Google Chrome 137+ ignores --load-extension; Edge still loads the
           # unpacked test extension into its disposable profile.
           AKDBX_REQUIRE_EXTENSION_BROWSER: '1'

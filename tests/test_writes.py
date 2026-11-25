@@ -20,7 +20,6 @@ from pykeepass import PyKeePass, create_database
 from akdbx import cli
 from akdbx.broker import Broker, open_vault_with_password
 from akdbx.persistence import VaultStore
-from akdbx.merge import engine_version
 from akdbx.web_unlock import start_unlock_server
 from akdbx.writes import metadata
 from test_broker import target_request, RecordingTyper, running_broker
@@ -521,8 +520,6 @@ def test_repeated_password_updates_advance_history_clocks(deployed, monkeypatch,
 
 @pytest.mark.parametrize('action', ['update-password', 'generate-password'])
 @pytest.mark.parametrize('preserve', [False, True])
-@pytest.mark.skipif(engine_version() is None,
-                    reason='native merge integration requires trusted KeePassXC CLI >=2.7.10,<2.8')
 def test_password_update_survives_merge_with_older_branch(deployed, tmp_path, action, preserve):
     broker, _, path, socket = deployed
     source_path = tmp_path / 'older-branch.kdbx'
@@ -812,7 +809,7 @@ def test_deployed_cli_wire_flow_and_origin_validation(deployed, capsys, caplog, 
         return json.loads(captured.out)
     with running_broker(socket.with_name('cli.sock'), broker):
         status = command('status')
-        assert status['version'] == '0.45.0' and status['writes_available']
+        assert status['version'] == '0.46.0' and status['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]
         args = [arg for field in ('title', 'username', 'url', 'group') for arg in ('--' + field, selected[field])]
         generated = command('generate-password', selected['handle'], *args, '--length', '28', '--symbols', '')
@@ -878,7 +875,7 @@ def test_actual_installed_executable_against_running_synthetic_broker(deployed, 
         assert all(secret not in result.stdout for secret in (MASTER, OLD, CHOSEN))
         return json.loads(result.stdout)
     version = subprocess.run([str(executable), '--version'], text=True, capture_output=True, check=True)
-    assert version.stdout.strip() == '0.45.0'
+    assert version.stdout.strip() == '0.46.0'
     with running_broker(socket.with_name('installed-cli.sock'), broker):
         assert command('status')['writes_available']
         selected = command('search', 'Synthetic site')['entries'][0]

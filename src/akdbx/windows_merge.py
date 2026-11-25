@@ -1,18 +1,9 @@
-"""Windows transaction for KeePassXC merges and exact-byte snapshot admission.
-
-The request checks, receipts, verification order and failure states are those
-of `merge.py`. Only the file and engine primitives differ. Checked handles and
-DACLs replace descriptor anchoring. `MoveFileEx(WRITE_THROUGH)` replaces rename
-plus fsync. The engine is the machine-installed `keepassxc-cli.exe`, never a
-PATH lookup. Only encrypted KDBX files and fixed, nonsecret receipts are staged.
-"""
-from contextlib import ExitStack, contextmanager
+"""Windows file transactions for native KDBX merge and snapshot admission."""
+from contextlib import ExitStack
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
-import subprocess
 import time
 
 import pywintypes
@@ -21,100 +12,21 @@ import win32file
 
 from . import admission, selection, versions
 from . import windows_security as security
-from .merge import (ENGINE_TIMEOUT, MergeError, MergeManager, _check_ambiguity, _counts, _digest, _open,
-                    supported_version, synchronize_deletions, verify_history)
-from .persistence import SaveError
+from .merge import (MergeError, MergeManager, _check_ambiguity, _counts, _digest, _open,
+                    merge_images, synchronize_deletions, verify_history)
+from .persistence import SaveError, serialize_encrypted
 from .windows_store import WindowsVaultStore, read_merge_receipt
 
 ERROR_ALREADY_EXISTS = 183
-SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX = 0x1, 0x2, 0x8000
 
 
-def engine_path():
-    """The per-machine install location from the known-folder API; never PATH."""
-    from win32com.shell import shell, shellcon
-    return Path(shell.SHGetKnownFolderPath(shellcon.FOLDERID_ProgramFiles, 0, None)) / 'KeePassXC' / 'keepassxc-cli.exe'
-
-
-@contextmanager
-def trusted_engine(path):
-    """Hold a machine-installed engine that only the system can replace.
-
-    Linux requires a root-owned engine that no other account can write. Here
-    the engine, its folder and every ancestor must be owned by SYSTEM,
-    administrators or TrustedInstaller, and must give no other account a way
-    to change them. The read-only handle denies write and delete sharing, so
-    the checked file is the file that runs.
-    """
-    path = Path(path)
-    with security.trusted_directory(path.parent):
-        with security.checked_handle(path.parent, directory=True, private=False) as directory:
-            security.check_machine_acl(directory)
-            with security.managed_handle(win32file.CreateFile(
-                    str(path), win32con.GENERIC_READ | win32con.READ_CONTROL, win32con.FILE_SHARE_READ,
-                    None, win32con.OPEN_EXISTING, security.FILE_FLAG_OPEN_REPARSE_POINT, None)) as handle:
-                info = win32file.GetFileInformationByHandle(handle)
-                if info[0] & (win32con.FILE_ATTRIBUTE_REPARSE_POINT | win32con.FILE_ATTRIBUTE_DIRECTORY):
-                    raise PermissionError('merge engine must be a regular file')
-                security.check_machine_acl(handle)
-                yield path
-
-
-def engine_environment():
-    # The engine needs only the system folder to load its libraries. No user
-    # variable, proxy, plugin path or secret enters its environment.
-    return {'SystemRoot': os.environ['SystemRoot']}
-
-
-def engine_version():
-    """Fail closed outside the tested engine release series."""
-    try:
-        with trusted_engine(engine_path()) as engine:
-            result = subprocess.run([str(engine), '--version'], stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=True,
-                                    env=engine_environment(), creationflags=subprocess.CREATE_NO_WINDOW)
-        return supported_version(result.stdout.decode('ascii').strip())
-    except Exception:
-        pass
-    return None
-
-
-def run_engine(bundle, vault, key_path, *, source_name='source.kdbx'):
-    """No secret argv/env/files. Raw engine output is discarded, even on error."""
-    password = vault.password
-    if not isinstance(password, str) or any(c in password for c in '\r\n\x00'):
-        raise MergeError('merge requires a line-compatible master password')
-    try:
-        import ctypes
-        # The engine inherits this error mode. Its crash path then ends the
-        # process without a fault dialog or an error report of its memory.
-        ctypes.windll.kernel32.SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX)
-        with ExitStack() as stack:
-            engine = stack.enter_context(trusted_engine(engine_path()))
-            args = [str(engine), 'merge', '--quiet', '--same-credentials']
-            if vault.keyfile is not None:
-                # Windows has no anonymous sealed file. Use the vault's own key
-                # file, with write and delete sharing denied for the whole run,
-                # after its bytes match the key that the broker holds.
-                if key_path is None:
-                    raise MergeError('merge engine failed; target not replaced')
-                with security.trusted_directory(Path(key_path).parent):
-                    stack.enter_context(security.managed_handle(win32file.CreateFile(
-                        str(key_path), win32con.GENERIC_READ, win32con.FILE_SHARE_READ, None,
-                        win32con.OPEN_EXISTING, security.FILE_FLAG_OPEN_REPARSE_POINT, None)))
-                    key, _ = security.read_private(key_path, limit=1024 * 1024)
-                if key != vault.keyfile.getvalue():
-                    raise MergeError('merge engine failed; target not replaced')
-                args += ['--key-file', str(key_path)]
-            args += [str(Path(bundle) / 'candidate.kdbx'), str(Path(bundle) / source_name)]
-            subprocess.run(args, input=(password + '\n').encode('utf-8'),
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                           env=engine_environment(), cwd=bundle, timeout=ENGINE_TIMEOUT, check=True,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
-    except MergeError:
-        raise
-    except Exception:
-        raise MergeError('merge engine failed; target not replaced') from None
+def run_engine(bundle, vault, *, source_name='source.kdbx'):
+    candidate = bundle / 'candidate.kdbx'
+    data = merge_images(read_snapshot(candidate)[0], read_snapshot(bundle / source_name)[0], vault)
+    if data is not None:
+        pending = bundle / 'candidate-native.kdbx'
+        security.write_new(pending, data)
+        replace(pending, candidate)
 
 
 def read_snapshot(path):
@@ -140,9 +52,6 @@ def replace(source, destination):
 
 
 class WindowsMergeManager(MergeManager):
-    def _engine_version(self):
-        return engine_version()
-
     def _store(self):
         """Use normal opening's target identity for locked receipt recovery."""
         store = getattr(self.broker.vault, '_akdbx_store', None)
@@ -303,9 +212,7 @@ class WindowsMergeManager(MergeManager):
                             changed = synchronize_deletions(stage, *originals)
                         changed = versions.ensure(stage, ledger) or changed
                         if changed:
-                            buffer = io.BytesIO()
-                            stage.save(buffer)
-                            data = buffer.getvalue()
+                            data = serialize_encrypted(stage)
                             security.write_new(bundle / 'candidate-final.kdbx', data)
                             replace(bundle / 'candidate-final.kdbx', bundle / 'candidate.kdbx')
                             stage = _open(data, self.broker.vault)
@@ -318,11 +225,11 @@ class WindowsMergeManager(MergeManager):
                         return data, stage
 
                     if refresh_target and broker_image != previous:
-                        run_engine(bundle, self.broker.vault, store.keyfile_path, source_name='broker.kdbx')
+                        run_engine(bundle, self.broker.vault, source_name='broker.kdbx')
                         intermediate_bytes, _ = read_snapshot(bundle / 'candidate.kdbx')
                         intermediate_bytes, _ = complete_stage(intermediate_bytes, (disk_vault, broker_vault))
                         security.write_new(bundle / 'reconciled.kdbx', intermediate_bytes)
-                    run_engine(bundle, self.broker.vault, store.keyfile_path)
+                    run_engine(bundle, self.broker.vault)
                     # The engine's own save must still be a private regular file.
                     encrypted, _ = read_snapshot(bundle / 'candidate.kdbx')
                     encrypted, verified = complete_stage(encrypted, originals, final=True)

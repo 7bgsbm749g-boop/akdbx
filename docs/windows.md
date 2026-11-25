@@ -37,8 +37,7 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
   `cdp-card-element-v1` DOM route, and card-save notifications. The broker must
   start with `--card-browser-profile`.
 - `merge` (including `--check`, `--refresh-target` and `--preserve-conflicts`),
-  `admit` and `merge-status`, with KeePassXC CLI 2.7.10 or newer, below 2.8,
-  installed for all users. See [Merge and admission](#merge-and-admission).
+  `admit` and `merge-status`, with the built-in merge engine. See [Merge and admission](#merge-and-admission).
 - Fills through the paired akdbx browser extension in Helium, Chrome or Edge,
   with no debugging port (`extension-dom-v1`). See
   [Browser extension route](#browser-extension-route).
@@ -600,19 +599,10 @@ references: the same request checks, receipts, verification order and failure
 states. Snapshot admission keeps its review status: read that reference before
 any use.
 
-- **Engine.** The broker runs only
-  `%ProgramFiles%\KeePassXC\keepassxc-cli.exe`, from the known-folder API and
-  never from `PATH`. The engine, its folder and every ancestor must be owned by
-  SYSTEM, administrators or TrustedInstaller, with no write, delete or
-  permission right for another account. A per-user install or a portable copy
-  is refused. The version must be 2.7.10 or newer, below 2.8; the extended
-  admission group profiles need exactly 2.7.10. `status` reports
-  `merge_available` and `merge_engine`.
-- **Secrets.** The master password goes to the engine's standard input only.
-  The engine's environment holds `SystemRoot` and nothing else, and its output
-  is discarded. Windows has no anonymous sealed file, so a key file is passed
-  by its own path: the broker first confirms that the file's bytes match the
-  key it holds, and denies write and delete sharing for the whole run.
+- **Engine.** From version 0.46.0 the broker merges in process. Status reports
+  `merge_engine: "akdbx-native-v1"` and `merge_available`.
+- **Secrets.** The broker opens the encrypted inputs with the master password
+  and key-file bytes it holds in memory.
 - **Files.** Each operation keeps its encrypted inputs, candidate and receipt
   in a private folder `.NAME.kdbx.akdbx-merge-ID` beside the vault, or in the
   bound snapshot folder for admission. Checked handles and DACLs replace the
@@ -623,9 +613,6 @@ any use.
   permissions another user could change, also blocks use. The admission
   locator beside the vault binds the snapshot folder; a missing or changed
   folder blocks use.
-- **Crashes.** The broker sets the no-fault-dialog error mode, which the engine
-  inherits. A dump policy that an administrator configured is outside the
-  broker's control.
 
 ## Validation before production use
 
@@ -644,17 +631,12 @@ $testRoot = Join-Path $env:LOCALAPPDATA ('akdbx-test-' + [guid]::NewGuid().ToStr
 
 `test_windows_chromium.py` starts Chrome or Edge headless with a new private
 profile. It does not take the foreground and does not read an existing profile.
-`test_windows_merge.py` uses the installed engine when it passes the production
-checks. On a machine without that engine, set `AKDBX_TEST_ENGINE` to a verified
-KeePassXC 2.7.10 `keepassxc-cli.exe`; the tests then replace only the install
-location check. All values are synthetic, and the pages report only SHA-256
-digests.
+`test_windows_merge.py` exercises the built-in engine with synthetic vaults.
 
 Recorded result (2026-11-19, Windows 11 Home build 26200, Python 3.11.9, akdbx
 0.17.0, Chrome 157.0.8103.80, KeePassXC CLI 2.7.10): 223 of 224 cases passed
 and one was skipped. The skipped case runs a separate broker process and needs
-the engine installed for all users; hosted Windows CI installs it and runs all
-224 cases.
+the external engine used by that historical release.
 
 | Area | Covered by the automated checks | Result |
 | --- | --- | --- |

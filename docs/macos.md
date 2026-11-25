@@ -66,9 +66,8 @@ Pairing and sealed values use the same protocol as Linux and Windows.
 - Native application/window fills are unavailable. Status reports
   `target_fill_delivery: "unavailable"` and an empty `target_fill_modes` list;
   there is no keyboard or clipboard fallback.
-- Merge and snapshot admission are unavailable without the supported native
-  engine. The Linux `/usr/bin/keepassxc-cli` engine integration is not a
-  macOS engine integration.
+- From 0.46.0, `merge`, `admit` and `merge-status` use the built-in
+  engine and the same encrypted snapshot and recovery protocol as Linux.
 - The guided `akdbx setup` command and login-service installation are not yet
   implemented on macOS. Use the explicit commands above; no system service,
   browser setting or trust setting is changed by installing the wheel.

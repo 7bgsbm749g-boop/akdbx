@@ -30,7 +30,7 @@ broker. The broker is the only required part; every other stage is optional
 and can be skipped (`--skip STAGE`):
 
 1. **System check**: Python, the desktop (Linux X11 or Windows), and optional
-   tools (KeePassXC CLI for merge, mkcert, Tailscale, Chromium browsers). It
+   tools (mkcert, Tailscale, Chromium browsers). It
    reports gaps and installs no system software.
 2. **Vault**: your existing `.kdbx` file and key file, checked with the
    broker's own path and permission rules. Setup never creates, copies, opens
@@ -973,8 +973,9 @@ block. The broker privately reuses its held password and key file. Locked
 operation returns the existing private HTTPS unlock link and a clear command
 continuation. Different source credentials are not supported in this release.
 
-The native dependency is root-owned `/usr/bin/keepassxc-cli` >=2.7.10,<2.8
-(tested: 2.7.10). Its UUID-aware merge keeps newer entry versions and combines
+From akdbx 0.46.0, the broker merges KDBX files directly on Linux, macOS and Windows.
+No KeePass or KeePassXC installation is required. The built-in engine matches
+entries by UUID, keeps the newer entry version and combines
 history. A broker deletion pass applies timestamped UUID tombstones; newer edits
 survive. Default mode refuses genuine equal-second conflicts and loss of surviving
 history/fields. Explicit `--preserve-conflicts` retains every distinct original
@@ -1187,7 +1188,8 @@ AKDBX_REQUIRE_CARD_CHROMIUM=1 AKDBX_TEST_FOREIGN_UID=1 \
 
 Card CI enables both requirements and rejects any skipped case.
 
-Merge integration tests require the native KeePassXC CLI dependency above.
+Merge integration tests run with the package dependencies. Some compatibility
+tests also compare synthetic output with KeePassXC 2.7.10 when installed.
 Tests generate synthetic KDBXs under pytest's temporary directory, with isolated
 RPC and HTTP Unix sockets. Keep temporary fixtures outside every synced vault;
 store retained evidence in the project's gitignored `evidence/` directory, outside

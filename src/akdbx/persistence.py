@@ -10,6 +10,7 @@ import logging
 import os
 import secrets
 import stat
+import sys
 import time
 import threading
 from contextlib import contextmanager
@@ -26,6 +27,12 @@ class SaveError(Exception):
 WRITE_TOKEN_BYTES = 12
 
 
+def _check_acl(fd):
+    if sys.platform == 'darwin':
+        from .macos import require_private_acl
+        require_private_acl(fd)
+
+
 def _file_identity(info):
     return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
@@ -35,6 +42,50 @@ if __name__ == 'akdbx.persistence':
     _OPEN_LOCK = threading.RLock()
 else:
     from akdbx.persistence import _OPEN_LOCK
+
+
+def serialize_encrypted(vault):
+    """Serialize a candidate using fresh encryption seeds and the target KDF."""
+    requires_41 = vault.tree.xpath(
+        'boolean(//Group/Tags[string-length(text()) > 0] | //Entry/QualityCheck[translate(text(),"FALSE","false")="false"]'
+        ' | //CustomIcons/Icon/Name[string-length(text()) > 0] | //CustomIcons/Icon/LastModificationTime'
+        ' | //CustomData/Item/LastModificationTime'
+        ' | //PreviousParentGroup[(parent::Entry or parent::Group) and normalize-space() != ""'
+        ' and normalize-space() != "AAAAAAAAAAAAAAAAAAAAAA=="])')
+    if vault.version[0] >= 4:
+        if requires_41:
+            vault.kdbx.header.value.minor_version = max(vault.version[1], 1)
+        output = io.BytesIO()
+        vault.save(output)
+        return output.getvalue()
+    if requires_41 or vault.tree.xpath('boolean(//Entry/CustomData/Item | //Group/CustomData/Item)'):
+        raise SaveError('metadata requires KDBX 4; target not replaced')
+    # Write a compact ordered binary table for compatibility with clients
+    # that index it by position. References in active and historical entries
+    # use the same remapping. Input images and captured records are untouched.
+    from .versions import legacy_binary_table
+    table = legacy_binary_table(vault)
+    if list(table) != list(range(len(table))):
+        indices = {old: new for new, old in enumerate(sorted(table))}
+        for value in vault.tree.xpath('//Entry/Binary/Value'):
+            value.set('Ref', str(indices[int(value.get('Ref'))]))
+        for old, new in indices.items():
+            node = table[old]
+            node.set('ID', str(new))
+            node.getparent().append(node)
+    # PyKeePass rotates the 3.1 header on save but does not update the hash
+    # inside its encrypted XML. KeePass verifies that hash when reopening.
+    from lxml import etree
+    from pykeepass.kdbx_parsing.common import rotate_seeds
+    from pykeepass.kdbx_parsing.kdbx import KDBX
+    rotate_seeds(vault.kdbx)
+    header = KDBX.header.build(vault.kdbx.header)
+    meta = vault.tree.find('Meta')
+    field = meta.find('HeaderHash')
+    if field is None:
+        field = etree.SubElement(meta, 'HeaderHash')
+    field.text = base64.b64encode(hashlib.sha256(header).digest()).decode('ascii')
+    return KDBX.build(vault.kdbx, password=vault.password, keyfile=vault.keyfile, transformed_key=None, decrypt=True)
 
 
 def open_encrypted(encrypted, password, keyfile=None):
@@ -205,10 +256,7 @@ class VaultStore:
                 os.close(current)
                 current = child
                 info = os.fstat(current)
-                import sys
-                if sys.platform == 'darwin':
-                    from .macos import require_private_acl
-                    require_private_acl(current)
+                _check_acl(current)
                 if writing and (info.st_uid not in {0, os.getuid()} or (
                     info.st_mode & 0o022
                     and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX)
@@ -221,10 +269,7 @@ class VaultStore:
                 os.close(current)
 
     def _file_info(self, fd, *, writing=True):
-        import sys
-        if sys.platform == 'darwin':
-            from .macos import require_private_acl
-            require_private_acl(fd)
+        _check_acl(fd)
         return self._checked_info(os.fstat(fd), writing=writing)
 
     @staticmethod
@@ -311,10 +356,7 @@ class VaultStore:
         """Refuse nonregular key artifacts without waiting for a FIFO or following a replaced leaf."""
         fd = os.open(self.keyfile_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         try:
-            import sys
-            if sys.platform == 'darwin':
-                from .macos import require_private_acl
-                require_private_acl(fd)
+            _check_acl(fd)
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 raise SaveError('key file must be a regular file')
             return fd
@@ -377,6 +419,7 @@ class VaultStore:
         bound = None
         if fd is not None:
             with os.fdopen(fd, 'rb') as stream:
+                _check_acl(stream.fileno())
                 info = os.fstat(stream.fileno())
                 if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                         or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1 or info.st_size > 4096):
@@ -416,12 +459,14 @@ class VaultStore:
     @staticmethod
     def read_merge_receipt(bundle, operation_id):
         """Read a bounded receipt only from its private, correctly identified bundle."""
+        _check_acl(bundle)
         info = os.fstat(bundle)
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
             raise SaveError('unsafe merge receipt directory')
         fd = os.open('receipt.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                      dir_fd=bundle)
         with os.fdopen(fd, 'rb') as stream:
+            _check_acl(stream.fileno())
             info = os.fstat(stream.fileno())
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
                     or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 16384):
@@ -532,9 +577,7 @@ class VaultStore:
             # Work on a copy: failures must leave the active vault untouched.
             candidate = copy.deepcopy(vault)
             mutate(candidate)
-            buffer = io.BytesIO()
-            candidate.save(buffer)
-            encrypted = buffer.getvalue()
+            encrypted = serialize_encrypted(candidate)
             verified = open_encrypted(encrypted, candidate.password, candidate.keyfile)
             verify(verified, retained_versions)
             if verify_candidate is not None:

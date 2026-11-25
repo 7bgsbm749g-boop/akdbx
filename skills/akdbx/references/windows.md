@@ -25,7 +25,6 @@ steps are the same as in `SKILL.md`; its private folder is
 | Unix socket, `--broker-uid` | Local named pipe of this user and session; `--broker-uid` is refused |
 | `pin-target` X11 window, `x11-send-event-v1` | `pin-target` top-level HWND, `win32-char-v1` |
 | `/absolute/path/to/akdbx/.venv/bin/akdbx` | `CHECKOUT\.venv\Scripts\akdbx.exe` |
-| `/usr/bin/keepassxc-cli`, root-owned | `%ProgramFiles%\KeePassXC\keepassxc-cli.exe`, installed for all users |
 
 ## Before a fill
 
@@ -111,9 +110,9 @@ field, another for the confirmation field (none for a write staged with
   `card_browser_configured: true`.
 - Merge and admission follow [the merge workflow](merge.md) and
   [the admission contract](snapshot-admission.md). Require `merge_available:
-  true` and read `merge_engine`. `merge_available: false` with `merge_engine:
-  null` means that no trusted KeePassXC CLI 2.7.10 or newer, below 2.8, is
-  installed for all users. Report it; do not point the broker at another copy.
+  true` and read `merge_engine`. With akdbx 0.46.0 and later, this is
+  `akdbx-native-v1`. Unlock the vault and check its write and recovery status
+  if merge is unavailable.
 - `subscribe-unlock` and `subscribe-card-save` read the callback from a file
   that only this user, SYSTEM and administrators can open. Until-unlock
   subscriptions survive a broker restart.

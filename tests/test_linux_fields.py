@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shlex
 import shutil
 import subprocess
 import sys
@@ -39,7 +40,16 @@ def lab(tmp_path, monkeypatch, request):
         monkeypatch.delenv('XAUTHORITY', raising=False)
         monkeypatch.setenv('GTK_MODULES', 'atk-bridge')
         monkeypatch.setenv('NO_AT_BRIDGE', '0')
-        children.append(subprocess.Popen(['openbox'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        # Setting focus before Openbox manages the display can leave the
+        # first Qt window inactive between discovery and the pinned read.
+        wm_ready = tmp_path / 'openbox-ready'
+        wm = subprocess.Popen(['openbox', '--startup', shlex.join(['touch', str(wm_ready)])],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        children.append(wm)
+        deadline = time.monotonic() + 10
+        while not wm_ready.exists():
+            assert wm.poll() is None and time.monotonic() < deadline, 'Openbox did not start'
+            time.sleep(.05)
         if display == 'wayland':
             assert shutil.which('weston'), 'native Wayland lab requires Weston'
             runtime = tmp_path / 'runtime'

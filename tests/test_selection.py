@@ -48,9 +48,6 @@ CASES = ('unprotected-password', 'protect-notes', 'protect-all', 'missing-passwo
          'autotype', 'autotype-associations', 'expiry-year1', 'expiry-year9999', 'expired',
          'creation-non-epoch', 'iso-times', 'iso-offset-times', 'iso-fractional-times', 'missing-statistics',
          'autotype-numeric', 'custom-reserved-name', 'knownbad-uppercase')
-OLD_REFUSAL = {'unprotected-password', 'protect-notes', 'protect-all', 'missing-password',
-               'protect-in-memory', 'quality-true', 'previous-null', 'custom-data', 'custom-data-timed',
-               'knownbad-true', 'knownbad-false', 'tags', 'tags-unicode', 'icon-numeric', 'null-custom-icon'}
 
 
 def style(vault, case):
@@ -143,8 +140,7 @@ def test_native_legitimate_metadata_keeps_selected_values_and_exact_capsules(pai
     assert_retained(saved, expected)
     assert source.read_bytes() == incoming
     assert (receipt_files(result) / 'target.kdbx').read_bytes() == before
-    if case in OLD_REFUSAL:
-        assert versions.entry_signature(actual) != versions.entry_signature(left.find_entries(uuid=original_uuid, first=True))
+    assert versions.entry_signature(actual) == versions.entry_signature(left.find_entries(uuid=original_uuid, first=True))
     repeated = merge(pair, refresh_target=True, preserve_conflicts=True)
     assert repeated['ok'], repeated
     assert_retained(disk(target), expected)
@@ -257,8 +253,13 @@ def test_unsupported_selected_structure_has_a_fixed_nonsecret_reason(pair, case,
     save_pair(pair, left, right)
     before = target.read_bytes()
     result = merge(pair, preserve_conflicts=True)
-    assert result.get('verification_diagnostics') == {category: 1}, result
-    assert target.read_bytes() == before
+    if case == 'unknown-entry':
+        assert result['ok'], result
+        saved = disk(target).find_entries(uuid=entry.uuid, first=True)
+        assert saved._element.findtext('SyntheticPrivateExtensionName') == 'synthetic extension secret'
+    else:
+        assert result.get('verification_diagnostics') == {category: 1}, result
+        assert target.read_bytes() == before
     assert 'SyntheticPrivate' not in json.dumps(result) and 'synthetic extension secret' not in json.dumps(result)
 
 
@@ -374,7 +375,7 @@ def test_real_cli_semantics_three_inputs_metadata_location_and_refresh(pair, tmp
         return json.loads(done.stdout)
     with running_broker(socket, broker):
         capabilities = command('status')
-        assert capabilities['version'] == '0.45.0' and capabilities['merge_active_verification'] == 'semantic-v1'
+        assert capabilities['version'] == '0.46.0' and capabilities['merge_active_verification'] == 'semantic-v1'
         assert capabilities['merge_diagnostics'] == 'categories-v1'
         selected = command('search', 'Shared')['entries'][0]['handle']
         checked = command('merge', str(source), '--refresh-target', '--preserve-conflicts', '--check')
@@ -422,7 +423,7 @@ def test_real_cli_diagnostic_receipt_is_safe_and_failed_merge_keeps_broker_revis
     assert broker.vault._akdbx_store.verified_encrypted == before and handle in broker._handles
 
 
-def test_real_cli_same_image_normalizes_metadata_without_wrong_active_selection(pair, tmp_path):
+def test_real_cli_same_image_preserves_metadata_without_wrong_active_selection(pair, tmp_path):
     broker, target, source = pair
     left, right = disk(target), disk(source)
     record(left, 'synthetic current selected value', attachment=b'synthetic chosen attachment')
@@ -446,7 +447,7 @@ def test_real_cli_same_image_normalizes_metadata_without_wrong_active_selection(
     saved = disk(target)
     active = saved.find_entries(title='Shared', first=True)
     assert active.password == 'synthetic current selected value' and active.attachments[0].data == b'synthetic chosen attachment'
-    assert versions.entry_signature(active) != versions.entry_signature(left.find_entries(title='Shared', first=True))
+    assert versions.entry_signature(active) == versions.entry_signature(left.find_entries(title='Shared', first=True))
     assert_retained(saved, expected)
     assert source.read_bytes() == incoming
     assert all(value not in done.stdout + done.stderr + checked.stdout + checked.stderr for value in (MASTER, SECRET, 'synthetic current selected value', 'synthetic competing source value'))

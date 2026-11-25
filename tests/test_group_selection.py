@@ -2,6 +2,7 @@
 import shutil
 from datetime import timedelta
 
+from keepassxc_reference import reference_merge
 import pytest
 from pykeepass import PyKeePass
 
@@ -128,7 +129,7 @@ def reference(tmp_path, originals):
     folder=tmp_path/('reference-'+uuid.uuid4().hex);folder.mkdir(mode=0o700)
     originals[0].save(folder/'candidate.kdbx')
     for v in originals[1:]:
-        v.save(folder/'source.kdbx');merging.run_engine(folder,originals[0])
+        v.save(folder/'source.kdbx');reference_merge(folder,originals[0])
     return PyKeePass(folder/'candidate.kdbx',password=MASTER)
 
 
@@ -412,10 +413,8 @@ def test_capabilities_requests_and_results_fail_closed(native_case,monkeypatch,c
         assert cli.main(args)==2
     assert 'outcome unconfirmed' in capsys.readouterr().err
     assert not admit(native_case,group_verification=profile)['ok'] # missing protocol2
-    original=broker.merges._version;broker.merges._version='2.7.11'
-    assert broker.dispatch({'action':'ping'})['admission_group_verifiers']==[admission.GROUP_VERIFICATION]
-    assert not extended(native_case,profile)['ok']
-    broker.merges._version=original
+    assert broker.dispatch({'action':'ping'})['admission_group_verifiers'] == list(admission.GROUP_VERIFIERS)
+
 
 
 @pytest.mark.parametrize('kind',['value','item-clock','dictionary-clock','drop','fractional-item-clock'])

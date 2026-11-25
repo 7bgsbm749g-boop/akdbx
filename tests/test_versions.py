@@ -18,6 +18,7 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
+from keepassxc_reference import reference_merge
 import pytest
 from lxml import etree
 from pykeepass import PyKeePass
@@ -350,7 +351,7 @@ def test_history_limits_repeated_native_merges_and_reconciliation_cannot_drop_ca
         else:
             assert len(versions.archives(disk(target))) == cardinality
     # A subsequent native-only default save must preserve the opaque capsules.
-    merging.run_engine(receipt_files(result), broker.vault)
+    reference_merge(receipt_files(result), broker.vault)
     native = disk(receipt_files(result) / 'candidate.kdbx')
     assert_retained(native, expected)
     # An external replacement lacks the archive; held broker image restores it.
@@ -634,7 +635,7 @@ def test_real_cli_preservation_preview_save_and_refresh(pair, tmp_path):
         return json.loads(completed.stdout)
     with running_broker(socket, broker):
         caps = command('status')
-        assert caps['version'] == '0.45.0' and caps['merge_preservation_policy'] == 'capsule-v1'
+        assert caps['version'] == '0.46.0' and caps['merge_preservation_policy'] == 'capsule-v1'
         assert not command('merge', str(source), '--refresh-target', status=1)['ok']
         checked = command('merge', str(source), '--refresh-target', '--preserve-conflicts', '--check')
         assert checked['state'] == 'checked'
@@ -704,5 +705,5 @@ def test_full_cost_41_argon2d_preservation(pair):
     expected = ledger([disk(target), disk(source)])
     result = merge(pair, preserve_conflicts=True, refresh_target=True)
     assert result['ok'], result
-    assert disk(target).encryption_algorithm == 'aes256' and disk(target).kdf_algorithm == 'argon2'
+    assert disk(target).encryption_algorithm == 'aes256' and disk(target).kdbx.header.value.dynamic_header.kdf_parameters.data.dict['$UUID'].value == kdf_uuids['argon2']
     assert_retained(disk(target), expected)

@@ -30,7 +30,7 @@ import sysconfig
 import time
 from xml.sax.saxutils import escape
 
-from . import __version__
+from . import __version__, native_merge
 from .extension_route import BROWSERS, EXTENSION_ID, EXTENSION_VERSION
 
 COMMAND = 'setup'
@@ -689,22 +689,18 @@ class Setup:
             platform = sys.platform
             desktop = 'unsupported'
             gaps.append('akdbx supports Linux (X11) and Windows only')
-        engine = self._engine_version()
         tools = {
-            'keepassxc_cli': engine,
+            'merge_engine': native_merge.ENGINE,
             'mkcert': self.which('mkcert'),
             'tailscale': self.which('tailscale'),
             'systemctl': None if self.windows else self.which('systemctl'),
             'browsers': self._browsers(),
         }
         self.tools = tools
-        if engine is None:
-            gaps.append('merge: no KeePassXC CLI 2.7.10 or newer (below 2.8) installed for all users '
-                        '(optional; only merge needs it)')
         if not tools['browsers']:
             gaps.append('no supported Chromium browser (Helium, Chrome, Edge) found (needed for browser fills)')
         self.say(f'Python {python}; {platform}: {desktop}')
-        self.say('KeePassXC CLI for merge: ' + (engine or 'not available'))
+        self.say('Built-in merge engine: ' + native_merge.ENGINE)
         self.say('mkcert: ' + (tools['mkcert'] or 'not found') + '; tailscale: ' + (tools['tailscale'] or 'not found'))
         self.say('Browsers: ' + (', '.join(sorted(tools['browsers'])) or 'none found'))
         for gap in gaps:
@@ -719,16 +715,6 @@ class Setup:
             return bool(ctypes.windll.shell32.IsUserAnAdmin())
         except Exception:
             return False
-
-    def _engine_version(self):
-        try:
-            if self.windows:
-                from .windows_merge import engine_version
-            else:
-                from .merge import engine_version
-            return engine_version()
-        except Exception:
-            return None
 
     def _browsers(self):
         found = {}
@@ -1545,11 +1531,8 @@ class Setup:
     def stage_features(self):
         self.say(NOTIFICATIONS)
         self.say("Optional Android device: run akdbx android setup to attach a device or create an on-demand Google Play emulator on Linux.")
-        engine = self.tools.get('keepassxc_cli')
-        self.say('Merge: ' + (f'available (KeePassXC CLI {engine})' if engine else
-                              'not available: install KeePassXC 2.7.10 or newer (below 2.8) for all users'
-                              + (' in Program Files' if self.windows else ' as root-owned /usr/bin/keepassxc-cli')))
-        details = {'merge_engine': engine}
+        self.say('Merge: built into akdbx')
+        details = {'merge_engine': native_merge.ENGINE}
         if not self.choice.get('capture_host'):
             self.say('Authenticator capture host: not selected (--capture-host).')
             self.record('features', 'ok', capture_host=False, **details)

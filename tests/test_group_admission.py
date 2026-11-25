@@ -16,6 +16,7 @@ import types
 import uuid
 from datetime import timedelta, timezone
 
+from keepassxc_reference import reference_merge
 import pytest
 from lxml import etree
 from pykeepass import PyKeePass
@@ -100,7 +101,7 @@ def native_case(case, tmp_path):
     reference = tmp_path / 'native'; reference.mkdir(mode=0o700)
     shutil.copyfile(target, reference / 'candidate.kdbx')
     shutil.copyfile(source, reference / 'source.kdbx')
-    merging.run_engine(reference, vault)
+    reference_merge(reference, vault)
     shutil.copyfile(reference / 'candidate.kdbx', target)
     broker.vault = open_vault_with_password(target, MASTER)
     assert versions.archives(broker.vault)
@@ -168,7 +169,7 @@ def test_public_reader_defaults_and_optional_serialization(native_case, variatio
     shutil.copyfile(target, reference / 'candidate.kdbx')
     incoming.add_entry(incoming.root_group, 'Force native writer', 'synthetic', SECRET); incoming.save()
     shutil.copyfile(source, reference / 'source.kdbx')
-    merging.run_engine(reference, broker.vault)
+    reference_merge(reference, broker.vault)
     native = PyKeePass(reference / 'candidate.kdbx', password=MASTER)
     for group in native.groups:
         assert group._element.findtext('Notes') in (None, '')
@@ -352,7 +353,7 @@ def test_cli_http_consecutive_group_projection_and_restart_recovery(native_case,
     socket = tmp_path / 'runtime' / 'broker.sock'; lab = Lab(target, snapshots, staging, socket)
     with running_broker(socket, broker), servers(lab) as address:
         caps = lab.command('status')
-        assert caps['version'] == '0.45.0' and caps['admission_group_verification'] == 'group-semantic-v1'
+        assert caps['version'] == '0.46.0' and caps['admission_group_verification'] == 'group-semantic-v1'
         client = KeePassiumSequence(address); client.read()
         for day in (2, 3):
             v = edit(source, day=day)
@@ -431,6 +432,6 @@ def test_tag_text_rewrites_remain_a_documented_conservative_refusal(native_case,
     shutil.copyfile(target, reference / 'candidate.kdbx')
     v.add_entry(v.root_group, 'Native tag reference trigger', 'synthetic', SECRET); v.save()
     shutil.copyfile(source, reference / 'source.kdbx')
-    merging.run_engine(reference, broker.vault)
+    reference_merge(reference, broker.vault)
     native = PyKeePass(reference / 'candidate.kdbx', password=MASTER)
     assert native.find_groups(name='Synthetic group', first=True)._element.findtext('Tags') == text
