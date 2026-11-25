@@ -76,7 +76,21 @@ jobs:
           AKDBX_TEST_FIREFOX: ${{ steps.firefox.outputs.firefox-path }}
         run: |
           firefox_test_base="$RUNNER_TEMP/f"
-          if [ "$RUNNER_OS" = Windows ]; then firefox_test_base="$LOCALAPPDATA/akdbx-firefox-tests"; fi
+          if [ "$RUNNER_OS" = Windows ]; then
+            # pytest deletes and recreates basetemp. Give it a private parent
+            # so new children inherit the production-required DACL.
+            python - <<'PY'
+          import os
+          from pathlib import Path
+          import win32file
+          from akdbx import windows_security as security
+          parent = Path(os.environ['LOCALAPPDATA']) / 'akdbx-firefox-tests'
+          win32file.CreateDirectory(str(parent), security.private_attributes(directory=True))
+          with security.trusted_directory(parent), security.checked_handle(parent, directory=True):
+              pass
+          PY
+            firefox_test_base="$LOCALAPPDATA/akdbx-firefox-tests/run"
+          fi
           python -m pytest -q -rs tests/test_firefox_browser.py tests/test_firefox_extension.py \
             --basetemp="$firefox_test_base" --junitxml="$RUNNER_TEMP/firefox.xml"
       - uses: actions/upload-artifact@v4
