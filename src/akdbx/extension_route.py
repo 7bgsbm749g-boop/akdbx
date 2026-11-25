@@ -1384,15 +1384,15 @@ class ExtensionHub:
 class RoutedTargets:
     """Card/identity target manager that adds the extension route to the CDP one."""
 
-    def __init__(self, cdp, hub, kind):
-        self.cdp, self.hub, self.kind = cdp, hub, kind
+    def __init__(self, cdp, hub, kind, *, native=None):
+        self.cdp, self.hub, self.kind, self.native = cdp, hub, kind, native
 
     def __getattr__(self, name):
         return getattr(self.cdp, name)
 
     def __setattr__(self, name, value):
         # Settings such as `profile` or `clock` belong to the CDP manager.
-        if name in {'cdp', 'hub', 'kind'}:
+        if name in {'cdp', 'hub', 'kind', 'native'}:
             object.__setattr__(self, name, value)
         else:
             setattr(self.cdp, name, value)
@@ -1421,18 +1421,24 @@ class RoutedTargets:
     def consume(self, token):
         from .browser_card import CardTargetError
         try:
-            pin = self.hub.take(token, self.kind)
+            pin = self.native.take(token, self.kind) if self.native is not None else None
+            if pin is None:
+                pin = self.hub.take(token, self.kind)
         except TargetError:
             raise CardTargetError() from None
         return pin if pin is not None else self.cdp.consume(token)
 
     def fill(self, pin, value, field, ready, deadline=None, *, notify_page=False):
+        from .native_fields import NativePin
+        if isinstance(pin, NativePin):
+            return self.native.fill(pin, value, field, ready, deadline, notify_page=notify_page)
         if isinstance(pin, ExtensionPin):
             return self.hub.fill_element(pin, value, field, ready, deadline, notify_page=notify_page)
         return self.cdp.fill(pin, value, field, ready, deadline, notify_page=notify_page)
 
     def _close(self, pin):
-        if isinstance(pin, ExtensionPin):
+        from .native_fields import NativePin
+        if isinstance(pin, (ExtensionPin, NativePin)):
             pin.close()
         else:
             self.cdp._close(pin)

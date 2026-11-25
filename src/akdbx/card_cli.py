@@ -12,6 +12,7 @@ from .cards import FILL_FIELDS
 from .card_notifications import RESULTS
 from . import browser_slots, card_processor, page_url
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
+from .native_fields import DELIVERY as NATIVE_DELIVERY
 
 NOTIFICATIONS = {'subscribe-card-save', 'card-save-subscription-status', 'unsubscribe-card-save'}
 CARD_BROWSER_REFUSAL = ('broker has no card browser profile (card_browser_configured is false); '
@@ -84,7 +85,7 @@ def valid_receipt(command, response, args):
                 and urlsplit(response.get('private_url', '')).path == '/card')
     if command == 'fill-card':
         return (set(response) == {'ok', 'filled', 'card_delivery'}
-                and response.get('card_delivery') in {DELIVERY, EXTENSION_DELIVERY} and response.get('filled') == args.field)
+                and response.get('card_delivery') in {DELIVERY, EXTENSION_DELIVERY, NATIVE_DELIVERY} and response.get('filled') == args.field)
     if command == 'pin-card-target':
         expected = EXTENSION_DELIVERY if getattr(args, 'resolved_route', 'cdp') == 'extension' else DELIVERY
         return (set(response) == {'ok', 'target', 'expires_in', 'field', 'card_delivery'}
@@ -141,7 +142,9 @@ def run(args, request):
         extension_ready = (getattr(args, 'resolved_route', None) == 'extension' if args.command == 'pin-card-target'
                            else caps.get('extension_paired') is True)
         if (os.name == 'nt' and args.command in {'pin-card-target', 'fill-card'}
-                and caps.get('card_browser_configured') is False and not extension_ready):
+                and caps.get('card_browser_configured') is False and not extension_ready
+                and not (args.command == 'fill-card' and type(caps.get('native_field_protocol')) is int
+                         and caps['native_field_protocol'] == 1 and caps.get('native_field_supported') is True)):
             # Windows only: refuse before dispatch what this broker cannot deliver.
             print(json.dumps(dict(ok=False, error=CARD_BROWSER_REFUSAL)))
             return 1

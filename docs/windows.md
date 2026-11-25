@@ -84,6 +84,16 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
   of the active tab. Pairing is held in memory only: a
   browser or broker restart needs a new pairing with the master password.
 
+## Native desktop field pins
+
+Native field protocol 1 supports passwords, combined login, generated passwords,
+cards, addresses and read-only secret capture in standard Unicode Win32 Edit
+controls. Password fields must remain masked; login pins name both controls and
+never use Tab. Legacy numeric HWND pins keep their username/TOTP-only contract.
+Browser pages keep using DOM delivery. The caller asserts the service used by
+the native app; an HWND cannot attest a tab, URL or DOM field. See
+[Native desktop fields](../skills/akdbx/references/native-fields.md).
+
 ## Install and prepare private files
 
 From the checkout in PowerShell:

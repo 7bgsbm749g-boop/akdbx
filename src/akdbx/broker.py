@@ -19,6 +19,7 @@ from pathlib import Path
 from threading import Event
 from typing import Callable, Protocol
 
+from .native_fields import NativeFields, NativePin, DELIVERY as NATIVE_DELIVERY
 from .target import TargetPins, TargetError, DeliveryError, DELIVERY, capabilities as target_capabilities, failure as target_failure
 from .writes import (WriteManager, WriteError, generated_capabilities, sso_capabilities, passwordless_capabilities, passwordless_identity,
                      additional_origins, additional_urls, additional_urls_capabilities, allowed_origins,
@@ -74,8 +75,9 @@ MAX_OUTSTANDING_HANDLES = 1024
 UNLOCK_LINK_MAX_FAILURES = 3
 UNLOCK_LINK_PROTOCOL = 1
 CONNECTION_ERROR = {"ok": False, "error": "request failed"}
-# Pins bound to one exact field; only these may receive a password.
-DOM_PINS = (PasswordPin, ExtensionPin, AndroidPin)
+# Pins bound to exact DOM, Android or native controls; only these may receive a password.
+
+FIELD_PINS = (PasswordPin, ExtensionPin, AndroidPin, NativePin)
 
 
 class EntryLike(Protocol):
@@ -129,6 +131,7 @@ class Broker:
         self.vault = vault
         self.typer = typer
         self.targets = TargetPins(typer, clock)
+        self.native = NativeFields(clock=clock)
         # A root of agent desktop slots replaces the single profiles: each
         # pin request then names its slot, for password, card and identity.
         if browser_profile_root is not None and (password_browser_profile is not None or card_browser_profile is not None):
@@ -149,10 +152,10 @@ class Broker:
         # The extension route sits next to CDP; the operator picks the default.
         self.extension = ExtensionHub(self, default_route=default_fill_route)
         self.card_targets = RoutedTargets(BrowserCards(card_browser_profile, clock=clock, slots=self.browser_slots),
-                                          self.extension, 'card')
+                                          self.extension, 'card', native=self.native)
         self.identity_targets = RoutedTargets(
             BrowserIdentities(password_browser_profile or card_browser_profile, clock=clock, slots=self.browser_slots),
-            self.extension, 'identity')
+            self.extension, 'identity', native=self.native)
         self.identities = IdentityManager(self)
         # Phone verification texts: durable sources, codes in memory only.
         self.sms = sms_module.SmsInbox(sms_sources_path, clock=clock, wall_clock=wall_clock)
@@ -279,6 +282,7 @@ class Broker:
                     self.writes.invalidate_revision(all_pending=True)
                     self.writes.keep_receipts()
                     self.targets.pins.clear()
+                    self.native.close()
                     self.passwords.clear()
                     self.android.clear()
                     self.card_targets.close()
@@ -507,7 +511,7 @@ class Broker:
                     **({"relay": self.relay.status()} if self.relay is not None else {}),
                     **({"active_origin": origin} if isinstance(origin, str) else {})}
         if action == "ping":
-            return {"ok": True, "version": __version__, "lock_timeout_seconds": self.session.timeout, "lock_event_sources": self.lock_events.copy(), **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **entry_organize_capabilities(), **entry_edit_capabilities(), **secret_save_capabilities(), **target_capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **sms_notification_capabilities(), **self.secrets.capabilities(), **self.android.capabilities(), **self.totp_captures.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
+            return {"ok": True, "version": __version__, "lock_timeout_seconds": self.session.timeout, "lock_event_sources": self.lock_events.copy(), **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **entry_organize_capabilities(), **entry_edit_capabilities(), **secret_save_capabilities(), **target_capabilities(), **self.native.capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **pairing_notification_capabilities(), **sms_notification_capabilities(), **self.secrets.capabilities(), **self.android.capabilities(), **self.totp_captures.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -560,6 +564,11 @@ class Broker:
                 return target_failure()
         if action == 'android-google-sign-in':
             return self._android_google_sign_in(request, internal_dispatch, delivery_ready)
+        if action in {'list-native-fields', 'pin-native-target'}:
+            try:
+                return self.native.discover(request) if action == 'list-native-fields' else self.native.pin(request)
+            except Exception:
+                return target_failure()
         if action == 'pin-target':
             try:
                 return self.targets.pin(request)
@@ -725,7 +734,9 @@ class Broker:
                 entry = self._resolve(request.get("handle"))
                 token = request.get('target')
                 if isinstance(token, str):
-                    target = self.android.take(token) or self.extension.take(token, 'password')
+                    target = self.native.take(token, 'totp' if action == 'fill-totp' else 'password')
+                    if target is None:
+                        target = self.android.take(token) or self.extension.take(token, 'password')
                     if target is None:
                         try:
                             target = self.passwords.consume(token)
@@ -733,7 +744,7 @@ class Broker:
                             target = self.targets.consume(request)
                 else:
                     target = self.targets.consume(request)
-                if isinstance(target, DOM_PINS) and (type(request.get('target_protocol')) is not int or request['target_protocol'] != 1):
+                if isinstance(target, FIELD_PINS) and (type(request.get('target_protocol')) is not int or request['target_protocol'] != 1):
                     raise TargetError()
                 allowed = {'action', 'handle', 'start_deadline', 'target', 'target_protocol'}
                 allowed |= {'target_url', 'pending'} if action == 'fill-totp' else {'mode'}
@@ -752,11 +763,11 @@ class Broker:
                 ):
                     raise ValueError("autofill not started: invalid deadline")
             except TargetError:
-                if isinstance(target, DOM_PINS):
+                if isinstance(target, FIELD_PINS):
                     target.close()
                 return target_failure()
             except ValueError as exc:
-                if isinstance(target, DOM_PINS):
+                if isinstance(target, FIELD_PINS):
                     target.close()
                 return {"ok": False, "error": str(exc)}
             # Once credentials are accessed, backend errors must never reach RPC
@@ -784,7 +795,7 @@ class Broker:
 
                     # A keyboard backend cannot authorize browser password delivery.
                     # Refuse before reading the password, irrespective of its methods.
-                    if mode in {"login", "password"} and not isinstance(target, DOM_PINS):
+                    if mode in {"login", "password"} and not isinstance(target, FIELD_PINS):
                         raise DeliveryError(False)
 
                     # Materialize and validate every value needed by this mode
@@ -842,7 +853,15 @@ class Broker:
 
                     steps = [username, None, password] if mode == 'login' else [username if mode == 'username' else password]
                     ready = lambda: self.clock() < start_deadline and delivery_ready() and code_valid()
-                    if isinstance(target, AndroidPin):
+                    if isinstance(target, NativePin):
+                        if mode == 'totp':
+                            if target.mode != 'totp' or target.origin != target_origin:
+                                raise DeliveryError(False)
+                            self.native._write(target, (password,), ready, start_deadline)
+                        else:
+                            self.native.deliver_password(target, mode, username if mode != 'password' else '',
+                                password if mode != 'username' else '', allowed_origins(entry), ready, start_deadline)
+                    elif isinstance(target, AndroidPin):
                         values = ([username, password] if mode == 'login' else [username] if mode == 'username'
                                   else [password])
                         try:
@@ -851,7 +870,7 @@ class Broker:
                             values = None
                         if mode == 'totp' and not code_valid():
                             return target_failure(True)
-                    elif isinstance(target, DOM_PINS):
+                    elif isinstance(target, FIELD_PINS):
                         if mode == 'totp':
                             raise DeliveryError(False)
                         (self.extension.deliver_password if isinstance(target, ExtensionPin) else self.passwords.deliver)(target, mode, username if mode != 'password' else '',
@@ -866,7 +885,8 @@ class Broker:
                         raise DeliveryError(False)
                     return {"ok": True, "filled": mode, "target_delivery": self.android.delivery(target) if isinstance(target, AndroidPin)
                             else EXTENSION_DELIVERY if isinstance(target, ExtensionPin)
-                            else PASSWORD_DELIVERY if isinstance(target, DOM_PINS) else DELIVERY}
+                            else NATIVE_DELIVERY if isinstance(target, NativePin)
+                            else PASSWORD_DELIVERY if isinstance(target, FIELD_PINS) else DELIVERY}
                 finally:
                     self._keyboard_lock.release()
             except AndroidMismatch:
@@ -878,7 +898,7 @@ class Broker:
             except Exception:
                 return {"ok": False, "error": "autofill failed"}
             finally:
-                if isinstance(target, DOM_PINS):
+                if isinstance(target, FIELD_PINS):
                     try:
                         target.close()
                     except Exception:
@@ -1018,6 +1038,7 @@ def serve(socket_path: Path, broker: Broker, stop: Event | None = None) -> None:
             if server is not None:
                 server.close()
             broker.extension.close()
+            broker.native.close()
             broker.unlock_notifications.close()
             broker.card_save_notifications.close()
             broker.pairing_notifications.close()

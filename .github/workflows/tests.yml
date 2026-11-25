@@ -49,6 +49,23 @@ jobs:
         run: |
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0" "platforms;android-35" > /dev/null
           JAVA_HOME="$JAVA_HOME_17_X64" ANDROID_SDK="$ANDROID_SDK_ROOT" python -m pytest -q -rs tests/test_android_route.py -k "helper" --basetemp="${{ runner.temp }}/akdbx-android"
+  linux-native-fields:
+    name: Native GTK controls (X11 and Wayland)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[test]'
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb openbox weston at-spi2-core dbus-x11 libgtk-3-0t64
+      - name: Native delivery and encrypted saves on both Linux display systems
+        env:
+          AKDBX_TEST_NATIVE_LINUX: '1'
+        run: dbus-run-session -- python -m pytest -q -rs tests/test_linux_fields.py tests/test_native_fields.py --basetemp="${{ runner.temp }}/native-fields"
   linux-extension-browser:
     # The extension route in a real browser: secret capture and frame owners.
     # Google Chrome 137+ ignores --load-extension; Chrome
@@ -136,7 +153,7 @@ jobs:
           # unpacked test extension into its disposable profile.
           AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
           AKDBX_TEST_EXTENSION_BROWSER: 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
-        run: python -m pytest -q -rs tests/test_vault_lock.py::test_windows_receives_session_and_power_messages tests/test_protocol.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_windows_native.py tests/test_windows_browser.py tests/test_windows_chromium.py tests/test_windows_merge.py tests/test_extension_route.py tests/test_extension_browser.py --basetemp="$env:LOCALAPPDATA/akdbx-tests" --junitxml="$env:RUNNER_TEMP/akdbx-windows.xml"
+        run: python -m pytest -q -rs tests/test_vault_lock.py::test_windows_receives_session_and_power_messages tests/test_protocol.py tests/test_windows_target.py tests/test_windows_fields.py tests/test_native_fields.py tests/test_windows_unlock.py tests/test_windows_native.py tests/test_windows_browser.py tests/test_windows_chromium.py tests/test_windows_merge.py tests/test_extension_route.py tests/test_extension_browser.py --basetemp="$env:LOCALAPPDATA/akdbx-tests" --junitxml="$env:RUNNER_TEMP/akdbx-windows.xml"
       - name: Require every Windows case to run
         shell: pwsh
         run: |
