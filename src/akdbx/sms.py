@@ -1077,7 +1077,9 @@ class SmsInbox:
         # the broker sets it to wake SMS webhook subscriptions.
         self.on_text = None
         # Called with (source, message_id or None, result) after any accepted
-        # text, kept or dropped: it wakes a setup page's any-text waits.
+        # text, kept or dropped: it wakes a setup page's any-text waits. It
+        # runs under the inbox lock, which subscribe-sms also holds, so a
+        # text that came before a registration never wakes it.
         self.on_any_text = None
         self._load()
 
@@ -1336,13 +1338,17 @@ class SmsInbox:
                 self.messages.append(message)
                 del self.messages[:-MAX_MESSAGES]
                 self.condition.notify_all()
-        for hook, arguments in ((self.on_text, (source.name, message.id) if message else None),
-                                (self.on_any_text, (source.name, message.id if message else None, reading.result))):
-            if hook is not None and arguments is not None:
+            if self.on_any_text is not None:
+                # Only marks waits; the delivery worker posts them later.
                 try:
-                    hook(*arguments)
+                    self.on_any_text(source.name, message.id if message else None, reading.result)
                 except Exception:
                     pass  # A notification failure never drops a received text.
+        if message is not None and self.on_text is not None:
+            try:
+                self.on_text(message.source, message.id)
+            except Exception:
+                pass  # A notification failure never drops a received text.
         return 'kept' if message else 'dropped'
 
     def newest(self, source: str | None, since: float) -> tuple[str, str] | None:

@@ -294,3 +294,11 @@ def test_cli_withholds_a_receipt_with_unexpected_fields(monkeypatch, capsys, tmp
     assert cli.main(['subscribe-write', 'a' * 64, '--webhook-url-file', str(file)]) == 2
     captured = capsys.readouterr()
     assert URL not in captured.out + captured.err and 'withheld' in captured.err
+
+
+def test_a_page_that_expires_during_registration_is_refused(deployed, events, monkeypatch):
+    broker = deployed[0]
+    prepared = password_begin(broker)
+    # The second lookup finds the page gone, as at the deadline.
+    monkeypatch.setattr(broker.writes, 'status', lambda *a, **k: dict(ok=False, error='unknown or expired write; start again'))
+    assert broker.dispatch(request(prepared['write_handle'])) == dict(ok=False, error='unknown or expired private write')

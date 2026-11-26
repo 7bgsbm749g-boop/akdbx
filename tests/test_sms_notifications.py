@@ -230,3 +230,15 @@ def test_any_text_cli_needs_a_source_and_a_new_broker(monkeypatch, capsys, tmp_p
     captured = capsys.readouterr()
     assert URL not in captured.out + captured.err and json.loads(captured.out)['any_text'] is True
     assert calls[-1]['any_text'] is True and calls[-1]['source'] == 'iphone' and 'since' not in calls[-1]
+
+
+def test_any_text_wait_is_marked_under_the_inbox_lock(events):
+    # subscribe-sms holds the same lock, so a text counted before a
+    # registration can never wake it.
+    broker, _ = events
+    token = broker.sms.add_source('iphone', 'shortcut')
+    owned = []
+    broker.sms.on_any_text = lambda *args: owned.append(broker.sms.condition._is_owned())
+    broker.sms.receive(token, 'Me', 'Shortcut setup test')
+    broker.sms.receive(token, 'Google', TEXT)
+    assert owned == [True, True]

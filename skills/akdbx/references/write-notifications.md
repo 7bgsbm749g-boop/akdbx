@@ -51,8 +51,9 @@ so that it survives a reboot.
    ```
 
    Use the same socket and trusted origin as `status`. Delete the URL file
-   after the confirmed receipt; keep only the task ID and `subscription_id`
-   in the private task context. A retry with the same write and URL returns
+   after the confirmed receipt. Keep the task ID, the `subscription_id` and
+   the `write_handle` in the private task context until you have checked the
+   result: the event and the receipt do not include the handle. A retry with the same write and URL returns
    the same subscription. A result that comes before or during registration
    is not lost: the receipt state is then `pending`, and the event follows.
 4. Require `expires_in: null`. Give the user the private page (and its

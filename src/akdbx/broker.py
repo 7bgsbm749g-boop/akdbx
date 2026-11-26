@@ -388,8 +388,11 @@ class Broker:
                 # A generated password has no page to wait for.
                 if op is None or not op.private_page:
                     return dict(ok=False, error='unknown or expired private write')
-                state = self.writes.status(handle)['state']
-                return self.write_notifications.subscribe_save(request, state=state, expires=op.expires)
+                # One more lookup: the page can expire between the two.
+                status = self.writes.status(handle)
+                if not status.get('ok'):
+                    return dict(ok=False, error='unknown or expired private write')
+                return self.write_notifications.subscribe_save(request, state=status['state'], expires=op.expires)
         if action in {'write-subscription-status', 'unsubscribe-write'}:
             return self.write_notifications.status(
                 request.get('subscription_id'), cancel=action == 'unsubscribe-write')
