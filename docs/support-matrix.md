@@ -212,12 +212,12 @@ broker takes attached devices only (after 0.50.1).
 ## Tests that CI skips
 
 Every `tests/test_*.py` file is in at least one CI job. Some cases skip in a
-job, for the reason given. Only `test_relay_integration.py` runs in no job.
+job, for the reason given. Only `test_relay_integration.py` and `test_android_emulator.py` run in no job.
 
 | Cases | Reason |
 | --- | --- |
 | `test_relay_integration.py` (skipped in `linux`) | It needs the akdbx-relay server from its own repository, which this CI does not install. |
-| The real-emulator cases of `test_android_emulator.py` (skipped in `linux`) | They need KVM, an Android SDK with a Play system image and a running emulator or device; they run by hand on a Linux host (note X). |
+| `test_android_emulator.py` (every case skipped in `linux`) | They need KVM, an Android SDK with a Play system image and a running emulator or device; they run by hand on a Linux host (note X). |
 | The KeePassXC case of `test_unlock_keys.py` (skipped in `linux`, left out in `macos-broker`) | It needs `/usr/bin/keepassxc-cli`. `native-merge` installs KeePassXC 2.7.10 and runs it, with the KeePassXC cases of the merge files. |
 | Cases for one operating system in a shared file | They run in that system's job. |
 

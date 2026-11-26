@@ -548,8 +548,9 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
      rule) that paints only the pinned element in a random colour, takes a
      screenshot of the tab (`tabs.captureVisibleTab`), removes the rule, and
      checks the colour at the points CDP hit-tests: the centre of a field; for
-     a secret, a point every few pixels along the middle of each line of its
-     text. An ordinary cover over those points, in any document or frame (a
+     a secret in an input, its start, centre and end; for other text, points
+     along the middle of each line (every few pixels, fewer when the text has
+     many lines). An ordinary cover over those points, in any document or frame (a
      dialog, a banner, a popover, an inert or click-through layer), changes
      those pixels, so the pin refuses; a see-through veil also refuses.
      Limit: the check proves those points only, at the moment of the
