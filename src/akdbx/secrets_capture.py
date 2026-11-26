@@ -142,7 +142,8 @@ class SecretCaptures:
             android = isinstance(pin, AndroidPin)
             extension = isinstance(pin, ExtensionPin)
             native = isinstance(pin, NativePin)
-            if pin.mode != 'read':
+            # A QR read pin (read_kind "qr") is for capture-totp only.
+            if pin.mode != 'read' or getattr(pin, 'read_kind', 'text') != 'text':
                 return dict(ok=False, error=REFUSED)
             create = request.get('create') is True
             allowed = {'action', 'capture_protocol', 'target', 'field', 'metadata', 'start_deadline'}

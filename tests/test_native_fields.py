@@ -141,7 +141,8 @@ def test_secret_capture_reads_only_explicit_readonly_control():
     pin.close()
 
 
-def test_capture_totp_refuses_and_consumes_native_read_pin(monkeypatch):
+@pytest.mark.parametrize('extra', [{}, {'read_kind': 'qr'}])
+def test_capture_totp_refuses_and_consumes_native_read_pin(monkeypatch, extra):
     from test_broker import make_broker
     from akdbx.writes import metadata
 
@@ -152,7 +153,7 @@ def test_capture_totp_refuses_and_consumes_native_read_pin(monkeypatch):
     entry = broker.vault.entries[0]
     entry.url = SITE
     request = dict(action='capture-totp', totp_capture_protocol=1, target=receipt['target'],
-                   handle=broker._new_handle(entry), metadata=metadata(entry), start_deadline=14)
+                   handle=broker._new_handle(entry), metadata=metadata(entry), start_deadline=14, **extra)
     assert broker.dispatch(request) == dict(
         ok=False, error='authenticator capture refused: native controls cannot verify the site origin; nothing saved')
     assert session.closed and broker.native.take(receipt['target']) is None
