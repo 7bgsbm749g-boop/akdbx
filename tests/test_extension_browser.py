@@ -1087,7 +1087,10 @@ def test_the_cog_opens_the_settings_and_the_switch_turns_enhanced_security_on_an
     while harness.worker_call(SETTINGS) != dict(enhanced_security=True):
         assert time.monotonic() < deadline, harness.worker_call(SETTINGS)
         time.sleep(.05)
-    assert observer.evaluate(state, options) == dict(disabled=False, checked=True, status='')
+    # The page saves the setting first, then shows the saved state and unlocks the switch.
+    while (shown := observer.evaluate(state, options)) != dict(disabled=False, checked=True, status=''):
+        assert time.monotonic() < deadline, shown
+        time.sleep(.05)
     # The service worker reads the setting: a click-through cover now refuses.
     observer.call('Page.bringToFront', session=lab.session)
     url = lab.navigate('/secret-covered')
@@ -1637,11 +1640,12 @@ def test_a_rebuild_with_other_contents_runs_the_new_worker_after_a_browser_resta
     stamped = rebuild(monkeypatch, folder, unlock_origin=origin)
     assert stamped != first and json.loads((folder / 'manifest.json').read_text())['version'] == stamped
     with chromium_lab(private_dir, *certificates, restart=True, **run) as lab:
-        # Chromium registers the new worker at startup. Edge on Windows can first start the registered old
-        # worker, which then finds the newer build on disk and reloads into it.
+        # Chromium registers the new worker at startup. Chromium or Edge can first start the worker it
+        # registered on the previous launch, which then finds the newer build on disk and reloads into it.
+        # That earlier worker ran either the old files or the rebuilt ones (see the restart above).
         deadline = time.monotonic() + 30
         while (runs := worker_value(lab, RUNS)) != [stamped, True, 'function']:
-            assert runs == [first, False, 'function'] and time.monotonic() < deadline, runs
+            assert runs in ([first, False, 'function'], [first, True, 'function']) and time.monotonic() < deadline, runs
             time.sleep(.2)
 
 
