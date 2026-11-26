@@ -426,11 +426,13 @@ async function digestName(name, index = 0) {
     '/sms-frame': ('<!doctype html><meta charset="utf-8"><style>input{width:160px;height:24px}</style>'
                    '<input id="otp" autocomplete="one-time-code" maxlength="6">'),
     '/address': '<!doctype html><meta charset="utf-8">' + ADDRESS_FORM + DIGEST,
-    # Address fields without IDs, whose first field's input handler adds a hint next to it.
+    # Address fields without IDs, whose input handlers add a hint after one field and a note before another.
     '/address-shifting': ('<!doctype html><meta charset="utf-8"><form><input name="given" autocomplete="given-name">'
                           '<input name="line1" autocomplete="address-line1"><input name="postal" autocomplete="postal-code">'
                           '</form><script>document.querySelector("[name=given]").addEventListener("input", e =>'
                           ' e.target.insertAdjacentHTML("afterend", "<span>Looks good</span>"));'
+                          'document.querySelector("[name=line1]").addEventListener("input", e =>'
+                          ' e.target.insertAdjacentHTML("beforebegin", "<p>Street and number</p>"));'
                           'async function digestName(name) { const data = new TextEncoder().encode('
                           'document.getElementsByName(name)[0].value); return Array.from(new Uint8Array('
                           'await crypto.subtle.digest("SHA-256", data)), b => b.toString(16).padStart(2, "0")).join(""); }'
@@ -2109,7 +2111,7 @@ def test_popup_address_fill_refuses_a_field_changed_after_the_probe(harness):
         assert all(lab.digest(field) == EMPTY for field in FILLED) and lab.evaluate('addressEvents') == []
 
 
-FRAME_DIGEST = ("(async id => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder()"
+ADDRESS_FRAME_DIGEST = ("(async id => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder()"
                 ".encode(document.getElementById(id).value))), b => b.toString(16).padStart(2, '0')).join(''))")
 
 
@@ -2130,16 +2132,17 @@ def test_popup_address_fill_reaches_a_frame_of_the_top_origin_and_never_another_
     assert found['ok'] and found['kind'] == 'identity' and found['origin'] == ORIGIN, found
     index = next(e['index'] for e in found['entries'] if e['title'] == ADDRESS_TITLE)
     assert harness.worker_call(f'popupFill({{session: {json.dumps(found["session"])}, index: {index}}})') == {'ok': True}
-    digest = lambda frame, field: frame(f'{FRAME_DIGEST}({json.dumps(field)})', await_promise=True)  # noqa: E731
+    digest = lambda frame, field: frame(f'{ADDRESS_FRAME_DIGEST}({json.dumps(field)})', await_promise=True)  # noqa: E731
     assert {field: digest(same, field) for field in FILLED} == {field: sha(value) for field, value in FILLED.items()}
     assert all(digest(same, field) == EMPTY for field in DECOYS)
     assert all(digest(other, field) == EMPTY for field in (*FILLED, *DECOYS))
 
 
 def test_popup_address_fill_pins_each_field_just_before_its_write(harness):
-    """Fields without IDs: a node that the page adds next to a field, before the click or while it handles an
-    earlier field's events, moves the later fields' structural paths. Each field is pinned again just before
-    its write, from the element kept since the popup opened, so the whole address fills."""
+    """Fields without IDs: a node that the page adds next to a field, before the click or while it handles a
+    field's own events or an earlier field's, moves the fields' structural paths. Each field is pinned again just
+    before its write, from the element kept since the popup opened, and the popup's pin checks that element, not
+    the path, so the whole address fills."""
     lab, broker = harness.lab, harness.broker
     broker.vault.entries.append(AddressEntry(uuid='address', title=ADDRESS_TITLE, path=('Root', 'Web', ADDRESS_TITLE)))
     lab.navigate('/address-shifting')

@@ -11,15 +11,24 @@ def _popup(script: str) -> str:
     The popup applies the identity pin's own rules to every field it fills:
     autocomplete grammar, input type, select options, style guard, hit tests
     through same-origin frames, exact URLs and the retained-element checks.
-    Only the pin's focus check differs. The popup holds the window focus while
-    the user chooses, and it fills the focused field's partners in the same
-    form, so the extension checks the focused field itself: it must stay the
-    document's active element until the fill.
+    Two checks differ. The popup holds the window focus while the user
+    chooses, and it fills the focused field's partners in the same form, so
+    the extension checks the focused field itself: it must stay the
+    document's active element until the fill. And the popup names each field
+    by the element it kept since the user opened it, not by an agent's
+    selector: the selector it passes only finds that element at the pin, so
+    a node the page adds above a field during the fill does not refuse it.
     """
-    old = "    if (identity && (!doc.hasFocus() || doc.activeElement !== el || (select && el.multiple))) return false;"
-    if script.count(old) != 1:
-        raise RuntimeError('card pin script changed; update browser_identity')
-    return script.replace(old, "    if (identity && select && el.multiple) return false;")
+    replacements = (
+        ("    if (identity && (!doc.hasFocus() || doc.activeElement !== el || (select && el.multiple))) return false;",
+         "    if (identity && select && el.multiple) return false;"),
+        ("        document.querySelectorAll(selector).length !== 1 || document.querySelector(selector) !== el ||\n", ""),
+    )
+    for old, new in replacements:
+        if script.count(old) != 1:
+            raise RuntimeError('card pin script changed; update browser_identity')
+        script = script.replace(old, new)
+    return script
 
 
 POPUP_PIN_SCRIPT = _popup(PIN_SCRIPT)
