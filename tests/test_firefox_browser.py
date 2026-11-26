@@ -515,7 +515,10 @@ def test_firefox_user_click_popup(firefox_lab):
                 const actor = doc.getActor("MarionetteCommands");
                 const buttons = await actor.findElements("css selector", "#entries button", {all:true, timeout:5000});
                 if (buttons.length !== 1) return "expected one matching entry";
-                await actor.clickElement(buttons[0], new Map([["moz:webdriverClick", true]]));
+                // Firefox 153 reads capabilities through toJSON(); newer releases use Map.get().
+                const capabilities = Object.assign(new Map([["moz:webdriverClick", true]]),
+                    {toJSON() { return {"moz:webdriverClick": true}; }});
+                await actor.clickElement(buttons[0], capabilities);
                 return "clicked";
             })().then(done, e => done(String(e)));
         """, popup)
