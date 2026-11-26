@@ -135,7 +135,7 @@ class CDP:
 # All DOM methods run in a private isolated world. Page JavaScript cannot replace
 # its builtins or the native value setter. Capture the actual element, not a
 # selector to resolve later. Every check and the write run in one JS task.
-PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=false, purpose=false, allowOff=false) => {
+PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=false, purpose=false, allowOff=false, shadowRootOf=null) => {
   __STYLE_GUARD__
   const matches = document.querySelectorAll(selector);
   if (matches.length !== 1) return null;
@@ -221,7 +221,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
       const clipped = value => inset = insetContains(value, clipper, rect, style);
       if (!supportedStyle(style,forbidTransform,false,clipped)) return false;
       flat = flat || inset;
-      if (flat && !flatChain(ancestor, style)) return false;
+      if (flat && !flatChain(ancestor, style, shadowRootOf)) return false;
     }
     return owner.visibilityState === 'visible' && !node.closest('[inert]');
   }

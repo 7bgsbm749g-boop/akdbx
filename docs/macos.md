@@ -64,8 +64,47 @@ build. See [Firefox setup](firefox.md); its macOS host manifest goes under
 `~/Library/Application Support/Mozilla/NativeMessagingHosts`.
 
 For user-started authenticator QR import, use the separate 1.1.0+ importer.
-The default capture-only socket is `~/Library/Application Support/akdbx/run/u`.
+The default capture socket is `~/Library/Application Support/akdbx/run/u`.
 See [private import](../skills/akdbx/references/private-import.md) for browser builds and registration.
+
+## Guided setup and login
+
+After 0.48.0, run `akdbx setup` in your macOS login session. For example:
+
+```sh
+akdbx setup --yes --vault /absolute/path/to/vault.kdbx \
+  --tls-cert /absolute/path/to/localhost.pem --tls-key /absolute/path/to/localhost-key.pem \
+  --browser chrome --start-at-login
+```
+
+Use `--dry-run --json` to check the plan. The login stage installs
+`~/Library/LaunchAgents/org.akdbx.broker.plist`. It uses the selected Python and
+vault, starts locked, and suppresses the unlock link in service output. Setup
+checks the selected RPC socket before starting a broker. If the vault already has a
+broker, use its socket and origin. The LaunchAgent preserves `AKDBX_LOCK_TIMEOUT`
+as an explicit timeout in seconds. Changes to a loaded job apply at next login.
+Use `akdbx status` to get the private link and check that
+`lock_event_sources.macos` is `listening`. The broker listens for screen lock,
+sleep and wake in the GUI login session. Losing a listening helper locks the vault.
+
+## Private pages and phone codes
+
+- For the relay, select `--access relay` in setup. Check `relay.connected` in
+  broker status. TLS terminates at the broker. CI exercises a local test relay.
+- For Tailscale Serve, setup prints the verified HTTPS loopback mapping. The
+  broker also accepts a Serve backend on its private Unix socket. With the
+  default RPC path the backend is `~/Library/Application Support/akdbx/run/u`.
+  Use the root-run open-source Tailscale daemon for a filesystem socket. See
+  [private pages](private-pages.md#tailscale-serve-unix-socket-linux-and-macos).
+- One-shot unlock webhooks use `unlock_notifications_protocol: 1`. SMS ingest
+  uses `sms_protocol: 1`; the phone or SMS provider needs access to the
+  configured HTTPS origin. See [SMS sources](../skills/akdbx/references/sms.md).
+- For a Chromium QR capture host, select `--capture-host --capture-browser chrome`
+  and supply `--capture-extension-id ID` after loading the capture extension.
+  Setup runs the importer's `install-host` with the default capture socket and
+  the browser's `NativeMessagingHosts` folder. For Firefox, run `install-host
+  --browser firefox` yourself. The host requires `totp_import_protocol: 1`. A
+  capture still needs confirmation on the private page before a save.
 
 ## Chromium CDP
 
@@ -98,9 +137,14 @@ refuses delivery. See [browser pins](../skills/akdbx/references/target-fill.md).
   there is no keyboard or clipboard fallback.
 - From 0.46.0, `merge`, `admit` and `merge-status` use the built-in
   engine and the same encrypted snapshot and recovery protocol as Linux.
-- The guided `akdbx setup` command and login-service installation are not yet
-  implemented on macOS. Use the explicit commands above; no system service,
-  browser setting or trust setting is changed by installing the wheel.
+- Screen lock and the LaunchAgent need the user's GUI login session. There is
+  no sleep-delay inhibitor. CI tests delivery of the lock notification in that
+  session; a physical sleep/wake cycle and a live tailnet are outside this test.
+- Safari needs a signed Apple browser wrapper. The separate QR capture
+  extension uses Chromium native messaging. SMS ingest is available, but
+  this version's SMS fill requires a CDP or native window target.
+- The managed Android emulator requires a Linux host with KVM. The Linux
+  privileged secret-sink helper requires Linux peer credentials and systemd.
 - iOS and iPadOS cannot run this Python broker. This is macOS support only.
 
 ## Validation

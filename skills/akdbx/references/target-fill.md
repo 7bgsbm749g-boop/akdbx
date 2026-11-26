@@ -442,8 +442,18 @@ retry an uncertain fill automatically or read back a real password to check it.
 
 ## Remaining X11 operations
 
-`pin-target --pid PID --window XID` remains available for username-only keyboard
-fills and TOTP. These paths retain their existing PID/window/focus checks and
+After 0.47.0, Linux and Windows brokers list the numeric window operations in
+`target_fill_modes: ["username", "totp", "sms-code"]`. These correspond to
+`fill --mode username`, `fill-totp` and `fill-sms-code`.
+
+On Linux, `pin-target --pid PID --window XID` requires a window on the broker's
+X display (or the selected slot's display), X-Resource 1.2 local PID support,
+and a window manager that publishes `_NET_ACTIVE_WINDOW`. This includes
+XWayland when the compositor provides those checks. A native Wayland surface
+has no XID. Virtual keyboards and remote desktop input follow compositor focus
+and cannot bind key delivery to that surface. Use a [native field pin](native-fields.md)
+for supported native controls. The SMS fallback for split inputs also requires
+an X11 or XWayland window on Linux. These paths retain their existing PID/window/focus checks and
 `x11-send-event-v1` receipts. They do not attest DOM fields or origins. In
 particular, this password repair does not extend field protection to TOTP.
 See [TOTP](totp.md). Never use username mode to deliver a password.

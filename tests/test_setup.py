@@ -302,7 +302,12 @@ def test_without_a_terminal_it_needs_yes_or_dry_run(home, vault, capsys):
     assert '--yes' in capsys.readouterr().err
 
 
-def test_a_non_interactive_run_sets_up_every_selected_stage(home, vault, pair, capsys):
+def test_a_non_interactive_run_sets_up_every_selected_stage(home, vault, pair, capsys, monkeypatch):
+    monkeypatch.delenv('XAUTHORITY', raising=False)
+    session = dict(WAYLAND_DISPLAY='wayland-3', XDG_SESSION_TYPE='wayland',
+                   HYPRLAND_INSTANCE_SIGNATURE='fixture', XDG_CURRENT_DESKTOP='Hyprland')
+    for name, value in session.items():
+        monkeypatch.setenv(name, value)
     code, result, runner = setup(*base(vault, pair, '--start-at-login', '--browser', 'chrome', '--link-skill'),
                                  capsys=capsys)
     assert code == 0 and result['ok'], result
@@ -313,15 +318,22 @@ def test_a_non_interactive_run_sets_up_every_selected_stage(home, vault, pair, c
     assert stages['login']['state'] == 'changed'
     assert stages['fill']['state'] == 'changed' and stages['skill']['state'] == 'changed'
     unit = (home / '.config/systemd/user/akdbx.service').read_text()
+    assert stages['system']['desktop'] == 'Wayland desktop (XWayland DISPLAY=:7)'
+    assert 'WantedBy=graphical-session.target' in unit and 'PartOf=graphical-session.target' in unit
+    assert 'Environment="' not in unit
     assert unit.startswith('# akdbx-setup:')
     assert (f'ExecStart="@{EXECUTABLE}" "{EXECUTABLE}" "-m" "akdbx.cli" "--unlock-origin" "https://localhost:9443" '
             f'"serve" "{vault}" "--no-print-unlock-link" "--tls-cert" "{pair[0]}" "--tls-key" "{pair[1]}" '
             '"--default-fill-route" "extension"') in unit
-    assert 'Environment="DISPLAY=:7"' in unit and 'UnsetEnvironment=AKDBX_UNLOCK_ORIGIN' in unit
+    assert 'UnsetEnvironment=AKDBX_UNLOCK_ORIGIN' in unit
     assert stat.S_IMODE((home / '.config/systemd/user/akdbx.service').stat().st_mode) == 0o600
     commands = [argv[1:] for argv in runner.commands() if argv[0].endswith('systemctl')]
     assert commands == [['--user', 'daemon-reload'], ['--user', 'is-enabled', 'akdbx.service'],
-                        ['--user', 'enable', 'akdbx.service'], ['--user', 'start', 'akdbx.service']]
+                        ['--user', 'enable', 'akdbx.service'],
+                        ['--user', 'unset-environment', 'XAUTHORITY'],
+                        ['--user', 'import-environment', 'DISPLAY', 'WAYLAND_DISPLAY',
+                         'XDG_CURRENT_DESKTOP', 'HYPRLAND_INSTANCE_SIGNATURE', 'XDG_SESSION_TYPE'],
+                        ['--user', 'start', 'akdbx.service']]
     # The real extension commands wrote their files into the temporary home.
     manifest = home / '.config/google-chrome/NativeMessagingHosts/org.akdbx.extension.json'
     assert json.loads(manifest.read_text())['path'].endswith('chrome.sh')
@@ -338,6 +350,27 @@ def test_a_non_interactive_run_sets_up_every_selected_stage(home, vault, pair, c
     saved = json.loads(state.read_text())
     assert saved['vault'] == str(vault) and saved['browsers'] == ['chrome'] and saved['start_at_login'] is True
     assert 'synthetic setup master' not in state.read_text() + json.dumps(result)
+
+
+def test_wayland_login_migrates_enabled_unit_and_follows_next_session(home, vault, pair, capsys, monkeypatch):
+    options = base(vault, pair, '--start-at-login')
+    monkeypatch.setenv('XDG_SESSION_TYPE', 'x11')
+    monkeypatch.delenv('WAYLAND_DISPLAY', raising=False)
+    runner = Runner()
+    setup(*options, capsys=capsys, runner=runner)
+    unit = home / '.config/systemd/user/akdbx.service'
+    assert 'Environment="DISPLAY=:7"' in unit.read_text()
+    link = unit.parent / 'default.target.wants/akdbx.service'
+    link.parent.mkdir()
+    link.symlink_to(unit)
+    monkeypatch.setenv('WAYLAND_DISPLAY', 'wayland-1')
+    code, _, _ = setup(*options, capsys=capsys, runner=runner, status=Status(runner, running=True))
+    assert code == 0 and any(cmd[2:] == ['reenable', 'akdbx.service'] for cmd in runner.commands())
+    text = unit.read_text()
+    assert 'wayland-1' not in text and 'WantedBy=graphical-session.target' in text
+    monkeypatch.setenv('WAYLAND_DISPLAY', 'wayland-3')
+    setup(*options, capsys=capsys, runner=runner, status=Status(runner, running=True))
+    assert unit.read_text() == text
 
 
 def test_running_setup_again_changes_nothing(home, vault, pair, capsys):

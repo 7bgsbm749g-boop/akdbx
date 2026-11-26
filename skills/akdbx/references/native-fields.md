@@ -20,7 +20,8 @@ Supported controls:
 This is directed **control** delivery: Linux uses the retained AT-SPI editable
 text object, and Windows uses `WM_SETTEXT` to the exact child HWND. There are
 no global keys, Tab, clipboard or automatic submit actions. Legacy numeric
-`pin-target` X11/HWND pins still accept only username and TOTP delivery. They
+`pin-target` pins accept usernames, TOTP and SMS codes on X11, XWayland or Windows.
+Native Wayland windows have no XID; use AT-SPI field pins there. Window pins
 cannot authorize passwords or the other native field operations.
 
 ## Verify the destination

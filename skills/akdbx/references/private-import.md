@@ -118,6 +118,14 @@ manifest. It refuses to overwrite existing files. Use the same config environmen
 when the browser starts the host. No database/password/key is stored in this config.
 Neither build nor install reads the vault or restarts the browser/broker.
 
+On macOS, guided setup after 0.48.0 (`--capture-host --capture-browser
+chrome|edge|helium`) runs this installer with the default capture socket and
+that browser's `NativeMessagingHosts` folder. A browser started from Finder
+does not get `XDG_CONFIG_HOME`. With a configuration folder other than
+`~/.config/akdbx`, the macOS manifest therefore names a mode-0700 launcher,
+`browser-import-host.sh`, in that folder. The launcher sets `XDG_CONFIG_HOME` and
+starts the recorded script. A second registration reuses it only if it is identical.
+
 On Windows (0.22.0+) use `akdbx-browser-import.exe install-host --browser
 chrome|edge|helium --extension-id EXTENSION_ID --origin ORIGIN`. It registers
 the host under `HKEY_CURRENT_USER` and, without `--socket`, uses the default

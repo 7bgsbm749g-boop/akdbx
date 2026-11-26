@@ -31,6 +31,7 @@ session.
 | Merge two vaults | [Merge](references/merge.md), [preservation format](references/preservation-format.md) |
 | Snapshot admission (review prototype) | [Admission](references/snapshot-admission.md), [group selection](references/group-selection.md), [selection verification](references/selection-verification.md) |
 | Open the private pages from any device (no Tailscale) | [The akdbx relay](#the-akdbx-relay) |
+| macOS host | Use the paired browser extension. Check `lock_event_sources.macos` for desktop lock and `relay.connected` when using the relay. |
 | Windows host | [Windows operation](references/windows.md) |
 | Set up an optional on-demand Android emulator, sign in on Android, or confirm a login in a mobile app (wake the device before requesting the push) | [Android devices](references/android.md) |
 | Set akdbx up for a user (first install, or add a part later) | [First-time setup](#first-time-setup) |
@@ -39,7 +40,7 @@ session.
 
 ## Native desktop apps
 
-For authorized password, combined login, generated-password, card, address or
+For authorized username, TOTP, password, combined login, generated-password, card, address or
 read-only secret capture in a native desktop app, use native field protocol 1
 and [the native field workflow](references/native-fields.md). Verify the app and
 service independently. `list-native-fields` returns only opaque IDs and flags;
@@ -97,8 +98,8 @@ workflow owns.
 
 On Windows, read [Windows operation](references/windows.md) first: the
 transport is a named pipe, and native-window pins use HWNDs instead of X11
-windows. The private HTTPS page works the same way on both platforms. The managed Android emulator, Hyprland lock,
-Tailscale Serve Unix socket and Linux agent-desktop slot window pins are Linux-specific.
+windows. The private HTTPS page works the same way on every platform. The managed Android emulator, Hyprland lock
+and Linux agent-desktop slot window pins are Linux-specific. The Tailscale Serve Unix socket works on Linux and macOS.
 
 The maintained source of this skill is the repository's `skills/akdbx`
 directory. A local install links the agent's skills directory to it (a
@@ -108,7 +109,7 @@ directory junction on Windows needs no elevation), so it can be invoked as
 ### First-time setup
 
 `akdbx setup` (0.27.0+) takes a user from install to a working broker, on
-Linux and Windows. You can run it for the user without questions:
+Linux and Windows, with macOS support after 0.48.0. On macOS, `--start-at-login` installs a per-user LaunchAgent. Native window pins, CDP and Safari are unavailable in this version. You can run it for the user without questions:
 
 ```bash
 akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
@@ -136,7 +137,7 @@ akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
   continue as in [When the vault is locked](#when-the-vault-is-locked).
   `broker.unlock_blocked: true` means [Blocked unlock link](#blocked-unlock-link).
 - Setup never reads the vault and never asks for the master password. It
-  never starts a second broker, and never replaces a unit, task, extension
+  checks for a broker at the selected endpoint before starting one, and never replaces a unit, task, extension
   host or skill folder that it did not write. Run it again to finish or
   extend a setup; it detects what is already done.
 
@@ -154,7 +155,7 @@ on a loopback origin (`https://localhost:PORT` or `https://127.0.0.1:PORT`)
 opens only on the broker's computer. A link on a Tailscale origin opens on any
 device in the tailnet. A link on a relay origin (`https://<id>.akdbx.link`; `:8443`
 before the 0.28.0 move) opens on any device; handle it exactly like any other unlock link: give it
-only to the user, privately. This is the same on Linux and Windows; the
+only to the user, privately. This is the same on Linux, macOS and Windows; the
 repository's `docs/private-pages.md` describes the setups.
 
 Then let an event resume the task instead of waiting or asking the user to say
@@ -484,8 +485,9 @@ Rules (full detail in [password field delivery](references/target-fill.md)):
   `--top-url-file FILE` (or `--frame-url-file FILE`) in place of the plain
   flag, and delete the file after the pin. Never shorten or change the URL.
   See [exact URL with a private token](references/target-fill.md#exact-url-with-a-private-token).
-- Native apps and username or TOTP fields outside a browser use window pins:
-  `pin-target --pid PID --window WINDOW` (X11 on Linux, HWND on Windows). A
+- Use native field pins for supported native apps, including apps on Wayland.
+  The numeric fallback for usernames, TOTP and SMS codes is
+  `pin-target --pid PID --window WINDOW` (X11 or XWayland on Linux, HWND on Windows). A
   window pin never accepts a password or login fill, because a browser's
   address bar shares its window. In an agent desktop slot, a window of the
   slot's Chrome needs `--browser-slot "$AGENT_DESKTOP_SLOT"` (0.35.3+, pass it
@@ -601,7 +603,7 @@ input next to a separate country picker takes `fill-identity --format national
 `07...` number needs `--calling-code`; some countries refuse it
 ([identities](references/identities.md#phone-number-next-to-a-country-picker)).
 From 0.36.3 (fill extension 0.7.2), a field in a side drawer or modal whose
-`clip-path: inset(...)` only trims its shadow pins with `--route extension`;
+`clip-path: inset(...)` only trims its shadow pins with `--route extension` (Firefox requires fill extension 0.11.1+);
 the CDP route and other clip shapes refuse
 ([clipped ancestors](references/identities.md#field-inside-a-clipped-drawer-or-modal-0363)). Names,
 addresses, phone numbers and emails never go in CLI arguments, output, logs or

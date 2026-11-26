@@ -1,7 +1,8 @@
 # Resume on vault unlock (0.11.0)
 
 Unlock notifications are one-shot HTTPS webhooks sent by the broker after it
-accepts the vault. No agent run, polling schedule, shell listener or extra
+accepts the vault on Linux, macOS or Windows. On macOS the default subscription
+state sits beside the broker socket in the private, persistent run directory. No agent run, polling schedule, shell listener or extra
 service needs to stay active. `status` must advertise
 `unlock_notifications_supported: true` and integer
 `unlock_notifications_protocol: 1`. The CLI refuses incompatible brokers before

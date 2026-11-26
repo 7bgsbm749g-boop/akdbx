@@ -17,10 +17,12 @@ import http.client
 import json
 import os
 import re
+import shlex
 import socket
 import stat
 import struct
 import sys
+from contextlib import contextmanager
 from importlib.resources import files
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -29,6 +31,7 @@ MAX_NATIVE_MESSAGE = 48 * 1024
 HOST_NAME = 'org.akdbx.private_import'
 FIREFOX_ID = 'private-import@akdbx.org'
 RECEIPT = {'ok': True, 'state': 'awaiting-private-confirmation'}
+LAUNCHER = 'browser-import-host.sh'
 
 
 def config_path(browser='chrome'):
@@ -192,6 +195,71 @@ def host_identity(args):
     return args.extension_id, {'allowed_origins': ['chrome-extension://' + args.extension_id + '/']}
 
 
+def _host_manifest(path, allowed):
+    return dict(name=HOST_NAME, description='Private akdbx authenticator import', path=str(path),
+                type='stdio', **allowed)
+
+
+def _macos_launcher(executable, config):
+    """Finder starts the browser, and so the host, without the installing shell's XDG_CONFIG_HOME."""
+    folder = Path(os.path.abspath(config.parent))
+    if sys.platform != 'darwin' or folder == Path(os.path.abspath(Path.home() / '.config' / 'akdbx')):
+        return None
+    return ('#!/bin/sh\nexport XDG_CONFIG_HOME=' + shlex.quote(str(folder.parent))
+            + '\nexec ' + shlex.quote(str(executable)) + ' "$@"\n')
+
+
+@contextmanager
+def _read_installed(directory, name, *, executable=False):
+    """Open a registration file only if this user alone can change it."""
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    with os.fdopen(fd, 'r') as stream:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022
+                or info.st_size > 65536 or executable and not info.st_mode & stat.S_IXUSR):
+            raise ValueError('unsafe capture registration')
+        if sys.platform == 'darwin':
+            from .macos import require_private_acl
+            require_private_acl(fd)
+        yield stream
+
+
+def _unlink_if_same(directory, name, created):
+    if created is not None:
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+            os.unlink(name, dir_fd=directory)
+
+
+def registration_matches(browser, executable, origin, socket_path, extension_id=None):
+    """Whether this browser's Unix registration names exactly this host, origin and socket."""
+    from types import SimpleNamespace
+    from .extension_host import linux_manifest_dir
+    from .runtime import trusted_user_directory
+    try:
+        path = config_path(browser)
+        config = load_config(path)
+        extension_id, allowed = host_identity(SimpleNamespace(
+            browser=browser, extension_id=extension_id or config['extension_id']))
+        if config != dict(extension_id=extension_id, origin=origin.rstrip('/'),
+                          socket=str(Path(socket_path).absolute())):
+            return False
+        executable = Path(executable).absolute()
+        script = _macos_launcher(executable, path)
+        host = executable if script is None else Path(os.path.abspath(path.parent)) / LAUNCHER
+        with trusted_user_directory(linux_manifest_dir(browser)) as directory:
+            with _read_installed(directory, HOST_NAME + '.json') as stream:
+                if json.load(stream) != _host_manifest(host, allowed):
+                    return False
+        if script is not None:
+            with trusted_user_directory(path.parent) as directory:
+                with _read_installed(directory, LAUNCHER, executable=True) as stream:
+                    return stream.read() == script
+        return True
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+        return False
+
+
 def install_host(args):
     """Register the invoked console script without selecting another PATH install."""
     import fcntl
@@ -209,6 +277,7 @@ def install_host(args):
     manifest_dir = args.manifest_dir or linux_manifest_dir(browser)
     _, directory = prepare_private_runtime_directory(path.parent, create_ancestors=True)
     created = None
+    launcher_created = None
     manifest_created = None
     registration = None
     manifest = HOST_NAME + '.json'
@@ -233,22 +302,30 @@ def install_host(args):
         else:
             if existing != config:
                 raise ValueError('a different private import configuration exists')
+        host = executable
+        script = _macos_launcher(executable, path)
+        if script is not None:
+            # The manifest names a private launcher that restores this config folder.
+            host = Path(os.path.abspath(path.parent)) / LAUNCHER
+            try:
+                with _read_installed(directory, LAUNCHER, executable=True) as stream:
+                    if stream.read() != script:
+                        raise ValueError('a different private import launcher exists')
+            except FileNotFoundError:
+                fd = os.open(LAUNCHER, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700, dir_fd=directory)
+                with os.fdopen(fd, 'w') as stream:
+                    launcher_created = os.fstat(stream.fileno())
+                    os.fchmod(stream.fileno(), 0o700)
+                    stream.write(script)
         # An explicit directory supports Chrome's existing custom user-data root.
         fd = os.open(manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=registration)
         with os.fdopen(fd, 'w') as stream:
             manifest_created = os.fstat(stream.fileno())
-            json.dump(dict(name=HOST_NAME, description='Private akdbx authenticator import',
-                           path=str(Path(executable).absolute()), type='stdio',
-                           **allowed), stream)
+            json.dump(_host_manifest(host, allowed), stream)
     except Exception:
-        if manifest_created is not None:
-            current_manifest = os.stat(manifest, dir_fd=registration, follow_symlinks=False)
-            if (current_manifest.st_dev, current_manifest.st_ino) == (manifest_created.st_dev, manifest_created.st_ino):
-                os.unlink(manifest, dir_fd=registration)
-        if created is not None:
-            current = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
-            if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
-                os.unlink(path.name, dir_fd=directory)
+        _unlink_if_same(registration, manifest, manifest_created)
+        _unlink_if_same(directory, LAUNCHER, launcher_created)
+        _unlink_if_same(directory, path.name, created)
         raise
     finally:
         if registration is not None:
