@@ -81,13 +81,14 @@ refuses with `target unavailable`.
   over it must hit-test to it, at least 21 CSS pixels a side, with `object-fit`
   fill (or contain at the default position).
 - An inline `<svg>` is drawn from its own plain shapes (rect, also with
-  rounded corners, circle, ellipse, line, polyline, polygon, path) with their
+  rounded corners given as lengths, circle, ellipse, line, polyline, polygon,
+  path) with their
   computed geometry, fill, stroke and transform; nothing is loaded, so a strict
   page Content Security Policy does not block it. An `<svg>` that also holds
   text, an image, `<use>`, a nested `<svg>`, a gradient or pattern fill, a
   marker, a clip path, a mask, a filter, a blend mode, a dashed stroke,
-  `vector-effect` or `paint-order` refuses: the broker does not guess how it
-  looks.
+  `vector-effect`, `paint-order` or a corner radius given as a percentage
+  refuses: the broker does not guess how it looks.
 - `commit-totp --site-accepted` moves the pending key into `otp`. If `otp`
   already holds a key, `--replace` is required; the old key stays in the
   entry's encrypted history.
