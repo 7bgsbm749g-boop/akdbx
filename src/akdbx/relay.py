@@ -1272,25 +1272,36 @@ class _StreamTLS:
         self._sock = sock
         self._timeout = timeout
         self._lock = threading.Lock()
+        self._waiters = 0
+        self._closing = False
         sock.setblocking(False)
 
     def _io(self, operation, arg):
         deadline = time.monotonic() + self._timeout
         while True:
             with self._lock:
+                if self._closing:
+                    raise ConnectionError('relay stream closed')
                 try:
                     return operation(arg)
                 except ssl.SSLWantReadError:
                     event = selectors.EVENT_READ
                 except ssl.SSLWantWriteError:
                     event = selectors.EVENT_WRITE
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError('relay stream timed out')
-            with selectors.DefaultSelector() as selector:
-                selector.register(self._sock, event)
-                if not selector.select(remaining):
+                self._waiters += 1
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     raise TimeoutError('relay stream timed out')
+                with selectors.DefaultSelector() as selector:
+                    selector.register(self._sock, event)
+                    if not selector.select(remaining):
+                        raise TimeoutError('relay stream timed out')
+            finally:
+                with self._lock:
+                    self._waiters -= 1
+                    if self._closing and not self._waiters:
+                        self._sock.close()
 
     def recv(self, size):
         return self._io(self._sock.recv, size)
@@ -1304,7 +1315,14 @@ class _StreamTLS:
 
     def close(self):
         with self._lock:
-            self._sock.close()
+            self._closing = True
+            if self._waiters:
+                # Closing the descriptor now can remove it from epoll before
+                # it delivers the shutdown event. The last waiter closes it.
+                with suppress(OSError):
+                    self._sock.shutdown(socket.SHUT_RDWR)
+            else:
+                self._sock.close()
 
     def __getattr__(self, name):
         return getattr(self._sock, name)

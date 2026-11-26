@@ -1,6 +1,6 @@
 """The broker side of the akdbx relay against an in-process fake relay (loopback only)."""
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 import datetime
 import json
 import os
@@ -13,6 +13,7 @@ import threading
 import time
 import tracemalloc
 from types import SimpleNamespace
+from unittest.mock import Mock, call
 from urllib.parse import urlencode, urlsplit
 
 import pytest
@@ -461,6 +462,50 @@ def test_idle_relay_read_allows_a_reply_without_overlapping_tls_calls(fake, page
             if waiter is not None:
                 waiter['ws'].abort()
                 waiter['done'].set()
+
+
+def test_tls_readiness_does_not_restart_the_stream_deadline(monkeypatch):
+    # Each readiness notification costs one second but TLS still needs more I/O.
+    ticks = iter((10, 11, 12, 13))
+    monkeypatch.setattr(relay_module, 'time', SimpleNamespace(monotonic=lambda: next(ticks)))
+    selector = Mock()
+    selector.select.return_value = [(None, None)]
+    monkeypatch.setattr(relay_module.selectors, 'DefaultSelector', lambda: nullcontext(selector))
+    sock = Mock()
+    sock.recv.side_effect = [ssl.SSLWantReadError, ssl.SSLWantWriteError, ssl.SSLWantReadError]
+    stream = relay_module._StreamTLS(sock, 3)
+    with pytest.raises(TimeoutError, match='relay stream timed out'):
+        stream.recv(1)
+    assert selector.select.call_args_list == [call(2), call(1)]
+    assert selector.register.call_args_list == [
+        call(sock, relay_module.selectors.EVENT_READ), call(sock, relay_module.selectors.EVENT_WRITE)]
+
+
+def test_closing_stream_wakes_a_registered_tls_waiter(monkeypatch):
+    # Abort after registration but before the waiting thread consumes the event.
+    registered, aborted = threading.Event(), threading.Event()
+
+    class PausedSelector(relay_module.selectors.DefaultSelector):
+        def select(self, timeout=None):
+            registered.set()
+            assert aborted.wait(5)
+            return super().select(0)  # Shutdown must already be observable.
+
+    monkeypatch.setattr(relay_module.selectors, 'DefaultSelector', PausedSelector)
+    near, far = socket.socketpair()
+    with near, far, ThreadPoolExecutor(1) as pool:
+        sock = Mock(wraps=near)
+        sock.send.side_effect = ssl.SSLWantWriteError
+        stream = relay_module._StreamTLS(sock, 330)
+        writer = pool.submit(stream.send, b'x')
+        try:
+            assert registered.wait(5)
+            stream.close()
+        finally:
+            aborted.set()
+        with pytest.raises(ConnectionError):
+            writer.result(5)
+        assert near.fileno() == -1
 
 
 def test_the_client_reconnects_after_the_relay_drops_it(fake, page):
