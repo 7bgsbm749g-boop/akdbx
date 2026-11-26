@@ -104,6 +104,11 @@ saves its value into the verified encrypted vault; it never returns the value.
 The receipt identifies `capture_delivery: "native-field-read-v1"`. Existing
 single-line secret validation and configured sink rules are unchanged.
 
+A native read pin cannot authorize `capture-totp`. The caller supplies
+`--service-url`, and the OS cannot verify that a website at that origin
+displayed the setup key. The broker consumes the pin and returns a fixed
+refusal before reading the control.
+
 All pins and entry handles are single-use. A changed destination refuses before
 dispatch, or reports an uncertain result if a write may already have started.
 Do not retry an uncertain fill automatically. A length check detects truncation;

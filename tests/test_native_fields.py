@@ -141,6 +141,23 @@ def test_secret_capture_reads_only_explicit_readonly_control():
     pin.close()
 
 
+def test_capture_totp_refuses_and_consumes_native_read_pin(monkeypatch):
+    from test_broker import make_broker
+    from akdbx.writes import metadata
+
+    broker, _ = make_broker()
+    broker.native, session, receipt, now = setup('read')
+    broker.clock = lambda: now[0]
+    monkeypatch.setattr(session, 'read', lambda index: pytest.fail('native control was read'))
+    entry = broker.vault.entries[0]
+    entry.url = SITE
+    request = dict(action='capture-totp', totp_capture_protocol=1, target=receipt['target'],
+                   handle=broker._new_handle(entry), metadata=metadata(entry), start_deadline=14)
+    assert broker.dispatch(request) == dict(
+        ok=False, error='authenticator capture refused: native controls cannot verify the site origin; nothing saved')
+    assert session.closed and broker.native.take(receipt['target']) is None
+
+
 def test_wrong_kind_consumes_and_closes_pin():
     manager, session, receipt, _ = setup()
     with pytest.raises(TargetError):

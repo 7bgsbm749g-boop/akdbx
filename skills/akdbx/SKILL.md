@@ -528,7 +528,8 @@ URL must match the pinned field document and entry origin. Codes and keys never 
 imports it once through `setup-totp`'s private page. When the task authorizes
 adding an authenticator app to the account, enroll it yourself with
 `capture-totp` (0.35.0+): the broker reads the setup key from the site's
-enrollment page; see [automatic enrollment](references/totp-enrollment.md).
+enrollment page through a CDP or extension read pin. A native read pin cannot
+verify the enrollment site's origin. See [automatic enrollment](references/totp-enrollment.md).
 Never reset or replace a site's 2FA just to finish a login. Push approvals, passkeys and device
 checks can still need the user. Details: [TOTP](references/totp.md) and
 [private key import](references/private-import.md).

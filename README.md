@@ -940,7 +940,8 @@ Algorithm references: [RFC 6238](https://www.rfc-editor.org/rfc/rfc6238) and
 When the user authorizes adding an authenticator app to a website account (for
 example GitHub's two-factor setup), the agent can enroll it with no private
 page and no user step. The broker reads the setup key from the site's page
-through a single-use read pin, the same route as
+through a single-use CDP or extension read pin. Native controls cannot verify
+the enrollment site's origin. For the browser pin checks, see
 [secret capture](skills/akdbx/references/secret-capture.md):
 
 ```bash

@@ -52,7 +52,9 @@ The receipt is `{"ok": true, "target": "...", "expires_in": 30, "target_delivery
 (`"extension-dom-v1"` with `--route extension`, which reads through the paired
 extension in the user's own browser; take the page and frame IDs from
 `list-password-frames --route extension`). The extension route reads only in
-the top document; for a secret in a child frame use the CDP route.
+the top document. It cannot verify the text's exact position and visibility
+through padded or transformed iframe owners. Use the CDP route for a supported
+same-site child frame.
 The pin is single use and expires after 30 seconds. It refuses unless:
 
 - the page has the exact HTTPS top URL, page ID and frame ID (a same-site child
