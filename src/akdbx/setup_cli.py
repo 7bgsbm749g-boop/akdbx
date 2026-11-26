@@ -1714,15 +1714,19 @@ class Setup:
             if not applied:
                 return self.outcome(applied)
             state = 'changed'
-        if os.path.lexists(config_path()):
-            if self.macos:
-                from .browser_import import registration_matches
-                from .macos import macos_page_socket
-                if not registration_matches(browser, tool, self.origin, macos_page_socket(Path(self.socket)),
-                                            self.choice.get('capture_extension_id')):
-                    self.step('The installed QR capture registration differs or is unsafe. Review the existing '
-                              'configuration and browser manifest before reinstalling the capture host.', 'features')
-                    return 'failed'
+        registered = os.path.lexists(config_path())
+        if registered and self.macos:
+            from .browser_import import HOST_NAME, registration_matches
+            from .extension_host import linux_manifest_dir
+            from .macos import macos_page_socket
+            registered = registration_matches(browser, tool, self.origin, macos_page_socket(Path(self.socket)),
+                                              self.choice.get('capture_extension_id'))
+            if not registered and os.path.lexists(linux_manifest_dir(browser) / (HOST_NAME + '.json')):
+                self.step('The installed QR capture registration differs or is unsafe. Review the existing '
+                          'configuration and browser manifest before reinstalling the capture host.', 'features')
+                return 'failed'
+            # Without this browser's manifest, install-host reuses only an identical configuration and launcher.
+        if registered:
             self.say(f'The capture host is already registered ({config_path()}); setup leaves it unchanged.')
             return state
         extension_id = self.choice.get('capture_extension_id')
