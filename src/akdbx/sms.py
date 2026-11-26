@@ -1484,7 +1484,10 @@ def dispatch(broker, request: dict, delivery_ready) -> dict:
 
 
 def _consume_target(broker, request):
-    """Spend one native control, DOM field or window pin, including refused pins."""
+    """Spend one native control, Android, DOM field or window pin, including refused pins.
+
+    Each manager pops only its own tokens, so a token is spent once, by its owner.
+    """
     from .browser_card import CardTargetError
     token = request.get('target')
     native = broker.native.take(token, 'code')
@@ -1493,6 +1496,13 @@ def _consume_target(broker, request):
             native.close()
             raise SmsError('invalid target protocol')
         return 'native', native
+    android = broker.android.take(token)
+    if android is not None:
+        if (android.mode != 'sms' or type(request.get('target_protocol')) is not int
+                or request['target_protocol'] != 1 or request.get('action') != 'fill-sms-code'):
+            android.close()
+            raise CardTargetError()
+        return 'android', android
     try:
         return 'dom', broker.code_targets.consume(token)
     except CardTargetError:
@@ -1501,10 +1511,18 @@ def _consume_target(broker, request):
 
 
 def _close_target(broker, route, pin):
-    if route == 'native':
+    if route in {'native', 'android'}:
         pin.close()
     elif route == 'dom':
         broker.code_targets._close(pin)
+
+
+def _android_site_matches(pin, request):
+    from .totp import TotpError, https_origin
+    try:
+        return pin.origin == https_origin(request.get('target_url'))
+    except TotpError:
+        return False
 
 
 def _deadline(broker, request):
@@ -1518,6 +1536,11 @@ def _deadline(broker, request):
 def _deliver(broker, route, pin, value, field, ready, deadline):
     """Type ``value`` through the pinned field or window; a fill receipt."""
     from .target import DELIVERY as WINDOW_DELIVERY, DeliveryError
+    if route == 'android':
+        try:
+            return broker.android.fill_element(pin, value, field, ready, deadline)
+        finally:
+            pin.close()
     if route in {'native', 'dom'}:
         manager = broker.native if route == 'native' else broker.code_targets
         try:
@@ -1608,6 +1631,8 @@ def _fill(broker, request, delivery_ready):
     refusal = None
     if route == 'window' and not _https_url(request.get('target_url')):
         refusal = dict(ok=False, error='autofill not started: window code fill needs --target-url')
+    elif route == 'android' and not _android_site_matches(pin, request):
+        refusal = dict(ok=False, error='autofill not started: Android SMS fill needs a matching HTTPS target URL')
     elif route == 'native' and 'target_url' in request:
         from .totp import https_origin, TotpError
         try:

@@ -11,6 +11,7 @@ from . import browser_slots, page_url
 from .identities import (COMMANDS, FAILED, FIELD_PURPOSE_PROTOCOL, FIELDS, FIELDS_PROTOCOL, FILL_FIELDS, REFUSED,
                          TEL_FORMATS, UPDATE_PROTOCOL, label_matches)
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
+from .android_route import CHROME_DELIVERY as ANDROID_CHROME_DELIVERY, DELIVERY as ANDROID_DELIVERY
 from .native_fields import DELIVERY as NATIVE_DELIVERY
 
 PIN_ARGS = ('page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field')
@@ -131,7 +132,9 @@ def valid_receipt(args, response):
     if args.command == 'fill-identity':
         return response in (dict(ok=True, filled=args.field, identity_delivery=DELIVERY),
                             dict(ok=True, filled=args.field, identity_delivery=EXTENSION_DELIVERY),
-                            dict(ok=True, filled=args.field, identity_delivery=NATIVE_DELIVERY))
+                            dict(ok=True, filled=args.field, identity_delivery=NATIVE_DELIVERY),
+                            dict(ok=True, filled=args.field, identity_delivery=ANDROID_DELIVERY),
+                            dict(ok=True, filled=args.field, identity_delivery=ANDROID_CHROME_DELIVERY))
     if set(response) != {'ok', 'entries'} or not isinstance(response['entries'], list) or len(response['entries']) > 20:
         return False
     labels = set()
@@ -183,6 +186,8 @@ def run(args, request):
                            else caps.get('extension_paired') is True)
         if (caps.get('locked') is False and args.command in {'pin-identity-target', 'fill-identity'}
                 and caps.get('identity_browser_configured') is not True and not extension_ready
+                and not (args.command == 'fill-identity' and caps.get('android_devices_configured') is True
+                         and 'identity' in caps.get('android_fill_modes', []))
                 and not (args.command == 'fill-identity' and type(caps.get('native_field_protocol')) is int
                          and caps['native_field_protocol'] == 1 and caps.get('native_field_supported') is True)):
             print(json.dumps(dict(ok=False, error='broker has no identity browser profile; request not sent')))

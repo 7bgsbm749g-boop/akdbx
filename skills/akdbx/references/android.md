@@ -149,7 +149,7 @@ Android SDK level and `speak_password`.
    akdbx android pin --device github-mobile --mode totp --field FIELD
    ```
 
-   Modes: `login` (username then password), `username`, `password`, `totp`.
+   For these sign-in commands use `login` (username then password), `username`, `password` or `totp`.
 5. Fill once with the pin's token:
 
    ```sh
@@ -160,6 +160,40 @@ Android SDK level and `speak_password`.
    The receipt is `{"ok": true, "filled": MODE, "target_delivery": ...}`.
    Then submit with a tap or Enter and check the result on screen. Do not
    retry a fill whose `delivery` is `uncertain`; inspect first.
+
+## Additional Android operations (after 0.47.0)
+
+Use a fresh `akdbx android pin --device NAME --field FIELD` for each command.
+Check `android_fill_modes` for the required mode. For a native app also supply
+the verified `--app-site` when pinning.
+
+| Operation | Pin options | Command |
+| --- | --- | --- |
+| Generated password | `--mode password` | `fill-generated --target-url RESET_URL --target TOKEN -- FILL_HANDLE` (requires `android_generated_password: true`) |
+| SMS code | `--mode sms` | `fill-sms-code MESSAGE --target TOKEN --target-url CHALLENGE_URL` (the HTTPS origin must match the pin) |
+| Card field | `--mode card --purpose cc-number` | `fill-card HANDLE --field cc-number --target TOKEN` |
+| Identity field | `--mode identity --purpose email` | `fill-identity HANDLE --field email --target TOKEN` |
+| Shown-once secret or authenticator setup key | `--mode read` | Use the token with `capture-secret` or `capture-totp` and the usual entry metadata. Chrome only. Check `android_read_delivery` for `android-chrome-verified-read-v1`. |
+
+For a card or identity pin, use the field name for the selected value as its
+purpose. On Chrome, focus the field and use the matching HTML autocomplete
+token. The browser guard checks that the field is visible, exposed and still
+the same element. App identity fields do not support `--notify-page`.
+For a read pin, focus a visible read-only text input or a focusable text leaf.
+Supply a simple selector for that element. Read pins accept up to 16 rendered text rectangles. A leaf may need a selector from
+the page because `android inspect` lists input fields. The read pin checks
+that the shown value, focus and document stay the same. Capture keeps the
+value inside the broker. After `capture-totp`, use a fresh `--mode totp` pin
+and `akdbx android fill-totp --pending HANDLE --target TOKEN` for the site's
+confirmation step (requires `android_pending_totp: true`). Then run
+`commit-totp` with the site's result. In-app web views and frames remain unsupported.
+
+For these new Chrome read, SMS, card and identity pins, the helper sends
+random key events only to Chrome. The retained focused element must receive
+the whole sequence before the broker reads or writes. The check cancels the
+keys' normal editing action so it can verify a read-only or short field.
+A page with a capturing keyboard handler on its window is refused.
+For generated passwords the existing password field check applies.
 
 ## Which site a pin may fill
 
@@ -211,7 +245,10 @@ reported as `uncertain`.
 - Tested on an Android 15 (API 35) Google Play emulator with Chrome 124 and
   Google Play services 26.45. A physical device over USB uses the same path but
   was not tested; the device must have USB debugging on.
-- Linux broker only was tested. The Windows broker has the same code path.
+- Device setup and managed emulators are supported on Linux. Windows and
+  macOS device operation has no end-to-end host proof. A Windows broker that
+  reads a manual device registry requires a private file DACL and trusted
+  parent directories.
 - adb gives every process of the broker's operating-system user full control
   of the device, as a DevTools port does for a desktop browser. The broker
   checks the helper file's hash immediately before it starts it, but a

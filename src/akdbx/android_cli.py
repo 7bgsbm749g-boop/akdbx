@@ -29,7 +29,7 @@ TOKEN = re.compile(r'[0-9a-f]{64}')
 def add_parser(commands):
     android = commands.add_parser(
         COMMAND, help='Android devices: inspect the focused app, pin a verified field, fill it (no secret output)',
-        description=('Fill a login, password, username or authenticator code into one verified field of the '
+        description=('Pin fields for verified fills and Chrome reads in the '
                      'focused app on an Android device that the operator configured for the broker. '
                      'The value goes from the broker to an akdbx helper on the device over adb standard input; '
                      'it is never an argument, typed key, clipboard content or output.'))
@@ -43,7 +43,8 @@ def add_parser(commands):
     pin.add_argument('--mode', required=True, choices=MODES)
     pin.add_argument('--field', required=True,
                      help='a field value from android inspect: the password field (login, password), the username '
-                          'field (username) or the code field (totp). A page field must be focused (tap it first)')
+                          'field (username), code field (totp or sms), or selected card, identity or read field. Tap a page field first')
+    pin.add_argument('--purpose', help='card or identity field name, such as cc-number or email')
     pin.add_argument('--username-field', help='field value of the username field; login mode only')
 
     pin.add_argument('--app-site', help=('exact HTTPS origin whose Digital Asset Links name this app; needed for '
@@ -59,6 +60,8 @@ def add_parser(commands):
                                           if name == 'fill' else 'fill the entry\'s current authenticator code'))
         fill.add_argument('handle', help='fresh handle from akdbx search')
         fill.add_argument('--target', required=True, help='token from android pin')
+        if name == 'fill-totp':
+            fill.add_argument('--pending', action='store_true', help='use the pending key to confirm enrollment')
         if name == 'fill':
             fill.add_argument('--mode', required=True, choices=('login', 'username', 'password'),
                               help='must be the mode of the pin')
@@ -149,6 +152,8 @@ def _request(args, request, leases):
             # Boot before starting the short fill deadline. The 30-second pin
             # and its 60-second fill fit within the minimum 120-second idle period.
             leases.enter_context(android_lifecycle.use(device))
+        if command == 'fill-totp' and getattr(args, 'pending', False) and caps.get('android_pending_totp') is not True:
+            raise AndroidError('broker lacks pending Android authenticator delivery; request not sent')
         if command == 'devices':
             payload = {'action': 'android-devices'}
         elif command == 'inspect':
@@ -162,6 +167,8 @@ def _request(args, request, leases):
                        'mode': args.mode, 'field': args.field}
             if args.username_field is not None:
                 payload['username_field'] = args.username_field
+            if getattr(args, 'purpose', None) is not None:
+                payload['purpose'] = args.purpose
             if args.app_site is not None:
                 payload['app_site'] = args.app_site
 
@@ -171,6 +178,8 @@ def _request(args, request, leases):
         else:
             payload = {'action': command, 'handle': args.handle, 'target': args.target, 'target_protocol': 1,
                        'start_deadline': time.monotonic() + 4}
+            if command == 'fill-totp' and getattr(args, 'pending', False):
+                payload['pending'] = True
             if command == 'fill':
                 payload['mode'] = args.mode
         sent = True
