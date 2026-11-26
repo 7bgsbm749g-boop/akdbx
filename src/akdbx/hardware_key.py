@@ -97,10 +97,28 @@ def crc16(data: bytes) -> int:
 
 def hid_hmac(transport, command: int, challenge: bytes, deadline: float,
              on_touch: Callable[[], None] | None = None) -> bytes:
-    """Send one challenge over HID feature reports and read the response.
+    """Send one challenge over HID feature reports and read the 20-byte response.
+
+    Raise ``_Rejected`` when the slot gives no response.
+    """
+    payload = padded(challenge) if len(challenge) < CHALLENGE_BYTES else challenge
+    return hid_command(transport, command, payload, RESPONSE_BYTES, deadline, on_touch)
+
+
+def hid_serial(transport, deadline: float) -> int | None:
+    """The key's serial number (no touch), or None when the key does not tell it."""
+    try:
+        return int.from_bytes(hid_command(transport, 0x10, b'', 4, deadline), 'big')
+    except (_Rejected, HardwareKeyError, OSError):
+        return None
+
+
+def hid_command(transport, command: int, payload: bytes, size: int, deadline: float,
+                on_touch: Callable[[], None] | None = None) -> bytes:
+    """Send one command frame over HID feature reports and read a ``size``-byte answer.
 
     ``transport.get()`` reads an 8-byte feature report and ``transport.set(data)``
-    writes one. Raise ``_Rejected`` when the slot gives no response.
+    writes one. Raise ``_Rejected`` when the key gives no answer.
     """
     def receive():
         report = bytes(transport.get())
@@ -118,7 +136,7 @@ def hid_hmac(transport, command: int, challenge: bytes, deadline: float,
     def reset():
         transport.set(bytes(DATA_SIZE) + b'\xff')
 
-    payload = padded(challenge) if len(challenge) < CHALLENGE_BYTES else challenge
+    payload = payload.ljust(CHALLENGE_BYTES, b'\0')
     frame = payload + bytes([command]) + crc16(payload).to_bytes(2, 'little') + bytes(3)
     sequence = receive()[4]
     for index in range(len(frame) // DATA_SIZE):
@@ -154,9 +172,9 @@ def hid_hmac(transport, command: int, challenge: bytes, deadline: float,
                     on_touch()
             time.sleep(0.1 if status & RESP_TIMEOUT_WAIT else 0.02)
         del report
-    if len(response) < RESPONSE_BYTES + 2 or crc16(response[:RESPONSE_BYTES + 2]) != CRC_RESIDUAL:
+    if len(response) < size + 2 or crc16(response[:size + 2]) != CRC_RESIDUAL:
         raise HardwareKeyError('the hardware key gave an invalid answer')
-    return response[:RESPONSE_BYTES]
+    return response[:size]
 
 
 def _allowed(vendor: int, product: int) -> bool:
@@ -580,6 +598,20 @@ def with_continuation(exchange, apdu):
     return data, status
 
 
+def card_serial(transmit) -> int | None:
+    """The serial number of a card with the YubiKey OTP applet (no touch), or None."""
+    _, status = transmit(bytes([0x00, 0xA4, 0x04, 0x00, len(APPLETS[0])]) + APPLETS[0])
+    if status != 0x9000:
+        return None
+    data, status = transmit(bytes([0x00, 0x01, 0x10, 0x00]))
+    return int.from_bytes(data, 'big') if status == 0x9000 and len(data) == 4 else None
+
+
+class Responses(list):
+    """The responses found; ``complete`` is False when time cut the search short."""
+    complete = True
+
+
 def card_hmac(transmit, command: int, challenge: bytes) -> bytes:
     """Select a challenge-response applet and send the challenge as an APDU."""
     for applet in APPLETS:
@@ -658,58 +690,65 @@ def available() -> bool:
 
 
 def responses(challenge: bytes, *, timeout: float = TOUCH_TIMEOUT,
-              on_touch: Callable[[], None] | None = None) -> list[bytes]:
+              on_touch: Callable[[], None] | None = None) -> Responses:
     """Every response that this computer's hardware keys give to ``challenge``.
 
     Each key is asked on slot 2, then slot 1; a slot that is not set up for
-    challenge-response is skipped. Raise NoHardwareKey when no key is found,
-    and HardwareKeyError when keys are found but none answers.
+    challenge-response is skipped. A USB YubiKey is also a smart card reader:
+    a card whose serial number belongs to a key that already answered over
+    HID is not asked again, so the key flashes once. ``complete`` is False when
+    time cut the search short. Raise NoHardwareKey when no key is found, and
+    HardwareKeyError when keys are found but none answers.
     """
     deadline = time.monotonic() + timeout
-    found, answers, failure, hid_yubico = False, [], None, False
+    found, answers, failure, answered, cut = False, [], None, set(), False
     with _LOCK:
-        for vendor, opener in _safe(_hid_sessions()):
+        for _, opener in _safe(_hid_sessions()):
             found = True
-            hid_yubico = hid_yubico or vendor == YUBICO_VID
             try:
                 transport = opener()
             except HardwareKeyError as exc:
                 failure = exc
                 continue
             try:
+                before = len(answers)
                 for _, command in SLOT_COMMANDS:
                     try:
                         answers.append(hid_hmac(transport, command, challenge, deadline, on_touch))
                     except _Rejected:
                         continue
                     except HardwareKeyError as exc:
-                        failure = exc
+                        failure, cut = exc, cut or isinstance(exc, TouchTimeout)
                         break
+                if len(answers) > before:
+                    serial = hid_serial(transport, deadline)
+                    if serial is not None:
+                        answered.add(serial)
             except OSError:
                 failure = HardwareKeyError('the hardware key could not be read')
             finally:
                 transport.close()
-        # A USB YubiKey that HID already asked is also a smart card reader named after it: never ask it twice.
         try:
-            pcsc = None if isinstance(failure, TouchTimeout) else _Pcsc()
+            pcsc = None if time.monotonic() > deadline else _Pcsc()
         except Exception:
             pcsc = None
         if pcsc is not None:
             try:
                 for reader in pcsc.readers():
-                    if hid_yubico and b'yubico' in reader.lower():
-                        continue
                     card = pcsc.connect(reader)
                     if card is None:
                         continue
                     found = True
                     try:
+                        transmit = lambda apdu, card=card: pcsc.transmit(card, apdu)  # noqa: E731
+                        if answered and card_serial(transmit) in answered:
+                            continue  # the USB key that already answered
                         for _, command in SLOT_COMMANDS:
                             if deadline - time.monotonic() < CARD_WAIT:
-                                failure = failure or TouchTimeout()
+                                failure, cut = failure or TouchTimeout(), True
                                 break
                             try:
-                                answers.append(card_hmac(lambda apdu: pcsc.transmit(card, apdu), command, challenge))
+                                answers.append(card_hmac(transmit, command, challenge))
                             except _Rejected:
                                 continue
                             except HardwareKeyError as exc:
@@ -719,8 +758,9 @@ def responses(challenge: bytes, *, timeout: float = TOUCH_TIMEOUT,
                         pcsc.disconnect(card)
             finally:
                 pcsc.close()
-    unique = list(dict.fromkeys(answers))
+    unique = Responses(dict.fromkeys(answers))
     if unique:
+        unique.complete = not cut
         return unique
     if not found:
         raise NoHardwareKey()

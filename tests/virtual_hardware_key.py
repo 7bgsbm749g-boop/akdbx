@@ -76,19 +76,26 @@ class Key:
         if sequence == 9:
             self.process(bytes(self.frame))
 
+    serial = 12345678
+
+    def respond(self, data):
+        data = data + (crc16(data) ^ 0xFFFF).to_bytes(2, 'little')
+        data += bytes(-len(data) % 7)
+        self.pending = [data[i:i + 7] + bytes([0x40 | (i // 7)]) for i in range(0, len(data), 7)]
+        self.pending.append(bytes(7) + bytes([0x40]))  # sequence back to 0: complete
+
     def process(self, frame):
         payload, command = frame[:64], frame[64]
         if int.from_bytes(frame[65:67], 'little') != crc16(payload):
+            return
+        if command == 0x10:  # the serial number: no touch
+            self.respond(self.serial.to_bytes(4, 'big'))
             return
         wanted = {2: 0x38, 1: 0x30}[self.slot]
         if command != wanted:
             return  # not set up: the host sees an unchanged status report
         challenge = payload if self.fixed else payload.rstrip(payload[-1:])
-        response = hmac.new(self.secret, challenge, hashlib.sha1).digest()
-        data = response + (crc16(response) ^ 0xFFFF).to_bytes(2, 'little')
-        data += bytes(-len(data) % 7)
-        self.pending = [data[i:i + 7] + bytes([0x40 | (i // 7)]) for i in range(0, len(data), 7)]
-        self.pending.append(bytes(7) + bytes([0x40]))  # sequence back to 0: complete
+        self.respond(hmac.new(self.secret, challenge, hashlib.sha1).digest())
         self.waiting = 15 if self.touch else 0
 
 

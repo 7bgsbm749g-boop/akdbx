@@ -536,8 +536,9 @@ file you choose, or a hardware key on the computer where you opened the page.
 The broker's own key file (`--keyfile`) and a hardware key plugged into the
 broker's computer never replace the master password, so the link alone never
 opens a vault. The pairing page also accepts these keys while the vault is
-open and has no master password: it checks them by opening the vault file,
-and the open vault stays as it is.
+open and has no master password: it checks them against the keys the open
+vault holds, without reading the vault file, and the open vault stays as it
+is.
 
 - **Key file.** Choose the vault's key file. The browser sends it in the
   same form as the password, over the page's HTTPS connection. On the relay
@@ -583,7 +584,9 @@ uses one of two routes, and says which:
 A response is a key secret: the broker keeps it in memory only, like the
 password. A key that is not found, not touched in time or not set up for
 challenge-response gets a `409` page that says so, and the attempt does not
-count. On Linux, the user who runs akdbx needs access to the key's `hidraw`
+count; nor does a search that ran out of time before every slot answered. A
+USB YubiKey is also a smart card reader: akdbx matches the two by serial
+number, so the key flashes only once. On Linux, the user who runs akdbx needs access to the key's `hidraw`
 device (the udev rule that the key's maker ships); on macOS, a key on USB
 needs Input Monitoring for the app that runs akdbx.
 

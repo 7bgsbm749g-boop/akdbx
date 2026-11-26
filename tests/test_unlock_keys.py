@@ -603,22 +603,15 @@ def test_pairing_page_hardware_key_branches_count_like_the_unlock_page(broker_ke
     assert state.remaining() == 2 and broker.locked
 
 
-def test_unlocked_vault_without_master_password_pairs_with_its_keys():
-    """The open vault stays; opening the file with the page's keys proves them."""
+def test_unlocked_vault_without_master_password_pairs_with_its_own_keys():
+    """The open vault's own key material decides: no read of the vault file, no new unlock."""
     from test_extension_route import PageHandler
     from akdbx.extension_web import handle_pairing
     from akdbx.web_unlock import UnlockState
     broker, path = pairing(locked=False)
-    held = SimpleNamespace(entries=[], password=None)
+    held = SimpleNamespace(entries=[], password=None, keyfile=key_material(b'synthetic key', None))
     broker.vault = held
-    seen = []
-
-    def opener(_database, password, _keyfile, keys=None):
-        seen.append((password, keys))
-        if keys is None or keys.keyfile != b'synthetic key':
-            raise CredentialsError('synthetic failure')
-        return SimpleNamespace(entries=[], password=None)
-    state = UnlockState(broker, None, None, opener)
+    state = UnlockState(broker, None, None, lambda *_, **__: pytest.fail('the vault file was opened'))
     token = state.token
     page = PageHandler(path)
     handle_pairing(page, state)
@@ -631,17 +624,37 @@ def test_unlocked_vault_without_master_password_pairs_with_its_keys():
     assert state.token == token and state.remaining() == 2
 
 
-def test_unlocked_pairing_refuses_keys_for_a_vault_file_that_changed():
-    from akdbx.web_unlock import UnlockState
-    broker, path = pairing(locked=False)
-    broker.vault = SimpleNamespace(entries=[], password=None, _akdbx_store=SimpleNamespace(verified_encrypted=b'held'))
+def test_held_keys_match_password_key_file_and_hardware_response():
+    response = bytes.fromhex(YUBIKEY_RESPONSE)
+    vault = open_encrypted(YUBIKEY_VAULT.read_bytes(), YUBIKEY_PASSWORD, key_material(None, response))
+    check = unlock_keys.held_keys_match
+    keys = UnlockKeys(challenge=YUBIKEY_SEED, responses=(bytes(20), response))
+    assert check(vault, YUBIKEY_PASSWORD, keys)
+    assert not check(vault, 'other', keys) and not check(vault, None, keys)
+    assert not check(vault, YUBIKEY_PASSWORD, UnlockKeys(challenge=YUBIKEY_SEED, responses=(bytes(20),)))
+    assert not check(vault, YUBIKEY_PASSWORD, None)
+    with pytest.raises(unlock_keys.ChallengeChanged):
+        check(vault, YUBIKEY_PASSWORD, UnlockKeys(challenge=bytes(32), responses=(response,)))
 
-    def opener(_database, password, _keyfile, keys=None):
-        return SimpleNamespace(entries=[], password=None, _akdbx_store=SimpleNamespace(verified_encrypted=b'changed'))
-    state = UnlockState(broker, None, None, opener)
-    status, body = pair(path, state, [('password', ''), ('confirmed', 'yes')], [('keyfile', 'k', b'synthetic key')])
-    assert status == 409 and 'changed after it was unlocked' in body
-    assert state.remaining() == 3 and not broker.extension.approved
+
+def test_a_key_file_without_its_hash_is_a_malformed_form():
+    data = b'<KeyFile><Meta><Version>2.0</Version></Meta><Key><Data>AABB</Data></Key></KeyFile>'
+    with pytest.raises(ValueError):
+        unlock_keys.keyfile_key(data)
+    with pytest.raises(ValueError):
+        unlock_credentials({'password': [''], 'keyfile': [data]}, None)
+
+
+def test_a_failed_try_with_this_computers_key_keeps_that_route(tmp_path, broker_key):
+    database = private_copy(tmp_path, YUBIKEY_VAULT)
+    broker, server, socket_path, path = serve(tmp_path, database)
+    try:
+        status, page = post(socket_path, path, [('password', 'wrong'), ('hardware', 'on'), ('hardware_route', 'browser'),
+                                                ('challenge', YUBIKEY_SEED.hex()), ('response', YUBIKEY_RESPONSE)])
+        assert status == 401 and route_checked(page) == 'browser'
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 # ----- the real kernel path ------------------------------------------------------

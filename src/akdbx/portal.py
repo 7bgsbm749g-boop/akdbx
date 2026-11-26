@@ -686,6 +686,11 @@ SCRIPT = r""""use strict";
       setStatus(status, key.getAttribute("data-touch-text"), "");
       return true;
     }
+    // The page's signature for the extension lasts an hour; an older page asks for a reload first.
+    if (performance.now() > 50 * 60 * 1000) {
+      setStatus(status, "This page is more than 50 minutes old. Reload it, then try again.", "is-error");
+      return false;
+    }
     setStatus(status, "Touch your hardware key when it flashes.", "");
     const reply = await askExtension(key.getAttribute("data-hardware-challenge"),
       key.getAttribute("data-hardware-identity"), key.getAttribute("data-hardware-proof"));

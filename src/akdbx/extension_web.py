@@ -140,9 +140,15 @@ def handle_pairing(handler, state):
                 if keys is not None and keys.broker_key and hasattr(handler, 'server'):  # the key's touch
                     handler.server.extend_request(handler.request, TOUCH_TIMEOUT + 20)
                 try:
-                    vault = call_opener(state, password, keys)
+                    if was_locked:
+                        vault = call_opener(state, password, keys)
+                    else:
+                        # The open vault stays as it is: its own password and key material decide,
+                        # with no read of the vault file, so a file another app changed cannot.
+                        from .unlock_keys import held_keys_match
+                        ok = held_keys_match(broker.vault, password, keys, state.keyfile)
                 except Exception as exc:
-                    browsing = browsing_first(keys, exc)
+                    browsing = browsing_first(keys, exc) or (keys is not None and bool(keys.responses))
                     password = keys = None
                     if isinstance(exc, (ChallengeChanged, HardwareKeyError)):
                         # No response, or one for another challenge: not a failed attempt.
@@ -159,18 +165,6 @@ def handle_pairing(handler, state):
                 else:
                     if was_locked:
                         ok = broker.unlock(vault) or not broker.locked
-                    else:
-                        # The open vault stays as it is: opening the file only proved the keys, and only
-                        # for the vault in memory. A file that another app changed since is refused.
-                        def snapshot(item):
-                            return getattr(getattr(item, '_akdbx_store', None), 'verified_encrypted', None)
-                        if snapshot(vault) != snapshot(broker.vault):
-                            state.cancel_attempt(attempt)
-                            send(HTTPStatus.CONFLICT, form('The vault file changed after it was unlocked. Lock '
-                                                           'AKDBX, unlock it again, then pair. This attempt did '
-                                                           "not count toward the link's limit."))
-                            return True
-                        ok = True
                 if ok and was_locked:
                     state.record_success(attempt)
             else:
@@ -179,6 +173,7 @@ def handle_pairing(handler, state):
                 held = getattr(broker.vault, 'password', None)
                 ok = isinstance(held, str) and bool(held) and isinstance(password, str) and hmac.compare_digest(
                     password.encode('utf-8'), held.encode('utf-8'))
+            browsing = keys is not None and bool(keys.responses)
             password = keys = None
             if not ok:
                 if state.record_failure(attempt) or state.blocked:
@@ -187,7 +182,7 @@ def handle_pairing(handler, state):
                 send(HTTPStatus.UNAUTHORIZED, form(
                     'AKDBX could not unlock the vault. Check the master password, key file and hardware '
                     'key.' if keys_used and checked else 'The master password is not correct.',
-                    keys_open=keys_used and checked))
+                    keys_open=keys_used and checked, browsing_key=browsing))
                 return True
         if not hub.approve(token):
             send(HTTPStatus.NOT_FOUND, '<p>This pairing request expired. Open akdbx in the browser again.</p>')

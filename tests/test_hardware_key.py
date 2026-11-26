@@ -230,10 +230,10 @@ def test_only_cards_with_a_challenge_response_applet_count(monkeypatch):
 
 
 class FakeReaders:
-    """PC/SC readers: each name maps to the HMAC secret of the card on it, or None (no applet)."""
+    """PC/SC readers: name -> (HMAC secret or None for no applet, serial number or None)."""
 
     def __init__(self, cards, slow=0.0):
-        self.cards, self.slow, self.asked = cards, slow, []
+        self.cards, self.slow, self.asked, self.selected = cards, slow, [], {}
 
     def readers(self):
         return list(self.cards)
@@ -242,13 +242,17 @@ class FakeReaders:
         return reader
 
     def transmit(self, card, apdu):
+        secret, serial = self.cards[card]
         if apdu[1] == 0xA4:
-            return b'', 0x9000 if self.cards[card] is not None else 0x6A82
+            self.selected[card] = apdu[5:]
+            return b'', 0x9000 if secret is not None else 0x6A82
+        if apdu[:4] == bytes([0, 1, 0x10, 0]):
+            return (serial.to_bytes(4, 'big'), 0x9000) if serial is not None else (b'', 0x6D00)
         self.asked.append(card)
         time.sleep(self.slow)
         if apdu[2] != 0x38:
             return b'', 0x6A80  # slot 1 not set up
-        return hmac.new(self.cards[card], apdu[5:].rstrip(apdu[-1:]), hashlib.sha1).digest(), 0x9000
+        return hmac.new(secret, apdu[5:].rstrip(apdu[-1:]), hashlib.sha1).digest(), 0x9000
 
     def disconnect(self, card):
         pass
@@ -257,25 +261,64 @@ class FakeReaders:
         pass
 
 
-def test_a_usb_key_is_not_asked_again_through_its_own_reader_but_an_nfc_key_is(monkeypatch):
+def test_a_usb_key_is_not_asked_again_through_its_own_reader_but_other_cards_are(monkeypatch):
     key = Key(SECRET, 2, False, False)
-    nfc = b'\x07' * 20
-    readers = FakeReaders({b'Yubico YubiKey OTP+FIDO+CCID 00 00': SECRET, b'ACS ACR122U PICC Interface 00 00': nfc})
+    second, nfc = b'\x06' * 20, b'\x07' * 20
+    readers = FakeReaders({b'Yubico YubiKey OTP+FIDO+CCID 00 00': (SECRET, key.serial),  # the same key
+                           b'Yubico YubiKey CCID 01 00': (second, 87654321),  # another key, card interface only
+                           b'ACS ACR122U PICC Interface 00 00': (nfc, None)})
     monkeypatch.setattr(hardware_key, '_hid_sessions', lambda: iter([(0x1050, lambda: FakeTransport(key))]))
     monkeypatch.setattr(hardware_key, '_Pcsc', lambda: readers)
-    assert hardware_key.responses(SEED) == [expected(), expected(secret=nfc)]
-    assert all(reader.startswith(b'ACS') for reader in readers.asked)
+    found = hardware_key.responses(SEED)
+    assert found == [expected(), expected(secret=second), expected(secret=nfc)] and found.complete
+    assert b'Yubico YubiKey OTP+FIDO+CCID 00 00' not in readers.asked
 
 
-def test_a_card_slot_starts_only_with_time_for_its_touch(monkeypatch):
-    monkeypatch.setattr(hardware_key, '_hid_sessions', lambda: iter(()))
-    readers = FakeReaders({b'ACS ACR122U PICC Interface 00 00': SECRET})
+def test_a_usb_key_this_user_cannot_open_still_answers_through_its_card_interface(monkeypatch):
+    def denied():
+        raise hardware_key.HardwareKeyError('this user may not use the hardware key; allow it with a udev rule')
+    readers = FakeReaders({b'Yubico YubiKey OTP+FIDO+CCID 00 00': (SECRET, 12345678)})
+    monkeypatch.setattr(hardware_key, '_hid_sessions', lambda: iter([(0x1050, denied)]))
     monkeypatch.setattr(hardware_key, '_Pcsc', lambda: readers)
-    assert hardware_key.responses(SEED, timeout=20) == [expected()]
+    assert hardware_key.responses(SEED) == [expected()]
+
+
+def test_a_card_slot_starts_only_with_time_for_its_touch_and_a_cut_search_is_marked(monkeypatch):
+    monkeypatch.setattr(hardware_key, '_hid_sessions', lambda: iter(()))
+    readers = FakeReaders({b'ACS ACR122U PICC Interface 00 00': (SECRET, None)})
+    monkeypatch.setattr(hardware_key, '_Pcsc', lambda: readers)
+    found = hardware_key.responses(SEED, timeout=20)
+    assert found == [expected()] and found.complete
     readers.asked.clear()
     with pytest.raises(hardware_key.TouchTimeout):
         hardware_key.responses(SEED, timeout=hardware_key.CARD_WAIT - 1)
     assert readers.asked == []
+    # Slot 2 answers slowly: no time is left for slot 1, so the search is marked as cut short.
+    readers.slow = 0.6
+    found = hardware_key.responses(SEED, timeout=hardware_key.CARD_WAIT + 0.3)
+    assert found == [expected()] and found.complete is False
+
+
+def test_a_cut_search_whose_answers_fail_is_never_a_failed_attempt():
+    from pykeepass.exceptions import CredentialsError
+    from akdbx import unlock_keys
+    from test_unlock_keys import YUBIKEY_SEED, YUBIKEY_VAULT
+    cut = hardware_key.Responses([b'\0' * 20])
+    cut.complete = False
+    original = hardware_key.responses
+    hardware_key.responses = lambda seed, **_: cut
+    try:
+        with pytest.raises(hardware_key.HardwareKeyError, match='ran out of time'):
+            unlock_keys.open_with_keys(YUBIKEY_VAULT.read_bytes(), 'demo', None,
+                                       unlock_keys.UnlockKeys(broker_key=True),
+                                       lambda *_: (_ for _ in ()).throw(CredentialsError('wrong')))
+    finally:
+        hardware_key.responses = original
+
+
+def test_the_virtual_key_tells_its_serial_without_a_touch():
+    key = Key(SECRET, 2, True, False)
+    assert hardware_key.hid_serial(FakeTransport(key), time.monotonic() + 2) == key.serial
 
 
 # ----- the real kernel path (Linux) ---------------------------------------------

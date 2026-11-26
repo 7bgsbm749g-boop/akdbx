@@ -125,7 +125,7 @@ def keyfile_key(data: bytes) -> bytes:
             return base64.b64decode(element.text)
         if version.startswith('2.0'):
             key = bytes.fromhex(element.text.strip())
-            if bytes.fromhex(element.attrib['Hash']) != hashlib.sha256(key).digest()[:4]:
+            if bytes.fromhex(element.attrib.get('Hash', '')) != hashlib.sha256(key).digest()[:4]:
                 raise ValueError('key file has an invalid hash')
             return key
         raise AttributeError
@@ -176,13 +176,19 @@ def open_with_keys(encrypted: bytes, password, key_bytes: bytes | None, keys: Un
         elif seed is None:
             raise hardware_key.HardwareKeyError('this vault does not use a hardware key')
         else:
-            candidates = hardware_key.responses(seed)[:MAX_RESPONSES]
+            candidates = hardware_key.responses(seed)
+            if len(candidates) > MAX_RESPONSES:
+                del candidates[MAX_RESPONSES:]
     failure = None
     for response in candidates:
         try:
             return opener(encrypted, password, key_material(key_bytes, response))
         except CredentialsError as exc:
             failure = exc
+    if getattr(candidates, 'complete', True) is False:
+        # Time cut the key search short: the right slot may not have answered. Not a failed attempt.
+        raise hardware_key.HardwareKeyError('the hardware key search ran out of time; try again and '
+                                            'touch the key as soon as it flashes')
     raise failure
 
 
@@ -190,3 +196,47 @@ def uses_hardware_key(keyfile) -> bool:
     """True for a vault opened with a hardware key response: its KDF seed must stay."""
     getvalue = getattr(keyfile, 'getvalue', None)
     return callable(getvalue) and getvalue().startswith(MARKER)
+
+
+def held_keys_match(vault, password, keys: UnlockKeys | None, configured_keyfile=None) -> bool:
+    """Whether the page's keys are the ones the open vault was unlocked with.
+
+    It compares the password and the key material that the vault holds, with no
+    read of the vault file and no key derivation, so a file that another app
+    changed since cannot decide. Raise ChallengeChanged or
+    ``hardware_key.HardwareKeyError`` like ``open_with_keys``.
+    """
+    import hmac
+    from . import hardware_key
+    held_password = getattr(vault, 'password', None)
+    if (password is None) != (held_password is None) or (password is not None and not hmac.compare_digest(
+            password.encode('utf-8'), held_password.encode('utf-8'))):
+        return False
+    holder = getattr(vault, 'keyfile', None)
+    held = holder.getvalue() if holder is not None else None
+    key_bytes = keys.keyfile if keys is not None and keys.keyfile is not None else None
+    if key_bytes is None and configured_keyfile is not None:
+        with open(configured_keyfile, 'rb') as stream:
+            key_bytes = stream.read(KEYFILE_LIMIT + 1)
+    candidates = [None]
+    if keys is not None and keys.hardware:
+        parameters = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
+        seed = bytes(parameters['S'].value)
+        if keys.responses:
+            if keys.challenge != seed:
+                raise ChallengeChanged
+            candidates = list(keys.responses)
+        else:
+            candidates = hardware_key.responses(seed)
+    for response in candidates:
+        material = key_material(key_bytes, response)
+        if material is None or held is None:
+            if material is None and held is None:
+                return True
+            continue
+        if hmac.compare_digest(material.getvalue(), held):
+            return True
+    if getattr(candidates, 'complete', True) is False:
+        raise hardware_key.HardwareKeyError('the hardware key search ran out of time; try again and '
+                                            'touch the key as soon as it flashes')
+    return False

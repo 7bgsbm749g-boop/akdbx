@@ -1224,7 +1224,9 @@ def handler_for(state: UnlockState):
                         vault = call_opener(state, password, keys)
                     except Exception as exc:
                         from .hardware_key import HardwareKeyError
-                        browsing = browsing_first(keys, exc)
+                        # This computer's key comes first after the broker's found nothing usable, and
+                        # stays first after a try that brought this computer's responses.
+                        browsing = browsing_first(keys, exc) or (keys is not None and bool(keys.responses))
                         password, keys_used, keys = "", keys is not None, None
                         if isinstance(exc, (ChallengeChanged, HardwareKeyError)):
                             # No response, or one for another challenge: not a failed attempt.
@@ -1252,7 +1254,7 @@ def handler_for(state: UnlockState):
                              "AKDBX could not unlock the database. Check your master password and try again. ")
                             + (f"{left} attempts left for this link." if left != 1 else
                                "1 attempt left for this link; another failure blocks it."),
-                            keys_open=keys_used))
+                            keys_open=keys_used, browsing_key=browsing))
                         return
                     finally:
                         password, keys = "", None
