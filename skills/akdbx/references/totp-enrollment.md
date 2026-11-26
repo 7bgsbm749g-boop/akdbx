@@ -23,7 +23,7 @@ or recovery options to finish it.
 
 The pending code fill uses the same TOTP pins as a saved code: retained DOM
 pins on CDP (Linux/Windows), the paired extension (Linux/Windows/macOS), native
-field pins (Linux X11/Wayland and supported Windows controls), or Current Window
+field pins (Linux X11/Wayland and supported Windows or macOS controls), or Current Window
 pins on Linux X11/Windows. Browser pins require integer
 `browser_totp_protocol: 1`; extension pins also require integer
 `extension_totp_protocol: 1` and fill extension 0.10.0 or newer. See

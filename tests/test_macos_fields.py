@@ -162,3 +162,15 @@ def test_browser_process_is_refused(binary, tmp_path):
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+def test_missing_permission_has_fixed_response(monkeypatch, lab):
+    from akdbx.broker import Broker
+    from akdbx.macos_fields import AX
+    from akdbx.native_fields import ACCESSIBILITY_ERROR
+    manager, pid, _ = lab
+    monkeypatch.setattr(AX, 'AXIsProcessTrusted', lambda: False)
+    assert manager.capabilities()['native_field_accessibility_granted'] is False
+    broker = Broker(type('Vault', (), {'entries': []})(), object())
+    response = broker.dispatch(dict(action='list-native-fields', native_protocol=1, pid=pid))
+    assert response == dict(ok=False, delivery='not-started', error=ACCESSIBILITY_ERROR)

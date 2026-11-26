@@ -23,9 +23,9 @@ int main(int argc, const char **argv) {
         NSString *command = [directory stringByAppendingPathComponent:@"command"];
         NSString *result = [directory stringByAppendingPathComponent:@"result"];
         [NSTimer scheduledTimerWithTimeInterval:0.02 repeats:YES block:^(NSTimer *timer) {
-            NSString *cmd = [NSString stringWithContentsOfFile:command encoding:NSUTF8StringEncoding error:nil];
+            NSString *cmd = [NSString stringWithContentsOfFile:command encoding:NSUTF8StringEncoding error:NULL];
             if (!cmd) return;
-            [[NSFileManager defaultManager] removeItemAtPath:command error:nil];
+            [[NSFileManager defaultManager] removeItemAtPath:command error:NULL];
             if ([cmd hasPrefix:@"focus"]) [window makeFirstResponder:fields[[[cmd substringFromIndex:5] integerValue]]];
             if ([cmd isEqual:@"replace"]) {
                 [plain removeFromSuperview];
@@ -42,7 +42,7 @@ int main(int argc, const char **argv) {
             for (NSTextField *field in @[plain, stock]) {
                 [values addObject:field.currentEditor ? field.currentEditor.string : field.stringValue];
             }
-            [[NSJSONSerialization dataWithJSONObject:values options:0 error:nil] writeToFile:result atomically:YES];
+            [[NSJSONSerialization dataWithJSONObject:values options:0 error:NULL] writeToFile:result atomically:YES];
         }];
         [app run];
     }

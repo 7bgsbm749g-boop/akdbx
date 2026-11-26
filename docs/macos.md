@@ -89,7 +89,9 @@ build. See [Firefox setup](firefox.md); its macOS host manifest goes under
 
 The `Native macOS broker` CI job uses a real Darwin runner for Unix peer
 credentials, private socket RPC, encrypted save/reopen, checked TLS loading
-and unlock, and the extension protocol tests. It installs the same wheel in
+and unlock, the extension protocol tests, and native field tests against a
+separate AppKit application. The native field tests require the runner’s existing
+Accessibility grant and fail if it is missing. It installs the same wheel in
 the release workflow. Linux simulations are not evidence of native macOS
 behavior. Safari application signing, installation and live browser behavior
 belong to the separate Safari extension delivery.
