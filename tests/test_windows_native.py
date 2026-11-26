@@ -153,6 +153,12 @@ def test_android_device_registry_refuses_untrusted_adb_configuration(private_dir
     entry = {'adb': str(private_dir / 'adb.exe'), 'serial': 'proof', 'adb_server_port': 5037}
     security.write_new(path, json.dumps({'version': 1, 'devices': {'phone': entry}}).encode())
     assert load_devices(path)['phone'].adb == entry['adb']
+    busy = win32file.CreateFile(str(path), win32con.GENERIC_READ, 0, None, win32con.OPEN_EXISTING, 0, None)
+    try:
+        with pytest.raises(AndroidError):
+            load_devices(path)
+    finally:
+        busy.Close()
     acl = win32security.GetFileSecurity(str(path), win32security.DACL_SECURITY_INFORMATION).GetSecurityDescriptorDacl()
     acl.AddAccessAllowedAce(win32security.ACL_REVISION, ntsecuritycon.FILE_WRITE_DATA,
                             win32security.CreateWellKnownSid(win32security.WinWorldSid))

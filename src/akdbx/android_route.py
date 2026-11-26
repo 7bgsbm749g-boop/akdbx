@@ -132,7 +132,7 @@ class AndroidMismatch(TargetError):
 def capabilities(configured: bool) -> dict:
     return dict(android_fill_protocol=PROTOCOL, android_fill_delivery=DELIVERY,
                 android_chrome_delivery=CHROME_DELIVERY,
-                android_generated_password=True, android_read_delivery=READ_DELIVERY,
+                android_generated_password=True, android_pending_totp=True, android_read_delivery=READ_DELIVERY,
                 android_fill_modes=list(MODES), android_devices_configured=configured)
 
 
@@ -181,10 +181,11 @@ class Device:
 def _read_private_file(path: Path) -> bytes:
     """Read the bounded operator file only through a checked file handle."""
     if os.name == 'nt':
+        import pywintypes
         from .windows_security import read_private_optional
         try:
             data = read_private_optional(path, limit=MAX_CONFIG)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, pywintypes.error) as exc:
             raise AndroidError('Android device configuration is unsafe or unavailable') from exc
         if data is None:
             raise FileNotFoundError(path)
@@ -641,27 +642,35 @@ KEY_PROOF = r"""(function(guard, field, mode, url) {
     (mode === 'read' ? guard.check() : guard.geometry());
   let keys = '', timer;
   const observe = e => {
-    if (e.isTrusted && e.target === field && valid()) {
+    if (e.isTrusted && /^[a-z0-9]$/.test(e.key)) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      if (keys.length < 17) keys += e.key;
+      if (e.type === 'keydown' && e.target === field && valid() && keys.length < 17) keys += e.key;
     }
   };
   const stop = () => {
     window.removeEventListener('keydown', observe, true);
+    window.removeEventListener('keyup', observe, true);
     clearTimeout(timer);
   };
-  return {focused: !!valid(), prepare() {
+  return {focused: !!valid(), node: () => field, geometry() {
+    if (!valid()) return null;
+    if (mode !== 'read') return guard.geometry();
+    const box = field.getBoundingClientRect();
+    return {rootX: box.left + box.width / 2 + scrollX, rootY: box.top + box.height / 2 + scrollY};
+  }, prepare() {
     if (!valid()) return false;
     keys = '';
     window.addEventListener('keydown', observe, true);
+    window.addEventListener('keyup', observe, true);
     timer = setTimeout(stop, 8000);
     return true;
   }, proof() { stop(); return valid() ? keys : null; },
-  capture() { return mode === 'read' && valid() ? guard.value() : null; },
-  write(value, notify) {
-    if (!valid()) return 'refused';
-    return guard.fill(value, 30000, notify);
+  capture(deadline) { return mode === 'read' && performance.now() < deadline && valid() ? guard.value() : null; },
+  write(value, notify, deadline) {
+    if (performance.now() >= deadline || !valid()) return 'refused';
+    const result = guard.fill(value, 30000, notify);
+    return result === 'filled' && !valid() ? 'uncertain' : result;
   }, dispose() {
     stop();
     observer.disconnect();
@@ -826,6 +835,28 @@ class ChromeFields:
     page_id: str
     url: str
     objects: list
+    frame_id: str | None = None
+    backend_node: int | None = None
+
+    def check_proof_listeners(self):
+        # A window capture handler registered by the page can run before our
+        # isolated-world listener. Check the page's main world after arming
+        # our listener; any handler registered afterwards runs behind it.
+        obj = self.connection.call('Runtime.evaluate', {'expression': 'this', 'silent': True},
+                                   self.session)['result']['objectId']
+        try:
+            listeners = self.connection.call('DOMDebugger.getEventListeners', {'objectId': obj, 'depth': 1},
+                                             self.session)['listeners']
+            if any(event['useCapture'] and event['type'] in ('keydown', 'keyup') for event in listeners):
+                raise AndroidError('the page handles proof keys before the focused field')
+        finally:
+            self.connection.call('Runtime.releaseObject', {'objectId': obj}, self.session)
+
+    def check_exposed(self):
+        from . import card_hit_test
+        if card_hit_test.input_point(self.connection, self.session, self.objects[0],
+                                     self.backend_node, self.frame_id) is None:
+            raise AndroidError('the pinned field is covered or no longer visible')
 
     def call(self, index, declaration, *args, timeout=3):
         result = self.connection.call('Runtime.callFunctionOn', {
@@ -1119,10 +1150,15 @@ class AndroidTargets:
                 'returnByValue': True}, page['session'])
             if focused.get('result', {}).get('value') is not True:
                 raise AndroidError('tap the field first: the pinned field must be the focused one')
+            dom = ChromeFields(connection, page['session'], page['page_id'], page['url'], fields)
+            if mode in CHALLENGE_MODES:
+                from . import card_hit_test
+                dom.frame_id = page['frame_id']
+                dom.backend_node = card_hit_test.retained_node(connection, page['session'], fields[0])
+                dom.check_exposed()
         except Exception:
             connection.close()
             raise
-        dom = ChromeFields(connection, page['session'], page['page_id'], page['url'], fields)
         return self._store(device, context, [], mode, page['origin'], 'chrome', dom=dom, purpose=request.get('purpose'))
 
     # ----- apps ----------------------------------------------------------
@@ -1391,13 +1427,17 @@ class AndroidTargets:
                            for r in results)):
             raise DeliveryError(answer.get('delivered') is not False)
 
-    def _verified_field(self, pin, ready):
+    def _verified_field(self, pin, ready, deadline):
         if pin.used or not ready() or self.clock() >= pin.expires_at:
             raise TargetError()
         pin.used = True
         adb = self.adb_factory(pin.device)
         dom = pin.dom
+        dom.check_exposed()
         if dom.call(0, 'function() { return this.prepare(); }') is not True or not ready():
+            raise TargetError()
+        dom.check_proof_listeners()
+        if not ready():
             raise TargetError()
         check = ''.join(secrets.choice('abcdefghijkmnpqrstuvwxyz23456789') for _ in range(16))
         answer = adb.helper({'op': 'type', 'boot_id': pin.boot_id, 'task_id': pin.context['task_id'],
@@ -1408,15 +1448,19 @@ class AndroidTargets:
         if (not isinstance(shown, str) or not secrets.compare_digest(shown.encode(), check.encode())
                 or self.clock() >= pin.expires_at):
             raise TargetError()
-        return dom
+        dom.check_exposed()
+        sample = dom.connection.call('Runtime.evaluate', {'expression': 'performance.now()', 'returnByValue': True},
+                                     dom.session)['result']['value']
+        remaining = min(pin.expires_at, deadline) - self.clock()
+        if type(sample) not in (int, float) or remaining <= 0 or not ready():
+            raise TargetError()
+        return dom, sample + remaining * 1000
 
     def read(self, pin, origins, ready, deadline):
         if pin.mode != 'read' or pin.origin not in origins or pin.dom is None:
             raise TargetError()
-        dom = self._verified_field(pin, ready)
-        if not ready() or self.clock() >= deadline:
-            raise TargetError()
-        value = dom.call(0, 'function() { return this.capture(); }')
+        dom, cutoff = self._verified_field(pin, ready, deadline)
+        value = dom.call(0, 'function(deadline) { return this.capture(deadline); }', cutoff)
         if not isinstance(value, str) or not 0 < len(value) <= 4096:
             raise TargetError()
         return value
@@ -1433,13 +1477,13 @@ class AndroidTargets:
                     raise TargetError()
                 self.deliver(pin, pin.mode, [value], ready, deadline)
             else:
-                dom = self._verified_field(pin, ready)
-                if not ready():
-                    raise TargetError()
+                dom, cutoff = self._verified_field(pin, ready, deadline)
                 started = True
-                result = dom.call(0, 'function(value, notify) { return this.write(value, notify); }', value, notify_page)
-                if result is not True and result != 'filled':
-                    raise DeliveryError(result not in (False, 'refused'))
+                result = dom.call(0, 'function(value, notify, deadline) { return this.write(value, notify, deadline); }',
+                                  value, notify_page, cutoff)
+                if result != 'filled':
+                    raise DeliveryError(result != 'refused')
+                dom.check_exposed()
             key = 'target_delivery' if pin.mode == 'sms' else pin.mode + '_delivery'
             return dict(ok=True, filled=field, **{key: self.delivery(pin)})
         except DeliveryError as exc:

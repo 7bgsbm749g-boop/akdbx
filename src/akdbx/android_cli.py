@@ -60,6 +60,8 @@ def add_parser(commands):
                                           if name == 'fill' else 'fill the entry\'s current authenticator code'))
         fill.add_argument('handle', help='fresh handle from akdbx search')
         fill.add_argument('--target', required=True, help='token from android pin')
+        if name == 'fill-totp':
+            fill.add_argument('--pending', action='store_true', help='use the pending key to confirm enrollment')
         if name == 'fill':
             fill.add_argument('--mode', required=True, choices=('login', 'username', 'password'),
                               help='must be the mode of the pin')
@@ -150,6 +152,8 @@ def _request(args, request, leases):
             # Boot before starting the short fill deadline. The 30-second pin
             # and its 60-second fill fit within the minimum 120-second idle period.
             leases.enter_context(android_lifecycle.use(device))
+        if command == 'fill-totp' and getattr(args, 'pending', False) and caps.get('android_pending_totp') is not True:
+            raise AndroidError('broker lacks pending Android authenticator delivery; request not sent')
         if command == 'devices':
             payload = {'action': 'android-devices'}
         elif command == 'inspect':
@@ -174,6 +178,8 @@ def _request(args, request, leases):
         else:
             payload = {'action': command, 'handle': args.handle, 'target': args.target, 'target_protocol': 1,
                        'start_deadline': time.monotonic() + 4}
+            if command == 'fill-totp' and getattr(args, 'pending', False):
+                payload['pending'] = True
             if command == 'fill':
                 payload['mode'] = args.mode
         sent = True

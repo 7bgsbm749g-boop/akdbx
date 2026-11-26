@@ -183,12 +183,16 @@ For a read pin, focus a visible read-only text input or a focusable text leaf.
 Supply a simple selector for that element. A leaf may need a selector from
 the page because `android inspect` lists input fields. The read pin checks
 that the shown value, focus and document stay the same. Capture keeps the
-value inside the broker. In-app web views and frames remain unsupported.
+value inside the broker. After `capture-totp`, use a fresh `--mode totp` pin
+and `akdbx android fill-totp --pending HANDLE --target TOKEN` for the site's
+confirmation step (requires `android_pending_totp: true`). Then run
+`commit-totp` with the site's result. In-app web views and frames remain unsupported.
 
 For these new Chrome read, SMS, card and identity pins, the helper sends
 random key events only to Chrome. The retained focused element must receive
 the whole sequence before the broker reads or writes. The check cancels the
 keys' normal editing action so it can verify a read-only or short field.
+A page with a capturing keyboard handler on its window is refused.
 For generated passwords the existing password field check applies.
 
 ## Which site a pin may fill

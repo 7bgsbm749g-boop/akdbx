@@ -507,6 +507,7 @@ class FakeCDP:
         self.closed = False
         self.objects = {}
         self.scene = None
+        self.hit_node = 7
 
     def call(self, method, params=None, session=None, *, timeout=3):
         self.calls.append((method, params))
@@ -515,6 +516,15 @@ class FakeCDP:
                                     {'targetId': 'T2', 'type': 'page', 'url': 'https://evil.example/'}]}
         if method == 'Target.attachToTarget':
             return {'sessionId': 'S-' + params['targetId']}
+        if method == 'DOMDebugger.getEventListeners':
+            return {'listeners': []}
+        if method == 'DOM.describeNode':
+            return {'node': {'backendNodeId': 7}}
+        if method == 'DOM.getNodeForLocation':
+            assert params['ignorePointerEventsNone'] is True
+            return {'backendNodeId': self.hit_node, 'frameId': 'F1'}
+        if method == 'Runtime.releaseObject':
+            return {}
         if method == 'Page.getFrameTree':
             return {'frameTree': {'frame': {'id': 'F1', 'url': self.url}}}
         if method == 'Page.createIsolatedWorld':
@@ -523,6 +533,8 @@ class FakeCDP:
             expression = params['expression']
             if expression == android_route.PAGE_STATE:
                 return {'result': {'value': {'url': self.url, 'shown': self.shown, 'secure': True}}}
+            if expression == 'this':
+                return {'result': {'objectId': 'main-window'}}
             if expression == 'performance.now()':
                 return {'result': {'value': 1000.0}}
             if expression == android_route.QUICK_STATE:
@@ -540,6 +552,12 @@ class FakeCDP:
                 return {'result': {'value': [{'selector': '#app_totp', 'type': 'text', 'focused': True}]}}
         if method == 'Runtime.callFunctionOn':
             declaration = params['functionDeclaration']
+            if 'this.node()' in declaration:
+                return {'result': {'objectId': 'field'}}
+            if 'this.geometry()' in declaration:
+                return {'result': {'value': {'rootX': 12, 'rootY': 20}}}
+            if 'this.write(' in declaration:
+                return {'result': {'value': 'filled'}}
             if 'this.focused' in declaration:
                 return {'result': {'value': self.focused}}
             if 'this.prepare()' in declaration:
@@ -820,14 +838,16 @@ def caps():
     return {'ok': True, 'android_fill_protocol': 1, 'android_fill_delivery': DELIVERY}
 
 
-def run_cli(argv, responses, capsys):
+def run_cli(argv, responses, capsys, *, capabilities=None):
     from akdbx.cli import parser
     args = parser().parse_args(argv)
     sent = []
 
     def request(payload, timeout=None):
         sent.append(payload)
-        return caps() if payload['action'] == 'ping' else responses.pop(0)
+        if payload['action'] == 'ping':
+            return caps() if capabilities is None else capabilities
+        return responses.pop(0)
     code = android_cli.run(args, request)
     return code, sent, capsys.readouterr()
 
@@ -943,7 +963,42 @@ def test_chrome_structured_operation_refuses_an_unverified_peer(device_file, mod
             result = broker.android.fill_element(target, 'fixture', purpose or 'one-time-code',
                                                  lambda: True, broker.clock() + 4)
             assert not result['ok']
-        assert not any('this.capture()' in p.get('functionDeclaration', '') or
+        assert not any('this.capture(' in p.get('functionDeclaration', '') or
                        'this.write(value' in p.get('functionDeclaration', '') for _, p in cdp.calls if p)
     finally:
         target.close()
+
+@pytest.mark.parametrize('covered_at', ['pin', 'fill'])
+def test_chrome_card_refuses_when_browser_hit_is_a_different_node(device_file, covered_at):
+    cdp = FakeCDP('https://example.com/payment')
+    broker, _ = chrome_broker(device_file, cdp)
+    cdp.hit_node = 8 if covered_at == 'pin' else 7
+    receipt = pin(broker, mode='card', field='#card', purpose='cc-number')
+    if covered_at == 'pin':
+        assert not receipt['ok']
+    else:
+        target = broker.android.take(receipt['target'])
+        cdp.hit_node = 8
+        try:
+            result = broker.android.fill_element(target, 'fixture', 'cc-number', lambda: True, broker.clock() + 4)
+            assert not result['ok'] and result['delivery'] == 'not-started'
+        finally:
+            target.close()
+    assert not any('this.write(' in p.get('functionDeclaration', '') for _, p in cdp.calls if p)
+
+
+def test_pending_android_totp_never_substitutes_the_active_key(device_file):
+    broker, _ = app_broker(device_file, fields=[field('31')])
+    target = pin(broker, mode='totp', field='31', app_site='https://example.com')['target']
+    result = broker.dispatch(dict(action='fill-totp', pending=True, target=target, target_protocol=1,
+                                  handle=handle(broker, 'synthetic-user')))
+    assert not result['ok'] and not fill_requests()
+
+
+def test_android_pending_cli_requires_support_before_sending(capsys):
+    argv = ['android', 'fill-totp', 'fixture-handle', '--pending', '--target', 'f' * 64]
+    code, sent, _ = run_cli(argv, [], capsys)
+    assert code == 1 and [r['action'] for r in sent] == ['ping']
+    receipt = dict(ok=True, filled='totp', target_delivery=DELIVERY)
+    code, sent, _ = run_cli(argv, [receipt], capsys, capabilities={**caps(), 'android_pending_totp': True})
+    assert code == 0 and sent[-1]['pending'] is True
