@@ -4,6 +4,7 @@ import importlib
 import io
 import os
 import shutil
+import stat
 import uuid
 from datetime import datetime, timezone
 
@@ -100,7 +101,7 @@ def test_stale_inputs_refuse_generated_resets_before_delivery(
         references = [] if prepared is None else list(prepared['fill_handles'].values())
         if timing == 'one-fill':
             assert broker.dispatch(dict(action='fill-generated', handle=references.pop(0),
-                target_url='https://example.test/reset', **target_request(broker)))['ok']
+                target_url='https://example.test/reset', **target_request(broker, 'password')))['ok']
         prior_events = list(broker.typer.events)
         change_input(path, key, fault)
         before = path.read_bytes()
@@ -114,7 +115,7 @@ def test_stale_inputs_refuse_generated_resets_before_delivery(
         else:
             for reference in references:
                 result = broker.dispatch(dict(action='fill-generated', handle=reference,
-                    target_url='https://example.test/reset', **target_request(broker)))
+                    target_url='https://example.test/reset', **target_request(broker, 'password')))
                 assert not result['ok'], result
             assert not commit(broker, prepared)['ok']
         assert not prepare_generated(broker, action)['ok']
@@ -123,7 +124,7 @@ def test_stale_inputs_refuse_generated_resets_before_delivery(
         assert saved.find_entries(title='Synthetic site', first=True).password == OLD
         selected = broker.dispatch(dict(action='search', query='Synthetic site'))['entries'][0]
         assert broker.dispatch(dict(action='fill', handle=selected['handle'], mode='password',
-            **target_request(broker)))['ok']
+            **target_request(broker, 'password')))['ok']
         assert broker.typer.events[-1] == ('type', OLD)
         if fault == 'key':
             key.chmod(0o600)
@@ -168,7 +169,7 @@ def test_generated_delivery_rechecks_input_identity_after_preflight(
         result = broker.dispatch(dict(action='fill-generated',
             handle=prepared['fill_handles']['password'], target_url='https://example.test/reset',
             start_deadline=broker.clock() + importlib.import_module(namespace + '.broker').FILL_START_TIMEOUT,
-            **target_request(broker)), delivery_ready=caller_ready)
+            **target_request(broker, 'password')), delivery_ready=caller_ready)
         assert changed[0] and not result['ok'], result
         assert not broker.typer.events
         assert broker.dispatch(dict(action='ping'))['writes_available'] is False
@@ -215,9 +216,12 @@ def test_stale_ordinary_inputs_keep_explicit_reconciliation_available(
 
 
 @pytest.mark.parametrize('namespace', ['akdbx', 'agentic_kdbx'])
-def test_unchanged_key_input_checks_do_not_read_bodies_or_scan_receipts(
+def test_unchanged_key_input_checks_do_not_read_vault_or_key_bodies(
     tmp_path, keyed_template, namespace, monkeypatch,
 ):
+    # Readiness scans merge receipt names under the disk lock (since 27a5d9b),
+    # so a peer broker's prepared merge blocks a generated reset; it still
+    # never reads the vault or key file bodies when their metadata is unchanged.
     broker, path, key = keyed_broker(tmp_path, keyed_template, namespace)
     def forbidden(*args, **kwargs):
         raise AssertionError('readiness must use metadata for unchanged inputs')
@@ -226,7 +230,6 @@ def test_unchanged_key_input_checks_do_not_read_bodies_or_scan_receipts(
         monkeypatch.setattr(store, '_read', forbidden)
         monkeypatch.setattr(store, '_read_keyfile', forbidden)
         monkeypatch.setattr(store, '_check_keyfile', forbidden)
-        monkeypatch.setattr(store, '_scan_merge_recovery', forbidden)
         assert broker.dispatch(dict(action='ping'))['writes_available']
         generated = begin(broker, 'generate-password')
         assert generated['ok'] and all(result['ok'] for result in fills(broker, generated))
@@ -262,7 +265,7 @@ def test_required_write_artifact_names_fit_directory_limit(template, tmp_path, a
             assert not broker.typer.events and path.read_bytes() == before
             selected = broker.dispatch(dict(action='search', query='Synthetic site'))['entries'][0]
             assert broker.dispatch(dict(action='fill', handle=selected['handle'], mode='password',
-                                        **target_request(broker)))['ok']
+                                        **target_request(broker, 'password')))['ok']
             assert broker.typer.events == [('type', OLD)]
             return
         assert prepared['ok'] and all(result['ok'] for result in fills(broker, prepared))
@@ -384,7 +387,7 @@ def test_bound_recovery_storage_is_ready_before_generation_and_delivery(
             if staged:
                 result = broker.dispatch(dict(action='fill-generated',
                     handle=prepared['fill_handles']['password'], target_url='https://example.test/reset',
-                    **target_request(broker)))
+                    **target_request(broker, 'password')))
                 assert not result['ok'], result
             else:
                 assert broker.dispatch(dict(action='ping'))['writes_available'] is False
@@ -444,7 +447,7 @@ def test_unusable_existing_lock_blocks_resets_but_keeps_read_only_fill(vault_pat
     assert result['ok'] is False and 'fill_handles' not in result
     assert not broker.writes.operations
     selected = broker.dispatch({'action': 'search', 'query': 'Synthetic site'})['entries'][0]
-    assert broker.dispatch({'action': 'fill', **target_request(broker),
+    assert broker.dispatch({'action': 'fill', **target_request(broker, 'password'),
                             'handle': selected['handle'], 'mode': 'password'})['ok']
     assert broker.typer.events == [('type', OLD)] and vault_path.read_bytes() == before
     after = lock.lstat()
@@ -460,7 +463,9 @@ def test_private_or_absent_lock_allows_atomic_save_of_read_only_vault(vault_path
         inode = lock.stat().st_ino
     broker = open_broker(vault_path)
     assert broker.dispatch({'action': 'ping'})['writes_available'] is True
-    assert lock.exists() is existing
+    # Readiness takes the disk lock to scan merge receipts, so it may create a private lock.
+    info = lock.lstat()
+    assert stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
     prepared = begin(broker, 'generate-password')
     assert prepared['ok'] and all(result['ok'] for result in fills(broker, prepared))
     assert commit(broker, prepared)['state'] == 'saved'
@@ -504,7 +509,8 @@ def test_readiness_refreshes_after_lock_permissions_change(vault_path):
     assert commit(broker, prepared)['state'] == 'saved'
 
 
-def test_temporary_lock_contention_does_not_disable_readiness(vault_path):
+def test_temporary_lock_contention_does_not_latch_unavailable_writes(vault_path):
+    # A live peer save makes writes busy, never failed recovery (27a5d9b).
     lock = lock_path(vault_path)
     lock.write_bytes(b'synthetic lock')
     lock.chmod(0o600)
@@ -512,10 +518,12 @@ def test_temporary_lock_contention_does_not_disable_readiness(vault_path):
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         broker = open_broker(vault_path)
-        assert broker.dispatch({'action': 'ping'})['writes_available'] is True
+        status = broker.dispatch({'action': 'ping'})
+        assert status['writes_available'] is False and status['recovery_required'] is False
     finally:
         os.close(fd)
-    assert broker.dispatch({'action': 'ping'})['writes_available'] is True
+    status = broker.dispatch({'action': 'ping'})
+    assert status['writes_available'] is True and status['recovery_required'] is False
 
 
 class KeyReadBudget:

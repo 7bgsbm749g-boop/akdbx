@@ -31,8 +31,8 @@ from types import SimpleNamespace
 import pytest
 from pykeepass import PyKeePass, create_database
 
-if sys.platform != 'win32' and not sys.platform.startswith('linux'):
-    pytest.skip('native Windows or Linux required', allow_module_level=True)
+if sys.platform not in ('win32', 'darwin') and not sys.platform.startswith('linux'):
+    pytest.skip('native Windows, Linux or macOS required', allow_module_level=True)
 
 import qr_fixture
 import test_extension_browser as extension_lab
@@ -273,7 +273,9 @@ def qr(request, tmp_path, template, private_dir, certificates):  # noqa: F811
     if sys.platform != 'win32':
         certificates[1].chmod(0o600)
     with chromium_lab(private_dir, *certificates, pages=PAGES, binary=binary) as lab:
-        broker = Broker(open_vault_with_password(path, MASTER), NoKeys(), password_browser_profile=lab.profile)
+        # As `serve --default-fill-route cdp` (docs/macos.md): on macOS a request without a route goes to the extension.
+        broker = Broker(open_vault_with_password(path, MASTER), NoKeys(), password_browser_profile=lab.profile,
+                        default_fill_route='cdp')
         # The broker's private HTTPS page on loopback, as `akdbx serve` runs it: it activates private writes.
         with socket.socket() as probe:
             probe.bind(('127.0.0.1', 0))

@@ -392,8 +392,9 @@ def test_streams_are_spliced_to_the_real_tls_page(fake, page):
         wait_until(client.connected.is_set)
         with ThreadPoolExecutor(6) as pool:
             results = list(pool.map(lambda _: get_page(fake, page), range(6)))
-        assert all(status == 200 for status, _, _ in results)
-        assert client.streams_opened == 6 and fake.streams == 6
+        # Each status and the start of each body (no secret: the synthetic unlock page), if one fails.
+        assert [status for status, _, _ in results] == [200] * 6, [(status, body[:120]) for status, body, _ in results]
+        assert client.streams_opened == 6 and fake.streams == 6, (client.streams_opened, fake.streams)
         # Control pings are answered; unknown and malformed messages are ignored.
         fake.control.send_text('{"type":"future","stream":"x"}')
         fake.control.send_text('{"type":"open","stream":"../../etc"}')

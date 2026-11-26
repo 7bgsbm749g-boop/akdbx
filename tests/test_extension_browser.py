@@ -1,17 +1,18 @@
-"""The extension route in a real browser on native Windows or Linux; synthetic values only.
+"""The extension route in a real browser on native Windows, Linux or macOS; synthetic values only.
 
 A disposable headless profile loads the built extension. A uniquely named test
 host is registered for the duration of the test, then removed: on Windows under
 the browser's own native-messaging registry key (for Helium that is Chromium's
-key, so the test also proves where Helium looks), on Linux in the profile's
-NativeMessagingHosts folder. The broker runs on a test pipe or Unix socket with
+key, so the test also proves where Helium looks), on Linux and macOS in the
+profile's NativeMessagingHosts folder. The broker runs on a test pipe or Unix socket with
 a synthetic vault. Values reach pages only through the extension route; the
 pages report SHA-256 digests, so no test reads back a field value. The test
 observer uses the disposable profile's debugging port only to prepare pages.
 
-On Linux, set AKDBX_TEST_EXTENSION_BROWSER to a Chromium that still loads an
-unpacked extension (Chromium or Chrome for Testing; Google Chrome 137+ does
-not), and AKDBX_TEST_BROWSER_NO_SANDBOX=1 on a host without user namespaces.
+On Linux and macOS, set AKDBX_TEST_EXTENSION_BROWSER to a Chromium that still
+loads an unpacked extension (Chromium or Chrome for Testing; Google Chrome 137+
+does not), and on Linux AKDBX_TEST_BROWSER_NO_SANDBOX=1 on a host without user
+namespaces.
 """
 import hashlib
 import json
@@ -25,8 +26,8 @@ import uuid
 
 import pytest
 
-if sys.platform != 'win32' and not sys.platform.startswith('linux'):
-    pytest.skip('native Windows or Linux required', allow_module_level=True)
+if sys.platform not in ('win32', 'darwin') and not sys.platform.startswith('linux'):
+    pytest.skip('native Windows, Linux or macOS required', allow_module_level=True)
 
 from akdbx import broker_identity, extension_host, extension_route as route
 from akdbx.broker import Broker, serve
@@ -413,7 +414,7 @@ class Harness:
 @pytest.fixture
 def harness(private_dir, certificates, monkeypatch, request):
     if sys.platform != 'win32':
-        certificates[1].chmod(0o600)  # The Linux page refuses a key other users could read.
+        certificates[1].chmod(0o600)  # The POSIX page refuses a key other users could read.
     binary = extension_browser()
     if binary is None:
         if os.environ.get('AKDBX_REQUIRE_EXTENSION_BROWSER') == '1':
@@ -550,6 +551,48 @@ def test_agent_route_fills_the_pinned_password_through_the_extension(harness):
                                 target_protocol=1))['ok']
     assert lab.digest('username') == sha(USERNAME) and lab.evaluate('document.activeElement.id') == 'username'
     print(json.dumps(dict(browser=lab.version, kind=harness.kind, route='extension', exact_values=True)))
+
+
+def test_a_generated_password_fills_both_new_password_fields_once_and_saves(harness, tmp_path):
+    """Generation, both DOM fills and the encrypted save through the extension route; synthetic vault only."""
+    from pykeepass import PyKeePass, create_database
+    from akdbx.broker import open_vault_with_password
+    lab, broker = harness.lab, harness.broker
+    # In tmp_path, as the QR capture vaults: on Windows the broker refuses a file that inherits private_dir's DACL.
+    path, master = tmp_path / 'generated.kdbx', 'synthetic-generated-master'
+    vault = create_database(str(path), password=master)
+    params = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
+    params['I'].value, params['M'].value = 1, 1024 * 1024  # A cheap KDF for a synthetic vault.
+    vault.add_group(vault.root_group, 'Web')
+    vault.save()
+    broker.vault = open_vault_with_password(path, master)  # A real encrypted vault in place of the fake one.
+    url = lab.evaluate('location.href')
+    listing = harness.frames(url)
+    metadata = dict(title='Synthetic generated', username='new-user', url=url, group='Web')
+    staged = broker.dispatch(dict(action='generate-entry', metadata=metadata))
+    assert staged['ok'] and set(staged['fill_handles']) == {'password', 'confirmation'}, staged
+    for name, field in (('password', 'new-password'), ('confirmation', 'confirmation')):
+        harness.focus(field)
+        pin = broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                                   frame_id=listing['main_frame_id'], top_url=url, selector='#' + field,
+                                   mode='password', route='extension'))
+        assert pin['ok'] and pin['target_delivery'] == route.DELIVERY, pin
+        receipt = broker.dispatch(dict(action='fill-generated', handle=staged['fill_handles'][name],
+                                       target_url=url, target=pin['target'], target_protocol=1))
+        assert receipt == dict(ok=True, filled='password', target_delivery=route.DELIVERY)
+    # One use per handle: a spent handle fills nothing, even through a fresh pin.
+    pin = broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                               frame_id=listing['main_frame_id'], top_url=url, selector='#confirmation',
+                               mode='password', route='extension'))
+    assert not broker.dispatch(dict(action='fill-generated', handle=staged['fill_handles']['password'],
+                                    target_url=url, target=pin['target'], target_protocol=1))['ok']
+    assert broker.dispatch(dict(action='commit-password', write_handle=staged['write_handle'],
+                                site_accepted=True))['ok']
+    saved = PyKeePass(str(path), password=master).find_entries(title=metadata['title'], first=True)
+    assert saved.username == 'new-user' and saved.password
+    assert lab.digest('new-password') == lab.digest('confirmation') == sha(saved.password)
+    assert lab.digest('password') == lab.digest('username') == EMPTY
+    assert not any(e['trusted'] for e in lab.evaluate('syntheticEvents'))
 
 
 def test_agent_route_refuses_wrong_origin_wrong_frame_and_hidden_fields(harness):
@@ -1557,7 +1600,9 @@ def test_popup_totp_fills_after_the_closing_popup_returns_focus(harness):
 
     Headless Edge on Windows (the Windows CI browser) keeps the page focused while the popup is open,
     and no other window takes a headless page's focus. There the call never waits, so the race cannot
-    happen; the test still checks the one fill. On Linux the popup must take the focus.
+    happen; the test still checks the one fill. On Linux the popup must take the focus. Headless
+    Chrome for Testing on macOS is checked as Windows is: the race is forced only when the popup
+    takes the focus there.
     """
     from totp_vectors import URI
     lab, broker = harness.lab, harness.broker
@@ -1577,7 +1622,7 @@ def test_popup_totp_fills_after_the_closing_popup_returns_focus(harness):
     while not observer.evaluate('!!document.querySelector("#entries button")', session):
         assert time.monotonic() < deadline, observer.evaluate('document.getElementById("status").textContent', session)
         time.sleep(.05)
-    if sys.platform == 'win32':
+    if not sys.platform.startswith('linux'):
         lab.wait('document.activeElement === otp')
         held = not lab.evaluate('document.hasFocus()')
     else:

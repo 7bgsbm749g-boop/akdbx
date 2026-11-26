@@ -320,7 +320,7 @@ def test_add_source_with_a_target_needs_a_webhook_url_dom_pin(tmp_path):
 # HTTPS intake --------------------------------------------------------------
 
 
-def https(port, cafile, method, path, *, host, body=b'', content_type=None, origin=None, user_agent=None):
+def https(port, cafile, method, path, *, host, body=b'', content_type=None, origin=None, user_agent=None, length=None):
     client = HTTPSConnection('127.0.0.1', port, context=ssl.create_default_context(cafile=str(cafile)), timeout=30)
     try:
         client.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
@@ -331,7 +331,7 @@ def https(port, cafile, method, path, *, host, body=b'', content_type=None, orig
             client.putheader('Content-Type', content_type)
         if user_agent is not None:
             client.putheader('User-Agent', user_agent)
-        client.putheader('Content-Length', str(len(body)))
+        client.putheader('Content-Length', str(len(body) if length is None else length))
         client.endheaders(body)
         response = client.getresponse()
         return response.status, response.headers, response.read()
@@ -392,7 +392,9 @@ def test_https_intake_refuses_wrong_token_host_origin_method_and_body(served):
             ('GET', '/sms/in/' + token, dict(body=b'')),
             ('POST', '/sms/in/' + token, dict(content_type='text/plain')),
             ('POST', '/sms/in/' + token, dict(body=b'{"from": "x"}')),
-            ('POST', '/sms/in/' + token, dict(body=b'x' * (64 * 1024)))):
+            # Declared only: the intake refuses on the length without reading a body. A sent 64 KiB
+            # body raced that refusal and its close (SSLEOFError on the macOS runner).
+            ('POST', '/sms/in/' + token, dict(body=b'', length=64 * 1024))):
         options = dict(host=served.host, body=good, content_type='application/json')
         options.update(extra)
         status, _, body = https(served.port, served.cert, method, path, **options)

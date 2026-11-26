@@ -8,7 +8,7 @@ akdbx {{VERSION}} is one release for every platform. Install the same wheel on L
 
 Every operation, per route and platform, with the CI job that proves it and the reason for each gap: [support matrix](https://github.com/7bgsbm749g-boop/akdbx/blob/v{{VERSION}}/docs/support-matrix.md).
 
-From 0.50.1, the private unlock page also accepts a vault key file or a KeePassXC YubiKey challenge-response (KDBX 4, Argon2). Linux CI tests the whole page flow, Windows CI the vault store, and macOS has no CI for it yet. Version 0.50.0 was tagged but not published; its changes ship in 0.50.1.
+From 0.50.1, the private unlock page also accepts a vault key file or a KeePassXC YubiKey challenge-response (KDBX 4, Argon2). Linux and macOS CI test the whole page flow, and Windows CI the vault store. Version 0.50.0 was tagged but not published; its changes ship in 0.50.1.
 
 From 0.50.3, `docs/support-matrix.md` lists every fill and capture operation by route and platform, with the release and CI job that prove each one or the reason for the gap.
 
