@@ -80,6 +80,7 @@ def lab(tmp_path, monkeypatch, request):
                     match = re.search(r'listening on display (:\d+)', weston_log.read_text())
                     if match:
                         assert match[1] != os.environ['DISPLAY']
+                        (tmp_path / 'outer-display').write_text(os.environ['DISPLAY'])
                         monkeypatch.setenv('DISPLAY', match[1])
                         break
                     assert weston.poll() is None and time.monotonic() < deadline, weston_log.read_text()
@@ -179,6 +180,24 @@ def test_window_pin_delivers_to_active_gtk_window(lab):
                                   handle=handle, mode='username'))
     assert result['ok'], result
     assert command(directory)[0] == Entry().username
+
+
+@pytest.mark.parametrize('lab', ['xwayland'], indirect=True)
+def test_xwayland_registration_preserves_live_x11_connection(lab):
+    from contextlib import closing
+    from Xlib.ext import res
+    from akdbx.x11_display import TargetDisplay
+
+    _, _, directory = lab
+    with closing(TargetDisplay((directory / 'outer-display').read_text())) as x11:
+        with closing(TargetDisplay()) as xwayland:
+            # Servers are free to assign the same opcode. Check isolation as
+            # well as real X-Resource queries on both open connections.
+            assert x11.display.extension_major_opcodes is not xwayland.display.extension_major_opcodes
+            for connection in (xwayland, x11):
+                window = connection.screen().root.create_window(0, 0, 1, 1, 0, 0)
+                ids = connection.res_query_client_ids([dict(client=window.id, mask=res.LocalClientPIDMask)]).ids
+                assert len(ids) == 1 and list(ids[0].value) == [os.getpid()]
 
 
 @pytest.mark.parametrize('lab', ['wayland'], indirect=True)

@@ -455,7 +455,16 @@ On Linux it listens to systemd-logind through `/usr/bin/gdbus` for the user's se
 sleep-delay permission, the broker holds a bounded delay while it locks. It also locks on resume.
 On Hyprland it also subscribes directly to the compositor's lock notification. Run the broker with
 the desktop's `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and either `XDG_CURRENT_DESKTOP=Hyprland` or
-`HYPRLAND_INSTANCE_SIGNATURE` for that route. Run setup from that desktop session when creating or updating the login service. The systemd user manager supplies `XDG_RUNTIME_DIR`.
+`HYPRLAND_INSTANCE_SIGNATURE` for that route. Run setup from that desktop session when creating or updating the login service. The Wayland unit starts with
+`graphical-session.target` and inherits the environment for each login. The systemd user manager
+supplies `XDG_RUNTIME_DIR`. If standalone Hyprland does not start this target, run this command from the compositor’s login hook after configuring the session environment:
+
+```sh
+systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XAUTHORITY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start akdbx.service
+```
+
+For a standalone session that keeps its systemd user manager after logout, run
+`systemctl --user stop akdbx.service` from its logout hook.
 The `lock_event_sources` field in `akdbx status` shows which listeners are ready. For logind, `signals-only` means the broker receives
 events without a confirmed sleep delay.
 For a locker that reports neither event, configure its lock hook to run `akdbx lock`.
