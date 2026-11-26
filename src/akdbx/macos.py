@@ -51,6 +51,10 @@ def require_private_acl(fd: int) -> None:
         libc.acl_free(acl)
 
 
+def macos_page_socket(broker_socket: Path) -> Path:
+    return broker_socket.with_name('u' if broker_socket.name.casefold() != 'u' else 's')
+
+
 def prepare_runtime(path: Path, *, create_ancestors=False) -> None:
     from .runtime import prepare_private_runtime_directory
     _, fd = prepare_private_runtime_directory(path.parent, create_ancestors=create_ancestors)
