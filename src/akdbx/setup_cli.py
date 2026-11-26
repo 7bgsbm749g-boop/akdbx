@@ -1496,7 +1496,8 @@ class Setup:
                     # Reuse a custom local registration only when this installer owns its manifest.
                     # Do not open a network path or repair an unrelated registry target.
                     if not same_windows_manifest(current, where['manifest']):
-                        registered = (candidate.is_absolute() and len(candidate.drive) == 2
+                        drive = candidate.drive.removeprefix('\\\\?\\')
+                        registered = (candidate.is_absolute() and len(drive) == 2 and drive.endswith(':')
                                       and candidate.name.casefold() == where['manifest'].name.casefold()
                                       and _owned_manifest(candidate, where['launcher']))
                         if registered:
@@ -1606,7 +1607,8 @@ class Setup:
             self.step(f'Firefox 153 or newer: open about:debugging#/runtime/this-firefox, choose Load Temporary '
                       f'Add-on and select {folder / "manifest.json"}. The add-on ID is {FIREFOX_EXTENSION_ID}. '
                       'For Snap or Flatpak, archive the contents of the build folder in a ZIP with manifest.json '
-                      'at its root and select the ZIP. A temporary add-on must be loaded again after Firefox restarts. '
+                      'at its root and select the ZIP. After each rebuild, create a fresh ZIP and load it with '
+                      'Load Temporary Add-on. Load the add-on again after Firefox restarts. '
                       'Permanent installation requires a Mozilla-signed XPI.', 'fill')
         else:
             self.step(f'Load the extension once in each Chromium browser: open chrome://extensions, turn on Developer mode, '

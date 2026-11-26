@@ -59,6 +59,11 @@ def test_install_reinstall_and_remove(home, browser, linux, mac, windows, custom
                 Setup._install_host(setup, browser)
                 setup._akdbx_ok.assert_called_once_with(
                     ['extension', 'install', '--browser', browser, '--manifest-dir', str(directory)])
+                extended = Path('\\\\?\\' + str(directory))
+                assert host.uninstall(browser, manifest_dir=directory)
+                host.install(browser, manifest_dir=extended)
+                assert Setup._install_host(setup, browser) == 'done'
+                assert host.uninstall(browser, manifest_dir=extended)
                 alternate = directory.with_name(directory.name.upper())
                 assert Path(host.install(browser, manifest_dir=alternate)['manifest']).samefile(manifest)
                 assert not host.uninstall(browser)

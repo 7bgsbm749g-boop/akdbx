@@ -46,7 +46,9 @@ XPI after review. Editing its bundled origin or rebuilding the files requires
 a new signature. See Mozilla’s [web-ext signing instructions](https://extensionworkshop.com/documentation/develop/getting-started-with-web-ext/).
 
 After an update, rebuild with `--browser firefox` into the same Firefox
-folder, reload the temporary add-on, and pair again. Keep Chromium and
+folder. For an unpacked install, reload the temporary add-on. For a ZIP
+install, create a fresh ZIP from the rebuilt folder and select the new archive
+with **Load Temporary Add-on**. Pair again. Keep Chromium and
 Firefox builds in separate folders; the builder refuses to replace the other
 format.
 
