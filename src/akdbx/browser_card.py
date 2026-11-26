@@ -20,6 +20,7 @@ from . import cdp_peer
 from . import browser_slots
 
 DELIVERY = 'cdp-card-element-v1'
+CARD_PURPOSE_PROTOCOL = 1
 TTL = 30
 MAX_PINS = 16
 
@@ -149,7 +150,25 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
   const input = el instanceof HTMLInputElement;
   const select = el instanceof HTMLSelectElement;
   const textarea = identity && field === 'street-address' && el instanceof HTMLTextAreaElement;
-  if (!input && !select && !textarea) return null;
+  // A card expiry month or year in a custom dropdown, with an explicit field
+  // purpose: a type=button <button> or a role=combobox element that opens one
+  // listbox, named by aria-controls or aria-owns, of role=option choices.
+  function ariaList() {
+    if (identity || processor || purpose !== field || !['cc-exp-month','cc-exp-year'].includes(field) ||
+        input || select || !(el instanceof HTMLElement)) return null;
+    const role = el.getAttribute('role'), popup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
+    if (el instanceof HTMLButtonElement ? el.type !== 'button' || role !== null && role !== 'combobox' :
+        role !== 'combobox') return null;
+    if (role === 'combobox' ? el.hasAttribute('aria-haspopup') && popup !== 'listbox' : popup !== 'listbox') return null;
+    // A click must not also follow a link, submit a form or activate a label.
+    if (el.parentElement?.closest('a[href],button,label,summary') ||
+        el.getAttribute('aria-disabled') === 'true' || el.closest('[inert]')) return null;
+    const owned = ['aria-controls','aria-owns'].filter(a => el.hasAttribute(a)).map(a => el.getAttribute(a).trim());
+    if (!owned.length || owned.some(n => !/^[^\t\n\f\r ]+$/.test(n)) || new Set(owned).size !== 1) return null;
+    return owned[0];
+  }
+  const listId = ariaList(), aria = listId !== null;
+  if (!input && !select && !textarea && !aria) return null;
   if (select && el.multiple) return null;
   if (select && !(identity ? ['country', 'country-name', 'address-level1'] :
                                ['cc-exp-month', 'cc-exp-year']).includes(field)) return null;
@@ -195,7 +214,12 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
   // flag. Any other hint must still name this field.
   const attested = identity && purpose === field &&
     (tokens.length === 0 || tokens.length === 1 && (tokens[0] === 'on' || tokens[0] === 'off' && allowOff === true));
-  if (identity && purpose !== false && purpose !== field) return null;
+  if (purpose !== false && purpose !== field) return null;
+  // A card field purpose likewise accepts no hint, an empty one or only `on`
+  // (and `off` only with its own flag). Never on a processor route.
+  const hint = (autocomplete || '').trim().toLowerCase();
+  const cardAttested = !identity && !processor && purpose === field &&
+    (hint === '' || hint === 'on' || hint === 'off' && allowOff === true);
   if (identity && !attested) {
     if (prefix[0]?.startsWith('section-')) prefix.shift();
     if (['shipping','billing'].includes(prefix[0])) prefix.shift();
@@ -205,9 +229,9 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
   if (identity) {
     if (input && !(type === 'text' || type === 'email' && field === 'email' ||
                    type === 'tel' && field === 'tel')) return null;
-  } else if (computop ? !knownComputopField() :
+  } else if (computop ? !knownComputopField() : !cardAttested && (
       tokens[tokens.length - 1] !== field ||
-      tokens.slice(0,-1).some(t => t !== 'billing' && !/^section-[a-z0-9_-]+$/.test(t))) return null;
+      tokens.slice(0,-1).some(t => t !== 'billing' && !/^section-[a-z0-9_-]+$/.test(t)))) return null;
   if (stripe && !knownStripeField()) return null;
   if (!identity && input && !['text','tel','password'].includes(type)) return null;
   const proto = input ? HTMLInputElement.prototype :
@@ -234,7 +258,9 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
   function exposed(node, owner) {
     const rect = node.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0 || !shown(node, owner)) return false;
-    return owner.elementFromPoint(rect.left + rect.width/2, rect.top + rect.height/2) === node;
+    const hit = owner.elementFromPoint(rect.left + rect.width/2, rect.top + rect.height/2);
+    // A dropdown button's own text and icon are part of it.
+    return hit === node || aria && node === el && ownPart(hit);
   }
   function valid() {
     if (!isSecureContext || location.href !== frameURL || (!processor && window.top.location.href !== topURL) ||
@@ -243,6 +269,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
         el.type !== type || el.getAttribute('autocomplete') !== autocomplete ||
         (computop && !knownComputopField()) ||
         (stripe && !knownStripeField()) ||
+        (aria && ariaList() !== listId) ||
         el.disabled || el.matches(':disabled') || el.readOnly || el.hidden || el.closest('[inert]') ||
         document.querySelectorAll(selector).length !== 1 || document.querySelector(selector) !== el ||
         document.visibilityState !== 'visible') return false;
@@ -266,10 +293,82 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
     }
     return {...point,rootX:x+window.top.scrollX,rootY:y+window.top.scrollY};
   }
+  // Elements inside the dropdown button, never an embedded document.
+  function ownPart(node) {
+    return node instanceof Element && node !== el && el.contains(node) &&
+      !node.closest('iframe,frame,object,embed') && node.getRootNode() === doc;
+  }
+  const text = node => (node.textContent || '').replace(/\s+/g, ' ').trim();
+  const pause = () => new Promise(resolve => setTimeout(resolve, 25));
+  // The open listbox's enabled choices, or null while it has none.
+  function ariaOptions() {
+    const list = doc.getElementById(listId);
+    if (!list || list.getAttribute('role') !== 'listbox' || list.getRootNode() !== doc ||
+        doc.querySelectorAll('#' + CSS.escape(listId)).length !== 1 || list.contains(el) || el.contains(list) ||
+        list.closest('[hidden],[inert]')) return null;
+    const options = Array.from(list.querySelectorAll('[role="option"]')).filter(o =>
+      o.closest('[role="listbox"]') === list && o.getAttribute('aria-disabled') !== 'true' &&
+      !o.closest('[hidden],[inert]') && !(o.disabled === true));
+    return options.length ? options : null;
+  }
+  // An option's value attributes and its visible text.
+  const names = o => [text(o), o.getAttribute('data-value'), o.getAttribute('value')]
+    .filter(v => v !== null).map(v => v.trim()).filter(v => v !== '');
+  // Open the dropdown, choose the one option that names the saved month or
+  // year, and confirm the choice. No keys are sent; the value is never typed.
+  async function choose(value, maxAgeMs) {
+    const forms = field === 'cc-exp-month' ?
+      (/^(0[1-9]|1[0-2])$/.test(value) ? [value, String(Number(value))] : null) :
+      /^[0-9]{4}$/.test(value) ? [value, value.slice(2)] : /^[0-9]{2}$/.test(value) ? ['20' + value, value] : null;
+    if (!forms) return 'refused';
+    const late = () => performance.now() - pinnedAt >= Math.min(30000, maxAgeMs);
+    const opened = el.getAttribute('aria-expanded') !== 'true';
+    // A refusal leaves the selection as it was: it only closes what it opened.
+    const refuse = () => {
+      try {
+        if (opened && el.isConnected && el.getAttribute('aria-expanded') === 'true') el.click();
+      } catch {
+        // The selection did not change.
+      }
+      return 'refused';
+    };
+    if (opened) el.click();
+    let options = null;
+    for (let i = 0; i < 24 && options === null; ++i) {
+      await pause();
+      if (late() || !valid()) return refuse();
+      options = ariaOptions();
+    }
+    if (options === null) return refuse();
+    const matches = options.filter(o => names(o).some(n => forms.includes(n)));
+    if (matches.length !== 1) return refuse();
+    const option = matches[0], chosen = names(option);
+    if (option.closest('a[href],label,summary,input,select,textarea,button:not([type="button" i])') ||
+        option.querySelector('a[href],input,select,textarea,button,iframe,frame,object,embed') ||
+        late() || !valid() || ariaOptions()?.includes(option) !== true) return refuse();
+    option.click();
+    // The button (or its label inside it, beside an icon) shows the choice, or
+    // the option stays selected.
+    for (let i = 0; i < 24; ++i) {
+      if (!el.isConnected) return 'uncertain';
+      const shows = [el, ...el.querySelectorAll('*')].some(n => chosen.includes(text(n))) ||
+        [el.getAttribute('data-value'), el.getAttribute('value')].some(v => v !== null && chosen.includes(v.trim()));
+      if (shows || option.isConnected && option.getAttribute('aria-selected') === 'true') return 'filled';
+      await pause();
+    }
+    return 'uncertain';
+  }
   if (!valid()) return null;
   const pinnedAt = performance.now();
-  return {node() { return el; },geometry() { return valid() || null; },fill(value, maxAgeMs, notifyPage) {
+  return {node() { return el; },geometry() { return valid() || null; },
+  // The browser's own hit test may land on the dropdown button's text or icon.
+  part(node) {
+    const element = node instanceof Text ? node.parentElement : node;
+    return aria && (node instanceof Text && element === el || ownPart(element));
+  },
+  fill(value, maxAgeMs, notifyPage) {
     if (performance.now() - pinnedAt >= Math.min(30000, maxAgeMs) || !valid()) return 'refused';
+    if (aria) return choose(value, maxAgeMs);
     if ((computop || stripe) && field === 'cc-exp' && !/^[0-9]{2}\/[0-9]{2}$/.test(value)) return 'refused';
     if (identity && input && value.includes('\n')) return 'refused';
     if ((input || textarea) && el.maxLength >= 0 && value.length > el.maxLength) return 'refused';
@@ -310,15 +409,22 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
     '__STRIPE_ELEMENTS__', card_processor.STRIPE_ELEMENTS_JSON)
 
 
+# Card fields that take an explicit purpose (pin-card-target --field-purpose).
+CARD_PURPOSE_FIELDS = ('cc-number', 'cc-csc', 'cc-exp-month', 'cc-exp-year', 'cc-name')
+
+
 def field_purpose(kind, request):
-    """The identity pin's explicit field purpose and autocomplete-off flag, checked.
+    """The pin's explicit field purpose and autocomplete-off flag, checked.
 
     ``field_purpose`` must name the pinned field; ``allow_autocomplete_off``
-    must be ``True`` and needs ``field_purpose``. Cards take neither.
+    must be ``True`` and needs ``field_purpose``. Identity pins take them; a
+    card pin takes them for ``CARD_PURPOSE_FIELDS`` only, never with a processor.
     """
     purpose, allow_off = request.get('field_purpose', False), request.get('allow_autocomplete_off', False)
+    card = kind == 'card' and 'processor' not in request and purpose in CARD_PURPOSE_FIELDS
     if ('field_purpose' in request or 'allow_autocomplete_off' in request) and (
-            kind != 'identity' or 'field_purpose' in request and request['field_purpose'] != request.get('field')
+            kind != 'identity' and not card
+            or 'field_purpose' in request and request['field_purpose'] != request.get('field')
             or 'allow_autocomplete_off' in request and (request['allow_autocomplete_off'] is not True
                                                         or 'field_purpose' not in request)):
         raise CardTargetError()
@@ -353,7 +459,9 @@ class BrowserCards:
                     card_processor_frames_protocol=card_processor.PROTOCOL,
                     card_processors=list(card_processor.PROCESSORS),
                     # `stripe` also accepts the classic Card Element frame.
-                    stripe_card_element=True)
+                    stripe_card_element=True,
+                    # pin-card-target --field-purpose, and ARIA expiry dropdowns.
+                    card_field_purpose_protocol=CARD_PURPOSE_PROTOCOL)
 
     def prune(self):
         for token, pin in list(self.pins.items()):
@@ -436,6 +544,8 @@ class BrowserCards:
             arguments = [request[k] for k in ('selector', 'field', 'frame_url', 'top_url')]
             if self.kind == 'identity':
                 arguments.extend((False, True, purpose, allow_off))
+            elif self.kind == 'card' and purpose is not False:
+                arguments.extend((False, False, purpose, allow_off))
             arguments.extend(self.pin_extra)
             expression = '(' + self.pin_script + ')(' + ','.join(map(json.dumps, arguments)) + ')'
             result = cdp.call('Runtime.evaluate', dict(expression=expression, contextId=context,
@@ -445,14 +555,14 @@ class BrowserCards:
             if 'exceptionDetails' in result or obj.get('subtype') == 'null' or not obj.get('objectId'):
                 raise CardTargetError()
             input_node = card_hit_test.retained_node(cdp,session,obj['objectId'])
-            if card_hit_test.input_point(cdp,session,obj['objectId'],input_node,request['frame_id']) is None:
+            if card_hit_test.input_point(cdp,session,obj['objectId'],input_node,request['frame_id'],context) is None:
                 raise CardTargetError()
             if self.clock() >= created + TTL:
                 raise CardTargetError()
             token = secrets.token_hex(32)
             self.pins[token] = dict(cdp=cdp, session=session, obj=obj['objectId'], field=request['field'],
                                     request=dict(request), created=created, expires=created + TTL,input_node=input_node,
-                                    slot=slot)
+                                    slot=slot, context=context)
             return dict(ok=True, target=token, expires_in=TTL, field=request['field'], **self._receipt())
         except BaseException:
             cdp.close()
@@ -476,16 +586,18 @@ class BrowserCards:
             else:
                 self._frames(pin['cdp'], pin['session'], pin['request'])
                 if card_hit_test.input_point(pin['cdp'],pin['session'],pin['obj'],
-                        pin['input_node'],pin['request']['frame_id']) is None:
+                        pin['input_node'],pin['request']['frame_id'],pin.get('context')) is None:
                     return self._failure()
             if not ready() or pin['expires'] <= self.clock():
                 return self._failure()
             deadline = self.clock() + 4 if deadline is None else deadline
             max_age_ms = max(0, min(30000, (deadline - pin['created']) * 1000))
             started = True  # An unanswered RPC may already have changed the field.
+            # A dropdown choice (an ARIA expiry button) spans a few tasks and returns a promise.
             result = pin['cdp'].call('Runtime.callFunctionOn', dict(objectId=pin['obj'],
                 functionDeclaration='function(value, maxAgeMs, notify) { return this.fill(value, maxAgeMs, notify); }',
-                arguments=[dict(value=value), dict(value=max_age_ms), dict(value=notify_page)], returnByValue=True, silent=True), pin['session'])
+                arguments=[dict(value=value), dict(value=max_age_ms), dict(value=notify_page)], returnByValue=True,
+                awaitPromise=True, silent=True), pin['session'])
             state = result.get('result', {}).get('value') if 'exceptionDetails' not in result else None
             if state == 'refused':
                 return self._failure()
@@ -495,7 +607,7 @@ class BrowserCards:
                     pin['cdp'], pin, pin['request'], secure_url, CardTargetError):
                 return self._failure(True)
             if not pin.get('processor') and card_hit_test.input_point(pin['cdp'],pin['session'],pin['obj'],
-                    pin['input_node'],pin['request']['frame_id']) is None:
+                    pin['input_node'],pin['request']['frame_id'],pin.get('context')) is None:
                 return self._failure(True)
             return dict(ok=True, filled=field, **self._receipt())
         except Exception:

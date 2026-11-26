@@ -26,6 +26,7 @@ from akdbx import cli
 from test_cards import CARD
 from test_writes import deployed, template
 from test_target import isolated_x11
+from card_form_fixtures import HINTLESS
 
 HTML = b'''<!doctype html><title>Synthetic card destination test</title>
 <style>input,select{display:block;width:230px;height:25px;margin:5px}</style>
@@ -120,7 +121,9 @@ def chrome(tmp_path, request):
         def do_GET(self):
             requests.append(self.path)
             body = HTML
-            if self.path == '/framed':
+            if self.path == '/hintless':
+                body = HINTLESS.encode()
+            elif self.path == '/framed':
                 body = b'<!doctype html><iframe src="/frame" style="width:600px;height:600px"></iframe>'
             elif self.path == '/computop':
                 body = b'<!doctype html><iframe id=merchant src=/computop-merchant style="width:650px;height:500px"></iframe>'
@@ -809,3 +812,113 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
         assert purpose_pin('#other', '--allow-autocomplete-off', code=1)['delivery'] == 'not-started'
         assert evaluate(chrome, "other.value === '' && submitAttempts === 0 && identityKeyEvents === 0")
     assert broker.typer.events == []
+
+
+def hintless(chrome):
+    url = chrome.url.replace('/payment', '/hintless')
+    evaluate(chrome, f'location.href = {json.dumps(url)}')
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            if evaluate(chrome, "location.pathname === '/hintless' && document.readyState === 'complete' && "
+                                "!!document.getElementById('two-lists')"):
+                break
+        except AssertionError:
+            pass
+        time.sleep(.05)
+    frame = chrome.cdp.call('Page.getFrameTree', session=chrome.session)['frameTree']['frame']['id']
+    return SimpleNamespace(url=url, frame=frame)
+
+
+def hintless_pin(chrome, page, selector, field, **changes):
+    return pin(chrome, field, selector, top_url=page.url, frame_url=page.url, frame_id=page.frame, **changes)
+
+
+@pytest.mark.parametrize('field,selector,expected', [
+    ('cc-number', '#pidlInput_accountToken', CARD['number']), ('cc-csc', '#pidlInput_cvvToken', CARD['csc']),
+    ('cc-number', '#hint-on', CARD['number'])])
+def test_a_card_field_without_a_hint_fills_only_with_its_purpose(chrome, field, selector, expected):
+    page = hintless(chrome)
+    assert hintless_pin(chrome, page, selector, field) == failure()
+    target = hintless_pin(chrome, page, selector, field, field_purpose=field)
+    assert target['ok'], target
+    assert fill(chrome, target, field) == dict(ok=True, filled=field, card_delivery='cdp-card-element-v1')
+    assert evaluate(chrome, f'document.querySelector({json.dumps(selector)}).value') == expected
+    assert evaluate(chrome, 'events') == ['input:' + selector[1:]]
+    assert chrome.broker.typer.events == []
+
+
+def test_a_card_purpose_never_overrides_another_hint_off_or_a_processor(chrome):
+    page = hintless(chrome)
+    # A hint for another detail, or with a section the card grammar refuses, still refuses.
+    assert hintless_pin(chrome, page, '#conflict', 'cc-number', field_purpose='cc-number') == failure()
+    assert hintless_pin(chrome, page, '#sub-hint', 'cc-number', field_purpose='cc-number') == failure()
+    # A purpose for another field, or a field without its own purpose, refuses.
+    assert hintless_pin(chrome, page, '#pidlInput_accountToken', 'cc-number', field_purpose='cc-csc') == failure()
+    assert hintless_pin(chrome, page, '#pidlInput_accountToken', 'cc-exp', field_purpose='cc-exp') == failure()
+    # autocomplete=off needs its own flag, which needs the purpose.
+    assert hintless_pin(chrome, page, '#hint-off', 'cc-number', field_purpose='cc-number') == failure()
+    assert hintless_pin(chrome, page, '#hint-off', 'cc-number', allow_autocomplete_off=True) == failure()
+    target = hintless_pin(chrome, page, '#hint-off', 'cc-number', field_purpose='cc-number', allow_autocomplete_off=True)
+    assert target['ok'], target
+    assert fill(chrome, target) == dict(ok=True, filled='cc-number', card_delivery='cdp-card-element-v1')
+    assert evaluate(chrome, "events") == ['input:hint-off']
+    # A hint added after the pin refuses the fill.
+    target = hintless_pin(chrome, page, '#pidlInput_cvvToken', 'cc-csc', field_purpose='cc-csc')
+    evaluate(chrome, "pidlInput_cvvToken.setAttribute('autocomplete', 'cc-number')")
+    assert fill(chrome, target, 'cc-csc') == failure()
+    assert evaluate(chrome, "pidlInput_cvvToken.value") == ''
+
+
+def dropdown_state(chrome, selector):
+    return evaluate(chrome, f"""(() => {{ const b = document.querySelector({json.dumps(selector)});
+        return [b.firstElementChild.textContent, b.getAttribute('aria-expanded'),
+                document.querySelectorAll('[role=listbox]').length]; }})()""")
+
+
+@pytest.mark.parametrize('field,selector,formatting,shown', [
+    ('cc-exp-month', '#pidlInput_expiryMonth', None, '09'),
+    ('cc-exp-year', '#pidlInput_expiryYear', 'YYYY', '2031'),
+    ('cc-exp-year', '#pidlInput_expiryYear', 'YY', '2031'),
+    ('cc-exp-year', '#short-year', 'YYYY', '31'),
+    ('cc-exp-month', '#combo-month', None, '9')])
+def test_an_aria_expiry_dropdown_chooses_the_one_matching_option(chrome, field, selector, formatting, shown):
+    page = hintless(chrome)
+    # Without the purpose, a dropdown button is not a card field.
+    assert hintless_pin(chrome, page, selector, field) == failure()
+    target = hintless_pin(chrome, page, selector, field, field_purpose=field)
+    assert target['ok'], target
+    result = fill(chrome, target, field, **({'format': formatting} if formatting else {}))
+    assert result == dict(ok=True, filled=field, card_delivery='cdp-card-element-v1')
+    assert dropdown_state(chrome, selector) == [shown, 'false', 0]
+    assert evaluate(chrome, 'events') == ['open:' + selector[1:], 'choose:' + selector[1:] + '=' + shown]
+    assert chrome.broker.typer.events == []
+
+
+@pytest.mark.parametrize('selector', ['#ambiguous', '#no-match', '#disabled-match', '#never-opens'])
+def test_an_aria_dropdown_with_no_single_match_refuses_and_keeps_the_selection(chrome, selector):
+    page = hintless(chrome)
+    target = hintless_pin(chrome, page, selector, 'cc-exp-month', field_purpose='cc-exp-month')
+    assert target['ok'], target
+    assert fill(chrome, target, 'cc-exp-month') == failure()
+    # It closed what it opened, and chose nothing.
+    assert dropdown_state(chrome, selector) == ['Month', 'false', 0]
+    assert evaluate(chrome, 'events') == ['open:' + selector[1:], 'close:' + selector[1:]]
+
+
+@pytest.mark.parametrize('selector', ['#plain-button', '#submit-dropdown', '#menu-dropdown', '#two-lists'])
+def test_a_button_that_is_not_an_aria_listbox_dropdown_refuses(chrome, selector):
+    page = hintless(chrome)
+    assert hintless_pin(chrome, page, selector, 'cc-exp-month', field_purpose='cc-exp-month') == failure()
+    # A card number never goes to a dropdown, even a well-formed one.
+    assert hintless_pin(chrome, page, '#pidlInput_expiryMonth', 'cc-number', field_purpose='cc-number') == failure()
+    assert evaluate(chrome, 'events') == []
+
+
+def test_an_aria_dropdown_whose_list_changes_owner_refuses(chrome):
+    page = hintless(chrome)
+    target = hintless_pin(chrome, page, '#pidlInput_expiryMonth', 'cc-exp-month', field_purpose='cc-exp-month')
+    assert target['ok'], target
+    evaluate(chrome, "pidlInput_expiryMonth.setAttribute('aria-controls', 'year-list')")
+    assert fill(chrome, target, 'cc-exp-month') == failure()
+    assert evaluate(chrome, 'events') == []

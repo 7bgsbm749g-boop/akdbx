@@ -107,6 +107,8 @@ QR_VERSION = (0, 14, 0)
 FIREFOX_QR_VERSION = (0, 14, 2)
 # Identity pins with an explicit field purpose (pin-identity-target --field-purpose).
 FIELD_PURPOSE_VERSION = (0, 7, 0)
+# Card pins with an explicit field purpose, and ARIA expiry dropdowns (pin-card-target --field-purpose).
+CARD_PURPOSE_VERSION = (0, 16, 0)
 # The toolbar popup offers the inbox's texted codes for a focused one-time-code field.
 POPUP_SMS_VERSION = (0, 15, 0)
 MAX_POPUP_TEXTS = 8
@@ -1392,10 +1394,12 @@ class ExtensionHub:
         _secure(request['top_url'])
         spec = dict(selector=request['selector'], field=request['field'], processor=processor)
         if purpose is not False:
-            # Fill extension 0.7.0 and newer apply the field purpose; an older one ignores it.
+            # Fill extension 0.7.0 (identities) and 0.16.0 (cards) and newer apply the
+            # field purpose; an older one ignores it, and so refuses the field.
             spec.update(field_purpose=purpose, allow_autocomplete_off=allow_off)
         # An extension older than 0.13.0 has no code pin; it is never asked for one.
-        needs = CODE_VERSION if kind == 'code' else FIELD_PURPOSE_VERSION if purpose is not False else None
+        needs = (CODE_VERSION if kind == 'code' else None if purpose is False else
+                 CARD_PURPOSE_VERSION if kind == 'card' else FIELD_PURPOSE_VERSION)
         channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, request.get('frame_url'), hardened=False,
                                                             needs=needs)
         try:

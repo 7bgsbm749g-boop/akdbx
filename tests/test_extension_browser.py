@@ -37,6 +37,7 @@ from akdbx.cards import FIELDS, MARKER
 from akdbx.identities import MARKER as IDENTITY_MARKER, property_key as identity_property
 from akdbx.target import failure
 from test_broker import Entry, Vault
+from card_form_fixtures import HINTLESS
 from popup_fixtures import ADDRESS, ADDRESS_FORM, ADDRESS_TITLE, DECOYS, FILLED, AddressEntry
 from test_windows_unlock import certificates  # noqa: F401
 from windows_chromium_lab import FORM, ORIGIN, chromium_lab
@@ -175,6 +176,7 @@ PAGES = {
                '<input id="phone-email" type="text" autocomplete="email"><input id="phone-national" type="tel" '
                'autocomplete="tel-national"></form>' + DIGEST),
     '/drawer': DRAWER_PAGE,
+    '/card-hintless': HINTLESS + DIGEST,
     '/framed-visible': LOGIN_FRAME.format(''),
     '/framed-hidden': LOGIN_FRAME.format('opacity:0'),
     '/decoy': '<!doctype html><meta charset="utf-8"><p>decoy</p>',
@@ -1395,6 +1397,42 @@ def test_an_older_extension_never_gets_an_identity_purpose_pin(harness):
     finally:
         channel.version = reported
     assert identity_pin(harness, url, '#phone', field_purpose='tel')['ok']
+
+
+def test_a_hintless_card_field_and_an_aria_expiry_dropdown_fill_through_the_extension(harness):
+    """The CDP route's DOM checks: a field purpose for a hint-less input, and a dropdown choice."""
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate('/card-hintless')
+    listing = harness.frames(url)
+
+    def pin(selector, field, **extra):
+        return broker.dispatch(dict(action='pin-card-target', card_protocol=1, page_id=listing['page_id'],
+                                    frame_id=listing['main_frame_id'], top_url=url, selector=selector,
+                                    field=field, route='extension', **extra))
+
+    def fill(target, field, **extra):
+        handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
+        return broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
+                                    field=field, **extra))
+    assert pin('#pidlInput_accountToken', 'cc-number') == card_failure()
+    assert pin('#conflict', 'cc-number', field_purpose='cc-number') == card_failure()
+    assert pin('#plain-button', 'cc-exp-month', field_purpose='cc-exp-month') == card_failure()
+    target = pin('#pidlInput_accountToken', 'cc-number', field_purpose='cc-number')
+    assert target['ok'], target
+    assert fill(target, 'cc-number') == dict(ok=True, filled='cc-number', card_delivery=route.DELIVERY)
+    assert lab.digest('pidlInput_accountToken') == sha(CARD['number'])
+    label = "document.querySelector('#{}').firstElementChild.textContent"
+    target = pin('#pidlInput_expiryYear', 'cc-exp-year', field_purpose='cc-exp-year')
+    assert target['ok'], target
+    assert fill(target, 'cc-exp-year', format='YYYY') == dict(ok=True, filled='cc-exp-year', card_delivery=route.DELIVERY)
+    assert lab.evaluate(label.format('pidlInput_expiryYear')) == '2031'
+    # Two options match: nothing is chosen, and the dropdown closes again.
+    target = pin('#ambiguous', 'cc-exp-month', field_purpose='cc-exp-month')
+    assert target['ok'], target
+    assert fill(target, 'cc-exp-month') == card_failure()
+    assert lab.evaluate(label.format('ambiguous')) == 'Month'
+    assert lab.evaluate("document.querySelectorAll('[role=listbox]').length") == 0
+    assert lab.evaluate("events.filter(e => e.startsWith('choose:'))") == ['choose:pidlInput_expiryYear=2031']
 
 
 def same_site_frame(harness, url, ready='password'):

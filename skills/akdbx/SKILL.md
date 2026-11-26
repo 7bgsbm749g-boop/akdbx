@@ -714,7 +714,16 @@ group, brand and last four. Pin each card field with `pin-card-target` (fields
 `cc-name`, `cc-number`, `cc-exp`, `cc-exp-month`, `cc-exp-year`, `cc-csc`) and
 fill with `fill-card`, using a fresh handle and pin per field. Combined expiry
 needs `--format MM/YY` or `MM/YYYY`. Processor iframes need `--processor
-adyen|computop|stripe` and the exact supported inputs. Card values go only to a
+adyen|computop|stripe` and the exact supported inputs. A main-frame card field
+with no autocomplete hint (or only `on`) needs `--field-purpose FIELD` after
+you verify its purpose on the page (`autocomplete="off"` also needs
+`--allow-autocomplete-off`); a hint for another detail still refuses. An expiry
+month or year that is an ARIA dropdown button (`aria-haspopup="listbox"` or
+`role="combobox"`, with `aria-controls` or `aria-owns`) pins the same way: the
+broker opens it and chooses the one matching option itself, or refuses and
+leaves it as it was (after 0.52.0, `card_field_purpose_protocol: 1`;
+[cards](references/cards.md#field-without-an-autocomplete-hint-after-0520)).
+Card values go only to a
 verified DOM element: no keyboard, Tab or clipboard, and never the login fill
 commands. Save a new card with `create-card` (the user types the card on a
 private page; register a [card-save notification](references/card-save-notifications.md)
