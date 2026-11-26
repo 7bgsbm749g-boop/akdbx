@@ -62,8 +62,13 @@ the two formats share one folder.
 Snap or Flatpak Firefox packages are not covered by this host installation;
 use a standard Mozilla Firefox installation.
 
-The separate authenticator QR capture extension remains Chromium-only. This
-does not change the Firefox fill extension's shown-once secret read pins.
+For a user-started QR import, build the **separate importer** (1.1.0+) with
+`akdbx-browser-import build-extension --browser firefox NEW_DIRECTORY` and load
+its manifest as a temporary add-on. Register `org.akdbx.private_import` with
+`akdbx-browser-import install-host --browser firefox --origin ORIGIN`, adding
+`--socket CAPTURE_SOCKET` on Linux and macOS. Its host allows only
+`private-import@akdbx.org`. The user confirms the account on the private page
+before saving. See [private import](../skills/akdbx/references/private-import.md).
 
 ## Validation
 

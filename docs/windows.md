@@ -333,7 +333,7 @@ costs and how an interrupted rotation finishes.
 
 ### Authenticator capture native host
 
-From 0.22.0 the browser native host that captures a website's authenticator
+From 0.22.0 the Chromium native host that captures a website's authenticator
 setup QR also runs on Windows. The extension and the review flow are the same
 as on Linux; see the skill's
 [private import reference](../skills/akdbx/references/private-import.md).
@@ -355,7 +355,11 @@ with its extension ID and the broker's unlock origin:
   --extension-id EXTENSION_ID --origin $env:AKDBX_UNLOCK_ORIGIN
 ```
 
-`--browser` is `chrome`, `edge` or `helium`. Without `--socket` the host uses
+For Chromium use `--browser chrome|edge|helium`. For Firefox 153+ use
+importer 1.1.0+, pass `--browser firefox` to both commands, load the
+temporary add-on and omit `--extension-id`. Firefox uses a separate
+`browser-import-firefox.json` and the Mozilla native messaging registry key.
+Without `--socket` the host uses
 the capture pipe of this user's default broker; give `--socket` with the
 `-capture` pipe when the broker runs with its own `--socket`. The installer
 writes `%LOCALAPPDATA%\akdbx\browser-import.json` (private to this user, SYSTEM
@@ -363,10 +367,10 @@ and administrators), a manifest under `%LOCALAPPDATA%\akdbx\browser-import`, and
 one `HKEY_CURRENT_USER` registry value. The manifest starts the installed
 `akdbx-browser-import.exe` of this environment directly. Without `--socket`
 the host finds the default pipe of the current desktop session each time it
-starts. It never replaces another registration. A second browser must use the
+starts. It never replaces another registration. A second Chromium browser must use the
 same extension ID, origin and pipe. `install-host` reads no vault and starts no
 browser. `uninstall-host --browser NAME` removes that browser's registry value
-and manifest. When it removes the last browser, it also removes the shared
+and manifest. When it removes the last browser of that format, it also removes its
 configuration; to change the origin, extension ID or pipe, uninstall every
 browser and install again.
 

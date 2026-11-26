@@ -55,12 +55,18 @@ model, not compromise by a process sharing the broker's OS account.
 
 ## Private browser capture
 
-This optional Chrome extension runs on **Linux on the same machine as the broker**.
+Importer 1.1.0 supports Chromium browsers and Firefox 153+ on Linux, macOS
+and Windows. Use the browser on the same machine as the broker. The importer
+stays separate from the fill extension so the browser enforces its temporary
+`activeTab` permission. The user invokes it on one tab. Closing that tab or
+navigating to another origin revokes access. The fill extension's persistent
+HTTPS permissions would remove this browser-enforced limit.
 It is not an iOS app, a Windows-to-VPS tunnel, or an agent screenshot reader.
 It captures one standard TOTP QR or `otpauth://totp/` link/code from the selected
 HTTPS top-level document. It does not extract arbitrary Base32-looking page text,
 read other frames, export an app's internal database, or use a screenshot fallback.
-Cross-origin/tainted images and unsupported pages fail closed.
+Cross-origin and tainted images are skipped. Images loaded with CORS enabled
+are also skipped because a redirect can make foreign pixels readable.
 
 Build an unpacked extension after installing this version of akdbx:
 
@@ -68,7 +74,15 @@ Build an unpacked extension after installing this version of akdbx:
 /absolute/path/to/.venv/bin/akdbx-browser-import build-extension /private/new-extension-directory
 ```
 
-Load that directory through **chrome://extensions > Developer mode > Load
+For Firefox, add `--browser firefox` to the build command. Load its
+`manifest.json` through **about:debugging > This Firefox > Load Temporary
+Add-on**. Repeat after Firefox restarts. Permanent installation in standard
+Firefox requires a Mozilla-signed XPI. Register with `install-host --browser
+firefox` and the origin and socket options below. Its fixed ID is
+`private-import@akdbx.org`. Omit `--extension-id` for Firefox. Use separate
+build directories when installing both formats.
+
+For Chromium, load that directory through **chrome://extensions > Developer mode > Load
 unpacked** in the established main profile. Do not create a new profile to
 work around an error. Copy Chrome's extension ID, then explicitly register the
 native host using the current independently configured unlock origin and the
@@ -83,31 +97,41 @@ it serves only this capture request, as the capture pipe does on Windows.
   --extension-id EXTENSION_ID \
   --origin https://PRIVATE_HOST:9443 \
   --socket /private/runtime/akdbx-unlock.sock \
-  --manifest-dir /existing/chrome-user-data/NativeMessagingHosts
+  --browser chrome
 ```
 
-The manifest directory belongs to the user-data root (the parent of `Default`),
-not the `Default` profile directory. It must already have an existing parent.
+On Linux and macOS, `--browser chrome|edge|helium|firefox` selects the
+browser's per-user native host directory. On Linux, Chrome and Helium honor
+`CHROME_CONFIG_HOME` before `XDG_CONFIG_HOME`. A second Chromium browser can
+reuse the same extension ID, private origin and capture socket. For a custom Chromium user-data
+root, pass `--manifest-dir /existing/chrome-user-data/NativeMessagingHosts`.
+Use a user-owned manifest directory under trusted, non-symlinked parents.
+On macOS pass `--socket "$HOME/Library/Application Support/akdbx/run/u"` for
+the default broker. For a custom broker use its `--unlock-socket` or the
+sibling socket named `u` (`s` if the RPC socket itself is named `u`).
+The host and broker both verify Darwin peer credentials.
 Run the installed console script from the intended environment as shown above.
 The installer records that exact script, even when its directory is not on `PATH`.
 The installer creates mode-0600 configuration at
-`${XDG_CONFIG_HOME:-~/.config}/akdbx/browser-import.json` and one native-host
+`${XDG_CONFIG_HOME:-~/.config}/akdbx/browser-import.json` (Firefox uses `browser-import-firefox.json`) and one native-host
 manifest. It refuses to overwrite existing files. Use the same config environment
-when Chrome starts the host. No database/password/key is stored in this config.
+when the browser starts the host. No database/password/key is stored in this config.
 Neither build nor install reads the vault or restarts the browser/broker.
 
 On Windows (0.22.0+) use `akdbx-browser-import.exe install-host --browser
 chrome|edge|helium --extension-id EXTENSION_ID --origin ORIGIN`. It registers
 the host under `HKEY_CURRENT_USER` and, without `--socket`, uses the default
 broker's capture pipe (the RPC pipe name plus `-capture`), never the agent RPC
-pipe. `uninstall-host --browser NAME` removes one registration. See
+pipe. For Firefox use `--browser firefox` without an extension ID. The
+manifest registers under Mozilla's per-user native messaging key.
+`uninstall-host --browser NAME` removes one registration. See
 `docs/windows.md`.
 
 For capture, prepare the normal private `setup-totp` URL, verify the website and
 account without reading the setup key, then open the extension on the enrollment
 tab. The user supplies that private URL and clicks **Capture this tab's setup QR**.
 The extension requests temporary `activeTab` access, not blanket site permission.
-It sends data through a Chrome native-messaging host restricted to that extension
+It sends data through a browser native-messaging host restricted to that extension
 ID. The host validates the configured private origin, protected Unix socket and
 broker UID (on Windows: the capture named pipe and its same-user, same-session
 server). The broker separately checks the actual captured source origin
@@ -138,9 +162,11 @@ Synthetic tests cover complete/mixed/malformed migration batches, parser bounds,
 private account selection, consent, CSRF origin checks, protected encrypted saves,
 native-message framing, wrong-site capture, replay, cancellation, expiry, socket
 trust and memory cleanup. Node tests decode a synthetic QR and exercise extension
-navigation/receipt checks. The optional real Chromium test uses a new isolated
-Xvfb/profile and synthetic image only. It does not prove native iPhone behavior,
-real Authy/Microsoft export, or a loaded Chrome extension/native-host deployment.
+navigation/receipt checks. Linux integration tests invoke the toolbar action in real
+Chromium and Firefox profiles, decode a synthetic canvas QR through the
+installed native host, verify the vault is unchanged, submit the private
+confirmation and reopen the encrypted entry. Windows and macOS runner suites
+exercise host registration and their native capture channels.
 
 The decoder is vendored unmodified from jsQR 1.4.0 with its Apache-2.0 license
 and npm tarball integrity recorded in `import_assets/VENDOR.txt`. No runtime
