@@ -80,7 +80,7 @@ def visible(node):
     if width <= 0 or height <= 0:
         return False
     hit = AX.AXUIElementCopyElementAtPosition(SYSTEM, x + width / 2, y + height / 2, None)
-    if hit[0] == AX.kAXErrorNoValue:
+    if hit[0] in (AX.kAXErrorNoValue, AX.kAXErrorFailure):
         return False
     return CFEqual(result(hit), node)
 
