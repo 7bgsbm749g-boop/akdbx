@@ -491,6 +491,19 @@ def check_firefox_bridge(package):
                      'Could not verify either with gdbus on this desktop session. Use a standard Firefox build.')
 
 
+def same_windows_manifest(registered, manifest):
+    if registered == str(manifest):
+        return True
+    # Windows can enable case sensitivity per directory. Confirm a case-only
+    # spelling difference with the filesystem before changing the registration.
+    if Path(registered) != manifest:
+        return False
+    try:
+        return manifest.samefile(registered)
+    except FileNotFoundError:
+        return False
+
+
 def windows_registered_manifest(browser):
     import winreg
     key = WINDOWS_KEYS[registration_browser(browser)] + '\\' + HOST_NAME
@@ -525,7 +538,7 @@ def install(browser, *, socket_path=None, manifest_dir=None, python=None, firefo
     launcher, manifest = where['launcher'], where['manifest']
     if os.name == 'nt':
         current = windows_registered_manifest(browser)
-        if current not in (None, str(manifest)):
+        if current is not None and not same_windows_manifest(current, manifest):
             raise ValueError('another org.akdbx.extension host is registered for this browser; uninstall it first')
     if _file_kind(manifest) == 'other':
         raise ValueError(f'{manifest} is a link or not a regular file; akdbx never writes through it. Remove it first')
@@ -592,7 +605,7 @@ def uninstall(browser, *, manifest_dir=None):
         import winreg
         key = WINDOWS_KEYS[browser] + '\\' + HOST_NAME
         current = windows_registered_manifest(browser)
-        if current is not None and current != str(manifest):
+        if current is not None and not same_windows_manifest(current, manifest):
             return []
         if current is not None:
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)

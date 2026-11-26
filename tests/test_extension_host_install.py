@@ -48,6 +48,19 @@ def test_install_reinstall_and_remove(home, browser, linux, mac, windows, custom
                 assert winreg.QueryValueEx(handle, '') == (str(manifest), winreg.REG_SZ)
             expected_dir = directory or home / 'LOCALAPPDATA/akdbx/extension-host'
             if custom:
+                from unittest.mock import Mock
+                from akdbx.setup_cli import Setup
+                setup = Mock(windows=True, socket_explicit=False, executable=sys.executable)
+                assert Setup._install_host(setup, browser) == 'done'
+                # An owned manifest may need its launcher restored after an upgrade.
+                launcher.unlink()
+                setup.akdbx_argv.side_effect = lambda *args: list(args)
+                setup.change.side_effect = lambda stage, detail, display, apply, **options: apply()
+                Setup._install_host(setup, browser)
+                setup._akdbx_ok.assert_called_once_with(
+                    ['extension', 'install', '--browser', browser, '--manifest-dir', str(directory)])
+                alternate = directory.with_name(directory.name.upper())
+                assert Path(host.install(browser, manifest_dir=alternate)['manifest']).samefile(manifest)
                 assert not host.uninstall(browser)
                 with pytest.raises(ValueError, match='registered'):
                     host.install(browser)
@@ -63,7 +76,8 @@ def test_install_reinstall_and_remove(home, browser, linux, mac, windows, custom
         assert host.launcher_state(browser) == 'current'
         assert len(host.refresh()) == 1
     finally:
-        host.uninstall(browser, manifest_dir=directory)
+        host.uninstall(browser, manifest_dir=(directory.with_name(directory.name.upper())
+                                              if custom and os.name == 'nt' else directory))
     assert not manifest.exists() and not launcher.exists()
     if os.name == 'nt':
         with pytest.raises(FileNotFoundError):
@@ -103,3 +117,22 @@ def test_setup_detects_each_supported_browser(home):
         exe.parent.mkdir(parents=True, exist_ok=True)
         exe.touch()
     assert set(setup_cli.Setup._browsers(setup)) == set(host.BROWSERS)
+
+
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason='Linux desktop session')
+@pytest.mark.parametrize(('bus', 'interface', 'package'), [
+    ('org.freedesktop.NativeMessagingProxy', 'org.freedesktop.NativeMessagingProxy', 'flatpak'),
+    ('org.freedesktop.portal.Desktop', 'org.freedesktop.portal.WebExtensions', 'snap'),
+])
+def test_confined_firefox_installs_with_bridge(home, monkeypatch, bus, interface, package):
+    probe = home / 'gdbus'
+    probe.write_text(f'''#!/bin/sh
+[ "$4" = "{bus}" ] || exit 1
+echo '<node><interface name="{interface}"></interface></node>'
+''')
+    probe.chmod(0o700)
+    monkeypatch.setenv('PATH', str(home))
+    where = host.install('firefox', firefox_package=package)
+    manifest = json.loads(Path(where['manifest']).read_bytes())
+    assert manifest['allowed_extensions'] == [host.FIREFOX_EXTENSION_ID]
+    assert Path(manifest['path']).is_file()

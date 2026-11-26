@@ -23,7 +23,12 @@ akdbx --unlock-origin https://YOUR-BROKER-ORIGIN extension build --browser firef
 
 Use the broker's configured private-page origin. Open
 `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**, and
-select the built folder's `manifest.json`. Open the akdbx toolbar popup and
+select the built folder's `manifest.json` for a native build. With Snap or
+Flatpak, give the file picker one ZIP containing the complete extension. For
+example, run `(cd /absolute/path/to/akdbx-firefox && zip -r ../akdbx-firefox.zip .)`
+with a new archive name, then select the ZIP. The archive must have
+`manifest.json` at its root. Selecting the unpacked manifest can give the
+sandbox access to that file alone. Open the akdbx toolbar popup and
 pair it on the broker's private page. Agents then use `--route extension`.
 Logins, cards, identity fields, TOTP delivery and shown-once secret capture use
 the existing extension protocol and its field and origin restrictions.

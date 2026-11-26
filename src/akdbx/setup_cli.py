@@ -1482,14 +1482,28 @@ class Setup:
         from .extension_host import LAUNCHER_LIMIT, _owned_manifest, _read_regular, expected_launcher, paths
         where = paths(browser)
         socket_path = str(self.socket) if self.socket_explicit else None
+        custom_manifest_dir = None
         try:
             expected = expected_launcher(browser, str(self.executable), socket_path).encode('utf-8')
             # Regular files only: a link at either path is never taken as installed.
-            installed = (_read_regular(where['launcher'], LAUNCHER_LIMIT) == expected
+            registered = True
+            if self.windows:
+                from .extension_host import same_windows_manifest, windows_registered_manifest
+                current = windows_registered_manifest(browser)
+                registered = current is not None
+                if current is not None:
+                    candidate = Path(current)
+                    # Reuse a custom local registration only when this installer owns its manifest.
+                    # Do not open a network path or repair an unrelated registry target.
+                    if not same_windows_manifest(current, where['manifest']):
+                        registered = (candidate.is_absolute() and len(candidate.drive) == 2
+                                      and candidate.name.casefold() == where['manifest'].name.casefold()
+                                      and _owned_manifest(candidate, where['launcher']))
+                        if registered:
+                            custom_manifest_dir = candidate.parent
+                            where['manifest'] = candidate
+            installed = (registered and _read_regular(where['launcher'], LAUNCHER_LIMIT) == expected
                          and _owned_manifest(where['manifest'], where['launcher']))
-            if installed and self.windows:
-                from .extension_host import windows_registered_manifest
-                installed = windows_registered_manifest(browser) == str(where['manifest'])
             if installed and browser == 'firefox' and sys.platform.startswith('linux'):
                 from .extension_host import check_firefox_bridge, detected_firefox_package
                 package = detected_firefox_package()
@@ -1501,6 +1515,8 @@ class Setup:
             self.say(f'The extension host for {browser} is already installed.')
             return 'done'
         argv = self.akdbx_argv('extension', 'install', '--browser', browser)
+        if custom_manifest_dir is not None:
+            argv += ['--manifest-dir', str(custom_manifest_dir)]
         show = [shell_command(argv, self.windows), f'writes {where["launcher"]} and {where["manifest"]}'
                 + (f' and {where["registry"]}' if 'registry' in where else '')]
         applied = self.change('fill', f'install the native-messaging host for {browser}', show,
@@ -1589,8 +1605,9 @@ class Setup:
         if browser == 'firefox':
             self.step(f'Firefox 153 or newer: open about:debugging#/runtime/this-firefox, choose Load Temporary '
                       f'Add-on and select {folder / "manifest.json"}. The add-on ID is {FIREFOX_EXTENSION_ID}. '
-                      'A temporary add-on must be loaded again after Firefox restarts. Permanent installation '
-                      'requires a Mozilla-signed XPI.', 'fill')
+                      'For Snap or Flatpak, archive the contents of the build folder in a ZIP with manifest.json '
+                      'at its root and select the ZIP. A temporary add-on must be loaded again after Firefox restarts. '
+                      'Permanent installation requires a Mozilla-signed XPI.', 'fill')
         else:
             self.step(f'Load the extension once in each Chromium browser: open chrome://extensions, turn on Developer mode, '
                   f'choose Load unpacked and select {folder} (extension ID {EXTENSION_ID}). After an akdbx update, '
