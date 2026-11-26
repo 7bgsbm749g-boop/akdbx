@@ -56,7 +56,13 @@ def serialize_encrypted(vault):
         if requires_41:
             vault.kdbx.header.value.minor_version = max(vault.version[1], 1)
         output = io.BytesIO()
-        vault.save(output)
+        from .unlock_keys import uses_hardware_key
+        if uses_hardware_key(vault.keyfile):
+            # Keep the KDF seed: it is the hardware key's challenge, and the
+            # broker holds only the response to it. Master seed and IVs rotate.
+            vault.save(output, transformed_key=vault.transformed_key)
+        else:
+            vault.save(output)
         return output.getvalue()
     if requires_41 or vault.tree.xpath('boolean(//Entry/CustomData/Item | //Group/CustomData/Item)'):
         raise SaveError('metadata requires KDBX 4; target not replaced')
@@ -328,16 +334,28 @@ class VaultStore:
         finally:
             os.close(fd)
 
-    def open(self, password, keyfile=None):
+    def open(self, password, keyfile=None, keys=None):
+        """Open with the password, the broker's key file path and keys from the page.
+
+        ``keys`` (an UnlockKeys) holds a key file uploaded on the page and a
+        hardware key response; they stay in memory only.
+        """
+        from .unlock_keys import check_challenge, key_material as unlock_material
         directory = self._directory(writing=False)
         try:
             encrypted, snapshot = self._read(directory, writing=False)
-            key_material = None
+            key_bytes = None
             if keyfile is not None:
                 self.keyfile_path = Path(keyfile).expanduser().resolve(strict=True)
                 key_bytes = self._read_keyfile()
                 self.keyfile_digest = hashlib.sha256(key_bytes).digest()
-                key_material = io.BytesIO(key_bytes)
+            if keys is not None:
+                if keys.keyfile is not None:
+                    if key_bytes is not None:
+                        raise SaveError('the broker already has a key file')
+                    key_bytes = keys.keyfile
+                check_challenge(encrypted, keys)
+            key_material = unlock_material(key_bytes, keys.response if keys is not None else None)
             vault = open_encrypted(encrypted, password, key_material)
             from .versions import archives
             self.verified_capsules = archives(vault)
