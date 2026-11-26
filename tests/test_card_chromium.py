@@ -402,6 +402,7 @@ def test_reused_expired_mismatched_and_disconnected_authorizations_never_write(c
     assert evaluate(chrome, "number.value === ''")
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='requires an interactive X11 browser and XTest')
 def test_real_omnibox_focus_cannot_receive_card_value(chrome):
     from Xlib import X, Xatom, XK
     from Xlib.ext import xtest

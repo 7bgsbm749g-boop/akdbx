@@ -69,7 +69,15 @@ See [private import](../skills/akdbx/references/private-import.md) for browser b
 
 ## Chromium CDP (after 0.47.0)
 
-The extension remains the default. For CDP, start Chromium with a dedicated
+The extension remains the default. Before enabling CDP, verify that only trusted
+clients can reach the browser’s loopback TCP listener. For example, run Chrome
+and the broker inside a dedicated VM that only you can access, with no port
+forwarding. On a shared Mac, keep using the extension unless you have verified
+equivalent isolation. Any local process that can reach the debugger can read
+filled fields. A private profile and the broker’s socket UID check do not
+restrict incoming connections to Chrome.
+
+Once client isolation is in place, start Chromium with a dedicated
 mode-0700 user-data directory and `--remote-debugging-port=0` under `umask 077`.
 Give the broker that physical path with `--password-browser-profile` for
 credentials and read pins and `--card-browser-profile` for cards. Identities

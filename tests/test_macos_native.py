@@ -303,3 +303,22 @@ def test_darwin_refuses_ambiguous_or_incomplete_snapshot(monkeypatch, case):
         monkeypatch.setattr(cdp_peer, '_darwin_rows', changed)
         with pytest.raises(cdp_peer.PeerError):
             cdp_peer.verify_peer(client)
+
+
+def test_darwin_refuses_oversized_table_before_allocation(monkeypatch):
+    import ctypes
+    from akdbx import cdp_peer
+
+    calls = []
+
+    def sysctl(name, buffer, size, *_):
+        assert buffer is None
+        calls.append(name)
+        ctypes.cast(size, ctypes.POINTER(ctypes.c_size_t))[0] = cdp_peer.MAX_TCP_TABLE_BYTES + 1
+        return 0
+
+    monkeypatch.setattr(ctypes, 'CDLL', lambda *a, **kw: SimpleNamespace(sysctlbyname=sysctl))
+    monkeypatch.setattr(ctypes, 'create_string_buffer', lambda *_: pytest.fail('oversized kernel table allocation'))
+    with pytest.raises(cdp_peer.PeerError):
+        cdp_peer._darwin_peer(('127.0.0.1', 12345), ('127.0.0.1', 23456), time.monotonic() + 1)
+    assert calls == [b'net.inet.tcp.pcblist64']
