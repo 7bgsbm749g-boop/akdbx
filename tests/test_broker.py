@@ -842,6 +842,7 @@ def expected_extension_capabilities():
             "extension_capture_protocol": 1, "extension_capture_delivery": "extension-dom-read-v1",
             "extension_id": "jjoamaejjkldcjcpgncoomoaagdfimhg", "fill_routes": ["cdp", "extension"],
             "default_fill_route": "cdp", "extension_connected": False, "extension_paired": False,
+            "extension_host_browsers": ["helium", "chrome", "edge", "chromium", "brave", "firefox"],
             "extension_version_expected": built_version(), "extension_browsers": []}
 
 
