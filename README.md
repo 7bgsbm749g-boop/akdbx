@@ -29,7 +29,7 @@ It asks a few questions with defaults and takes you from install to a working
 broker. The broker is the only required part; every other stage is optional
 and can be skipped (`--skip STAGE`):
 
-1. **System check**: Python, the desktop (Linux X11 or Windows), and optional
+1. **System check**: Python, the desktop (Linux X11/Wayland or Windows), and optional
    tools (mkcert, Tailscale, Chromium browsers). It
    reports gaps and installs no system software.
 2. **Vault**: your existing `.kdbx` file and key file, checked with the
@@ -144,8 +144,8 @@ the service URL is a caller assertion and is matched to login/capture origins,
 not claimed as OS URL verification. See [Native desktop fields](skills/akdbx/references/native-fields.md)
 for supported controls, explicit field selection and limits.
 
-Legacy numeric window pins (`pin-target`) still use X11 on Linux and HWNDs on
-Windows for username and TOTP only. They never receive a password. Browser
+Legacy numeric window pins (`pin-target`) use X11 or XWayland on Linux and HWNDs on
+Windows for usernames, TOTP and SMS codes. They never receive a password. Browser
 pages keep using the CDP or Extension route with tab, URL and DOM verification.
 
 ## Platforms
@@ -155,7 +155,7 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
   native-host locations are supported. Native window delivery, CDP and guided
   setup are unavailable. Safari's Apple wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).
-- **Linux** (X11 desktop): the original platform. The setup notes in this
+- **Linux** (X11 or Wayland desktop): the original platform. The setup notes in this
   README and the [VPS setup reference](skills/akdbx/references/vps-setup.md)
   describe it. The unlock page is the same loopback HTTPS page as on Windows
   (0.23.0+), optionally reached from other tailnet devices through Tailscale
@@ -319,7 +319,7 @@ origin's HTTPS page. There is no trust on first use: only a local
 
 ## CDP route: install and run (Linux)
 
-Linux desktop with X11, X-Resource 1.2 local PID support and EWMH window-manager metadata. Set `AKDBX_UNLOCK_ORIGIN` in your private local environment to the private page's HTTPS origin before starting the broker or using the CLI, and create its certificate as [Private HTTPS pages](docs/private-pages.md) describes. `https://localhost:9443` is the default:
+CDP works on Linux with X11 or Wayland. Only numeric window pins need an X11 or XWayland target, X-Resource 1.2 local PID support and EWMH active-window metadata. Set `AKDBX_UNLOCK_ORIGIN` in your private local environment to the private page's HTTPS origin before starting the broker or using the CLI, and create its certificate as [Private HTTPS pages](docs/private-pages.md) describes. `https://localhost:9443` is the default:
 
 ```bash
 python3 -m venv .venv
@@ -354,7 +354,7 @@ Each slot `ROOT/slotN` is one Chrome user data directory, started as above (`--u
 
 With a root, every CDP pin names its slot: `pin-password-target`, `list-password-frames`, `pin-card-target` and `pin-identity-target` take `--browser-slot SLOT`, and default to the `AGENT_DESKTOP_SLOT` environment variable (sent only to a broker that reports a root, so a single-profile broker keeps working in an agent desktop shell). The request field is `browser_slot`; the broker advertises `browser_slot_protocol: 1` (0.30.0+).
 
-A window pin of a slot's Chrome (`pin-target`, for username and TOTP fills) needs `--browser-slot SLOT` too (0.35.3+, `target_slot_protocol: 1`), because that Chrome runs on the slot's own X display. Pass it explicitly; a window pin does not take `AGENT_DESKTOP_SLOT`, so a native app on the broker's display keeps a plain pin. The broker takes the slot Chrome's PID from its profile lock, finds the X display where that PID is a client, and sends that X server's cookie only to a Unix-socket peer of the same user. `--pid` must be that Chrome.
+A window pin of a slot's Chrome (`pin-target`, for username, TOTP and SMS code fills) needs `--browser-slot SLOT` too (0.35.3+, `target_slot_protocol: 1`), because that Chrome runs on the slot's own X display. Pass it explicitly; a window pin does not take `AGENT_DESKTOP_SLOT`, so a native app on the broker's display keeps a plain pin. The broker takes the slot Chrome's PID from its profile lock, finds the X display where that PID is a client, and sends that X server's cookie only to a Unix-socket peer of the same user. `--pid` must be that Chrome.
 
 ```bash
 .venv/bin/akdbx pin-password-target --browser-slot slot2 --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
@@ -454,7 +454,8 @@ On Windows the broker listens for session-lock and suspend/resume messages in it
 On Linux it listens to systemd-logind through `/usr/bin/gdbus` for the user's session lock and system sleep. With `systemd-inhibit` installed and logind's
 sleep-delay permission, the broker holds a bounded delay while it locks. It also locks on resume.
 On Hyprland it also subscribes directly to the compositor's lock notification. Run the broker with
-the desktop's `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and `XDG_CURRENT_DESKTOP=Hyprland` for that route.
+the desktop's `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and either `XDG_CURRENT_DESKTOP=Hyprland` or
+`HYPRLAND_INSTANCE_SIGNATURE` for that route. Run setup from that desktop session when creating or updating the login service. The systemd user manager supplies `XDG_RUNTIME_DIR`.
 The `lock_event_sources` field in `akdbx status` shows which listeners are ready. For logind, `signals-only` means the broker receives
 events without a confirmed sleep delay.
 For a locker that reports neither event, configure its lock hook to run `akdbx lock`.
@@ -834,7 +835,7 @@ every other text at once. Each code fills once; a fill that never started
 returns it to the inbox. `pin-code-target` pins one focused, visible, enabled
 `text`, `tel`, `number` or `password` input on an exact HTTPS page (the
 card transport's same-origin, hit-tested DOM guards, CDP route). For six
-one-digit boxes, `fill-sms-code` also takes an X11 `pin-target` token with
+one-digit boxes, `fill-sms-code` also takes a `pin-target` token (on Linux, an X11 or XWayland window; on Windows, an HWND) with
 `--target-url`, or `--target-url-file` for a challenge URL that holds a token.
 The iPhone filter forwards only texts with the word `code`; a second automation
 with `OTP` covers sites that say only that. See
@@ -1247,7 +1248,7 @@ desktop). It reproduces the former X11 omnibox delivery and checks direct DOM
 saved/generated fills, login without Tab, wrong-field/selector/type changes,
 replacement, focus restoration, tab changes, navigation and commit refusal.
 `tests/test_password_endpoint.py` checks endpoint configuration and pin cleanup.
-Existing native X11 tests cover the remaining username/TOTP transport.
+Existing native X11 tests cover the remaining window-pin transport.
 Optional browser tests require Xvfb, Chromium, OpenSSL, xdotool and ImageMagick;
 record skips explicitly. Store test output and temporary files outside project
 checkouts, for example with pytest `--basetemp` in a private evidence directory.

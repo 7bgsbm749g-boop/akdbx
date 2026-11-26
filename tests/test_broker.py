@@ -72,7 +72,7 @@ def target_capabilities():
     from akdbx.native_fields import NativeFields
     return dict(identity_protocol=1, identity_delivery='cdp-identity-element-v1', identity_browser_configured=False, identity_fields_protocol=1, identity_update_protocol=1, identity_field_purpose_protocol=1, identity_notify_page=True, identity_tel_formats=['national', 'international'],
                 target_fill_required=True, target_fill_protocol=1,
-                target_fill_delivery='x11-send-event-v1', target_slot_protocol=1, browser_totp_protocol=1, password_fill_protocol=1, password_purpose_protocol=1, password_autocomplete_off_protocol=1, password_frame_protocol=1, password_frame_policy="same-site-chain-v1",
+                target_fill_delivery='x11-send-event-v1', target_fill_modes=['username', 'totp', 'sms-code'], target_slot_protocol=1, browser_totp_protocol=1, password_fill_protocol=1, password_purpose_protocol=1, password_autocomplete_off_protocol=1, password_frame_protocol=1, password_frame_policy="same-site-chain-v1",
                 password_fill_delivery='chromium-password-dom-v1', password_browser_configured=False, browser_slot_protocol=1,
                 additional_urls_protocol=1, additional_urls_policy='kp2a-exact-origin-v1', entry_organize_protocol=1, entry_edit_protocol=1, group_create_protocol=1,
                 secret_save_protocol=1, secret_save_field='password',

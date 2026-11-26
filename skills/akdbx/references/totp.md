@@ -18,7 +18,7 @@ Then check the selected route:
   `native_field_protocol: 1` and `native_field_delivery: native-field-v1`.
   Linux X11/Wayland and supported Windows controls use the
   [native field workflow](native-fields.md) with `--mode totp`.
-- Current Window: `target_fill_delivery: x11-send-event-v1` on Linux or
+- Current Window: `target_fill_delivery: x11-send-event-v1` on Linux (X11 or XWayland windows) or
   `win32-char-v1` on Windows. This method is unavailable on macOS; its
   `target_fill_delivery: unavailable` does not block the paired extension.
 

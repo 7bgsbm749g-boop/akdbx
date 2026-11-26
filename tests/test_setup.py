@@ -302,7 +302,11 @@ def test_without_a_terminal_it_needs_yes_or_dry_run(home, vault, capsys):
     assert '--yes' in capsys.readouterr().err
 
 
-def test_a_non_interactive_run_sets_up_every_selected_stage(home, vault, pair, capsys):
+def test_a_non_interactive_run_sets_up_every_selected_stage(home, vault, pair, capsys, monkeypatch):
+    session = dict(WAYLAND_DISPLAY='wayland-3', XDG_SESSION_TYPE='wayland',
+                   HYPRLAND_INSTANCE_SIGNATURE='fixture', XDG_CURRENT_DESKTOP='Hyprland')
+    for name, value in session.items():
+        monkeypatch.setenv(name, value)
     code, result, runner = setup(*base(vault, pair, '--start-at-login', '--browser', 'chrome', '--link-skill'),
                                  capsys=capsys)
     assert code == 0 and result['ok'], result
@@ -313,6 +317,8 @@ def test_a_non_interactive_run_sets_up_every_selected_stage(home, vault, pair, c
     assert stages['login']['state'] == 'changed'
     assert stages['fill']['state'] == 'changed' and stages['skill']['state'] == 'changed'
     unit = (home / '.config/systemd/user/akdbx.service').read_text()
+    assert stages['system']['desktop'] == 'Wayland desktop (XWayland DISPLAY=:7)'
+    assert all(f'Environment="{name}={value}"' in unit for name, value in session.items())
     assert unit.startswith('# akdbx-setup:')
     assert (f'ExecStart="@{EXECUTABLE}" "{EXECUTABLE}" "-m" "akdbx.cli" "--unlock-origin" "https://localhost:9443" '
             f'"serve" "{vault}" "--no-print-unlock-link" "--tls-cert" "{pair[0]}" "--tls-key" "{pair[1]}" '

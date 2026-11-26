@@ -677,14 +677,18 @@ class Setup:
                 gaps.append('this shell is elevated: run setup and the broker as a normal user, without elevation')
         elif sys.platform.startswith('linux'):
             platform = 'linux'
-            session = self.env.get('XDG_SESSION_TYPE', '')
-            if self.env.get('DISPLAY'):
+            wayland = self.env.get('WAYLAND_DISPLAY') or self.env.get('XDG_SESSION_TYPE') == 'wayland'
+            if wayland:
+                desktop = 'Wayland desktop'
+                if self.env.get('DISPLAY'):
+                    desktop += f' (XWayland DISPLAY={self.env["DISPLAY"]})'
+                gaps.append('native Wayland apps use native field pins; numeric window pins require '
+                            'an active X11 or XWayland window on the broker display')
+            elif self.env.get('DISPLAY'):
                 desktop = f'X11 desktop (DISPLAY={self.env["DISPLAY"]})'
-                if session == 'wayland':
-                    gaps.append('this is a Wayland session: native-window fills need X11 (browser fills work)')
             else:
-                desktop = 'no X11 desktop in this environment'
-                gaps.append('DISPLAY is not set: native-window fills need an X11 desktop (browser fills work); '
+                desktop = 'no desktop display in this environment'
+                gaps.append('DISPLAY is not set: numeric window pins need X11 or XWayland; '
                             'run setup from the desktop session that the broker will use')
         else:
             platform = sys.platform
@@ -1287,8 +1291,9 @@ class Setup:
     def _login_linux(self, broker):
         path = self.unit_path()
         try:
-            text = unit_text(self.serve_argv(service=True), [(name, self.env[name])
-                                                             for name in ('DISPLAY', 'XAUTHORITY')
+            names = ('DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY', 'XDG_CURRENT_DESKTOP',
+                     'HYPRLAND_INSTANCE_SIGNATURE', 'XDG_SESSION_TYPE')
+            text = unit_text(self.serve_argv(service=True), [(name, self.env[name]) for name in names
                                                              if self.env.get(name)])
         except ValueError as exc:
             self.record('login', 'failed', error=str(exc))
