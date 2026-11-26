@@ -76,10 +76,16 @@ refuses with `target unavailable`.
   another origin (only the page's own origin or a `data:` URL; also with CORS)
   and any source that taints the canvas, no QR code, two or more codes, a code
   that is not an `otpauth://totp/` URI (a bare key, HOTP, a link), and an
-  element whose pixels (an `<svg>`: markup or styles) changed after the pin.
-  The element must show whole and uncovered: a 5 x 5 grid of points over it
-  must hit-test to it, at least 21 CSS pixels a side, with `object-fit` fill
-  (or contain at the default position).
+  element whose pixels (an `<svg>`: shapes, transforms or paint) changed after
+  the pin. The element must show whole and uncovered: a 5 x 5 grid of points
+  over it must hit-test to it, at least 21 CSS pixels a side, with `object-fit`
+  fill (or contain at the default position).
+- An inline `<svg>` is drawn from its own plain shapes (rect, circle, ellipse,
+  line, polyline, polygon, path) with their computed fill, stroke and
+  transform; nothing is loaded, so a strict page Content Security Policy does
+  not block it. An `<svg>` that also holds text, an image, `<use>`, a nested
+  `<svg>`, a gradient or pattern fill, a clip path, a mask, a filter or a dashed
+  stroke refuses: the broker does not guess how it looks.
 - `commit-totp --site-accepted` moves the pending key into `otp`. If `otp`
   already holds a key, `--replace` is required; the old key stays in the
   entry's encrypted history.

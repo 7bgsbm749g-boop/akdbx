@@ -77,7 +77,7 @@ def target_capabilities():
                 additional_urls_protocol=1, additional_urls_policy='kp2a-exact-origin-v1', entry_organize_protocol=1, entry_edit_protocol=1, group_create_protocol=1,
                 secret_save_protocol=1, secret_save_field='password',
                 secret_capture_protocol=1, secret_capture_delivery='chromium-dom-read-v1', secret_sink_protocol=1, secret_sinks=[],
-                totp_capture_protocol=1, android_fill_protocol=1, android_fill_delivery='android-accessibility-set-text-v1',
+                totp_capture_protocol=1, totp_qr_capture_protocol=1, android_fill_protocol=1, android_fill_delivery='android-accessibility-set-text-v1',
                 android_chrome_delivery='android-chrome-verified-dom-v1',
                 android_fill_modes=['login', 'username', 'password', 'totp'], android_devices_configured=False,
                 sms_protocol=1, sms_notifications_supported=True, sms_notifications_protocol=1, sms_source_kinds=['shortcut', 'twilio', 'webhook'], sms_sources_configured=0,
@@ -839,6 +839,7 @@ def expected_extension_capabilities():
     from akdbx.extension_host import built_version
     return {"extension_protocol": 1, "extension_delivery": "extension-dom-v1",
             "extension_totp_protocol": 1, "extension_totp_min_version": "0.10.0",
+            "extension_qr_capture_min_version": "0.12.0",
             "extension_capture_protocol": 1, "extension_capture_delivery": "extension-dom-read-v1",
             "extension_id": "jjoamaejjkldcjcpgncoomoaagdfimhg", "fill_routes": ["cdp", "extension"],
             "default_fill_route": "cdp", "extension_connected": False, "extension_paired": False,

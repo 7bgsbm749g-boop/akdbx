@@ -132,11 +132,24 @@ PAGES = {
     '/qr/blank.png': (qr_fixture.png(['0' * 40] * 40), *PNG),
     '/qr-img': enrollment('<img id=qr src="/qr/key.png" alt="QR code">'),
     '/qr-inverted': enrollment('<img id=qr src="/qr/inverted.png" alt="QR code">'),
+    '/qr-rounded': enrollment('<img id=qr src="/qr/key.png" alt="QR code" style="border-radius:24px">'),
     '/qr-data-url': enrollment('<img id=qr alt="QR code" src="data:image/png;base64,'
                                + base64.b64encode(qr_fixture.png(ROWS)).decode() + '">'),
     '/qr-canvas': enrollment('<canvas id=qr></canvas>', 'const ROWS = ' + json.dumps(ROWS) + ';\n'
                              + 'const NEXT_ROWS = ' + json.dumps(NEXT_ROWS) + ';\n' + CANVAS),
     '/qr-svg': enrollment(qr_fixture.svg(ROWS).replace('<svg ', '<svg id="qr" ', 1)),
+    '/qr-svg-path': enrollment(qr_fixture.svg(ROWS, kind='path').replace('<svg ', '<svg id="qr" ', 1)),
+    '/qr-svg-stroke': enrollment(qr_fixture.svg(ROWS, kind='stroke').replace('<svg ', '<svg id="qr" ', 1)),
+    '/qr-svg-styled': enrollment('<style>#qr .light{fill:#fff} #qr .dark{fill:#111}</style>'
+                                 + qr_fixture.svg(ROWS, kind='styled').replace('<svg ', '<svg id="qr" ', 1)),
+    # An <svg> with text over the code: not a plain shape, so it refuses rather than draw something else.
+    '/qr-svg-text': enrollment(qr_fixture.svg(ROWS).replace('<svg ', '<svg id="qr" ', 1)
+                               .replace('</svg>', '<text x="10" y="20">Scan me</text></svg>')),
+    # A strict image policy: only the page's own origin, no data: images.
+    '/qr-svg-csp': (enrollment(qr_fixture.svg(ROWS).replace('<svg ', '<svg id="qr" ', 1)), 'text/html; charset=utf-8',
+                    {'Content-Security-Policy': "img-src 'self'"}),
+    '/qr-img-csp': (enrollment('<img id=qr src="/qr/key.png" alt="QR code">'), 'text/html; charset=utf-8',
+                    {'Content-Security-Policy': "img-src 'self'"}),
     '/qr-cross-origin': enrollment('<img id=qr src="https://evil.example.net/qr/key.png" alt="QR code">'),
     '/qr-cross-origin-cors': enrollment('<img id=qr crossorigin=anonymous src="https://evil.example.net/qr/key-cors.png" '
                                         'alt="QR code">'),
@@ -358,8 +371,9 @@ def test_a_qr_code_on_the_entry_origin_saves_a_pending_key_that_commit_promotes(
     assert clean(pinned, captured, filled, saved, listed, out.out, out.err, caplog.text)
 
 
-@pytest.mark.parametrize('page', ['/qr-inverted', '/qr-data-url'])
-def test_a_light_code_on_a_dark_ground_and_a_data_url_image_capture(qr, page):
+@pytest.mark.parametrize('page', ['/qr-inverted', '/qr-data-url', '/qr-svg-csp', '/qr-img-csp', '/qr-svg-path',
+                                  '/qr-svg-stroke', '/qr-svg-styled'])
+def test_other_code_forms_and_a_strict_image_policy_capture(qr, page):
     url = open_page(qr, page)
     pinned = pin(qr, url)
     assert pinned['ok'], pinned
@@ -368,7 +382,7 @@ def test_a_light_code_on_a_dark_ground_and_a_data_url_image_capture(qr, page):
 
 
 @pytest.mark.parametrize('page', ['/qr-cross-origin', '/qr-cross-origin-cors', '/qr-canvas-tainted', '/qr-two',
-                                  '/qr-two-sizes', '/qr-blank', '/qr-covered', '/qr-text'])
+                                  '/qr-two-sizes', '/qr-blank', '/qr-covered', '/qr-text', '/qr-svg-text'])
 def test_a_cross_origin_image_two_codes_no_code_a_cover_or_text_refuse_the_pin(qr, page):
     url = open_page(qr, page)
     if page.startswith('/qr-cross-origin'):
@@ -524,7 +538,7 @@ CHALLENGE_GONE = "getComputedStyle(document.getElementById('qr')).boxShadow === 
 
 
 @pytest.mark.usefixtures('enhanced')
-@pytest.mark.parametrize('page', ['/qr-img', '/qr-canvas', '/qr-svg'])
+@pytest.mark.parametrize('page', ['/qr-img', '/qr-canvas', '/qr-svg', '/qr-rounded'])
 def test_with_enhanced_security_a_shown_code_passes_the_pixel_challenge(qr_extension, page):
     q = qr_extension
     url = open_page(q, page)

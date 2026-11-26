@@ -174,10 +174,37 @@ def png(lines, scale=4, *, invert=False):
     return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', header) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
 
 
-def svg(lines, scale=4):
-    """An inline <svg> of the rows: a white ground and one dark rectangle per module."""
-    size = len(lines) * scale
-    rects = ''.join(f'<rect x="{x * scale}" y="{y * scale}" width="{scale}" height="{scale}"/>'
+def svg(lines, scale=4, kind='rects'):
+    """An inline <svg> of the rows, in the shapes real generators write.
+
+    rects: a white ground and one dark rectangle per module (rqrcode, qrcode.js).
+    path: one filled path of unit squares in a viewBox of modules (qrcode.react).
+    stroke: one stroked path of horizontal runs (node-qrcode, segno).
+    styled: rectangles painted by a page style sheet class, not by attributes.
+    """
+    size, count = len(lines) * scale, len(lines)
+    head = f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}"'
+    if kind == 'path':
+        d = ''.join(f'M{x} {y}h1v1h-1z' for y, line in enumerate(lines) for x, c in enumerate(line) if c == '1')
+        return (f'{head} viewBox="0 0 {count} {count}" shape-rendering="crispEdges"><path fill="#FFFFFF" '
+                f'd="M0,0 h{count}v{count}H0z"/><path fill="#000000" d="{d}"/></svg>')
+    if kind == 'stroke':
+        runs = []
+        for y, line in enumerate(lines):
+            x = 0
+            while x < count:
+                if line[x] == '1':
+                    start = x
+                    while x < count and line[x] == '1':
+                        x += 1
+                    runs.append(f'M{start} {y + .5}h{x - start}')
+                else:
+                    x += 1
+        return (f'{head} viewBox="0 0 {count} {count}" shape-rendering="crispEdges"><path fill="#ffffff" '
+                f'd="M0 0h{count}v{count}H0z"/><path stroke="#000000" d="{"".join(runs)}"/></svg>')
+    cells = ''.join(f'<rect x="{x * scale}" y="{y * scale}" width="{scale}" height="{scale}"'
+                    + (' class="dark"/>' if kind == 'styled' else '/>')
                     for y, line in enumerate(lines) for x, c in enumerate(line) if c == '1')
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 {size} {size}">'
-            f'<rect width="{size}" height="{size}" fill="#fff"/><g fill="#000">{rects}</g></svg>')
+    if kind == 'styled':
+        return f'{head}><rect class="light" width="{size}" height="{size}"/>{cells}</svg>'
+    return f'{head} viewBox="0 0 {size} {size}"><rect width="{size}" height="{size}" fill="#fff"/><g fill="#000">{cells}</g></svg>'

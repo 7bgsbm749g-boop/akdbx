@@ -417,7 +417,7 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
 # a data: URL), and a cross-origin (tainted) source refuses: getImageData
 # throws. No code, two or more codes, or a value that is not one line of text
 # refuses the pin. The read draws the element again and must get the same
-# pixels (an <svg>: the same markup and styles), so a change after the pin
+# pixels (an <svg>: the same shapes, transforms and paint), so a change after the pin
 # refuses. The decoded value stays in the renderer until the broker's own read
 # call; no pixel or value is ever returned to the caller.
 QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
@@ -487,36 +487,98 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
     if (!(element.width > 0 && element.height > 0)) return null;
     return raster(element, element.width, element.height);
   };
-  // An inline <svg>: a copy with each element's computed paint styles, drawn as
-  // an image at the size it shows (at least 512 and at most 1024 pixels a side).
-  const STYLES = ['display', 'visibility', 'opacity', 'fill', 'fill-opacity', 'fill-rule', 'stroke', 'stroke-opacity',
-                  'stroke-width', 'shape-rendering'];
-  const markup = () => {
-    const nodes = [element, ...element.querySelectorAll('*')];
-    if (nodes.length > 20000) return null;
-    const copy = element.cloneNode(true), copies = [copy, ...copy.querySelectorAll('*')];
-    if (copies.length !== nodes.length) return null;
-    nodes.forEach((node, i) => {
-      const s = getComputedStyle(node);
-      copies[i].setAttribute('style', STYLES.map(p => p + ':' + s.getPropertyValue(p)).join(';'));
-    });
+  // An inline <svg>: its plain shapes (rect, circle, ellipse, line, polyline,
+  // polygon, path), drawn into the canvas with their computed paint and
+  // transform at the size the code shows (512 to 1024 pixels a side). Nothing is
+  // loaded, so no page policy can block it. Anything else that could paint (text,
+  // images, <use>, nested <svg>, gradients or patterns, clip paths, masks,
+  // filters, dashes) refuses rather than draw something other than the page shows.
+  const PLAIN = new Set(['g', 'title', 'desc', 'metadata', 'style']);
+  const SHAPES = new Set(['rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'path']);
+  const COLOUR = /^(?:none|rgba?\([0-9., ]+\))$/;
+  const number = value => { const n = parseFloat(value); return Number.isFinite(n) && n >= 0 && /^[0-9.]+(?:px)?$/.test(value) ? n : NaN; };
+  const shapes = () => {
     const r = element.getBoundingClientRect(), s = getComputedStyle(element);
     const width = r.width - parseFloat(s.borderLeftWidth) - parseFloat(s.borderRightWidth) - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight);
     const height = r.height - parseFloat(s.borderTopWidth) - parseFloat(s.borderBottomWidth) - parseFloat(s.paddingTop) - parseFloat(s.paddingBottom);
     if (!(width >= MIN && height >= MIN)) return null;
-    if (!copy.hasAttribute('viewBox')) copy.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
     const long = Math.max(width, height), scale = Math.min(MAX, Math.max(512, long * devicePixelRatio)) / long;
     const w = Math.max(1, Math.round(width * scale)), h = Math.max(1, Math.round(height * scale));
-    copy.setAttribute('width', String(w));
-    copy.setAttribute('height', String(h));
-    const text = new XMLSerializer().serializeToString(copy);
-    return text.length <= 4 * 1024 * 1024 ? {text, w, h} : null;
+    const ops = [];
+    let count = 0;
+    const walk = (node, opacity) => {
+      if (++count > 20000) return false;
+      const style = getComputedStyle(node), name = node.localName;
+      if (style.display === 'none' || name === 'defs') return true;  // Not rendered.
+      if (node.namespaceURI !== 'http://www.w3.org/2000/svg' || node !== element && !PLAIN.has(name) && !SHAPES.has(name) ||
+          style.clipPath !== 'none' || style.mask !== 'none' || style.filter !== 'none') return false;
+      const alpha = opacity * parseFloat(style.opacity);
+      if (!(alpha >= 0)) return false;
+      if (SHAPES.has(name)) {
+        const fill = style.fill, stroke = style.stroke, lineWidth = number(style.strokeWidth);
+        if (!COLOUR.test(fill) || !COLOUR.test(stroke) || style.strokeDasharray !== 'none' || style.vectorEffect !== 'none' ||
+            style.paintOrder !== 'normal' || !(lineWidth >= 0)) return false;
+        if (style.visibility !== 'visible' || alpha === 0 || fill === 'none' && stroke === 'none') return true;
+        let geometry;
+        if (name === 'rect') {
+          if (node.rx.baseVal.value > 0 || node.ry.baseVal.value > 0) return false;
+          const box = node.getBBox();
+          geometry = [box.x, box.y, box.width, box.height];
+        } else if (name === 'circle' || name === 'ellipse') {
+          const box = node.getBBox();
+          geometry = [box.x, box.y, box.width, box.height];
+        } else if (name === 'line') {
+          geometry = [node.x1.baseVal.value, node.y1.baseVal.value, node.x2.baseVal.value, node.y2.baseVal.value];
+        } else if (name === 'path') {
+          geometry = node.getAttribute('d') || '';
+        } else {
+          geometry = Array.from({length: node.points.numberOfItems}, (_, i) => node.points.getItem(i)).flatMap(p => [p.x, p.y]);
+        }
+        const m = node.getCTM();
+        if (!m) return false;
+        ops.push({name, geometry, matrix: [m.a, m.b, m.c, m.d, m.e, m.f], fill, stroke, alpha,
+                  fillOpacity: parseFloat(style.fillOpacity), fillRule: style.fillRule === 'evenodd' ? 'evenodd' : 'nonzero',
+                  strokeOpacity: parseFloat(style.strokeOpacity), lineWidth, lineCap: style.strokeLinecap,
+                  lineJoin: style.strokeLinejoin, miterLimit: parseFloat(style.strokeMiterlimit)});
+        return true;
+      }
+      return Array.from(node.children).every(child => walk(child, alpha));
+    };
+    if (!walk(element, 1) || !ops.length) return null;
+    return {text: JSON.stringify([w, h, width, height, ops]), w, h, width, height, ops};
   };
-  const drawn = async drawing => {
-    const image = new Image();
-    image.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(drawing.text);
-    await image.decode();
-    return raster(image, drawing.w, drawing.h);
+  const drawn = drawing => {
+    const context = new OffscreenCanvas(drawing.w, drawing.h).getContext('2d', {willReadFrequently: true});
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, drawing.w, drawing.h);
+    const sx = drawing.w / drawing.width, sy = drawing.h / drawing.height;
+    for (const op of drawing.ops) {
+      const [a, b, c, d, e, f] = op.matrix, g = op.geometry, path = new Path2D();
+      context.setTransform(sx * a, sy * b, sx * c, sy * d, sx * e, sy * f);
+      if (op.name === 'rect') path.rect(g[0], g[1], g[2], g[3]);
+      else if (op.name === 'circle' || op.name === 'ellipse') path.ellipse(g[0] + g[2] / 2, g[1] + g[3] / 2, g[2] / 2, g[3] / 2, 0, 0, 2 * Math.PI);
+      else if (op.name === 'line') { path.moveTo(g[0], g[1]); path.lineTo(g[2], g[3]); }
+      else if (op.name === 'path') path.addPath(new Path2D(g));
+      else {
+        for (let i = 0; i < g.length; i += 2) i ? path.lineTo(g[i], g[i + 1]) : path.moveTo(g[i], g[i + 1]);
+        if (op.name === 'polygon') path.closePath();
+      }
+      if (op.fill !== 'none' && op.name !== 'line') {
+        context.globalAlpha = op.alpha * op.fillOpacity;
+        context.fillStyle = op.fill;
+        context.fill(path, op.fillRule);
+      }
+      if (op.stroke !== 'none' && op.lineWidth > 0) {
+        context.globalAlpha = op.alpha * op.strokeOpacity;
+        context.strokeStyle = op.stroke;
+        context.lineWidth = op.lineWidth;
+        context.lineCap = op.lineCap;
+        context.lineJoin = op.lineJoin;
+        context.miterLimit = op.miterLimit;
+        context.stroke(path);
+      }
+    }
+    return context.getImageData(0, 0, drawing.w, drawing.h);
   };
   // One code only: after the first is found, blank it (quiet zone included) and
   // look again; a second code refuses. jsQR returns one code per call.
@@ -582,8 +644,8 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
   try {
     if (!check() || !fitted()) throw 0;
     if (kind === 'svg') {
-      drawing = markup();
-      decoded = drawing && decode(await drawn(drawing));
+      drawing = shapes();
+      decoded = drawing && decode(drawn(drawing));
     } else {
       snapshot = pixels();
       decoded = snapshot && decode(snapshot);
@@ -593,12 +655,12 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
     dispose();
     throw 0;
   }
-  // The same pixels as at the pin, or for an <svg> the same markup and styles.
+  // The same pixels as at the pin, or for an <svg> the same shapes, transforms and paint.
   const same = () => {
     try {
       if (!fitted()) return false;
       if (kind === 'svg') {
-        const now = markup();
+        const now = shapes();
         return now !== null && now.text === drawing.text;
       }
       const now = pixels();

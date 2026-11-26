@@ -448,13 +448,16 @@
     return points;
   }
 
-  // The points of a QR read pin: a grid over the padding box, clear of a focus
-  // ring, at most 24 a side. The challenge rule hides the code's own pixels
-  // (see the service worker), so each point must show the challenge colour.
+  // The points of a QR read pin: a grid over the padding box, at most 24 a side,
+  // from 10% to 90% of it like the pin's own hit test: clear of a focus ring and
+  // of rounded corners, where the inset challenge colour does not paint. The
+  // challenge rule hides the code's own pixels (see the service worker), so each
+  // point must show the challenge colour.
   function gridPoints(el) {
-    const box = el.getBoundingClientRect(), style = getComputedStyle(el), edge = 4;
-    const left = box.left + parseFloat(style.borderLeftWidth) + edge, right = box.right - parseFloat(style.borderRightWidth) - edge;
-    const top = box.top + parseFloat(style.borderTopWidth) + edge, bottom = box.bottom - parseFloat(style.borderBottomWidth) - edge;
+    const box = el.getBoundingClientRect(), style = getComputedStyle(el);
+    const x = Math.max(4, box.width * 0.1), y = Math.max(4, box.height * 0.1);
+    const left = box.left + parseFloat(style.borderLeftWidth) + x, right = box.right - parseFloat(style.borderRightWidth) - x;
+    const top = box.top + parseFloat(style.borderTopWidth) + y, bottom = box.bottom - parseFloat(style.borderBottomWidth) - y;
     if (!(right > left) || !(bottom > top)) return null;
     const count = size => Math.min(24, Math.max(3, Math.ceil(size / 6) + 1));
     const columns = count(right - left), rows = count(bottom - top), points = [];
