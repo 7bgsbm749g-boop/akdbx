@@ -813,19 +813,24 @@ def signed_sequence(version):
     return number % 1000
 
 
-def firefox_signing_files(origin, version, *, host_name=HOST_NAME):
+def firefox_signing_files(origin, version, *, host_name=HOST_NAME, build_id=None):
     """The files of one Firefox build for signing: this akdbx's own source, nothing from a caller.
 
     The same files as ``build(browser='firefox')`` writes, with ``version`` in
     manifest.json and config.js and a new random build ID (the add-on's trust
-    anchor; every signed build has its own). ``host_name`` is for tests only,
+    anchor; every signed build has its own). ``build_id`` repeats a submitted
+    build (the source archive's rebuild.py). ``host_name`` is for tests only,
     as in ``build``; the broker always uses the default host.
     """
     if signed_sequence(version) is None:
         raise ValueError('invalid signed extension version')
+    if build_id is None:
+        build_id = secrets.token_urlsafe(16)
+    elif not isinstance(build_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{22}', build_id):
+        raise ValueError('invalid build ID')
     written = _source_files(host_name)
     written['manifest.json'] = _manifest_for('firefox', written, version)
-    written['config.js'] = _config_text(trusted_origin(origin), version, secrets.token_urlsafe(16)).encode('utf-8')
+    written['config.js'] = _config_text(trusted_origin(origin), version, build_id).encode('utf-8')
     return written
 
 

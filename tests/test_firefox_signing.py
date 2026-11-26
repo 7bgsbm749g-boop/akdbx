@@ -466,6 +466,13 @@ def test_mozillas_add_on_validator_accepts_the_archive_that_sign_submits(tmp_pat
     assert done.returncode == 0
 
 
+def test_the_rebuild_instructions_name_akdbx_s_own_dependencies():
+    import tomllib
+    project = tomllib.loads((Path(__file__).resolve().parents[1] / 'pyproject.toml').read_text(encoding='utf-8'))
+    everywhere = sorted(d for d in project['project']['dependencies'] if ';' not in d)
+    assert sorted(firefox_signing.REBUILD_REQUIREMENTS) == everywhere
+
+
 def test_the_host_relays_a_signed_build_version():
     """The native host checks the worker's hello with the same version rule as the broker."""
     version = extension_host.signed_version(3)
@@ -522,7 +529,20 @@ def test_sign_submits_the_brokers_own_build_unlisted_and_saves_the_signed_file(l
     assert source.read('akdbx/fill_extension/content.js') == (
         Path(firefox_signing.__file__).with_name('fill_extension') / 'content.js').read_bytes()
     notes = source.read('BUILD.md').decode()
-    assert version in notes and 'extension build --browser firefox' in notes and '_content_script' in notes
+    assert version in notes and 'python rebuild.py OUT' in notes and '_content_script' in notes
+    assert hashlib.sha256(uploaded).hexdigest() in notes and ORIGIN in notes
+    # A reviewer's rebuild from the archive gives every submitted file and the uploaded archive itself.
+    folder = lab.tmp / 'review'
+    source.extractall(folder)
+    out = folder / 'OUT'
+    done = subprocess.run([sys.executable, 'rebuild.py', str(out)], cwd=folder, capture_output=True, timeout=120)
+    assert done.returncode == 0, done.stderr
+    result = json.loads(done.stdout)
+    assert Path(result['akdbx']).resolve().is_relative_to(folder.resolve())  # The archived akdbx, not this one.
+    assert (folder / 'OUT.xpi').read_bytes() == uploaded and result['sha256'] == hashlib.sha256(uploaded).hexdigest()
+    with zipfile.ZipFile(io.BytesIO(uploaded)) as submitted:
+        assert sorted(p.name for p in out.iterdir()) == sorted(submitted.namelist())
+        assert all((out / name).read_bytes() == submitted.read(name) for name in submitted.namelist())
     assert paths[-1][1].startswith('/files/') and all(has for _, _, has in lab.amo.log)
     assert all(c['exp'] - c['iat'] == 60 and c['iss'] == ISSUER for c in lab.amo.claims)
     assert len({c['jti'] for c in lab.amo.claims}) == len(lab.amo.claims)
@@ -560,8 +580,36 @@ def test_the_version_list_is_read_past_its_first_page_from_the_api_origin_only(l
     lab.amo.log.clear()
     lab.amo.next_host = 'localhost'
     receipt = sign(lab)
-    assert receipt['ok'], receipt
+    assert not receipt['ok'] and 'version list page on another origin' in receipt['error'], receipt
     assert sum(1 for m, path, _ in lab.amo.log if path.endswith('/versions/') and m == 'GET') == 1
+    assert len(lab.amo.uploads) == 1
+
+
+def test_a_long_version_list_resumes_across_calls_and_its_page_limit_holds(lab, monkeypatch):
+    lab.amo.exists = True
+    lab.amo.versions = {extension_host.signed_version(n): dict(id=n, xpi=b'', polls=0) for n in range(1, 7)}
+    lab.amo.versions.update({f'0.9.{n}': dict(id=1000 + n, xpi=b'', polls=0) for n in range(100)})  # 3 pages.
+    clock = [0.0]
+    lab.broker.clock = lambda: clock[0]
+    real = lab.broker.firefox_signing.runner
+
+    def slow_list(request, timeout):
+        if '/versions/?' in request['url']:
+            clock[0] += 80  # Each page takes most of a call's budget.
+        return real(request, timeout)
+    lab.broker.firefox_signing.runner = slow_list
+    monkeypatch.setattr(firefox_signing, 'MAX_VERSION_PAGES', 2)
+    first, second, third = sign(lab), sign(lab), sign(lab)
+    assert first['state'] == second['state'] == 'pending' and first['stage'] == second['stage'] == 'plan'
+    # The page count lives in the job: the third page would pass the limit, so nothing is submitted.
+    assert not third['ok'] and 'more than 100 versions' in third['error'] and not lab.amo.uploads
+    monkeypatch.setattr(firefox_signing, 'MAX_VERSION_PAGES', 200)
+    receipts = [sign(lab) for _ in range(3)]  # Pages 1, 2, then 3 (which leaves no room to upload).
+    assert [(r['state'], r['stage']) for r in receipts] == [('pending', 'plan')] * 2 + [('pending', 'upload')]
+    done = sign(lab)
+    # Sequences 1 to 6 sit on the third page; the resumed scan saw them.
+    assert done['ok'] and done['addon_version'] == extension_host.signed_version(7), done
+    assert len(lab.amo.uploads) == 1
 
 
 def test_slow_review_answers_pending_and_a_fresh_handle_resumes_the_same_job(lab, monkeypatch):

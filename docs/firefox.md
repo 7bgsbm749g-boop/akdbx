@@ -110,8 +110,10 @@ owner's account. It picks a new add-on version, uploads the archive, waits
 for AMO's validation, and attaches a source archive to the new version:
 Mozilla asks for the source of generated code, and content.js is filled in
 from akdbx's Python modules. The source archive holds the akdbx package that
-built the files (no compiled files, no Android helper binary) and a BUILD.md
-that explains the generation and the rebuild. Then the broker waits for the
+built the files (no compiled files, no Android helper binary), a BUILD.md
+that explains the generation, and a `rebuild.py` with this version's origin,
+build ID and version. `python rebuild.py OUT` rebuilds every submitted file
+from the archived package, and the uploaded archive byte for byte. Then the broker waits for the
 signature, downloads the signed XPI and checks that it holds exactly the
 submitted files plus a complete set of Mozilla's signature files under
 `META-INF/` (an unsigned copy is refused). It saves the XPI in its own private folder
@@ -156,8 +158,9 @@ included. A signed build's version is `MAJOR.MINOR.PATCH.N`, where
 N = 100000000 + 1000 × (the content part of the unsigned build version) + a
 sequence number from 1 to 999, for example `0.15.1.111058001`. Firefox and
 AMO allow up to nine digits in a part. The broker reads all of the add-on's
-versions on AMO (up to 20 pages of 50, from the API's own origin) and takes
-the next sequence number; when another deployment of the same account took
+versions on AMO (pages of 50 from the API's own origin; a long list
+continues at the next call, and more than 200 pages refuse) and takes the
+next sequence number; when another deployment of the same account took
 one (AMO answers HTTP 409), it builds the next one. From the version alone
 the broker knows that a signed add-on runs its own contents, so `status`
 shows it as `version_status: "current"`. A broker from 0.52.0 or earlier
@@ -195,6 +198,7 @@ broker.
 | `AMO refused the API key (HTTP 401)` | Wrong issuer or secret, or this computer's clock is wrong. The job is kept. |
 | `AMO refused add-on ID akdbx@akdbx.org (HTTP 403 or 409)` | Another AMO account owns the ID (or a deleted add-on used it), or the key cannot manage it. Only the account that owns the ID can sign. Nothing is signed. |
 | `AMO refused the source archive of VERSION` | AMO did not take the source archive. The job is kept: run the command again. |
+| `AMO lists more than 10000 versions…`, `AMO named a version list page on another origin` | The next free version cannot be known safely. Nothing is submitted. |
 | `AMO validation failed for VERSION: …` | AMO's validator refused the archive; its first errors follow. Nothing is signed. |
 | `Mozilla did not sign VERSION` | AMO rejected or disabled the version; see the AMO developer hub. |
 | `AMO could not be reached`, `AMO is busy or failed (HTTP 5xx or 429)` | Network failure or an AMO outage. The job is kept: run the command again later. |

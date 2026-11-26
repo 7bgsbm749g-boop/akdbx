@@ -626,7 +626,8 @@ the broker needs; `firefox_signing_channel` is `unlisted`.
    `akdbx extension sign --output FOLDER HANDLE`. The broker builds the Firefox
    files from its own akdbx (callers cannot add files), uses its own
    private-page origin, picks the next free add-on version, submits it on the
-   unlisted channel with a source archive of the akdbx package, and checks
+   unlisted channel with a source archive of the akdbx package (its
+   `rebuild.py` reproduces the upload byte for byte), and checks
    that the signed XPI holds exactly the submitted files plus Mozilla's
    `META-INF/` signatures. The result has `state:
    "signed"`, `addon_version`, `xpi` (the copy in FOLDER), `broker_xpi`,

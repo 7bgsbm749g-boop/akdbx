@@ -77,7 +77,7 @@ TOKEN_LIFETIME = 60        # AMO allows at most 300 seconds.
 MAX_XPI = 8 * 1024 * 1024
 MAX_UNPACKED = 32 * 1024 * 1024
 MAX_SOURCE = 8 * 1024 * 1024
-MAX_VERSION_PAGES = 20     # 50 versions a page, newest first.
+MAX_VERSION_PAGES = 200    # 50 versions a page, newest first; across calls of one job.
 MAX_DUPLICATES = 5         # Versions taken by another deployment of the same account.
 MAX_REDIRECTS = 3
 CLI_TIMEOUT = 150          # The CLI waits this long for one call (CALL_BUDGET plus margin).
@@ -116,6 +116,7 @@ class Job:
     submitted: bool = False   # A version create was sent; its outcome may be unknown.
     listed: int = 0           # The highest sequence of this build seen in AMO's version list so far.
     list_url: str | None = None  # The next page of that list.
+    list_pages: int = 0       # Pages of that list read so far.
     file_url: str | None = None
     file_hash: str | None = None
     duplicates: int = 0
@@ -200,12 +201,16 @@ def _messages(response, hide):
     return _clean('; '.join(_texts(data, [])), hide) if data is not None else ''
 
 
+# akdbx's runtime dependencies on every platform (pyproject.toml; a test keeps them equal).
+REBUILD_REQUIREMENTS = ('cryptography>=43,<47', 'idna>=3.7,<4', 'pykeepass==4.2.0', 'websocket-client>=1.8,<2')
+
 BUILD_NOTES = '''# Source of the akdbx Firefox add-on {version}
 
-akdbx {package} generated this add-on: https://github.com/7bgsbm749g-boop/akdbx
-(tag v{package}). This archive holds that akdbx package (`akdbx/`), without
-compiled files and without the Android helper binary, which the add-on does
-not use.
+akdbx {package} generated this add-on (https://github.com/7bgsbm749g-boop/akdbx).
+This archive holds the exact akdbx package that built it (`akdbx/`), which can
+be a development build, without compiled files and without the Android helper
+binary, which the add-on does not use. Rebuild from this archive, not from a
+release.
 
 - `akdbx/fill_extension/` holds the add-on's files as written. No minifier,
   bundler or transpiler runs.
@@ -216,29 +221,57 @@ not use.
   `password_frames.py`.
 - `manifest.json`: `_manifest_for('firefox', ...)` adds the Firefox fields and
   the version {version}.
-- `config.js` differs for every deployment: the broker's private-page origin,
-  a random build ID and the version.
+- `config.js` holds this deployment's values: the private-page origin
+  {origin}, the build ID {build_id} and the version.
 - `jsQR.js` and `jsQR.LICENSE`: jsQR 1.4.0, unmodified
   (`akdbx/import_assets/VENDOR.txt` names the npm package and its integrity).
 
-Rebuild with Python 3.11 or newer from the release's source package:
+Rebuild with Python 3.11 or newer, in the folder that holds this file:
 
-    python -m pip install akdbx-{package}.tar.gz
-    akdbx --unlock-origin https://example.invalid extension build --browser firefox --output OUT
+    python -m pip install {requirements}
+    python rebuild.py OUT
 
-Every file in OUT except `config.js` and the manifest version equals this
-add-on's file.
+`rebuild.py` calls `extension_host.firefox_signing_files` with the values
+above and writes every file of the add-on to OUT and the archive to OUT.xpi.
+Each file equals the submitted one, and OUT.xpi equals the uploaded archive
+byte for byte (SHA-256 {sha256}).
+'''
+
+REBUILD_SCRIPT = '''"""Rebuild the akdbx Firefox add-on {version} from this archive: python rebuild.py OUT"""
+import hashlib
+import json
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # This archive's akdbx, not an installed one.
+import akdbx
+from akdbx import extension_host
+
+files = extension_host.firefox_signing_files({origin!r}, {version!r}, build_id={build_id!r})
+out = pathlib.Path(sys.argv[1])
+out.mkdir(parents=True)
+for name, data in sorted(files.items()):
+    (out / name).write_bytes(data)
+archive = extension_host.xpi_bytes(files)
+out.with_name(out.name + '.xpi').write_bytes(archive)
+print(json.dumps({{'akdbx': akdbx.__file__, 'files': len(files), 'sha256': hashlib.sha256(archive).hexdigest()}}))
 '''
 
 
-def source_archive(version):
-    """The source that AMO reviewers get for one signed version: this akdbx package and BUILD.md."""
+def source_archive(version, origin, build_id, xpi):
+    """What AMO reviewers get for one signed version: this akdbx package, BUILD.md and rebuild.py.
+
+    ``rebuild.py`` reproduces every submitted file and the uploaded archive itself from
+    the archived package with this version's origin, build ID and version.
+    """
     from . import __version__
     package = Path(__file__).resolve().parent
+    values = dict(version=version, package=__version__, origin=origin, build_id=build_id,
+                  sha256=hashlib.sha256(xpi).hexdigest(), requirements=' '.join(f'"{r}"' for r in REBUILD_REQUIREMENTS))
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(zipfile.ZipInfo('BUILD.md', (2020, 1, 1, 0, 0, 0)),
-                         BUILD_NOTES.format(version=version, package=__version__), zipfile.ZIP_DEFLATED)
+        for name, text in (('BUILD.md', BUILD_NOTES), ('rebuild.py', REBUILD_SCRIPT)):
+            archive.writestr(zipfile.ZipInfo(name, (2020, 1, 1, 0, 0, 0)), text.format(**values), zipfile.ZIP_DEFLATED)
         for path in sorted(package.rglob('*')):
             relative = path.relative_to(package)
             if (not path.is_file() or path.is_symlink() or '__pycache__' in relative.parts
@@ -455,13 +488,20 @@ class FirefoxSigning:
         from .extension_host import firefox_signing_files, signed_sequence, signed_version, xpi_bytes
         first = urljoin(self.api_base, f'addons/addon/{FIREFOX_EXTENSION_ID}/versions/?filter=all_with_unlisted'
                                        '&page_size=50')
+        if job.list_url is None:
+            job.list_pages = 0  # A new scan (also after a version another deployment took).
         url, pages = job.list_url or first, 0
         while url is not None:
             if pages and not room(REQUEST_TIMEOUT):
                 job.list_url = url
                 return False
+            if job.list_pages >= MAX_VERSION_PAGES:
+                job.list_url = None
+                raise SigningError(f'AMO lists more than {MAX_VERSION_PAGES * 50} versions of {FIREFOX_EXTENSION_ID}, '
+                                   'so the next free version is unknown; nothing submitted')
             response = self._call('GET', None, issuer, secret, url=url)
             pages += 1
+            job.list_pages += 1
             if response['status'] == 403:
                 raise self._owner_refusal(response, hide)
             if response['status'] == 404 and url == first:
@@ -474,8 +514,9 @@ class FirefoxSigning:
                 job.listed = max(job.listed, number or 0)
             following = data.get('next')
             # Pages come from the API's own origin only, so the token never goes elsewhere.
-            url = (following if isinstance(following, str) and self._same_api_origin(following)
-                   and pages < MAX_VERSION_PAGES else None)
+            if isinstance(following, str) and not self._same_api_origin(following):
+                raise SigningError('AMO named a version list page on another origin; nothing submitted')
+            url = following if isinstance(following, str) else None
         job.list_url = None
         job.sequence = max(job.listed, self._last_sequence, job.sequence) + 1
         try:
@@ -556,8 +597,10 @@ class FirefoxSigning:
     def _source(self, job, issuer, secret, hide):
         """Attach the source archive to the new version, as AMO asks for generated code (as web-ext does)."""
         try:
-            data = source_archive(job.version)
-        except (OSError, ValueError) as exc:
+            from .extension_host import BUILD_ID
+            build_id = BUILD_ID.search(job.files['config.js'].decode('utf-8')).group(1)
+            data = source_archive(job.version, job.origin, build_id, job.xpi)
+        except (OSError, ValueError, AttributeError) as exc:
             raise SigningError(f'the akdbx source archive could not be built ({exc}); the signing job is kept; '
                                + RESUME, keep=True) from None
         body, content_type = _multipart({}, 'source', f'akdbx-source-{job.version}.zip', 'application/zip', data)
