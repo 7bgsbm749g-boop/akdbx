@@ -1105,6 +1105,38 @@ def test_each_sms_route_spends_only_its_own_token_once(device_file, tmp_path, mo
     assert all(s.closed for s in sessions) and not broker.native.pins and not broker.android._pins
 
 
+@pytest.mark.parametrize('case', ['filled', 'wrong-site', 'unknown-message', 'add-source'])
+def test_android_chrome_sms_pin_closes_its_devtools_connection(device_file, tmp_path, case):
+    import secrets
+    from types import SimpleNamespace
+    from akdbx.sms import Message, SmsInbox
+    from test_sms import call
+    cdp = FakeCDP('https://example.com/challenge')
+    broker, _ = chrome_broker(device_file, cdp)
+    broker.sms = SmsInbox(tmp_path / 'state/sms.json', clock=broker.clock)
+    broker.unlock_link = SimpleNamespace(origin='https://unlock.example')
+    message = Message(secrets.token_hex(16), 'fixture', 'Example', 'Your code', '482913',
+                      broker.clock(), broker.wall_clock())
+    if case != 'unknown-message':
+        broker.sms.restore(message)
+    target = pin(broker, mode='sms', field='#test')['target']
+    cdp.closed = False
+    if case == 'add-source':
+        result = call(broker, 'sms-add-source', name='webhook', kind='twilio', target=target, target_protocol=1,
+                      start_deadline=broker.clock() + 4)
+    else:
+        result = call(broker, 'fill-sms-code', message=message.id, target=target, target_protocol=1,
+                      target_url='https://other.example/' if case == 'wrong-site' else 'https://example.com/challenge')
+    written = [p['arguments'][0]['value'] for m, p in cdp.calls
+               if m == 'Runtime.callFunctionOn' and 'this.write(value' in p['functionDeclaration']]
+    if case == 'filled':
+        assert result == dict(ok=True, filled='one-time-code', target_delivery=CHROME_DELIVERY)
+        assert written == ['482913']
+    else:
+        assert result['ok'] is False and written == []
+    assert cdp.closed and broker.android.take(target) is None
+
+
 @pytest.mark.parametrize('mode,purpose', [('read', None), ('sms', None), ('card', 'cc-name'), ('identity', 'email')])
 def test_chrome_structured_operation_refuses_an_unverified_peer(device_file, mode, purpose):
     cdp = FakeCDP('https://example.com/challenge', shows_typed=False)
