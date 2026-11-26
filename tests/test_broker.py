@@ -6,6 +6,7 @@ import os
 import socket
 import stat
 import struct
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -81,7 +82,7 @@ def target_capabilities():
                 android_chrome_delivery='android-chrome-verified-dom-v1',
                 android_generated_password=True, android_pending_totp=True, android_read_delivery='android-chrome-verified-read-v1',
                 android_fill_modes=['login', 'username', 'password', 'totp', 'sms', 'card', 'identity', 'read'],
-                android_devices_configured=False,
+                android_devices_configured=False, android_managed_emulators=sys.platform.startswith('linux'),
                 sms_protocol=1, sms_notifications_supported=True, sms_notifications_protocol=1, sms_source_kinds=['shortcut', 'twilio', 'webhook'], sms_sources_configured=0,
                 sms_fill_routes=['extension', 'native', 'window'], sms_message_ttl=600, code_protocol=1, code_browser_configured=False, code_delivery='cdp-code-element-v1', **NativeFields().capabilities())
 

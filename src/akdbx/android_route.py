@@ -44,6 +44,7 @@ import secrets
 import socket
 import stat
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -114,6 +115,8 @@ SPEAK_PASSWORD_REFUSAL = ('device lets accessibility services read password text
                           '"settings put secure speak_password 0" (adb shell), then pin again')
 GOOGLE_SECRETS_REFUSAL = ('Google sign-in takes the password and code only through '
                           '"akdbx android google-sign-in"; pin only the email here')
+MANAGED_LINUX_ONLY = ('managed Android emulators require a Linux host with systemd --user and KVM; '
+                      'on this host run the emulator or device yourself and register it as attached')
 ORIGIN_MISMATCH = "autofill not started: the pinned Android app or page is not this entry's site; no value sent"
 
 
@@ -133,7 +136,9 @@ def capabilities(configured: bool) -> dict:
     return dict(android_fill_protocol=PROTOCOL, android_fill_delivery=DELIVERY,
                 android_chrome_delivery=CHROME_DELIVERY,
                 android_generated_password=True, android_pending_totp=True, android_read_delivery=READ_DELIVERY,
-                android_fill_modes=list(MODES), android_devices_configured=configured)
+                android_fill_modes=list(MODES), android_devices_configured=configured,
+                # Attached devices work on every broker host; managed emulators need systemd and KVM.
+                android_managed_emulators=sys.platform.startswith('linux'))
 
 
 def default_config_path() -> Path:
@@ -190,22 +195,42 @@ def _read_private_file(path: Path) -> bytes:
         if data is None:
             raise FileNotFoundError(path)
     else:
-        directory = path.parent
-        info = os.stat(directory)
-        if info.st_uid not in {0, os.getuid()} or info.st_mode & 0o022:
-            raise AndroidError('Android device configuration folder is writable by other accounts')
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        # Check the folder and open the file through the same descriptor.
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            info = os.fstat(directory)
+            if info.st_uid not in {0, os.getuid()} or info.st_mode & 0o022:
+                raise AndroidError('Android device configuration folder is writable by other accounts')
+            if sys.platform == 'darwin':
+                _require_private_acl(directory, 'Android device configuration folder grants access '
+                                                'to other accounts (macOS ACL)')
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        finally:
+            os.close(directory)
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
                 raise AndroidError('Android device configuration must be a regular file owned by the broker '
                                    'user and not writable by others')
+            if sys.platform == 'darwin':
+                # The same rules as other private macOS files: one link, no allow ACEs.
+                if info.st_nlink != 1:
+                    raise AndroidError('Android device configuration must not have other hard links')
+                _require_private_acl(fd, 'Android device configuration grants access to other accounts (macOS ACL)')
             data = os.read(fd, MAX_CONFIG + 1)
         finally:
             os.close(fd)
     if len(data) > MAX_CONFIG:
         raise AndroidError('Android device configuration is too large')
     return data
+
+
+def _require_private_acl(fd: int, message: str) -> None:
+    from .macos import require_private_acl
+    try:
+        require_private_acl(fd)
+    except OSError:
+        raise AndroidError(message) from None
 
 
 def load_devices(path: Path | None) -> dict[str, Device]:
@@ -287,7 +312,7 @@ class Adb:
         """True when this user's process listens on the configured adb port.
 
         Another OS account could listen on the port while the operator's adb
-        server is down; the CDP route's peer check refuses that listener.
+        server is down; the connection's peer check refuses that listener.
         """
         try:
             with self._connect(1):
@@ -325,8 +350,13 @@ class Adb:
             raise AndroidError('could not copy the akdbx helper to the device')
 
     def _connect(self, timeout: float) -> socket.socket:
-        """A connection to the adb server whose owner is this user (checked on this very socket)."""
-        from .browser_password import verify_peer
+        """A connection to the adb server whose owner is this user (checked on this very socket).
+
+        cdp_peer reads the kernel's owner of this exact loopback connection
+        (Linux /proc, the Windows TCP table, the Darwin pcblist) before any byte
+        goes to the server. The Chrome DevTools forward gets the same check.
+        """
+        from . import cdp_peer
         if self.device.managed:
             from .android_lifecycle import runtime
             from .cli import _peer_credentials
@@ -342,8 +372,8 @@ class Adb:
                 raise
         connection = socket.create_connection(('127.0.0.1', self.device.port), timeout=min(timeout, 5.0))
         try:
-            verify_peer(connection)
-        except TargetError:
+            cdp_peer.verify_peer(connection)
+        except Exception:
             connection.close()
             raise AndroidError('the adb server port belongs to another account') from None
         except BaseException:
@@ -1015,7 +1045,10 @@ class AndroidTargets:
         device = devices[name]
         if device.managed:
             from .android_lifecycle import state
-            if state(device) != 'awake':
+            power = state(device)
+            if power == 'unsupported':
+                raise AndroidError(MANAGED_LINUX_ONLY)
+            if power != 'awake':
                 raise AndroidError('managed Android device is asleep; use android wake on the broker host')
         return device
 

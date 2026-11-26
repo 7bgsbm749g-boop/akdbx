@@ -193,20 +193,24 @@ The [support matrix](docs/support-matrix.md) has the full list per route and pla
   transport. [Private HTTPS pages](docs/private-pages.md) describes the unlock
   page for both platforms.
 - **Android devices and emulators** (0.36.0+) support verified app fields and
-  Chrome pages on a Linux broker. Version 0.50.1 adds generated
+  Chrome pages on a Linux broker, and on a macOS broker for attached devices
+  (after 0.50.1). Version 0.50.1 adds generated
   passwords, SMS codes, card and identity fields, and Chrome read pins for
   shown-once secrets and authenticator enrollment. The managed emulator needs
-  Linux. A Windows broker has no end-to-end proof, and a macOS broker is not
-  supported yet. [Android setup and operations](skills/akdbx/references/android.md)
+  Linux (`android_managed_emulators` in `status`). A Windows broker has no
+  end-to-end proof. [Android setup and operations](skills/akdbx/references/android.md)
 
 ## Android devices (0.36.0)
 
-**Optional on-demand emulator (0.37.0+).** Run `akdbx android setup --create`
+**Optional on-demand emulator (0.37.0+, Linux only).** Run `akdbx android setup --create`
 on an x86-64 Linux host with KVM, a systemd user session and a Java runtime.
 Setup uses Google's SDK to create a persistent Google Play virtual device.
 Android operations start it when needed. It stops three minutes after its
 last operation. Apps, their sign-ins and notification settings stay on disk.
 To connect a device you already run, use `akdbx android setup --attach SERIAL`.
+This also works on macOS (after 0.50.1), where `akdbx status` reports
+`android_managed_emulators: false`: run the emulator or device yourself. See
+[macOS Android devices](docs/macos.md#android-devices-after-0501).
 
 For a service that offers mobile sign-in confirmation, such as GitHub Mobile,
 sign in to its app once and enable its notifications. When a login you started
@@ -218,8 +222,9 @@ ordinary browser fills work while the emulator is off.
 
 `akdbx android inspect | pin | fill | fill-totp | google-sign-in` reach a
 device through adb. For a managed emulator the broker uses a Unix socket in
-its private runtime directory. For an attached device it checks ownership of
-the operator's loopback adb connection. It binds each pin to
+its private runtime directory. For an attached device it checks, in the
+kernel's TCP table (Linux, Windows and macOS), that the broker user owns the
+server side of its own loopback adb connection before it sends a byte. It binds each pin to
 the device (adb serial and boot), the focused app (package, signing
 certificate, activity, task) and the field. For login entries it fills only an entry whose URL
 or additional URL is the verified site:

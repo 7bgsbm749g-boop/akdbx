@@ -32,7 +32,7 @@ session.
 | Snapshot admission (review prototype) | [Admission](references/snapshot-admission.md), [group selection](references/group-selection.md), [selection verification](references/selection-verification.md) |
 | Open the private pages from any device (no Tailscale) | [The akdbx relay](#the-akdbx-relay) |
 | Which route works on this platform | [Routes by platform](#routes-by-platform), then the repository's [support matrix](https://github.com/7bgsbm749g-boop/akdbx/blob/main/docs/support-matrix.md) |
-| macOS host | [Routes by platform](#routes-by-platform). Check `native_field_accessibility_granted` for native apps, `lock_event_sources.macos` for desktop lock and `relay.connected` when using the relay. |
+| macOS host | [Routes by platform](#routes-by-platform). Check `native_field_accessibility_granted` for native apps, `lock_event_sources.macos` for desktop lock and `relay.connected` when using the relay. Android: attached devices only (`android_managed_emulators: false`). |
 | Windows host | [Windows operation](references/windows.md) |
 | Fill login, generated password, SMS, card or identity fields on Android, capture a shown-once value in Chrome, or wake an emulator for a mobile approval | [Android devices](references/android.md) |
 | Set akdbx up for a user (first install, or add a part later) | [First-time setup](#first-time-setup) |
@@ -104,7 +104,7 @@ workflow owns.
 On Windows, read [Windows operation](references/windows.md) first: the
 transport is a named pipe, and native-window pins use HWNDs instead of X11
 windows. The private HTTPS page works the same way on every platform. The managed Android emulator, Hyprland lock
-and Linux agent-desktop slot window pins are Linux-specific. The Tailscale Serve Unix socket works on Linux and macOS.
+and Linux agent-desktop slot window pins are Linux-specific; a macOS broker drives attached Android devices (after 0.50.1). The Tailscale Serve Unix socket works on Linux and macOS.
 
 The maintained source of this skill is the repository's `skills/akdbx`
 directory. A local install links the agent's skills directory to it (a
@@ -424,7 +424,7 @@ available, whatever the table says.
 | CDP (`--route cdp`) | Yes | Yes | 0.50.1+, only after the operator verified debugging-port isolation |
 | Native field (`pin-native-target`) | AT-SPI on X11 and Wayland | Win32 Edit, WinForms, WPF | Accessibility, 0.50.1+; no password, login or generated-password modes |
 | Window pin (`pin-target`): usernames, TOTP, SMS codes only | X11 or XWayland windows; not native Wayland | HWND | None |
-| Android (`akdbx android`) | Yes; managed emulator too | No end-to-end proof | Not supported yet |
+| Android (`akdbx android`) | Yes; managed emulator too | No end-to-end proof | Attached devices only (after 0.50.1); no managed emulator (`android_managed_emulators: false`) |
 
 Everywhere: passwords never go to a window pin; `capture-totp` needs a CDP,
 extension or Android Chrome read pin (a native read pin is refused); the

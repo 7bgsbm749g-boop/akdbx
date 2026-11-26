@@ -25,6 +25,7 @@ the routes and modes that this broker offers now (`fill_routes`,
 | — | The operation does not exist on this route. |
 
 `<0.16` means the feature shipped before the first release tag (`v0.16.0`).
+`after 0.50.1` means merged on `main` for the next release after 0.50.1.
 `v0.50.0` was tagged but never published (its release checks failed), so the
 features of PRs #81–#96 first ship in 0.50.1, together with key-file and
 hardware-key unlock (#98).
@@ -39,7 +40,7 @@ CI jobs (all in `.github/workflows/`):
 | `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, cover checks |
 | `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension |
 | `windows` | `tests.yml` | Named pipe, real Win32, WinForms and WPF apps, Chrome and Edge CDP, the extension in Edge, QR capture |
-| `macos-broker` | `tests.yml` | macOS 15: AppKit fields, Darwin IPC and TLS, Chrome CDP with a foreign-user listener, guided setup and LaunchAgent |
+| `macos-broker` | `tests.yml` | macOS 15: AppKit fields, Darwin IPC and TLS, Chrome CDP with a foreign-user listener, guided setup and LaunchAgent, Android attach host checks with a simulated device |
 | `card-safety` | `card-safety.yml` | Real Chrome CDP: cards, processor frames, identities, SMS codes, agent desktop slots |
 | `synthetic-password-fields` | `password-fields.yml` | Real Chrome CDP: passwords, child frames, secret capture, TOTP, QR capture, slot window pins |
 | `synthetic-import` | `private-import.yml` | The private authenticator QR importer |
@@ -53,7 +54,7 @@ CI jobs (all in `.github/workflows/`):
 | [CDP](#cdp-route) (`--route cdp`) | ✅ <0.16 | ✅ <0.16 | ✅ 0.17.0 | ✅ 0.50.1 |
 | [Extension, Chromium family](#extension-route-chromium-family) | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.43.0, no real-browser CI (P) |
 | [Extension, Firefox 153+](#extension-route-firefox) | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 |
-| [Android](#android-route-akdbx-android) (`akdbx android`) | ✅ 0.36.0 | ✅ 0.36.0 | ✅ 0.50.1 · no CI (T) | ✗ in [PR #97](https://github.com/7bgsbm749g-boop/akdbx/pull/97), not released |
+| [Android](#android-route-akdbx-android) (`akdbx android`) | ✅ 0.36.0 | ✅ 0.36.0 | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1, attached devices only (AE) |
 | Safari | — | — | — | ✗ not built (W) |
 
 The CDP and extension routes talk to the browser, not to the display server,
@@ -172,19 +173,20 @@ runs as a temporary add-on; see [Firefox setup](firefox.md).
 The columns are the computer that runs the broker. The device is an Android
 device or emulator reached through adb. Chrome pages use Chrome's DevTools
 socket; app fields use the akdbx accessibility helper. Check
-`android_fill_modes` in `status`.
+`android_fill_modes` and `android_managed_emulators` in `status`. A macOS
+broker takes attached devices only (after 0.50.1).
 
 | Operation | Linux host (X11 or Wayland) | Windows host | macOS host |
 | --- | --- | --- | --- |
-| Username, password, login | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✗ [PR #97](https://github.com/7bgsbm749g-boop/akdbx/pull/97), not released |
-| Generated password | ✅ 0.50.1 · contract test (`linux`) (X) (Y) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
-| TOTP | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
-| Card, identity | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
+| Username, password, login | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
+| Generated password | ✅ 0.50.1 · contract test (`linux`) (X) (Y) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · no CI (AE) |
+| TOTP | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
+| Card, identity | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
 | Card processor iframes, child-frame login | ✗ (Z) | ✗ (Z) | ✗ (Z) |
-| notify-page (identity) | ✅ 0.50.1 Chrome pages; ⛔ app fields (K) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
-| Secret read, `capture-totp` text key | ✅ 0.50.1 Chrome pages · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
+| notify-page (identity) | ✅ 0.50.1 Chrome pages · no CI; ⛔ app fields (K) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 Chrome pages · no CI (AE) |
+| Secret read, `capture-totp` text key | ✅ 0.50.1 Chrome pages · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
 | `capture-totp`, QR code | ✗ not built | ✗ not built | ✗ not built |
-| SMS code | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
+| SMS code | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
 | Fields in an app's own web view | ◼ (AB) | ◼ (AB) | ◼ (AB) |
 | Managed on-demand emulator (`android setup --create`) | ✅ 0.37.0 (x86-64, KVM, systemd 254+) | ✗ Linux only (AA) | ✗ Linux only (AA) |
 | Popup human click, agent desktop slots | — | — | — |
@@ -285,8 +287,8 @@ socket; app fields use the akdbx accessibility helper. Check
   do not retry automatically.
 - **Z** Not built: Android fields in frames are refused.
 - **AA** Not built: the managed emulator uses systemd user units and KVM.
-  [PR #97](https://github.com/7bgsbm749g-boop/akdbx/pull/97) refuses it off
-  Linux and adds attached devices on macOS.
+  On macOS and Windows, setup and `android wake` refuse it, and `status`
+  reports `android_managed_emulators: false`.
 - **AB** Inherent: the site of a page inside an app's web view cannot be read,
   so the broker refuses those fields. Chrome tabs and Custom Tabs work.
 - **AC** `akdbx setup --cdp-profile` refuses on macOS. To use CDP there, start
@@ -301,3 +303,11 @@ socket; app fields use the akdbx accessibility helper. Check
   command, and the user enters its response. The `linux` job tests the whole
   page flow; the `windows` job tests only the Windows vault store with both
   keys. See [Key file and hardware key](private-pages.md#key-file-and-hardware-key).
+- **AE** Attach mode only (`android setup --attach`, or a device file written
+  by hand). The `macos-broker` job proves the host side on macOS: the kernel
+  owner check of the loopback adb server and of the DevTools forward,
+  `android setup --attach` against a stand-in adb, the route suite with a
+  simulated device, and a stand-in owned by another account (`_www`) that
+  receives zero bytes. Inherent: no device or emulator runs in that CI,
+  because GitHub's arm64 macOS runners have no nested virtualization. A macOS
+  broker with a real device or emulator was not tested.
