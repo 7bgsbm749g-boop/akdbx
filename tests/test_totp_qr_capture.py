@@ -182,6 +182,16 @@ picture.src = 'https://evil.example.net/qr/key.png';'''),
     '/qr-text': enrollment('<code id=qr>' + KEY + '</code>'),
     # An inline setup key whose text box ends below a half pixel: Chromium hit-tests the box only up to
     # round(right) - 1, so a check point at right - 1 misses it. The page tunes the font size to get there.
+    # The same at a fractional device scale (Windows 125 %): Chromium snaps boxes in device pixels. The page looks
+    # for a font size where an end point of round(right) - 1.5 CSS pixels would fall outside the snapped box.
+    '/text-inline-scaled': enrollment('<code id=qr>' + KEY + '</code>', '''
+const key = document.getElementById('qr'), z = devicePixelRatio;
+for (let size = 10; size < 24 && window.found === undefined; size += 1 / 32) {
+  key.style.fontSize = size + 'px';
+  const range = document.createRange(); range.selectNodeContents(key);
+  const right = range.getClientRects()[0].right, old = Math.round(right) - 1.5;
+  if (Math.ceil(old * z) > Math.round(right * z) - 1) window.found = {size, right, z};
+}'''),
     '/text-inline-fraction': enrollment('<code id=qr>' + KEY + '</code>', '''
 const key = document.getElementById('qr');
 for (let size = 13; size < 19 && window.fraction === undefined; size += 1 / 16) {
@@ -466,6 +476,21 @@ def test_a_qr_pin_only_with_qr_capture_and_never_for_secret_capture(qr):
         assert pin(qr, url, **change) == failure(), change
     entry = PyKeePass(str(qr.path), password=MASTER).find_entries(title=VALUES['title'], first=True)
     assert entry.otp is None and PENDING_FIELD not in entry.custom_properties and 'client_secret' not in entry.custom_properties
+
+
+def test_an_inline_text_key_at_a_fractional_device_scale_captures_as_text(qr):
+    lab = qr.lab
+    lab.observer.call('Emulation.setDeviceMetricsOverride', dict(width=1200, height=900, deviceScaleFactor=1.25,
+                                                                 mobile=False), lab.session)
+    try:
+        url = open_page(qr, '/text-inline-scaled')
+        found = lab.evaluate('window.found || null')
+        assert found and found['z'] == 1.25, found
+        text = pin(qr, url, read_kind=None)
+        assert text['ok'], (text, found)
+        assert capture(qr, text['target'], read_kind=None) == receipt(qr)
+    finally:
+        lab.observer.call('Emulation.clearDeviceMetricsOverride', {}, lab.session)
 
 
 def test_an_inline_text_key_that_ends_below_a_half_pixel_captures_as_text(qr):
