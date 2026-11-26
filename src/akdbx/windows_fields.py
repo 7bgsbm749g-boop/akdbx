@@ -1,9 +1,4 @@
-"""Exact Win32 Unicode Edit controls. No global input, Tab or clipboard.
-
-Custom controls and browser processes are intentionally unsupported. Passwords
-require an Edit control whose password style and mask remain set. Read capture
-requires an unmasked, read-only Edit control.
-"""
+"""Windows native field pins. No global input, Tab or clipboard."""
 import ctypes as C
 from dataclasses import replace
 from ctypes import wintypes as W
@@ -13,9 +8,51 @@ from .target import TargetError
 from .windows_target import NativeWindows
 
 BROWSERS = {'chrome.exe', 'chromium.exe', 'firefox.exe', 'msedge.exe', 'helium.exe',
-            'brave.exe', 'opera.exe'}
+            'brave.exe', 'opera.exe', 'msedgewebview2.exe', 'electron.exe', 'vivaldi.exe',
+            'waterfox.exe', 'librewolf.exe'}
 READONLY, PASSWORD = 0x800, 0x20
 CONVERTING = 0x8 | 0x10 | 0x400  # ES_UPPERCASE, ES_LOWERCASE, ES_OEMCONVERT
+
+
+def edit_class(name):
+    return name == 'Edit' or name.upper().startswith('WINDOWSFORMS10.EDIT.')
+
+
+def integrity(handle):
+    import win32con
+    import win32security
+    from .windows_security import managed_handle
+    with managed_handle(win32security.OpenProcessToken(handle, win32con.TOKEN_QUERY)) as token:
+        sid, _ = win32security.GetTokenInformation(token, win32security.TokenIntegrityLevel)
+        return sid.GetSubAuthority(sid.GetSubAuthorityCount() - 1)
+
+
+def check_desktop(thread):
+    import win32service
+    # UOI_NAME, DESKTOP_READOBJECTS. Refuse secure desktops even if the
+    # broker has permission to open one.
+    desktop = win32service.OpenInputDesktop(0, False, 1)
+    try:
+        if (win32service.GetUserObjectInformation(desktop, 2).casefold() != 'default'
+                or win32service.GetUserObjectInformation(win32service.GetThreadDesktop(thread), 2).casefold() != 'default'):
+            raise TargetError()
+    finally:
+        desktop.CloseDesktop()
+
+
+def check_native_window(gui, window):
+    count = 0
+
+    def visit(hwnd, _):
+        nonlocal count
+        count += 1
+        name = gui.GetClassName(hwnd).casefold()
+        if count > 1024 or name.startswith(('chrome_', 'cef', 'mozilla', 'internet explorer_server')):
+            raise TargetError()
+        return True
+
+    visit(window, None)
+    gui.EnumChildWindows(window, visit, None)
 
 
 class WindowsFields:
@@ -32,7 +69,7 @@ class WindowsFields:
     def _add(self, hwnd):
         if len(self.controls) >= 128:
             raise TargetError()
-        if (self.gui.GetClassName(hwnd) == 'Edit' and self.native.api.IsWindowUnicode(hwnd)
+        if (edit_class(self.gui.GetClassName(hwnd)) and self.native.api.IsWindowUnicode(hwnd)
                 and self.gui.IsWindowVisible(hwnd) and self.gui.IsWindowEnabled(hwnd)):
             self.controls.append(hwnd)
         return True
@@ -45,6 +82,8 @@ class WindowsFields:
         # password by focus. Delivery's check() locks that final focus.
         if replace(current, focus=self.identity.focus, focus_class=self.identity.focus_class) != self.identity:
             raise TargetError()
+        check_desktop(current.thread)
+        check_native_window(self.gui, self.window)
         return current
 
     def describe(self, index):
@@ -52,7 +91,7 @@ class WindowsFields:
         hwnd = self.controls[index]
         if (self.native.owner(hwnd) != (self.identity.thread, self.pid)
                 or self.native.api.GetAncestor(hwnd, 2) != self.window
-                or self.gui.GetClassName(hwnd) != 'Edit' or not self.native.api.IsWindowUnicode(hwnd)
+                or not edit_class(self.gui.GetClassName(hwnd)) or not self.native.api.IsWindowUnicode(hwnd)
                 or not self.gui.IsWindowVisible(hwnd) or not self.gui.IsWindowEnabled(hwnd)):
             raise TargetError()
         style = self.gui.GetWindowLong(hwnd, -16)
@@ -125,6 +164,15 @@ def scan(pid):
         window = native.api.GetForegroundWindow()
         if not window or native.owner(window)[1] != pid:
             raise TargetError()
+        import win32api
+        import win32gui
+        if integrity(native.process_handle) > integrity(win32api.GetCurrentProcess()):
+            raise TargetError()
+        check_desktop(native.owner(window)[0])
+        check_native_window(win32gui, window)
+        if win32gui.GetClassName(window).startswith('HwndWrapper['):
+            from .windows_uia import WpfSession
+            return [WpfSession(pid, window, native)]
         session = WindowsFields(pid, window, native)
         for index in range(len(session.controls)):
             session.describe(index)

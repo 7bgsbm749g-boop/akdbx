@@ -77,6 +77,7 @@ class NativeFields:
 
     def capabilities(self):
         return dict(native_field_protocol=PROTOCOL, native_field_supported=supported(),
+                    native_field_windows_uia=sys.platform == 'win32',
                     native_field_delivery=DELIVERY, native_field_read_delivery=READ_DELIVERY,
                     native_field_modes=list(MODES) if supported() else [])
 

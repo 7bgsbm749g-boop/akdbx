@@ -2,6 +2,7 @@
 import json
 import sys
 import time
+from .android_route import READ_DELIVERY as ANDROID_READ_DELIVERY
 from .native_fields import READ_DELIVERY as NATIVE_READ_DELIVERY
 
 from .extension_route import CAPTURE_DELIVERY as EXTENSION_CAPTURE_DELIVERY
@@ -67,7 +68,7 @@ def valid_receipt(args, response, payload):
         return (set(response) == {'ok', 'state', 'totp_configured', 'metadata', 'capture_delivery'}
                 and response['state'] == 'pending' and type(response['totp_configured']) is bool
                 and response['metadata'] == payload['metadata']
-                and response['capture_delivery'] in (CAPTURE_DELIVERY, EXTENSION_CAPTURE_DELIVERY))
+                and response['capture_delivery'] in (ANDROID_READ_DELIVERY, CAPTURE_DELIVERY, EXTENSION_CAPTURE_DELIVERY))
     if args.command == 'commit-totp':
         if args.discard:
             return set(response) == {'ok', 'state', 'metadata'} and response['state'] == 'discarded' and response['metadata'] == payload['metadata']
@@ -79,7 +80,7 @@ def valid_receipt(args, response, payload):
                 and response['state'] == 'saved' and response['created'] is args.new
                 and response['field'] == args.field and type(response['length']) is int and 0 < response['length'] <= 4096
                 and response['metadata'] == payload['metadata']
-                and response['capture_delivery'] in (CAPTURE_DELIVERY, EXTENSION_CAPTURE_DELIVERY, NATIVE_READ_DELIVERY))
+                and response['capture_delivery'] in (ANDROID_READ_DELIVERY, CAPTURE_DELIVERY, EXTENSION_CAPTURE_DELIVERY, NATIVE_READ_DELIVERY))
     return (set(response) == {'ok', 'state', 'sink', 'field', 'restarted'}
             and response['state'] == 'delivered' and response['sink'] == args.sink and response['field'] == args.field
             and response['restarted'] in (True, False, None))

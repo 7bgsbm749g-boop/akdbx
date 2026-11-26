@@ -1,5 +1,7 @@
 # Card storage and field-bound delivery (0.14.2)
 
+For card field operations on Android, see [Android pins and commands](android.md#additional-android-operations-after-0470).
+
 Before using CDP, verify [client isolation](target-fill.md#operator-configuration).
 
 Require CLI/broker card protocol 1: `cards_supported: true`, integer
