@@ -146,20 +146,16 @@ class WpfSession(WindowsFields):
         masked = self.describe(index)[0]
         before_write()
         pattern.SetValue(value)
-        # Neither check retrieves field contents. A TextBox character unit is
-        # a caret step, which may span several UTF-16 units.
-        span = self._pattern(element, 'Text').DocumentRange
         if not masked:
-            if not value:
-                if span.CompareEndpoints(0, span, 1) != 0:
-                    raise TargetError()
-                return
-            match = span.FindText(value, False, False)
-            if (not match or match.CompareEndpoints(0, span, 0) != 0
-                    or match.CompareEndpoints(1, span, 1) != 0):
+            # Apply an exact Value condition only to this retained element. UIA
+            # returns an element or no match, never the field contents.
+            condition = self.uia.CreatePropertyCondition(self.types.UIA_ValueValuePropertyId, value)
+            match = element.FindFirst(self.types.TreeScope_Element, condition)
+            if not match or not self.uia.CompareElements(match, element):
                 raise TargetError()
             return
         # A WPF PasswordBox presents one mask character per UTF-16 unit.
+        span = self._pattern(element, 'Text').DocumentRange
         end = span.Clone()
         span.MoveEndpointByRange(1, span, 0)
         length = len(value.encode('utf-16-le')) // 2

@@ -6,14 +6,14 @@ using Wpf = System.Windows;
 using Controls = System.Windows.Controls;
 
 class ManagedFields {
-    static void Commands(Action<Action> invoke, Action<string> focus, Func<bool> matches, Action close) {
+    static void Commands(Action<Action> invoke, Action<string> focus, Func<string, bool> matches, Action close) {
         var reader = new Thread(() => {
             Console.WriteLine("ready");
             string command;
             while ((command = Console.ReadLine()) != null) {
                 if (command == "exit") break;
                 invoke(() => {
-                    if (command == "verify") Console.WriteLine(matches() ? "match" : "mismatch");
+                    if (command.StartsWith("verify")) Console.WriteLine(matches(command) ? "match" : "mismatch");
                     else {
                         focus(command);
                         Console.WriteLine("focused");
@@ -39,12 +39,15 @@ class ManagedFields {
             window.Shown += (s, e) => Commands(a => window.Invoke(a), name => {
                 window.Activate();
                 (name == "user" ? user : name == "password" ? password : capture).Focus();
-            }, () => user.Text == "invented-user\U0001F600" && password.Text == "invented-password", window.Close);
+            }, command => user.Text == "invented-user\U0001F600" && password.Text == "invented-password", window.Close);
             Forms.Application.Run(window);
         } else {
             var window = new Wpf.Window { Width = 400, Height = 200 };
             var panel = new Controls.StackPanel();
             var user = new Controls.TextBox();
+            user.TextChanged += (sender, argsChanged) => {
+                if (user.Text == "\u0628A\u030A") user.Text = "\u0628\u00C5";
+            };
             var password = new Controls.PasswordBox();
             var capture = new Controls.TextBox { IsReadOnly = true, Text = "invented-capture" };
             panel.Children.Add(user);
@@ -54,7 +57,7 @@ class ManagedFields {
             window.ContentRendered += (s, e) => Commands(a => window.Dispatcher.Invoke(a), name => {
                 window.Activate();
                 (name == "password" ? (Wpf.UIElement) password : name == "user" ? user : capture).Focus();
-            }, () => user.Text == "invented-user\U0001F600" && password.Password == "invented-password", window.Close);
+            }, command => user.Text == (command == "verify-normalized" ? "\u0628\u00C5" : "invented-user\U0001F600") && password.Password == "invented-password", window.Close);
             new Wpf.Application().Run(window);
         }
     }

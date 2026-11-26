@@ -192,6 +192,22 @@ def test_managed_control_login_read_and_focus_change(managed_exe, toolkit):
             assert manager.read(target, {https_origin(SITE)}, lambda: True, time.monotonic() + 4) == 'invented-capture'
         finally:
             target.close()
+
+        if toolkit == 'wpf':
+            command('user')
+            window = view()
+            user = next(f['control'] for f in window['controls'] if f['focused'])
+            password = next(f['control'] for f in window['controls'] if f['password'])
+            command('password')
+            target = pin(window, 'login', password, username_control=user)
+            try:
+                with pytest.raises(DeliveryError) as error:
+                    manager.deliver_password(target, 'login', '\u0628A\u030A', 'must-not-arrive',
+                                             {https_origin(SITE)}, lambda: True, time.monotonic() + 4)
+                assert error.value.started
+                command('verify-normalized', 'match')
+            finally:
+                target.close()
     finally:
         manager.close()
         app.stdin.close()
