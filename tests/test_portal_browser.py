@@ -461,7 +461,8 @@ def test_save_pages_share_the_busy_state_and_saved_screen(synthetic_chromium, sa
     # Every save page ends on the same small saved screen as a card.
     assert saved_screen(cdp, session) == dict(
         forms=0, heading='Success', tab='AKDBX: Success', focused=True, role='status',
-        lines=[f'{subject} saved to vault. You may close this page.'])
+        lines=[f'{subject} saved to vault. You may close this page.']
+        + (['Saved as \u201cSample shipping\u201d in Web.'] if subject == 'Identity' else []))
     assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle']))['state'] == 'saved'
 
 
