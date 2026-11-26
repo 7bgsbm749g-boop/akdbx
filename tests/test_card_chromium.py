@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import signal
 import ssl
+import sys
 import subprocess
 import threading
 import time
@@ -72,6 +73,10 @@ def connect_test_browser(profile, process, deadline):
 
 def card_browser_binary():
     """Require all native dependencies in card CI; allow optional local runs."""
+    if sys.platform == 'darwin':
+        binary = Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
+        assert binary.is_file(), 'macOS CDP tests require Google Chrome'
+        return str(binary)
     binary = shutil.which('google-chrome') or shutil.which('chromium')
     if not binary or not shutil.which('openssl') or not shutil.which('Xvfb'):
         message = 'Card safety tests require Chrome/Chromium, Xvfb and openssl'
@@ -103,7 +108,7 @@ def chrome(tmp_path, request):
         desktop = None
     else:
         binary = card_browser_binary()
-        desktop = request.getfixturevalue('isolated_x11')
+        desktop = None if sys.platform == 'darwin' else request.getfixturevalue('isolated_x11')
     cert, key = tmp_path / 'cert.pem', tmp_path / 'key.pem'
     subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
                     '-subj', '/CN=127.0.0.1', '-keyout', str(key), '-out', str(cert)],
@@ -201,7 +206,7 @@ def chrome(tmp_path, request):
     worker = threading.Thread(target=server.serve_forever, daemon=True)
     worker.start()
     url = 'https://127.0.0.1:' + str(server.server_port) + '/payment'
-    profile = tmp_path / 'profile'
+    profile = tmp_path / 'slot1'
     if windows:
         from akdbx.windows_security import ensure_private_directory
         ensure_private_directory(profile)
@@ -217,8 +222,9 @@ def chrome(tmp_path, request):
         '--site-per-process', '--no-proxy-server',
         '--host-resolver-rules=MAP checkoutshopper-live.adyen.com 127.0.0.1:' + str(server.server_port) +
         ',MAP www.computop-paygate.com 127.0.0.1:' + str(server.server_port) +
-        ',MAP js.stripe.com 127.0.0.1:' + str(server.server_port),
-        '--ignore-certificate-errors', '--window-size=1000,1000', '--headless=new' if windows else '--ozone-platform=x11', url],
+        ',MAP js.stripe.com 127.0.0.1:' + str(server.server_port) +
+        ',MAP login.example.test 127.0.0.1:' + str(server.server_port),
+        '--ignore-certificate-errors', '--window-size=1000,1000', '--headless=new' if desktop is None else '--ozone-platform=x11', url],
         env=environment, stdout=subprocess.DEVNULL, stderr=log, **launch)
     cdp = None
     try:
@@ -237,7 +243,7 @@ def chrome(tmp_path, request):
             time.sleep(.05)
         assert page and session
         frame = cdp.call('Page.getFrameTree', session=session)['frameTree']['frame']['id']
-        broker = Broker(Vault([CardEntry()]), RecordingTyper(), card_browser_profile=profile)
+        broker = Broker(Vault([CardEntry()]), RecordingTyper(), card_browser_profile=profile, default_fill_route='cdp')
         yield SimpleNamespace(broker=broker, cdp=cdp, session=session, page=page, frame=frame,
             url=url, profile=profile, process=process, lab=desktop, requests=requests)
     finally:
@@ -396,6 +402,7 @@ def test_reused_expired_mismatched_and_disconnected_authorizations_never_write(c
     assert evaluate(chrome, "number.value === ''")
 
 
+@pytest.mark.skipif(sys.platform != 'linux', reason='requires an interactive X11 browser and XTest')
 def test_real_omnibox_focus_cannot_receive_card_value(chrome):
     from Xlib import X, Xatom, XK
     from Xlib.ext import xtest
@@ -658,7 +665,7 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
         return json.loads(captured.out)
 
     def target(field, selector, code=0, url=None):
-        return command('pin-identity-target', '--page-id', chrome.page, '--frame-id', chrome.frame,
+        return command('pin-identity-target', '--route', 'cdp', '--page-id', chrome.page, '--frame-id', chrome.frame,
                        '--top-url', url or chrome.url, '--frame-url', url or chrome.url, '--selector', selector,
                        '--field', field, code=code)
 
@@ -774,7 +781,7 @@ def test_private_identity_save_and_cli_fill_on_real_loopback_https(chrome, deplo
         purpose = ('--field-purpose', 'tel')
 
         def purpose_pin(selector, *extra, code=0):
-            return command('pin-identity-target', '--page-id', chrome.page, '--frame-id', chrome.frame,
+            return command('pin-identity-target', '--route', 'cdp', '--page-id', chrome.page, '--frame-id', chrome.frame,
                            '--top-url', chrome.url, '--frame-url', chrome.url, '--selector', selector,
                            '--field', 'tel', *purpose, *extra, code=code)
         pin = purpose_pin('#bare')

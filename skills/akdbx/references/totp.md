@@ -1,5 +1,7 @@
 # TOTP authenticators
 
+Before using CDP, verify [client isolation](target-fill.md#operator-configuration).
+
 Use the broker to generate and enter authenticator codes for an authorized
 sign-in or access-confirmation challenge. This does not authorize changing a
 site's security settings. Reuse the shared browser session and verify the
@@ -42,7 +44,7 @@ without gaining password fill or password generation privileges.
 
 Verify the exact challenge page and account, then focus one visible editable
 whole-code input. For Chromium browser delivery, require integer
-`browser_totp_protocol: 1`. Use CDP on Linux/Windows or the paired extension on
+`browser_totp_protocol: 1`. Use CDP on Linux/Windows/macOS or the paired extension on
 Linux/Windows/macOS (including the native macOS broker). Extension TOTP requires
 integer `extension_totp_protocol: 1` and fill extension **0.10.0** or newer; an
 older loaded extension is refused before pinning. The human-click workflow

@@ -42,7 +42,7 @@ Require these values in `status` before you use the route:
 
 `default_fill_route` is `"cdp"` unless the operator started the broker with
 `serve --default-fill-route extension` (or `AKDBX_DEFAULT_FILL_ROUTE`).
-On macOS it defaults to `"extension"`, the only supported route.
+On macOS it defaults to `"extension"`, with CDP available for configured Chromium profiles after 0.49.0.
 `extension_browsers` lists attached browsers and whether each is paired.
 Each item also has the extension version that browser loaded and how it
 compares with this broker (see [Extension version](#extension-version)).

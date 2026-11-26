@@ -43,17 +43,7 @@ def test_endpoint_symlink_writable_file_and_replaceable_profile_refused(tmp_path
     with pytest.raises(Exception): browser_endpoint(profile)
 
 
-def test_foreign_uid_endpoint_receives_no_websocket_bytes(tmp_path):
-    """A stale owned port file must not authorize another user's listener."""
-    if os.environ.get('AKDBX_TEST_FOREIGN_UID') != '1':
-        pytest.skip('foreign-UID regression requires AKDBX_TEST_FOREIGN_UID=1 and sudo -n -u nobody')
-    import select
-    import shutil
-    import subprocess
-    from akdbx.browser_card import CDP
-    sudo = shutil.which('sudo')
-    assert sudo is not None, 'foreign-UID regression requires sudo -n -u nobody'
-    script = '''import os, socket
+FOREIGN_LISTENER = '''import os, socket
 with socket.socket() as listener:
     listener.bind(('127.0.0.1', 0))
     listener.listen(1)
@@ -64,25 +54,93 @@ with socket.socket() as listener:
         connection.settimeout(3)
         print(len(connection.recv(8192)), flush=True)
 '''
+
+
+def _foreign_account_command(sudo):
+    """Return (UID, argv) that run Python as another unprivileged account.
+
+    A different user cannot always run the test's interpreter. macOS
+    /usr/bin/python3 is an Xcode shim, and a setup-python build can sit under
+    the runner's private home. Probe each candidate as that account, from /,
+    with an empty environment and HOME=/, and keep every failure's stderr.
+    """
+    import pwd
+    import subprocess
+    import sys
+    account = '_www' if sys.platform == 'darwin' else 'nobody'
+    uid = pwd.getpwnam(account).pw_uid
+    assert uid not in (0, os.getuid()), f'{account} must be a different unprivileged UID'
+    candidates = []
+    if sys.platform == 'darwin':
+        try:  # Resolve the shim as the runner, which has a developer directory.
+            candidates.append(subprocess.run(['/usr/bin/xcrun', '--find', 'python3'], capture_output=True,
+                                             text=True, timeout=30, check=True).stdout.strip())
+        except (OSError, subprocess.SubprocessError):
+            pass
+        candidates += ['/opt/homebrew/bin/python3', '/usr/local/bin/python3']
+    candidates += ['/usr/bin/python3', os.path.realpath(sys.executable)]
+    failures, seen = [], set()
+    for python in candidates:
+        if not python or not os.path.isfile(python) or os.path.realpath(python) in seen:
+            continue
+        seen.add(os.path.realpath(python))
+        argv = [sudo, '-n', '-u', account, '/usr/bin/env', '-i', 'HOME=/', 'PATH=/usr/bin:/bin',
+                python, '-I', '-S', '-c']
+        try:
+            probe = subprocess.run([*argv, 'import os, socket; print(os.getuid())'], cwd='/',
+                                   capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired as error:
+            failures.append(f'{python}: probe timed out; stderr: {error.stderr!r}')
+            continue
+        if probe.returncode == 0 and probe.stdout.strip() == str(uid):
+            return uid, argv
+        failures.append(f'{python}: exit {probe.returncode}; stdout {probe.stdout.strip()!r}; '
+                        f'stderr {probe.stderr.strip()[-800:]!r}')
+    pytest.fail(f'no Python interpreter runs as {account} (UID {uid}): ' + ' | '.join(failures or ['none found']))
+
+
+def test_foreign_uid_endpoint_receives_no_websocket_bytes(tmp_path):
+    """A stale owned port file must not authorize another user's listener."""
+    if os.environ.get('AKDBX_TEST_FOREIGN_UID') != '1':
+        pytest.skip('foreign-UID regression requires AKDBX_TEST_FOREIGN_UID=1 and passwordless sudo')
+    import select
+    import shutil
+    import subprocess
+    from akdbx.browser_card import CDP
+    sudo = shutil.which('sudo')
+    assert sudo is not None, 'foreign-UID regression requires sudo -n'
+    expected_uid, argv = _foreign_account_command(sudo)
     profile = tmp_path / 'profile'
     profile.mkdir(mode=0o700)
-    with subprocess.Popen([sudo, '-n', '-u', 'nobody', '/usr/bin/python3', '-c', script],
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+    with subprocess.Popen([*argv, FOREIGN_LISTENER], cwd='/', stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True) as process:
+        def startup_failure(reason):
+            if process.poll() is None:
+                process.terminate()  # sudo relays SIGTERM to the listener
+            _, error = process.communicate(timeout=10)
+            pytest.fail(f'foreign listener {reason} (exit {process.returncode}): {error.strip()[-800:]}')
         try:
-            assert select.select([process.stdout], [], [], 3)[0], 'listener did not start'
-            port, uid = map(int, process.stdout.readline().split())
-            assert uid != os.getuid(), 'listener must run as a different UID'
+            if not select.select([process.stdout], [], [], 15)[0]:
+                startup_failure('did not start in 15 s')
+            header = process.stdout.readline().split()
+            if len(header) != 2:
+                startup_failure(f'printed {header!r} instead of its port and UID')
+            port, uid = map(int, header)
+            assert uid == expected_uid, f'listener runs as UID {uid}, expected foreign UID {expected_uid}'
             active = profile / 'DevToolsActivePort'
             active.write_text(f'{port}\n/devtools/browser/synthetic-stale-file')
             active.chmod(0o600)
             with pytest.raises(Exception) as refused:
                 CDP(profile)
-            output, error = process.communicate(timeout=8)
-            assert process.returncode == 0, error
-            assert output.strip() == '0', 'foreign listener received WebSocket handshake bytes'
+            output, error = process.communicate(timeout=10)
+            # Exit 0 proves the listener accepted the broker's TCP connection.
+            assert process.returncode == 0, f'foreign listener failed: {error.strip()[-800:]}'
+            assert output.strip() == '0', f'foreign listener received WebSocket handshake bytes: {output!r}'
             assert isinstance(refused.value, CardTargetError)
         finally:
             # This exact child owns bounded accept/read deadlines; no shared process.
+            if process.poll() is None:
+                process.terminate()  # sudo relays SIGTERM to the listener
             process.wait(timeout=10)
 
 
@@ -168,6 +226,8 @@ def test_connected_endpoint_refuses_missing_or_untrusted_kernel_proof(monkeypatc
         if case == 'unavailable':
             raise PermissionError()
         return io.BytesIO(data)
+    if case == 'oversized-table':
+        monkeypatch.setattr('akdbx.cdp_peer.MAX_TCP_TABLE_BYTES', len(data) - 1)
     monkeypatch.setattr('builtins.open', table)
     with pytest.raises((CardTargetError, OSError, ValueError)):
         verify_peer(Connected())

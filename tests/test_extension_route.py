@@ -230,7 +230,7 @@ def pin_password(broker, channel, tab, document, top, **extra):
 def test_status_advertises_the_extension_route_without_a_connection():
     status = make_broker().dispatch(dict(action='ping'))
     assert status['extension_protocol'] == 1 and status['extension_delivery'] == route.DELIVERY
-    assert status['fill_routes'] == (['extension'] if sys.platform == 'darwin' else ['cdp', 'extension'])
+    assert status['fill_routes'] == ['cdp', 'extension']
     assert status['default_fill_route'] == ('extension' if sys.platform == 'darwin' else 'cdp')
     assert status['extension_connected'] is False and status['extension_paired'] is False
     assert status['extension_id'] == route.EXTENSION_ID and 'extension_pairing' not in status

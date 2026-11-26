@@ -8,6 +8,7 @@ from pathlib import Path
 import socket
 import sys
 import threading
+import time
 
 import pytest
 
@@ -17,10 +18,11 @@ if sys.platform != 'win32':
 import win32file
 import win32security
 
-from akdbx import browser_card, browser_password, windows_browser, windows_security as security
+from akdbx import browser_card, browser_password, cdp_peer, windows_browser, windows_security as security
 from akdbx.browser_card import CardTargetError
 from akdbx.target import TargetError
-from akdbx.windows_browser import BrowserEndpointError, MIB_TCP_STATE_ESTAB, _Row
+from akdbx.windows_browser import BrowserEndpointError
+from akdbx.cdp_peer import MIB_TCP_STATE_ESTAB, _Row
 from test_windows_native import private_dir  # noqa: F401
 
 VALID = b'12345\n/devtools/browser/synthetic-id'
@@ -113,7 +115,7 @@ def test_real_connected_peer_is_verified_before_accept():
         listener.listen(1)
         client.settimeout(2)
         client.connect(listener.getsockname())
-        windows_browser.verify_peer(client)
+        cdp_peer.verify_peer(client)
         browser_password.verify_peer(client)
         browser_card.verify_peer(client)
 
@@ -128,7 +130,7 @@ def row(server, client, *, pid=None, state=MIB_TCP_STATE_ESTAB, local='127.0.0.1
 def test_peer_is_found_in_a_large_table_in_any_position():
     unrelated = [row(1000 + index % 60000, 2000 + index % 60000, pid=4321) for index in range(50000)]
     for rows in ([row(12345, 54321), *unrelated], [*unrelated, row(12345, 54321)]):
-        assert windows_browser.server_pid(12345, 54321, rows) == os.getpid()
+        assert cdp_peer.server_pid(12345, 54321, rows, time.monotonic() + 1) == os.getpid()
 
 
 @pytest.mark.parametrize('case', ['missing', 'duplicate', 'listener-only', 'client-only', 'closing', 'other-address',
@@ -144,8 +146,8 @@ def test_ambiguous_or_missing_kernel_rows_refuse(case):
         'system-process': [row(12345, 54321, pid=4)],
         'reversed-ports': [row(54321, 12345)],
     }[case]
-    with pytest.raises(BrowserEndpointError):
-        windows_browser.server_pid(12345, 54321, rows)
+    with pytest.raises(cdp_peer.PeerError):
+        cdp_peer.server_pid(12345, 54321, rows, time.monotonic() + 1)
 
 
 @pytest.mark.parametrize('case', ['other-user', 'different-integrity', 'pid-reused', 'not-loopback', 'table-unavailable', 'oversized-table',
@@ -182,18 +184,18 @@ def test_untrusted_peer_receives_no_websocket_bytes(profile, monkeypatch, case):
             monkeypatch.setattr(security, 'integrity_level', lambda _: next(levels))
         elif case == 'pid-reused':
             answers = iter([os.getpid(), os.getpid() + 4])
-            monkeypatch.setattr(windows_browser, 'server_pid', lambda *_: next(answers))
+            monkeypatch.setattr(cdp_peer, 'server_pid', lambda *_: next(answers))
         elif case == 'not-loopback':
             real = socket.socket.getpeername
             monkeypatch.setattr(socket.socket, 'getpeername', lambda self: ('192.0.2.1', real(self)[1]))
         elif case == 'table-unavailable':
-            def unavailable():
+            def unavailable(_deadline):
                 raise BrowserEndpointError()
-            monkeypatch.setattr(windows_browser, 'tcp_rows', unavailable)
+            monkeypatch.setattr(cdp_peer, 'tcp_rows', unavailable)
         elif case == 'oversized-table':
-            monkeypatch.setattr(windows_browser, 'MAX_TCP_TABLE_BYTES', 8)
+            monkeypatch.setattr(cdp_peer, 'MAX_TCP_TABLE_BYTES', 8)
         else:
-            monkeypatch.setattr(windows_browser, 'PEER_SCAN_TIMEOUT', 0.0)
+            monkeypatch.setattr(cdp_peer, 'PEER_SCAN_TIMEOUT', 0.0)
         with pytest.raises(TargetError):
             browser_password.CDP(profile)
         monkeypatch.undo()

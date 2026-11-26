@@ -4,7 +4,7 @@ CDP is a privileged local interface. The operator selects the profile, or a
 root of agent desktop slot profiles (`browser_slots`), at broker startup; an RPC
 names at most a slot, never a path. Hostile pages/OS and other local debugging clients
 are outside this boundary. Unsupported frames/controls fail closed. Child frames
-need the explicit same-site route proof in `password_frames`. Linux and Windows
+need the explicit same-site route proof in `password_frames`. Linux, macOS and Windows
 share the DOM contract; only the profile and peer checks are per platform.
 """
 from __future__ import annotations
@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 from .target import TargetError, DeliveryError
 from .totp import https_origin
 from . import password_frames
+from . import cdp_peer
 from . import browser_slots
 
 DELIVERY = 'chromium-password-dom-v1'
@@ -48,8 +49,6 @@ MAX_READ_SELECTOR = 512
 TTL = 30
 MAX_PINS = 16
 MAX_MESSAGE = 256 * 1024
-MAX_TCP_TABLE_BYTES = 64 * 1024 * 1024
-PEER_SCAN_TIMEOUT = 1.0
 
 
 def frame_url(frame):
@@ -75,21 +74,30 @@ def endpoint(profile):
         except Exception:
             raise TargetError() from None
     path = Path(os.path.abspath(os.fspath(profile)))
-    # Do not follow a substituted profile or ancestor symlink.
-    for item in [*reversed(path.parents), path]:
-        info = item.lstat()
-        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_mode & 0o022 and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX):
+    if sys.platform == 'darwin':
+        from .runtime import open_private_runtime_directory
+        _, directory = open_private_runtime_directory(path)
+    else:
+        # Do not follow a substituted profile or ancestor symlink.
+        for item in [*reversed(path.parents), path]:
+            info = item.lstat()
+            if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_mode & 0o022 and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX):
+                raise TargetError()
+        info = path.lstat()
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise TargetError()
-    info = path.lstat()
-    if info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise TargetError()
-    directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         fd = os.open('DevToolsActivePort', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022 or info.st_size > 256:
                 raise TargetError()
+            if sys.platform == 'darwin':
+                from .macos import require_private_acl
+                if info.st_nlink != 1:
+                    raise TargetError()
+                require_private_acl(fd)
             data = os.read(fd, 257).decode('ascii')
         finally:
             os.close(fd)
@@ -102,45 +110,10 @@ def endpoint(profile):
 
 
 def verify_peer(connection):
-    """Require our UID on the server side of this connected Linux TCP socket.
-
-    Checking a listener before connect permits port reuse between the check and
-    connect. The reciprocal ESTABLISHED tuple identifies this actual peer. Keep
-    this socket for the WebSocket handshake; never reconnect or follow redirects.
-    Missing, ambiguous, oversized or slow tables refuse before sending data.
-    Windows proves the same fact with the kernel's TCP owner table and the
-    owning process's user and desktop session.
-    """
-    if os.name == 'nt':
-        from . import windows_browser
-        try:
-            return windows_browser.verify_peer(connection)
-        except Exception:
-            raise TargetError() from None
-    local, remote = connection.getsockname(), connection.getpeername()
-    if connection.family != socket.AF_INET or local[0] != '127.0.0.1' or remote[0] != '127.0.0.1':
-        raise TargetError()
-    def address(value):
-        return f'{int.from_bytes(socket.inet_aton(value[0]), sys.byteorder):08X}:{value[1]:04X}'.encode('ascii')
-    server, client = address(remote), address(local)
-    owners = []
-    consumed = 0
-    deadline = time.monotonic() + PEER_SCAN_TIMEOUT
-    with open('/proc/self/net/tcp', 'rb') as table:
-        while True:
-            line = table.readline(1025)
-            consumed += len(line)
-            if len(line) > 1024 or consumed > MAX_TCP_TABLE_BYTES or time.monotonic() >= deadline:
-                raise TargetError()
-            if not line:
-                break
-            fields = line.split()
-            if len(fields) >= 4 and fields[1:4] == [server, client, b'01']:
-                if len(fields) < 8:
-                    raise TargetError()
-                owners.append(int(fields[7]))
-    if owners != [os.getuid()]:
-        raise TargetError()
+    try:
+        cdp_peer.verify_peer(connection)
+    except Exception:
+        raise TargetError() from None
 
 
 class CDP:

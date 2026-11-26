@@ -48,7 +48,7 @@ class BrowserCodes(BrowserCards):
     pin_extra = (False, False, False, False, True)
 
     def capabilities(self):
-        cdp = self.configured and sys.platform != 'darwin'
+        cdp = self.configured
         routes = ['cdp'] if cdp else []
         # The broker adds the extension route to this manager (RoutedTargets): a
         # paired fill extension 0.13.0 or newer takes code pins on Linux, Windows

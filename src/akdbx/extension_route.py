@@ -574,7 +574,7 @@ class ExtensionHub:
                      extension_code_protocol=1, extension_code_min_version='.'.join(map(str, CODE_VERSION)),
                      extension_qr_capture_min_version='.'.join(map(str, QR_VERSION)),
                      extension_capture_protocol=CAPTURE_PROTOCOL, extension_capture_delivery=CAPTURE_DELIVERY,
-                     fill_routes=['extension'] if sys.platform == 'darwin' else list(ROUTES),
+                     fill_routes=list(ROUTES),
                      default_fill_route=self.default_route,
                      extension_host_browsers=list(BROWSERS),
                      extension_connected=bool(channels),

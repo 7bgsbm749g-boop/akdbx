@@ -47,15 +47,6 @@ def test_macos_never_falls_back_to_window_input():
     assert error.value.started is False
 
 
-@pytest.mark.parametrize('profile, route', [(Path('/synthetic/profile'), 'extension'), (None, 'cdp')])
-def test_macos_refuses_cdp_configuration_before_startup(monkeypatch, capsys, profile, route):
-    monkeypatch.setattr(sys, 'platform', 'darwin')
-    args = SimpleNamespace(password_browser_profile=profile, default_fill_route=route,
-                           card_browser_profile=None, browser_profile_root=None)
-    assert cli._serve(args, None, None, None, None) == 2
-    assert 'extension route only' in capsys.readouterr().err
-
-
 def test_macos_native_host_locations(monkeypatch, tmp_path):
     from akdbx.extension_host import linux_manifest_dir
     monkeypatch.setattr(sys, 'platform', 'darwin')
@@ -149,13 +140,15 @@ def test_documented_first_launch_uses_extension_route(tmp_path, monkeypatch, pri
         capture_name = 's' if path.name.casefold() == 'u' else 'u'
         assert (path.parent / capture_name).is_socket()
     monkeypatch.setattr(cli, 'serve', exercise)
+    cdp_options = ['--password-browser-profile', str(tmp_path / 'profile'), '--default-fill-route', 'cdp'] if custom_socket == 's' else []
     cert, key = private_pair
     assert cli.main([*options, '--unlock-origin', 'https://localhost:9443', 'serve', str(database),
-                     '--tls-cert', str(cert), '--tls-key', str(key)]) == 0
-    assert seen[0]['fill_routes'] == ['extension'] and seen[0]['default_fill_route'] == 'extension'
-    # SMS codes fill a page through the paired extension, the macOS page route.
-    assert seen[0]['sms_protocol'] == 1 and seen[0]['sms_fill_routes'] == ['extension']
-    assert seen[0]['extension_code_protocol'] == 1 and seen[0]['code_browser_configured'] is False
+                     '--tls-cert', str(cert), '--tls-key', str(key), *cdp_options]) == 0
+    assert seen[0]['fill_routes'] == ['cdp', 'extension']
+    assert seen[0]['default_fill_route'] == ('cdp' if cdp_options else 'extension')
+    # SMS codes fill a page through the paired extension, and through CDP once a profile is configured.
+    assert seen[0]['sms_protocol'] == 1 and seen[0]['sms_fill_routes'] == (['cdp', 'extension'] if cdp_options else ['extension'])
+    assert seen[0]['extension_code_protocol'] == 1 and seen[0]['code_browser_configured'] is bool(cdp_options)
 
 
 @native
@@ -259,3 +252,76 @@ def test_macos_preview_merge_and_read_receipt(tmp_path, monkeypatch):
     assert saved['state'] == 'saved', saved
     assert broker.dispatch({'action': 'merge-status', 'operation_id': saved['operation_id']}) == saved
     assert PyKeePass(target_file, password='synthetic-only master').find_entries(title='Imported', first=True)
+
+
+@native
+@pytest.mark.parametrize('location', ['ancestor', 'profile', 'port'])
+def test_cdp_routes_refuse_extended_allow_acl(tmp_path, location):
+    from akdbx import browser_card, browser_password
+    parent = tmp_path.resolve() / 'profiles'
+    profile = parent / 'slot1'
+    parent.mkdir(mode=0o700)
+    profile.mkdir(mode=0o700)
+    port = profile / 'DevToolsActivePort'
+    port.write_text('12345\n/devtools/browser/synthetic')
+    port.chmod(0o600)
+    validators = [browser_card.browser_endpoint, browser_password.endpoint]
+    for endpoint in validators:
+        assert endpoint(profile) == 'ws://127.0.0.1:12345/devtools/browser/synthetic'
+    path = dict(ancestor=parent, profile=profile, port=port)[location]
+    subprocess.run(['/bin/chmod', '+a', 'everyone allow read', str(path)], check=True)
+    for endpoint in validators:
+        with pytest.raises(PermissionError, match='ACL'):
+            endpoint(profile)
+
+
+@native
+@pytest.mark.parametrize('case', ['duplicate', 'missing', 'truncated', 'unknown-layout', 'foreign', 'timeout'])
+def test_darwin_refuses_ambiguous_or_incomplete_snapshot(monkeypatch, case):
+    """Mutate only a real kernel snapshot between acquisition and parsing."""
+    from akdbx import cdp_peer
+    parse = cdp_peer._darwin_rows
+
+    def changed(data, local, remote, deadline):
+        if case == 'duplicate':
+            data = bytes(data[:-24]) + bytes(data[24:])
+        elif case == 'missing':
+            data = bytes(data[:24]) + bytes(data[-24:])
+        elif case == 'truncated':
+            data = data[:-1]
+        elif case == 'unknown-layout':
+            data = bytes(data[:24]) + bytes(4) + bytes(data[28:])
+        elif case == 'foreign':
+            uid = os.getuid()
+            monkeypatch.setattr(os, 'getuid', lambda: uid + 1)
+        else:
+            deadline = 0
+        parse(data, local, remote, deadline)
+
+    with socket.socket() as listener, socket.socket() as client:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen()
+        client.connect(listener.getsockname())
+        cdp_peer.verify_peer(client)
+        monkeypatch.setattr(cdp_peer, '_darwin_rows', changed)
+        with pytest.raises(cdp_peer.PeerError):
+            cdp_peer.verify_peer(client)
+
+
+def test_darwin_refuses_oversized_table_before_allocation(monkeypatch):
+    import ctypes
+    from akdbx import cdp_peer
+
+    calls = []
+
+    def sysctl(name, buffer, size, *_):
+        assert buffer is None
+        calls.append(name)
+        ctypes.cast(size, ctypes.POINTER(ctypes.c_size_t))[0] = cdp_peer.MAX_TCP_TABLE_BYTES + 1
+        return 0
+
+    monkeypatch.setattr(ctypes, 'CDLL', lambda *a, **kw: SimpleNamespace(sysctlbyname=sysctl))
+    monkeypatch.setattr(ctypes, 'create_string_buffer', lambda *_: pytest.fail('oversized kernel table allocation'))
+    with pytest.raises(cdp_peer.PeerError):
+        cdp_peer._darwin_peer(('127.0.0.1', 12345), ('127.0.0.1', 23456), time.monotonic() + 1)
+    assert calls == [b'net.inet.tcp.pcblist64']

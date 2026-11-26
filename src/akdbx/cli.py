@@ -875,11 +875,6 @@ def main(argv: list[str] | None = None) -> int:
 def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -> int:
     if sys.platform == 'darwin':
         from .macos import prepare_runtime, macos_page_socket
-        if (any((args.password_browser_profile, args.card_browser_profile, args.browser_profile_root))
-                or args.default_fill_route != 'extension'):
-            print('macOS currently supports the extension route only; omit CDP options and use '
-                  '--default-fill-route extension', file=sys.stderr)
-            return 2
         try:
             prepare_runtime(args.socket, create_ancestors=args.socket == default_socket())
             capture = args.unlock_socket or macos_page_socket(args.socket)

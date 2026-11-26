@@ -2,6 +2,8 @@
 
 For card field operations on Android, see [Android pins and commands](android.md#additional-android-operations-after-0470).
 
+Before using CDP, verify [client isolation](target-fill.md#operator-configuration).
+
 Require CLI/broker card protocol 1: `cards_supported: true`, integer
 `card_protocol: 1`, `card_delivery: "cdp-card-element-v1"`. `card_browser_configured`
 must be true for filling. The CLI checks protocol capabilities before dispatch.
@@ -224,7 +226,9 @@ this is deployment configuration, not an agent-selected endpoint or new profile.
 With a root, `pin-card-target` names the desktop's slot with `--browser-slot SLOT`
 (default `$AGENT_DESKTOP_SLOT`; see [agent desktop slots](target-fill.md#agent-desktop-slots)).
 Before the WebSocket handshake, the broker checks the connected peer's reciprocal
-TCP tuple and UID in bounded Linux kernel metadata. Missing or ambiguous proof
+established TCP tuple in bounded kernel metadata. Linux and macOS require the
+socket owner UID. Windows requires the broker user, desktop session and integrity level and
+rechecks the tuple while holding the owner process handle. Missing or ambiguous proof
 refuses the connection. The verified socket is retained and redirects are refused.
 Chrome's debugging port is a browser-control interface. Loopback alone does not
 isolate it from other local users. The operator must provide host access controls

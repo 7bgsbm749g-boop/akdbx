@@ -110,6 +110,19 @@ jobs:
           python -m pytest -q -rs tests/test_macos_native.py tests/test_protocol.py
           tests/test_local_https.py tests/test_extension_route.py
           --basetemp="${{ runner.temp }}/m"
+      - name: Verified CDP in native Chrome, including a foreign UID receiving zero bytes
+        env:
+          AKDBX_TEST_FOREIGN_UID: '1'
+        run: |
+          umask 077
+          python -m pytest -q -rs \
+            tests/test_cdp_profile_chromium.py tests/test_sms_chromium.py \
+            tests/test_card_chromium.py::test_private_identity_save_and_cli_fill_on_real_loopback_https \
+            tests/test_card_processor.py::test_stripe_card_element_fills_each_exact_field_once \
+            tests/test_card_target.py::test_foreign_uid_endpoint_receives_no_websocket_bytes \
+            tests/test_password_endpoint.py::test_real_connected_peer_uid_before_accept \
+            --basetemp="$HOME/cdp" --junitxml="$RUNNER_TEMP/macos-cdp.xml"
+          python -c 'import os, xml.etree.ElementTree as ET; cases = ET.parse(os.environ["RUNNER_TEMP"] + "/macos-cdp.xml").findall(".//testcase"); assert cases and all(c.find("skipped") is None for c in cases)'
       - name: macOS setup, LaunchAgent, lock notifications and private page transports
         env:
           AKDBX_MACOS_RUNNER: '1'

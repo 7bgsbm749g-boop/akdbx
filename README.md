@@ -153,11 +153,12 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 
 ## Platforms
 
-- **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
+- **macOS** (0.43.0+): local browser broker, with native Unix peer
   checks, private HTTPS unlock and encrypted vault writes. The native host supports Chrome, Edge, Helium
   and Firefox 153+ (0.47.0+); Chromium and Brave are supported from 0.49.0. From 0.49.0, guided setup
   installs a login LaunchAgent, the broker locks on macOS screen-lock notifications, and the QR importer
-  also registers for Chromium and Brave. Native window delivery and CDP are unavailable. Safari's Apple
+  also registers for Chromium and Brave. After 0.49.0, Chromium CDP also supports private profiles and profile slots.
+  Native window delivery is unavailable. Safari's Apple
   wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).
 - **Linux** (X11 or Wayland desktop): the original platform. The setup notes in this
@@ -344,7 +345,7 @@ Keep the broker process running. Open its private unlock page (on this computer 
 .venv/bin/akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
 ```
 
-Before starting the broker, choose the private Chrome user data directory shown above (or set `AKDBX_PASSWORD_BROWSER_PROFILE`). Configure that browser's startup with `--user-data-dir=/absolute/path/to/chrome-user-data --remote-debugging-port=0` so Chrome writes its selected port and browser endpoint to `DevToolsActivePort`. [Chrome 136 and later require a non-default user data directory](https://developer.chrome.com/blog/remote-debugging-port); explicitly naming Chrome's default directory with `--user-data-dir` does not enable remote debugging there. This concerns the user-data root, not a profile name such as `Default`. A fixed debugging port does not provide `DevToolsActivePort` for this transport. The broker does not start or change Chrome. The profile must be owned, mode 0700, without symlink components; launch Chrome with `umask 077` so `DevToolsActivePort` is not writable by other users. On Linux, the broker also verifies the kernel UID of the connected TCP peer before the WebSocket handshake. An unavailable or ambiguous ownership check refuses; redirects and reconnection are forbidden. No profile means password fills refuse. Treat CDP as a privileged local interface.
+Before enabling remote debugging, verify that only trusted clients can reach the browser’s loopback TCP port. Use an isolated host or VM if other local users can access that port. Then choose the private Chrome user data directory shown above (or set `AKDBX_PASSWORD_BROWSER_PROFILE`). Configure that browser's startup with `--user-data-dir=/absolute/path/to/chrome-user-data --remote-debugging-port=0` so Chrome writes its selected port and browser endpoint to `DevToolsActivePort`. [Chrome 136 and later require a non-default user data directory](https://developer.chrome.com/blog/remote-debugging-port); explicitly naming Chrome's default directory with `--user-data-dir` does not enable remote debugging there. This concerns the user-data root, not a profile name such as `Default`. A fixed debugging port does not provide `DevToolsActivePort` for this transport. The broker does not start or change Chrome. The profile must be owned, mode 0700, without symlink components; launch Chrome with `umask 077` so `DevToolsActivePort` is not writable by other users. On Linux and macOS the kernel must identify the broker UID on the reciprocal established connection. macOS also refuses extended allow ACLs on profile paths and the port file. On Windows the owner PID must belong to the same user, desktop session and integrity level. These checks precede the WebSocket handshake. An unavailable or ambiguous ownership check refuses; redirects and reconnection are forbidden. No profile means password fills refuse. Treat CDP as a privileged local interface.
 
 ### Several agent desktops: one Chrome per slot
 
@@ -936,7 +937,7 @@ akdbx fill-totp FRESH_SEARCH_HANDLE --target-url 'https://example.com/challenge'
   --target FRESH_TARGET_PIN
 ```
 
-Use `--route cdp` for the configured CDP browser on Linux/Windows. The paired
+Use `--route cdp` for the configured CDP browser on Linux, Windows or macOS. The paired
 extension route works on Linux/Windows/macOS, including the native macOS broker,
 and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. For a
 human-click fill, focus a top-page input marked `autocomplete="one-time-code"`
@@ -1233,8 +1234,10 @@ changes are authorized.
 
 Card browser tests skip locally if Chrome/Chromium, Xvfb or openssl is missing.
 The foreign-UID listener test requires an explicit opt-in and passwordless
-`sudo -n -u nobody`. To require both native checks locally, install those
-dependencies and run:
+`sudo -n -u nobody` (`_www` on macOS). It runs the listener from `/` with an
+empty environment, using the first Python that account can execute, and fails
+with each candidate's error when none can. To require both native checks
+locally, install those dependencies and run:
 
 ```bash
 AKDBX_REQUIRE_CARD_CHROMIUM=1 AKDBX_TEST_FOREIGN_UID=1 \

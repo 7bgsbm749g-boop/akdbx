@@ -290,6 +290,10 @@ or forget a relay that another workflow's broker uses. Details:
 
 ## Choose the fill route
 
+On macOS, use CDP only when the operator has verified that only trusted clients
+can reach the debugging port. Route and profile status do not verify that
+isolation. Otherwise use the paired extension. See the [macOS CDP setup](https://github.com/7bgsbm749g-boop/akdbx/blob/main/docs/macos.md#chromium-cdp).
+
 Web fills can reach the page in two ways. Check `fill_routes`,
 `default_fill_route`, `extension_connected` and `extension_paired` in `status`.
 
@@ -302,7 +306,8 @@ Sites see ordinary use by the user, which is what it is.
 
 **CDP route (`--route cdp`): the original route.** The broker drives a Chromium
 profile that was started with `--remote-debugging-port` and fills over the
-Chrome DevTools Protocol. It works without any browser extension. Secret
+Chrome DevTools Protocol. On macOS after 0.49.0, check that `fill_routes`
+includes `cdp` and that the browser profile is configured. It works without any browser extension. Secret
 capture (`--mode read`, `capture-secret`) works on both routes from 0.32.0. It
 has two costs:
 
@@ -521,7 +526,7 @@ do anything else.
 has `totp_configured: true`, fill it with `fill-totp` instead of asking for a
 phone approval. Use a fresh handle, a verified HTTPS challenge URL and a fresh
 pin. In a Chromium browser, use `pin-password-target --mode totp` with the
-CDP route (Linux/Windows) or paired extension route (Linux/Windows/macOS), then
+CDP route (Linux/Windows/macOS) or paired extension route (Linux/Windows/macOS), then
 `fill-totp HANDLE --target-url EXACT_CHALLENGE_URL --target PIN [--pending]`.
 Require `browser_totp_protocol: 1`; extension also needs
 `extension_totp_protocol: 1` and fill extension 0.10.0+. Only one whole-code

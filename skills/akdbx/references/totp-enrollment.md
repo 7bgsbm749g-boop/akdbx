@@ -2,6 +2,8 @@
 
 For authenticator setup key operations on Android, see [Android pins and commands](android.md#additional-android-operations-after-0470).
 
+Before using CDP, verify [client isolation](target-fill.md#operator-configuration).
+
 Use this when the user authorized adding an authenticator app (TOTP) to a
 website account, for example GitHub's **Set up authenticator app**. The broker
 reads the setup key from the enrollment page itself (the printed key, or the
@@ -43,7 +45,7 @@ read route, as text does. The CLI refuses `--qr` before it sends anything to a
 broker without the flag.
 
 The pending code fill uses the same TOTP pins as a saved code: retained DOM
-pins on CDP (Linux/Windows), the paired extension (Linux/Windows/macOS), native
+pins on CDP (Linux/Windows/macOS), the paired extension (Linux/Windows/macOS), native
 field pins (Linux X11/Wayland and supported Windows controls), or Current Window
 pins on Linux X11/Windows. Browser pins require integer
 `browser_totp_protocol: 1`; extension pins also require integer
