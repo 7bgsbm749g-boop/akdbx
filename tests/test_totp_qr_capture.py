@@ -140,6 +140,16 @@ PAGES = {
     '/qr-cross-origin': enrollment('<img id=qr src="https://evil.example.net/qr/key.png" alt="QR code">'),
     '/qr-cross-origin-cors': enrollment('<img id=qr crossorigin=anonymous src="https://evil.example.net/qr/key-cors.png" '
                                         'alt="QR code">'),
+    # The page draws a cross-origin image (no CORS) into its own canvas: the canvas is tainted.
+    '/qr-canvas-tainted': enrollment('<canvas id=qr></canvas>').replace('window.ready = true;', '''
+const picture = new Image();
+picture.onload = () => {
+  const canvas = document.getElementById('qr');
+  canvas.width = picture.naturalWidth; canvas.height = picture.naturalHeight;
+  canvas.getContext('2d').drawImage(picture, 0, 0);
+  window.ready = true;
+};
+picture.src = 'https://evil.example.net/qr/key.png';'''),
     '/qr-two': enrollment('<img id=qr src="/qr/two.png" alt="QR codes">'),
     '/qr-two-sizes': enrollment('<img id=qr src="/qr/two-sizes.png" alt="QR codes">'),
     '/qr-hotp': enrollment('<img id=qr src="/qr/hotp.png" alt="QR code">'),
@@ -357,8 +367,8 @@ def test_a_light_code_on_a_dark_ground_and_a_data_url_image_capture(qr, page):
     assert 'secret=' + KEY in stored(qr)[1]
 
 
-@pytest.mark.parametrize('page', ['/qr-cross-origin', '/qr-cross-origin-cors', '/qr-two', '/qr-two-sizes', '/qr-blank',
-                                  '/qr-covered', '/qr-text'])
+@pytest.mark.parametrize('page', ['/qr-cross-origin', '/qr-cross-origin-cors', '/qr-canvas-tainted', '/qr-two',
+                                  '/qr-two-sizes', '/qr-blank', '/qr-covered', '/qr-text'])
 def test_a_cross_origin_image_two_codes_no_code_a_cover_or_text_refuse_the_pin(qr, page):
     url = open_page(qr, page)
     if page.startswith('/qr-cross-origin'):
