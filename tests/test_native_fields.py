@@ -481,3 +481,276 @@ def test_discovery_asks_the_app_outside_the_manager_lock(full):
         assert session.closed and not manager.views
     else:
         assert len(manager.discover(request)['windows']) == 1 and len(manager.views) == 1
+
+
+# WPF through UI Automation, with a fake comtypes client. Real WPF runs only in
+# the Windows job (tests/test_windows_fields.py); this proves the error contract.
+COM_TEXT = 'provider text with invented-password'
+WPF_WINDOW = 0x51
+
+
+class COMError(Exception):
+    """Like _ctypes.COMError: (hresult, text, details) may carry provider text."""
+
+
+class FakeUia:
+    EDIT, DOCUMENT, PASSWORD, VALUE, TEXT = 50004, 50030, 30019, 10002, 10014
+
+    def __init__(self, now):
+        from types import SimpleNamespace
+        self.now, self.fail, self.connect_delay = now, None, 0
+        self.connections, self.value = [], {}
+        self.types = SimpleNamespace(
+            CUIAutomation8=object(), IUIAutomation2=object(), UIA_DocumentControlTypeId=self.DOCUMENT,
+            UIA_EditControlTypeId=self.EDIT, UIA_IsPasswordPropertyId=self.PASSWORD,
+            UIA_ValuePatternId=self.VALUE, UIA_TextPatternId=self.TEXT, TextUnit_Character=0,
+            IUIAutomationValuePattern='value', IUIAutomationTextPattern='text')
+        self.controls = [self.Element(self, 'TextBox', 1), self.Element(self, 'PasswordBox', 2),
+                         self.Element(self, 'TextBox', 3, readonly=True, text='invented-capture')]
+        self.root = self.Element(self, 'Window', 0, children=self.controls)
+        self.focused = 0
+        self.RawViewWalker = self
+
+    def hit(self, name):
+        if self.fail == name:
+            raise COMError(-2146233083, COM_TEXT, (COM_TEXT, 'Provider', None, 0, None))
+
+    def ElementFromHandle(self, window):
+        assert window == WPF_WINDOW
+        self.connections.append(self.ConnectionTimeout)
+        self.now[0] += self.connect_delay
+        self.hit('connect')
+        return self.root
+
+    def GetFirstChildElement(self, node):
+        self.hit('walk')
+        return node.children[0] if node.children else None
+
+    def GetNextSiblingElement(self, node):
+        siblings = node.parent.children
+        index = siblings.index(node) + 1
+        return siblings[index] if index < len(siblings) else None
+
+    def GetParentElement(self, node):
+        return node.parent
+
+    def CompareElements(self, a, b):
+        return a is b
+
+    def GetFocusedElement(self):
+        self.hit('focus')
+        return self.controls[self.focused]
+
+    class Element:
+        CurrentProcessId, CurrentFrameworkId = 123, 'WPF'
+        CurrentIsEnabled, CurrentIsKeyboardFocusable, CurrentIsOffscreen = True, True, False
+
+        def __init__(self, app, name, runtime, children=(), readonly=False, text=''):
+            self.app, self.CurrentClassName, self.runtime = app, name, (42, runtime)
+            self.children, self.parent, self.readonly, self.text = list(children), None, readonly, text
+            for child in self.children:
+                child.parent = self
+            self.CurrentControlType = app.EDIT if name != 'Window' else 50032
+
+        @property
+        def CurrentHasKeyboardFocus(self):
+            return self.app.controls[self.app.focused] is self
+
+        def GetRuntimeId(self):
+            return self.runtime
+
+        def GetCurrentPropertyValueEx(self, prop, ignore_default):
+            assert prop == self.app.PASSWORD and ignore_default is True
+            self.app.hit('describe')
+            return self.CurrentClassName == 'PasswordBox'
+
+        def GetCurrentPattern(self, pattern):
+            if self.app.fail == 'pattern':
+                # A refusal raised while a COM error is handled carries it as context.
+                try:
+                    self.app.fail = 'chained'
+                    self.app.hit('chained')
+                except COMError:
+                    raise TargetError()
+                finally:
+                    self.app.fail = 'pattern'
+            return self
+
+        def QueryInterface(self, interface):
+            return self
+
+        @property
+        def CurrentIsReadOnly(self):
+            return self.readonly
+
+        @property
+        def CurrentValue(self):
+            return self.text
+
+        def SetValue(self, value):
+            self.app.hit('write')
+            self.text = value
+
+        @property
+        def DocumentRange(self):
+            return self
+
+        def GetText(self, limit):
+            self.app.hit('read')
+            return self.text
+
+
+@pytest.fixture
+def wpf(monkeypatch):
+    """Load windows_uia.py on any OS with fake comtypes and pywin32 modules."""
+    import importlib.util
+    import sys
+    from dataclasses import dataclass
+    from pathlib import Path
+    from types import ModuleType, SimpleNamespace
+    import akdbx
+
+    now = [100.0]
+    app = FakeUia(now)
+    modules = {name: ModuleType(name) for name in ('comtypes', 'comtypes.client', 'win32api', 'win32gui', 'win32service')}
+    modules['comtypes'].__dict__.update(COINIT_MULTITHREADED=0, CoInitializeEx=lambda flags: None,
+                                        client=modules['comtypes.client'])
+    modules['comtypes.client'].__dict__.update(GetModule=lambda path: app.types,
+                                               CreateObject=lambda cls, interface: app)
+    modules['win32api'].GetSystemDirectory = lambda: r'C:\Windows\System32'
+    modules['win32gui'].__dict__.update(GetClassName=lambda hwnd: 'HwndWrapper[fields.exe;;1]',
+                                        EnumChildWindows=lambda window, visit, extra: None)
+    modules['win32service'].__dict__.update(
+        OpenInputDesktop=lambda *args: SimpleNamespace(CloseDesktop=lambda: None),
+        GetThreadDesktop=lambda thread: thread, GetUserObjectInformation=lambda desktop, index: 'Default')
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    spec = importlib.util.spec_from_file_location('akdbx._fake_windows_uia', Path(akdbx.__file__).with_name('windows_uia.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module.WpfSession, 'clock', staticmethod(lambda: now[0]))
+
+    @dataclass(frozen=True)
+    class Identity:
+        focus: int = WPF_WINDOW
+        focus_class: str = 'HwndWrapper'
+        thread: int = 7
+
+    native = SimpleNamespace(snapshot=lambda pid, window: Identity(), close=lambda: None)
+    manager = NativeFields(scan=lambda pid: [module.WpfSession(pid, WPF_WINDOW, native)])
+    yield module, app, manager
+    manager.close()
+    module._worker.shutdown()
+
+
+def no_com_text(exc):
+    """Nothing reachable from the error names the COM failure or its text."""
+    seen = []
+    while exc is not None and exc not in seen:
+        seen.append(exc)
+        assert isinstance(exc, TargetError) and COM_TEXT not in repr(exc)
+        assert exc.args == ((exc.started,) if isinstance(exc, DeliveryError) else ())
+        assert not isinstance(exc.__context__, COMError) and not isinstance(exc.__cause__, COMError)
+        exc = exc.__cause__ or exc.__context__
+    return seen
+
+
+def wpf_discover(manager):
+    return manager.discover(dict(action='list-native-fields', native_protocol=1, pid=123))['windows'][0]
+
+
+@pytest.mark.parametrize('site', ['connect', 'walk', 'focus', 'describe', 'pattern'])
+def test_wpf_com_failure_in_discovery_is_a_bare_target_error(wpf, site):
+    module, app, manager = wpf
+    app.fail = site
+    with pytest.raises(TargetError) as error:
+        wpf_discover(manager)
+    assert type(error.value) is TargetError and error.value.__traceback__ is not None
+    assert len(no_com_text(error.value)) == 1 and not manager.views
+
+
+@pytest.mark.parametrize('site, started', [('describe', False), ('write', True)])
+def test_wpf_com_failure_in_a_write_reports_whether_it_started(wpf, site, started):
+    import time
+    module, app, manager = wpf
+    window = wpf_discover(manager)
+    receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                               control=0, mode='username', service_url=SITE))
+    pin = manager.take(receipt['target'])
+    app.fail = site
+    with pytest.raises(DeliveryError) as error:
+        manager.deliver_password(pin, 'username', 'invented-user', '', ORIGINS, lambda: True, time.monotonic() + 4)
+    assert error.value.started is started
+    no_com_text(error.value)
+    assert app.controls[0].text == ''
+    pin.close()
+
+
+def test_wpf_com_failure_in_a_read_is_a_bare_target_error(wpf):
+    import time
+    module, app, manager = wpf
+    app.focused = 2
+    window = wpf_discover(manager)
+    receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                               control=2, mode='read', service_url=SITE))
+    pin = manager.take(receipt['target'])
+    assert manager.read(pin, ORIGINS, lambda: True, time.monotonic() + 4) == 'invented-capture'
+    pin.close()
+    window = wpf_discover(manager)
+    receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                               control=2, mode='read', service_url=SITE))
+    pin = manager.take(receipt['target'])
+    app.fail = 'read'
+    with pytest.raises(TargetError) as error:
+        manager.read(pin, ORIGINS, lambda: True, time.monotonic() + 4)
+    assert len(no_com_text(error.value)) == 1
+    pin.close()
+    window = wpf_discover(manager)
+    receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                               control=2, mode='read', service_url=SITE))
+    pin = manager.take(receipt['target'])
+    app.fail = 'pattern'
+    with pytest.raises(TargetError) as error:
+        manager.read(pin, ORIGINS, lambda: True, time.monotonic() + 4)
+    assert len(no_com_text(error.value)) == 1
+    pin.close()
+
+
+def test_wpf_com_failures_reach_the_broker_as_fixed_text(wpf):
+    import time
+    from test_broker import make_broker
+    module, app, manager = wpf
+    broker, _ = make_broker(time.monotonic)
+    broker.native = manager
+    app.fail = 'connect'
+    result = broker.dispatch(dict(action='list-native-fields', native_protocol=1, pid=123))
+    assert result == dict(ok=False, delivery='not-started',
+                          error='autofill not started: target unavailable, changed or unsupported; pin again')
+    app.fail = None
+    window = wpf_discover(manager)
+    receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                               control=0, mode='username', service_url=SITE))
+    entry = broker.vault.entries[0]
+    entry.url = SITE
+    app.fail = 'write'
+    result = broker.dispatch(dict(action='fill', handle=broker._new_handle(entry), target=receipt['target'],
+                                  target_protocol=1, mode='username', start_deadline=time.monotonic() + 4))
+    assert result == dict(ok=False, delivery='uncertain',
+                          error='autofill outcome uncertain: target delivery interrupted; do not retry automatically')
+    assert COM_TEXT not in json.dumps(result) and 'invented' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('delay, found', [(1.9, True), (3.9, True), (4.0, False)])
+def test_wpf_first_connection_waits_longer_inside_the_collection_bound(wpf, delay, found):
+    module, app, manager = wpf
+    app.connect_delay = delay
+    if found:
+        assert len(wpf_discover(manager)['controls']) == 3
+    else:
+        with pytest.raises(TargetError):
+            wpf_discover(manager)
+    # Only the first request may wait for a starting or busy provider.
+    assert app.connections[0] == module.FIRST_CONNECTION_MS == 2000
+    assert app.TransactionTimeout == module.REQUEST_MS == 500
+    assert app.ConnectionTimeout == 500 and all(limit == 500 for limit in app.connections[1:])
+    assert module.COLLECT_SECONDS == 4
