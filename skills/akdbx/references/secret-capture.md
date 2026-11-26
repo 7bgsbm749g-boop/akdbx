@@ -3,7 +3,9 @@
 For shown-once secret operations on Android, see [Android pins and commands](android.md#additional-android-operations-after-0470).
 
 For an authenticator (TOTP) setup key, use `capture-totp` instead: see
-[automatic authenticator enrollment](totp-enrollment.md).
+[automatic authenticator enrollment](totp-enrollment.md). It also reads a
+setup QR code (`pin-password-target --mode read --qr`, `capture-totp --qr`);
+`capture-secret` refuses such a QR read pin and uses it up.
 
 Use this when a website shows a new secret once (an OAuth client secret, an API
 key, a webhook signing secret) and the task needs it stored and later written
@@ -71,7 +73,8 @@ The pin is single use and expires after 30 seconds. It refuses unless:
 - the element is a read-only text input or a leaf element that holds only text
   (no child elements), and not a password, textarea, select or editable element;
 - its rendered text, trimmed of surrounding blanks, is one non-empty token of at
-  most 4096 characters with no space, line break, control or invisible character.
+  most 4096 characters with no space, line break, control or invisible character;
+- it is a text read pin: a QR read pin (`--qr`) is for `capture-totp --qr` only.
 
 ## 2. Capture into an explicit entry
 

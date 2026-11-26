@@ -18,6 +18,7 @@ from .broker import Broker, FILL_START_TIMEOUT, serve
 from .protocol import ProtocolError, receive_message, send_message
 from .target import X11Typer, DELIVERY
 from .browser_password import DELIVERY as PASSWORD_DELIVERY
+from .totp_capture import OLD_BROKER as QR_CAPTURE_REFUSAL
 from .runtime import anchored_socket_path, open_private_runtime_directory
 from .merge import ID_PATTERN
 from .web_unlock import start_unlock_server
@@ -458,6 +459,9 @@ def parser() -> argparse.ArgumentParser:
                               'the saved credential must match this origin; requires broker password_frame_protocol 1')
     password_pin.add_argument('--mode', choices=('password', 'username', 'login', 'totp', 'read'), default='password',
                               help='read pins a focused element that shows a secret, for capture-secret or capture-totp; never select its text')
+    password_pin.add_argument('--qr', action='store_true',
+                              help='with --mode read: pin a focused <img>, <canvas> or inline <svg> that shows a setup QR code; '
+                                   'the browser decodes it, for capture-totp --qr only (broker totp_qr_capture_protocol 1)')
     password_pin.add_argument('--username-selector', help='required in login mode; no Tab traversal')
     password_pin.add_argument('--password-purpose', choices=('current-password', 'new-password'),
                               help='explicitly verified purpose for password-only fields with absent or on autocomplete')
@@ -871,11 +875,6 @@ def main(argv: list[str] | None = None) -> int:
 def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -> int:
     if sys.platform == 'darwin':
         from .macos import prepare_runtime, macos_page_socket
-        if (any((args.password_browser_profile, args.card_browser_profile, args.browser_profile_root))
-                or args.default_fill_route != 'extension'):
-            print('macOS currently supports the extension route only; omit CDP options and use '
-                  '--default-fill-route extension', file=sys.stderr)
-            return 2
         try:
             prepare_runtime(args.socket, create_ancestors=args.socket == default_socket())
             capture = args.unlock_socket or macos_page_socket(args.socket)
@@ -1068,10 +1067,15 @@ def _command(args) -> int:
         if args.allow_autocomplete_off and (args.mode != 'password' or args.password_purpose is None):
             print('--allow-autocomplete-off requires --mode password and --password-purpose', file=sys.stderr)
             return 2
+        if args.qr and args.mode != 'read':
+            print('--qr requires --mode read', file=sys.stderr)
+            return 2
         payload.update(password_protocol=1, page_id=args.page_id, frame_id=args.frame_id, top_url=args.top_url,
                        selector=args.selector, mode=args.mode)
         if args.mode == 'read':
             payload['capture_protocol'] = 1
+        if args.qr:
+            payload['read_kind'] = 'qr'
         if args.username_selector is not None:
             payload['username_selector'] = args.username_selector
         if args.password_purpose is not None:
@@ -1302,6 +1306,10 @@ def _command(args) -> int:
                 if args.route == 'extension' and not _extension_capture(capabilities):
                     print(json.dumps({'ok': False, 'error': 'broker lacks extension secret capture protocol 1; '
                                       'require broker 0.32.0 or newer; target request not sent'}))
+                    return 1
+                if args.qr and (type(capabilities.get('totp_qr_capture_protocol')) is not int
+                                or capabilities['totp_qr_capture_protocol'] != 1):
+                    print(json.dumps({'ok': False, 'error': QR_CAPTURE_REFUSAL + '; target request not sent'}))
                     return 1
             if args.command == 'pin-password-target' and args.allow_autocomplete_off:
                 if type(capabilities.get('password_autocomplete_off_protocol')) is not int or capabilities['password_autocomplete_off_protocol'] != 1:

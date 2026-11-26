@@ -123,10 +123,32 @@ sleep and wake in the GUI login session. Losing a listening helper locks the vau
   yourself. The host requires `totp_import_protocol: 1`. A
   capture still needs confirmation on the private page before a save.
 
+## Chromium CDP
+
+Versions after 0.49.0 support CDP on macOS. The extension remains the default. Before enabling CDP, verify that only trusted
+clients can reach the browser’s loopback TCP listener. For example, run Chrome
+and the broker inside a dedicated VM that only you can access, with no port
+forwarding. On a shared Mac, keep using the extension unless you have verified
+equivalent isolation. Any local process that can reach the debugger can read
+filled fields. A private profile and the broker’s socket UID check do not
+restrict incoming connections to Chrome.
+
+Once client isolation is in place, start Chromium with a dedicated
+mode-0700 user-data directory and `--remote-debugging-port=0` under `umask 077`.
+Give the broker that physical path with `--password-browser-profile` for
+credentials and read pins and `--card-browser-profile` for cards. Identities
+and SMS codes use the password profile when set, otherwise the card profile. Use `--browser-profile-root` to select a named slot at pin time.
+Select `--route cdp` or configure `serve --default-fill-route cdp`. Check
+`fill_routes` and the relevant `*_browser_configured` fields in `status`.
+
+Before sending a WebSocket handshake, the broker checks the exact reciprocal
+established IPv4 loopback connection in Darwin's kernel TCP table. The socket
+owner must match the broker UID. The broker checks the profile ancestry,
+directory and port file for extended allow ACLs. An unverifiable peer or path
+refuses delivery. See [browser pins](../skills/akdbx/references/target-fill.md).
+
 ## Limits
 
-- For browser fills, the broker supports the extension route only. CDP profile options are
-  refused before startup; this release does not claim macOS CDP peer verification.
 - Native field protocol 1 (after 0.49.0) supports retained Accessibility text
   controls in the frontmost native app. In System Settings → Privacy & Security →
   Accessibility, grant access to the process macOS identifies for the broker.
@@ -145,10 +167,10 @@ sleep and wake in the GUI login session. Losing a listening helper locks the vau
 - Safari needs a signed Apple browser wrapper. The fill extension and the
   separate QR capture extension use Chromium or Firefox native messaging, so
   neither runs in Safari.
-- SMS ingest is available. SMS codes fill web pages through the paired extension.
-  From the version after 0.49.0 they also fill native app fields with
-  `pin-native-target --mode code`, and status reports
-  `sms_fill_routes: ["extension", "native"]`. A window pin has no SMS route on macOS.
+- SMS ingest is available. SMS codes fill web pages through the paired extension,
+  or through a CDP code pin once a browser profile is configured (`sms_fill_routes`
+  then lists `cdp`). From the version after 0.49.0 they also fill native app fields with
+  `pin-native-target --mode code`, so status lists `native` too. A window pin has no SMS route on macOS.
 - The managed Android emulator requires a Linux host with KVM. The Linux
   privileged secret-sink helper requires Linux peer credentials and systemd.
 - iOS and iPadOS cannot run this Python broker. This is macOS support only.
@@ -160,8 +182,8 @@ credentials, private socket RPC, encrypted save/reopen, checked TLS loading
 and unlock, the extension protocol tests, and native field tests against a
 separate AppKit application. The native field tests require the runner’s existing
 Accessibility grant and fail if it is missing. It also installs and removes the
-native host for each supported browser, and runs guided setup with the
+native host for each supported browser, runs guided setup with the
 LaunchAgent, the capture host and lock notifications in the runner's GUI
-session. It installs the same wheel in the release workflow. Linux simulations are not evidence of native macOS
+session, and runs peer checks and DOM fills in Chrome. It installs the same wheel in the release workflow. Linux simulations are not evidence of native macOS
 behavior. Safari application signing, installation and live browser behavior
 belong to the separate Safari extension delivery.

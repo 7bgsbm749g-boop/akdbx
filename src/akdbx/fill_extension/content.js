@@ -13,6 +13,9 @@
   const totpField = __TOTP_FIELD__;
   const PASSWORD_FILL = __PASSWORD_FILL__;
   const READ_CAPTURE = __READ_CAPTURE__;
+  // QR read pins (capture-totp --qr): the CDP route's QR checks and decode. The service
+  // worker injects the vendored jsQR into this isolated world (jsQR.js) for such a pin.
+  const QR_CAPTURE = __QR_CAPTURE__;
   const READ = __READ__;
   const OWNER_GUARD = __OWNER_GUARD__;
   // The broker's read-pin selector grammar: tags, #id, .class and :nth-*(n) only.
@@ -71,13 +74,13 @@
   }, true);
 
   // ----- agent route: retained pins --------------------------------------
-  function pin(kind, spec, frameURL, topURL) {
+  async function pin(kind, spec, frameURL, topURL) {
     for (const [id, item] of pins) {
       if (performance.now() - item.created >= PIN_MS) release(id);
     }
     if (pins.size >= MAX_PINS) return null;
     if (kind === "read" && (typeof spec.selector !== "string" || spec.selector.length > MAX_READ_SELECTOR ||
-        !READ_SELECTOR.test(spec.selector))) return null;
+        !READ_SELECTOR.test(spec.selector) || spec.read_kind !== undefined && spec.read_kind !== "qr")) return null;
     let state, el = null;
     try {
       if (kind === "password") {
@@ -87,7 +90,8 @@
         // The CDP route's read pin: a focused, visible, single-line text, never a
         // selection. The extension reads only in the top document.
         if (window !== window.top) return null;
-        state = READ_CAPTURE(spec.selector, frameURL, null);
+        state = spec.read_kind === "qr" ? await QR_CAPTURE(globalThis.jsQR, spec.selector, frameURL, null) :
+          READ_CAPTURE(spec.selector, frameURL, null);
         el = state && document.querySelector(spec.selector);
       } else if (kind === "card" || kind === "identity") {
         const identity = kind === "identity";
@@ -106,8 +110,14 @@
     // The pin's own DOM checks passed. The service worker now asks for the cover check
     // (clear, then challengeSpec when something overlaps) before it reports the pin.
     const id = randomId();
+    // A pin added while this one awaited its QR decode may have filled the map.
+    if (pins.size >= MAX_PINS) {
+      if (state.dispose) state.dispose();
+      return null;
+    }
     pins.set(id, {kind, mode: kind === "password" ? spec.mode : kind === "read" ? "read" : spec.field, state, el,
-      processor: kind === "card" && Boolean(spec.processor), created: performance.now()});
+      qr: kind === "read" && spec.read_kind === "qr", processor: kind === "card" && Boolean(spec.processor),
+      created: performance.now()});
     return id;
   }
 
@@ -446,6 +456,27 @@
     return points;
   }
 
+  // The points of a QR read pin: a grid over the padding box, at most 24 a side,
+  // from 10% to 90% of it like the pin's own hit test: clear of a focus ring and
+  // of rounded corners, where the inset challenge colour does not paint. The
+  // challenge rule hides the code's own pixels (see the service worker), so each
+  // point must show the challenge colour.
+  function gridPoints(el) {
+    const box = el.getBoundingClientRect(), style = getComputedStyle(el);
+    const x = Math.max(4, box.width * 0.1), y = Math.max(4, box.height * 0.1);
+    const left = box.left + parseFloat(style.borderLeftWidth) + x, right = box.right - parseFloat(style.borderRightWidth) - x;
+    const top = box.top + parseFloat(style.borderTopWidth) + y, bottom = box.bottom - parseFloat(style.borderBottomWidth) - y;
+    if (!(right > left) || !(bottom > top)) return null;
+    const count = size => Math.min(24, Math.max(3, Math.ceil(size / 6) + 1));
+    const columns = count(right - left), rows = count(bottom - top), points = [];
+    for (let i = 0; i < columns; ++i) {
+      for (let j = 0; j < rows; ++j) {
+        points.push([left + (right - left) * i / (columns - 1), top + (bottom - top) * j / (rows - 1)]);
+      }
+    }
+    return points.length <= MAX_POINTS ? points : null;
+  }
+
   function ownPaint(el) {
     const style = getComputedStyle(el);
     const drawn = value => value !== "none" && value !== "normal";
@@ -480,8 +511,8 @@
         // the pixels could not tell it from the text: a secret element that draws a
         // ::before, ::after or list marker refuses.
         if (ownPaint(item.el)) return null;
-        const points = item.state.check() && textPoints(item.el);
-        return points ? {path, points, view: [innerWidth, innerHeight]} : null;
+        const points = item.state.check() && (item.qr ? gridPoints(item.el) : textPoints(item.el));
+        return points ? {path, points, view: [innerWidth, innerHeight], qr: item.qr} : null;
       }
       const point = item.state.geometry();
       if (!point) return null;

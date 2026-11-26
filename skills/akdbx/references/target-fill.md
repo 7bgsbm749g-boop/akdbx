@@ -20,6 +20,10 @@ clients. There is no password keyboard fallback.
 
 ## Operator configuration
 
+Before starting Chromium with remote debugging, verify that only trusted clients
+can reach its loopback TCP port. On a shared Mac without verified isolation,
+use the paired extension. See the [macOS CDP setup](https://github.com/7bgsbm749g-boop/akdbx/blob/main/docs/macos.md#chromium-cdp).
+
 The operator must explicitly configure `serve --password-browser-profile PATH`
 or `AKDBX_PASSWORD_BROWSER_PROFILE`. PATH is the Chrome user data directory of
 the intended browser, started with `--user-data-dir=PATH` and
@@ -32,8 +36,10 @@ or changes a browser, discovers profiles, or accepts an endpoint in an RPC.
 The profile must be owned by the broker UID, mode 0700, with no symlink components.
 Its bounded regular `DevToolsActivePort` must be owned by that UID and not writable
 by group/others (launch Chrome with `umask 077`). The broker connects only to the
-loopback browser websocket described by that file. Before its handshake, Linux
-kernel metadata must identify the broker UID on the actual connected peer;
+loopback browser websocket described by that file. Before its handshake, Linux and macOS kernel metadata must identify the broker
+UID on the reciprocal established connection. macOS refuses extended allow
+ACLs on profile paths and the port file. Windows verifies private DACLs and
+requires the connected peer to share the broker user, desktop session and integrity level;
 unverifiable ownership and redirects refuse. Protect this privileged CDP
 interface and profile from other local users. Configuration is not proof of
 protection against malicious processes running as the broker user.
