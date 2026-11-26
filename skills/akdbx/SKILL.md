@@ -50,7 +50,7 @@ window pin for passwords, and never use native pins for browser pages. Native
 apps have no DOM; their service URL is a caller assertion, not URL attestation.
 On macOS check `native_field_accessibility_granted`. Grant access in System
 Settings if needed. Password, login and generated-password pins on macOS need a
-broker after 0.51.0: check that `native_field_modes` lists `password`. A native
+broker from 0.52.0: check that `native_field_modes` lists `password`. A native
 read pin never feeds `capture-totp`.
 
 ## You act for the user
@@ -470,7 +470,7 @@ available, whatever the table says.
 | --- | --- | --- | --- |
 | Extension (`--route extension`), first choice for pages | Chromium family and Firefox 153+ | Chromium family and Firefox 153+ | Chromium family and Firefox 153+ |
 | CDP (`--route cdp`) | Yes | Yes | 0.50.1+, only after the operator verified debugging-port isolation |
-| Native field (`pin-native-target`) | AT-SPI on X11 and Wayland | Win32 Edit, WinForms, WPF | Accessibility, 0.50.1+; password, login and generated-password modes after 0.51.0 |
+| Native field (`pin-native-target`) | AT-SPI on X11 and Wayland | Win32 Edit, WinForms, WPF | Accessibility, 0.50.1+; password, login and generated-password modes from 0.52.0 |
 | Window pin (`pin-target`): usernames, TOTP, SMS codes only | X11 or XWayland windows; not native Wayland | HWND | None |
 | Android (`akdbx android`) | Yes; managed emulator too | No end-to-end proof | Attached devices only (after 0.50.1); no managed emulator (`android_managed_emulators: false`) |
 

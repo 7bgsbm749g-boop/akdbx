@@ -26,7 +26,7 @@ the routes and modes that this broker offers now (`fill_routes`,
 | — | The operation does not exist on this route. |
 
 `<0.16` means the feature shipped before the first release tag (`v0.16.0`).
-`after 0.50.1` and `after 0.51.0` mean merged on `main` for the next release after that version.
+`after 0.50.1` and `from 0.52.0` mean merged on `main` for the next release after that version.
 `v0.50.0` was tagged but never published (its release checks failed), so the
 features of PRs #81–#96 first ship in 0.50.1, together with key-file and
 hardware-key unlock (#98).
@@ -51,7 +51,7 @@ CI jobs (all in `.github/workflows/`):
 | Route | Linux X11 | Linux Wayland | Windows 10/11 | macOS |
 | --- | --- | --- | --- | --- |
 | [Window pin](#window-pin-pin-target) (`pin-target`) | ✅ 0.9.0: usernames, TOTP, SMS codes | ✅ XWayland windows only (0.49.0); ◼ native Wayland surfaces (D) | ✅ 0.17.0, HWND: usernames, TOTP, SMS codes | ◼ unavailable (E) |
-| [Native field](#native-field-pin-native-target) (`pin-native-target`) | ✅ 0.44.0, AT-SPI | ✅ 0.44.0, AT-SPI | ✅ 0.44.0 Win32 Edit; 0.50.1 WinForms, WPF | ✅ 0.50.1, Accessibility; passwords after 0.51.0 (F) |
+| [Native field](#native-field-pin-native-target) (`pin-native-target`) | ✅ 0.44.0, AT-SPI | ✅ 0.44.0, AT-SPI | ✅ 0.44.0 Win32 Edit; 0.50.1 WinForms, WPF | ✅ 0.50.1, Accessibility; passwords from 0.52.0 (F) |
 | [CDP](#cdp-route) (`--route cdp`) | ✅ <0.16 | ✅ <0.16 | ✅ 0.17.0 | ✅ 0.50.1 |
 | [Extension, Chromium family](#extension-route-chromium-family) | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.43.0, no real-browser CI (P) |
 | [Extension, Firefox 153+](#extension-route-firefox) | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 |
@@ -89,8 +89,8 @@ assertion. Check `native_field_modes` in `status`.
 | Operation | Linux X11 | Linux Wayland | Windows | macOS |
 | --- | --- | --- | --- | --- |
 | Username | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms and WPF · `windows` (J) | ✅ 0.50.1 · `macos-broker` |
-| Password, login | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms TextBox and WPF PasswordBox · `windows` (J) | ✅ after 0.51.0 · `macos-broker` (F) |
-| Generated password | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · no CI | ✅ after 0.51.0 · `macos-broker` (F) |
+| Password, login | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms TextBox and WPF PasswordBox · `windows` (J) | ✅ from 0.52.0 · `macos-broker` (F) |
+| Generated password | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · no CI | ✅ from 0.52.0 · `macos-broker` (F) |
 | TOTP | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
 | Card | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
 | Identity | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
@@ -144,7 +144,7 @@ install from 0.49.0.
 | `capture-totp`, text key (top document) | ✅ 0.35.0 (ext 0.6.0 for grouped keys) · `linux-extension-browser` | ✅ 0.35.0 · `windows` | ✅ 0.43.0 · no CI (P) |
 | `capture-totp`, QR code (top document) | ✅ 0.50.1 (ext 0.14.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · no CI (P) |
 | SMS code | ✅ 0.50.1 (ext 0.13.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · no CI (P) |
-| Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0); address with the identity pin's checks and texted (SMS) code after 0.51.0 (ext 0.15.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ 0.43.0; address and texted code after 0.51.0 · no CI (P) |
+| Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0); address with the identity pin's checks and texted (SMS) code from 0.52.0 (ext 0.15.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ 0.43.0; address and texted code from 0.52.0 · no CI (P) |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
 ## Extension route, Firefox
@@ -164,9 +164,9 @@ runs as a temporary add-on; see [Firefox setup](firefox.md).
 | Secret read, top document | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
 | Secret read, child frame | ⛔ (O) | ⛔ (O) | ⛔ (O) |
 | `capture-totp`, text key | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
-| `capture-totp`, QR code (top document) | ✅ after 0.51.0 (ext 0.14.2) · `firefox-extension-browser` (V) | ✅ after 0.51.0 · `firefox-extension-browser` (V) | ✅ after 0.51.0 · `firefox-extension-browser` (V) |
+| `capture-totp`, QR code (top document) | ✅ from 0.52.0 (ext 0.14.2) · `firefox-extension-browser` (V) | ✅ from 0.52.0 · `firefox-extension-browser` (V) | ✅ from 0.52.0 · `firefox-extension-browser` (V) |
 | SMS code | ✅ 0.50.1 (ext 0.13.0) · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` |
-| Popup human click | ✅ login 0.47.0; address and texted (SMS) code after 0.51.0 (ext 0.15.0) · `firefox-extension-browser`; TOTP, card: no Firefox test (R) | ✅ login, address, texted code · `firefox-extension-browser` | ✅ login, address, texted code · `firefox-extension-browser` |
+| Popup human click | ✅ login 0.47.0; address and texted (SMS) code from 0.52.0 (ext 0.15.0) · `firefox-extension-browser`; TOTP, card: no Firefox test (R) | ✅ login, address, texted code · `firefox-extension-browser` | ✅ login, address, texted code · `firefox-extension-browser` |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
 ## Android route (`akdbx android`)
@@ -248,7 +248,7 @@ broker takes attached devices only (after 0.50.1).
   and Qt on Windows are not proven, and the broker refuses other UI
   Automation providers.
 - **K** Refused: a native control or an Android app field has no page to
-  notify; `--notify-page` refuses before delivery. After 0.51.0 the refusal
+  notify; `--notify-page` refuses before delivery. From 0.52.0 the refusal
   names the option (`--notify-page needs a web page, and an app field has
   none`); before, it was the generic `target unavailable` refusal.
 - **L** Refused by design: the caller asserts the service URL, and the OS
@@ -304,7 +304,7 @@ broker takes attached devices only (after 0.50.1).
   `commit-totp`. They also show that the pin refuses another origin's image
   (with or without CORS), the redirect and a tainted canvas, with and without
   `<all_urls>`. Two codes or a changed element refuse, and so does a code that
-  is not TOTP. From fill extension 0.15.1 (and on the CDP route after 0.51.0),
+  is not TOTP. From fill extension 0.15.1 (and on the CDP route from 0.52.0),
   an `<img>` that is not a `data:` URL and loads in CORS mode refuses on every
   route. After a redirect to another origin that allows the read, its canvas
   stays origin-clean. A canvas
@@ -313,7 +313,7 @@ broker takes attached devices only (after 0.50.1).
   and Apple signing. A permanently installed (signed) Firefox add-on also
   needs the owner's Mozilla AMO credentials; until then Firefox uses a
   temporary add-on.
-- **X** CI checks the Android route with a simulated device. After 0.51.0,
+- **X** CI checks the Android route with a simulated device. From 0.52.0,
   `tests/test_android_emulator.py` also proves every Chrome-page operation
   on a real Android 15 Google Play emulator (Chrome 124) through the real
   broker, CLI and helper: login, generated password through commit, TOTP,
@@ -321,7 +321,7 @@ broker takes attached devices only (after 0.50.1).
   through save, text-key `capture-totp` through `commit-totp`, and their
   refusals. It needs KVM, so it runs by hand on a Linux host and is not in
   CI. App fields have no real-device test.
-- **Y** Fixed after 0.51.0. Right after a cold boot, the helper's typed check
+- **Y** Fixed from 0.52.0. Right after a cold boot, the helper's typed check
   takes 5 to 10 seconds (about 1 second warm), and `fill-generated` waited
   only 5 seconds for the broker's answer. Each fill then ended with
   `autofill outcome uncertain: connection lost after request` (6 of 6 cold
@@ -362,7 +362,7 @@ broker takes attached devices only (after 0.50.1).
   broker with a real device or emulator was not tested.
 - **AF** The `linux` and `macos-broker` jobs test the Android read pin and
   its refusals (an unverified DevTools peer, a QR capture, covered text)
-  with a simulated device. After 0.51.0 the real emulator test (X) completes
+  with a simulated device. From 0.52.0 the real emulator test (X) completes
   `capture-secret` from pin through save and a text-key `capture-totp`
   through the pending code and `commit-totp`, with the CDP route's refusals:
   another site, a used pin, a changed value or key, covered text, an

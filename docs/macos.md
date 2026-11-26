@@ -201,7 +201,7 @@ emulator, start it yourself (for example from Android Studio) and attach it.
   Check `native_field_accessibility_granted: true` in `akdbx status`. The broker
   checks permission without prompting. It can operate only on fields that
   pass the [native field checks](../skills/akdbx/references/native-fields.md).
-- After 0.51.0, password, combined login and generated-password pins fill a
+- From 0.52.0, password, combined login and generated-password pins fill a
   stock AppKit secure field (`NSSecureTextField`). This field reports no
   character count. Its Accessibility value has one mask character for each
   UTF-16 unit of the text, so the broker compares that length with the written

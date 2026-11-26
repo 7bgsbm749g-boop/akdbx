@@ -204,7 +204,7 @@ purpose. On Chrome, focus the field and use the matching HTML autocomplete
 token. The browser guard checks that the field is visible, exposed and still
 the same element. On a Chrome page, `fill-identity --notify-page` sends
 bubbling `input` and `change` events after the value is set; without it the
-fill sends no event. An app field has no page to notify: after 0.51.0 the
+fill sends no event. An app field has no page to notify: from 0.52.0 the
 broker refuses `--notify-page` there before any value, with `identity fill
 not started: --notify-page needs a web page, and an app field has none`. The
 pin is used up; pin again and fill without the option.
@@ -227,7 +227,7 @@ cold boot.
   cold boot still fills. When the broker has Android devices configured,
   `fill`, `fill-generated`, `fill-totp`, `fill-card`, `fill-identity` and
   `fill-sms-code` wait up to 60 seconds for the broker's answer, as `akdbx
-  android fill` does (after 0.51.0). Before, they waited 5 seconds, and a
+  android fill` does (0.52.0+). Before, they waited 5 seconds, and a
   fill right after a cold boot ended with `autofill outcome uncertain:
   connection lost after request`.
 - Card, identity, SMS-code and read pins: the whole typed check must end
@@ -295,7 +295,7 @@ reported as `uncertain`.
 - Tested on an Android 15 (API 35) Google Play emulator with Chrome 124 and
   Google Play services 26.45. A physical device over USB uses the same path but
   was not tested; the device must have USB debugging on.
-- `tests/test_android_emulator.py` (after 0.51.0) runs on a real emulator
+- `tests/test_android_emulator.py` (0.52.0+) runs on a real emulator
   through the real broker, CLI and helper: on a Chrome page, a login, a
   generated password from pin through commit, `capture-secret` from pin
   through save, a text-key `capture-totp` through the pending code and

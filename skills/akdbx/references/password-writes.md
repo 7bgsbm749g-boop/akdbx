@@ -2,7 +2,7 @@
 
 Password and confirmation fills require a fresh password pin: a DOM pin from
 `pin-password-target` (`chromium-password-dom-v1` on the CDP route,
-`extension-dom-v1` on the extension route), a native field pin (on macOS after 0.51.0)
+`extension-dom-v1` on the extension route), a native field pin (on macOS from 0.52.0)
 or an Android pin. Window pins refuse passwords. Read [password field delivery](target-fill.md) for operator setup,
 explicit selectors, supported controls, and race checks before this workflow.
 
