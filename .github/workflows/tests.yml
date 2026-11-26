@@ -108,6 +108,21 @@ jobs:
           python -m pytest -q -rs tests/test_macos_native.py tests/test_protocol.py
           tests/test_local_https.py tests/test_extension_route.py
           --basetemp="${{ runner.temp }}/m"
+      - name: macOS setup, LaunchAgent, lock notifications and private page transports
+        env:
+          AKDBX_MACOS_RUNNER: '1'
+        run: |
+          umask 077
+          python -m pytest -q -rs tests/test_macos_platform.py \
+            tests/test_relay.py::test_serve_uses_the_saved_relay_and_unlocks_from_a_phone \
+            tests/test_notifications.py::test_real_private_unlock_triggers_event_without_agent_wait \
+            tests/test_notifications.py::test_verified_https_delivery_and_redirect_refusal \
+            tests/test_sms.py::test_https_intake_from_a_shortcut_and_twilio \
+            tests/test_sms.py::test_https_intake_refuses_wrong_token_host_origin_method_and_body \
+            tests/test_web_unlock.py::test_tailscale_identity_and_one_time_web_unlock \
+            tests/test_import_totp.py::test_native_host_subprocess_to_private_broker \
+            --basetemp="$RUNNER_TEMP/p" --junitxml="$RUNNER_TEMP/platform.xml"
+          python -c 'import sys, xml.etree.ElementTree as E; sys.exit(bool(E.parse(sys.argv[1]).findall(".//skipped")))' "$RUNNER_TEMP/platform.xml"
   linux:
     runs-on: ubuntu-latest
     timeout-minutes: 15

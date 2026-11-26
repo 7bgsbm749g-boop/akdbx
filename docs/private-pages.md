@@ -5,17 +5,17 @@ uses the same page to save passwords, authenticators, cards and identities.
 The master password and other secrets go only into that page, never into chat,
 the CLI, arguments or the environment.
 
-Linux and Windows serve this page the same way: the broker terminates HTTPS
+Linux, macOS and Windows serve this page the same way: the broker terminates HTTPS
 itself on `127.0.0.1`. Linux also keeps its earlier Tailscale Serve
 Unix-socket route for existing deployments.
 
 | Route | Platforms | Where the page opens | Setup |
 | --- | --- | --- | --- |
-| [Loopback HTTPS page](#loopback-https-page) | Linux (0.23.0+), Windows | The broker's computer | A certificate and private key |
-| [Unlock from another device](#unlock-from-another-device) | Linux (0.23.0+), Windows (0.22.0+) | Any device in your tailnet, including the broker's computer | The loopback page, plus Tailscale Serve to a verified `https://127.0.0.1:PORT` target |
-| [Tailscale Serve Unix socket](#tailscale-serve-unix-socket-linux-only) | Linux only | Any device in your tailnet | Tailscale Serve to the broker's Unix socket; no certificate |
-| [The akdbx relay](#the-akdbx-relay) | Linux, Windows (0.26.0+) | Any device | `akdbx relay enable`; no certificate, port or proxy to set up |
-| [Unlock from the internet](#unlock-from-the-internet) | Linux, Windows | Any device | The loopback page, plus a public route; read the section before you choose one |
+| [Loopback HTTPS page](#loopback-https-page) | macOS, Linux (0.23.0+), Windows | The broker's computer | A certificate and private key |
+| [Unlock from another device](#unlock-from-another-device) | macOS, Linux (0.23.0+), Windows (0.22.0+) | Any device in your tailnet, including the broker's computer | The loopback page, plus Tailscale Serve to a verified `https://127.0.0.1:PORT` target |
+| [Tailscale Serve Unix socket](#tailscale-serve-unix-socket-linux-and-macos) | Linux and macOS | Any device in your tailnet | Tailscale Serve to the broker's Unix socket; no certificate |
+| [The akdbx relay](#the-akdbx-relay) | Linux, macOS, Windows | Any device | `akdbx relay enable`; no certificate, port or proxy to set up |
+| [Unlock from the internet](#unlock-from-the-internet) | Linux, macOS, Windows | Any device | The loopback page, plus a public route; read the section before you choose one |
 
 Every route has the same limit on failed attempts: see
 [Failed attempts block the link](#failed-attempts-block-the-link).
@@ -214,7 +214,7 @@ Windows have the same choices, in this order of recommendation:
 
    Then start the broker with `--local-port 9444` and the TLS options, as in
    [Unlock from another device](#unlock-from-another-device). The Linux
-   [Unix-socket route](#tailscale-serve-unix-socket-linux-only) does not work
+   [Unix-socket route](#tailscale-serve-unix-socket-linux-and-macos) does not work
    through Funnel: Funnel sends no tailnet identity header, so the page
    refuses every request. Remove the route with
    `tailscale funnel --https=8443 off`.
@@ -247,7 +247,7 @@ phone --TLS for <id>.akdbx.link--> relay :443 (reads the name only)
       --> the broker's own HTTPS page on 127.0.0.1 (TLS ends here)
 ```
 
-Set it up once (Linux and Windows, the same commands):
+Set it up once (Linux, macOS and Windows, the same commands):
 
 ```sh
 akdbx relay enable
@@ -576,7 +576,7 @@ yours and whether you want a new link. If they were not yours, someone else
 has the link: do not create a new one until you know how it leaked. A broker
 restart does not replace a blocked link.
 
-## Tailscale Serve Unix socket (Linux only)
+## Tailscale Serve Unix socket (Linux and macOS)
 
 Before 0.23.0 this was the only Linux route, and existing deployments can keep
 it. Start the broker with a tailnet origin and without `--tls-cert`,
@@ -595,6 +595,10 @@ or newer (older versions had a Unix-socket Serve authorization flaw):
 ```bash
 sudo tailscale serve --bg --https=9443 "unix:${XDG_RUNTIME_DIR}/akdbx/akdbx-unlock.sock"
 ```
+
+For macOS with the open-source `tailscaled`, substitute
+`"unix:${HOME}/Library/Application Support/akdbx/run/u"` for the Linux target.
+Use the HTTPS loopback target when the daemon cannot access the socket.
 
 Tailscale Serve supplies HTTPS and the `Tailscale-User-Login` header. The page
 requires that header and the one-time token. Only `tailscaled`, which runs as

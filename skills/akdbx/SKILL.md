@@ -31,6 +31,7 @@ session.
 | Merge two vaults | [Merge](references/merge.md), [preservation format](references/preservation-format.md) |
 | Snapshot admission (review prototype) | [Admission](references/snapshot-admission.md), [group selection](references/group-selection.md), [selection verification](references/selection-verification.md) |
 | Open the private pages from any device (no Tailscale) | [The akdbx relay](#the-akdbx-relay) |
+| macOS host | Use the paired browser extension. Check `lock_event_sources.macos` for desktop lock and `relay.connected` when using the relay. |
 | Windows host | [Windows operation](references/windows.md) |
 | Set up an optional on-demand Android emulator, sign in on Android, or confirm a login in a mobile app (wake the device before requesting the push) | [Android devices](references/android.md) |
 | Set akdbx up for a user (first install, or add a part later) | [First-time setup](#first-time-setup) |
@@ -108,7 +109,7 @@ directory junction on Windows needs no elevation), so it can be invoked as
 ### First-time setup
 
 `akdbx setup` (0.27.0+) takes a user from install to a working broker, on
-Linux and Windows. You can run it for the user without questions:
+Linux and Windows, with macOS support after 0.47.0. On macOS, `--start-at-login` installs a per-user LaunchAgent. Native window pins, CDP and Safari are unavailable in this version. You can run it for the user without questions:
 
 ```bash
 akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
@@ -154,7 +155,7 @@ on a loopback origin (`https://localhost:PORT` or `https://127.0.0.1:PORT`)
 opens only on the broker's computer. A link on a Tailscale origin opens on any
 device in the tailnet. A link on a relay origin (`https://<id>.akdbx.link`; `:8443`
 before the 0.28.0 move) opens on any device; handle it exactly like any other unlock link: give it
-only to the user, privately. This is the same on Linux and Windows; the
+only to the user, privately. This is the same on Linux, macOS and Windows; the
 repository's `docs/private-pages.md` describes the setups.
 
 Then let an event resume the task instead of waiting or asking the user to say
