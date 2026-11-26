@@ -146,6 +146,41 @@ owner must match the broker UID. The broker checks the profile ancestry,
 directory and port file for extended allow ACLs. An unverifiable peer or path
 refuses delivery. See [browser pins](../skills/akdbx/references/target-fill.md).
 
+## Android devices (after 0.49.0)
+
+A macOS broker drives an attached Android device or emulator with the same
+checks as Linux. You run the device and its adb server; akdbx never starts or
+stops them. Register it with:
+
+```sh
+akdbx android setup --attach SERIAL --adb-port 5037
+```
+
+`--adb` defaults to `adb` on `PATH`, then `platform-tools/adb` in `--sdk`,
+`ANDROID_HOME`, `ANDROID_SDK_ROOT` or `~/Library/Android/sdk`. Setup checks
+that the device is online on that server and turns off spoken passwords. It
+writes `~/.config/akdbx/android-devices.json` (or `AKDBX_ANDROID_DEVICES`) as a
+mode-0600 file in a folder that only you can write. On macOS that file must
+have one hard link, and neither the file nor its folder may have an allow ACL
+entry; deny-only entries are accepted. The broker reads the file at each
+request, so it needs no restart.
+
+Before it sends a byte to the adb server, or a WebSocket handshake to Chrome's
+forwarded DevTools port, the broker finds that exact loopback connection in
+Darwin's kernel TCP table and requires your UID as the owner of the server
+side. The same Chrome typed check, site rules and single-use pins apply as on
+Linux. See [Android devices](../skills/akdbx/references/android.md).
+
+adb's loopback server accepts a client from any local account, and adb gives
+that client full control of the device. akdbx checks the server's owner, not
+its other clients. On a Mac with other user accounts, protect the adb port as
+you would a browser debugging port.
+
+The managed emulator (`android setup --create` or `--manage-avd`, `android
+wake`) needs Linux with systemd and KVM. On macOS these commands refuse, and
+`akdbx status` reports `android_managed_emulators: false`. To use an
+emulator, start it yourself (for example from Android Studio) and attach it.
+
 ## Limits
 
 - Native application/window fills are unavailable. Status reports
@@ -161,8 +196,12 @@ refuses delivery. See [browser pins](../skills/akdbx/references/target-fill.md).
   neither runs in Safari. SMS codes fill web pages through the paired extension,
   or through a CDP code pin once a browser profile is configured (`sms_fill_routes`
   then lists `cdp`); a native app or window has no SMS route on macOS.
-- The managed Android emulator requires a Linux host with KVM. The Linux
-  privileged secret-sink helper requires Linux peer credentials and systemd.
+- Android: attached devices only. The managed emulator requires a Linux host
+  with systemd and KVM. CI has no Android device or emulator on macOS:
+  GitHub's arm64 macOS runners have no nested virtualization, so the emulator
+  cannot start there. The macOS proof covers the host side (see Validation).
+- The Linux privileged secret-sink helper requires Linux peer credentials and
+  systemd.
 - iOS and iPadOS cannot run this Python broker. This is macOS support only.
 
 ## Validation
@@ -172,6 +211,11 @@ credentials, private socket RPC, encrypted save/reopen, checked TLS loading
 and unlock, and the extension protocol tests. It also installs and removes the
 native host for each supported browser, runs guided setup with the
 LaunchAgent, the capture host and lock notifications in the runner's GUI
-session, and runs peer checks and DOM fills in Chrome. It installs the same wheel in the release workflow. Linux simulations are not evidence of native macOS
+session, and runs peer checks and DOM fills in Chrome. It runs the Android
+route suite with a fake device. A real loopback adb server stand-in and a
+DevTools forward owned by the runner user pass the kernel owner check.
+`android setup --attach` runs the real check and a stand-in adb, then writes
+the private device file. A stand-in owned by `_www` receives zero bytes from
+setup, probes, helper runs and the DevTools handshake. It installs the same wheel in the release workflow. Linux simulations are not evidence of native macOS
 behavior. Safari application signing, installation and live browser behavior
 belong to the separate Safari extension delivery.
