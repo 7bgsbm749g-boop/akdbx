@@ -53,6 +53,7 @@ def test_guided_setup_launches_locked_broker_and_installs_hosts(tmp_path, monkey
     from akdbx import browser_import, extension_host
     home = tmp_path / 'home'
     (home / 'Library').mkdir(parents=True)
+    monkeypatch.setenv('AKDBX_LOCK_TIMEOUT', '30')
     monkeypatch.setenv('HOME', str(home))
     monkeypatch.setenv('XDG_DATA_HOME', str(home / 'data'))
     monkeypatch.setenv('XDG_CONFIG_HOME', str(home / 'config'))
@@ -78,13 +79,58 @@ def test_guided_setup_launches_locked_broker_and_installs_hosts(tmp_path, monkey
         assert code == 0, {s: v.get('errors', v.get('error')) for s, v in result['stages'].items()}
         assert result['broker']['running'] is True and result['broker']['locked'] is True
         assert result['stages']['system']['platform'] == 'macos'
-        assert '--no-print-unlock-link' in plistlib.loads(plist.read_bytes())['ProgramArguments']
+        arguments = plistlib.loads(plist.read_bytes())['ProgramArguments']
+        assert '--no-print-unlock-link' in arguments
+        assert arguments[arguments.index('--lock-timeout') + 1] == '30'
         directory = home / 'Library/Application Support/Google/Chrome/NativeMessagingHosts'
         assert (directory / (extension_host.HOST_NAME + '.json')).is_file()
         manifest = json.loads((directory / (browser_import.HOST_NAME + '.json')).read_text())
-        assert Path(manifest['path']).is_file()
+        launcher = Path(manifest['path'])
+        assert launcher.is_file()
+        assert launcher.read_text().startswith('#!/bin/sh')
+        # An existing configuration for the original origin cannot count as ready for another origin.
+        stale = [f'https://localhost:{free_port()}' if arg == origin else arg for arg in args]
+        assert cli.main(stale) != 0
+        assert json.loads(capsys.readouterr().out)['stages']['features']['state'] == 'failed'
         assert browser_import.load_config(browser_import.config_path())['socket'] == str(socket.with_name('u'))
         assert cli.main(args) == 0
         assert json.loads(capsys.readouterr().out)['stages']['login']['state'] == 'done'
     finally:
         subprocess.run(['/bin/launchctl', 'bootout', job], capture_output=True, timeout=15)
+
+
+def test_qr_registration_is_private_under_shared_umask(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from akdbx import browser_import
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path))
+    exe = tmp_path / 'akdbx-browser-import'
+    exe.touch(mode=0o700)
+    monkeypatch.setattr(sys, 'argv', [str(exe)])
+    folder = tmp_path / 'NativeMessagingHosts'
+    folder.mkdir(mode=0o755)
+    args = SimpleNamespace(extension_id='a'*32, socket=tmp_path/'u', origin='https://localhost:9443',
+                           manifest_dir=folder)
+    saved = os.umask(0o002)
+    try:
+        browser_import.install_host(args)
+    finally:
+        os.umask(saved)
+    manifest = folder / (browser_import.HOST_NAME + '.json')
+    assert manifest.stat().st_mode & 0o777 == 0o600
+
+
+def test_capture_host_refuses_replaceable_manifest_directory(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from akdbx import browser_import
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path))
+    exe = tmp_path / 'akdbx-browser-import'
+    exe.touch(mode=0o700)
+    monkeypatch.setattr(sys, 'argv', [str(exe)])
+    folder = tmp_path / 'NativeMessagingHosts'
+    folder.mkdir()
+    folder.chmod(0o775)
+    args = SimpleNamespace(extension_id='a'*32, socket=tmp_path/'u', origin='https://localhost:9443',
+                           manifest_dir=folder)
+    with pytest.raises(RuntimeError, match='writable by other users'):
+        browser_import.install_host(args)
+    assert not browser_import.config_path().exists()

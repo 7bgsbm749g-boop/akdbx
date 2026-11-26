@@ -418,12 +418,25 @@ def test_native_host_subprocess_to_private_broker(deployed,tmp_path):
     root=tmp_path/'native-configuration';root.mkdir(mode=0o700)
     directory=root/'akdbx';directory.mkdir(mode=0o700)
     config=directory/'browser-import.json'
-    config.write_text(json.dumps({'extension_id':'a'*32,'origin':'https://node.example:9443','socket':str(socket)}))
-    config.chmod(0o600)
+    env = {**os.environ, 'XDG_CONFIG_HOME': str(root),
+           'PYTHONPATH': str(Path(__file__).parent.parent / 'src')}
+    if sys.platform == 'darwin':
+        import sysconfig
+        manifests = tmp_path / 'NativeMessagingHosts'
+        program = Path(sysconfig.get_path('scripts')) / 'akdbx-browser-import'
+        subprocess.run([str(program), 'install-host', '--extension-id', 'a'*32,
+                        '--origin', 'https://node.example:9443', '--socket', str(socket),
+                        '--manifest-dir', str(manifests)], env=env, check=True, capture_output=True, timeout=15)
+        manifest = json.loads((manifests / (browser_import.HOST_NAME + '.json')).read_text())
+        host = [manifest['path']]
+        del env['XDG_CONFIG_HOME']  # A browser launched by Finder.
+    else:
+        config.write_text(json.dumps({'extension_id':'a'*32,'origin':'https://node.example:9443','socket':str(socket)}))
+        config.chmod(0o600)
+        host = [sys.executable, '-m', 'akdbx.browser_import']
     message=json.dumps({'private_url':prepared['private_url'],'source_url':'https://example.test/setup','payloads':[URI]}).encode()
-    result=subprocess.run([sys.executable,'-m','akdbx.browser_import','chrome-extension://'+'a'*32+'/'],
-        input=struct.pack('<I',len(message))+message,capture_output=True,timeout=15,
-        env={**os.environ,'XDG_CONFIG_HOME':str(root),'PYTHONPATH':str(Path(__file__).parent.parent/'src')})
+    result=subprocess.run([*host, 'chrome-extension://'+'a'*32+'/'], input=struct.pack('<I',len(message))+message,
+                          capture_output=True,timeout=15,env=env)
     assert result.returncode==0 and result.stderr==b''
     assert json.loads(result.stdout[4:])==browser_import.RECEIPT
     assert KEY.encode() not in result.stdout+result.stderr

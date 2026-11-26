@@ -45,7 +45,8 @@ and can be skipped (`--skip STAGE`):
    that decrypts HTTPS, which setup warns about and does not configure. See
    [Unlock from the internet](#unlock-from-the-internet).
 5. **Start at login**: a systemd user service on Linux, a macOS LaunchAgent, or a logon
-   task on Windows. Setup never starts a second broker. The service runs
+   task on Windows. Setup checks the selected RPC endpoint before it starts the service. Use the same
+   socket as any broker that already serves this vault. The service runs
    `akdbx serve --no-print-unlock-link`, so the journal or task output never
    keeps the unlock link: run `akdbx status` to get it.
 6. **Fill route**: the browser extension (`akdbx extension install` and

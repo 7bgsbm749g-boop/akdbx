@@ -1322,7 +1322,11 @@ class Setup:
         launchctl = '/bin/launchctl'
         env = {key: self.env[key] for key in ('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME')
                if self.env.get(key)}
-        data = launch_agent.configuration(self.serve_argv(service=True), env)
+        argv = self.serve_argv(service=True)
+        if 'AKDBX_LOCK_TIMEOUT' in self.env:
+            from .vault_lock import timeout_seconds
+            argv.extend(['--lock-timeout', str(timeout_seconds(self.env['AKDBX_LOCK_TIMEOUT']))])
+        data = launch_agent.configuration(argv, env)
         try:
             previous = launch_agent.read(path)
         except (OSError, RuntimeError, ValueError) as exc:
@@ -1711,6 +1715,14 @@ class Setup:
                 return self.outcome(applied)
             state = 'changed'
         if os.path.lexists(config_path()):
+            if self.macos:
+                from .browser_import import registration_matches
+                from .macos import macos_page_socket
+                if not registration_matches(browser, tool, self.origin, macos_page_socket(Path(self.socket)),
+                                            self.choice.get('capture_extension_id')):
+                    self.step('The installed QR capture registration differs or is unsafe. Review the existing '
+                              'configuration and browser manifest before reinstalling the capture host.', 'features')
+                    return 'failed'
             self.say(f'The capture host is already registered ({config_path()}); setup leaves it unchanged.')
             return state
         extension_id = self.choice.get('capture_extension_id')

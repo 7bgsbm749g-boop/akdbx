@@ -137,7 +137,7 @@ akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
   continue as in [When the vault is locked](#when-the-vault-is-locked).
   `broker.unlock_blocked: true` means [Blocked unlock link](#blocked-unlock-link).
 - Setup never reads the vault and never asks for the master password. It
-  never starts a second broker, and never replaces a unit, task, extension
+  checks for a broker at the selected endpoint before starting one, and never replaces a unit, task, extension
   host or skill folder that it did not write. Run it again to finish or
   extend a setup; it detects what is already done.
 

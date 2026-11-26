@@ -3,11 +3,10 @@ import os
 import plistlib
 import stat
 import tempfile
-from contextlib import contextmanager
 from pathlib import Path
 
 from .macos import require_private_acl
-from .runtime import _validate_trusted_ancestor
+from .runtime import trusted_user_directory
 
 
 LABEL = 'org.akdbx.broker'
@@ -18,30 +17,6 @@ def configuration(argv, environment):
     return plistlib.dumps(dict(Label=LABEL, Comment=MARKER, RunAtLoad=True,
                                LimitLoadToSessionType='Aqua', ProgramArguments=argv,
                                EnvironmentVariables=environment, Umask=0o077))
-
-
-@contextmanager
-def _directory(path, create):
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    fd = os.open(path.anchor, flags)
-    current = Path(path.anchor)
-    try:
-        for part in path.parts[1:]:
-            current /= part
-            if create and current == path:
-                try:
-                    os.mkdir(part, 0o700, dir_fd=fd)
-                except FileExistsError:
-                    pass
-            child = os.open(part, flags, dir_fd=fd)
-            os.close(fd)
-            fd = child
-            _validate_trusted_ancestor(os.fstat(fd), current, os.getuid(), fd)
-        if os.fstat(fd).st_uid != os.getuid():
-            raise PermissionError('LaunchAgents directory belongs to another user')
-        yield fd
-    finally:
-        os.close(fd)
 
 
 def _read(directory, name):
@@ -67,14 +42,14 @@ def _read(directory, name):
 
 def read(path):
     try:
-        with _directory(path.parent, False) as directory:
+        with trusted_user_directory(path.parent) as directory:
             return _read(directory, path.name)
     except FileNotFoundError:
         return None
 
 
 def install(path, data, previous):
-    with _directory(path.parent, True) as directory:
+    with trusted_user_directory(path.parent, create_leaf=True) as directory:
         fd, filename = tempfile.mkstemp(dir=path.parent)
         temporary = Path(filename).name
         try:

@@ -80,7 +80,9 @@ akdbx setup --yes --vault /absolute/path/to/vault.kdbx \
 Use `--dry-run --json` to check the plan. The login stage installs
 `~/Library/LaunchAgents/org.akdbx.broker.plist`. It uses the selected Python and
 vault, starts locked, and suppresses the unlock link in service output. Setup
-leaves an existing broker running. Changes to a loaded job apply at next login.
+checks the selected RPC socket before starting a broker. If the vault already has a
+broker, use its socket and origin. The LaunchAgent preserves `AKDBX_LOCK_TIMEOUT`
+as an explicit timeout in seconds. Changes to a loaded job apply at next login.
 Use `akdbx status` to get the private link and check that
 `lock_event_sources.macos` is `listening`. The broker listens for screen lock,
 sleep and wake in the GUI login session. Losing a listening helper locks the vault.
