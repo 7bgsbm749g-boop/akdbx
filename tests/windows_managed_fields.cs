@@ -36,6 +36,11 @@ class ManagedFields {
             var password = new Forms.TextBox { UseSystemPasswordChar = true };
             var capture = new Forms.TextBox { ReadOnly = true, Text = "invented-capture" };
             panel.Controls.AddRange(new Forms.Control[] {user, password, capture});
+            // A busy but responsive app: each change handler runs longer than
+            // a probe may wait, but inside the write limit.
+            EventHandler busy = (s, e) => Thread.Sleep(300);
+            user.TextChanged += busy;
+            password.TextChanged += busy;
             window.Shown += (s, e) => Commands(a => window.Invoke(a), name => {
                 window.Activate();
                 (name == "user" ? user : name == "password" ? password : capture).Focus();
