@@ -366,7 +366,10 @@ In fill extension 0.12.0 or later, the popup can fill a saved authenticator
 code on the top HTTPS page. Require `extension_popup_totp_protocol: 1`. Focus
 an input marked `autocomplete="one-time-code"` and select the matching account.
 The popup closes to return focus to the field before delivery. Framed
-challenges use a TOTP pin with retained frame owners.
+challenges use a TOTP pin with retained frame owners. Before fill extension
+0.13.1, a chosen code was sometimes refused ("field changed or hidden; nothing
+filled") when the code reached the page before the browser gave focus back to
+the field. Rebuild and reload an older extension.
 
 Stripe's classic Card Element frame (`elements-inner-card-<hash>.html`) is
 pin-route only. Its inputs have no ID, so the popup does not offer or fill a
