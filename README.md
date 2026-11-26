@@ -141,7 +141,8 @@ generated passwords, usernames, TOTP codes, cards, addresses and read-only
 secret capture. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
 uses exact Unicode Win32 Edit controls. On macOS (after 0.47.0), native fields
 use Accessibility with permission granted to the broker. Stock AppKit password
-fields omit the character count required to verify delivery and are refused. Native apps have no browser origin:
+fields omit the character count required to verify delivery. Password and
+combined login modes are unavailable on macOS. Native apps have no browser origin:
 the service URL is a caller assertion and is matched to login/capture origins,
 not claimed as OS URL verification. See [Native desktop fields](skills/akdbx/references/native-fields.md)
 for supported controls, explicit field selection and limits.

@@ -31,6 +31,12 @@ class AccessibilityRequired(TargetError):
     pass
 
 
+def available_modes():
+    if sys.platform == 'darwin':
+        return ('username', 'totp', 'card', 'identity', 'read')
+    return MODES if supported() else ()
+
+
 def supported():
     return sys.platform.startswith('linux') or sys.platform in {'win32', 'darwin'}
 
@@ -91,7 +97,7 @@ class NativeFields:
             status['native_field_accessibility_granted'] = bool(AXIsProcessTrusted())
         return dict(**status, native_field_protocol=PROTOCOL, native_field_supported=supported(),
                     native_field_delivery=DELIVERY, native_field_read_delivery=READ_DELIVERY,
-                    native_field_modes=list(MODES) if supported() else [])
+                    native_field_modes=list(available_modes()))
 
     def prune(self):
         with self.lock:
@@ -163,7 +169,7 @@ class NativeFields:
             mode = request.get('mode')
             extra = {'username_control'} if mode == 'login' else {'field'} if mode in {'card', 'identity'} else set()
             if (set(request) != required | extra or type(request.get('native_protocol')) is not int
-                    or request['native_protocol'] != PROTOCOL or mode not in MODES or expiry <= self.clock()):
+                    or request['native_protocol'] != PROTOCOL or mode not in available_modes() or expiry <= self.clock()):
                 raise TargetError()
             origin = https_origin(request['service_url'])
             indices = (request['control'],)

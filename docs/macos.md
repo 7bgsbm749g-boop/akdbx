@@ -10,7 +10,8 @@ not install or enable a Safari extension.
 ## Install and run
 
 Install the same release wheel as Linux and Windows. The platform dependency
-markers omit both python-xlib and pywin32 on macOS. Use a virtual environment:
+markers select the PyObjC ApplicationServices bridge on macOS. This single
+framework package supplies managed Accessibility and Core Foundation references. Use a virtual environment:
 
 ```sh
 python3 -m venv .venv

@@ -65,7 +65,7 @@ def optional(node, name):
 
 def visible(node):
     # Hit-test the center against the whole desktop. This excludes clipped,
-    # hidden, covered and off-screen controls, including nonfocused login fields.
+    # hidden, covered and off-screen controls.
     position = AX.AXValueGetValue(attr(node, 'AXPosition'), AX.kAXValueCGPointType, None)
     size = AX.AXValueGetValue(attr(node, 'AXSize'), AX.kAXValueCGSizeType, None)
     if not position[0] or not size[0]:
@@ -183,7 +183,7 @@ class MacFields:
             raise TargetError()
 
     def prepare(self, index, value):
-        if self.describe(index)[1] or len(value.encode('utf-16-le')) // 2 > MAX_TEXT:
+        if self.describe(index)[:2] != (False, False) or len(value.encode('utf-16-le')) // 2 > MAX_TEXT:
             raise TargetError()
         count(self.controls[index])
 

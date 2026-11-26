@@ -72,18 +72,14 @@ def pin(manager, window, index, mode, **extra):
     return manager.take(receipt['target'])
 
 
-@pytest.mark.parametrize('mode', ['username', 'totp', 'identity', 'card', 'password', 'login', 'read'])
+@pytest.mark.parametrize('mode', ['username', 'totp', 'identity', 'card', 'read'])
 def test_appkit_modes(lab, mode):
     manager, pid, command = lab
-    index = 1 if mode == 'password' else 3 if mode == 'read' else 0
+    index = 2 if mode == 'read' else 0
     command(f'focus{index}')
     window = listing(manager, pid)
     control = focused(window)
     extra = {}
-    if mode == 'login':
-        extra['username_control'] = control
-        command('focus1')
-        control = focused(listing(manager, pid))
     if mode in ('card', 'identity'):
         extra['field'] = 'cc-number' if mode == 'card' else 'address-line1'
     target = pin(manager, window, control, mode, **extra)
@@ -92,13 +88,9 @@ def test_appkit_modes(lab, mode):
         origins = {https_origin(ORIGIN)}
         if mode == 'read':
             assert manager.read(target, origins, lambda: True, deadline) == 'invented-read-🐈'
-        elif mode in ('username', 'password', 'login'):
-            manager.deliver_password(target, mode, 'invented-user', 'fixture-🔑', origins, lambda: True, deadline)
-            values = command('inspect')
-            if mode in ('username', 'login'):
-                assert values[0] == 'invented-user'
-            if mode in ('password', 'login'):
-                assert values[1] == 'fixture-🔑'
+        elif mode == 'username':
+            manager.deliver_password(target, mode, 'invented-user', '', origins, lambda: True, deadline)
+            assert command('inspect')[0] == 'invented-user'
         else:
             value = '123456' if mode == 'totp' else '4111111111111111' if mode == 'card' else 'Example Street'
             if mode == 'totp':
@@ -110,19 +102,19 @@ def test_appkit_modes(lab, mode):
         target.close()
 
 
-def test_stock_secure_field_refuses_before_either_login_write(lab):
+def test_secure_field_modes_are_refused_before_writing(lab):
     manager, pid, command = lab
     window = listing(manager, pid)
-    command('focus2')
-    password = focused(listing(manager, pid))
-    target = pin(manager, window, password, 'login', username_control=focused(window))
-    try:
-        with pytest.raises(DeliveryError) as failure:
-            manager.deliver_password(target, 'login', 'fixture-user', 'fixture-key', {https_origin(ORIGIN)},
-                                     lambda: True, time.monotonic() + 4)
-        assert not failure.value.started and command('inspect') == ['', '', '']
-    finally:
-        target.close()
+    command('focus1')
+    secure = listing(manager, pid)
+    password = focused(secure)
+    assert secure['controls'][password]['password']
+    with pytest.raises(TargetError):
+        pin(manager, window, password, 'login', username_control=focused(window))
+    with pytest.raises(TargetError):
+        pin(manager, secure, password, 'password')
+    assert command('inspect') == ['', '']
+    assert set(manager.capabilities()['native_field_modes']) == {'username', 'totp', 'identity', 'card', 'read'}
 
 
 def test_replaced_field_and_editable_read_refused(lab):
@@ -140,3 +132,33 @@ def test_replaced_field_and_editable_read_refused(lab):
         assert not failure.value.started
     finally:
         target.close()
+
+def test_embedded_web_area_is_refused(lab):
+    manager, pid, command = lab
+    listing(manager, pid)
+    command('web')
+    # WKWebView attaches its web process asynchronously.
+    deadline = time.monotonic() + 6
+    from akdbx.macos_fields import scan
+    while time.monotonic() < deadline:
+        try:
+            for session in scan(pid):
+                session.close()
+        except TargetError:
+            return
+        time.sleep(.1)
+    pytest.fail('accepted window with embedded WKWebView')
+
+
+def test_browser_process_is_refused(binary, tmp_path):
+    import shutil
+    from akdbx.macos_fields import identity
+    browser = tmp_path / 'Google Chrome'
+    shutil.copy(binary, browser)
+    process = subprocess.Popen([browser, tmp_path])
+    try:
+        with pytest.raises(TargetError):
+            identity(process.pid)
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
