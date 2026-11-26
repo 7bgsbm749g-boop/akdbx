@@ -95,7 +95,8 @@ def test_attach_setup_checks_the_real_adb_server_owner_then_writes_a_private_fil
     finally:
         server.close()
     assert cfg.stat().st_mode & 0o777 == 0o600 and cfg.parent.stat().st_mode & 0o777 == 0o700
-    assert load_devices(cfg) == {'tablet': Device('tablet', str(adb.resolve()), server.port, 'R5CT1234')}
+    stored = str(adb) if sys.platform == 'darwin' else str(adb.resolve())
+    assert load_devices(cfg) == {'tablet': Device('tablet', stored, server.port, 'R5CT1234')}
     port = str(server.port)
     assert log.read_text().splitlines() == [
         f'{port} -s R5CT1234 get-state',
@@ -110,6 +111,34 @@ def _host(monkeypatch, module, platform):
     if sys.platform != platform:
         from types import SimpleNamespace
         monkeypatch.setattr(module, 'sys', SimpleNamespace(platform=platform, stdin=sys.stdin))
+
+
+@pytest.mark.parametrize('platform', ['darwin', 'linux'])
+def test_attach_keeps_a_macos_adb_link_that_upgrades_retarget(tmp_path, monkeypatch, platform):
+    """Homebrew links adb into a versioned folder; Linux keeps storing the resolved file."""
+    cfg = tmp_path / 'cfg' / 'devices.json'
+    monkeypatch.setenv('AKDBX_ANDROID_DEVICES', str(cfg))
+    _host(monkeypatch, android_setup, platform)
+    real = tmp_path / 'Caskroom' / '36.0.0' / 'platform-tools' / 'adb'
+    real.parent.mkdir(parents=True)
+    real.touch(mode=0o700)
+    link = tmp_path / 'bin' / 'adb'
+    link.parent.mkdir()
+    link.symlink_to(real)
+
+    class Transport:
+        def __init__(self, device):
+            pass
+
+        def run(self, *command):
+            import subprocess
+            output = {('get-state',): b'device', ('shell', 'settings', 'get', 'secure', 'speak_password'): b'0'}
+            return subprocess.CompletedProcess(command, 0, output.get(command, b''))
+
+    monkeypatch.setattr(android_setup, 'Adb', Transport)
+    android_setup.setup(args('setup', '--attach', 'R5CT1234', '--adb', str(link)))
+    stored = load_devices(cfg)['android'].adb
+    assert stored == (str(link) if platform == 'darwin' else str(real.resolve()))
 
 
 @pytest.mark.parametrize('flags', [['--create'], ['--manage-avd', 'Pixel_9'], ['--create', '--device', 'pixel']])

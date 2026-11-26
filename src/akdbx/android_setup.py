@@ -155,7 +155,9 @@ def setup(args):
         if not SERIAL.fullmatch(args.attach):
             raise AndroidError('invalid adb serial')
         serial = args.attach
-        adb = (args.adb or Path(shutil.which('adb') or sdk / 'platform-tools/adb')).resolve()
+        adb = args.adb or Path(shutil.which('adb') or sdk / 'platform-tools/adb')
+        # Homebrew links adb into a versioned folder that an upgrade removes: keep the link on macOS.
+        adb = Path(os.path.abspath(adb)) if sys.platform == 'darwin' else adb.resolve()
     else:
         if not (args.create or args.manage_avd) or args.adb:
             raise AndroidError('managed setup uses the SDK platform-tools/adb')

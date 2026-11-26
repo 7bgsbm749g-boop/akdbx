@@ -127,9 +127,10 @@ def _acl(*arguments):
 
 
 @pytest.mark.skipif(sys.platform != 'darwin', reason='macOS ACLs')
-@pytest.mark.parametrize('target, entry', [('file', 'everyone allow read'), ('file', 'everyone allow write'),
-                                           ('folder', 'everyone allow add_file,delete_child'),
-                                           ('folder', 'everyone allow list')])
+@pytest.mark.parametrize('target, entry', [('file', 'group:everyone allow read'),
+                                           ('file', 'group:everyone allow write'),
+                                           ('folder', 'group:everyone allow add_file,delete_child'),
+                                           ('folder', 'group:everyone allow list')])
 def test_macos_device_file_or_folder_with_an_allow_acl_is_refused(tmp_path, target, entry):
     path = write_config(tmp_path / 'cfg' / 'android.json', {'phone': DEVICE})
     assert set(load_devices(path)) == {'phone'}
@@ -141,10 +142,14 @@ def test_macos_device_file_or_folder_with_an_allow_acl_is_refused(tmp_path, targ
 @pytest.mark.skipif(sys.platform != 'darwin', reason='macOS private-file rules')
 def test_macos_device_file_accepts_deny_acls_and_refuses_hard_links(tmp_path):
     path = write_config(tmp_path / 'cfg' / 'android.json', {'phone': DEVICE})
-    # Deny-only entries, such as the home folder's delete protection, grant nothing.
-    _acl('+a', 'everyone deny delete', str(path.parent))
-    _acl('+a', 'everyone deny delete', str(path))
-    assert set(load_devices(path)) == {'phone'}
+    try:
+        # Deny-only entries, such as the home folder's delete protection, grant nothing.
+        _acl('+a', 'group:everyone deny delete', str(path.parent))
+        _acl('+a', 'group:everyone deny delete', str(path))
+        assert set(load_devices(path)) == {'phone'}
+    finally:
+        # The deny entry also stops the owner, and so pytest, from deleting them.
+        _acl('-N', str(path), str(path.parent))
     os.link(path, tmp_path / 'android-copy.json')
     with pytest.raises(AndroidError, match='must not have other hard links'):
         load_devices(path)
@@ -855,8 +860,11 @@ def test_values_reach_the_device_only_in_stdin_packets_of_the_verified_connectio
 @pytest.mark.skipif(os.name == 'nt', reason='POSIX loopback peer check')
 def test_a_helper_run_refuses_an_adb_port_of_another_account(tmp_path, monkeypatch):
     server = FakeAdbServer({'ok': True})
+    adb = tmp_path / 'adb'
+    adb.write_text('#!/bin/sh\nexit 1\n')
+    adb.chmod(0o700)
     try:
-        runner = android_route.Adb(android_route.Device('phone', '/bin/true', server.port, 'emulator-5584'))
+        runner = android_route.Adb(android_route.Device('phone', str(adb), server.port, 'emulator-5584'))
 
         def other_owner(connection):
             raise cdp_peer.PeerError()

@@ -157,7 +157,9 @@ akdbx android setup --attach SERIAL --adb-port 5037
 ```
 
 `--adb` defaults to `adb` on `PATH`, then `platform-tools/adb` in `--sdk`,
-`ANDROID_HOME`, `ANDROID_SDK_ROOT` or `~/Library/Android/sdk`. Setup checks
+`ANDROID_HOME`, `ANDROID_SDK_ROOT` or `~/Library/Android/sdk`. Setup stores
+that path as given, without following links, so Homebrew's
+`/opt/homebrew/bin/adb` keeps working after an upgrade. Setup checks
 that the device is online on that server and turns off spoken passwords. It
 writes `~/.config/akdbx/android-devices.json` (or `AKDBX_ANDROID_DEVICES`) as a
 mode-0600 file in a folder that only you can write. On macOS that file must

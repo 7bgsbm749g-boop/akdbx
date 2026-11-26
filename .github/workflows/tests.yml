@@ -134,6 +134,7 @@ jobs:
             --deselect tests/test_android_route.py::test_each_sms_route_spends_only_its_own_token_once \
             tests/test_android_lifecycle.py::test_attach_and_repeat_preserve_other_devices \
             tests/test_android_lifecycle.py::test_attach_setup_checks_the_real_adb_server_owner_then_writes_a_private_file \
+            tests/test_android_lifecycle.py::test_attach_keeps_a_macos_adb_link_that_upgrades_retarget \
             tests/test_android_lifecycle.py::test_managed_setup_is_refused_on_macos_before_any_change \
             tests/test_android_lifecycle.py::test_macos_setup_without_a_choice_offers_only_attach \
             tests/test_android_lifecycle.py::test_managed_entry_on_macos_is_refused_with_the_linux_reason \
