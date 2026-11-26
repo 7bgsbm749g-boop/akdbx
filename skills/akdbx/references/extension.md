@@ -354,7 +354,9 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   pixel leaves the page. With enhanced security, the pixel challenge hides the
   code's own pixels for a moment (the picture moves out of its clipped box, an
   `<svg>`'s shapes are hidden), so the screenshot must show the challenge
-  colour on a grid of points over the whole code. From fill extension 0.14.2,
+  colour at every pixel of the code's box from 10% to 90% (fill extension
+  0.15.1, after akdbx 0.51.0; earlier builds checked a grid of points). From
+  fill extension 0.14.2,
   the challenge ignores the `::before` content that Firefox reports for every
   `<img>` (its alt text, which a loaded image does not paint). An older
   extension refuses a QR read pin with `target unavailable`; text reads are
@@ -543,13 +545,14 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
      The service worker then adds one user-origin rule (it beats every author
      rule) that paints only the pinned element in a random colour, takes a
      screenshot of the tab (`tabs.captureVisibleTab`), removes the rule, and
-     checks the colour at the points CDP hit-tests: the centre of a field; for
-     a secret, a point every few pixels along three rows of each line of its
-     text (near its top, at its centre and near its bottom; fill extension
-     0.14.3, after akdbx 0.51.0). A cover of any kind, in any document or
+     checks the colour: at the point CDP hit-tests for a field (its centre);
+     for a secret, at every pixel of each line of its text, inside the
+     element's padding box and 4 pixels clear of its edge (fill extension
+     0.15.1, after akdbx 0.51.0). A cover of any kind, in any document or
      frame, changes those pixels, so the pin refuses; a see-through veil also
-     refuses, and so do covers that hide all of a line but a band through its
-     middle (before 0.14.3 only the centre row was checked). The field shows the colour for
+     refuses, and so do covers with gaps (slits, a mesh, or a band through the
+     middle of each line). Before 0.15.1 a secret's check looked at points
+     along the centre of each line only, which such covers passed. The field shows the colour for
      about a tenth of a second. The screenshot stays in the service worker and
      is dropped after the check. The element's own outline gets another colour,
      so one drawn over its content refuses; a secret element that draws its own

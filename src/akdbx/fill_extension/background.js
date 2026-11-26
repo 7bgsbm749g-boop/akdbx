@@ -512,11 +512,13 @@ async function enhancedSecurity() {
 // transparent backdrop of a popover elsewhere also fails it. Then one pixel
 // challenge decides: a user-origin rule (it beats every author rule) paints only
 // the pinned element in a random colour for a moment, and a screenshot of the tab
-// must show that colour at the checked points. Whatever covers a point, in any
-// document, in the top layer or in a parent frame, changes its pixels. The
+// must show that colour at a field's checked point and at every pixel of a read's
+// checked areas (each line of a secret, the inside of a QR code). Whatever covers
+// them, in any document, in the top layer or in a parent frame, changes those
+// pixels; a cover with gaps at fixed points (slits, a mesh) does too. The
 // screenshot needs the optional <all_urls> host access, which the options page
 // requests when the user turns the setting on.
-const STEP_MS = 3000, CAPTURE_GAP_MS = 550, COLOUR_TOLERANCE = 2, MAX_CHALLENGE_POINTS = 600;
+const STEP_MS = 3000, CAPTURE_GAP_MS = 550, COLOUR_TOLERANCE = 2, MAX_CHALLENGE_POINTS = 600, MAX_CHALLENGE_AREAS = 200;
 // The screenshot API allows two calls each second: one challenge at a time, spaced.
 let challengeQueue = Promise.resolve();
 let lastCapture = 0;
@@ -527,7 +529,7 @@ function bounded(promise, ms) {
     .finally(() => clearTimeout(timer));
 }
 
-// "pixels": the checked points show the element, though something overlaps its
+// "pixels": the checked point or areas show the element, though something overlaps its
 // box. "both": the occlusion test is also clear. null: covered, or no proof.
 // Every card, address and read check takes the pixels: the occlusion test misses
 // paint that the element's own ancestors draw over it (a negative-offset outline,
@@ -586,8 +588,14 @@ async function challenge(tabId, chain, pinId, guardId) {
   if (!found) return false;
   const {spec, placed} = found;
   const finite = value => typeof value === "number" && Number.isFinite(value);
-  if (!placed || !Array.isArray(placed.points) || !placed.points.length || placed.points.length > MAX_CHALLENGE_POINTS ||
-      !placed.points.every(point => Array.isArray(point) && point.length === 2 && point.every(finite)) ||
+  // A field gives points; a read gives areas, and every pixel of each must show the colour.
+  const points = placed && Array.isArray(placed.points) && placed.points.length &&
+    placed.points.length <= MAX_CHALLENGE_POINTS &&
+    placed.points.every(point => Array.isArray(point) && point.length === 2 && point.every(finite));
+  const areas = placed && Array.isArray(placed.areas) && placed.areas.length && placed.areas.length <= MAX_CHALLENGE_AREAS &&
+    placed.areas.every(area => Array.isArray(area) && area.length === 4 && area.every(finite) &&
+      area[2] > area[0] && area[3] > area[1]);
+  if (!placed || Boolean(points) === Boolean(areas) || (spec.areas !== undefined) !== Boolean(areas) ||
       !Array.isArray(placed.view) || placed.view.length !== 2 || !placed.view.every(value => finite(value) && value > 0)) {
     return false;
   }
@@ -615,9 +623,9 @@ async function challenge(tabId, chain, pinId, guardId) {
       // The points must still be where the element is: a layout shift while the
       // screenshot was taken makes the old points meaningless.
       const again = await locate();
-      if (!again || again.spec.path !== spec.path ||
-          JSON.stringify([again.placed.points, again.placed.view]) !== JSON.stringify([placed.points, placed.view])) return false;
-      if (await shows(image, placed.points, placed.view, rgb)) return true;
+      if (!again || again.spec.path !== spec.path || JSON.stringify([again.placed.points, again.placed.areas, again.placed.view]) !==
+          JSON.stringify([placed.points, placed.areas, placed.view])) return false;
+      if (await shows(image, placed, rgb)) return true;
     }
     return false;
   } finally {
@@ -625,9 +633,10 @@ async function challenge(tabId, chain, pinId, guardId) {
   }
 }
 
-// True when every point of the screenshot, with its neighbours, has the challenge colour.
-// The image stays in this worker and is dropped here; no pixel is stored or sent.
-async function shows(image, points, view, rgb) {
+// True when every point of the screenshot, with its neighbours, or every pixel of every
+// area has the challenge colour. The image stays in this worker and is dropped here; no
+// pixel is stored or sent.
+async function shows(image, {points, areas, view}, rgb) {
   if (typeof image !== "string" || !image.startsWith("data:image/png;base64,")) return false;
   const bytes = Uint8Array.from(atob(image.slice(image.indexOf(",") + 1)), c => c.charCodeAt(0));
   const bitmap = await createImageBitmap(new Blob([bytes], {type: "image/png"}));
@@ -637,17 +646,27 @@ async function shows(image, points, view, rgb) {
     if (!(scale >= 0.25 && scale <= 8) || Math.abs(bitmap.height / view[1] - scale) > 0.05 * scale) return false;
     const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d", {willReadFrequently: true});
     context.drawImage(bitmap, 0, 0);
-    const reach = Math.max(1, Math.round(scale));
-    return points.every(([x, y]) => {
-      const left = Math.round(x * scale) - reach, top = Math.round(y * scale) - reach, size = 2 * reach + 1;
-      if (left < 0 || top < 0 || left + size > bitmap.width || top + size > bitmap.height) return false;
-      const data = context.getImageData(left, top, size, size).data;
+    const uniform = (left, top, width, height) => {
+      if (!(width > 0 && height > 0) || left < 0 || top < 0 || left + width > bitmap.width || top + height > bitmap.height) {
+        return false;
+      }
+      const data = context.getImageData(left, top, width, height).data;
       for (let i = 0; i < data.length; i += 4) {
         if (data[i + 3] !== 255 || Math.abs(data[i] - rgb[0]) > COLOUR_TOLERANCE ||
             Math.abs(data[i + 1] - rgb[1]) > COLOUR_TOLERANCE || Math.abs(data[i + 2] - rgb[2]) > COLOUR_TOLERANCE) return false;
       }
       return true;
-    });
+    };
+    if (areas) {
+      // The device pixels wholly inside each area; an area with none gives no proof.
+      return areas.every(([left, top, right, bottom]) => {
+        const x = Math.ceil(left * scale), y = Math.ceil(top * scale);
+        return uniform(x, y, Math.floor(right * scale) - x, Math.floor(bottom * scale) - y);
+      });
+    }
+    const reach = Math.max(1, Math.round(scale));
+    return points.every(([x, y]) => uniform(Math.round(x * scale) - reach, Math.round(y * scale) - reach,
+      2 * reach + 1, 2 * reach + 1));
   } finally {
     bitmap.close();
   }

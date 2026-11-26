@@ -140,6 +140,10 @@ LOGIN_FRAME = ('<!doctype html><meta charset="utf-8"><h1>Outer page</h1>'
                '<iframe id="login-frame" src="https://auth.example.com/login" style="width:600px;height:300px;border:0;{}">'
                '</iframe><iframe id="decoy" src="https://auth.example.com/decoy" style="width:200px;height:100px;border:0">'
                '</iframe>')
+# The secret's first line box (t) and the three rows that extension 0.14.3 sampled in it.
+SAMPLED_ROWS = ('const r = document.createRange(); r.selectNodeContents(secret); const t = r.getClientRects()[0],'
+                'b = secret.getBoundingClientRect(), rows = [0, .5, 1].map(f => Math.min(Math.max('
+                't.top + 4 + (t.height - 8) * f, b.top + 4), b.bottom - 4));')
 PAGES = {
     '/secret': f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<p>Copy it now.</p><code id="secret" tabindex="0">{SECRET}</code>',
     # An authenticator setup key printed in groups, and prose that has only Base32 letters.
@@ -214,6 +218,19 @@ PAGES = {
                             'const t = r.getClientRects()[0], mid = t.top + t.height / 2;'
                             'a.style.top = (t.top - 2) + "px"; a.style.height = (mid - 2.5 - t.top + 2) + "px";'
                             'b.style.top = (mid + 2.5) + "px"; b.style.height = (t.bottom + 2 - mid - 2.5) + "px";</script>'),
+    # Covers with gaps at the points a sampled check would look at (extension 0.14.3 sampled three rows
+    # of each line): slits along those rows, and a white canvas with a 3x3 hole at each such point.
+    '/secret-slits': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
+                      '<script>' + SAMPLED_ROWS + 'const bands = [t.top - 2, ...rows.flatMap(y => [Math.round(y) - 1, Math.round(y) + 2]), t.bottom + 2];'
+                      'for (let i = 0; i < bands.length; i += 2) { const d = document.createElement("div");'
+                      'd.style.cssText = `position:fixed;left:0;width:900px;background:#fff;pointer-events:none;'
+                      'top:${bands[i]}px;height:${bands[i + 1] - bands[i]}px`; document.body.append(d); }</script>'),
+    '/secret-mesh': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
+                     '<canvas id="m" style="position:fixed;left:0;top:0;pointer-events:none"></canvas><script>' + SAMPLED_ROWS
+                     + 'm.width = innerWidth; m.height = innerHeight; const g = m.getContext("2d"); g.fillStyle = "#fff";'
+                     'g.fillRect(0, 0, m.width, m.height); const from = t.left + 4, to = t.right - 4,'
+                     'count = Math.ceil((to - from) / 6) + 1; for (const y of rows) for (let i = 0; i < count; ++i)'
+                     'g.clearRect(Math.round(from + (to - from) * i / (count - 1)) - 1, Math.round(y) - 1, 3, 3);</script>'),
     '/secret-inert-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#c{{position:fixed;left:0;top:0;'
                              'width:0;height:0}#c::before{content:"";display:block;width:900px;height:300px;'
                              f'background:#fff}}</style><code id="secret" tabindex="0">{SECRET}</code><div id="c" inert></div>'),
@@ -1025,7 +1042,8 @@ def test_secret_capture_refuses_unfocused_selected_and_changed_secrets(harness):
 
 COVERED_SECRETS = ['/secret-covered', '/secret-covered-important', '/secret-shadow-cover', '/secret-shadow-important',
                    '/secret-inert', '/secret-interactivity', '/secret-shadow-pseudo', '/secret-inert-styled',
-                   '/secret-modal-cover', '/secret-inert-text', '/secret-center-band', '/secret-inert-pseudo',
+                   '/secret-modal-cover', '/secret-inert-text', '/secret-center-band', '/secret-slits', '/secret-mesh',
+                   '/secret-inert-pseudo',
                    '/secret-inert-slot',
                    '/secret-popover-backdrop', '/secret-popover-exit', '/secret-popover-holds-modal',
                    '/secret-details-content', '/secret-scroll-button', '/secret-scroll-marker-group',
