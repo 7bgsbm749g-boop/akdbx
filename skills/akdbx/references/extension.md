@@ -571,7 +571,8 @@ launcher; reinstall the other slots afterwards.
 
 ## Agent desktop slot without DevTools
 
-Use this **from the first load** of a page that has a bot check (see
+Use this **from the first load** of a page that has a
+[red-flag vendor](#red-flag-vendors) (see
 [Known bot-check sites](#known-bot-check-sites) and the probe below), and
 before **every** retry after a block. Seen: DataDome on SoundCloud and npm
 sign-ups, Cloudflare "Verifying…" that does not finish. A page that loads
@@ -580,29 +581,41 @@ inspection tools") flags the profile, and every later attempt starts as a
 known bot. Every route that needs that connection fails: the CDP route, the
 `browser_*` tools and `browser_prepare`. A home IP alone did not pass.
 
+### Red-flag vendors
+
+A red-flag vendor can refuse a sign-up at the first request, with no
+challenge to solve, and remembers the profile, the device and the IP. Use the
+whole procedure on this page from the first load.
+
+| Vendor | Signs in the probe | Process |
+| --- | --- | --- |
+| DataDome | `x-datadome` or `x-dd-b` header, `datadome` cookie, `captcha-delivery.com` or `datadome` in the body | **Red flag.** This whole procedure from the first load. |
+| Cloudflare challenge | `cf-mitigated: challenge`, `challenges.cloudflare.com` | Hides the page behind it. Check the table and search the web for a red-flag vendor on the site; doubt is a red flag. Through the home IP tunnel it hung on every setup; it passed at once on the direct IP. |
+| Others: HUMAN (PerimeterX), Akamai Bot Manager, Kasada, Imperva, Arkose, reCAPTCHA, hCaptcha, Turnstile | `_px`, `px-captcha`, `_abck`, `bm_sz`, `x-kpsdk`, `incap_ses`, `reese84`, `arkoselabs`, `hcaptcha`, `recaptcha`, `turnstile` | Not a red flag yet. Solve the check ([Website checks](../SKILL.md#website-checks-during-sign-in)). If one refuses with no challenge, add it here as a red flag and report it ([Report blockers](../SKILL.md#report-blockers-and-adversarial-sites-to-akdbx)). |
+
 ### Known bot-check sites
 
 | Site | Check | Notes |
 | --- | --- | --- |
-| `npmjs.com` (sign-up, sign-in) | Cloudflare challenge, then GitHub's DataDome | The block page says "Access is temporarily restricted" with a GitHub logo. GitHub's DataDome keys sit under both `npmjs.com` and `github.com`. |
-| `soundcloud.com` (sign-up) | DataDome | Passed through the home IP proxy. |
+| `npmjs.com` (sign-up, sign-in) | Cloudflare challenge, then GitHub's DataDome | Hard block, no challenge: "Access is temporarily restricted" with a GitHub logo. Refused on the datacenter IP (also with a new empty Firefox profile) and on the home IP after a first load in a DevTools Chrome. GitHub's DataDome keys sit under both `npmjs.com` and `github.com`. `npm adduser` cannot create accounts ("Account creation via legacy auth is unavailable"). |
+| `soundcloud.com` (sign-up) | DataDome | Slider challenge. Passed through the home IP proxy with this whole procedure. |
 
 Add each new site that you meet to this table in the same change as your
-task.
+task, and report it ([Report blockers](../SKILL.md#report-blockers-and-adversarial-sites-to-akdbx)).
 
 ### Probe before the first load
 
 From the host, never from the slot browser:
 
 ```bash
-UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
-curl -s -D headers.txt -o body.html -A "$UA" https://SITE/PAGE
-grep -i -E '^(x-datadome|x-dd-b|cf-mitigated)|^set-cookie: *datadome' headers.txt
-grep -c -i -E 'captcha-delivery|datadome|challenges.cloudflare.com' body.html
+UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36'
+curl -sL -D headers.txt -o body.html -A "$UA" https://SITE/SIGNUP-PAGE
+cat headers.txt body.html | tr 'A-Z' 'a-z' | grep -o -E 'x-datadome|x-dd-b|datadome|captcha-delivery|cf-mitigated: *challenge|challenges\.cloudflare\.com|turnstile|_px[a-z0-9]*|perimeterx|px-captcha|_abck|bm_sz|x-kpsdk|kasada|incap_ses|reese84|imperva|arkoselabs|funcaptcha|hcaptcha|recaptcha' | sort -u
 ```
 
-Any match, a site in the table, or doubt: use this whole procedure from the
-first load.
+Probe the sign-up page itself and the site's home page. A red-flag vendor, a
+Cloudflare challenge that hides the page, a site in the table, or doubt: use
+this whole procedure from the first load.
 
 ### Host parts
 
@@ -738,6 +751,11 @@ uses it.
 8. **Clean up.** Remove the home IP proxy, restart the slot's browser with
    DevTools again (the pairing ends), delete any temporary profile you made,
    then `end_session`.
+9. **Report.** For a new site, a new vendor or a refusal, ask the user, then
+   open an akdbx issue
+   ([Report blockers](../SKILL.md#report-blockers-and-adversarial-sites-to-akdbx)).
+   Do not hand the sign-up to the user while a method is left to try
+   ([Automate first](../SKILL.md#automate-first-do-not-give-the-work-back-to-the-user)).
 
 ## Errors
 
