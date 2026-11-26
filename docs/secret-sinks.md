@@ -3,7 +3,7 @@
 `akdbx deliver-secret --sink NAME` writes a captured protected field into a
 `KEY=VALUE` environment file that the operator defined before the broker
 started. The agent names a sink; it never names a path, key, owner or
-command. Linux sinks date from 0.20.0. Windows named pipes are new after 0.47.0.
+command. Linux sinks date from 0.20.0. Windows named pipes date from 0.48.0.
 
 ## Linux configuration
 
