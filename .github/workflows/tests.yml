@@ -358,6 +358,17 @@ jobs:
           browser="$RUNNER_TEMP/cft/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
           "$browser" --version
           echo "AKDBX_TEST_EXTENSION_BROWSER=$browser" >> "$GITHUB_ENV"
+      # TEMPORARY (remove before merge): how Chrome on macOS paints the /secret-inert-text cover.
+      - name: Probe the inert-text cover
+        continue-on-error: true
+        run: |
+          umask 077
+          AKDBX_PROBE_DIR="$RUNNER_TEMP/probe" python -m pytest -q -s tests/probe_cover.py --basetemp="$HOME/probe"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-cover-probe
+          path: ${{ runner.temp }}/probe
       - name: Extension route in Chrome for Testing
         run: |
           umask 077
