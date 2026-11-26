@@ -376,6 +376,7 @@ class Setup:
         self.status_request = status
         self.which = which
         self.windows = (os.name == 'nt') if windows is None else windows
+        self.macos = not self.windows and sys.platform == 'darwin'
         self.env = os.environ if env is None else env
         self.home = Path(home) if home is not None else Path.home()
         self.sleep = sleep
@@ -676,6 +677,13 @@ class Setup:
             desktop = 'Windows desktop'
             if self._elevated():
                 gaps.append('this shell is elevated: run setup and the broker as a normal user, without elevation')
+        elif self.macos:
+            platform = 'macos'
+            desktop = 'macOS login session'
+            if os.getuid() == 0:
+                self.say('Run setup as the desktop user.')
+                self.record('system', 'failed', platform=platform, error='run setup as the desktop user')
+                return False
         elif sys.platform.startswith('linux'):
             platform = 'linux'
             wayland = self.env.get('WAYLAND_DISPLAY') or self.env.get('XDG_SESSION_TYPE') == 'wayland'
@@ -694,26 +702,29 @@ class Setup:
         else:
             platform = sys.platform
             desktop = 'unsupported'
-            gaps.append('akdbx supports Linux (X11) and Windows only')
+            gaps.append('akdbx supports Linux, macOS and Windows')
         tools = {
             'merge_engine': native_merge.ENGINE,
             'mkcert': self.which('mkcert'),
             'tailscale': self.which('tailscale'),
-            'systemctl': None if self.windows else self.which('systemctl'),
+            'systemctl': self.which('systemctl') if platform == 'linux' else None,
             'browsers': self._browsers(),
         }
         self.tools = tools
         if not tools['browsers']:
-            gaps.append('no supported Chromium browser (Helium, Chrome, Edge) found (needed for browser fills)')
+            if self.macos:
+                gaps.append('no supported browser found in /Applications or ~/Applications')
+            else:
+                gaps.append('no supported Chromium browser (Helium, Chrome, Edge) found (needed for browser fills)')
         self.say(f'Python {python}; {platform}: {desktop}')
         self.say('Built-in merge engine: ' + native_merge.ENGINE)
         self.say('mkcert: ' + (tools['mkcert'] or 'not found') + '; tailscale: ' + (tools['tailscale'] or 'not found'))
         self.say('Browsers: ' + (', '.join(sorted(tools['browsers'])) or 'none found'))
         for gap in gaps:
             self.say('Gap: ' + gap)
-        self.record('system', 'ok' if platform in ('linux', 'windows') else 'failed', python=python,
+        self.record('system', 'ok' if platform in ('linux', 'windows', 'macos') else 'failed', python=python,
                     platform=platform, desktop=desktop, tools=tools, gaps=gaps)
-        return platform in ('linux', 'windows')
+        return platform in ('linux', 'windows', 'macos')
 
     def _elevated(self):
         try:
@@ -738,6 +749,14 @@ class Setup:
             for name, paths in candidates.items():
                 for path in paths:
                     if local and path.is_file():
+                        found[name] = str(path)
+                        break
+        elif self.macos:
+            for name, bundle in (('chrome', 'Google Chrome'), ('edge', 'Microsoft Edge'),
+                                 ('firefox', 'Firefox'), ('helium', 'Helium')):
+                for root in (self.home / 'Applications', Path('/Applications')):
+                    path = root / (bundle + '.app')
+                    if path.is_dir():
                         found[name] = str(path)
                         break
         else:
@@ -816,7 +835,10 @@ class Setup:
         browsers = [] if args.no_extension else (args.browser or self.selected('browsers', None, []) or [])
         browsers = [b for b in browsers if b in BROWSERS]
         if 'fill' not in skip and ui.interactive:
-            self.ui.say('Fill route. The extension route works in your everyday browser and is preferred; the '
+            if self.macos:
+                self.ui.say('Fill route. Select the extension host for your browser.')
+            else:
+                self.ui.say('Fill route. The extension route works in your everyday browser and is preferred; the '
                         'CDP route needs a browser profile with a debugging port.')
             detected = [b for b in BROWSERS if b in self.tools.get('browsers', {})]
             answer = ui.text("Browsers for the extension route (" + ', '.join(BROWSERS) + "; comma-separated; 'none')",
@@ -846,7 +868,9 @@ class Setup:
         choice['extension_dir'] = str(chrome_dir) if chrome_dir is not None else None
         choice['firefox_extension_dir'] = str(firefox_dir) if firefox_dir is not None else None
         cdp = None if args.no_cdp else self.selected('cdp_profile', args.cdp_profile, None)
-        if 'fill' not in skip and ui.interactive:
+        if self.macos and cdp:
+            raise Refusal('macOS requires the extension route; omit --cdp-profile')
+        if not self.macos and 'fill' not in skip and ui.interactive:
             answer = ui.text("Private Chromium profile folder for the CDP route ('none' to skip)",
                              str(cdp) if cdp else 'none')
             cdp = None if not answer or answer.lower() == 'none' else answer
@@ -1223,12 +1247,14 @@ class Setup:
                      f'proxy {target} and no Funnel, nothing more is needed; if port {port} serves something else, '
                      'choose another --tailnet-port instead of replacing it (and update or remove --unlock-origin '
                      'or AKDBX_UNLOCK_ORIGIN if it names the old port); otherwise ')
-        self.step(('' if self.windows else 'On Linux as root or as the Tailscale operator user: ')
+        self.step(('' if self.windows or self.macos else 'On Linux as root or as the Tailscale operator user: ')
                   + f'{first}run {command} yourself; {check}.', 'access')
         if self.windows:
             self.step('Make the Tailscale service trust your CA: as your user run Join-Path (mkcert -CAROOT) '
                       "'rootCA.pem', then in an elevated PowerShell run certutil -addstore -f Root with that exact "
                       'path. This changes the trust of the whole computer.', 'access')
+        elif self.macos:
+            self.step('Make sure Tailscale trusts the CA for the loopback HTTPS certificate on this Mac.', 'access')
         else:
             self.step('Make tailscaled trust your CA: mkcert -install adds it to the system store; then run '
                       'sudo systemctl restart tailscaled (this briefly drops tailnet connections).', 'access')
@@ -1268,7 +1294,7 @@ class Setup:
         # A fill route that --yes left out keeps its saved values: they belong to this login change.
         browsers, cdp = (self.state.get(key) if key in self.unselected else self.choice.get(key)
                          for key in ('browsers', 'cdp_profile'))
-        if cdp:
+        if cdp and not self.macos:
             argv += ['--password-browser-profile', cdp, '--card-browser-profile', cdp]
         if browsers:
             argv += ['--default-fill-route', 'extension']
@@ -1286,8 +1312,56 @@ class Setup:
         broker = self.broker_status()
         if self.windows:
             self._login_windows(broker)
+        elif self.macos:
+            try:
+                self._login_macos(broker)
+            except (ValueError, OSError, subprocess.SubprocessError) as exc:
+                self.record('login', 'failed', error=str(exc))
         else:
             self._login_linux(broker)
+
+    def _login_macos(self, broker):
+        from . import launch_agent
+        path = self.home / 'Library' / 'LaunchAgents' / (launch_agent.LABEL + '.plist')
+        domain = f'gui/{os.getuid()}'
+        launchctl = '/bin/launchctl'
+        env = {key: self.env[key] for key in ('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME')
+               if self.env.get(key)}
+        argv = self.serve_argv(service=True)
+        if 'AKDBX_LOCK_TIMEOUT' in self.env:
+            from .vault_lock import timeout_seconds
+            argv.extend(['--lock-timeout', str(timeout_seconds(self.env['AKDBX_LOCK_TIMEOUT']))])
+        data = launch_agent.configuration(argv, env)
+        try:
+            previous = launch_agent.read(path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.record('login', 'failed', plist=str(path), error=str(exc))
+            return
+        job = f'{domain}/{launch_agent.LABEL}'
+        loaded = self.run([launchctl, 'print', job], timeout=10)
+        if loaded.returncode == 0 and (previous is None or
+                f'path = {path}' not in (line.strip() for line in loaded.stdout.splitlines())):
+            self.record('login', 'failed', error='another LaunchAgent uses this label')
+            return
+        if previous != data:
+            applied = self.change('login', f'write the login LaunchAgent {path}', data.decode().splitlines(),
+                                  lambda: launch_agent.install(path, data, previous),
+                                  selected=True, key='start_at_login')
+            if not applied:
+                self.record('login', self.outcome(applied), plist=str(path))
+                return
+        if loaded.returncode == 0 or broker['running'] is not False:
+            self.say('The job is loaded or a broker may already run. Saved changes take effect at next login.')
+        else:
+            command = [launchctl, 'bootstrap', domain, str(path)]
+            applied = self.change('login', 'load the LaunchAgent in the current login session',
+                                  [shell_command(command, False)], lambda: self._checked(command), selected=True)
+            if not applied:
+                self.record('login', self.outcome(applied), plist=str(path))
+                return
+            self.started_service = True
+        self.service_ready = True
+        self.record('login', 'changed' if 'changed' in self.stages.get('login', {}) else 'done', plist=str(path))
 
     def _login_linux(self, broker):
         path = self.unit_path()
@@ -1462,7 +1536,8 @@ class Setup:
     def stage_fill(self):
         browsers, cdp = self.choice.get('browsers') or [], self.choice.get('cdp_profile')
         if not browsers and not cdp:
-            self.say('Not selected. Add --browser NAME (extension route, preferred) or --cdp-profile DIR.')
+            self.say('Not selected. Add --browser NAME for the extension route.' if self.macos else
+                     'Not selected. Add --browser NAME (extension route, preferred) or --cdp-profile DIR.')
             self.record('fill', 'skipped', reason='not selected')
             return
         state = 'done'
@@ -1667,7 +1742,19 @@ class Setup:
             if not applied:
                 return self.outcome(applied)
             state = 'changed'
-        if os.path.lexists(config_path()):
+        registered = os.path.lexists(config_path())
+        if registered and self.macos:
+            from .browser_import import HOST_NAME, registration_matches
+            from .extension_host import linux_manifest_dir
+            from .macos import macos_page_socket
+            registered = registration_matches(browser, tool, self.origin, macos_page_socket(Path(self.socket)),
+                                              self.choice.get('capture_extension_id'))
+            if not registered and os.path.lexists(linux_manifest_dir(browser) / (HOST_NAME + '.json')):
+                self.step('The installed QR capture registration differs or is unsafe. Review the existing '
+                          'configuration and browser manifest before reinstalling the capture host.', 'features')
+                return 'failed'
+            # Without this browser's manifest, install-host reuses only an identical configuration and launcher.
+        if registered:
             self.say(f'The capture host is already registered ({config_path()}); setup leaves it unchanged.')
             return state
         extension_id = self.choice.get('capture_extension_id')
@@ -1683,7 +1770,11 @@ class Setup:
         else:
             from .extension_host import linux_manifest_dir
             name = 'agentic-kdbx-unlock.sock' if Path(self.socket).name == 'agentic-kdbx.sock' else 'akdbx-unlock.sock'
-            argv += ['--socket', Path(self.socket).with_name(name), '--manifest-dir', linux_manifest_dir(browser)]
+            socket_path = Path(self.socket).with_name(name)
+            if self.macos:
+                from .macos import macos_page_socket
+                socket_path = macos_page_socket(Path(self.socket))
+            argv += ['--socket', socket_path, '--manifest-dir', linux_manifest_dir(browser)]
         applied = self.change('features', f'register the capture native host for {browser}',
                               [shell_command(argv, self.windows)], lambda: self._checked(argv), selected=True,
                               key='capture_host')
@@ -1807,6 +1898,10 @@ class Setup:
         elif serve and not self.service_ready:
             self.step('Start the broker in a terminal that stays open (it starts locked): '
                       + summary['serve_command'], 'final')
+        elif serve and self.macos:
+            if self.started_service:
+                self.record('login', 'failed', error='the LaunchAgent loaded but the broker did not answer')
+            self.step('Log out and back in to start the saved LaunchAgent. Then check akdbx status.', 'final')
         elif serve:
             start = (f'schtasks /Run /TN {TASK_NAME}' if self.windows
                      else f'systemctl --user start {SERVICE_NAME}')
@@ -1826,7 +1921,10 @@ class Setup:
             self.ui.say('  Skipped.')
             self.record('system', 'skipped')
             self.tools = {'browsers': {}}
-            supported = self.windows or sys.platform.startswith('linux')
+            supported = self.windows or self.macos or sys.platform.startswith('linux')
+            if self.macos and os.getuid() == 0:
+                self.record('system', 'failed', error='run setup as the desktop user')
+                supported = False
         else:
             supported = self.stage_system()
         if not supported:
