@@ -529,19 +529,23 @@ the native host cannot write `config.js`.
 
 ## Key file and hardware key
 
-The unlock page (and the extension pairing page while the vault is locked)
-has a **Key file or hardware key** section under the master password. A vault
-with no master password unlocks with an empty password field and its key
-file, its hardware key, or both.
+The unlock page and the extension pairing page have a **Key file or hardware
+key** section under the master password. A vault with no master password
+unlocks with an empty password field and a key that the page brings: a key
+file you choose, or a hardware key on the computer where you opened the page.
+The broker's own key file (`--keyfile`) and a hardware key plugged into the
+broker's computer never replace the master password, so the link alone never
+opens a vault. The pairing page also accepts these keys while the vault is
+open and has no master password: it checks them by opening the vault file,
+and the open vault stays as it is.
 
 - **Key file.** Choose the vault's key file. The browser sends it in the
   same form as the password, over the page's HTTPS connection. On the relay
   route, TLS ends at the broker, so the relay sees only encrypted bytes. The
   broker keeps the file in memory for later saves and never writes it to
   disk. The field is not shown when the broker was started with
-  `--keyfile`: that key file stays on the broker's computer, an uploaded one
-  is refused, and an empty password is refused, so the link alone never
-  opens such a vault. Upload limit: 1 MiB.
+  `--keyfile`: that key file stays on the broker's computer, and an uploaded
+  one is refused. Upload limit: 1 MiB.
 - **Hardware key.** HMAC-SHA1 challenge-response, as other KeePass apps use
   it for a KDBX 4 vault with an Argon2 KDF. Select **Use my hardware key**,
   then **Unlock**, and touch the key when it flashes. akdbx talks to the key
@@ -553,18 +557,24 @@ A web page cannot reach this function of a key in any browser (pages get
 security keys only through WebAuthn, a different function). So the page
 uses one of two routes, and says which:
 
-1. **The broker's computer.** When a key is plugged into the computer that
-   runs the broker, the broker asks it after you select **Unlock**.
+1. **The broker's computer.** When a key with a challenge-response applet or
+   a USB key is plugged into the computer that runs the broker, the broker
+   asks it after you select **Unlock**, together with the master password.
+   If that key gives no response or the wrong one, the page offers the key on
+   your computer instead.
 2. **The browsing computer.** Otherwise the page asks the akdbx browser
    extension (0.16.0+) on the computer where you opened it. The extension's
    native host asks the key there, and the page sends the response to the
-   broker inside the same HTTPS request as the password. The extension
-   answers at once for its own broker's origin. For another akdbx broker
-   (for example your server's page opened on your laptop), the page must
-   serve a valid akdbx identity, and the extension asks you once in its own
-   window, which the page cannot draw or click; it remembers your answer for
-   that address. Other pages get no answer, so they cannot tell that the
-   extension is installed.
+   broker inside the same HTTPS request as the password. The native host
+   needs no broker on that computer. The extension answers at once for its
+   own broker's origin. For another akdbx broker (for example your server's
+   page opened on your laptop), the page carries that broker's signed
+   identity; the extension checks it without a request to the site and,
+   right after you select **Unlock**, asks you once in its own window, which
+   the page cannot draw or click. It remembers your answer for that identity
+   key at that address; another key there is a new question. A page learns
+   that the extension is installed only when it carries a valid akdbx
+   identity and you click on it.
 
 A response is a key secret: the broker keeps it in memory only, like the
 password. A key that is not found, not touched in time or not set up for

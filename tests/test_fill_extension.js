@@ -1179,6 +1179,12 @@ const HARDWARE_ANSWER = "ab".repeat(20);
 const pageSender = (origin, extra = {}) =>
   ({id: "jjoamaejjkldcjcpgncoomoaagdfimhg", tab: {id: 3}, frameId: 0, url: origin + "/?token=synthetic", ...extra});
 
+// The host's reply goes to every port listener, as the browser does for one port; the
+// worker's main port ignores "hardware-key" messages, the request's own port takes them.
+function fromHost(listeners, message) {
+  for (const listener of listeners["port.message[]"]) listener(message);
+}
+
 function askHardware(listeners, message, sender) {
   // Objects from the worker's sandbox: compare plain JSON copies.
   return new Promise(resolve => {
@@ -1193,55 +1199,65 @@ async function settleHardware(ready = () => true) {
   for (let i = 0; i < 20; i += 1) await new Promise(resolve => setTimeout(resolve, 0));
 }
 
-test("the trusted broker origin gets the hardware key's answer from the host at once", async () => {
-  const loaded = loadBackground({builtOrigin: LOCAL});
-  const {listeners, posted, chrome} = loaded;
+test("the trusted broker origin gets the hardware key's answer from its own host connection", async () => {
+  const {listeners, posted, chrome} = loadBackground({builtOrigin: LOCAL});
   assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed"}, pageSender(LOCAL)), {ok: true});
   const reply = askHardware(listeners, {op: "hardware-key", challenge: "01".repeat(32)}, pageSender(LOCAL));
-  await settleHardware();
+  await settleHardware(() => posted.some(message => message.type === "hardware-key"));
   const request = posted.find(message => message.type === "hardware-key");
   assert.deepEqual(copy(request), {type: "hardware-key", id: request.id, challenge: "01".repeat(32)});
-  listeners["port.message"]({type: "hardware-key", id: request.id, responses: [HARDWARE_ANSWER, "not hex"]});
+  fromHost(listeners, {type: "hardware-key", id: request.id, responses: [HARDWARE_ANSWER, "not hex"]});
   assert.deepEqual(await reply, {responses: [HARDWARE_ANSWER]});
   assert.equal(chrome.windows.opened.length, 0);  // no consent window for the trusted origin
-  // A host error comes back as a fixed code only.
+  // A host error comes back as a fixed code only; a closed host connection is "unavailable".
   const failing = askHardware(listeners, {op: "hardware-key", challenge: "01".repeat(32)}, pageSender(LOCAL));
-  await settleHardware();
+  await settleHardware(() => posted.filter(message => message.type === "hardware-key").length === 2);
   const second = posted.filter(message => message.type === "hardware-key").at(-1);
-  listeners["port.message"]({type: "hardware-key", id: second.id, error: "no-key"});
+  fromHost(listeners, {type: "hardware-key", id: second.id, error: "no-key"});
   assert.deepEqual(await failing, {error: "no-key"});
+  const closed = askHardware(listeners, {op: "hardware-key", challenge: "01".repeat(32)}, pageSender(LOCAL));
+  await settleHardware(() => posted.filter(message => message.type === "hardware-key").length === 3);
+  for (const listener of listeners["port.disconnect[]"]) listener();
+  assert.deepEqual(await closed, {error: "unavailable"});
 });
 
-test("only a content script in a top HTTPS document may ask, and a page with no akdbx identity is refused", async () => {
+test("only a content script in a top HTTPS document may ask, and a page without a verified identity gets nothing", async () => {
   const calls = [];
-  const {listeners, posted, chrome} = loadBackground({builtOrigin: LOCAL,
-    fetch: identityFetch("not json", {calls})});
+  const {listeners, posted, chrome} = loadBackground({builtOrigin: LOCAL, fetch: identityFetch("{}", {calls})});
   for (const sender of [pageSender(LOCAL, {frameId: 2}), pageSender(LOCAL, {tab: undefined}),
     pageSender(LOCAL, {id: "a".repeat(32)}), pageSender("http://example.com")]) {
     assert.equal(await askHardware(listeners, {op: "hardware-key-allowed"}, sender), "ignored");
   }
   const other = "https://phishing.example";
-  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed"}, pageSender(other)), {ok: false});
-  assert.deepEqual(await askHardware(listeners, {op: "hardware-key", challenge: "01".repeat(32)}, pageSender(other)),
-    {error: "denied"});
+  // Another site's own statement does not verify for this origin, and a click does not change that.
+  const copied = JSON.stringify(await hostKeyStatement(RELAY));
+  for (const message of [{}, {identity: "not json", activation: true}, {identity: copied, activation: true}]) {
+    assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", ...message}, pageSender(other)),
+      {ok: false});
+    assert.deepEqual(await askHardware(listeners, {op: "hardware-key", challenge: "01".repeat(32), ...message},
+      pageSender(other)), {error: "denied"});
+  }
   assert.equal(chrome.windows.opened.length, 0);
   assert.equal(posted.some(message => message.type === "hardware-key"), false);
-  assert.ok(calls.every(call => call.url === other + "/.well-known/akdbx-identity"));
+  assert.deepEqual(calls, []);  // no request to the site: it cannot tell that the extension is there
 });
 
-test("another akdbx broker asks once in a consent window, and an allowed origin is remembered", async () => {
-  const statement = await hostKeyStatement(RELAY);
+test("another akdbx broker asks once, after a click, and the answer is bound to its identity key", async () => {
+  const identity = JSON.stringify(await hostKeyStatement(RELAY));
   const local = {};
-  const {listeners, posted, chrome} = loadBackground({builtOrigin: LOCAL, local, fetch: identityFetch(statement)});
-  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed"}, pageSender(RELAY)), {ok: true});
+  const {listeners, posted, chrome} = loadBackground({builtOrigin: LOCAL, local});
+  // Without a click on the page, a new identity gets no answer and no window.
+  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", identity}, pageSender(RELAY)), {ok: false});
+  const asked = {op: "hardware-key", challenge: "02".repeat(32), identity, activation: true};
+  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", identity, activation: true},
+    pageSender(RELAY)), {ok: true});
   // The user closes the window: denied, nothing asked.
-  let reply = askHardware(listeners, {op: "hardware-key", challenge: "02".repeat(32)}, pageSender(RELAY));
+  let reply = askHardware(listeners, asked, pageSender(RELAY));
   await settleHardware(() => chrome.windows.opened.length === 1);
-  assert.equal(chrome.windows.opened.length, 1);
   listeners["windows.removed"](41);
   assert.deepEqual(await reply, {error: "denied"});
   // Only the consent page may read the request and answer it; it learns the origin from the worker.
-  reply = askHardware(listeners, {op: "hardware-key", challenge: "02".repeat(32)}, pageSender(RELAY));
+  reply = askHardware(listeners, asked, pageSender(RELAY));
   await settleHardware(() => chrome.windows.opened.length === 2);
   const url = new URL(chrome.windows.opened[1].url);
   assert.equal(url.pathname, "/hardware.html");
@@ -1253,14 +1269,19 @@ test("another akdbx broker asks once in a consent window, and an allowed origin 
   await askHardware(listeners, {op: "hardware-consent", id, allow: true}, consentPage);
   await settleHardware(() => posted.some(message => message.type === "hardware-key"));
   const request = posted.find(message => message.type === "hardware-key");
-  listeners["port.message"]({type: "hardware-key", id: request.id, responses: [HARDWARE_ANSWER]});
+  fromHost(listeners, {type: "hardware-key", id: request.id, responses: [HARDWARE_ANSWER]});
   assert.deepEqual(await reply, {responses: [HARDWARE_ANSWER]});
-  assert.deepEqual(copy(local.hardware_key_origins), [RELAY]);
-  // Remembered: the next request opens no window.
-  const again = askHardware(listeners, {op: "hardware-key", challenge: "02".repeat(32)}, pageSender(RELAY));
+  const statement = JSON.parse(identity).statement;
+  assert.deepEqual(copy(local.hardware_key_identities), [{origin: RELAY, key_id: statement.key_id}]);
+  // Allowed: the same identity needs no click and no window next time.
+  const again = askHardware(listeners, {op: "hardware-key", challenge: "02".repeat(32), identity}, pageSender(RELAY));
   await settleHardware(() => posted.filter(message => message.type === "hardware-key").length === 2);
   assert.equal(chrome.windows.opened.length, 2);
   const next = posted.filter(message => message.type === "hardware-key").at(-1);
-  listeners["port.message"]({type: "hardware-key", id: next.id, error: "timeout"});
+  fromHost(listeners, {type: "hardware-key", id: next.id, error: "timeout"});
   assert.deepEqual(await again, {error: "timeout"});
+  // Another broker at the same address (another identity key) is a new question.
+  const replaced = JSON.stringify(await hostKeyStatement(RELAY));
+  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", identity: replaced}, pageSender(RELAY)),
+    {ok: false});
 });

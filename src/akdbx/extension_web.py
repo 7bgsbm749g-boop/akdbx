@@ -51,13 +51,18 @@ def handle_pairing(handler, state):
                                    'choose <strong>Open the pairing page</strong> for a new link.</p>')
         return True
 
+    def by_keys():
+        # A locked broker opens the vault file; so does an open vault with no
+        # master password, to check the keys the page brings. Otherwise the
+        # held master password decides.
+        held = getattr(broker.vault, 'password', None)
+        return broker.locked or not (isinstance(held, str) and held)
+
     def form(error='', keys_open=False):
         action = ROUTE + '?token=' + html.escape(token, quote=True)
         message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
         unlock = '<p>The vault is locked: this also unlocks it.</p>' if broker.locked else ''
-        # Only an unlock can use a key file or hardware key; pairing an
-        # unlocked broker checks the master password it holds.
-        keys = keys_section(state, open_section=keys_open) if broker.locked else ''
+        keys = keys_section(state, open_section=keys_open) if by_keys() else ''
         encoding = ' enctype="multipart/form-data"' if keys else ''
         # The unlock page's form and button: the shared script posts it, shows the busy
         # state and then replaces the sheet with the result page (success or error).
@@ -99,8 +104,8 @@ def handle_pairing(handler, state):
             raise ValueError
         password, keys = unlock_credentials(values, state.keyfile)
         values = None
-        if password is None and not broker.locked:
-            raise ValueError  # Pairing an unlocked broker checks the master password it holds.
+        if password is None and not by_keys():
+            raise ValueError  # The open vault has a master password: it decides.
     except Exception:
         send(HTTPStatus.BAD_REQUEST, '<p>Request rejected.</p>')
         return True
@@ -130,8 +135,9 @@ def handle_pairing(handler, state):
                 return True
             ok = False
             keys_used = keys is not None
-            if broker.locked:
-                if keys is not None and keys.broker_key and hasattr(handler, 'server'):
+            checked, was_locked = by_keys(), broker.locked
+            if checked:
+                if keys is not None and keys.broker_key and hasattr(handler, 'server'):  # the key's touch
                     handler.server.extend_request(handler.request, TOUCH_TIMEOUT + 5)
                 try:
                     vault = call_opener(state, password, keys)
@@ -149,8 +155,9 @@ def handle_pairing(handler, state):
                         send(HTTPStatus.SERVICE_UNAVAILABLE, form(OPEN_FAILED))
                         return True
                 else:
-                    ok = broker.unlock(vault) or not broker.locked
-                if ok:
+                    # An open vault stays as it is: opening the file only proved the keys.
+                    ok = (broker.unlock(vault) or not broker.locked) if was_locked else True
+                if ok and was_locked:
                     state.record_success(attempt)
             else:
                 # Keys from a page that was opened while the vault was locked
@@ -165,8 +172,8 @@ def handle_pairing(handler, state):
                     return True
                 send(HTTPStatus.UNAUTHORIZED, form(
                     'AKDBX could not unlock the vault. Check the master password, key file and hardware '
-                    'key.' if keys_used and broker.locked else 'The master password is not correct.',
-                    keys_open=keys_used and broker.locked))
+                    'key.' if keys_used and checked else 'The master password is not correct.',
+                    keys_open=keys_used and checked))
                 return True
         if not hub.approve(token):
             send(HTTPStatus.NOT_FOUND, '<p>This pairing request expired. Open akdbx in the browser again.</p>')

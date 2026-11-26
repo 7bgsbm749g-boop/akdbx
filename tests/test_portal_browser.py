@@ -658,10 +658,12 @@ def test_hardware_key_on_the_broker_computer(keys_lab):
     assert cdp.evaluate("document.querySelector('[data-hardware-key]').dataset.hardwareRoute", session) == 'broker'
     cdp.evaluate("document.querySelector('[data-hardware-key]').click()", session)
     wait_for(cdp, session, "document.querySelector('#password').required === false")
+    # The broker's own key goes with the master password, never instead of it.
+    type_into(cdp, session, '#password', 'public-synthetic-test-only')
     cdp.evaluate("document.querySelector('.unlock-submit').click()", session)
     wait_for(cdp, session, "document.querySelector('h1').textContent === 'Vault unlocked'")
     no_password, _, keys = lab.received[0]
-    assert no_password and keys.broker_key and not keys.responses
+    assert not no_password and keys.broker_key and not keys.responses
 
 
 def test_hardware_key_through_the_extension_on_the_browsing_computer(keys_lab):
@@ -702,7 +704,12 @@ def test_hardware_key_without_the_extension_keeps_the_form(keys_lab):
     cdp.evaluate("document.querySelector('[data-hardware-key]').click()", session)
     type_into(cdp, session, '#password', 'public-synthetic-test-only')
     cdp.evaluate("document.querySelector('.unlock-submit').click()", session)
-    wait_for(cdp, session, "document.querySelector('#unlock-status').classList.contains('is-error')")
+    # The page waits 5 s for an extension to answer.
+    import time
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline and not cdp.evaluate(
+            "document.querySelector('#unlock-status').classList.contains('is-error')", session):
+        time.sleep(0.1)
     assert cdp.evaluate("document.querySelector('#unlock-status').textContent", session).startswith(
         'The akdbx extension did not answer.')
     # Nothing was sent, and the password and the choice stay for the next try.
@@ -710,3 +717,29 @@ def test_hardware_key_without_the_extension_keeps_the_form(keys_lab):
     assert cdp.evaluate("document.querySelector('[data-hardware-key]').checked", session) is True
     assert cdp.evaluate("document.querySelector('#password').checkValidity()", session) is True
     assert cdp.evaluate("!document.querySelector('.unlock-submit').disabled", session) is True
+
+
+def test_an_empty_password_never_uses_the_broker_key(keys_lab):
+    """A vault with no master password: the key must come from this computer, through the extension."""
+    from test_unlock_keys import YUBIKEY_RESPONSE, YUBIKEY_SEED
+    lab, cdp, session = keys_lab, keys_lab.cdp, keys_lab.session
+    lab.here = True
+    lab.start()
+    cdp.evaluate("""(() => {
+      window.addEventListener("message", event => {
+        const data = event.data;
+        if (!data || data.akdbx_hardware !== "request") return;
+        const id = data.akdbx_hardware_id;
+        window.postMessage({akdbx_hardware: "ack", akdbx_hardware_id: id}, location.origin);
+        window.postMessage({akdbx_hardware: "result", akdbx_hardware_id: id, responses: ["RESPONSE"]},
+          location.origin);
+      });
+    })()""".replace('RESPONSE', YUBIKEY_RESPONSE), session)
+    cdp.evaluate("document.querySelector('.unlock-keys summary').click()", session)
+    assert cdp.evaluate("document.querySelector('[data-hardware-key]').dataset.hardwareRoute", session) == 'broker'
+    cdp.evaluate("document.querySelector('[data-hardware-key]').click()", session)
+    cdp.evaluate("document.querySelector('.unlock-submit').click()", session)
+    wait_for(cdp, session, "document.querySelector('h1').textContent === 'Vault unlocked'")
+    no_password, _, keys = lab.received[0]
+    assert no_password and not keys.broker_key and keys.responses == (bytes.fromhex(YUBIKEY_RESPONSE),)
+    assert keys.challenge == YUBIKEY_SEED

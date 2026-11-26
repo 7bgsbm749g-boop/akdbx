@@ -168,7 +168,6 @@ jobs:
             tests/test_import_totp.py::test_macos_launcher_is_shared_only_when_identical \
             tests/test_import_totp.py::test_native_host_subprocess_to_private_broker \
             tests/test_unlock_keys.py \
-            --deselect tests/test_unlock_keys.py::test_keepassxc_key_file_vault_unlocks_by_upload_and_stays_readable_by_keepassxc \
             --basetemp="$RUNNER_TEMP/p" --junitxml="$RUNNER_TEMP/platform.xml"
           python -c 'import sys, xml.etree.ElementTree as E; sys.exit(bool(E.parse(sys.argv[1]).findall(".//skipped")))' "$RUNNER_TEMP/platform.xml"
   linux:
@@ -254,8 +253,7 @@ jobs:
             tests/test_admission.py tests/test_group_admission.py tests/test_group_selection.py tests/test_upload_contract.py \
             tests/test_recovery_paths.py tests/test_keyfile_paths.py tests/test_import_compat.py tests/test_protected_decoding.py \
             tests/test_verification_resources.py tests/test_target_legacy.py \
-            tests/test_unlock_keys.py::test_keepassxc_key_file_vault_unlocks_by_upload_and_stays_readable_by_keepassxc \
-            --basetemp="$RUNNER_TEMP/native-merge" --junitxml="$RUNNER_TEMP/native-merge.xml"
+                      --basetemp="$RUNNER_TEMP/native-merge" --junitxml="$RUNNER_TEMP/native-merge.xml"
           python -c 'import sys, xml.etree.ElementTree as E; cases = E.parse(sys.argv[1]).findall(".//testcase"); skipped = [c.get("name") for c in cases if c.find("skipped") is not None]; print(len(cases), "cases,", len(skipped), "skipped", skipped[:5]); sys.exit(len(cases) < 500 or bool(skipped))' "$RUNNER_TEMP/native-merge.xml"
       # Full-cost KDBX 4.1 (Argon2id, 64 MiB) admission must meet its 30-second deadline on a CI runner.
       - name: Full-cost admission deadlines

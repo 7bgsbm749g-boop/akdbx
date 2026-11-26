@@ -129,6 +129,14 @@ def test_destination_rules_keep_literal_titles():
 
 def test_page_script_reads_card_values_only_for_local_checks():
     script = portal.SCRIPT
+    # The one message the page posts asks the akdbx extension for a hardware key response, on the
+    # page's own window and origin. It carries only the vault's challenge and the broker's signed
+    # identity, both public; no input value can reach it.
+    hardware = script[script.index('function askExtension'):script.index('async function hardwareResponses')]
+    assert hardware.count('postMessage(') == 1 and 'value' not in hardware
+    assert ('window.postMessage({akdbx_hardware: "request", akdbx_hardware_id: id, challenge, identity}, '
+            'location.origin)') in hardware
+    script = script.replace(hardware, '')
     assert not re.search(r'\b(console|localStorage|sessionStorage|indexedDB|XMLHttpRequest|sendBeacon|postMessage|innerHTML)\b', script)
     # Card values are read in one place and only compared or measured. The
     # other reads keep the non-secret title and group after a final result.

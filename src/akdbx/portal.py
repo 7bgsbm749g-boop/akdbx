@@ -641,7 +641,7 @@ SCRIPT = r""""use strict";
   // The akdbx extension on this computer asks the hardware key. The page sends
   // only the vault's challenge, which is not secret; the responses come back
   // for this one unlock request and are never stored.
-  function askExtension(challenge) {
+  function askExtension(challenge, identity) {
     return new Promise(resolve => {
       const id = crypto.randomUUID();
       let timer;
@@ -655,27 +655,35 @@ SCRIPT = r""""use strict";
         if (event.source !== window || event.origin !== location.origin || !data || typeof data !== "object" ||
             data.akdbx_hardware_id !== id) return;
         if (data.akdbx_hardware === "ack") {
+          // Longer than a consent window (2 min) and a touch together.
           clearTimeout(timer);
-          timer = setTimeout(() => done({error: "timeout"}), 90000);
+          timer = setTimeout(() => done({error: "timeout"}), 150000);
         } else if (data.akdbx_hardware === "result") {
           done(data);
         }
       };
       window.addEventListener("message", listen);
-      timer = setTimeout(() => done({error: "no-extension"}), 2000);
-      window.postMessage({akdbx_hardware: "request", akdbx_hardware_id: id, challenge}, location.origin);
+      timer = setTimeout(() => done({error: "no-extension"}), 5000);
+      window.postMessage({akdbx_hardware: "request", akdbx_hardware_id: id, challenge, identity}, location.origin);
     });
   }
   async function hardwareResponses(form, status) {
     form.querySelectorAll("[data-hardware-response]").forEach(input => input.remove());
     const key = form.querySelector("[data-hardware-key]");
     if (!key || !key.checked) return true;
-    if (key.getAttribute("data-hardware-route") !== "extension") {
+    // The broker's own key never replaces the master password: with an empty
+    // password, the key must come from this computer.
+    const password = form.querySelector("#password"), required = password.required;
+    password.required = true;  // Ask the browser whether the field is empty; its text is never read.
+    const empty = !password.checkValidity();
+    password.required = required;
+    if (key.getAttribute("data-hardware-route") !== "extension" && !empty) {
       setStatus(status, key.getAttribute("data-touch-text"), "");
       return true;
     }
     setStatus(status, "Touch your hardware key when it flashes.", "");
-    const reply = await askExtension(key.getAttribute("data-hardware-challenge"));
+    const reply = await askExtension(key.getAttribute("data-hardware-challenge"),
+      key.getAttribute("data-hardware-identity"));
     const responses = Array.isArray(reply.responses) ?
       reply.responses.filter(item => typeof item === "string" && /^[0-9a-f]{40}$/.test(item)).slice(0, 4) : [];
     if (!responses.length) {

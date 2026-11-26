@@ -10,6 +10,7 @@ USB key of ``virtual_hardware_key`` on Linux.
 from __future__ import annotations
 
 import base64
+import sys
 import hashlib
 import hmac
 import io
@@ -28,7 +29,8 @@ from akdbx.unlock_keys import UnlockKeys, key_material, read_challenge, vault_ch
 from akdbx.web_unlock import parse_multipart, start_unlock_server, unlock_credentials
 from test_broker import RecordingTyper
 from test_web_unlock import UnixHTTPConnection, call, route
-from test_hardware_key import virtual_key  # noqa: F401  (fixture)
+if sys.platform == 'linux':
+    from test_hardware_key import virtual_key  # noqa: F401  (fixture)
 
 FIXTURES = Path(__file__).parent / 'fixtures'
 YUBIKEY_VAULT = FIXTURES / 'hardware-key-kdbx4.kdbx'
@@ -179,16 +181,21 @@ def test_unlock_credentials_rules():
     password, keys = unlock_credentials({'password': [MASTER], 'hardware': ['on'], 'challenge': [seed],
                                          'response': [' ' + YUBIKEY_RESPONSE.upper() + ' ', '00' * 20]}, None)
     assert password == MASTER and keys == UnlockKeys(challenge=YUBIKEY_SEED, responses=(answer, bytes(20)))
-    # A vault with no master password: the user's own key file or hardware key.
+    # A vault with no master password: a key that the page brings.
     assert unlock_credentials({'password': [''], 'keyfile': [b'key']}, None) == (None, UnlockKeys(keyfile=b'key'))
-    assert unlock_credentials({'password': [''], 'hardware': ['on']}, Path('/configured.key')) == (
-        None, UnlockKeys(broker_key=True))
+    assert unlock_credentials({'password': [''], 'hardware': ['on'], 'challenge': [seed],
+                               'response': [YUBIKEY_RESPONSE]}, Path('/configured.key')) == (
+        None, UnlockKeys(challenge=YUBIKEY_SEED, responses=(answer,)))
+    assert unlock_credentials({'password': [''], 'hardware': ['on'], 'keyfile': [b'key']}, None) == (
+        None, UnlockKeys(keyfile=b'key', broker_key=True))
     # Key material never shows in a repr, so a traceback or log cannot carry it.
     assert YUBIKEY_RESPONSE not in repr(keys) and 'synthetic-bytes' not in repr(UnlockKeys(keyfile=b'synthetic-bytes'))
     for values, keyfile in [
         ({'password': ['']}, None),
-        # A key file on the broker's computer never unlocks with an empty password.
+        # Keys on the broker's computer never replace the password: the link alone opens nothing.
         ({'password': ['']}, Path('/configured.key')),
+        ({'password': [''], 'hardware': ['on']}, None),
+        ({'password': [''], 'hardware': ['on']}, Path('/configured.key')),
         ({'password': [MASTER], 'keyfile': [b'key']}, Path('/configured.key')),
         ({'password': [MASTER], 'keyfile': ['text, not a file']}, None),
         ({'password': [MASTER, MASTER]}, None),
@@ -347,25 +354,80 @@ def test_browsing_computer_responses_and_a_stale_challenge(tmp_path, broker_key)
         server.server_close()
 
 
-@pytest.mark.parametrize('with_keyfile', [False, True])
-def test_vault_without_master_password_unlocks_with_the_hardware_key(tmp_path, broker_key, with_keyfile):
+def test_vault_without_master_password_needs_a_key_from_the_page(tmp_path, broker_key):
+    """The broker's own key never replaces the master password; a key the page brings does."""
     folder = tmp_path / 'vault'
     folder.mkdir(mode=0o700)
     database = folder / 'vault.kdbx'
-    key = b'synthetic key file' if with_keyfile else None
-    hardware_vault(database, password=None, keyfile=key)
+    hardware_vault(database, password=None)
+    seed = vault_challenge(database.read_bytes())
     broker, server, socket_path, path = serve(tmp_path, database)
     try:
-        files = [('keyfile', 'k.key', key)] if key else []
-        status, page = post(socket_path, path, [('password', ''), ('hardware', 'on')], files)
+        # The link alone, with the key on the broker's computer: refused, no attempt used, key never asked.
+        status, _ = post(socket_path, path, [('password', ''), ('hardware', 'on')])
+        assert status == 400 and broker.locked and broker.unlock_link.remaining() == 3 and broker_key.asked == []
+        # Responses from the browsing computer's key.
+        status, page = post(socket_path, path, [('password', ''), ('hardware', 'on'), ('challenge', seed.hex()),
+                                                ('response', key_response(seed).hex())])
         assert status == 200 and b'Vault unlocked' in page and not broker.locked
         assert save_secret(broker)['state'] == 'saved'
     finally:
         server.shutdown()
         server.server_close()
     data = database.read_bytes()
-    reopened = open_encrypted(data, None, key_material(key, key_response(vault_challenge(data))))
+    reopened = open_encrypted(data, None, key_material(None, key_response(vault_challenge(data))))
     assert reopened.find_entries(title='Synthetic service', first=True) is not None
+
+
+def test_vault_without_master_password_with_an_uploaded_key_file_may_use_the_broker_key(tmp_path, broker_key):
+    folder = tmp_path / 'vault'
+    folder.mkdir(mode=0o700)
+    database = folder / 'vault.kdbx'
+    key = b'synthetic key file'
+    hardware_vault(database, password=None, keyfile=key)
+    broker, server, socket_path, path = serve(tmp_path, database)
+    try:
+        status, page = post(socket_path, path, [('password', ''), ('hardware', 'on')], [('keyfile', 'k.key', key)])
+        assert status == 200 and not broker.locked and len(broker_key.asked) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_failed_broker_key_offers_the_browsing_computer_key(tmp_path, broker_key):
+    database = private_copy(tmp_path, YUBIKEY_VAULT)
+    broker, server, socket_path, path = serve(tmp_path, database)
+    try:
+        status, _, page = call(socket_path, 'GET', path)
+        assert b'data-hardware-route="broker"' in page
+        broker_key.error = hardware_key.HardwareKeyError('the hardware key has no challenge-response slot set up')
+        status, page = post(socket_path, path, [('password', YUBIKEY_PASSWORD), ('hardware', 'on')])
+        assert status == 409 and b'data-hardware-route="extension"' in page
+        broker_key.error, broker_key.secret = None, b'\x03' * 20  # another key on the broker's computer
+        status, page = post(socket_path, path, [('password', YUBIKEY_PASSWORD), ('hardware', 'on')])
+        assert status == 401 and b'data-hardware-route="extension"' in page
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_page_carries_the_broker_identity_for_the_extension(tmp_path, broker_key):
+    import json
+    from akdbx import broker_identity
+    database = private_copy(tmp_path, YUBIKEY_VAULT)
+    broker, server, socket_path, path = serve(tmp_path, database)
+    try:
+        identity = broker_identity.IdentityStore(tmp_path / 'identity').announce('https://node.example:9443')
+        broker.extension.set_identity(identity)
+        broker_key.here = False
+        status, _, page = call(socket_path, 'GET', path)
+    finally:
+        server.shutdown()
+        server.server_close()
+    import html as html_lib
+    import re
+    attribute = re.search(rb'data-hardware-identity="([^"]*)"', page).group(1).decode()
+    assert json.loads(html_lib.unescape(attribute)) == identity.message()
 
 
 def test_kdbx3_vault_page_offers_no_hardware_key(tmp_path, broker_key):
@@ -500,23 +562,53 @@ def test_pairing_page_hardware_key_branches_count_like_the_unlock_page(broker_ke
     assert state.remaining() == 2 and broker.locked
 
 
+def test_unlocked_vault_without_master_password_pairs_with_its_keys():
+    """The open vault stays; opening the file with the page's keys proves them."""
+    from test_extension_route import PageHandler
+    from akdbx.extension_web import handle_pairing
+    from akdbx.web_unlock import UnlockState
+    broker, path = pairing(locked=False)
+    held = SimpleNamespace(entries=[], password=None)
+    broker.vault = held
+    seen = []
+
+    def opener(_database, password, _keyfile, keys=None):
+        seen.append((password, keys))
+        if keys is None or keys.keyfile != b'synthetic key':
+            raise CredentialsError('synthetic failure')
+        return SimpleNamespace(entries=[], password=None)
+    state = UnlockState(broker, None, None, opener)
+    token = state.token
+    page = PageHandler(path)
+    handle_pairing(page, state)
+    assert page.sent[0][0] == 200 and 'name="keyfile" type="file"' in page.sent[0][1]
+    status, _ = pair(path, state, [('password', ''), ('confirmed', 'yes')], [('keyfile', 'k', b'other key')])
+    assert status == 401 and state.remaining() == 2
+    status, _ = pair(path, state, [('password', ''), ('confirmed', 'yes')], [('keyfile', 'k', b'synthetic key')])
+    assert status == 200 and broker.vault is held and broker.extension.approved
+    # The unlock link is not spent: only an unlock does that.
+    assert state.token == token and state.remaining() == 2
+
+
 # ----- the real kernel path ------------------------------------------------------
-def test_virtual_usb_key_unlocks_a_vault_without_master_password(tmp_path, request):
-    """Linux: a virtual USB key through /dev/uhid; the broker finds and asks it like a real one."""
-    from test_hardware_key import _virtual_key_available
-    if not _virtual_key_available():
-        pytest.skip('the virtual hardware key needs passwordless sudo and /dev/uhid')
-    request.getfixturevalue('virtual_key')
-    folder = tmp_path / 'vault'
-    folder.mkdir(mode=0o700)
-    database = folder / 'vault.kdbx'
-    hardware_vault(database, password=None)
-    broker, server, socket_path, path = serve(tmp_path, database)
-    try:
-        status, _, page = call(socket_path, 'GET', path)
-        assert b'data-hardware-route="broker"' in page
-        status, page = post(socket_path, path, [('password', ''), ('hardware', 'on')])
-        assert status == 200 and b'Vault unlocked' in page and not broker.locked
-    finally:
-        server.shutdown()
-        server.server_close()
+# Defined only on Linux: other systems have no /dev/uhid, and their CI jobs refuse skips.
+if sys.platform == 'linux':
+    def test_virtual_usb_key_on_the_broker_unlocks_with_the_password(tmp_path, request):
+        """Linux: a virtual USB key through /dev/uhid; the broker finds and asks it like a real one."""
+        from test_hardware_key import _virtual_key_available
+        if not _virtual_key_available():
+            pytest.skip('the virtual hardware key needs passwordless sudo and /dev/uhid')
+        request.getfixturevalue('virtual_key')
+        folder = tmp_path / 'vault'
+        folder.mkdir(mode=0o700)
+        database = folder / 'vault.kdbx'
+        hardware_vault(database, password=MASTER)
+        broker, server, socket_path, path = serve(tmp_path, database)
+        try:
+            status, _, page = call(socket_path, 'GET', path)
+            assert b'data-hardware-route="broker"' in page
+            status, page = post(socket_path, path, [('password', MASTER), ('hardware', 'on')])
+            assert status == 200 and b'Vault unlocked' in page and not broker.locked
+        finally:
+            server.shutdown()
+            server.server_close()

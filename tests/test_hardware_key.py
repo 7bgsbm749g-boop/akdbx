@@ -153,7 +153,7 @@ def frames(data):
 def test_native_host_answers_hardware_key_requests_itself():
     out, lock = io.BytesIO(), threading.Lock()
     message = dict(type='hardware-key', id=7, challenge=SEED.hex())
-    assert extension_host.hardware_request(message, out, lock, responses=lambda c: [expected(c)])
+    assert extension_host.hardware_request(message, out, lock, responses=lambda c: [expected(c)]) is not None
     deadline = time.monotonic() + 5
     while not out.getvalue() and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -162,82 +162,119 @@ def test_native_host_answers_hardware_key_requests_itself():
     def missing(challenge):
         raise hardware_key.NoHardwareKey()
     out = io.BytesIO()
-    assert extension_host.hardware_request(message, out, lock, responses=missing)
+    assert extension_host.hardware_request(message, out, lock, responses=missing) is not None
     while not out.getvalue() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert frames(out.getvalue()) == [dict(type='hardware-key', id=7, error='no-key')]
     for bad in (dict(message, challenge='zz'), dict(message, id='7'), dict(message, extra=1),
                 dict(message, challenge='00' * 65)):
-        assert not extension_host.hardware_request(bad, io.BytesIO(), lock, responses=lambda c: [])
+        assert extension_host.hardware_request(bad, io.BytesIO(), lock, responses=lambda c: []) is None
 
 
-def test_native_host_relay_keeps_hardware_key_requests_from_the_broker(monkeypatch):
+def test_a_hardware_key_request_gets_its_own_connection_and_needs_no_broker(monkeypatch):
+    """The extension opens a native connection for one request; no broker runs on this computer."""
+    monkeypatch.setattr(hardware_key, 'responses', lambda challenge: [expected(challenge)])
+
+    def no_broker():
+        raise AssertionError('a hardware key request never connects to a broker')
+    incoming = io.BytesIO()
+    extension_host.write_frame(incoming, dict(type='hardware-key', id=1, challenge=SEED.hex()))
+    incoming.seek(0)
+    out = io.BytesIO()
+    assert extension_host.relay(incoming, out, extension_host.EXTENSION_ORIGIN, 'chrome', no_broker) == 0
+    assert frames(out.getvalue()) == [dict(type='hardware-key', id=1, responses=[expected().hex()])]
+    # Another caller than the extension gets nothing.
+    incoming.seek(0)
+    assert extension_host.relay(incoming, io.BytesIO(), 'chrome-extension://another/', 'chrome', no_broker) == 1
+
+
+def test_card_replies_that_continue_are_fetched():
     sent = []
+    answer = bytes(range(20))
 
-    class Broker:
-        def settimeout(self, value):
+    def exchange(apdu):
+        sent.append(apdu)
+        if apdu[1] == 0xC0:
+            return answer[12:], 0x9000
+        return answer[:12], 0x6108
+    assert hardware_key.with_continuation(exchange, b'\x00\x01\x38\x00\x40' + bytes(64)) == (answer, 0x9000)
+    assert sent[1] == bytes([0, 0xC0, 0, 0, 8])
+
+
+def test_only_cards_with_a_challenge_response_applet_count(monkeypatch):
+    monkeypatch.setattr(hardware_key, '_hid_sessions', lambda: iter(()))
+
+    class Readers:
+        def __init__(self, status):
+            self.status = status
+
+        def readers(self):
+            return [b'Reader 0']
+
+        def connect(self, reader):
+            return (1, 2)
+
+        def transmit(self, card, apdu):
+            return b'', self.status
+
+        def disconnect(self, card):
             pass
 
         def close(self):
             pass
-    monkeypatch.setattr(extension_host, 'send_message', lambda connection, message: sent.append(message))
-    # A quiet broker: nothing to read, so the session lasts until the extension's input ends.
-    monkeypatch.setattr('akdbx.extension_route._wait_readable', lambda connection, timeout: time.sleep(0.02))
-    monkeypatch.setattr(hardware_key, 'responses', lambda challenge: [expected(challenge)])
-    from test_extension_route import KEY
-    hello = dict(type='hello', protocol=extension_host.PROTOCOL, public_key=KEY)
-    incoming = io.BytesIO()
-    for frame in (hello, dict(type='hardware-key', id=1, challenge=SEED.hex())):
-        extension_host.write_frame(incoming, frame)
-    incoming.seek(0)
-    out = io.BytesIO()
-    extension_host.relay(incoming, out, extension_host.EXTENSION_ORIGIN, 'chrome', Broker)
-    deadline = time.monotonic() + 5
-    while b'hardware-key' not in out.getvalue() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    # The broker saw only the attach; the extension got the key's answer from this computer.
-    assert [message['action'] for message in sent] == ['extension-attach']
-    assert dict(type='hardware-key', id=1, responses=[expected().hex()]) in frames(out.getvalue())
+    monkeypatch.setattr(hardware_key, '_Pcsc', lambda: Readers(0x6A82))  # an ID card: no such applet
+    assert hardware_key.available() is False
+    monkeypatch.setattr(hardware_key, '_Pcsc', lambda: Readers(0x9000))
+    assert hardware_key.available() is True
+
+
+def test_a_key_that_answered_over_usb_is_not_asked_again_as_a_card(monkeypatch):
+    key = Key(SECRET, 2, False, False)
+    monkeypatch.setattr(hardware_key, '_hid_sessions', lambda: iter([lambda: FakeTransport(key)]))
+    monkeypatch.setattr(hardware_key, '_Pcsc', lambda: pytest.fail('the smart card interface was asked too'))
+    assert hardware_key.responses(SEED) == [expected()]
 
 
 # ----- the real kernel path (Linux) ---------------------------------------------
+# Defined only on Linux: other systems have no /dev/uhid, and their CI jobs refuse skips.
 def _virtual_key_available():
     if sys.platform != 'linux' or not Path('/dev/uhid').exists() or not shutil.which('sudo'):
         return False
     return subprocess.run(['sudo', '-n', 'true'], capture_output=True, timeout=10).returncode == 0
 
 
-@pytest.fixture
-def virtual_key(request):
-    if not _virtual_key_available():
-        if os.environ.get('AKDBX_REQUIRE_VIRTUAL_KEY') == '1':
-            pytest.fail('the virtual hardware key needs passwordless sudo and /dev/uhid')
-        pytest.skip('the virtual hardware key needs passwordless sudo and /dev/uhid')
-    options = getattr(request, 'param', {})
-    script = Path(__file__).with_name('virtual_hardware_key.py')
-    command = ['sudo', '-n', '/usr/bin/python3', '-I', str(script), '--uid', str(os.getuid()),
-               '--secret', options.get('secret', SECRET).hex(), '--slot', str(options.get('slot', 2))]
-    command += ['--touch'] if options.get('touch', True) else []
-    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-    try:
-        node = process.stdout.readline().strip()
-        assert node.startswith('/dev/hidraw'), 'the virtual key did not start'
-        yield node
-    finally:
-        process.stdin.close()
-        process.wait(15)
+if sys.platform == 'linux':
+    @pytest.fixture
+    def virtual_key(request):
+        if not _virtual_key_available():
+            if os.environ.get('AKDBX_REQUIRE_VIRTUAL_KEY') == '1':
+                pytest.fail('the virtual hardware key needs passwordless sudo and /dev/uhid')
+            pytest.skip('the virtual hardware key needs passwordless sudo and /dev/uhid')
+        options = getattr(request, 'param', {})
+        script = Path(__file__).with_name('virtual_hardware_key.py')
+        command = ['sudo', '-n', '/usr/bin/python3', '-I', str(script), '--uid', str(os.getuid()),
+                   '--secret', options.get('secret', SECRET).hex(), '--slot', str(options.get('slot', 2))]
+        command += ['--touch'] if options.get('touch', True) else []
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            node = process.stdout.readline().strip()
+            assert node.startswith('/dev/hidraw'), 'the virtual key did not start'
+            yield node
+        finally:
+            process.stdin.close()
+            process.wait(15)
 
 
-def test_real_hidraw_device(virtual_key):
-    assert hardware_key.available()
-    touched = []
-    assert hardware_key.responses(SEED, on_touch=lambda: touched.append(1)) == [expected()]
-    assert touched == [1]
+    def test_real_hidraw_device(virtual_key):
+        assert hardware_key.available()
+        touched = []
+        assert hardware_key.responses(SEED, on_touch=lambda: touched.append(1)) == [expected()]
+        assert touched == [1]
 
 
-@pytest.mark.parametrize('virtual_key', [dict(slot=1, touch=False)], indirect=True)
-def test_real_hidraw_device_on_slot_one(virtual_key):
-    assert hardware_key.responses(SEED) == [expected()]
+    @pytest.mark.parametrize('virtual_key', [dict(slot=1, touch=False)], indirect=True)
+    def test_real_hidraw_device_on_slot_one(virtual_key):
+        assert hardware_key.responses(SEED) == [expected()]
 
 
 def test_this_computer_lists_its_keys_without_error():

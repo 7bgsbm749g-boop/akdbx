@@ -141,6 +141,13 @@ def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
         hello = read_frame(incoming)
     except FrameError:
         return 1
+    if hello is not None and hello.get('type') == 'hardware-key':
+        # Its own short connection: the key on this computer answers; no broker is needed.
+        worker = hardware_request(hello, outgoing, threading.Lock())
+        if worker is None:
+            return 1
+        worker.join()
+        return 0
     # Extensions built by akdbx 0.21.2 or earlier send no version; they still attach and show as outdated.
     # A worker that found a newer build on disk, and could not reload into it, says ``stale: true``.
     if (hello is None or set(hello) - {'version', 'stale'} != {'type', 'protocol', 'public_key'}
@@ -200,11 +207,6 @@ def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
     try:
         while not closed.is_set():
             message = read_frame(incoming)
-            if message is not None and message.get('type') == 'hardware-key':
-                # Answered here, by the key on this computer; never sent to the broker.
-                if not hardware_request(message, outgoing, out_lock):
-                    break
-                continue
             if message is None or message.get('type') not in FROM_EXTENSION:
                 break
             with send_lock:
@@ -229,15 +231,16 @@ _HARDWARE_ERRORS = {'NoHardwareKey': 'no-key', 'TouchTimeout': 'timeout'}
 def hardware_request(message, outgoing, out_lock, responses=None):
     """Ask this computer's hardware key for the challenge in ``message``, in a thread.
 
-    The extension sends ``{type, id, challenge}`` only for an akdbx unlock page
-    that it trusts or that the user allowed. The reply carries the responses in
-    hex, or a fixed error code. Returns False for a malformed message.
+    The extension sends ``{type, id, challenge}`` as the first message of its
+    own native connection, only for an akdbx unlock page that it trusts or
+    that the user allowed. The reply carries the responses in hex, or a fixed
+    error code. Returns the worker thread, or None for a malformed message.
     """
     from . import hardware_key
     ident, challenge = message.get('id'), message.get('challenge')
     if (set(message) != {'type', 'id', 'challenge'} or type(ident) is not int or not 0 <= ident < 2 ** 31
             or not isinstance(challenge, str) or not re.fullmatch(r'(?:[0-9a-f]{2}){1,64}', challenge)):
-        return False
+        return None
     ask = responses or hardware_key.responses
 
     def run():
@@ -259,8 +262,9 @@ def hardware_request(message, outgoing, out_lock, responses=None):
         except Exception:
             pass
 
-    threading.Thread(target=run, daemon=True, name='akdbx-host-hardware-key').start()
-    return True
+    worker = threading.Thread(target=run, daemon=True, name='akdbx-host-hardware-key')
+    worker.start()
+    return worker
 
 
 def _binary_stdio():

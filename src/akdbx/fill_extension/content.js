@@ -77,26 +77,30 @@
   }, true);
 
   // ----- hardware key for an akdbx unlock page ----------------------------
-  // The page sends the vault's challenge (not a secret). The service worker
-  // answers only for the trusted broker origin, or for another akdbx broker
-  // that the user allowed once, and only then does this world acknowledge the
-  // request: other pages learn nothing. The native host asks the key on this
-  // computer. Only the top document takes part.
+  // The page sends the vault's challenge (not a secret) and its broker's signed
+  // identity. The service worker answers only for the trusted broker origin,
+  // for another akdbx broker identity that the user allowed once, or, right
+  // after a click on the page, to ask the user about a verified identity. Only
+  // then does this world acknowledge the request; other pages get no answer.
+  // The native host asks the key on this computer. Only the top document.
   if (window === window.top) {
     window.addEventListener("message", event => {
       const data = event.data;
       if (event.source !== window || event.origin !== location.origin || !data || typeof data !== "object" ||
           data.akdbx_hardware !== "request") return;
       const id = data.akdbx_hardware_id, challenge = data.challenge;
+      const identity = typeof data.identity === "string" && data.identity.length <= 4096 ? data.identity : null;
       if (typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id) || typeof challenge !== "string" ||
           !/^(?:[0-9a-f]{2}){1,64}$/.test(challenge)) return;
+      // A click on this page just now: only then may the extension ask the user.
+      const activation = navigator.userActivation?.isActive === true;
       // This world has no api.js: use the browser's own namespace (Firefox `browser`, Chromium `chrome`).
       const runtime = (globalThis.browser || globalThis.chrome).runtime;
       const ask = message => runtime.sendMessage(message).catch(() => null);
-      ask({op: "hardware-key-allowed"}).then(allowed => {
+      ask({op: "hardware-key-allowed", identity, activation}).then(allowed => {
         if (!allowed || allowed.ok !== true) return null;
         window.postMessage({akdbx_hardware: "ack", akdbx_hardware_id: id}, location.origin);
-        return ask({op: "hardware-key", challenge}).then(reply => {
+        return ask({op: "hardware-key", challenge, identity, activation}).then(reply => {
           const result = {akdbx_hardware: "result", akdbx_hardware_id: id};
           if (reply && Array.isArray(reply.responses)) result.responses = reply.responses;
           else result.error = reply && typeof reply.error === "string" ? reply.error : "failed";

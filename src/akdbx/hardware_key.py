@@ -545,7 +545,7 @@ class _Pcsc:
             return None
         return card, protocol.value
 
-    def transmit(self, card, apdu):
+    def _exchange(self, card, apdu):
         handle, protocol = card
         request = self.api['IoRequest'](protocol, ctypes.sizeof(self.api['IoRequest']))
         response = ctypes.create_string_buffer(258)
@@ -556,11 +556,25 @@ class _Pcsc:
         data = response.raw[:length.value]
         return data[:-2], int.from_bytes(data[-2:], 'big')
 
+    def transmit(self, card, apdu):
+        return with_continuation(lambda command: self._exchange(card, command), apdu)
+
     def disconnect(self, card):
         self.api['lib'].SCardDisconnect(card[0], SCARD_LEAVE_CARD)
 
     def close(self):
         self.api['lib'].SCardReleaseContext(self.context)
+
+
+def with_continuation(exchange, apdu):
+    """Send ``apdu``; while the card answers 61xx, fetch the rest with GET RESPONSE."""
+    data, status = exchange(apdu)
+    for _ in range(8):
+        if status >> 8 != 0x61:
+            break
+        more, status = exchange(bytes([0x00, 0xC0, 0x00, 0x00, status & 0xFF]))
+        data += more
+    return data, status
 
 
 def card_hmac(transmit, command: int, challenge: bytes) -> bytes:
@@ -603,11 +617,19 @@ def _safe(generator):
         return
 
 
+def selects_applet(transmit) -> bool:
+    """True when the card has one of the challenge-response applets (no challenge is sent)."""
+    for applet in APPLETS:
+        if transmit(bytes([0x00, 0xA4, 0x04, 0x00, len(applet)]) + applet)[1] == 0x9000:
+            return True
+    return False
+
+
 def available() -> bool:
     """True when this computer has a hardware key that may answer a challenge.
 
-    It looks only at USB descriptors and PC/SC readers with a card; it sends
-    nothing to a key.
+    It looks at USB descriptors, and at PC/SC cards that have a
+    challenge-response applet; it never sends a challenge, so no key flashes.
     """
     for _ in _safe(_hid_sessions()):
         return True
@@ -618,9 +640,13 @@ def available() -> bool:
     try:
         for reader in pcsc.readers():
             card = pcsc.connect(reader)
-            if card is not None:
+            if card is None:
+                continue
+            try:
+                if selects_applet(lambda apdu: pcsc.transmit(card, apdu)):
+                    return True
+            finally:
                 pcsc.disconnect(card)
-                return True
     except Exception:
         return False
     finally:
@@ -659,13 +685,17 @@ def responses(challenge: bytes, *, timeout: float = TOUCH_TIMEOUT,
                 failure = HardwareKeyError('the hardware key could not be read')
             finally:
                 transport.close()
+        # A USB key that answered over HID is also a smart card reader: never ask it twice.
         try:
-            pcsc = _Pcsc()
+            pcsc = None if answers or isinstance(failure, TouchTimeout) else _Pcsc()
         except Exception:
             pcsc = None
         if pcsc is not None:
             try:
                 for reader in pcsc.readers():
+                    if time.monotonic() > deadline:
+                        failure = failure or TouchTimeout()
+                        break
                     card = pcsc.connect(reader)
                     if card is None:
                         continue

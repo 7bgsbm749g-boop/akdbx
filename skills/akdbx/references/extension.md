@@ -55,10 +55,11 @@ receipts of this route carry `"extension-dom-v1"` in the same keys.
 
 An unlock page for a vault with a hardware key asks the extension on the
 computer where the user opened it, when the broker's own computer has no key.
-The native host asks the key over USB or a smart card reader; the user
-touches it. The extension answers its own broker's origin at once. For another
-akdbx broker's origin it asks the user once in its own window and remembers
-the answer. Nothing for the agent to do: give the unlock link as usual, and
+The native host asks the key over USB or a smart card reader (it needs no
+broker on that computer); the user touches it. The extension answers its own
+broker's origin at once. For another akdbx broker it checks the signed
+identity that the page carries, asks the user once in its own window right
+after their click, and remembers the answer for that identity key. Nothing for the agent to do: give the unlock link as usual, and
 tell the user to open it on the computer with the key. See
 [Key file and hardware key](../../../docs/private-pages.md#key-file-and-hardware-key).
 

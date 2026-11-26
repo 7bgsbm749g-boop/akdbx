@@ -121,10 +121,11 @@ def parse_unlock_body(headers, raw: bytes) -> dict[str, list]:
 def unlock_credentials(values: dict[str, list], configured_keyfile) -> tuple[str | None, UnlockKeys | None]:
     """The password and the page's keys from a parsed form; raise ValueError when invalid.
 
-    The master password may be empty only when the user brings a key: an
-    uploaded key file or a hardware key. The password is then None (a vault
-    with no master password). A key file on the broker's computer never
-    unlocks with an empty password, so the link alone cannot open a vault.
+    The master password may be empty only when the page brings a key: an
+    uploaded key file, or hardware key responses from the browsing computer.
+    The password is then None (a vault with no master password). Keys on the
+    broker's computer (its key file, its hardware key) never replace the
+    password, so the link alone cannot open a vault.
     """
     def one(name, kind):
         found = values.get(name, [])
@@ -162,7 +163,7 @@ def unlock_credentials(values: dict[str, list], configured_keyfile) -> tuple[str
     if keyfile is None and not keys.hardware:
         keys = None
     if not password:
-        if keys is None:
+        if keyfile is None and not responses:
             raise ValueError('empty password')
         password = None
     return password, keys
@@ -185,19 +186,21 @@ def hardware_problem(exc, computer: str) -> str:
     tail = " This attempt did not count toward the link's limit."
     if isinstance(exc, hardware_key.NoHardwareKey):
         return (f"AKDBX found no hardware key on {computer}. Plug the key in there, or open this page on the "
-                "computer with the key, in a browser with the akdbx extension." + tail)
+                "computer with the key, in a browser with the akdbx extension, and try again." + tail)
     if isinstance(exc, hardware_key.TouchTimeout):
         return "The hardware key was not touched in time. Try again, and touch the key when it flashes." + tail
     return f"The hardware key did not answer: {exc}." + tail
 
 
-def keys_section(state, *, open_section: bool = False) -> str:
+def keys_section(state, *, open_section: bool = False, browsing_key: bool = False) -> str:
     """The form's key file and hardware key fields; empty when the vault can use neither.
 
     The key file field shows when the broker has no key file of its own. The
     hardware key field shows for a vault that can use one (KDBX 4, Argon2).
     The page uses the key on the broker's computer when one is plugged in
-    there, and otherwise asks the akdbx extension on the browsing computer.
+    there, and otherwise (or with ``browsing_key``, after the broker's key
+    failed) asks the akdbx extension on the browsing computer. The page carries
+    the broker's signed identity, so the extension checks it without a request.
     """
     from . import hardware_key
     parts, names = [], []
@@ -212,9 +215,15 @@ def keys_section(state, *, open_section: bool = False) -> str:
         names.append('hardware key')
         computer = html.escape(computer_name())
         try:
-            here = hardware_key.available()
+            here = not browsing_key and hardware_key.available()
         except Exception:
             here = False
+        identity = getattr(getattr(state.broker, 'extension', None), 'identity', None)
+        try:
+            signed = json.dumps(identity.message(), sort_keys=True, separators=(',', ':')) if identity else ''
+        except Exception:
+            signed = ''
+        signed = f' data-hardware-identity="{html.escape(signed, quote=True)}"' if signed else ''
         where = (f'Touch the key on <strong>{computer}</strong> when it flashes.' if here else
                  'Plug the key into this computer and touch it when it flashes. The akdbx browser '
                  'extension talks to the key.')
@@ -222,7 +231,7 @@ def keys_section(state, *, open_section: bool = False) -> str:
         parts.append(
             '<div class="field unlock-hardware"><label><input type="checkbox" name="hardware" value="on"'
             f' data-hardware-key data-hardware-route="{"broker" if here else "extension"}"'
-            f' data-hardware-challenge="{seed.hex()}" data-touch-text="{touch}" aria-describedby="hardware-note">'
+            f' data-hardware-challenge="{seed.hex()}" data-touch-text="{touch}"{signed} aria-describedby="hardware-note">'
             'Use my hardware key</label>'
             f'<p id="hardware-note" class="setup-note">{where}</p>'
             f'<input type="hidden" name="challenge" value="{seed.hex()}"></div>')
@@ -1093,11 +1102,12 @@ def handler_for(state: UnlockState):
                 return False
             return True
 
-        def _unlock_page(self, token: str, error: str = "", *, keys_open: bool = False) -> bytes:
+        def _unlock_page(self, token: str, error: str = "", *, keys_open: bool = False,
+                         browsing_key: bool = False) -> bytes:
             # Always the token that authorized this request, never state.token:
             # a caller with an old link must not see its replacement.
             action = "?token=" + html.escape(token, quote=True)
-            keys = keys_section(state, open_section=keys_open)
+            keys = keys_section(state, open_section=keys_open, browsing_key=browsing_key)
             password_field = field('Master password', 'password', autocomplete='current-password', autofocus=True)
             message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
             encoding = ' enctype="multipart/form-data"' if keys else ''
@@ -1180,13 +1190,16 @@ def handler_for(state: UnlockState):
                         vault = call_opener(state, password, keys)
                     except Exception as exc:
                         from .hardware_key import HardwareKeyError
+                        # After the broker's own key failed, offer the key on the browsing computer.
+                        browsing = keys is not None and keys.broker_key
                         password, keys_used, keys = "", keys is not None, None
                         if isinstance(exc, (ChallengeChanged, HardwareKeyError)):
                             # No response, or one for another challenge: not a failed attempt.
                             state.cancel_attempt(attempt)
                             self._send(HTTPStatus.CONFLICT, self._unlock_page(
                                 submitted_token, HARDWARE_CHANGED if isinstance(exc, ChallengeChanged)
-                                else hardware_problem(exc, computer_name()), keys_open=True))
+                                else hardware_problem(exc, computer_name()), keys_open=True,
+                                browsing_key=browsing))
                             return
                         if not is_wrong_credentials(exc):
                             # A store or I/O error says nothing about the
@@ -1206,7 +1219,7 @@ def handler_for(state: UnlockState):
                              "AKDBX could not unlock the database. Check your master password and try again. ")
                             + (f"{left} attempts left for this link." if left != 1 else
                                "1 attempt left for this link; another failure blocks it."),
-                            keys_open=keys_used))
+                            keys_open=keys_used, browsing_key=browsing))
                         return
                     finally:
                         password, keys = "", None

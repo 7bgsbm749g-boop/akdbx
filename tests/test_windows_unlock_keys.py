@@ -23,10 +23,10 @@ def test_windows_store_opens_with_the_hardware_key_response(private_dir):
     security.write_new(path, YUBIKEY_VAULT.read_bytes())
     response = bytes.fromhex(YUBIKEY_RESPONSE)
     with pytest.raises(ChallengeChanged):
-        WindowsVaultStore(path).open(YUBIKEY_PASSWORD, None, UnlockKeys(challenge=b'\0' * 32, response=response))
+        WindowsVaultStore(path).open(YUBIKEY_PASSWORD, None, UnlockKeys(challenge=b'\0' * 32, responses=(response,)))
     with pytest.raises(CredentialsError):
-        WindowsVaultStore(path).open(YUBIKEY_PASSWORD, None, UnlockKeys(challenge=YUBIKEY_SEED, response=b'\0' * 20))
-    vault = WindowsVaultStore(path).open(YUBIKEY_PASSWORD, None, UnlockKeys(challenge=YUBIKEY_SEED, response=response))
+        WindowsVaultStore(path).open(YUBIKEY_PASSWORD, None, UnlockKeys(challenge=YUBIKEY_SEED, responses=(b'\0' * 20,)))
+    vault = WindowsVaultStore(path).open(YUBIKEY_PASSWORD, None, UnlockKeys(challenge=YUBIKEY_SEED, responses=(response,)))
     assert [entry.title for entry in vault.entries] == ['Demo entry']
     saved = serialize_encrypted(vault)
     assert vault_challenge(saved) == YUBIKEY_SEED
