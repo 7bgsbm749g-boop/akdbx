@@ -24,8 +24,8 @@ from .extension_route import EXTENSION_ORIGIN
 from .portal import content_security_policy, field, render
 from .writes import expiry_text, group_paths
 from .unlock_keys import (
-    CHALLENGE_BYTES, KEYFILE_LIMIT, RESPONSE_BYTES, ChallengeChanged, UnlockKeys,
-    padded_challenge, parse_hex, read_challenge,
+    CHALLENGE_BYTES, KEYFILE_LIMIT, MAX_RESPONSES, RESPONSE_BYTES, ChallengeChanged, UnlockKeys, parse_hex,
+    read_challenge,
 )
 from .runtime import (
     acquire_lifecycle_lock,
@@ -52,7 +52,7 @@ def parse_form(raw: bytes, **options) -> dict[str, list[str]]:
 _DISPOSITION = re.compile(r'form-data; name="([^"\r\n]*)"(?:; filename="([^"\r\n]*)")?')
 _BOUNDARY = re.compile(r"[0-9A-Za-z'()+_,./:=?-]{1,70}")
 # The page's key file and hardware key fields.
-KEY_FIELDS = frozenset({'keyfile', 'challenge', 'response'})
+KEY_FIELDS = frozenset({'keyfile', 'challenge', 'response', 'hardware', 'hardware_route'})
 
 
 def is_multipart(headers) -> bool:
@@ -118,11 +118,14 @@ def parse_unlock_body(headers, raw: bytes) -> dict[str, list]:
     return parse_form(raw)
 
 
-def unlock_credentials(values: dict[str, list], configured_keyfile) -> tuple[str, UnlockKeys | None]:
+def unlock_credentials(values: dict[str, list], configured_keyfile) -> tuple[str | None, UnlockKeys | None]:
     """The password and the page's keys from a parsed form; raise ValueError when invalid.
 
-    The master password is always required: a key file on the broker's
-    computer must never unlock with the link alone.
+    The master password may be empty only when the page brings a key: an
+    uploaded key file, or hardware key responses from the browsing computer.
+    The password is then None (a vault with no master password). Keys on the
+    broker's computer (its key file, its hardware key) never replace the
+    password, so the link alone cannot open a vault.
     """
     def one(name, kind):
         found = values.get(name, [])
@@ -131,49 +134,96 @@ def unlock_credentials(values: dict[str, list], configured_keyfile) -> tuple[str
         return found[0] if found else None
 
     password = one('password', str)
-    if not password:
-        raise ValueError('no password')
+    if password is None:
+        raise ValueError('no password field')
     keyfile = one('keyfile', bytes)
     if keyfile == b'':
         keyfile = None  # The browser sends an empty part when no file is chosen.
     if keyfile is not None and configured_keyfile is not None:
         raise ValueError('the broker already has a key file')
-    challenge_text, response_text = one('challenge', str), one('response', str)
-    response = challenge = None
-    if response_text is not None and response_text.strip():
-        response = parse_hex(response_text, RESPONSE_BYTES)
-        challenge_text = ''.join((challenge_text or '').split())
-        if not 2 <= len(challenge_text) <= 2 * CHALLENGE_BYTES or len(challenge_text) % 2:
+    hardware = one('hardware', str)
+    if hardware not in (None, 'on') or one('hardware_route', str) not in (None, 'broker', 'browser'):
+        raise ValueError('invalid hardware field')
+    texts = values.get('response', [])
+    if len(texts) > MAX_RESPONSES or any(not isinstance(text, str) for text in texts):
+        raise ValueError('invalid response field')
+    responses = tuple(dict.fromkeys(parse_hex(text, RESPONSE_BYTES) for text in texts if text.strip()))
+    if responses and hardware is None:
+        raise ValueError('responses without the hardware key')
+    challenge = None
+    if responses:
+        text = ''.join((one('challenge', str) or '').split())
+        if not 2 <= len(text) <= 2 * CHALLENGE_BYTES or len(text) % 2:
             raise ValueError('invalid challenge')
-        challenge = parse_hex(challenge_text, len(challenge_text) // 2)
-    if keyfile is None and response is None:
-        return password, None
-    return password, UnlockKeys(keyfile=keyfile, challenge=challenge, response=response)
+        challenge = parse_hex(text, len(text) // 2)
+    else:
+        one('challenge', str)
+    keys = UnlockKeys(keyfile=keyfile, challenge=challenge, responses=responses,
+                      broker_key=hardware is not None and not responses)
+    if keyfile is None and not keys.hardware:
+        keys = None
+    if not password:
+        if keyfile is None and not responses:
+            raise ValueError('empty password')
+        if not responses:
+            # The key file is then the user's only key: it must add key material.
+            from .unlock_keys import keyfile_key
+            if not keyfile_key(keyfile):
+                raise ValueError('the key file has no key')
+        password = None
+    return password, keys
 
 
-def open_with_keys(state, password, keys):
+def call_opener(state, password, keys):
     """Call the state's opener; the page's keys go only to an opener that takes them."""
     if keys is None:
         return state.opener(state.database, password, state.keyfile)
     return state.opener(state.database, password, state.keyfile, keys=keys)
 
 
-HARDWARE_CHANGED = ("The vault changed after this page opened, so the hardware key challenge changed. "
-                    "This attempt did not count toward the link's limit. Run the new command below, "
-                    "then enter its response.")
-KEY_COPIED = ('<span class="copy-done" aria-hidden="true"><span>Command copied</span>'
-              '<svg viewBox="0 0 24 24" focusable="false">'
-              '<circle cx="12" cy="12" r="10.5" pathLength="1" transform="rotate(-90 12 12)"/>'
-              '<path d="M7.2 12.4l3.2 3.2 6.4-6.8" pathLength="1"/></svg></span>')
+HARDWARE_CHANGED = ("The vault changed after this page opened. This attempt did not count toward the link's "
+                    "limit. Try again with the hardware key.")
 
 
-def keys_section(state, *, open_section: bool = False) -> str:
+def hardware_problem(exc, computer: str) -> str:
+    """The page text for a hardware key that gave no response; never a failed attempt."""
+    from . import hardware_key
+    tail = " This attempt did not count toward the link's limit."
+    if isinstance(exc, hardware_key.NoHardwareKey):
+        return (f"AKDBX found no hardware key on {computer}. Plug the key in there, or open this page on the "
+                "computer with the key, in a browser with the akdbx extension, and try again." + tail)
+    if isinstance(exc, hardware_key.TouchTimeout):
+        return "The hardware key was not touched in time. Try again, and touch the key when it flashes." + tail
+    return f"The hardware key did not answer: {exc}." + tail
+
+
+def _compact(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(',', ':'))
+
+
+def browsing_first(keys, exc) -> bool:
+    """After the broker's own key found nothing usable, offer this computer's key first.
+
+    A late touch or a wrong password keeps the broker's key first.
+    """
+    from .hardware_key import HardwareKeyError, TouchTimeout
+    return (keys is not None and keys.broker_key and isinstance(exc, HardwareKeyError)
+            and not isinstance(exc, TouchTimeout))
+
+
+def keys_section(state, *, open_section: bool = False, browsing_key: bool = False, seed: bytes | None = None) -> str:
     """The form's key file and hardware key fields; empty when the vault can use neither.
 
     The key file field shows when the broker has no key file of its own. The
-    hardware key field shows for a vault with a KeePassXC challenge (KDBX 4,
-    Argon2). The challenge is read from the vault file for each page.
+    hardware key field shows for a vault that can use one (KDBX 4, Argon2).
+    When the broker's computer has a key, the user chooses it or the key on
+    the browsing computer (``browsing_key`` preselects the latter after the
+    broker's key found nothing usable); otherwise the page asks the akdbx
+    extension on the browsing computer. The page carries the broker's signed
+    identity and a fresh signature for its challenge, which the extension
+    checks without a request to the site.
     """
+    from . import hardware_key
     parts, names = [], []
     if state.keyfile is None:
         names.append('key file')
@@ -181,24 +231,49 @@ def keys_section(state, *, open_section: bool = False) -> str:
                      '<input id="keyfile" name="keyfile" type="file" aria-describedby="keyfile-note">'
                      '<p id="keyfile-note" class="setup-note">Only if the vault uses one. The broker keeps it '
                      'in memory and never saves it.</p></div>')
-    seed = read_challenge(state.database)
+    # ``seed``: the open vault's challenge, when its own keys are checked (pairing an open vault).
+    seed = seed if seed is not None else read_challenge(state.database)
     if seed is not None:
         names.append('hardware key')
-        command = 'ykman otp calculate 2 ' + padded_challenge(seed).hex()
-        quoted = html.escape(command, quote=True)
+        computer = html.escape(computer_name())
+        try:
+            here = hardware_key.available()
+        except Exception:
+            here = False
+        identity = getattr(getattr(state.broker, 'extension', None), 'identity', None)
+        signed = ''
+        if identity is not None:
+            try:
+                # The extension checks both without a request to the site: the public origin
+                # statement, and a fresh signature by the same key for this page's challenge.
+                signed = (f' data-hardware-identity="{html.escape(_compact(identity.message()), quote=True)}"'
+                          f' data-hardware-proof="{html.escape(_compact(identity.sign_hardware(seed.hex())), quote=True)}"')
+            except Exception:
+                signed = ''
+        touch = html.escape(f'Touch the hardware key on {computer_name()} when it flashes.', quote=True)
+        choice = ''
+        if here:
+            # Both routes stay selectable; after the broker found no usable key, this computer comes first.
+            choice = ('<div class="hardware-route" role="radiogroup" aria-label="Where the key is">'
+                      f'<label><input type="radio" name="hardware_route" value="broker" data-route="broker"'
+                      f'{"" if browsing_key else " checked"}><span>Plugged into <strong>{computer}</strong></span></label>'
+                      '<label><input type="radio" name="hardware_route" value="browser" data-route="extension"'
+                      f'{" checked" if browsing_key else ""}><span>Plugged into this computer (akdbx extension)</span></label></div>')
+            where = 'Touch the key when it flashes.'
+        else:
+            where = ('Plug the key into this computer and touch it when it flashes. The akdbx browser '
+                     'extension talks to the key.')
         parts.append(
-            '<p class="setup-note">YubiKey challenge-response (KeePassXC): a browser cannot reach the key. '
-            'On a computer with the key, run this command, touch the key and enter the response. '
-            'For slot 1, change 2 to 1.</p>'
-            f'<button type="button" class="copy-field" data-copy="{quoted}" data-copied-text="Command copied"'
-            ' data-copy-failed-text="Copy failed. Press and hold the command, then tap Copy.">'
-            '<span class="copy-label" aria-live="polite">Command (tap to copy)</span>'
-            f'<span class="copy-text">{quoted}</span>{KEY_COPIED}</button>'
-            f'<input type="hidden" name="challenge" value="{seed.hex()}">'
-            + field('Hardware key response', 'response', required=False, maxlength=48,
-                    note='<p class="setup-note">The 40 characters the command prints.</p>'))
+            '<div class="field unlock-hardware"><label><input type="checkbox" name="hardware" value="on"'
+            f' data-hardware-key data-hardware-route="{"broker" if here else "extension"}"'
+            f' data-hardware-challenge="{seed.hex()}" data-touch-text="{touch}"{signed} aria-describedby="hardware-note">'
+            'Use my hardware key</label>'
+            f'{choice}<p id="hardware-note" class="setup-note">{where}</p>'
+            f'<input type="hidden" name="challenge" value="{seed.hex()}"></div>')
     if not parts:
         return ''
+    # A vault may have no master password: its key file or hardware key alone opens it.
+    parts.insert(0, '<p class="setup-note">No master password? Leave the password field empty.</p>')
     summary = ' or '.join(names)
     summary = summary[0].upper() + summary[1:]
     return (f'<details class="unlock-keys"{" open" if open_section else ""}>'
@@ -215,12 +290,17 @@ class ConnectionDeadline:
     def __init__(self) -> None:
         self.expires_at = time.monotonic() + CONNECTION_TIMEOUT
         self.expired_event = threading.Event()
+        self.timer = None
 
     def expire(self) -> None:
         self.expired_event.set()
 
     def expired(self) -> bool:
         return self.expired_event.is_set() or time.monotonic() >= self.expires_at
+
+    def extend(self, seconds: float) -> None:
+        """Move the deadline later (a hardware key's touch); never earlier."""
+        self.expires_at = max(self.expires_at, time.monotonic() + seconds)
 
 
 class ThreadingUnixHTTPServer(ThreadingHTTPServer):
@@ -308,6 +388,23 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
         except OSError:
             pass
 
+    def extend_request(self, request: socket.socket, seconds: float) -> None:
+        """Give one request more time; the watchdog follows the later deadline."""
+        with self._deadline_lock:
+            deadline = self._deadlines.get(request)
+        if deadline is not None and not deadline.expired():
+            deadline.extend(seconds)
+
+    def _watch(self, request: socket.socket, deadline: ConnectionDeadline) -> None:
+        remaining = deadline.expires_at - time.monotonic()
+        if remaining > 0.05 and not deadline.expired_event.is_set():
+            timer = threading.Timer(remaining, self._watch, args=(request, deadline))
+            timer.daemon = True
+            deadline.timer = timer
+            timer.start()
+            return
+        self._expire_request(request, deadline)
+
     def request_expired(self, request: socket.socket) -> bool:
         with self._deadline_lock:
             deadline = self._deadlines.get(request)
@@ -328,10 +425,11 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
         with self._deadline_lock:
             self._deadlines[request] = connection_deadline
         deadline = threading.Timer(
-            CONNECTION_TIMEOUT, self._expire_request,
+            CONNECTION_TIMEOUT, self._watch,
             args=(request, connection_deadline),
         )
         deadline.daemon = True
+        connection_deadline.timer = deadline
         deadline_started = False
         try:
             deadline.start()
@@ -346,7 +444,8 @@ class ThreadingUnixHTTPServer(ThreadingHTTPServer):
                 self.handle_error(request, client_address)
         finally:
             if deadline_started:
-                deadline.cancel()
+                connection_deadline.expired_event.set()
+                connection_deadline.timer.cancel()
             with self._deadline_lock:
                 self._deadlines.pop(request, None)
             self.shutdown_request(request)
@@ -1038,11 +1137,12 @@ def handler_for(state: UnlockState):
                 return False
             return True
 
-        def _unlock_page(self, token: str, error: str = "", *, keys_open: bool = False) -> bytes:
+        def _unlock_page(self, token: str, error: str = "", *, keys_open: bool = False,
+                         browsing_key: bool = False) -> bytes:
             # Always the token that authorized this request, never state.token:
             # a caller with an old link must not see its replacement.
             action = "?token=" + html.escape(token, quote=True)
-            keys = keys_section(state, open_section=keys_open)
+            keys = keys_section(state, open_section=keys_open, browsing_key=browsing_key)
             password_field = field('Master password', 'password', autocomplete='current-password', autofocus=True)
             message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
             encoding = ' enctype="multipart/form-data"' if keys else ''
@@ -1117,15 +1217,25 @@ def handler_for(state: UnlockState):
                         return
                     if self._send_status(state.attempt_status(attempt, submitted_token)):
                         return
+                    if keys is not None and keys.broker_key:
+                        # The key on this computer waits up to its touch timeout.
+                        from .hardware_key import TOUCH_TIMEOUT
+                        self.server.extend_request(self.request, TOUCH_TIMEOUT + 20)
                     try:
-                        vault = open_with_keys(state, password, keys)
+                        vault = call_opener(state, password, keys)
                     except Exception as exc:
+                        from .hardware_key import HardwareKeyError
+                        # This computer's key comes first after the broker's found nothing usable, and
+                        # stays first after a try that brought this computer's responses.
+                        browsing = browsing_first(keys, exc) or (keys is not None and bool(keys.responses))
                         password, keys_used, keys = "", keys is not None, None
-                        if isinstance(exc, ChallengeChanged):
-                            # The response answers another challenge: not a failed attempt.
+                        if isinstance(exc, (ChallengeChanged, HardwareKeyError)):
+                            # No response, or one for another challenge: not a failed attempt.
                             state.cancel_attempt(attempt)
                             self._send(HTTPStatus.CONFLICT, self._unlock_page(
-                                submitted_token, HARDWARE_CHANGED, keys_open=True))
+                                submitted_token, HARDWARE_CHANGED if isinstance(exc, ChallengeChanged)
+                                else hardware_problem(exc, computer_name()), keys_open=True,
+                                browsing_key=browsing))
                             return
                         if not is_wrong_credentials(exc):
                             # A store or I/O error says nothing about the
@@ -1141,11 +1251,11 @@ def handler_for(state: UnlockState):
                         self._send(HTTPStatus.UNAUTHORIZED, self._unlock_page(
                             submitted_token,
                             ("AKDBX could not unlock the database. Check your master password, key file "
-                             "and hardware key response, and try again. " if keys_used else
+                             "and hardware key, and try again. " if keys_used else
                              "AKDBX could not unlock the database. Check your master password and try again. ")
                             + (f"{left} attempts left for this link." if left != 1 else
                                "1 attempt left for this link; another failure blocks it."),
-                            keys_open=keys_used))
+                            keys_open=keys_used, browsing_key=browsing))
                         return
                     finally:
                         password, keys = "", None

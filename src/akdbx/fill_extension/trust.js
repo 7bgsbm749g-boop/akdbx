@@ -117,6 +117,30 @@
     }
   }
 
+  // A broker's signature for one unlock page's hardware key request (broker_identity.sign_hardware):
+  // its origin, its identity key, the vault's challenge and the time. True only for a statement by
+  // `identity` (verified facts) for exactly `challenge`, issued within `maxAge` seconds of `now`.
+  async function verifyHardwareProof(proof, identity, challenge, now = Date.now() / 1000, maxAge = 3600) {
+    try {
+      if (!identity || !hasKeys(proof, ["signature", "statement"])) return false;
+      const statement = proof.statement;
+      if (!hasKeys(statement, ["challenge", "issued", "key_id", "origin", "type", "v"]) ||
+          statement.type !== "akdbx-hardware" || statement.v !== 1 || statement.origin !== identity.origin ||
+          statement.key_id !== identity.key_id || statement.challenge !== challenge ||
+          typeof challenge !== "string" || !/^(?:[0-9a-f]{2}){1,64}$/.test(challenge) ||
+          !Number.isSafeInteger(statement.issued) || Math.abs(now - statement.issued) > maxAge ||
+          typeof proof.signature !== "string" || !SIGNATURE.test(proof.signature)) return false;
+      const signature = decode(proof.signature);
+      if (signature.length !== 64) return false;
+      const key = await crypto.subtle.importKey("raw", decode(identity.public_key), {name: "ECDSA", namedCurve: "P-256"},
+        false, ["verify"]);
+      return await crypto.subtle.verify({name: "ECDSA", hash: "SHA-256"}, key, signature,
+        new TextEncoder().encode(canonical(statement)));
+    } catch {
+      return false;
+    }
+  }
+
   /* The broker's signature over one connection: its per-connection ECDH key and this extension's key,
    * signed by the identity key in `trusted` (a saved record). The native host relays that ECDH key, so
    * only this signature shows that the broker, not the host, made it. */
@@ -280,7 +304,8 @@
     return {origin: fetched.origin, store: saveRecord(fetched, config), error: null, reset: false, changed: false, learned: true};
   }
 
-  const api = {STORAGE_KEY, IDENTITY_PATH, validOrigin, privateLink, canonical, verifyIdentity, fetchIdentity, decide,
+  const api = {STORAGE_KEY, IDENTITY_PATH, validOrigin, privateLink, canonical, verifyIdentity, verifyHardwareProof,
+    fetchIdentity, decide,
     storedKey, trustedOrigin, saveRecord, trustedKey, verifyChannel};
   globalThis.akdbxTrust = api;
   if (typeof module !== "undefined") module.exports = api;

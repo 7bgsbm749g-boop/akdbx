@@ -76,6 +76,41 @@
     }
   }, true);
 
+  // ----- hardware key for an akdbx unlock page ----------------------------
+  // The page sends the vault's challenge (not a secret) and its broker's signed
+  // identity. The service worker answers only for the trusted broker origin,
+  // for another akdbx broker identity that the user allowed once, or, right
+  // after a click on the page, to ask the user about a verified identity. Only
+  // then does this world acknowledge the request; other pages get no answer.
+  // The native host asks the key on this computer. Only the top document.
+  if (window === window.top) {
+    window.addEventListener("message", event => {
+      const data = event.data;
+      if (event.source !== window || event.origin !== location.origin || !data || typeof data !== "object" ||
+          data.akdbx_hardware !== "request") return;
+      const id = data.akdbx_hardware_id, challenge = data.challenge;
+      const identity = typeof data.identity === "string" && data.identity.length <= 4096 ? data.identity : null;
+      const proof = typeof data.proof === "string" && data.proof.length <= 4096 ? data.proof : null;
+      if (typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id) || typeof challenge !== "string" ||
+          !/^(?:[0-9a-f]{2}){1,64}$/.test(challenge)) return;
+      // A click on this page just now: only then may the extension ask the user.
+      const activation = navigator.userActivation?.isActive === true;
+      // This world has no api.js: use the browser's own namespace (Firefox `browser`, Chromium `chrome`).
+      const runtime = (globalThis.browser || globalThis.chrome).runtime;
+      const ask = message => runtime.sendMessage(message).catch(() => null);
+      ask({op: "hardware-key-allowed", challenge, identity, proof, activation}).then(allowed => {
+        if (!allowed || allowed.ok !== true) return null;
+        window.postMessage({akdbx_hardware: "ack", akdbx_hardware_id: id}, location.origin);
+        return ask({op: "hardware-key", challenge, identity, proof, activation}).then(reply => {
+          const result = {akdbx_hardware: "result", akdbx_hardware_id: id};
+          if (reply && Array.isArray(reply.responses)) result.responses = reply.responses;
+          else result.error = reply && typeof reply.error === "string" ? reply.error : "failed";
+          window.postMessage(result, location.origin);
+        });
+      });
+    });
+  }
+
   // ----- agent route: retained pins --------------------------------------
   async function pin(kind, spec, frameURL, topURL) {
     for (const [id, item] of pins) {

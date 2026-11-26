@@ -954,6 +954,166 @@ async function popupText(session, message, deadline) {
   }
 }
 
+// ----- hardware key for akdbx unlock pages ------------------------------
+// An unlock page asks for the responses of a hardware key on this computer.
+// The trusted broker origin may ask at once. Another origin must give its
+// broker's signed identity (verified here, with no request to the site), and
+// the user must allow that identity once, in an extension window that opens
+// only right after a click on the page and that the page cannot draw or
+// click. An allowed origin that later shows another identity asks again.
+// Each request uses its own native host connection, which needs no broker.
+const HARDWARE_ORIGINS = "hardware_key_identities";
+const HARDWARE_ANSWER = /^[0-9a-f]{40}$/;
+const MAX_HARDWARE_IDENTITY = 4096;
+const consents = new Map();
+let hardwareId = 0;
+
+function hardwareOrigin(sender) {
+  // A content script in the top document of an HTTPS page; never the page itself.
+  if (sender.id !== akdbxBrowser.runtime.id || !sender.tab || sender.frameId !== 0 || typeof sender.url !== "string") {
+    return null;
+  }
+  try {
+    const origin = new URL(sender.url).origin;
+    return akdbxTrust.validOrigin(origin) ? origin : null;
+  } catch {
+    return null;
+  }
+}
+
+async function allowedIdentities() {
+  const saved = (await akdbxBrowser.storage.local.get(HARDWARE_ORIGINS))[HARDWARE_ORIGINS];
+  return Array.isArray(saved) ? saved.filter(item => item && akdbxTrust.validOrigin(item.origin) &&
+    typeof item.key_id === "string") : [];
+}
+
+// "yes", "ask" (a verified identity, not allowed yet, during a click) or "no". Another origin
+// needs its broker's origin statement and a fresh signature by the same key for this challenge:
+// a copy of the public statement, at an address that changed hands, proves nothing.
+async function hardwareAllowed(origin, message) {
+  if (akdbxTrust.trustedOrigin(await storedTrust(), builtConfig()) === origin) return {allowed: "yes"};
+  let identity = null, proven = false;
+  try {
+    if (typeof message.identity === "string" && message.identity.length <= MAX_HARDWARE_IDENTITY &&
+        typeof message.proof === "string" && message.proof.length <= MAX_HARDWARE_IDENTITY) {
+      identity = await akdbxTrust.verifyIdentity(JSON.parse(message.identity));
+      proven = await akdbxTrust.verifyHardwareProof(JSON.parse(message.proof), identity, message.challenge);
+    }
+  } catch {
+    identity = null;
+  }
+  if (!identity || !proven || identity.origin !== origin) return {allowed: "no"};
+  if ((await allowedIdentities()).some(item => item.origin === origin && item.key_id === identity.key_id)) {
+    return {allowed: "yes"};
+  }
+  return {allowed: message.activation === true ? "ask" : "no", identity};
+}
+
+async function askConsent(origin) {
+  if (!akdbxBrowser.windows || [...consents.values()].some(item => item.origin === origin)) return false;
+  const id = crypto.randomUUID();
+  const url = akdbxBrowser.runtime.getURL("hardware.html") + "?" + new URLSearchParams({id});
+  const created = await akdbxBrowser.windows.create({url, type: "popup", width: 440, height: 320}).catch(() => null);
+  if (!created) return false;
+  return new Promise(resolve => {
+    const finish = allow => {
+      clearTimeout(timer);
+      consents.delete(id);
+      akdbxBrowser.windows.remove(created.id).catch(() => {});
+      resolve(allow);
+    };
+    const timer = setTimeout(() => finish(false), 120000);
+    consents.set(id, {origin, windowId: created.id, finish});
+  });
+}
+
+// Firefox for Android has no windows API: there, only the trusted origin may ask.
+akdbxBrowser.windows?.onRemoved.addListener(windowId => {
+  for (const item of [...consents.values()]) if (item.windowId === windowId) item.finish(false);
+});
+
+function askHost(challenge) {
+  let current;
+  try {
+    current = akdbxBrowser.runtime.connectNative(HOST);
+  } catch {
+    return Promise.resolve({error: "unavailable"});
+  }
+  hardwareId = (hardwareId + 1) % 2147483647;
+  const id = hardwareId;
+  return new Promise(resolve => {
+    let settled = false;
+    const done = reply => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        current.disconnect();
+      } catch {
+        // Already closed.
+      }
+      resolve(reply);
+    };
+    const timer = setTimeout(() => done({error: "timeout"}), 60000);
+    current.onMessage.addListener(message => {
+      if (!message || typeof message !== "object" || message.type !== "hardware-key" || message.id !== id) return;
+      const answers = Array.isArray(message.responses) ?
+        message.responses.filter(item => typeof item === "string" && HARDWARE_ANSWER.test(item)).slice(0, 4) : [];
+      done(answers.length ? {responses: answers} :
+        {error: typeof message.error === "string" && /^[a-z-]{1,20}$/.test(message.error) ? message.error : "failed"});
+    });
+    current.onDisconnect.addListener(() => {
+      void akdbxBrowser.runtime.lastError;
+      done({error: "unavailable"});
+    });
+    current.postMessage({type: "hardware-key", id, challenge});
+  });
+}
+
+async function hardwareKey(message, origin) {
+  if (typeof message.challenge !== "string" || !/^(?:[0-9a-f]{2}){1,64}$/.test(message.challenge)) {
+    return {error: "failed"};
+  }
+  const decision = await hardwareAllowed(origin, message);
+  let allowed = decision.allowed;
+  if (allowed === "ask") {
+    allowed = await askConsent(origin) ? "yes" : "no";
+    if (allowed === "yes") {
+      const list = (await allowedIdentities()).filter(item => item.origin !== origin);
+      list.push({origin, key_id: decision.identity.key_id});
+      await akdbxBrowser.storage.local.set({[HARDWARE_ORIGINS]: list.slice(-32)});
+    }
+  }
+  if (allowed !== "yes") return {error: "denied"};
+  return askHost(message.challenge);
+}
+
+// The consent window: an extension page, never a tab of a web page.
+function fromHardwarePage(sender) {
+  return sender.id === akdbxBrowser.runtime.id && typeof sender.url === "string" &&
+    sender.url.startsWith(akdbxBrowser.runtime.getURL("hardware.html") + "?");
+}
+
+akdbxBrowser.runtime.onMessage.addListener((message, sender, respond) => {
+  if (!message || typeof message !== "object") return false;
+  if (message.op === "hardware-consent" || message.op === "hardware-consent-origin") {
+    const item = fromHardwarePage(sender) ? consents.get(message.id) : null;
+    if (message.op === "hardware-consent") {
+      if (item) item.finish(message.allow === true);
+    } else {
+      respond(item ? {origin: item.origin} : null);
+    }
+    return false;
+  }
+  if (message.op !== "hardware-key" && message.op !== "hardware-key-allowed") return false;
+  const origin = hardwareOrigin(sender);
+  if (!origin) return false;
+  const work = message.op === "hardware-key" ? hardwareKey(message, origin) :
+    hardwareAllowed(origin, message).then(decision => ({ok: decision.allowed !== "no"}));
+  work.then(respond, () => respond({error: "failed"}));
+  return true;
+});
+
 akdbxBrowser.runtime.onMessage.addListener((message, sender, respond) => {
   if (!fromPopup(sender) || !message || typeof message !== "object") return false;
   const handler = {state: popupState, probe: popupProbe, fill: popupFill, "reset-trust": popupReset}[message.op];

@@ -141,6 +141,13 @@ def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
         hello = read_frame(incoming)
     except FrameError:
         return 1
+    if hello is not None and hello.get('type') == 'hardware-key':
+        # Its own short connection: the key on this computer answers; no broker is needed.
+        worker = hardware_request(hello, outgoing, threading.Lock())
+        if worker is None:
+            return 1
+        worker.join()
+        return 0
     # Extensions built by akdbx 0.21.2 or earlier send no version; they still attach and show as outdated.
     # A worker that found a newer build on disk, and could not reload into it, says ``stale: true``.
     if (hello is None or set(hello) - {'version', 'stale'} != {'type', 'protocol', 'public_key'}
@@ -215,6 +222,55 @@ def relay(incoming, outgoing, origin, browser, connect, on_broker_closed=None):
             pass
         reader.join(2)
     return 0
+
+
+_HARDWARE_BUSY = threading.BoundedSemaphore(1)
+_HARDWARE_ERRORS = {'NoHardwareKey': 'no-key', 'TouchTimeout': 'timeout'}
+
+
+def hardware_request(message, outgoing, out_lock, responses=None):
+    """Ask this computer's hardware key for the challenge in ``message``, in a thread.
+
+    The extension sends ``{type, id, challenge}`` as the first message of its
+    own native connection, only for an akdbx unlock page that it trusts or
+    that the user allowed. The reply carries the responses in hex, or a fixed
+    error code. Returns the worker thread, or None for a malformed message.
+    """
+    from . import hardware_key
+    ident, challenge = message.get('id'), message.get('challenge')
+    if (set(message) != {'type', 'id', 'challenge'} or type(ident) is not int or not 0 <= ident < 2 ** 31
+            or not isinstance(challenge, str) or not re.fullmatch(r'(?:[0-9a-f]{2}){1,64}', challenge)):
+        return None
+    ask = responses or hardware_key.responses
+
+    def run():
+        reply = dict(type='hardware-key', id=ident)
+        if not _HARDWARE_BUSY.acquire(blocking=False):
+            reply['error'] = 'busy'
+        else:
+            try:
+                found = ask(bytes.fromhex(challenge))
+                if getattr(found, 'complete', True) is False:
+                    # Time cut the search short: the right slot may be missing, so ask for a retry
+                    # rather than send answers that could cost the user one of the link's attempts.
+                    reply['error'] = 'timeout'
+                else:
+                    reply['responses'] = [item.hex() for item in found]
+            except hardware_key.HardwareKeyError as exc:
+                reply['error'] = _HARDWARE_ERRORS.get(type(exc).__name__, 'failed')
+            except Exception:
+                reply['error'] = 'failed'
+            finally:
+                _HARDWARE_BUSY.release()
+        try:
+            with out_lock:
+                write_frame(outgoing, reply)
+        except Exception:
+            pass
+
+    worker = threading.Thread(target=run, daemon=True, name='akdbx-host-hardware-key')
+    worker.start()
+    return worker
 
 
 def _binary_stdio():

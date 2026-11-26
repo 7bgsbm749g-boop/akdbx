@@ -340,7 +340,7 @@ class VaultStore:
         ``keys`` (an UnlockKeys) holds a key file uploaded on the page and a
         hardware key response; they stay in memory only.
         """
-        from .unlock_keys import check_challenge, key_material as unlock_material
+        from .unlock_keys import open_with_keys
         directory = self._directory(writing=False)
         try:
             encrypted, snapshot = self._read(directory, writing=False)
@@ -354,9 +354,7 @@ class VaultStore:
                     if key_bytes is not None:
                         raise SaveError('the broker already has a key file')
                     key_bytes = keys.keyfile
-                check_challenge(encrypted, keys)
-            key_material = unlock_material(key_bytes, keys.response if keys is not None else None)
-            vault = open_encrypted(encrypted, password, key_material)
+            vault = open_with_keys(encrypted, password, key_bytes, keys, open_encrypted)
             from .versions import archives
             self.verified_capsules = archives(vault)
             self._check_keyfile()

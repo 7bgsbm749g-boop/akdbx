@@ -2051,3 +2051,45 @@ def test_a_covered_field_gets_no_popup_text(harness, private_dir):
     session = popup_text_session(harness)
     assert popup_fill(harness, session) == {'ok': True}
     assert lab.digest('otp') == sha(SMS_CODE) and sms_inbox(broker) == []
+
+
+# ----- hardware key through the extension (Linux virtual USB key) -------------------------
+# Defined only on Linux: other systems have no /dev/uhid, and their CI jobs refuse skips.
+if sys.platform == 'linux':
+    from test_hardware_key import virtual_key  # noqa: E402,F401  (fixture)
+    @pytest.mark.parametrize('virtual_key', [dict(touch=True)], indirect=True)
+    def test_hardware_key_on_the_browsing_computer_unlocks_through_the_extension(harness, virtual_key, monkeypatch):
+        """The whole route: page script, content script, service worker, native host, USB key, broker.
+
+        The vault has no master password, only the hardware key. The broker sees no
+        key of its own here, so the page asks the extension; the native host (its
+        own process) finds the virtual USB key and waits for its touch.
+        """
+        from akdbx import hardware_key
+        from test_unlock_keys import hardware_vault
+        lab, broker = harness.lab, harness.broker
+        database = broker.unlock_link.database
+        hardware_vault(database, password=None)
+        monkeypatch.setattr(hardware_key, 'available', lambda: False)  # this process stands for the broker computer
+        broker.lock()
+        assert broker.locked
+        lab.observer.call('Page.navigate', {'url': broker.unlock_link.url}, lab.session)
+        lab.wait("document.readyState === 'complete' && !!document.querySelector('[data-hardware-key]')")
+        assert lab.evaluate("document.querySelector('[data-hardware-key]').dataset.hardwareRoute") == 'extension'
+        lab.evaluate("""document.querySelector('.unlock-keys summary').click();
+            const key = document.querySelector('[data-hardware-key]');
+            key.click();
+            document.querySelector('.unlock-submit').click();""")
+        deadline = time.monotonic() + 40
+        text = ''
+        while time.monotonic() < deadline:
+            try:
+                text = lab.evaluate("document.querySelector('h1').textContent + ' ' + "
+                                    "(document.querySelector('#unlock-status')?.textContent || '')")
+            except AssertionError:
+                text = ''  # The sheet is being replaced.
+            if text.startswith('Vault unlocked') or 'did not' in text or 'akdbx' in text.lower() and 'extension' in text:
+                break
+            time.sleep(.1)
+        assert text.startswith('Vault unlocked'), text
+        assert not broker.locked

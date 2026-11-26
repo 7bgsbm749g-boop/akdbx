@@ -182,6 +182,9 @@ button:disabled { cursor: default; opacity: .4; }
 .unlock-keys > summary:focus-visible { outline: 2px solid #ffffff5c; outline-offset: 3px; border-radius: 4px; }
 .unlock-keys[open] > summary { color: #fff; }
 .unlock-keys-body > .setup-note { margin: 0 !important; }
+.hardware-route { display: grid; gap: 6px; margin-top: 10px; }
+.field.unlock-hardware .hardware-route label { font-size: 13px; color: #ffffffcc; align-items: center; }
+.field.unlock-hardware label { display: flex; align-items: center; gap: 10px; margin: 0; color: #fff; font-size: 14px; }
 .unlock-keys .copy-field .copy-text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 button.copy-field {
   display: block; text-align: left; min-height: 0; padding: 13px 16px 12px; border: 1px solid #ffffff1a;
@@ -620,13 +623,113 @@ SCRIPT = r""""use strict";
     }
     setStatus(status, message, final[1] === "is-done" ? "is-shown" : "is-error");
   }
+  // A key file or a hardware key may replace the master password (a vault with none).
+  document.addEventListener("change", event => {
+    const form = event.target.closest("[data-unlock-form]");
+    const password = form && form.querySelector("#password");
+    if (!password) return;
+    const file = form.querySelector("input[type=file]"), key = form.querySelector("[data-hardware-key]");
+    password.required = !(file && file.files.length || key && key.checked);
+  });
+  const HARDWARE_ERRORS = {
+    "no-extension": "The akdbx extension did not answer. Open this page on the computer with the hardware key, " +
+      "in a browser with the akdbx extension.",
+    "no-key": "No hardware key was found on this computer. Plug it in and try again.",
+    "timeout": "The hardware key was not touched in time. Try again, and touch the key when it flashes.",
+    "denied": "akdbx may not use the hardware key for this page. Allow it in the akdbx window to continue.",
+    "unavailable": "The akdbx extension cannot reach akdbx on this computer. Start akdbx here and try again.",
+    "failed": "The hardware key did not answer. Try again."
+  };
+  // The akdbx extension on this computer asks the hardware key. The page sends
+  // only the vault's challenge, which is not secret; the responses come back
+  // for this one unlock request and are never stored.
+  function askExtension(challenge, identity, proof) {
+    return new Promise(resolve => {
+      const id = crypto.randomUUID();
+      let timer;
+      const done = reply => {
+        window.removeEventListener("message", listen);
+        clearTimeout(timer);
+        resolve(reply);
+      };
+      const listen = event => {
+        const data = event.data;
+        if (event.source !== window || event.origin !== location.origin || !data || typeof data !== "object" ||
+            data.akdbx_hardware_id !== id) return;
+        if (data.akdbx_hardware === "ack") {
+          // Longer than a consent window (2 min) and a touch together.
+          clearTimeout(timer);
+          timer = setTimeout(() => done({error: "timeout"}), 150000);
+        } else if (data.akdbx_hardware === "result") {
+          done(data);
+        }
+      };
+      window.addEventListener("message", listen);
+      timer = setTimeout(() => done({error: "no-extension"}), 5000);
+      window.postMessage({akdbx_hardware: "request", akdbx_hardware_id: id, challenge, identity, proof}, location.origin);
+    });
+  }
+  async function hardwareResponses(form, status) {
+    form.querySelectorAll("[data-hardware-response]").forEach(input => input.remove());
+    const key = form.querySelector("[data-hardware-key]");
+    if (!key || !key.checked) return true;
+    // The broker's own key never replaces the master password: with an empty
+    // password and no key file, the key must come from this computer.
+    const password = form.querySelector("#password"), required = password.required;
+    const file = form.querySelector("input[type=file]");
+    password.required = true;  // Ask the browser whether the field is empty; its text is never read.
+    const empty = !password.checkValidity() && !(file && file.files.length);
+    password.required = required;
+    const chosen = form.querySelector("input[name=hardware_route]:checked");
+    const route = chosen ? chosen.getAttribute("data-route") : key.getAttribute("data-hardware-route");
+    if (route !== "extension" && !empty) {
+      setStatus(status, key.getAttribute("data-touch-text"), "");
+      return true;
+    }
+    // The page's signature for the extension lasts an hour; an older page asks for a reload first.
+    let issued = null;
+    try {
+      issued = JSON.parse(key.getAttribute("data-hardware-proof") || "null")?.statement?.issued ?? null;
+    } catch {
+      issued = null;
+    }
+    if (Number.isSafeInteger(issued) && Date.now() / 1000 - issued > 50 * 60) {
+      setStatus(status, "This page is more than 50 minutes old. Reload it, then try again.", "is-error");
+      return false;
+    }
+    setStatus(status, "Touch your hardware key when it flashes.", "");
+    const reply = await askExtension(key.getAttribute("data-hardware-challenge"),
+      key.getAttribute("data-hardware-identity"), key.getAttribute("data-hardware-proof"));
+    const responses = Array.isArray(reply.responses) ?
+      reply.responses.filter(item => typeof item === "string" && /^[0-9a-f]{40}$/.test(item)).slice(0, 4) : [];
+    if (!responses.length) {
+      setStatus(status, HARDWARE_ERRORS[reply.error] || HARDWARE_ERRORS.failed, "is-error");
+      return false;
+    }
+    for (const response of responses) {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = "response";
+      input.defaultValue = response;
+      input.setAttribute("data-hardware-response", "");
+      form.append(input);
+    }
+    setStatus(status, form.getAttribute("data-wait-text") || "Unlocking AKDBX. Please wait.", "");
+    return true;
+  }
   async function unlock(form) {
     form.closest(".sheet").querySelector("[role=alert]")?.remove();
     setBusy(form, true);
     const status = document.getElementById("unlock-status");
     // The pairing page reuses this form and names its own status lines.
     setStatus(status, form.getAttribute("data-wait-text") || "Unlocking AKDBX. Please wait.", "");
+    let keep = false;
     try {
+      // A hardware key that gave no response keeps the form as it is.
+      if (!await hardwareResponses(form, status)) {
+        keep = true;
+        return;
+      }
       const page = await post(form);
       const sheet = page.querySelector("main > .sheet");
       if (!sheet || !sheet.querySelector("#portal-title")) throw new Error();
@@ -641,7 +744,8 @@ SCRIPT = r""""use strict";
       setStatus(status, form.getAttribute("data-unconfirmed-text") ||
         "AKDBX unlock result not confirmed. Check its status before trying again.", "is-error");
     } finally {
-      form.reset();
+      form.querySelectorAll("[data-hardware-response]").forEach(input => input.remove());
+      if (!keep) form.reset();
       setBusy(form, false);
     }
   }

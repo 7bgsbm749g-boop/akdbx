@@ -1,6 +1,6 @@
 # Test fixtures
 
-`keepassxc-yubikey4.kdbx` is `resources/YubiKey4.kdbx` from
+`hardware-key-kdbx4.kdbx` is `resources/YubiKey4.kdbx` from
 [kdbxweb](https://github.com/keeweb/kdbxweb): a KeePassXC KDBX 4 vault with the
 password `demo` and a YubiKey HMAC-SHA1 challenge-response. kdbxweb's tests
 give the key's response to its challenge. Its licence:

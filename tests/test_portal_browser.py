@@ -585,55 +585,161 @@ def test_pairing_page_shows_the_unlock_busy_state_then_successfully_paired(synth
     assert broker.extension.approved == [channel.digest]
 
 
-def test_key_file_and_hardware_response_reach_the_broker_byte_for_byte(synthetic_chromium, tmp_path):
-    """The page's own script posts the key file as multipart, so its bytes stay exact."""
+@pytest.fixture
+def keys_lab(synthetic_chromium, tmp_path, monkeypatch):
+    """An unlock page for a vault that can use a hardware key; the opener records only the keys."""
     import shutil
-    from pathlib import Path
-    from akdbx.unlock_keys import padded_challenge
-    from test_unlock_keys import YUBIKEY_RESPONSE, YUBIKEY_SEED, YUBIKEY_VAULT
+    from akdbx import hardware_key
+    from test_unlock_keys import YUBIKEY_VAULT
     _, _, cdp, session, _, _ = synthetic_chromium
-    received = []
+    lab = type('Lab', (), {})()
+    lab.received, lab.here = [], False
+    monkeypatch.setattr(hardware_key, 'available', lambda: lab.here)
     broker = Broker(None, RecordingTyper())
 
-    def opener(_database, _password, keyfile, keys=None):
-        # Only the synthetic key material is kept; the password is not inspected.
-        received.append((keyfile, keys))
+    def opener(_database, password, keyfile, keys=None):
+        # Only the synthetic key material and whether a password came are kept.
+        lab.received.append((password is None, keyfile, keys))
         return Vault([Entry()])
     folder = tmp_path / 'vault'
     folder.mkdir(mode=0o700)
     database = folder / 'vault.kdbx'
     shutil.copyfile(YUBIKEY_VAULT, database)
-    socket = tmp_path / 'private' / 'portal.sock'
-    server, url = start_unlock_server(broker, database, None, socket, 'http://127.0.0.1', opener=opener)
-    bridge, worker = start_bridge(socket)
-    key = tmp_path / 'synthetic.key'
-    key.write_bytes(bytes(range(256)) * 3 + b'\r\n--\r\n\x00')
-    try:
+
+    def start():
+        socket = tmp_path / 'private' / 'portal.sock'
+        server, url = start_unlock_server(broker, database, None, socket, 'http://127.0.0.1', opener=opener)
+        bridge, worker = start_bridge(socket)
+        lab.stop = lambda: (bridge.shutdown(), bridge.server_close(), worker.join(3), server.shutdown(),
+                            server.server_close())
         parts = urlsplit(url)
         cdp.call('Emulation.setDeviceMetricsOverride', {
             'width': 390, 'height': 844, 'deviceScaleFactor': 1, 'mobile': True}, session)
         navigate(cdp, session, f'http://127.0.0.1:{bridge.server_port}{parts.path}?{parts.query}')
-        assert cdp.evaluate("document.querySelector('form').enctype", session) == 'multipart/form-data'
-        assert cdp.evaluate("document.querySelector('.unlock-keys').open", session) is False
-        cdp.evaluate("document.querySelector('.unlock-keys summary').click()", session)
-        command = cdp.evaluate("document.querySelector('.unlock-keys [data-copy]').getAttribute('data-copy')", session)
-        assert command == 'ykman otp calculate 2 ' + padded_challenge(YUBIKEY_SEED).hex()
-        assert cdp.evaluate("document.documentElement.scrollWidth <= innerWidth", session) is True
-        document = cdp.call('DOM.getDocument', {}, session)
-        node = cdp.call('DOM.querySelector', {'nodeId': document['root']['nodeId'], 'selector': '#keyfile'}, session)
-        cdp.call('DOM.setFileInputFiles', {'files': [str(key)], 'nodeId': node['nodeId']}, session)
-        for selector, text in (('#password', 'public-synthetic-test-only'), ('#response', YUBIKEY_RESPONSE)):
-            cdp.evaluate(f"document.querySelector('{selector}').focus()", session)
-            cdp.call('Input.insertText', {'text': text}, session)
-        cdp.evaluate("document.querySelector('.unlock-submit').click()", session)
-        wait_for(cdp, session, "document.querySelector('h1').textContent === 'Vault unlocked'")
-        assert not broker.locked and len(received) == 1
-        keyfile, keys = received[0]
-        assert keyfile is None and keys.keyfile == Path(key).read_bytes()
-        assert keys.challenge == YUBIKEY_SEED and keys.response == bytes.fromhex(YUBIKEY_RESPONSE)
-    finally:
-        bridge.shutdown()
-        bridge.server_close()
-        worker.join(3)
-        server.shutdown()
-        server.server_close()
+    lab.start, lab.cdp, lab.session, lab.broker, lab.stop = start, cdp, session, broker, lambda: None
+    yield lab
+    lab.stop()
+
+
+def type_into(cdp, session, selector, text):
+    cdp.evaluate(f"document.querySelector('{selector}').focus()", session)
+    cdp.call('Input.insertText', {'text': text}, session)
+
+
+def test_key_file_reaches_the_broker_byte_for_byte_with_no_master_password(keys_lab, tmp_path):
+    """The page's own script posts the key file as multipart; a chosen file lets the password be empty."""
+    from pathlib import Path
+    lab, cdp, session = keys_lab, keys_lab.cdp, keys_lab.session
+    lab.start()
+    key = tmp_path / 'synthetic.key'
+    key.write_bytes(bytes(range(256)) * 3 + b'\r\n--\r\n\x00')
+    assert cdp.evaluate("document.querySelector('form').enctype", session) == 'multipart/form-data'
+    assert cdp.evaluate("document.querySelector('.unlock-keys').open", session) is False
+    assert cdp.evaluate("document.querySelector('#password').required", session) is True
+    cdp.evaluate("document.querySelector('.unlock-keys summary').click()", session)
+    assert cdp.evaluate("document.documentElement.scrollWidth <= innerWidth", session) is True
+    document = cdp.call('DOM.getDocument', {}, session)
+    node = cdp.call('DOM.querySelector', {'nodeId': document['root']['nodeId'], 'selector': '#keyfile'}, session)
+    cdp.call('DOM.setFileInputFiles', {'files': [str(key)], 'nodeId': node['nodeId']}, session)
+    # Choosing a key file makes the master password optional (a vault with none).
+    wait_for(cdp, session, "document.querySelector('#password').required === false")
+    cdp.evaluate("document.querySelector('.unlock-submit').click()", session)
+    wait_for(cdp, session, "document.querySelector('h1').textContent === 'Vault unlocked'")
+    assert not lab.broker.locked and len(lab.received) == 1
+    no_password, keyfile, keys = lab.received[0]
+    assert no_password and keyfile is None and keys.keyfile == Path(key).read_bytes() and not keys.hardware
+
+
+def test_hardware_key_on_the_broker_computer(keys_lab):
+    lab, cdp, session = keys_lab, keys_lab.cdp, keys_lab.session
+    lab.here = True
+    lab.start()
+    cdp.evaluate("document.querySelector('.unlock-keys summary').click()", session)
+    assert cdp.evaluate("document.querySelector('[data-hardware-key]').dataset.hardwareRoute", session) == 'broker'
+    cdp.evaluate("document.querySelector('[data-hardware-key]').click()", session)
+    wait_for(cdp, session, "document.querySelector('#password').required === false")
+    # The broker's own key goes with the master password, never instead of it.
+    type_into(cdp, session, '#password', 'public-synthetic-test-only')
+    cdp.evaluate("document.querySelector('.unlock-submit').click()", session)
+    wait_for(cdp, session, "document.querySelector('h1').textContent === 'Vault unlocked'")
+    no_password, _, keys = lab.received[0]
+    assert not no_password and keys.broker_key and not keys.responses
+
+
+def test_hardware_key_through_the_extension_on_the_browsing_computer(keys_lab):
+    """The page side of the extension protocol, with a stand-in for the content script."""
+    from test_unlock_keys import YUBIKEY_RESPONSE, YUBIKEY_SEED
+    lab, cdp, session = keys_lab, keys_lab.cdp, keys_lab.session
+    lab.start()
+    stand_in = """(() => {
+      window.seenChallenges = [];
+      window.addEventListener("message", event => {
+        const data = event.data;
+        if (!data || data.akdbx_hardware !== "request") return;
+        window.seenChallenges.push(data.challenge);
+        const id = data.akdbx_hardware_id;
+        window.postMessage({akdbx_hardware: "ack", akdbx_hardware_id: id}, location.origin);
+        setTimeout(() => window.postMessage({akdbx_hardware: "result", akdbx_hardware_id: id,
+          responses: ["RESPONSE"]}, location.origin), 300);
+      });
+    })()""".replace('RESPONSE', YUBIKEY_RESPONSE)
+    cdp.evaluate(stand_in, session)
+    cdp.evaluate("document.querySelector('.unlock-keys summary').click()", session)
+    assert cdp.evaluate("document.querySelector('[data-hardware-key]').dataset.hardwareRoute", session) == 'extension'
+    cdp.evaluate("document.querySelector('[data-hardware-key]').click()", session)
+    type_into(cdp, session, '#password', 'public-synthetic-test-only')
+    cdp.evaluate("document.querySelector('.unlock-submit').click()", session)
+    wait_for(cdp, session, "document.querySelector('#unlock-status').textContent.startsWith('Touch your hardware key')")
+    wait_for(cdp, session, "document.querySelector('h1').textContent === 'Vault unlocked'")
+    assert cdp.evaluate("window.seenChallenges", session) == [YUBIKEY_SEED.hex()]
+    no_password, _, keys = lab.received[0]
+    assert not no_password and keys.responses == (bytes.fromhex(YUBIKEY_RESPONSE),) and keys.challenge == YUBIKEY_SEED
+    assert not keys.broker_key
+
+
+def test_hardware_key_without_the_extension_keeps_the_form(keys_lab):
+    lab, cdp, session = keys_lab, keys_lab.cdp, keys_lab.session
+    lab.start()
+    cdp.evaluate("document.querySelector('.unlock-keys summary').click()", session)
+    cdp.evaluate("document.querySelector('[data-hardware-key]').click()", session)
+    type_into(cdp, session, '#password', 'public-synthetic-test-only')
+    cdp.evaluate("document.querySelector('.unlock-submit').click()", session)
+    # The page waits 5 s for an extension to answer.
+    import time
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline and not cdp.evaluate(
+            "document.querySelector('#unlock-status').classList.contains('is-error')", session):
+        time.sleep(0.1)
+    assert cdp.evaluate("document.querySelector('#unlock-status').textContent", session).startswith(
+        'The akdbx extension did not answer.')
+    # Nothing was sent, and the password and the choice stay for the next try.
+    assert lab.received == [] and lab.broker.locked
+    assert cdp.evaluate("document.querySelector('[data-hardware-key]').checked", session) is True
+    assert cdp.evaluate("document.querySelector('#password').checkValidity()", session) is True
+    assert cdp.evaluate("!document.querySelector('.unlock-submit').disabled", session) is True
+
+
+def test_an_empty_password_never_uses_the_broker_key(keys_lab):
+    """A vault with no master password: the key must come from this computer, through the extension."""
+    from test_unlock_keys import YUBIKEY_RESPONSE, YUBIKEY_SEED
+    lab, cdp, session = keys_lab, keys_lab.cdp, keys_lab.session
+    lab.here = True
+    lab.start()
+    cdp.evaluate("""(() => {
+      window.addEventListener("message", event => {
+        const data = event.data;
+        if (!data || data.akdbx_hardware !== "request") return;
+        const id = data.akdbx_hardware_id;
+        window.postMessage({akdbx_hardware: "ack", akdbx_hardware_id: id}, location.origin);
+        window.postMessage({akdbx_hardware: "result", akdbx_hardware_id: id, responses: ["RESPONSE"]},
+          location.origin);
+      });
+    })()""".replace('RESPONSE', YUBIKEY_RESPONSE), session)
+    cdp.evaluate("document.querySelector('.unlock-keys summary').click()", session)
+    assert cdp.evaluate("document.querySelector('[data-hardware-key]').dataset.hardwareRoute", session) == 'broker'
+    cdp.evaluate("document.querySelector('[data-hardware-key]').click()", session)
+    cdp.evaluate("document.querySelector('.unlock-submit').click()", session)
+    wait_for(cdp, session, "document.querySelector('h1').textContent === 'Vault unlocked'")
+    no_password, _, keys = lab.received[0]
+    assert no_password and not keys.broker_key and keys.responses == (bytes.fromhex(YUBIKEY_RESPONSE),)
+    assert keys.challenge == YUBIKEY_SEED
