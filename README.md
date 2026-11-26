@@ -19,7 +19,7 @@ release or upgrade a broker.
 ## Quick start: akdbx setup
 
 Install akdbx (a release wheel or `pip install -e .` in a checkout), then run
-one guided command (0.27.0+; also available on macOS after 0.47.0):
+one guided command (0.27.0+; also available on macOS after 0.48.0):
 
 ```sh
 akdbx setup
@@ -153,7 +153,7 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 
 - **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
   checks, private HTTPS unlock and encrypted vault writes. Chrome, Edge and Firefox (0.47.0+)
-  native-host locations are supported. After 0.47.0, guided setup installs a login LaunchAgent and the broker
+  native-host locations are supported. After 0.48.0, guided setup installs a login LaunchAgent and the broker
   locks on macOS screen-lock notifications. Native window delivery and CDP are unavailable. Safari's Apple wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).
 - **Linux** (X11 desktop): the original platform. The setup notes in this
@@ -440,7 +440,7 @@ containing an HTTP, malformed, credential-bearing, or different-origin unlock
 link. Every deployment must configure the client with the intended origin
 using global `--unlock-origin HTTPS_ORIGIN` (or `AKDBX_UNLOCK_ORIGIN`) before the
 subcommand. With neither, the CLI uses the origin of an enabled akdbx relay
-(0.26.0+), then `https://localhost:9443`. The same setting configures the broker's private-page origin at startup; the built-in default is `https://localhost:9443` on both platforms (before 0.23.0, Linux used a non-routable example). Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
+(0.26.0+), then `https://localhost:9443`. The same setting configures the broker's private-page origin at startup; the built-in default is `https://localhost:9443` on every platform (before 0.23.0, Linux used a non-routable example). Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
 requires global `--broker-uid UID` (or `AKDBX_BROKER_UID`).
 
 The master password travels inside the HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Run `akdbx lock` to lock immediately and keep the broker available for a fresh private unlock.

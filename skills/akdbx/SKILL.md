@@ -98,8 +98,8 @@ workflow owns.
 
 On Windows, read [Windows operation](references/windows.md) first: the
 transport is a named pipe, and native-window pins use HWNDs instead of X11
-windows. The private HTTPS page works the same way on both platforms. The managed Android emulator, Hyprland lock,
-Tailscale Serve Unix socket and Linux agent-desktop slot window pins are Linux-specific.
+windows. The private HTTPS page works the same way on every platform. The managed Android emulator, Hyprland lock
+and Linux agent-desktop slot window pins are Linux-specific. The Tailscale Serve Unix socket works on Linux and macOS.
 
 The maintained source of this skill is the repository's `skills/akdbx`
 directory. A local install links the agent's skills directory to it (a
@@ -109,7 +109,7 @@ directory junction on Windows needs no elevation), so it can be invoked as
 ### First-time setup
 
 `akdbx setup` (0.27.0+) takes a user from install to a working broker, on
-Linux and Windows, with macOS support after 0.47.0. On macOS, `--start-at-login` installs a per-user LaunchAgent. Native window pins, CDP and Safari are unavailable in this version. You can run it for the user without questions:
+Linux and Windows, with macOS support after 0.48.0. On macOS, `--start-at-login` installs a per-user LaunchAgent. Native window pins, CDP and Safari are unavailable in this version. You can run it for the user without questions:
 
 ```bash
 akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
