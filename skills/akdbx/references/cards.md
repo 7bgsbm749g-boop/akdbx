@@ -221,7 +221,7 @@ With a root, `pin-card-target` names the desktop's slot with `--browser-slot SLO
 (default `$AGENT_DESKTOP_SLOT`; see [agent desktop slots](target-fill.md#agent-desktop-slots)).
 Before the WebSocket handshake, the broker checks the connected peer's reciprocal
 established TCP tuple in bounded kernel metadata. Linux and macOS require the
-socket owner UID. Windows requires the broker user and desktop session and
+socket owner UID. Windows requires the broker user, desktop session and integrity level and
 rechecks the tuple while holding the owner process handle. Missing or ambiguous proof
 refuses the connection. The verified socket is retained and redirects are refused.
 Chrome's debugging port is a browser-control interface. Loopback alone does not

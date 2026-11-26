@@ -39,7 +39,7 @@ by group/others (launch Chrome with `umask 077`). The broker connects only to th
 loopback browser websocket described by that file. Before its handshake, Linux and macOS kernel metadata must identify the broker
 UID on the reciprocal established connection. macOS refuses extended allow
 ACLs on profile paths and the port file. Windows verifies private DACLs and
-requires the connected peer to share the broker user and desktop session;
+requires the connected peer to share the broker user, desktop session and integrity level;
 unverifiable ownership and redirects refuse. Protect this privileged CDP
 interface and profile from other local users. Configuration is not proof of
 protection against malicious processes running as the broker user.

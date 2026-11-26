@@ -46,13 +46,23 @@ def test_endpoint_symlink_writable_file_and_replaceable_profile_refused(tmp_path
 def test_foreign_uid_endpoint_receives_no_websocket_bytes(tmp_path):
     """A stale owned port file must not authorize another user's listener."""
     if os.environ.get('AKDBX_TEST_FOREIGN_UID') != '1':
-        pytest.skip('foreign-UID regression requires AKDBX_TEST_FOREIGN_UID=1 and sudo -n -u nobody')
+        pytest.skip('foreign-UID regression requires AKDBX_TEST_FOREIGN_UID=1 and passwordless sudo')
+    import pwd
     import select
     import shutil
     import subprocess
+    import sys
     from akdbx.browser_card import CDP
     sudo = shutil.which('sudo')
-    assert sudo is not None, 'foreign-UID regression requires sudo -n -u nobody'
+    assert sudo is not None, 'foreign-UID regression requires sudo -n'
+    account, python = 'nobody', '/usr/bin/python3'
+    if sys.platform == 'darwin':
+        # Use a service account with a positive UID and resolve the Xcode shim
+        # as the runner, before switching to the account with no developer home.
+        account = '_www'
+        python = subprocess.check_output(['/usr/bin/xcrun', '--find', 'python3'], text=True, timeout=10).strip()
+    expected_uid = pwd.getpwnam(account).pw_uid
+    assert expected_uid not in (0, os.getuid())
     script = '''import os, socket
 with socket.socket() as listener:
     listener.bind(('127.0.0.1', 0))
@@ -66,12 +76,17 @@ with socket.socket() as listener:
 '''
     profile = tmp_path / 'profile'
     profile.mkdir(mode=0o700)
-    with subprocess.Popen([sudo, '-n', '-u', 'nobody', '/usr/bin/python3', '-c', script],
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+    with subprocess.Popen([sudo, '-n', '-u', account, '/usr/bin/env', '-i', 'HOME=/',
+                           'PATH=/usr/bin:/bin', python, '-I', '-S', '-c', script],
+                          cwd='/', stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
         try:
             assert select.select([process.stdout], [], [], 3)[0], 'listener did not start'
-            port, uid = map(int, process.stdout.readline().split())
-            assert uid != os.getuid(), 'listener must run as a different UID'
+            header = process.stdout.readline().split()
+            if len(header) != 2:
+                _, error = process.communicate(timeout=8)
+                pytest.fail(f'foreign listener startup failed (exit {process.returncode}): {error.strip()}')
+            port, uid = map(int, header)
+            assert uid == expected_uid, 'listener must run as the selected foreign UID'
             active = profile / 'DevToolsActivePort'
             active.write_text(f'{port}\n/devtools/browser/synthetic-stale-file')
             active.chmod(0o600)
