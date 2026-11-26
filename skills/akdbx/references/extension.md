@@ -346,9 +346,10 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   the content script decodes the pinned `<img>`, `<canvas>` or inline `<svg>`
   there with the CDP route's checks. An image URL must be on the page's own
   origin or be a `data:` URL, checked before anything is drawn, and from fill
-  extension 0.14.3 the image must load without CORS (no `crossorigin`
-  attribute). A CORS-mode image that redirects to another origin which allows
-  the read stays origin-clean, so it could show that origin's code. The pin also
+  extension 0.15.1 an image that is not a `data:` URL must load without CORS
+  (no `crossorigin` attribute). A CORS-mode image that redirects to another
+  origin which allows the read stays origin-clean, so it could show that
+  origin's code. The pin also
   decodes only a canvas that passes `convertToBlob`'s origin-clean check. A
   Firefox content script with `<all_urls>` host access (Enhanced security)
   reads another origin's pixels from a tainted canvas, also for an `<img>`
