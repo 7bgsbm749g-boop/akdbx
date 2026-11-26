@@ -2,10 +2,13 @@
 
 For identity field operations on Android, see [Android pins and commands](android.md#additional-android-operations-0501).
 
-Require `identity_protocol: 1` and `identity_delivery: "cdp-identity-element-v1"`
-from `akdbx status`. Delivery also requires `identity_browser_configured: true`.
-The broker uses its configured password browser profile, or the card browser
-profile if there is no password profile. A source or CLI update alone does not
+Require `identity_protocol: 1` from `akdbx status`. On the CDP route,
+delivery also requires `identity_delivery: "cdp-identity-element-v1"` and
+`identity_browser_configured: true`; the broker uses its configured password
+browser profile, or the card browser profile if there is no password profile.
+The extension route needs a paired extension, and native field and Android
+pins need their own capabilities (see the
+[support matrix](../../../docs/support-matrix.md)). A source or CLI update alone does not
 activate an existing broker. Follow the skill's private unlock workflow if
 the broker is locked.
 

@@ -4,6 +4,10 @@
 `KEY=VALUE` environment file that the operator defined before the broker
 started. The agent names a sink; it never names a path, key, owner or
 command. Linux sinks date from 0.20.0. Windows named pipes date from 0.48.0.
+A macOS broker reads same-user file sinks with the shared POSIX code, but no CI
+job tests them on macOS, and the root-owned helper for another account's files
+needs Linux (systemd and Linux peer credentials). See the
+[support matrix](support-matrix.md#platform-services).
 
 ## Linux configuration
 

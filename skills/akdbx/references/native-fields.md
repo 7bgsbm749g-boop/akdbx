@@ -1,8 +1,11 @@
 # Native desktop fields (0.44.0)
 
 Native field protocol 1 adds password, combined login, generated-password,
-username, TOTP, SMS code, card and address fills, and read-only secret capture outside a
-browser. Check `native_field_supported: true`, integer `native_field_protocol: 1`
+username, TOTP, card and address fills, and read-only secret capture outside a
+browser (0.44.0 on Linux and Windows Edit controls), and SMS code fills from
+0.49.0. Windows WinForms and WPF controls and the macOS backend arrive in
+0.50.1. The [support matrix](../../../docs/support-matrix.md#native-field-pin-native-target)
+lists each mode per platform and the CI job that proves it. Check `native_field_supported: true`, integer `native_field_protocol: 1`
 and `native_field_delivery: "native-field-v1"` in `status`.
 
 Supported controls:
@@ -38,8 +41,9 @@ WPF TextBox, the broker reads the Value back and compares it exactly with the
 written text; it never returns the value. UI Automation string conditions are
 not used, because they accept canonically equivalent text. WPF supports single-line values
 because UI Automation does not expose the TextBox AcceptsReturn setting.
-Qt, WinUI, UWP, Java, Flutter, RichEdit and VCL controls are outside the
-verified set. The broker refuses other UI Automation providers. There are
+On Windows, Qt, WinUI, UWP, Java, Flutter, RichEdit and VCL controls are
+outside the verified set, and the broker refuses other UI Automation
+providers. Code pins on WinForms and WPF controls have no SMS test yet. There are
 no global keys, Tab, clipboard or automatic submit actions. Legacy numeric
 `pin-target` pins accept usernames, TOTP and SMS codes on X11, XWayland or Windows.
 Native Wayland windows have no XID; use AT-SPI field pins there. Window pins
