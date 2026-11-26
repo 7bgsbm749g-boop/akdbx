@@ -1739,13 +1739,14 @@ def test_popup_totp_binds_the_account_field_and_single_use_selection(harness):
     assert not fill(session)['ok'] and lab.digest('otp') == EMPTY
 
 
-def test_open_toolbar_popup_fills_totp_after_a_trusted_click(harness):
+@pytest.mark.parametrize('digits', [6, 8])
+def test_open_toolbar_popup_checks_totp_length_before_closing(harness, digits):
     from totp_vectors import URI
     lab, broker = harness.lab, harness.broker
     lab.navigate('/login')
-    broker.vault.entries[0].otp = URI
+    broker.vault.entries[0].otp = URI + f'&digits={digits}'
     broker.wall_clock = lambda: 1111111111
-    lab.evaluate("password.type='tel';password.autocomplete='one-time-code';password.id='otp'")
+    lab.evaluate("password.maxLength=6;password.type='tel';password.autocomplete='one-time-code';password.id='otp'")
     harness.focus('otp')
     harness.worker_call('chrome.action.openPopup()')
     observer = lab.observer
@@ -1760,7 +1761,13 @@ def test_open_toolbar_popup_fills_totp_after_a_trusted_click(harness):
                              'return [r.x+r.width/2, r.y+r.height/2]})()', session)
     for kind in ('mousePressed', 'mouseReleased'):
         observer.call('Input.dispatchMouseEvent', dict(type=kind, x=x, y=y, button='left', clickCount=1), session=session)
-    lab.wait('otp.value === "050471"')
+    if digits == 6:
+        lab.wait('otp.value === "050471"')
+    else:
+        while 'cannot accept this code' not in observer.evaluate('document.getElementById("status").textContent', session):
+            assert time.monotonic() < deadline
+            time.sleep(.05)
+        assert lab.digest('otp') == EMPTY
 
 
 def test_popup_totp_requires_a_match_bound_to_this_probe(harness, monkeypatch):

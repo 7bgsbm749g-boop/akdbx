@@ -997,8 +997,8 @@ async function popupFill(message) {
   if (!tab || tab.url !== session.topUrl || !chain || !sameChain(chain, session.chain)) {
     return {ok: false, error: "page changed; nothing filled"};
   }
-  const liveOtp = () => run(session.tabId, session.documentId, id => globalThis.__akdbxContent.liveOtp(id),
-    [session.probe]).catch(() => false);
+  const liveOtp = (digits = null) => run(session.tabId, session.documentId, (id, size) => globalThis.__akdbxContent.liveOtp(id, size),
+    [session.probe, digits]).catch(() => false);
   const expired = {ok: false, error: "code field changed or expired; open akdbx again"};
   if (session.kind === "totp" && !(await liveOtp())) return expired;
   const released = await brokerRequest("release", {handle: session.handles[message.index], tab_id: session.tabId,
@@ -1023,7 +1023,10 @@ async function popupFill(message) {
   }
   try {
     if (session.kind === "totp") {
-      if (!(await liveOtp()) || performance.timeOrigin + performance.now() >= deadline) return expired;
+      if (!/^(?:[0-9]{6}|[0-9]{8})$/.test(values.totp) || !(await liveOtp(values.totp.length))) {
+        return {ok: false, error: "code field changed or cannot accept this code; check the field"};
+      }
+      if (performance.timeOrigin + performance.now() >= deadline) return expired;
       await akdbxBrowser.runtime.sendMessage({op: "return-focus", session: message.session}).catch(() => {});
     }
     const result = session.kind === "totp"

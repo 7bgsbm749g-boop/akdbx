@@ -10,6 +10,7 @@
 (() => {
   if (globalThis.__akdbxContent) return;
   const CAPTURE = __PASSWORD_CAPTURE__;
+  const totpField = __TOTP_FIELD__;
   const PASSWORD_FILL = __PASSWORD_FILL__;
   const READ_CAPTURE = __READ_CAPTURE__;
   const READ = __READ__;
@@ -735,10 +736,10 @@
       actual.replace(/\s/g, "") === expected.replace(/\s/g, "");
   }
 
-  function liveOtp(id) {
+  function liveOtp(id, digits = null) {
     const item = probes.get(id);
     return Boolean(item && item.dispose && performance.now() - item.created < PIN_MS &&
-      document.activeElement === item.focused && shown(item.focused) && item.focused.form === item.fields[0].form &&
+      totpField(item.focused, digits) && document.activeElement === item.focused && shown(item.focused) && item.focused.form === item.fields[0].form &&
       window === window.top && self.origin === location.origin && location.href === item.url);
   }
 
