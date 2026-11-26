@@ -183,6 +183,9 @@ age. It never shows the code.
 - akdbx cannot tell which site sent a text: a text names no origin that akdbx
   can verify. The popup says so and lists every unexpired text. The user
   picks the one that this site sent, as when reading the text on the phone.
+- A field that cannot take a code of the listed length (its `maxlength` or
+  `minlength`, or an input type other than `text`, `tel`, `number` or
+  `password`) refuses while the popup is still open, and the text stays.
 - After the click the popup closes, so the browser gives the focus back to the
   field. Then the same checks as `pin-code-target --route extension` pin it:
   one focused, visible, enabled `text`, `tel`, `number` or `password` input on

@@ -401,9 +401,12 @@ focused field itself must stay the page's active element. So, as for
   frame up to the top. A field outside the visible part of the page, or under
   a cover, stays empty: scroll to it, focus it and open akdbx again.
 - Only documents whose frames up to the top all have the top page's origin.
-  The page URLs, the element, its form, type and autocomplete value must not
-  change until the fill; any change refuses the whole fill before a value is
-  written.
+  The popup keeps each field's element from when it opened. Just before it
+  writes a field, it pins that element again with all these checks, and the
+  element's type, autocomplete value, ID, name and form must be the same as
+  when the popup opened. A field that fails before the first write refuses
+  the whole fill; a field that the page changes while the popup fills the
+  others makes the result "fill incomplete".
 - Values: the saved value as saved. `street-address` gets the address lines
   joined with line breaks, and a single-line input refuses a multi-line
   address. A select needs exactly one enabled option with the saved value; a

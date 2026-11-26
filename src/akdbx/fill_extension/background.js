@@ -996,7 +996,7 @@ async function popupProbe(message) {
   // A one-time-code field also lists the inbox's texts (fill extension 0.15.0): each entry keeps its own kind.
   const kinds = entries.map(e => best.result.kind === "totp" && e.kind === "sms" ? "sms" : best.result.kind);
   sessions.set(id, {tabId: tab.id, documentId: best.documentId, topUrl: tab.url, chain, probe: best.result.id,
-    kind: best.result.kind, kinds,
+    kind: best.result.kind, kinds, lengths: entries.map(e => e.code_length),
     roles: best.result.roles, formats: best.result.formats, handles: entries.map(e => e.handle),
     created: Date.now()});
   return {ok: true, session: id, kind: best.result.kind, origin: new URL(chain[chain.length - 1].url).origin,
@@ -1071,8 +1071,13 @@ const TEXT_FILL_MS = 10000;
 async function popupText(session, message, deadline) {
   const {tabId, documentId, chain} = session;
   const handle = session.handles[message.index];
-  const live = await run(tabId, documentId, id => globalThis.__akdbxContent.liveProbe(id), [session.probe]).catch(() => false);
-  if (live !== true) return {ok: false, error: "code field changed or expired; open akdbx again"};
+  // While the popup is still open to show it: the field can take a code of the length the broker listed.
+  const length = session.lengths[message.index];
+  const live = await run(tabId, documentId, (id, size) => globalThis.__akdbxContent.liveCode(id, size),
+    [session.probe, length]).catch(() => false);
+  if (live !== true) {
+    return {ok: false, error: `code field changed or cannot take a ${Number(length) || ""}-digit code; check the field`};
+  }
   await akdbxBrowser.runtime.sendMessage({op: "return-focus", session: message.session}).catch(() => {});
   let pinId = null;
   try {

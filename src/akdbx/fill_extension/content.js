@@ -730,18 +730,19 @@
       }
     }
     if (first.kind === "identity") {
-      // Every address field passes the agent identity pin's checks now and again at the
-      // fill: exact URLs, only frames of the top origin, style guard, hit tests through
-      // each frame. A partner that fails them stays empty; the focused field must pass.
+      // Every address field passes the agent identity pin's checks now and again just
+      // before its value is written: exact URLs, only frames of the top origin, style
+      // guard, hit tests through each frame. A partner that fails them stays empty; the
+      // focused field must pass.
       let top;
       try {
         top = window.top.location.href;
       } catch {
         return null;
       }
-      for (const item of fields) item.state = identityPin(item.el, item.role, top);
-      if (!fields[0].state) return null;
-      fields.splice(0, fields.length, ...fields.filter(item => item.state));
+      const held = fields.map(item => identityPin(item.el, item.role, top));
+      if (!held[0]) return null;
+      fields.splice(0, fields.length, ...fields.filter((item, i) => held[i]));
     }
     const formats = {};
     for (const item of fields) {
@@ -842,6 +843,15 @@
     return liveProbe(id) && totpField(probes.get(id).focused, digits);
   }
 
+  // Before the popup closes for a texted code: the probed field can take a code of this
+  // length (its type and length limits, as the code pin's fill checks them later).
+  function liveCode(id, length) {
+    const el = probes.get(id)?.focused;
+    return liveProbe(id) && Number.isInteger(length) && length >= 4 && length <= 8 &&
+      ["text", "tel", "number", "password"].includes(el.type) && !(el.maxLength >= 0 && el.maxLength < length) &&
+      !(el.minLength > length);
+  }
+
   const now = () => performance.timeOrigin + performance.now();
 
   // Closing the action popup restores focus to the page. Do not activate a
@@ -922,27 +932,45 @@
   }
 
   // The popup's address fill: the agent identity pin's fill on each field, with the
-  // input and change events of fill-identity --notify-page. Every field's checks and
-  // value run before the first write; a page handler that changes a field after its
-  // events makes the result uncertain, never filled.
+  // input and change events of fill-identity --notify-page. Each field is pinned again
+  // just before its write, as an agent pins a field just before its fill: the retained
+  // element, unchanged since the popup opened (tag, type, autocomplete, id, name, form),
+  // must pass every pin check at that moment. So a page that adds a node next to a
+  // field while it handles an earlier field's events does not stop the fill. Every
+  // field is also checked before the first write; a page handler that changes a field
+  // after its events makes the result uncertain, never filled.
   function identityFill(item, values) {
+    let top;
+    try {
+      top = window.top.location.href;
+    } catch {
+      return "refused";
+    }
+    const fresh = field => {
+      if (!field.el.isConnected || identity(field.el) !== field.identity || field.el.form !== field.form) return null;
+      const state = identityPin(field.el, field.role, top);
+      return state && state.node() === field.el ? state : null;
+    };
     const planned = [];
     for (const field of item.fields.filter(field => typeof values[field.role] === "string")) {
       const value = optionValue(field.el, field.role, values[field.role]);
-      if (!field.state.geometry() || !fits(field.el, value)) return "refused";
-      planned.push([field, value]);
+      const state = fresh(field);
+      if (!state || !fits(field.el, value)) return "refused";
+      planned.push({field, value, state});
     }
     if (!planned.length) return "refused";
     for (let i = 0; i < planned.length; ++i) {
+      const {field, value} = planned[i];
       let state;
       try {
-        state = planned[i][0].state.fill(planned[i][1], PIN_MS, true);
+        const pinned = i === 0 ? planned[0].state : fresh(field);
+        state = pinned ? pinned.fill(value, PIN_MS, true) : "refused";
       } catch {
         state = "uncertain";
       }
       if (state !== "filled") return i === 0 && state === "refused" ? "refused" : "uncertain";
     }
-    return planned.every(([field, value]) => field.el.isConnected && accepted(field, value, value)) ? "filled" : "uncertain";
+    return planned.every(({field, value}) => field.el.isConnected && accepted(field, value, value)) ? "filled" : "uncertain";
   }
 
   function probeFill(id, values) {
@@ -975,7 +1003,7 @@
       const item = pins.get(id);
       return Boolean(item && item.kind === "password" && item.mode === "totp" && item.state.check() && item.state.acceptsTotp(digits));
     },
-    pin, geometry, release, fill, read, guard, guardCheck, guardPoint, count, probe, probeFill, liveOtp, liveProbe,
+    pin, geometry, release, fill, read, guard, guardCheck, guardPoint, count, probe, probeFill, liveOtp, liveCode,
     popupTotp, popupCodePin,
     clear, challengeSpec, challengeHeld, painted,
     releaseGuard: id => guards.delete(id),

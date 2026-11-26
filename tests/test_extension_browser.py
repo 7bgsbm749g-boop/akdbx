@@ -426,6 +426,15 @@ async function digestName(name, index = 0) {
     '/sms-frame': ('<!doctype html><meta charset="utf-8"><style>input{width:160px;height:24px}</style>'
                    '<input id="otp" autocomplete="one-time-code" maxlength="6">'),
     '/address': '<!doctype html><meta charset="utf-8">' + ADDRESS_FORM + DIGEST,
+    # Address fields without IDs, whose first field's input handler adds a hint next to it.
+    '/address-shifting': ('<!doctype html><meta charset="utf-8"><form><input name="given" autocomplete="given-name">'
+                          '<input name="line1" autocomplete="address-line1"><input name="postal" autocomplete="postal-code">'
+                          '</form><script>document.querySelector("[name=given]").addEventListener("input", e =>'
+                          ' e.target.insertAdjacentHTML("afterend", "<span>Looks good</span>"));'
+                          'async function digestName(name) { const data = new TextEncoder().encode('
+                          'document.getElementsByName(name)[0].value); return Array.from(new Uint8Array('
+                          'await crypto.subtle.digest("SHA-256", data)), b => b.toString(16).padStart(2, "0")).join(""); }'
+                          '</script>'),
     '/address-framed': ('<!doctype html><meta charset="utf-8"><style>body{margin:0}iframe{width:300px;height:470px;border:0}'
                         '</style><iframe id="same" src="/address"></iframe>'
                         '<iframe id="other" src="https://auth.example.com/address"></iframe>'),
@@ -2127,6 +2136,26 @@ def test_popup_address_fill_reaches_a_frame_of_the_top_origin_and_never_another_
     assert all(digest(other, field) == EMPTY for field in (*FILLED, *DECOYS))
 
 
+def test_popup_address_fill_pins_each_field_just_before_its_write(harness):
+    """Fields without IDs: a node that the page adds next to a field, before the click or while it handles an
+    earlier field's events, moves the later fields' structural paths. Each field is pinned again just before
+    its write, from the element kept since the popup opened, so the whole address fills."""
+    lab, broker = harness.lab, harness.broker
+    broker.vault.entries.append(AddressEntry(uuid='address', title=ADDRESS_TITLE, path=('Root', 'Web', ADDRESS_TITLE)))
+    lab.navigate('/address-shifting')
+    lab.evaluate('document.getElementsByName("given")[0].focus()')
+    lab.wait('document.activeElement.name === "given"')
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+    assert found['ok'] and found['kind'] == 'identity', found
+    index = next(e['index'] for e in found['entries'] if e['title'] == ADDRESS_TITLE)
+    lab.evaluate("document.forms[0].insertAdjacentHTML('afterbegin', '<p>All fields are required</p>')")
+    assert harness.worker_call(f'popupFill({{session: {json.dumps(found["session"])}, index: {index}}})') == {'ok': True}
+    expected = {'given': ADDRESS['given-name'], 'line1': ADDRESS['address-line1'], 'postal': ADDRESS['postal-code']}
+    assert {name: lab.evaluate(f'digestName({json.dumps(name)})', await_promise=True) for name in expected} == {
+        name: sha(value) for name, value in expected.items()}
+
+
 def test_toolbar_popup_fills_a_texted_code_once_and_never_shows_it(harness, private_dir):
     """A trusted click on a text in the open popup: the popup closes, the page gets the focus back, the agent
     code pin's checks pin the field, and only then does the broker spend the text and seal its code to the page."""
@@ -2196,6 +2225,26 @@ def test_a_popup_text_is_spent_only_after_its_code_pin_holds_and_comes_back_when
     assert popup_fill(harness, session) == {'ok': True}
     assert lab.digest('otp') == sha(SMS_CODE) and sms_inbox(broker) == []
     assert popup_fill(harness, session) == {'ok': False, 'error': 'selection expired; open akdbx again'}
+
+
+def test_a_field_too_short_for_the_listed_code_refuses_while_the_popup_is_open(harness, private_dir):
+    """The popup still shows this refusal: the worker checks the listed code length before the popup closes."""
+    lab, broker = harness.lab, harness.broker
+    message = sms_source(harness, private_dir)()
+    lab.navigate('/sms')
+    lab.evaluate("document.getElementById('otp').maxLength = 4")
+    session = popup_text_session(harness)
+    harness.worker_call('(() => { globalThis.focusReturned = false; const send = akdbxBrowser.runtime.sendMessage;'
+                        ' globalThis.unhook = () => { akdbxBrowser.runtime.sendMessage = send; };'
+                        ' akdbxBrowser.runtime.sendMessage = message => { if (message.op === "return-focus")'
+                        ' globalThis.focusReturned = true; return send(message); }; return true; })()')
+    try:
+        assert popup_fill(harness, session) == {
+            'ok': False, 'error': 'code field changed or cannot take a 6-digit code; check the field'}
+        assert harness.worker_call('focusReturned') is False
+    finally:
+        harness.worker_call('(unhook(), true)')
+    assert sms_inbox(broker) == [message] and lab.digest('otp') == EMPTY and not broker.extension.restores
 
 
 @pytest.mark.usefixtures('enhanced')
