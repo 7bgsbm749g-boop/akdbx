@@ -103,10 +103,16 @@ def parse_hex(text: str, size: int) -> bytes:
 
 
 def keyfile_key(data: bytes) -> bytes:
-    """The key of a key file, the same way PyKeePass and KeePassXC read it."""
+    """The key of a key file, the same way PyKeePass and KeePassXC read it.
+
+    The parser never loads a DTD, resolves an entity or uses the network: an
+    uploaded key file comes from the page, and lxml before 5.0 resolves
+    external entities by default.
+    """
     from lxml import etree
+    parser = etree.XMLParser(resolve_entities=False, load_dtd=False, no_network=True)
     try:
-        tree = etree.fromstring(data)
+        tree = etree.fromstring(data, parser)
         version = tree.find('Meta/Version').text
         element = tree.find('Key/Data')
         if version.startswith('1.0'):
@@ -117,8 +123,8 @@ def keyfile_key(data: bytes) -> bytes:
                 raise ValueError('key file has an invalid hash')
             return key
         raise AttributeError
-    except (etree.XMLSyntaxError, UnicodeDecodeError, AttributeError):
-        pass
+    except (etree.XMLSyntaxError, UnicodeDecodeError, AttributeError, TypeError):
+        pass  # Not a key file in XML (also one without key data): hashed like KeePassXC does.
     try:
         int(data, 16)
         is_hex = True
@@ -132,12 +138,20 @@ def keyfile_key(data: bytes) -> bytes:
 
 
 def key_material(keyfile: bytes | None, response: bytes | None) -> io.BytesIO | None:
-    """The key file that PyKeePass opens the vault with, in memory."""
-    if response is None:
-        return io.BytesIO(keyfile) if keyfile is not None else None
-    key = (keyfile_key(keyfile) if keyfile is not None else b'') + hashlib.sha256(response).digest()
+    """The key file that PyKeePass opens the vault with, in memory.
+
+    PyKeePass gets only a key file written here (XML 2.0 with the key that
+    ``keyfile_key`` read), so it never parses the user's file itself.
+    """
+    if keyfile is None and response is None:
+        return None
+    key = keyfile_key(keyfile) if keyfile is not None else b''
+    head = b'<?xml version="1.0" encoding="UTF-8"?><KeyFile><Meta><Version>2.0</Version></Meta>'
+    if response is not None:
+        key += hashlib.sha256(response).digest()
+        head = MARKER
     check = hashlib.sha256(key).digest()[:4].hex().upper()
-    return io.BytesIO(MARKER + f'<Key><Data Hash="{check}">{key.hex().upper()}</Data></Key></KeyFile>'.encode('ascii'))
+    return io.BytesIO(head + f'<Key><Data Hash="{check}">{key.hex().upper()}</Data></Key></KeyFile>'.encode('ascii'))
 
 
 def check_challenge(encrypted: bytes, keys: UnlockKeys) -> None:

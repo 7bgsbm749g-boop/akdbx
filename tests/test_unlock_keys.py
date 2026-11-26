@@ -365,3 +365,45 @@ def test_locked_pairing_page_unlocks_with_an_uploaded_key_file():
     assert handle_pairing(page, state) and page.sent[0][0] == 200
     assert seen == [(MASTER, UnlockKeys(keyfile=b'synthetic key'))]
     assert not broker.locked
+
+
+def test_key_file_entities_are_never_resolved(tmp_path):
+    """An uploaded key file is untrusted XML: no DTD, entity or network access."""
+    secret = tmp_path / 'local-secret.txt'
+    secret.write_text('00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff')
+    data = (f'<?xml version="1.0"?><!DOCTYPE KeyFile [<!ENTITY x SYSTEM "file://{secret}">]>'
+            '<KeyFile><Meta><Version>1.0</Version></Meta><Key><Data>&x;</Data></Key></KeyFile>').encode()
+    # The reference stays unresolved, so the file is hashed like any other file.
+    assert unlock_keys.keyfile_key(data) == hashlib.sha256(data).digest()
+    # PyKeePass only ever parses the key file that akdbx writes, never the upload.
+    material = key_material(data, None).getvalue()
+    assert b'DOCTYPE' not in material and b'ENTITY' not in material
+
+
+def test_pairing_page_hardware_key_branches_count_like_the_unlock_page():
+    from test_extension_route import PageHandler, attach, make_broker
+    from akdbx.extension_web import handle_pairing
+    from akdbx.web_unlock import UnlockState
+    broker = make_broker(locked=True)
+    channel, _ = attach(broker, {}, paired=False)
+    path = '/extension/pair?token=' + broker.extension._pairing_info(channel.digest)['url'].split('token=')[1]
+
+    def opener(_database, _password, _keyfile, keys=None):
+        from akdbx.unlock_keys import check_challenge
+        check_challenge(YUBIKEY_VAULT.read_bytes(), keys)
+        raise CredentialsError('synthetic failure')
+    state = UnlockState(broker, YUBIKEY_VAULT, None, opener)
+
+    def submit(challenge, response):
+        body, content_type = multipart([('password', MASTER), ('confirmed', 'yes'), ('challenge', challenge),
+                                        ('response', response)])
+        page = PageHandler(path, 'POST', body)
+        page.headers['Content-Type'] = content_type
+        assert handle_pairing(page, state)
+        return page.sent[0]
+    status, body = submit('00' * 32, YUBIKEY_RESPONSE)
+    assert status == 409 and 'did not count' in body and 'ykman otp calculate 2 ' in body
+    assert state.remaining() == 3 and broker.locked
+    status, body = submit(YUBIKEY_SEED.hex(), '00' * 20)
+    assert status == 401 and 'hardware key response' in body and '<details class="unlock-keys" open>' in body
+    assert state.remaining() == 2 and broker.locked
