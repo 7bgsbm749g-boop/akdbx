@@ -791,6 +791,10 @@
         const timer = setTimeout(done, Math.max(0, deadline - now()));
         window.addEventListener("focus", done);
       });
+      // Chromium fires the window's focus event before the field it gives the
+      // focus back to matches :focus again. Check in a later task, after the
+      // browser has finished that restore; every check below still applies.
+      await new Promise(resolve => setTimeout(resolve, 0));
     }
     if (!liveOtp(id) || now() >= deadline || !document.hasFocus()) return "refused";
     const item = probes.get(id);

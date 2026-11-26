@@ -1787,6 +1787,62 @@ def test_open_toolbar_popup_checks_totp_length_before_closing(harness, digits):
         assert lab.digest('otp') == EMPTY
 
 
+def test_popup_totp_fills_after_the_closing_popup_returns_focus(harness):
+    """The code call can reach the page before the closing popup gives the focus back.
+
+    Chromium fires the window's focus event before the restored field matches :focus again. A fill
+    that checked inside that event refused at random (about 1 run in 28 of the toolbar popup test).
+    This test holds the popup open, starts the fill while the page has no focus, then closes the
+    popup as its return-focus handler does. The field must get the code once.
+
+    Headless Edge on Windows (the Windows CI browser) keeps the page focused while the popup is open,
+    and no other window takes a headless page's focus. There the call never waits, so the race cannot
+    happen; the test still checks the one fill. On Linux the popup must take the focus.
+    """
+    from totp_vectors import URI
+    lab, broker = harness.lab, harness.broker
+    lab.navigate('/login')
+    broker.vault.entries[0].otp = URI
+    broker.wall_clock = lambda: 1111111111
+    lab.evaluate("password.type='tel';password.autocomplete='one-time-code';password.id='otp'")
+    harness.focus('otp')
+    lab.evaluate("window.codeEvents = 0; otp.addEventListener('input', () => codeEvents++)")
+    harness.worker_call('chrome.action.openPopup()')
+    observer = lab.observer
+    targets = observer.call('Target.getTargets')['targetInfos']
+    popup = next(t for t in targets if t['url'] == route.EXTENSION_ORIGIN + 'popup.html')
+    session = observer.call('Target.attachToTarget', dict(targetId=popup['targetId'], flatten=True))['sessionId']
+    deadline = time.monotonic() + 10
+    # The popup's own probe has run, so it cannot cancel the probe below. Nobody clicks it, so it stays open.
+    while not observer.evaluate('!!document.querySelector("#entries button")', session):
+        assert time.monotonic() < deadline, observer.evaluate('document.getElementById("status").textContent', session)
+        time.sleep(.05)
+    if sys.platform == 'win32':
+        lab.wait('document.activeElement === otp')
+        held = not lab.evaluate('document.hasFocus()')
+    else:
+        lab.wait('!document.hasFocus() && document.activeElement === otp')
+        held = True
+    # Instrumentation only: note when the worker sends the code call to the page.
+    harness.worker_call('(() => { const call = run; globalThis.codeSent = false; run = (...args) => {'
+                        ' if (String(args[2]).includes("popupTotp")) globalThis.codeSent = true; return call(...args); };'
+                        ' return true; })()')
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+    assert found['ok'] and found['kind'] == 'totp' and len(found['entries']) == 1, found
+    harness.worker_call(f'(globalThis.codeFill = popupFill({{session: {json.dumps(found["session"])}, index: 0}}), true)')
+    while not harness.worker_call('codeSent'):
+        assert time.monotonic() < deadline, 'the worker did not send the code call'
+        time.sleep(.02)
+    if held:
+        time.sleep(.3)  # The call is in the page now, waiting for focus (the fill allows 4 seconds).
+        assert lab.evaluate('!document.hasFocus()') and lab.digest('otp') == EMPTY
+    observer.evaluate('window.close()', session)
+    assert harness.worker_call('codeFill') == {'ok': True}
+    assert lab.digest('otp') == sha('050471') and lab.evaluate('codeEvents') == 1
+    assert lab.evaluate('document.hasFocus() && document.activeElement === otp')
+
+
 def test_popup_totp_requires_a_match_bound_to_this_probe(harness, monkeypatch):
     from totp_vectors import URI
     lab, broker = harness.lab, harness.broker

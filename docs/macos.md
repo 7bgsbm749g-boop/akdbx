@@ -15,7 +15,8 @@ and [distribution guide](https://developer.apple.com/documentation/safariservice
 ## Install and run
 
 Install the same release wheel as Linux and Windows. The platform dependency
-markers omit both python-xlib and pywin32 on macOS. Use a virtual environment:
+markers select the PyObjC ApplicationServices bridge on macOS. This single
+framework package supplies managed Accessibility and Core Foundation references. Use a virtual environment:
 
 ```sh
 python3 -m venv .venv
@@ -185,9 +186,16 @@ emulator, start it yourself (for example from Android Studio) and attach it.
 
 ## Limits
 
-- Native application/window fills are unavailable. Status reports
-  `target_fill_delivery: "unavailable"` and an empty `target_fill_modes` list;
-  there is no keyboard or clipboard fallback.
+- Native field protocol 1 (after 0.49.0) supports retained Accessibility text
+  controls in the frontmost native app. In System Settings → Privacy & Security →
+  Accessibility, grant access to the process macOS identifies for the broker.
+  Check `native_field_accessibility_granted: true` in `akdbx status`. The broker
+  checks permission without prompting. It can operate only on fields that
+  pass the [native field checks](../skills/akdbx/references/native-fields.md).
+- Numeric window pins remain unavailable. `CGEventPostToPid` directs input to a
+  process and cannot bind a keyboard event to a field. Secure Event Input also
+  restricts synthesized keyboard input. Status reports
+  `target_fill_delivery: "unavailable"` and an empty `target_fill_modes` list.
 - From 0.46.0, `merge`, `admit` and `merge-status` use the built-in
   engine and the same encrypted snapshot and recovery protocol as Linux.
 - Screen lock and the LaunchAgent need the user's GUI login session. There is
@@ -195,9 +203,11 @@ emulator, start it yourself (for example from Android Studio) and attach it.
   session; a physical sleep/wake cycle and a live tailnet are outside this test.
 - Safari needs a signed Apple browser wrapper. The fill extension and the
   separate QR capture extension use Chromium or Firefox native messaging, so
-  neither runs in Safari. SMS codes fill web pages through the paired extension,
+  neither runs in Safari.
+- SMS ingest is available. SMS codes fill web pages through the paired extension,
   or through a CDP code pin once a browser profile is configured (`sms_fill_routes`
-  then lists `cdp`); a native app or window has no SMS route on macOS.
+  then lists `cdp`). From the version after 0.49.0 they also fill native app fields with
+  `pin-native-target --mode code`, so status lists `native` too. A window pin has no SMS route on macOS.
 - Android: attached devices only. The managed emulator requires a Linux host
   with systemd and KVM. CI has no Android device or emulator on macOS:
   GitHub's arm64 macOS runners have no nested virtualization, so the emulator
@@ -210,7 +220,9 @@ emulator, start it yourself (for example from Android Studio) and attach it.
 
 The `Native macOS broker` CI job uses a real Darwin runner for Unix peer
 credentials, private socket RPC, encrypted save/reopen, checked TLS loading
-and unlock, and the extension protocol tests. It also installs and removes the
+and unlock, the extension protocol tests, and native field tests against a
+separate AppKit application. The native field tests require the runner’s existing
+Accessibility grant and fail if it is missing. It also installs and removes the
 native host for each supported browser, runs guided setup with the
 LaunchAgent, the capture host and lock notifications in the runner's GUI
 session, and runs peer checks and DOM fills in Chrome. It runs the Android

@@ -1989,12 +1989,16 @@ def inbox(broker):
 def test_an_sms_code_fills_an_extension_pin_once_and_never_returns_the_code(monkeypatch, tmp_path, platform):
     broker = sms_broker(tmp_path)
     monkeypatch.setattr(route.sys, 'platform', platform)
+    if platform == 'darwin':
+        # The macOS native-field status reads the Accessibility grant; this test runs on any OS.
+        import types
+        monkeypatch.setitem(sys.modules, 'HIServices', types.SimpleNamespace(AXIsProcessTrusted=lambda: False))
     status = broker.dispatch(dict(action='ping'))
     assert status['extension_code_protocol'] == 1 and status['extension_code_min_version'] == '0.13.0'
-    # Every desktop platform has a page route for SMS codes; on macOS it is the only one.
+    # Every desktop platform has a page route for SMS codes; on macOS it is the only page route.
     assert 'extension' in status['sms_fill_routes']
     if platform == 'darwin':
-        assert status['sms_fill_routes'] == ['extension'] and status['code_browser_configured'] is False
+        assert status['sms_fill_routes'] == ['extension', 'native'] and status['code_browser_configured'] is False
     channel, extension = attach(broker, {5: [Document('TOP', TOP), Document('SAME', TOP + '/otp', 'TOP')]})
     for document, frame_url in (('TOP', TOP), ('SAME', TOP + '/otp')):
         message = sms_message(broker)

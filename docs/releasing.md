@@ -2,7 +2,7 @@
 
 Each version has one GitHub release for every platform. akdbx is pure Python,
 so one `py3-none-any` wheel installs on Linux, Windows and macOS. Environment markers
-in `pyproject.toml` select `python-xlib` or `pywin32`. Do not make separate
+in `pyproject.toml` select `python-xlib`, `pywin32` or the PyObjC ApplicationServices bridge. Do not make separate
 Linux and Windows releases: the CLI and broker check each other's version and
 capabilities, and one version must mean the same code everywhere. If a frozen
 Windows executable is added later, attach it to the same release.
