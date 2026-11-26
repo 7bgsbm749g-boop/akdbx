@@ -27,6 +27,9 @@
   // any page script; content.js injected later by the worker finds no flag.
   const STARTED_EARLY = globalThis.__akdbxEarly === true;
   const CARD_PIN = __CARD_PIN_SCRIPT__;
+  // The CDP route's code pin (browser_code): one focused, visible, enabled plain input.
+  const CODE_PIN = __CODE_PIN_SCRIPT__;
+  const CODE_FIELDS = ["one-time-code", "webhook-url"];
   const GUARD = __CARD_GUARD__;
   const STRIPE_ELEMENTS = __STRIPE_ELEMENTS__;
   const count = () => __PASSWORD_COUNT__;
@@ -95,6 +98,10 @@
         state = CARD_PIN(spec.selector, spec.field, frameURL, topURL, spec.processor || false, identity,
           identity && typeof spec.field_purpose === "string" ? spec.field_purpose : false,
           identity && spec.allow_autocomplete_off === true, shadowRootOf);
+      } else if (kind === "code") {
+        // An SMS code or a source's webhook URL, never a field of another kind.
+        if (!CODE_FIELDS.includes(spec.field)) return null;
+        state = CODE_PIN(spec.selector, spec.field, frameURL, topURL, false, false, false, false, true, shadowRootOf);
       }
     } catch {
       state = null;

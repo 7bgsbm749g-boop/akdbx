@@ -1003,18 +1003,22 @@ class NativeCodeSession:
 
 
 def test_each_sms_route_spends_only_its_own_token_once(device_file, tmp_path, monkeypatch):
-    """Native, Android, DOM and window tokens each fill once through their owner; replays and
-    tokens from another route or mode are spent, refused and leave the code in the inbox."""
+    """Native, Android, CDP (dom), extension and window tokens each fill once through their owner;
+    replays and tokens from another route or mode are spent, refused and leave the code in the inbox."""
     import secrets
     from types import SimpleNamespace
+    from akdbx.extension_route import DELIVERY as EXTENSION_DELIVERY
     from akdbx.native_fields import NativePin
     from akdbx.sms import Message, SmsInbox
+    from test_extension_route import Document, attach
     from test_sms import call, x11_target
     broker, _ = app_broker(device_file)
     broker.sms = SmsInbox(tmp_path / 'state/sms.json', clock=broker.clock)
     broker.unlock_link = SimpleNamespace(origin='https://unlock.example')
     site = 'https://example.com/challenge'
     sessions, dom_fills, dom_closed = [], [], []
+    # A paired extension (a synthetic browser model) holds the challenge page.
+    channel, extension = attach(broker, {5: [Document('TOP', site)]})
 
     def native_target(kind='code'):
         token, session = secrets.token_hex(32), NativeCodeSession()
@@ -1024,14 +1028,31 @@ def test_each_sms_route_spends_only_its_own_token_once(device_file, tmp_path, mo
                                               'one-time-code' if kind == 'code' else None, broker.clock() + 60)
         return token
 
+    # The CDP manager sits inside the routed code targets, beside the extension route.
+    cdp = broker.code_targets.cdp
+
     def dom_target():
         token = secrets.token_hex(32)
-        broker.code_targets.pins[token] = dict(cdp=None, field='one-time-code', expires=broker.clock() + 60)
+        cdp.pins[token] = dict(cdp=None, field='one-time-code', expires=broker.clock() + 60)
         return token
 
-    monkeypatch.setattr(broker.code_targets, 'fill', lambda pin, value, field, ready, deadline:
-                        dom_fills.append(value) or dict(ok=True, filled=field, code_delivery='cdp-code-element-v1'))
-    monkeypatch.setattr(broker.code_targets, '_close', dom_closed.append)
+    def dom_fill(pin, value, field, ready, deadline=None, *, notify_page=False):
+        assert notify_page is False  # A code fill never notifies the page.
+        dom_fills.append(value)
+        return dict(ok=True, filled=field, code_delivery='cdp-code-element-v1')
+
+    monkeypatch.setattr(cdp, 'fill', dom_fill)
+    monkeypatch.setattr(cdp, '_close', dom_closed.append)
+
+    def extension_target(field='one-time-code', kind='code'):
+        request = dict(action='pin-code-target', sms_protocol=1, page_id=f'{channel.id}.5', frame_id='TOP',
+                       top_url=site, frame_url=site, selector='#otp', field=field, route='extension')
+        if kind == 'identity':
+            request = dict(action='pin-identity-target', identity_protocol=1, page_id=f'{channel.id}.5',
+                           frame_id='TOP', top_url=site, selector='#given', field='given-name', route='extension')
+        target = broker.dispatch(request)
+        assert target['ok'], target
+        return target['target']
 
     def android_target(mode='sms', **extra):
         return pin(broker, mode=mode, field='21', app_site='https://example.com', **extra)['target']
@@ -1055,12 +1076,15 @@ def test_each_sms_route_spends_only_its_own_token_once(device_file, tmp_path, mo
 
     def delivered():
         return dict(native=[w for s in sessions for w in s.writes], android=len(fill_requests()),
-                    dom=list(dom_fills), window=[e for e in broker.typer.events if e[0] == 'type'])
+                    dom=list(dom_fills), extension=[f['value'] for f in extension.filled],
+                    window=[e for e in broker.typer.events if e[0] == 'type'])
 
-    makers = dict(native=native_target, android=android_target, dom=dom_target, window=lambda: x11_target(broker))
+    makers = dict(native=native_target, android=android_target, dom=dom_target, extension=extension_target,
+                  window=lambda: x11_target(broker))
     receipts = dict(native=dict(code_delivery='native-field-v1'), android=dict(target_delivery=DELIVERY),
-                    dom=dict(code_delivery='cdp-code-element-v1'), window=dict(target_delivery='x11-send-event-v1'))
-    expected = dict(native=[], android=0, dom=[], window=[])
+                    dom=dict(code_delivery='cdp-code-element-v1'), extension=dict(code_delivery=EXTENSION_DELIVERY),
+                    window=dict(target_delivery='x11-send-event-v1'))
+    expected = dict(native=[], android=0, dom=[], extension=[], window=[])
     for route, make in makers.items():
         token = make()
         result, message_id, code = fill(token)
@@ -1076,7 +1100,8 @@ def test_each_sms_route_spends_only_its_own_token_once(device_file, tmp_path, mo
         assert not result['ok'] and message_id in inbox(), route
         assert delivered() == expected, route
     assert all(s.closed for s in sessions) and len(dom_closed) == 1
-    assert not broker.native.pins and not broker.code_targets.pins and not broker.android._pins
+    assert not broker.native.pins and not cdp.pins and not broker.android._pins
+    assert not broker.extension.pins and not extension.pins
 
     # A token from another route or mode is spent by its owner, refused, and cannot be reused.
     wrong = [
@@ -1087,6 +1112,8 @@ def test_each_sms_route_spends_only_its_own_token_once(device_file, tmp_path, mo
         (android_target(), {'target_protocol': 2}),
         (android_target(), {'target_url': 'https://other.example/'}),
         (android_target(), {'target_url': None}),
+        (extension_target(kind='identity'), {}),  # extension pin of another kind
+        (extension_target(field='webhook-url'), {}),  # extension code pin for a webhook URL
     ]
     for token, extra in wrong:
         result, message_id, _ = fill(token, **extra)
@@ -1103,6 +1130,7 @@ def test_each_sms_route_spends_only_its_own_token_once(device_file, tmp_path, mo
     assert not result['ok'] and message_id in inbox()
     assert delivered() == expected
     assert all(s.closed for s in sessions) and not broker.native.pins and not broker.android._pins
+    assert not broker.extension.pins and not extension.pins
 
 
 @pytest.mark.parametrize('case', ['filled', 'wrong-site', 'unknown-message', 'add-source'])

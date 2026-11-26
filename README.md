@@ -830,7 +830,7 @@ akdbx sms-add-source iphone --kind shortcut            # private setup page for 
 akdbx sms-add-source twilio-us --kind twilio --target PIN   # type the URL into a pinned console field
 akdbx sms-sources                                      # names, kinds, last text; never tokens
 akdbx sms-wait --recent 120 --timeout 120              # masked previews of received codes
-akdbx pin-code-target --page-id P --frame-id F --top-url URL --frame-url URL --selector '#code'
+akdbx pin-code-target --page-id P --frame-id F --top-url URL --frame-url URL --selector '#code' [--route extension]
 akdbx fill-sms-code MESSAGE_ID --target PIN            # fills the code; returns no code
 akdbx sms-remove-source iphone
 akdbx subscribe-sms --source iphone --recent 120 --webhook-url-file FILE  # one-shot event for the next code
@@ -856,7 +856,10 @@ keeps that code and the masked preview in memory for 10 minutes, and drops
 every other text at once. Each code fills once; a fill that never started
 returns it to the inbox. `pin-code-target` pins one focused, visible, enabled
 `text`, `tel`, `number` or `password` input on an exact HTTPS page (the
-card transport's same-origin, hit-tested DOM guards, CDP route). For six
+card transport's same-origin, hit-tested DOM guards). It uses the CDP route
+or, with `--route extension` (fill extension 0.13.0+, `extension_code_protocol: 1`),
+the paired browser extension, which applies the same checks and is the page
+route on macOS. For six
 one-digit boxes, `fill-sms-code` also takes a `pin-target` token (on Linux, an X11 or XWayland window; on Windows, an HWND) with
 `--target-url`, or `--target-url-file` for a challenge URL that holds a token.
 For a native app, use `pin-native-target --mode code` and the same
@@ -1001,7 +1004,7 @@ akdbx capture-totp --qr --target TARGET --handle HANDLE --title T --username U -
 ```
 
 The browser decodes the `<img>`, `<canvas>` or inline `<svg>` itself with the
-bundled jsQR (the CDP pin's isolated world, or the fill extension 0.13.0+
+bundled jsQR (the CDP pin's isolated world, or the fill extension 0.14.0+
 content script in Helium, Chrome or Edge; Firefox refuses QR pins for now). The
 key goes only to the vault; pixels and the decoded value never reach the agent,
 a receipt or a log. An image from another origin, no code or two codes, a code

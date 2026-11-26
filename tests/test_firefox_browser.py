@@ -587,3 +587,67 @@ def test_firefox_card_in_clipped_drawer(firefox_lab):
     assert not refused['ok']
     assert not fill_card(firefox_lab, pin)['ok']
     assert field_digest(firefox_lab.driver, 'number') == hashlib.sha256(b'').hexdigest()
+
+
+def test_firefox_sms_code_fills_exact_main_and_child_documents_once(firefox_lab, private_dir):
+    """fill-sms-code through Firefox's own document UUIDs; the code never reaches the agent or the keyboard."""
+    from akdbx.browser_card import failure
+    from akdbx.sms import SmsInbox
+    driver, broker, url = firefox_lab.driver, firefox_lab.broker, firefox_lab.url
+    broker.sms = SmsInbox(private_dir / 'sms' / 'sources.json')
+    token = broker.sms.add_source('iphone', 'shortcut')
+    refused = failure(kind='code')
+
+    def text():
+        assert broker.sms.receive(token, 'Google', 'G-482913 is your Google verification code.') == 'kept'
+        return inbox()[0]
+
+    def inbox():
+        return [m['id'] for m in broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages']]
+
+    def pin(frame, frame_url, selector='#otp'):
+        return broker.dispatch(dict(action='pin-code-target', sms_protocol=1, page_id=listing['page_id'],
+                                    frame_id=frame, top_url=url, frame_url=frame_url, selector=selector,
+                                    field='one-time-code', route='extension'))
+
+    def fill(message, target):
+        return broker.dispatch(dict(action='fill-sms-code', sms_protocol=1, message=message, target=target['target'],
+                                    target_protocol=1, start_deadline=broker.clock() + 4))
+
+    def digest(field):
+        return driver.execute_async_script('const done=arguments[arguments.length-1];digest(arguments[0]).then(done)',
+                                           field)
+    listing = broker.dispatch(dict(action='list-password-frames', password_protocol=1,
+                                   frame_protocol=1, top_url=url, route='extension'))
+    assert listing['ok'], listing
+    top = listing['main_frame_id']
+    child = next(frame['frame_id'] for frame in listing['frames'] if frame['depth'] == 1)
+    for frame in (top, child):
+        frame_url = url
+        if frame == child:
+            element = driver.find_element('id', 'frame')
+            frame_url = element.get_attribute('src')
+            driver.switch_to.frame(element)
+        driver.find_element('id', 'otp').click()
+        assert pin(frame, url + '?other') == refused  # Not this frame's exact URL.
+        target = pin(frame, frame_url)
+        assert target == dict(ok=True, target=target['target'], expires_in=30, field='one-time-code',
+                              code_delivery=DELIVERY)
+        message = text()
+        receipt = fill(message, target)
+        assert receipt == dict(ok=True, filled='one-time-code', code_delivery=DELIVERY)
+        assert digest('otp') == hashlib.sha256(b'482913').hexdigest() and '482913' not in json.dumps(receipt)
+        assert driver.execute_script('return window.keyEvents') == 0
+        # Replay: the text and the pin were each used once.
+        assert fill(message, target) == dict(ok=False, error='unknown or expired SMS message')
+        driver.switch_to.default_content()
+    # A hidden field never pins; a pin of a page that reloaded never fills, and its text stays.
+    assert pin(top, url, '#hidden') == refused
+    driver.find_element('id', 'otp').click()
+    target = pin(top, url)
+    assert target['ok'], target
+    driver.refresh()
+    driver.find_element('id', 'otp').click()
+    message = text()
+    assert fill(message, target) == refused and inbox() == [message]
+    assert digest('otp') == hashlib.sha256(b'').hexdigest()

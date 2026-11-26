@@ -929,7 +929,7 @@ def test_pairing_store_errors_do_not_count_as_failed_attempts():
 
 # ----- install and build -------------------------------------------------------------
 def test_build_fills_the_content_script_from_the_cdp_route(tmp_path):
-    from akdbx import browser_card, browser_password, card_processor
+    from akdbx import browser_card, browser_code, browser_password, card_processor
     built = extension_host.build(tmp_path / 'akdbx-extension', unlock_origin='https://localhost:9443/')
     assert 'AKDBX_TRUSTED_ORIGIN = "https://localhost:9443";' in (built / 'config.js').read_text()
     with pytest.raises(Exception):
@@ -938,7 +938,8 @@ def test_build_fills_the_content_script_from_the_cdp_route(tmp_path):
     assert manifest['key'] == extension_host.EXTENSION_KEY and manifest['permissions'].count('nativeMessaging') == 1
     content = (built / 'content.js').read_text()
     assert '__' + 'PASSWORD_CAPTURE__' not in content
-    for source in (browser_password.CAPTURE, browser_password.FILL, browser_card.PIN_SCRIPT, card_processor.GUARD):
+    for source in (browser_password.CAPTURE, browser_password.FILL, browser_card.PIN_SCRIPT,
+                   browser_code.CODE_PIN_SCRIPT, card_processor.GUARD):
         assert source in content
     # The manifest key determines the fixed extension ID.
     import base64
@@ -1730,7 +1731,7 @@ def test_a_qr_read_pin_is_sealed_as_qr_and_is_for_capture_totp_only(capture_brok
     channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
     extension.secret = QR_URI  # What the extension decoded from the pinned picture.
     status = broker.dispatch(dict(action='ping'))
-    assert status['totp_qr_capture_protocol'] == 1 and status['extension_qr_capture_min_version'] == '0.13.0'
+    assert status['totp_qr_capture_protocol'] == 1 and status['extension_qr_capture_min_version'] == '0.14.0'
     # read_kind is "qr" only, on a read pin only: refused before the browser sees it.
     for extra in (dict(read_kind='text'), dict(read_kind='QR'), dict(read_kind=True)):
         assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE, **extra) == failure()
@@ -1760,7 +1761,7 @@ def test_a_qr_read_pin_is_sealed_as_qr_and_is_for_capture_totp_only(capture_brok
     assert extension.calls.count('read') == 1 and 'JBSWY3DP' not in json.dumps(receipt)
 
 
-@pytest.mark.parametrize('browser, version', [('helium', '0.12.0'), ('firefox', BUILT)])
+@pytest.mark.parametrize('browser, version', [('helium', '0.13.0'), ('firefox', BUILT)])
 def test_an_older_or_firefox_extension_gets_no_qr_read_pin_but_keeps_text_reads(capture_broker, browser, version):
     broker = capture_broker
     extension = FakeExtension({4: [Document('TOP', SECRET_SITE)]})
@@ -1947,3 +1948,169 @@ def test_totp_extension_rejects_unknown_response_fields_without_secret_output(bo
     assert len(extension.filled) == (boundary == 'receipt')
     assert '050471' not in json.dumps(result) and OTP_KEY not in json.dumps(result)
     assert capsys.readouterr() == ('', '') and not caplog.records
+
+
+# ----- SMS verification codes (pin-code-target --route extension) -------------------
+SMS_TEXT = 'G-482913 is your Google verification code.'  # Synthetic only.
+
+
+def sms_broker(tmp_path, now=None):
+    """A broker with one SMS source; its texts arrive through ``sms_message``."""
+    from akdbx.sms import SmsInbox
+    broker = make_broker(now=now)
+    broker.sms = SmsInbox(tmp_path / 'state' / 'sms.json', clock=broker.clock)
+    broker.sms_token = broker.sms.add_source('iphone', 'shortcut')
+    return broker
+
+
+def sms_message(broker, text=SMS_TEXT):
+    assert broker.sms.receive(broker.sms_token, 'Google', text) == 'kept'
+    return broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages'][0]['id']
+
+
+def code_pin(broker, channel, document='TOP', *, tab=5, top=TOP, frame_url=TOP, field='one-time-code', **extra):
+    request = dict(action='pin-code-target', sms_protocol=1, page_id=f'{channel.id}.{tab}', frame_id=document,
+                   top_url=top, frame_url=frame_url, selector='#otp', field=field, route='extension', **extra)
+    if frame_url is None:
+        del request['frame_url']
+    return broker.dispatch(request)
+
+
+def fill_code(broker, message, target):
+    return broker.dispatch(dict(action='fill-sms-code', sms_protocol=1, message=message, target=target,
+                                target_protocol=1, start_deadline=broker.clock() + 4))
+
+
+def inbox(broker):
+    return [m['id'] for m in broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages']]
+
+
+@pytest.mark.parametrize('platform', ['win32', 'darwin', 'linux'])
+def test_an_sms_code_fills_an_extension_pin_once_and_never_returns_the_code(monkeypatch, tmp_path, platform):
+    broker = sms_broker(tmp_path)
+    monkeypatch.setattr(route.sys, 'platform', platform)
+    status = broker.dispatch(dict(action='ping'))
+    assert status['extension_code_protocol'] == 1 and status['extension_code_min_version'] == '0.13.0'
+    # Every desktop platform has a page route for SMS codes; on macOS it is the only one.
+    assert 'extension' in status['sms_fill_routes']
+    if platform == 'darwin':
+        assert status['sms_fill_routes'] == ['extension'] and status['code_browser_configured'] is False
+    channel, extension = attach(broker, {5: [Document('TOP', TOP), Document('SAME', TOP + '/otp', 'TOP')]})
+    for document, frame_url in (('TOP', TOP), ('SAME', TOP + '/otp')):
+        message = sms_message(broker)
+        target = code_pin(broker, channel, document, frame_url=frame_url)
+        assert target == dict(ok=True, target=target['target'], expires_in=30, field='one-time-code',
+                              code_delivery=route.DELIVERY)
+        assert extension.pins[max(extension.pins)] == dict(kind='code', spec=dict(
+            selector='#otp', field='one-time-code', processor=None))
+        receipt = fill_code(broker, message, target['target'])
+        assert receipt == dict(ok=True, filled='one-time-code', code_delivery=route.DELIVERY)
+        assert '482913' not in json.dumps(receipt) and extension.filled[-1] == dict(value='482913')
+        # Replay: the pin and the text were both used once.
+        assert fill_code(broker, message, target['target']) == dict(ok=False, error='unknown or expired SMS message')
+        assert inbox(broker) == []
+    assert len(extension.filled) == 2 and broker.typer.events == [] and not broker.extension.pins
+
+
+def test_an_older_extension_is_never_asked_for_a_code_pin():
+    broker = make_broker()
+    channel, extension = attach(broker, {5: [Document('TOP', TOP)]})
+    channel.version = '0.12.0.7'
+    assert code_pin(broker, channel) == card_failure(kind='code')
+    assert 'pin' not in extension.calls and not broker.extension.pins
+
+
+@pytest.mark.parametrize('case', ['no-frame-url', 'other-frame-url', 'foreign-frame', 'same-site-frame', 'webhook-field',
+                                  'insecure-top', 'slot', 'purpose'])
+def test_a_code_pin_needs_its_exact_frame_url_in_a_frame_of_the_top_origin(case):
+    broker = make_broker()
+    tabs = {5: [Document('TOP', TOP), Document('FOREIGN', 'https://pay.example.net/otp', 'TOP'),
+                Document('SITE', 'https://auth.example.com/otp', 'TOP')],
+            6: [Document('PLAIN', 'http://shop.example.com/checkout')]}
+    channel, extension = attach(broker, tabs)
+    options = {'no-frame-url': dict(frame_url=None), 'other-frame-url': dict(frame_url=TOP + '?other'),
+               'foreign-frame': dict(document='FOREIGN', frame_url='https://pay.example.net/otp'),
+               'same-site-frame': dict(document='SITE', frame_url='https://auth.example.com/otp'),
+               'webhook-field': dict(field='cc-number'),
+               'insecure-top': dict(document='PLAIN', tab=6, top='http://shop.example.com/checkout',
+                                    frame_url='http://shop.example.com/checkout'),
+               'slot': dict(browser_slot='slot1'), 'purpose': dict(field_purpose='one-time-code')}[case]
+    result = code_pin(broker, channel, **options)
+    if case == 'slot':
+        assert result == dict(ok=False, error='browser slot applies only to the cdp route; omit --browser-slot '
+                                              'with --route extension')
+    else:
+        assert result == card_failure(kind='code')
+    # A pin the browser made for a refused request is released at once.
+    assert not broker.extension.pins and not extension.pins
+
+
+def test_a_refused_code_fill_spends_the_pin_and_keeps_the_text(tmp_path):
+    now = [100.0]
+    broker = sms_broker(tmp_path, now)
+    channel, extension = attach(broker, {5: [Document('TOP', TOP)]})
+    message = sms_message(broker)
+    # A pin of another kind: spent and refused, and the text goes back to the inbox.
+    identity = broker.dispatch(dict(action='pin-identity-target', identity_protocol=1, page_id=f'{channel.id}.5',
+                                    frame_id='TOP', top_url=TOP, selector='#given', field='given-name',
+                                    route='extension'))
+    assert identity['ok'] and fill_code(broker, message, identity['target']) == card_failure(kind='code')
+    assert not broker.extension.pins and not extension.pins and inbox(broker) == [message]
+    # A code pin cannot fill another kind of field.
+    target = code_pin(broker, channel)
+    refused = broker.dispatch(dict(action='fill-identity', identity_protocol=1, handle='a' * 64, target=target['target'],
+                                   field='given-name', start_deadline=broker.clock() + 4))
+    assert refused['ok'] is False and not broker.extension.pins and not extension.pins
+    # A webhook-URL pin never takes a code.
+    target = code_pin(broker, channel, field='webhook-url')
+    assert target['ok'] and fill_code(broker, message, target['target']) == card_failure(kind='code')
+    assert not broker.extension.pins and not extension.pins and inbox(broker) == [message]
+    # Expired: the broker refuses before any value leaves it.
+    target = code_pin(broker, channel)
+    now[0] += 30
+    assert fill_code(broker, message, target['target']) == card_failure(kind='code')
+    assert extension.filled == [] and not broker.extension.pins and not extension.pins and inbox(broker) == [message]
+    # The page refused the value (a changed field): not started, so the text stays for a fresh pin.
+    extension.fill_state = 'refused'
+    target = code_pin(broker, channel)
+    assert fill_code(broker, message, target['target']) == card_failure(kind='code')
+    assert inbox(broker) == [message]
+    # An unanswered fill may have changed the field: uncertain, and the text is used up.
+    extension.fill_state = 'uncertain'
+    target = code_pin(broker, channel)
+    assert fill_code(broker, message, target['target']) == card_failure(True, kind='code')
+    assert inbox(broker) == [] and extension.filled == [] and broker.typer.events == []
+
+
+def test_a_webhook_url_goes_into_an_extension_pin_and_never_into_the_receipt(tmp_path):
+    broker = sms_broker(tmp_path)
+    broker.unlock_link = SimpleNamespace(origin='https://box.example.test')
+    channel, extension = attach(broker, {5: [Document('TOP', TOP)]})
+    target = code_pin(broker, channel, field='webhook-url')
+    receipt = broker.dispatch(dict(action='sms-add-source', sms_protocol=1, name='twilio-us', kind='twilio',
+                                   target=target['target'], target_protocol=1, start_deadline=broker.clock() + 4))
+    assert receipt == dict(ok=True, name='twilio-us', kind='twilio', filled='webhook-url',
+                           code_delivery=route.DELIVERY)
+    [value] = extension.filled
+    url = value['value']
+    assert url.startswith('https://box.example.test/sms/in/') and url not in json.dumps(receipt)
+    assert broker.sms.source_for(url.rsplit('/', 1)[1]).name == 'twilio-us'
+    # A code pin never receives a webhook URL.
+    target = code_pin(broker, channel)
+    refused = broker.dispatch(dict(action='sms-add-source', sms_protocol=1, name='other', kind='webhook',
+                                   target=target['target'], target_protocol=1, start_deadline=broker.clock() + 4))
+    assert refused['ok'] is False and len(extension.filled) == 1 and not broker.extension.pins
+
+
+def test_a_code_pin_without_a_route_takes_the_brokers_default_route(monkeypatch):
+    broker = make_broker()
+    channel, extension = attach(broker, {5: [Document('TOP', TOP)]})
+    request = dict(action='pin-code-target', sms_protocol=1, page_id=f'{channel.id}.5', frame_id='TOP', top_url=TOP,
+                   frame_url=TOP, selector='#otp', field='one-time-code')
+    broker.extension.default_route = 'extension'
+    assert broker.dispatch(request)['code_delivery'] == route.DELIVERY
+    broker.extension.default_route = 'cdp'
+    calls = []
+    monkeypatch.setattr(broker.code_targets.cdp, 'pin', lambda r: calls.append(r) or dict(ok=True))
+    broker.dispatch(request)
+    assert calls == [{**{k: v for k, v in request.items() if k != 'sms_protocol'}, 'code_protocol': 1}]
