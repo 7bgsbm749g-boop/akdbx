@@ -28,9 +28,10 @@ class UnixHTTPConnection(HTTPConnection):
         self.sock.connect(self.socket_path)
 
 
-def call(socket_path, method, path, body=None, identity=True, timeout=2):
+def call(socket_path, method, path, body=None, identity=True, timeout=2,
+         content_type="application/x-www-form-urlencoded"):
     connection = UnixHTTPConnection(socket_path, timeout=timeout)
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    headers = {"Content-Type": content_type}
     if identity:
         headers["Tailscale-User-Login"] = (
             identity if isinstance(identity, str) else "owner@example.test"

@@ -1,6 +1,6 @@
 # Automatic authenticator enrollment (0.35.0)
 
-For authenticator setup key operations on Android, see [Android pins and commands](android.md#additional-android-operations-0500).
+For authenticator setup key operations on Android, see [Android pins and commands](android.md#additional-android-operations-0501).
 
 Before using CDP, verify [client isolation](target-fill.md#operator-configuration).
 
