@@ -25,10 +25,17 @@ owner's account and the API secret never leaves the broker:
 - Review can take minutes, so one call works for at most ``CALL_BUDGET``
   seconds and then answers ``state: pending``. The job stays in broker memory
   (no secret in it); the same command with a fresh handle resumes it.
+- Each version also gets a source archive (``source_archive``): the akdbx
+  package that generated the files and BUILD.md, because Mozilla asks for the
+  source of generated code (content.js is filled in from Python modules).
 - The signed file must hold exactly the submitted files plus Mozilla's
   signature files under META-INF/. The broker saves it in its own private
   folder and returns only its path, version, size and SHA-256. The CLI copies
   it to ``--output``.
+
+The add-on ID is fixed (``akdbx@akdbx.org``, which the native host allows), so
+only the AMO account that owns that ID can sign; any other account gets
+AMO's 403 or 409 as a clear refusal.
 """
 from __future__ import annotations
 
@@ -69,14 +76,20 @@ JOB_TTL = 24 * 3600.0      # A job that has not finished by then is dropped.
 TOKEN_LIFETIME = 60        # AMO allows at most 300 seconds.
 MAX_XPI = 8 * 1024 * 1024
 MAX_UNPACKED = 32 * 1024 * 1024
+MAX_SOURCE = 8 * 1024 * 1024
+MAX_VERSION_PAGES = 20     # 50 versions a page, newest first.
 MAX_DUPLICATES = 5         # Versions taken by another deployment of the same account.
 MAX_REDIRECTS = 3
 CLI_TIMEOUT = 150          # The CLI waits this long for one call (CALL_BUDGET plus margin).
 CHILD = Path(__file__).resolve().with_name('amo_https.py')
 UUID = re.compile(r'[0-9a-f]{32}|[0-9a-f-]{36}')
 SIGNATURE_FILE = re.compile(r'META-INF/[A-Za-z0-9._-]{1,64}')
+# Mozilla signs with PKCS#7 and with COSE; a signed file holds at least one complete set.
+SIGNATURE_SETS = ({'META-INF/manifest.mf', 'META-INF/mozilla.sf', 'META-INF/mozilla.rsa'},
+                  {'META-INF/cose.manifest', 'META-INF/cose.sig'})
+SOURCE_SUFFIXES = {'.py', '.js', '.json', '.html', '.css', '.txt', '.dat', '.LICENSE'}
 XPI_NAME = re.compile(r'akdbx-firefox-[0-9.]{5,40}\.xpi')
-STAGES = ('plan', 'upload', 'validation', 'submit', 'review', 'download')
+STAGES = ('plan', 'upload', 'validation', 'submit', 'source', 'review', 'download')
 RESUME = 'run `akdbx extension sign` again with a fresh search handle to resume'
 
 
@@ -101,6 +114,8 @@ class Job:
     upload: str | None = None
     version_id: int | None = None
     submitted: bool = False   # A version create was sent; its outcome may be unknown.
+    listed: int = 0           # The highest sequence of this build seen in AMO's version list so far.
+    list_url: str | None = None  # The next page of that list.
     file_url: str | None = None
     file_hash: str | None = None
     duplicates: int = 0
@@ -183,6 +198,69 @@ def _json(response):
 def _messages(response, hide):
     data = _json(response)
     return _clean('; '.join(_texts(data, [])), hide) if data is not None else ''
+
+
+BUILD_NOTES = '''# Source of the akdbx Firefox add-on {version}
+
+akdbx {package} generated this add-on: https://github.com/7bgsbm749g-boop/akdbx
+(tag v{package}). This archive holds that akdbx package (`akdbx/`), without
+compiled files and without the Android helper binary, which the add-on does
+not use.
+
+- `akdbx/fill_extension/` holds the add-on's files as written. No minifier,
+  bundler or transpiler runs.
+- `content.js` is generated: `akdbx/extension_host.py` (`_content_script`)
+  replaces each `__MARKER__` placeholder in `fill_extension/content.js` with a
+  JavaScript constant from `browser_password.py`, `browser_card.py`,
+  `browser_code.py`, `browser_identity.py`, `card_processor.py` and
+  `password_frames.py`.
+- `manifest.json`: `_manifest_for('firefox', ...)` adds the Firefox fields and
+  the version {version}.
+- `config.js` differs for every deployment: the broker's private-page origin,
+  a random build ID and the version.
+- `jsQR.js` and `jsQR.LICENSE`: jsQR 1.4.0, unmodified
+  (`akdbx/import_assets/VENDOR.txt` names the npm package and its integrity).
+
+Rebuild with Python 3.11 or newer from the release's source package:
+
+    python -m pip install akdbx-{package}.tar.gz
+    akdbx --unlock-origin https://example.invalid extension build --browser firefox --output OUT
+
+Every file in OUT except `config.js` and the manifest version equals this
+add-on's file.
+'''
+
+
+def source_archive(version):
+    """The source that AMO reviewers get for one signed version: this akdbx package and BUILD.md."""
+    from . import __version__
+    package = Path(__file__).resolve().parent
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(zipfile.ZipInfo('BUILD.md', (2020, 1, 1, 0, 0, 0)),
+                         BUILD_NOTES.format(version=version, package=__version__), zipfile.ZIP_DEFLATED)
+        for path in sorted(package.rglob('*')):
+            relative = path.relative_to(package)
+            if (not path.is_file() or path.is_symlink() or '__pycache__' in relative.parts
+                    or path.suffix not in SOURCE_SUFFIXES):
+                continue
+            info = zipfile.ZipInfo('akdbx/' + relative.as_posix(), (2020, 1, 1, 0, 0, 0))
+            archive.writestr(info, path.read_bytes(), zipfile.ZIP_DEFLATED)
+    data = buffer.getvalue()
+    if len(data) > MAX_SOURCE:
+        raise ValueError('the akdbx source archive is larger than 8 MiB')
+    return data
+
+
+def _multipart(fields, name, filename, content_type, data):
+    """A multipart/form-data body: plain fields, then one file."""
+    boundary = 'akdbx-' + secrets.token_hex(16)
+    head = ''.join(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'
+                   for key, value in fields.items())
+    head += (f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; filename="{filename}"\r\n'
+             f'Content-Type: {content_type}\r\n\r\n')
+    return (head.encode('ascii') + data + f'\r\n--{boundary}--\r\n'.encode('ascii'),
+            'multipart/form-data; boundary=' + boundary)
 
 
 class FirefoxSigning:
@@ -322,8 +400,8 @@ class FirefoxSigning:
     def _owner_refusal(self, response, hide):
         detail = _messages(response, hide)
         return SigningError(f'AMO refused add-on ID {FIREFOX_EXTENSION_ID} (HTTP {response["status"]}): another AMO '
-                            'account owns this ID, or this API key cannot manage it'
-                            + (f'. AMO says: {detail}' if detail else '') + '; nothing signed')
+                            'account owns this ID (only that account can sign akdbx), or this API key cannot '
+                            'manage it' + (f'. AMO says: {detail}' if detail else '') + '; nothing signed')
 
     def _advance(self, job, issuer, secret, deadline, hide):
         clock = self.broker.clock
@@ -333,7 +411,8 @@ class FirefoxSigning:
 
         while True:
             if job.stage == 'plan':
-                self._plan(job, issuer, secret, hide)
+                if not room(REQUEST_TIMEOUT) or not self._plan(job, issuer, secret, hide, room):
+                    return self._pending(job)
             elif job.stage == 'upload':
                 if not room(UPLOAD_TIMEOUT):
                     return self._pending(job)
@@ -347,6 +426,10 @@ class FirefoxSigning:
                 if not room(2 * REQUEST_TIMEOUT):
                     return self._pending(job)
                 self._submit(job, issuer, secret, hide)
+            elif job.stage == 'source':
+                if not room(UPLOAD_TIMEOUT):
+                    return self._pending(job)
+                self._source(job, issuer, secret, hide)
             elif job.stage == 'review':
                 if not room(REQUEST_TIMEOUT + REVIEW_POLL):
                     return self._pending(job)
@@ -359,23 +442,42 @@ class FirefoxSigning:
         return dict(ok=True, state='pending', stage=job.stage, addon_id=FIREFOX_EXTENSION_ID,
                     addon_version=job.version, channel=CHANNEL, retry_after=RETRY_AFTER)
 
-    def _plan(self, job, issuer, secret, hide):
-        """Pick the next unused version: AMO's list of this add-on's versions, and this broker's last one."""
+    def _same_api_origin(self, url):
+        api, parts = urlsplit(self.api_base), urlsplit(url)
+        return (parts.scheme == 'https' and parts.hostname is not None and not parts.username and not parts.password
+                and (parts.hostname.lower(), parts.port) == (api.hostname.lower(), api.port))
+
+    def _plan(self, job, issuer, secret, hide, room):
+        """Pick the next unused version from all of AMO's versions of this add-on and this broker's last one.
+
+        False when the call ran out of time; the pages read so far count at the next call.
+        """
         from .extension_host import firefox_signing_files, signed_sequence, signed_version, xpi_bytes
-        response = self._call('GET', f'addons/addon/{FIREFOX_EXTENSION_ID}/versions/?filter=all_with_unlisted'
-                                     '&page_size=50', issuer, secret)
-        used = 0
-        if response['status'] == 200:
+        first = urljoin(self.api_base, f'addons/addon/{FIREFOX_EXTENSION_ID}/versions/?filter=all_with_unlisted'
+                                       '&page_size=50')
+        url, pages = job.list_url or first, 0
+        while url is not None:
+            if pages and not room(REQUEST_TIMEOUT):
+                job.list_url = url
+                return False
+            response = self._call('GET', None, issuer, secret, url=url)
+            pages += 1
+            if response['status'] == 403:
+                raise self._owner_refusal(response, hide)
+            if response['status'] == 404 and url == first:
+                break  # AMO has no add-on with this ID yet; the first signature creates it.
             data = _json(response)
-            results = data.get('results') if isinstance(data, dict) else None
-            for item in results if isinstance(results, list) else []:
+            if response['status'] != 200 or not isinstance(data, dict) or not isinstance(data.get('results'), list):
+                raise SigningError(f'AMO refused the version list (HTTP {response["status"]}); nothing submitted')
+            for item in data['results']:
                 number = signed_sequence(item.get('version')) if isinstance(item, dict) else None
-                used = max(used, number or 0)
-        elif response['status'] == 403:
-            raise self._owner_refusal(response, hide)
-        elif response['status'] != 404:  # 404: AMO has no add-on with this ID yet; the first signature creates it.
-            raise SigningError(f'AMO refused the version list (HTTP {response["status"]}); nothing submitted')
-        job.sequence = max(used, self._last_sequence, job.sequence) + 1
+                job.listed = max(job.listed, number or 0)
+            following = data.get('next')
+            # Pages come from the API's own origin only, so the token never goes elsewhere.
+            url = (following if isinstance(following, str) and self._same_api_origin(following)
+                   and pages < MAX_VERSION_PAGES else None)
+        job.list_url = None
+        job.sequence = max(job.listed, self._last_sequence, job.sequence) + 1
         try:
             job.version = signed_version(job.sequence)
         except ValueError as exc:
@@ -386,16 +488,13 @@ class FirefoxSigning:
         job.upload = job.version_id = job.file_url = job.file_hash = None
         job.submitted = False
         job.stage = 'upload'
+        return True
 
     def _upload(self, job, issuer, secret, hide):
-        boundary = 'akdbx-' + secrets.token_hex(16)
-        name = f'akdbx-firefox-{job.version}.xpi'
-        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="channel"\r\n\r\n{CHANNEL}\r\n'
-                f'--{boundary}\r\nContent-Disposition: form-data; name="upload"; filename="{name}"\r\n'
-                'Content-Type: application/x-xpinstall\r\n\r\n').encode('ascii') + job.xpi + \
-            f'\r\n--{boundary}--\r\n'.encode('ascii')
+        body, content_type = _multipart({'channel': CHANNEL}, 'upload', f'akdbx-firefox-{job.version}.xpi',
+                                        'application/x-xpinstall', job.xpi)
         response = self._call('POST', 'addons/upload/', issuer, secret, body=body, timeout=UPLOAD_TIMEOUT,
-                              content_type='multipart/form-data; boundary=' + boundary)
+                              content_type=content_type)
         data = _json(response)
         if response['status'] not in (200, 201, 202) or not isinstance(data, dict) \
                 or not isinstance(data.get('uuid'), str) or not UUID.fullmatch(data['uuid']):
@@ -430,7 +529,7 @@ class FirefoxSigning:
             data = _json(response)
             if response['status'] == 200 and isinstance(data, dict) and type(data.get('id')) is int \
                     and data.get('version') == job.version:
-                job.version_id, job.stage = data['id'], 'review'
+                job.version_id, job.stage = data['id'], 'source'
                 return
         job.submitted = True
         response = self._call('PUT', f'addons/addon/{FIREFOX_EXTENSION_ID}/', issuer, secret,
@@ -439,7 +538,7 @@ class FirefoxSigning:
         status, data = response['status'], _json(response)
         if status in (200, 201, 202) and isinstance(data, dict) and isinstance(data.get('version'), dict) \
                 and type(data['version'].get('id')) is int:
-            job.version_id, job.stage = data['version']['id'], 'review'
+            job.version_id, job.stage = data['version']['id'], 'source'
             return
         detail = _messages(response, hide)
         if status == 409 and ('already exists' in detail or 'uploaded before and deleted' in detail):
@@ -453,6 +552,23 @@ class FirefoxSigning:
             raise self._owner_refusal(response, hide)
         raise SigningError(f'AMO refused version {job.version} (HTTP {status})' + (f': {detail}' if detail else '')
                            + '; nothing signed')
+
+    def _source(self, job, issuer, secret, hide):
+        """Attach the source archive to the new version, as AMO asks for generated code (as web-ext does)."""
+        try:
+            data = source_archive(job.version)
+        except (OSError, ValueError) as exc:
+            raise SigningError(f'the akdbx source archive could not be built ({exc}); the signing job is kept; '
+                               + RESUME, keep=True) from None
+        body, content_type = _multipart({}, 'source', f'akdbx-source-{job.version}.zip', 'application/zip', data)
+        response = self._call('PATCH', f'addons/addon/{FIREFOX_EXTENSION_ID}/versions/{job.version_id}/', issuer,
+                              secret, body=body, content_type=content_type, timeout=UPLOAD_TIMEOUT)
+        if response['status'] not in (200, 201, 202):
+            detail = _messages(response, hide)
+            raise SigningError(f'AMO refused the source archive of {job.version} (HTTP {response["status"]})'
+                               + (f': {detail}' if detail else '') + '; the signing job is kept; ' + RESUME,
+                               keep=True)
+        job.stage = 'review'
 
     def _reviewed(self, job, issuer, secret, hide):
         response = self._call('GET', f'addons/addon/{FIREFOX_EXTENSION_ID}/versions/{job.version_id}/',
@@ -519,8 +635,9 @@ class FirefoxSigning:
                 infos = archive.infolist()
                 names = [info.filename for info in infos]
                 if len(names) != len(set(names)) or set(job.files) - set(names) \
-                        or sum(info.file_size for info in infos) > MAX_UNPACKED:
-                    raise refused
+                        or sum(info.file_size for info in infos) > MAX_UNPACKED \
+                        or not any(signature <= set(names) for signature in SIGNATURE_SETS):
+                    raise refused  # An unsigned copy of the upload is refused too.
                 for info in infos:
                     if info.filename in job.files:
                         if archive.read(info) != job.files[info.filename]:

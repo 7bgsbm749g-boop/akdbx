@@ -132,7 +132,9 @@ class Amo:
         self.validation_errors = []
         self.reject = False
         self.tamper = False
+        self.unsigned = False          # Serve the upload itself as the "signed" file.
         self.redirect = None           # Another origin that serves the signed file.
+        self.next_host = None          # Another host name in the version list's next links.
         self.jtis = set()
         self.claims = []
         self.log = []                  # (method, path, has_token)
@@ -171,6 +173,8 @@ class Amo:
                 and fresh and 0 < claims['exp'] - claims['iat'] <= 300 and claims['iat'] <= now + 5 < claims['exp'] + 5)
 
     def signed(self, item):
+        if self.unsigned:
+            return item['xpi']
         with zipfile.ZipFile(io.BytesIO(item['xpi'])) as source:
             files = {name: source.read(name) for name in source.namelist()}
         if self.tamper:
@@ -216,19 +220,33 @@ class Amo:
                 if path.startswith('/api/v5/addons/upload/') and method == 'GET':
                     return self.upload_status(path.split('/')[-2])
                 if path == base + 'versions/' and method == 'GET':
-                    if parse_qs(parts.query).get('filter') != ['all_with_unlisted']:
+                    query = parse_qs(parts.query)
+                    if query.get('filter') != ['all_with_unlisted'] or query.get('page_size') != ['50']:
                         return self.reply(400, {'detail': 'filter'})
                     if amo.owner == 'other-listed':
                         return self.reply(403, {'detail': 'You do not have permission to perform this action.'})
                     if amo.owner == 'other-hidden' or not amo.exists:
                         return self.reply(404, {'detail': 'Not found.'})
+                    # AMO lists newest first, 50 a page (page_size's maximum), with an absolute next link.
                     listed = sorted(((v['id'], k) for k, v in amo.versions.items() if not v.get('deleted')), reverse=True)
-                    return self.reply(200, {'count': len(listed), 'next': None, 'previous': None,
-                                            'results': [{'id': i, 'version': k} for i, k in listed]})
+                    page = int(query.get('page', ['1'])[0])
+                    more = len(listed) > 50 * page
+                    host = amo.next_host or '127.0.0.1'
+                    following = (f'https://{host}:{amo.server.server_port}{path}?filter=all_with_unlisted&page_size=50'
+                                 f'&page={page + 1}' if more else None)
+                    return self.reply(200, {'count': len(listed), 'next': following, 'previous': None, 'results': [
+                        {'id': i, 'version': k} for i, k in listed[50 * (page - 1):50 * page]]})
                 if path.startswith(base + 'versions/') and method == 'GET':
                     return self.version(path.split('/')[-2])
                 if path == base and method == 'PUT':
                     return self.create(json.loads(data))
+                if path.startswith(base + 'versions/') and method == 'PATCH':
+                    fields = self.form(data)
+                    item = next((v for v in amo.versions.values() if str(v['id']) == path.split('/')[-2]), None)
+                    if item is None or set(fields) != {'source'}:
+                        return self.reply(400, {'source': ['Invalid source.']})
+                    item['source'] = fields['source']
+                    return self.reply(200, {'id': item['id'], 'source': amo.origin + '/source.zip'})
                 if path.startswith('/files/') and method == 'GET':
                     if amo.redirect is not None and not path.endswith('/direct.xpi'):
                         return self.reply(302, {}, headers=[('Location', amo.redirect + path)])
@@ -236,7 +254,7 @@ class Amo:
                     return self.reply(200, body=amo.signed(item))
                 return self.reply(404, {'detail': 'Not found.'})
 
-            def upload(self, data):
+            def form(self, data):
                 kind, _, boundary = self.headers['Content-Type'].partition('; boundary=')
                 fields = {}
                 for part in data.split(b'--' + boundary.encode())[1:-1] if kind == 'multipart/form-data' else []:
@@ -244,6 +262,10 @@ class Amo:
                     name = re.search(rb'name="([a-z]+)"', head)
                     if name and body.endswith(b'\r\n'):
                         fields[name.group(1).decode()] = body[:-2]
+                return fields
+
+            def upload(self, data):
+                fields = self.form(data)
                 if set(fields) != {'channel', 'upload'} or fields['channel'] != b'unlisted':
                     return self.reply(400, {'channel': ['Invalid channel.']})
                 with zipfile.ZipFile(io.BytesIO(fields['upload'])) as archive:
@@ -314,6 +336,9 @@ class Amo:
 
             def do_PUT(self):
                 self.route('PUT')
+
+            def do_PATCH(self):
+                self.route('PATCH')
 
         return Handler
 
@@ -487,6 +512,17 @@ def test_sign_submits_the_brokers_own_build_unlisted_and_saves_the_signed_file(l
     paths = [(method, path) for method, path, _ in lab.amo.log]
     assert paths[0] == ('GET', f'/api/v5/addons/addon/{GUID}/versions/')
     assert paths[1] == ('POST', '/api/v5/addons/upload/') and ('PUT', f'/api/v5/addons/addon/{GUID}/') in paths
+    put = paths.index(('PUT', f'/api/v5/addons/addon/{GUID}/'))
+    assert paths[put + 1][0] == 'PATCH'  # The source archive goes to the new version before review.
+    source = zipfile.ZipFile(io.BytesIO(lab.amo.versions[version]['source']))
+    names = source.namelist()
+    assert 'BUILD.md' in names and 'akdbx/extension_host.py' in names and 'akdbx/fill_extension/content.js' in names
+    assert 'akdbx/import_assets/jsQR.js' in names and 'akdbx/browser_password.py' in names
+    assert not any('__pycache__' in n or n.endswith(('.pyc', '.dex')) for n in names)
+    assert source.read('akdbx/fill_extension/content.js') == (
+        Path(firefox_signing.__file__).with_name('fill_extension') / 'content.js').read_bytes()
+    notes = source.read('BUILD.md').decode()
+    assert version in notes and 'extension build --browser firefox' in notes and '_content_script' in notes
     assert paths[-1][1].startswith('/files/') and all(has for _, _, has in lab.amo.log)
     assert all(c['exp'] - c['iat'] == 60 and c['iss'] == ISSUER for c in lab.amo.claims)
     assert len({c['jti'] for c in lab.amo.claims}) == len(lab.amo.claims)
@@ -510,6 +546,22 @@ def test_the_next_version_follows_amo_and_skips_versions_another_deployment_took
     assert receipt['ok'] and receipt['addon_version'] == extension_host.signed_version(7), receipt
     assert [u['version'] for u in lab.amo.uploads.values()] == [extension_host.signed_version(n) for n in (5, 6, 7)]
     assert_no_secret(lab, receipt)
+
+
+def test_the_version_list_is_read_past_its_first_page_from_the_api_origin_only(lab):
+    lab.amo.exists = True
+    lab.amo.versions = {extension_host.signed_version(n): dict(id=n, xpi=b'', polls=0) for n in (1, 2, 3)}
+    lab.amo.versions.update({f'0.9.{n}': dict(id=10 + n, xpi=b'', polls=0) for n in range(60)})  # Newer, other builds.
+    receipt = sign(lab)
+    assert receipt['ok'] and receipt['addon_version'] == extension_host.signed_version(4), receipt
+    assert len(lab.amo.uploads) == 1  # No version taken: the second page named sequences 1 to 3.
+    assert sum(1 for m, path, _ in lab.amo.log if path.endswith('/versions/') and m == 'GET') == 2
+    # A next link to another origin is not followed: the token stays on the API's origin.
+    lab.amo.log.clear()
+    lab.amo.next_host = 'localhost'
+    receipt = sign(lab)
+    assert receipt['ok'], receipt
+    assert sum(1 for m, path, _ in lab.amo.log if path.endswith('/versions/') and m == 'GET') == 1
 
 
 def test_slow_review_answers_pending_and_a_fresh_handle_resumes_the_same_job(lab, monkeypatch):
@@ -559,6 +611,24 @@ def test_an_interrupted_version_create_is_looked_up_before_it_is_sent_again(lab)
     done = sign(lab)
     assert done['ok'] and done['addon_version'] == extension_host.signed_version(1), done
     assert len(lab.amo.versions) == 1 and sum(1 for m, *_ in lab.amo.log if m == 'PUT') == 1
+    assert lab.amo.versions[done['addon_version']].get('source')  # The resumed job still sent its source.
+
+
+def test_a_refused_source_archive_keeps_the_job_and_resumes(lab):
+    real = lab.broker.firefox_signing.runner
+    refused = []
+
+    def refuse_first_patch(request, timeout):
+        if request['method'] == 'PATCH' and not refused:
+            refused.append(True)
+            return dict(status=400, location=None, body=b'{"source": ["Unsupported file type."]}')
+        return real(request, timeout)
+    lab.broker.firefox_signing.runner = refuse_first_patch
+    receipt = sign(lab)
+    assert receipt['resumable'] is True and 'refused the source archive' in receipt['error']
+    assert 'Unsupported file type.' in receipt['error']
+    done = sign(lab)
+    assert done['ok'] and len(lab.amo.uploads) == 1, done
 
 
 @pytest.mark.parametrize('title, error', [
@@ -633,6 +703,10 @@ def test_amo_refusals_are_clear_and_never_show_the_key(lab):
     amo.tamper = True
     receipt = sign(lab)
     assert not receipt['ok'] and 'does not match the submitted build' in receipt['error']
+    amo.tamper, amo.unsigned = False, True  # The submitted files with no Mozilla signature.
+    receipt = sign(lab)
+    assert not receipt['ok'] and 'does not match the submitted build' in receipt['error']
+    amo.unsigned = False
     assert not lab.folder.exists() or not any(lab.folder.iterdir())
     assert_no_secret(lab, receipt)
 

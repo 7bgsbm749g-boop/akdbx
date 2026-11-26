@@ -763,7 +763,8 @@ screenshot, snapshot, read, select or copy that page. Both routes from 0.32.0
 channel) sign the broker's own Firefox build for a permanent install. HANDLE
 is a fresh search handle of the owner's AMO API key entry on
 `https://addons.mozilla.org` with the captured protected fields `jwt_issuer`
-and `jwt_secret`; the broker keeps them. It prints only the XPI path,
+and `jwt_secret`; the broker keeps them. Only the AMO account that owns the
+add-on ID `akdbx@akdbx.org` can sign. It prints only the XPI path,
 version, size and SHA-256. `state: "pending"` means AMO is still reviewing:
 run it again with a fresh handle, which resumes the job. Never pass AMO
 credentials on a command line or in the environment

@@ -80,7 +80,8 @@ own version, because AMO accepts each version only once:
 fourth part) + a sequence number 1–999, for example `0.15.1.111058001`. The
 broker reads the contents from N and shows such an add-on as `"current"`;
 another build's signed version is `"mismatch"`. A broker or host from 0.52.0
-or earlier refuses the nine-digit part.
+or earlier refuses the nine-digit part. The popup footer and the settings
+page show the nine-digit version from fill extension 0.15.2.
 
 An extension built by akdbx 0.21.2 or earlier reports no version. It still
 attaches and works, with `version: null` and `version_status: "outdated"`.
@@ -625,8 +626,9 @@ the broker needs; `firefox_signing_channel` is `unlisted`.
    `akdbx extension sign --output FOLDER HANDLE`. The broker builds the Firefox
    files from its own akdbx (callers cannot add files), uses its own
    private-page origin, picks the next free add-on version, submits it on the
-   unlisted channel and checks that the signed XPI holds exactly the
-   submitted files plus `META-INF/` signatures. The result has `state:
+   unlisted channel with a source archive of the akdbx package, and checks
+   that the signed XPI holds exactly the submitted files plus Mozilla's
+   `META-INF/` signatures. The result has `state:
    "signed"`, `addon_version`, `xpi` (the copy in FOLDER), `broker_xpi`,
    `size`, `sha256` and `trusted_origin`.
 3. `state: "pending"` (with `stage` and `retry_after`): AMO is still
@@ -640,11 +642,13 @@ the broker needs; `firefox_signing_channel` is `unlisted`.
    `"outdated"` or `"mismatch"`), sign again and install the new file: a
    signed add-on cannot be rebuilt in place.
 
-Refusals name the cause: an entry on another origin or without both
-protected fields, a locked vault, no private page, AMO HTTP 401 (key or
-clock), HTTP 403/409 (another account owns `akdbx@akdbx.org`), validation
-errors (AMO's first messages), a rejected version, or a download that is not
-the submitted build. See [Firefox setup](../../../docs/firefox.md#permanent-install-a-mozilla-signed-xpi-after-0520).
+Only the AMO account that owns the fixed add-on ID `akdbx@akdbx.org` can
+sign; another account's key gets HTTP 403 or 409. Refusals name the cause:
+an entry on another origin or without both protected fields, a locked vault,
+no private page, AMO HTTP 401 (key or clock), HTTP 403/409 (another account
+owns `akdbx@akdbx.org`), validation errors (AMO's first messages), a refused
+source archive (job kept), a rejected version, or a download that is not the
+signed submitted build. See [Firefox setup](../../../docs/firefox.md#permanent-install-a-mozilla-signed-xpi-after-0520).
 
 ### Host launcher (0.31.1+)
 

@@ -310,7 +310,8 @@ with `extension build --browser firefox --output FOLDER` (0.47.0+).
 After 0.52.0, `akdbx extension sign --output FOLDER HANDLE` has Mozilla sign
 the broker's own Firefox build (AMO, unlisted channel) for a permanent
 install. HANDLE selects the owner's AMO API key entry, whose `jwt_issuer` and
-`jwt_secret` fields stay inside the broker. See [Firefox setup](docs/firefox.md)
+`jwt_secret` fields stay inside the broker; only the AMO account that owns
+the add-on ID `akdbx@akdbx.org` can sign. See [Firefox setup](docs/firefox.md)
 for temporary add-on loading, signing, permanent installation and updates,
 and native host locations.
 

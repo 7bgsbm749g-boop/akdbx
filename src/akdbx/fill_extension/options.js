@@ -39,7 +39,7 @@ function statusText({on, granted, denied}) {
 
 function versionText(manifest) {
   const version = manifest && typeof manifest.version === "string" ? manifest.version : "";
-  return /^\d{1,5}\.\d{1,5}\.\d{1,5}(\.\d{1,5})?$/.test(version) ? "akdbx extension " + version : "akdbx extension";
+  return /^\d{1,5}\.\d{1,5}\.\d{1,5}(\.\d{1,9})?$/.test(version) ? "akdbx extension " + version : "akdbx extension";
 }
 
 function unreadable() {
@@ -90,4 +90,4 @@ async function main() {
 if (typeof document !== "undefined" && typeof akdbxBrowser !== "undefined" && akdbxBrowser.runtime) {
   main().catch(unreadable);
 }
-if (typeof module !== "undefined") module.exports = {setEnhanced, currentState, statusText, readSettings, SETTINGS_KEY, ALL_SITES};
+if (typeof module !== "undefined") module.exports = {setEnhanced, currentState, statusText, readSettings, versionText, SETTINGS_KEY, ALL_SITES};

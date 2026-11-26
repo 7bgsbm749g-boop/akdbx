@@ -24,7 +24,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Requ
 
 MAX_INPUT = 16 * 1024 * 1024
 MAX_BODY = 8 * 1024 * 1024
-METHODS = ('GET', 'POST', 'PUT')
+METHODS = ('GET', 'POST', 'PUT', 'PATCH')
 USER_AGENT = 'akdbx-extension-sign/1'
 
 

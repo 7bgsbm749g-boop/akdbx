@@ -393,9 +393,12 @@ job, for the reason given. Only `test_relay_integration.py` and `test_android_em
   codes and messages (taken versions, another account's add-on ID, validation
   errors, rejection, a slow review that answers `pending` and resumes, a lost
   answer, a tampered download, a redirect that must get no token). No CI job
-  calls Mozilla. The `firefox-extension-browser` job loads the exact archive
+  calls Mozilla. The fake also takes the source archive (PATCH) and reads
+  the version list across pages. The `firefox-extension-browser` job loads the exact archive
   that the command uploads, with its nine-digit signed-build version, into
   real Firefox and fills through it, and Mozilla's `addons-linter` 10.16.0
   must find no error in it. The first real signature happens on the owner's
   AMO account. Firefox's check of Mozilla's signature itself is not tested in
-  CI.
+  CI. The add-on ID is fixed (`akdbx@akdbx.org`), so only the AMO account
+  that owns it can sign (✗ not built: signing under another account's own
+  add-on ID).
