@@ -127,7 +127,9 @@ class SecretCaptures:
             try:
                 # An extension read pin, else a CDP one; either way the token is used up.
                 token = request.get('target')
-                pin = broker.native.take(token, 'read') if hasattr(broker, 'native') else None
+                pin = broker.android.take(token) if hasattr(broker, 'android') else None
+                if pin is None:
+                    pin = broker.native.take(token, 'read') if hasattr(broker, 'native') else None
                 if pin is None:
                     pin = broker.extension.take(token, 'read') if hasattr(broker, 'extension') else None
                 if pin is None:
@@ -136,6 +138,8 @@ class SecretCaptures:
                 return dict(ok=False, error=REFUSED)
             from .extension_route import ExtensionPin, CAPTURE_DELIVERY as EXTENSION_CAPTURE_DELIVERY
             from .native_fields import NativePin, READ_DELIVERY as NATIVE_READ_DELIVERY
+            from .android_route import AndroidPin, READ_DELIVERY as ANDROID_READ_DELIVERY
+            android = isinstance(pin, AndroidPin)
             extension = isinstance(pin, ExtensionPin)
             native = isinstance(pin, NativePin)
             if pin.mode != 'read':
@@ -194,13 +198,13 @@ class SecretCaptures:
                 return dict(ok=False, error='invalid secret record metadata; nothing saved')
             started = lambda: ready() and broker.clock() < deadline
             try:
-                value = (broker.native if native else broker.extension if extension else broker.passwords).read(pin, origins, started, deadline)
+                value = (broker.android if android else broker.native if native else broker.extension if extension else broker.passwords).read(pin, origins, started, deadline)
             except Exception:
                 return dict(ok=False, error=REFUSED)
             if not valid_value(value):
                 return dict(ok=False, error=REFUSED)
             return self._save(entry, values, field, value, create,
-                              NATIVE_READ_DELIVERY if native else EXTENSION_CAPTURE_DELIVERY if extension else CAPTURE_DELIVERY)
+                              ANDROID_READ_DELIVERY if android else NATIVE_READ_DELIVERY if native else EXTENSION_CAPTURE_DELIVERY if extension else CAPTURE_DELIVERY)
         finally:
             if pin is not None:
                 try:

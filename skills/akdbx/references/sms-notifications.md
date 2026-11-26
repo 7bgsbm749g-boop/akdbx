@@ -72,7 +72,9 @@ repeat the event with the same `event_id`: handle it once. Always check
 `sms-wait` before you fill: texts expire after ten minutes and fill once.
 After notification, choose a supported destination from `sms_fill_routes`.
 Pages use a fresh `pin-code-target` pin (`--route extension` in the paired
-browser); native apps use a fresh `pin-native-target --mode code` pin.
+browser); native apps use a fresh `pin-native-target --mode code` pin. An
+Android device uses a fresh `akdbx android pin --mode sms` pin (see
+`android_fill_modes`).
 
 ## Restarts
 

@@ -507,6 +507,8 @@ class FakeCDP:
         self.closed = False
         self.objects = {}
         self.scene = None
+        self.hit_node = 7
+        self.covered_x = None
 
     def call(self, method, params=None, session=None, *, timeout=3):
         self.calls.append((method, params))
@@ -515,6 +517,15 @@ class FakeCDP:
                                     {'targetId': 'T2', 'type': 'page', 'url': 'https://evil.example/'}]}
         if method == 'Target.attachToTarget':
             return {'sessionId': 'S-' + params['targetId']}
+        if method == 'DOMDebugger.getEventListeners':
+            return {'listeners': []}
+        if method == 'DOM.describeNode':
+            return {'node': {'backendNodeId': 7}}
+        if method == 'DOM.getNodeForLocation':
+            assert params['ignorePointerEventsNone'] is True
+            return {'backendNodeId': 8 if params['x'] == self.covered_x else self.hit_node, 'frameId': 'F1'}
+        if method == 'Runtime.releaseObject':
+            return {}
         if method == 'Page.getFrameTree':
             return {'frameTree': {'frame': {'id': 'F1', 'url': self.url}}}
         if method == 'Page.createIsolatedWorld':
@@ -523,10 +534,14 @@ class FakeCDP:
             expression = params['expression']
             if expression == android_route.PAGE_STATE:
                 return {'result': {'value': {'url': self.url, 'shown': self.shown, 'secure': True}}}
+            if expression == 'this':
+                return {'result': {'objectId': 'main-window'}}
             if expression == 'performance.now()':
                 return {'result': {'value': 1000.0}}
             if expression == android_route.QUICK_STATE:
                 return {'result': {'value': self.shown}}
+            if expression.startswith(android_route.KEY_PROOF):
+                return {'result': {'type': 'object', 'objectId': 'STRUCTURED'}}
             if expression.startswith(android_route.PAGE_FIELD):
                 selector = json.loads('[' + expression[len(android_route.PAGE_FIELD) + 1:-1] + ']')[0]
                 if selector == '#missing':
@@ -538,11 +553,24 @@ class FakeCDP:
                 return {'result': {'value': [{'selector': '#app_totp', 'type': 'text', 'focused': True}]}}
         if method == 'Runtime.callFunctionOn':
             declaration = params['functionDeclaration']
+            if 'this.node()' in declaration:
+                return {'result': {'objectId': 'field'}}
+            if 'return performance.now()' in declaration:
+                return {'result': {'value': 1000.0}}
+            if 'this.points()' in declaration:
+                return {'result': {'value': [{'rootX': 1, 'rootY': 20}, {'rootX': 12, 'rootY': 20},
+                                              {'rootX': 23, 'rootY': 20}]}}
+            if 'this.geometry()' in declaration:
+                return {'result': {'value': {'rootX': 12, 'rootY': 20}}}
+            if 'this.write(' in declaration:
+                return {'result': {'value': 'filled'}}
             if 'this.focused' in declaration:
                 return {'result': {'value': self.focused}}
+            if 'this.prepare()' in declaration:
+                return {'result': {'value': True}}
             if 'this.prepare' in declaration:
                 return {'result': {'value': [self.max_length, self.input_type]}}
-            if 'this.read' in declaration:
+            if 'this.read' in declaration or 'this.proof()' in declaration:
                 if self.hostile:
                     # A peer that is not Chrome: it never saw the keys and can only guess.
                     return {'result': {'value': True if len(self.calls) % 2 else 'a' * 16}}
@@ -816,16 +844,44 @@ def caps():
     return {'ok': True, 'android_fill_protocol': 1, 'android_fill_delivery': DELIVERY}
 
 
-def run_cli(argv, responses, capsys):
+def run_cli(argv, responses, capsys, *, capabilities=None):
     from akdbx.cli import parser
     args = parser().parse_args(argv)
     sent = []
 
     def request(payload, timeout=None):
         sent.append(payload)
-        return caps() if payload['action'] == 'ping' else responses.pop(0)
+        if payload['action'] == 'ping':
+            return caps() if capabilities is None else capabilities
+        return responses.pop(0)
     code = android_cli.run(args, request)
     return code, sent, capsys.readouterr()
+
+
+@pytest.mark.parametrize('android, sent_fill', [
+    (dict(android_devices_configured=True, android_fill_modes=['login', 'sms']), True),
+    (dict(android_devices_configured=False, android_fill_modes=['login', 'sms']), False),
+    (dict(android_devices_configured=True, android_fill_modes=['login']), False),
+    ({}, False)])
+def test_cli_sends_an_android_sms_fill_when_no_desktop_route_exists(capsys, android, sent_fill):
+    from akdbx import sms_cli
+    from akdbx.cli import parser
+    status = dict(ok=True, locked=False, sms_protocol=1, sms_fill_routes=[], **android)
+    receipt = dict(ok=True, filled='one-time-code', target_delivery=DELIVERY)
+    args = parser().parse_args(['fill-sms-code', 'a' * 32, '--target', 'b' * 64,
+                                '--target-url', 'https://example.com/challenge'])
+    sent = []
+    responses = [status, receipt]
+
+    def request(payload):
+        sent.append(payload)
+        return responses.pop(0)
+    code = sms_cli.run(args, request)
+    out = capsys.readouterr().out
+    assert [p['action'] for p in sent] == (['ping', 'fill-sms-code'] if sent_fill else ['ping'])
+    assert code == (0 if sent_fill else 1)
+    if not sent_fill:
+        assert 'no SMS fill route' in out
 
 
 def test_cli_fill_sends_no_value_and_prints_the_receipt(capsys):
@@ -890,3 +946,281 @@ def test_too_many_same_site_tabs_are_refused_within_the_budget(device_file, monk
     broker, _ = chrome_broker(device_file, cdp)
     monkeypatch.setattr(android_route, 'TAB_ATTACH_BUDGET', 0.0)
     assert 'too many tabs' in pin(broker, mode='totp', field='#code')['error']
+
+
+@pytest.mark.parametrize(('mode', 'purpose'), [('card', 'cc-name'), ('identity', 'email')])
+def test_android_app_structured_fill_is_bound_to_its_field_purpose(device_file, mode, purpose):
+    broker, scene = app_broker(device_file)
+    targets = broker.card_targets if mode == 'card' else broker.identity_targets
+    for field_name in ('wrong', purpose):
+        receipt = pin(broker, mode=mode, purpose=purpose, field='21', app_site='https://example.com')
+        target = targets.consume(receipt['target'])
+        try:
+            result = targets.fill(target, 'fixture', field_name, lambda: True, broker.clock() + 4)
+        finally:
+            targets._close(target)
+        assert result['ok'] is (field_name == purpose)
+    assert len(fill_requests()) == 1
+
+
+def test_android_sms_pin_spent_but_message_restored_for_wrong_site(device_file, tmp_path):
+    from akdbx.sms import SmsInbox
+    from test_sms import call
+    broker, scene = app_broker(device_file)
+    broker.sms = SmsInbox(tmp_path / 'state/sms.json')
+    token = broker.sms.add_source('fixture', 'shortcut')
+    broker.sms.receive(token, 'Fixture', 'Your verification code is 1234')
+    [message] = call(broker, 'sms-wait')['messages']
+    for url in ('https://other.example', 'https://example.com/challenge'):
+        target = pin(broker, mode='sms', field='21', app_site='https://example.com')['target']
+        result = call(broker, 'fill-sms-code', message=message['id'], target=target,
+                      target_protocol=1, target_url=url)
+        assert result['ok'] is (url == 'https://example.com/challenge')
+        assert broker.android.take(target) is None
+    assert len(fill_requests()) == 1
+    assert call(broker, 'sms-wait')['messages'] == []
+
+
+class NativeCodeSession:
+    """A native control session that records writes instead of touching a real app."""
+
+    def __init__(self):
+        self.writes, self.closed = [], False
+
+    def check(self, indices, facts, focus):
+        if self.closed:
+            raise android_route.TargetError()
+
+    def prepare(self, index, value):
+        pass
+
+    def write(self, index, value, before):
+        before()
+        self.writes.append(value)
+
+    def close(self):
+        self.closed = True
+
+
+def test_each_sms_route_spends_only_its_own_token_once(device_file, tmp_path, monkeypatch):
+    """Native, Android, CDP (dom), extension and window tokens each fill once through their owner;
+    replays and tokens from another route or mode are spent, refused and leave the code in the inbox."""
+    import secrets
+    from types import SimpleNamespace
+    from akdbx.extension_route import DELIVERY as EXTENSION_DELIVERY
+    from akdbx.native_fields import NativePin
+    from akdbx.sms import Message, SmsInbox
+    from test_extension_route import Document, attach
+    from test_sms import call, x11_target
+    broker, _ = app_broker(device_file)
+    broker.sms = SmsInbox(tmp_path / 'state/sms.json', clock=broker.clock)
+    broker.unlock_link = SimpleNamespace(origin='https://unlock.example')
+    site = 'https://example.com/challenge'
+    sessions, dom_fills, dom_closed = [], [], []
+    # A paired extension (a synthetic browser model) holds the challenge page.
+    channel, extension = attach(broker, {5: [Document('TOP', site)]})
+
+    def native_target(kind='code'):
+        token, session = secrets.token_hex(32), NativeCodeSession()
+        sessions.append(session)
+        broker.native.pins[token] = NativePin(session, kind, kind, (0,), (('', '', False),), 0,
+                                              ('https', 'example.com', 443),
+                                              'one-time-code' if kind == 'code' else None, broker.clock() + 60)
+        return token
+
+    # The CDP manager sits inside the routed code targets, beside the extension route.
+    cdp = broker.code_targets.cdp
+
+    def dom_target():
+        token = secrets.token_hex(32)
+        cdp.pins[token] = dict(cdp=None, field='one-time-code', expires=broker.clock() + 60)
+        return token
+
+    def dom_fill(pin, value, field, ready, deadline=None, *, notify_page=False):
+        assert notify_page is False  # A code fill never notifies the page.
+        dom_fills.append(value)
+        return dict(ok=True, filled=field, code_delivery='cdp-code-element-v1')
+
+    monkeypatch.setattr(cdp, 'fill', dom_fill)
+    monkeypatch.setattr(cdp, '_close', dom_closed.append)
+
+    def extension_target(field='one-time-code', kind='code'):
+        request = dict(action='pin-code-target', sms_protocol=1, page_id=f'{channel.id}.5', frame_id='TOP',
+                       top_url=site, frame_url=site, selector='#otp', field=field, route='extension')
+        if kind == 'identity':
+            request = dict(action='pin-identity-target', identity_protocol=1, page_id=f'{channel.id}.5',
+                           frame_id='TOP', top_url=site, selector='#given', field='given-name', route='extension')
+        target = broker.dispatch(request)
+        assert target['ok'], target
+        return target['target']
+
+    def android_target(mode='sms', **extra):
+        return pin(broker, mode=mode, field='21', app_site='https://example.com', **extra)['target']
+
+    codes = iter(f'{n:06d}' for n in range(482910, 483000))
+
+    def message():
+        code = next(codes)
+        broker.sms.restore(Message(secrets.token_hex(16), 'fixture', 'Example', 'Your code', code,
+                                   broker.clock(), broker.wall_clock()))
+        return broker.sms.messages[-1].id, code
+
+    def inbox():
+        return {m.id for m in broker.sms.messages}
+
+    def fill(target, **extra):
+        # A None value leaves that request field out.
+        message_id, code = message()
+        fields = {k: v for k, v in {'target_protocol': 1, 'target_url': site, **extra}.items() if v is not None}
+        return call(broker, 'fill-sms-code', message=message_id, target=target, **fields), message_id, code
+
+    def delivered():
+        return dict(native=[w for s in sessions for w in s.writes], android=len(fill_requests()),
+                    dom=list(dom_fills), extension=[f['value'] for f in extension.filled],
+                    window=[e for e in broker.typer.events if e[0] == 'type'])
+
+    makers = dict(native=native_target, android=android_target, dom=dom_target, extension=extension_target,
+                  window=lambda: x11_target(broker))
+    receipts = dict(native=dict(code_delivery='native-field-v1'), android=dict(target_delivery=DELIVERY),
+                    dom=dict(code_delivery='cdp-code-element-v1'), extension=dict(code_delivery=EXTENSION_DELIVERY),
+                    window=dict(target_delivery='x11-send-event-v1'))
+    expected = dict(native=[], android=0, dom=[], extension=[], window=[])
+    for route, make in makers.items():
+        token = make()
+        result, message_id, code = fill(token)
+        assert result == dict(ok=True, filled='one-time-code', **receipts[route]), route
+        assert message_id not in inbox()
+        if route == 'android':
+            expected['android'] += 1
+        else:
+            expected[route].append(('type', code) if route == 'window' else code)
+        assert delivered() == expected, route
+        # Replay: refused before any delivery, and the second code stays.
+        result, message_id, _ = fill(token)
+        assert not result['ok'] and message_id in inbox(), route
+        assert delivered() == expected, route
+    assert all(s.closed for s in sessions) and len(dom_closed) == 1
+    assert not broker.native.pins and not cdp.pins and not broker.android._pins
+    assert not broker.extension.pins and not extension.pins
+
+    # A token from another route or mode is spent by its owner, refused, and cannot be reused.
+    wrong = [
+        (native_target('password'), {}),       # native control pinned for a password
+        (native_target(), {'target_protocol': 2}),
+        (native_target(), {'target_url': 'https://other.example/'}),
+        (android_target('card', purpose='cc-name'), {}),
+        (android_target(), {'target_protocol': 2}),
+        (android_target(), {'target_url': 'https://other.example/'}),
+        (android_target(), {'target_url': None}),
+        (extension_target(kind='identity'), {}),  # extension pin of another kind
+        (extension_target(field='webhook-url'), {}),  # extension code pin for a webhook URL
+    ]
+    for token, extra in wrong:
+        result, message_id, _ = fill(token, **extra)
+        assert not result['ok'] and message_id in inbox(), extra
+        for retry in ({}, {'target_protocol': 1, 'target_url': site}):
+            result, message_id, _ = fill(token, **retry)
+            assert not result['ok'] and message_id in inbox(), extra
+    # An Android code pin given to another SMS operation is spent too.
+    token = android_target()
+    receipt = call(broker, 'sms-add-source', name='webhook', kind='twilio', target=token, target_protocol=1,
+                   start_deadline=broker.clock() + 4)
+    assert receipt['ok'] is False and broker.sms.list_sources() == []
+    result, message_id, _ = fill(token)
+    assert not result['ok'] and message_id in inbox()
+    assert delivered() == expected
+    assert all(s.closed for s in sessions) and not broker.native.pins and not broker.android._pins
+    assert not broker.extension.pins and not extension.pins
+
+
+@pytest.mark.parametrize('case', ['filled', 'wrong-site', 'unknown-message', 'add-source'])
+def test_android_chrome_sms_pin_closes_its_devtools_connection(device_file, tmp_path, case):
+    import secrets
+    from types import SimpleNamespace
+    from akdbx.sms import Message, SmsInbox
+    from test_sms import call
+    cdp = FakeCDP('https://example.com/challenge')
+    broker, _ = chrome_broker(device_file, cdp)
+    broker.sms = SmsInbox(tmp_path / 'state/sms.json', clock=broker.clock)
+    broker.unlock_link = SimpleNamespace(origin='https://unlock.example')
+    message = Message(secrets.token_hex(16), 'fixture', 'Example', 'Your code', '482913',
+                      broker.clock(), broker.wall_clock())
+    if case != 'unknown-message':
+        broker.sms.restore(message)
+    target = pin(broker, mode='sms', field='#test')['target']
+    cdp.closed = False
+    if case == 'add-source':
+        result = call(broker, 'sms-add-source', name='webhook', kind='twilio', target=target, target_protocol=1,
+                      start_deadline=broker.clock() + 4)
+    else:
+        result = call(broker, 'fill-sms-code', message=message.id, target=target, target_protocol=1,
+                      target_url='https://other.example/' if case == 'wrong-site' else 'https://example.com/challenge')
+    written = [p['arguments'][0]['value'] for m, p in cdp.calls
+               if m == 'Runtime.callFunctionOn' and 'this.write(value' in p['functionDeclaration']]
+    if case == 'filled':
+        assert result == dict(ok=True, filled='one-time-code', target_delivery=CHROME_DELIVERY)
+        assert written == ['482913']
+    else:
+        assert result['ok'] is False and written == []
+    assert cdp.closed and broker.android.take(target) is None
+
+
+@pytest.mark.parametrize('mode,purpose', [('read', None), ('sms', None), ('card', 'cc-name'), ('identity', 'email')])
+def test_chrome_structured_operation_refuses_an_unverified_peer(device_file, mode, purpose):
+    cdp = FakeCDP('https://example.com/challenge', shows_typed=False)
+    broker, _ = chrome_broker(device_file, cdp)
+    receipt = pin(broker, mode=mode, field='#test', **({'purpose': purpose} if purpose else {}))
+    target = broker.android.take(receipt['target'])
+    try:
+        if mode == 'read':
+            with pytest.raises(android_route.TargetError):
+                broker.android.read(target, {target.origin}, lambda: True, broker.clock() + 4)
+        else:
+            result = broker.android.fill_element(target, 'fixture', purpose or 'one-time-code',
+                                                 lambda: True, broker.clock() + 4)
+            assert not result['ok']
+        assert not any('this.capture(' in p.get('functionDeclaration', '') or
+                       'this.write(value' in p.get('functionDeclaration', '') for _, p in cdp.calls if p)
+    finally:
+        target.close()
+
+@pytest.mark.parametrize('covered_at', ['pin', 'fill'])
+def test_chrome_card_refuses_when_browser_hit_is_a_different_node(device_file, covered_at):
+    cdp = FakeCDP('https://example.com/payment')
+    broker, _ = chrome_broker(device_file, cdp)
+    cdp.hit_node = 8 if covered_at == 'pin' else 7
+    receipt = pin(broker, mode='card', field='#card', purpose='cc-number')
+    if covered_at == 'pin':
+        assert not receipt['ok']
+    else:
+        target = broker.android.take(receipt['target'])
+        cdp.hit_node = 8
+        try:
+            result = broker.android.fill_element(target, 'fixture', 'cc-number', lambda: True, broker.clock() + 4)
+            assert not result['ok'] and result['delivery'] == 'not-started'
+        finally:
+            target.close()
+    assert not any('this.write(' in p.get('functionDeclaration', '') for _, p in cdp.calls if p)
+
+
+def test_pending_android_totp_never_substitutes_the_active_key(device_file):
+    broker, _ = app_broker(device_file, fields=[field('31')])
+    target = pin(broker, mode='totp', field='31', app_site='https://example.com')['target']
+    result = broker.dispatch(dict(action='fill-totp', pending=True, target=target, target_protocol=1,
+                                  handle=handle(broker, 'synthetic-user')))
+    assert not result['ok'] and not fill_requests()
+
+
+def test_android_pending_cli_requires_support_before_sending(capsys):
+    argv = ['android', 'fill-totp', 'fixture-handle', '--pending', '--target', 'f' * 64]
+    code, sent, _ = run_cli(argv, [], capsys)
+    assert code == 1 and [r['action'] for r in sent] == ['ping']
+    receipt = dict(ok=True, filled='totp', target_delivery=DELIVERY)
+    code, sent, _ = run_cli(argv, [receipt], capsys, capabilities={**caps(), 'android_pending_totp': True})
+    assert code == 0 and sent[-1]['pending'] is True
+
+def test_chrome_read_refuses_covered_text_when_the_center_is_exposed(device_file):
+    cdp = FakeCDP('https://example.com/setup')
+    broker, _ = chrome_broker(device_file, cdp)
+    cdp.covered_x = 1
+    assert not pin(broker, mode='read', field='#secret')['ok']

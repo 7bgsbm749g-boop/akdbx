@@ -145,6 +145,31 @@ def test_private_file_roundtrip_and_public_acl_refusal(private_dir):
         security.read_private(path)
 
 
+def test_android_device_registry_refuses_untrusted_adb_configuration(private_dir):
+    from akdbx.android_route import AndroidError, load_devices
+
+    path = private_dir / 'android-devices.json'
+    assert load_devices(path) == {}
+    entry = {'adb': str(private_dir / 'adb.exe'), 'serial': 'proof', 'adb_server_port': 5037}
+    security.write_new(path, json.dumps({'version': 1, 'devices': {'phone': entry}}).encode())
+    assert load_devices(path)['phone'].adb == entry['adb']
+    busy = win32file.CreateFile(str(path), win32con.GENERIC_READ, 0, None, win32con.OPEN_EXISTING, 0, None)
+    try:
+        with pytest.raises(AndroidError):
+            load_devices(path)
+    finally:
+        busy.Close()
+    acl = win32security.GetFileSecurity(str(path), win32security.DACL_SECURITY_INFORMATION).GetSecurityDescriptorDacl()
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, ntsecuritycon.FILE_WRITE_DATA,
+                            win32security.CreateWellKnownSid(win32security.WinWorldSid))
+    win32security.SetNamedSecurityInfo(str(path), win32security.SE_FILE_OBJECT,
+                                      win32security.DACL_SECURITY_INFORMATION
+                                      | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+                                      None, None, acl, None)
+    with pytest.raises(AndroidError):
+        load_devices(path)
+
+
 def test_private_file_refused_under_unsafe_parent(private_dir):
     child = private_dir / 'child'
     win32file.CreateDirectory(str(child), security.private_attributes())

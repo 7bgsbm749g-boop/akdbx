@@ -1,5 +1,7 @@
 # Phone verification texts (SMS) (0.40.0)
 
+For SMS code operations on Android, see [Android pins and commands](android.md#additional-android-operations-after-0470).
+
 akdbx can receive the verification texts that sites send to a phone number and
 fill the code straight into the challenge field. You see only a masked preview
 (plain words only: no digits, no links), the sender and the code length. You
@@ -13,8 +15,9 @@ profile, `extension` requires a paired akdbx fill extension 0.13.0 or newer
 and `window` requires a supported window backend. Every desktop broker that
 reports `extension_code_protocol: 1` lists `extension`; on macOS it is the only
 page route (`["extension"]`). An empty list means that the inbox works
-but this broker has no SMS fill route. The local target still needs to pass its
-pin checks.
+but this broker has no desktop SMS fill route. Android `--mode sms` pins are not
+in this list: check `android_fill_modes` and `android_devices_configured`. The
+local target still needs to pass its pin checks.
 `sms_sources_configured` tells you how many phone numbers forward texts.
 
 ## Two kinds of phone number

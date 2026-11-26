@@ -94,9 +94,16 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
 
 ## Native desktop field pins
 
-Native field protocol 1 supports usernames, TOTP, passwords, combined login, generated passwords,
-SMS codes, cards, addresses and read-only secret capture in standard Unicode Win32 Edit
-controls. Password fields must remain masked; login pins name both controls and
+Native field protocol 1 supports passwords, combined login, generated passwords,
+usernames, TOTP, SMS codes, cards, addresses and read-only secret capture in Unicode Win32
+Edit controls. The post-0.48 backend adds WinForms TextBox and WPF TextBox
+and PasswordBox. Look for `native_field_windows_uia: true` in status.
+WinForms retains the Edit HWND and its mask and style checks. WPF uses the
+Windows-only comtypes binding to the system UIAutomationCore library. This
+provides typed COM interfaces without a separate automation toolkit. The
+broker checks the process, window, retained element, runtime ID, mask and
+focus. Read pins require visible, read-only unmasked text. WPF accepts
+single-line values only. Password fields must remain masked; login pins name both controls and
 never use Tab. Legacy numeric HWND pins support usernames, TOTP and SMS codes.
 Browser pages keep using DOM delivery. The caller asserts the service used by
 the native app; an HWND cannot attest a tab, URL or DOM field. See

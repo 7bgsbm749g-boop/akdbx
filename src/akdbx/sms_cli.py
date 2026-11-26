@@ -77,9 +77,10 @@ def add_parsers(commands):
     p = commands.add_parser('fill-sms-code', help='fill the code of one received text; returns no code')
     p.add_argument('message', help='message id from sms-wait')
     p.add_argument('--target', required=True,
-                   help='fresh pin-code-target, native code control, or window pin-target token')
+                   help='fresh pin-code-target, native code control, Android pin --mode sms, '
+                        'or window pin-target token')
     page_url.add(p, 'target-url', required=False,
-                 help='independently verified HTTPS challenge URL; required with a pin-target token')
+                 help='independently verified HTTPS challenge URL; required with an Android or window pin-target token')
     p = commands.add_parser('subscribe-sms', help='register a one-shot HTTPS webhook for the next verification text '
                                                   '(event akdbx.sms-received with the message id; never the code)')
     p.add_argument('--webhook-url-file', required=True, type=Path,
@@ -212,9 +213,12 @@ def valid_receipt(args, response):
                 and response['field'] == args.field and _token(response['target'])
                 and response['expires_in'] == TTL and response['code_delivery'] == expected)
     if args.command == 'fill-sms-code':
+        from .android_route import CHROME_DELIVERY as ANDROID_CHROME, DELIVERY as ANDROID_APP
         return response in (dict(ok=True, filled='one-time-code', code_delivery=DELIVERY),
                             dict(ok=True, filled='one-time-code', code_delivery=EXTENSION_DELIVERY),
                             dict(ok=True, filled='one-time-code', code_delivery=NATIVE_DELIVERY),
+                            dict(ok=True, filled='one-time-code', target_delivery=ANDROID_CHROME),
+                            dict(ok=True, filled='one-time-code', target_delivery=ANDROID_APP),
                             dict(ok=True, filled='one-time-code', target_delivery=WINDOW_DELIVERY))
     return False
 
@@ -288,7 +292,10 @@ def run(args, request):
         elif args.command in {'sms-subscription-status', 'unsubscribe-sms'}:
             payload['subscription_id'] = args.subscription_id
         elif args.command == 'fill-sms-code':
-            if caps.get('sms_fill_routes') == []:
+            # Android SMS pins are advertised by the Android capabilities, not in sms_fill_routes.
+            modes = caps.get('android_fill_modes')
+            android = caps.get('android_devices_configured') is True and isinstance(modes, list) and 'sms' in modes
+            if caps.get('sms_fill_routes') == [] and not android:
                 print(json.dumps(dict(ok=False, error='broker has no SMS fill route; request not sent')))
                 return 1
             if not MESSAGE_ID.fullmatch(args.message):
