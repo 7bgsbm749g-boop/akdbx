@@ -1,24 +1,23 @@
 """Unlock keys that the user brings to the private page.
 
-Two keys can join the master password:
+Two keys can join the master password, or replace it in a vault that has none:
 
 - A key file. The browser uploads it in the unlock form, over the same HTTPS
   connection as the password (TLS ends at the broker, also behind the relay).
   The broker keeps it only in memory for later saves, never on disk.
-- A hardware key: KeePassXC's YubiKey HMAC-SHA1 challenge-response. Browsers
-  cannot reach that slot of the key, so the page shows the vault's challenge,
-  the user computes the response on a computer with the key (``ykman otp
-  calculate``) and pastes it into the page. The response is a key secret and
-  is treated like the password.
+- A hardware key with HMAC-SHA1 challenge-response (``hardware_key``). The
+  broker asks a key on its own computer, or the page brings the responses that
+  the akdbx browser extension got from a key on the browsing computer. A
+  response is a key secret and is treated like the password.
 
-KeePassXC's KDBX 4 composite key is ``SHA-256(SHA-256(password) || key-file
-key || SHA-256(response))``, and the challenge is the KDF seed. PyKeePass hashes
+The KDBX 4 composite key with a hardware key is ``SHA-256(SHA-256(password) ||
+key-file key || SHA-256(response))``, and the challenge is the KDF seed: the
+format that KeePassXC and other KeePass apps write. PyKeePass hashes
 ``SHA-256(password) || key-file key``, so the broker gives it a key file in
-memory whose key is ``key-file key || SHA-256(response)``. That key file carries
-a marker: a vault opened with it keeps its KDF seed on save, because a new
-seed would need a new touch of the hardware key (the broker keeps the
-response, not the key). Only KDBX 4 vaults with an Argon2 KDF are supported:
-KeePassXC mixes a KDBX 3 (AES-KDF) response in another way.
+memory whose key is ``key-file key || SHA-256(response)``. That key file
+carries a marker: a vault opened with it keeps its KDF seed on save, because a
+new seed would need a new touch of the key. Only KDBX 4 vaults with an Argon2
+KDF are supported: a KDBX 3 (AES-KDF) vault mixes the response in another way.
 """
 from __future__ import annotations
 
@@ -49,16 +48,29 @@ class ChallengeChanged(Exception):
     """The vault's hardware-key challenge is not the one the page showed."""
 
 
+# A key may have challenge-response on both slots, and a user may have several keys.
+MAX_RESPONSES = 4
+
+
 @dataclass(frozen=True)
 class UnlockKeys:
-    """Keys from the page: a key file's bytes and a hardware key response."""
+    """Keys from the page: a key file's bytes and hardware key responses.
+
+    ``responses`` came from a key on the browsing computer for ``challenge``;
+    ``broker_key`` asks the key on the broker's own computer instead.
+    """
     keyfile: bytes | None = None
     challenge: bytes | None = None
-    response: bytes | None = None
+    responses: tuple[bytes, ...] = ()
+    broker_key: bool = False
+
+    @property
+    def hardware(self) -> bool:
+        return bool(self.responses) or self.broker_key
 
     def __repr__(self) -> str:  # Never show key material in a traceback or log.
-        return (f'UnlockKeys(keyfile={self.keyfile is not None}, '
-                f'response={self.response is not None})')
+        return (f'UnlockKeys(keyfile={self.keyfile is not None}, responses={len(self.responses)}, '
+                f'broker_key={self.broker_key})')
 
 
 def vault_challenge(encrypted: bytes) -> bytes | None:
@@ -86,12 +98,6 @@ def read_challenge(database: Path) -> bytes | None:
             return vault_challenge(stream.read(_HEADER_LIMIT))
     except (OSError, ValueError, TypeError):
         return None
-
-
-def padded_challenge(seed: bytes) -> bytes:
-    """The 64 bytes KeePassXC sends to the key: the seed with PKCS #7 padding."""
-    pad = CHALLENGE_BYTES - len(seed)
-    return seed + bytes([pad]) * pad
 
 
 def parse_hex(text: str, size: int) -> bytes:
@@ -151,13 +157,33 @@ def key_material(keyfile: bytes | None, response: bytes | None) -> io.BytesIO | 
     return io.BytesIO(head + f'<Key><Data Hash="{check}">{key.hex().upper()}</Data></Key></KeyFile>'.encode('ascii'))
 
 
-def check_challenge(encrypted: bytes, keys: UnlockKeys) -> None:
-    """Raise ChallengeChanged unless the response answers this vault file's challenge."""
-    if keys.response is None:
-        return
-    current = vault_challenge(encrypted)
-    if current is None or keys.challenge is None or current != keys.challenge:
-        raise ChallengeChanged
+def open_with_keys(encrypted: bytes, password, key_bytes: bytes | None, keys: UnlockKeys | None, opener):
+    """Open with each hardware key response in turn; one wrong set of keys is one failure.
+
+    Raise ChallengeChanged when the page's responses answer another challenge,
+    and ``hardware_key.HardwareKeyError`` when no key gives a response. Neither
+    says anything about the password.
+    """
+    from pykeepass.exceptions import CredentialsError
+    from . import hardware_key
+    candidates = [None]
+    if keys is not None and keys.hardware:
+        seed = vault_challenge(encrypted)
+        if keys.responses:
+            if seed is None or keys.challenge != seed:
+                raise ChallengeChanged
+            candidates = list(keys.responses)
+        elif seed is None:
+            raise hardware_key.HardwareKeyError('this vault does not use a hardware key')
+        else:
+            candidates = hardware_key.responses(seed)[:MAX_RESPONSES]
+    failure = None
+    for response in candidates:
+        try:
+            return opener(encrypted, password, key_material(key_bytes, response))
+        except CredentialsError as exc:
+            failure = exc
+    raise failure
 
 
 def uses_hardware_key(keyfile) -> bool:

@@ -26,7 +26,8 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, 
   browserNamespace = false} = {}) {
   const posted = [];
   const listeners = {};
-  const event = name => ({addListener: fn => { listeners[name] = fn; }});
+  // `listeners[name]` is the last listener; `listeners[name + "[]"]` keeps them all.
+  const event = name => ({addListener: fn => { listeners[name] = fn; (listeners[name + "[]"] ??= []).push(fn); }});
   const area = store => ({get: async key => (key in store ? {[key]: copy(store[key])} : {}),
     set: async items => { Object.assign(store, copy(items)); }, remove: async key => { delete store[key]; },
     setAccessLevel: options => {
@@ -48,6 +49,9 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, 
     alarms: {create: () => {}, clear: () => {}, onAlarm: event("alarm")},
     contextMenus: {create: () => {}, onClicked: event("menu")},
     action: {openPopup: async () => {}},
+    windows: {opened: [], removed: [], onRemoved: event("windows.removed"),
+      create: async details => { chrome.windows.opened.push(details); return {id: 40 + chrome.windows.opened.length}; },
+      remove: async id => { chrome.windows.removed.push(id); }},
     tabs: {get: async () => null, query: async () => []},
     webNavigation: {getAllFrames: async () => []},
     scripting: {executeScript: async () => [], insertCSS: async details => { screen.css.push(details); },
@@ -64,7 +68,7 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, 
         (_, i) => i % 4 === 3 ? 255 : painted()[i % 4])})};
     }
   }
-  const sandbox = {chrome, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, TextEncoder,
+  const sandbox = {chrome, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, URLSearchParams, TextEncoder,
     TextDecoder, Uint8Array, AbortController, module: {exports: {}}, AKDBX_TRUSTED_ORIGIN: builtOrigin ?? null,
     AKDBX_BUILD_ID: build, Blob, OffscreenCanvas, createImageBitmap: async () => ({width: 100, height: 100, close() {}})};
   if (browserNamespace) sandbox.browser = chrome;  // Chromium148+ exposes both as the same API objects.
@@ -1168,4 +1172,95 @@ test("the popup and its reset are reachable only from the popup page", () => {
   const source = fs.readFileSync(path.join(root, "background.js"), "utf8");
   assert.match(source, /importScripts\("api.js", "config.js", "trust.js"\)/);
   assert.match(source, /"reset-trust": popupReset/);
+});
+
+// ----- hardware key for unlock pages ---------------------------------------
+const HARDWARE_ANSWER = "ab".repeat(20);
+const pageSender = (origin, extra = {}) =>
+  ({id: "jjoamaejjkldcjcpgncoomoaagdfimhg", tab: {id: 3}, frameId: 0, url: origin + "/?token=synthetic", ...extra});
+
+function askHardware(listeners, message, sender) {
+  // Objects from the worker's sandbox: compare plain JSON copies.
+  return new Promise(resolve => {
+    const kept = listeners["message[]"].map(listener => listener(message, sender, reply => resolve(copy(reply ?? null))));
+    if (!kept.includes(true)) resolve("ignored");
+  });
+}
+
+// Wait until `ready()` (the worker verifies signatures and reads storage asynchronously).
+async function settleHardware(ready = () => true) {
+  for (let i = 0; i < 400 && !ready(); i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+  for (let i = 0; i < 20; i += 1) await new Promise(resolve => setTimeout(resolve, 0));
+}
+
+test("the trusted broker origin gets the hardware key's answer from the host at once", async () => {
+  const loaded = loadBackground({builtOrigin: LOCAL});
+  const {listeners, posted, chrome} = loaded;
+  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed"}, pageSender(LOCAL)), {ok: true});
+  const reply = askHardware(listeners, {op: "hardware-key", challenge: "01".repeat(32)}, pageSender(LOCAL));
+  await settleHardware();
+  const request = posted.find(message => message.type === "hardware-key");
+  assert.deepEqual(copy(request), {type: "hardware-key", id: request.id, challenge: "01".repeat(32)});
+  listeners["port.message"]({type: "hardware-key", id: request.id, responses: [HARDWARE_ANSWER, "not hex"]});
+  assert.deepEqual(await reply, {responses: [HARDWARE_ANSWER]});
+  assert.equal(chrome.windows.opened.length, 0);  // no consent window for the trusted origin
+  // A host error comes back as a fixed code only.
+  const failing = askHardware(listeners, {op: "hardware-key", challenge: "01".repeat(32)}, pageSender(LOCAL));
+  await settleHardware();
+  const second = posted.filter(message => message.type === "hardware-key").at(-1);
+  listeners["port.message"]({type: "hardware-key", id: second.id, error: "no-key"});
+  assert.deepEqual(await failing, {error: "no-key"});
+});
+
+test("only a content script in a top HTTPS document may ask, and a page with no akdbx identity is refused", async () => {
+  const calls = [];
+  const {listeners, posted, chrome} = loadBackground({builtOrigin: LOCAL,
+    fetch: identityFetch("not json", {calls})});
+  for (const sender of [pageSender(LOCAL, {frameId: 2}), pageSender(LOCAL, {tab: undefined}),
+    pageSender(LOCAL, {id: "a".repeat(32)}), pageSender("http://example.com")]) {
+    assert.equal(await askHardware(listeners, {op: "hardware-key-allowed"}, sender), "ignored");
+  }
+  const other = "https://phishing.example";
+  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed"}, pageSender(other)), {ok: false});
+  assert.deepEqual(await askHardware(listeners, {op: "hardware-key", challenge: "01".repeat(32)}, pageSender(other)),
+    {error: "denied"});
+  assert.equal(chrome.windows.opened.length, 0);
+  assert.equal(posted.some(message => message.type === "hardware-key"), false);
+  assert.ok(calls.every(call => call.url === other + "/.well-known/akdbx-identity"));
+});
+
+test("another akdbx broker asks once in a consent window, and an allowed origin is remembered", async () => {
+  const statement = await hostKeyStatement(RELAY);
+  const local = {};
+  const {listeners, posted, chrome} = loadBackground({builtOrigin: LOCAL, local, fetch: identityFetch(statement)});
+  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed"}, pageSender(RELAY)), {ok: true});
+  // The user closes the window: denied, nothing asked.
+  let reply = askHardware(listeners, {op: "hardware-key", challenge: "02".repeat(32)}, pageSender(RELAY));
+  await settleHardware(() => chrome.windows.opened.length === 1);
+  assert.equal(chrome.windows.opened.length, 1);
+  listeners["windows.removed"](41);
+  assert.deepEqual(await reply, {error: "denied"});
+  // Only the consent page may read the request and answer it; it learns the origin from the worker.
+  reply = askHardware(listeners, {op: "hardware-key", challenge: "02".repeat(32)}, pageSender(RELAY));
+  await settleHardware(() => chrome.windows.opened.length === 2);
+  const url = new URL(chrome.windows.opened[1].url);
+  assert.equal(url.pathname, "/hardware.html");
+  assert.equal(url.searchParams.has("origin"), false);
+  const id = url.searchParams.get("id");
+  const consentPage = {id: "jjoamaejjkldcjcpgncoomoaagdfimhg", url: url.href};
+  assert.equal(await askHardware(listeners, {op: "hardware-consent", id, allow: true}, pageSender(RELAY)), "ignored");
+  assert.deepEqual(await askHardware(listeners, {op: "hardware-consent-origin", id}, consentPage), {origin: RELAY});
+  await askHardware(listeners, {op: "hardware-consent", id, allow: true}, consentPage);
+  await settleHardware(() => posted.some(message => message.type === "hardware-key"));
+  const request = posted.find(message => message.type === "hardware-key");
+  listeners["port.message"]({type: "hardware-key", id: request.id, responses: [HARDWARE_ANSWER]});
+  assert.deepEqual(await reply, {responses: [HARDWARE_ANSWER]});
+  assert.deepEqual(copy(local.hardware_key_origins), [RELAY]);
+  // Remembered: the next request opens no window.
+  const again = askHardware(listeners, {op: "hardware-key", challenge: "02".repeat(32)}, pageSender(RELAY));
+  await settleHardware(() => posted.filter(message => message.type === "hardware-key").length === 2);
+  assert.equal(chrome.windows.opened.length, 2);
+  const next = posted.filter(message => message.type === "hardware-key").at(-1);
+  listeners["port.message"]({type: "hardware-key", id: next.id, error: "timeout"});
+  assert.deepEqual(await again, {error: "timeout"});
 });

@@ -51,6 +51,17 @@ pairing link. The existing `password_fill_delivery`, `card_delivery`,
 `identity_delivery` and `code_delivery` values still describe the CDP route;
 receipts of this route carry `"extension-dom-v1"` in the same keys.
 
+## Hardware key on the browsing computer (extension 0.16.0+)
+
+An unlock page for a vault with a hardware key asks the extension on the
+computer where the user opened it, when the broker's own computer has no key.
+The native host asks the key over USB or a smart card reader; the user
+touches it. The extension answers its own broker's origin at once. For another
+akdbx broker's origin it asks the user once in its own window and remembers
+the answer. Nothing for the agent to do: give the unlock link as usual, and
+tell the user to open it on the computer with the key. See
+[Key file and hardware key](../../../docs/private-pages.md#key-file-and-hardware-key).
+
 ## Extension version
 
 The extension has its own version (from 0.1.0), separate from the akdbx

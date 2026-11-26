@@ -340,7 +340,7 @@ class WindowsVaultStore:
     def open(self, password, keyfile=None, keys=None):
         # ``keys`` (an UnlockKeys): a key file uploaded on the page and a
         # hardware key response; they stay in memory only.
-        from .unlock_keys import check_challenge, key_material as unlock_material
+        from .unlock_keys import open_with_keys
         with security.trusted_directory(self.path.parent):
             encrypted, snapshot = self._read()
             key = None
@@ -353,9 +353,7 @@ class WindowsVaultStore:
                     if key is not None:
                         raise SaveError('the broker already has a key file')
                     key = keys.keyfile
-                check_challenge(encrypted, keys)
-            key_material = unlock_material(key, keys.response if keys is not None else None)
-            vault = open_encrypted(encrypted, password, key_material)
+            vault = open_with_keys(encrypted, password, key, keys, open_encrypted)
             from .versions import archives
             self.verified_capsules = archives(vault)
             # A live prepared receipt is not failed recovery. Coordinate the

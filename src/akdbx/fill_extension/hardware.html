@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>akdbx: hardware key</title><link rel="stylesheet" href="popup.css"></head>
+<body class="consent">
+<header><h1>akdbx</h1></header>
+<p id="question" role="status">Checking the request…</p>
+<p id="origin" class="origin" hidden></p>
+<p id="explain" hidden>akdbx then asks the hardware key on this computer: touch the key when it flashes.
+  Allow only an unlock page that you opened yourself. akdbx remembers your answer for this address.</p>
+<div id="actions" class="actions" hidden>
+  <button id="deny" type="button">Do not allow</button>
+  <button id="allow" type="button">Allow this page</button>
+</div>
+<script src="api.js"></script>
+<script src="hardware.js"></script>
+</body>
+</html>

@@ -15,3 +15,7 @@ button:hover, button:focus-visible { border-color: currentColor; }
 .footer { margin: 10px 0 0; opacity: .6; font-size: 11px; }
 .warning { padding: 6px 8px; border: 1px solid #c60; border-radius: 6px; }
 #reset > * + *, #reset-confirm > * + * { margin-top: 6px; }
+body.consent { width: auto; max-width: 420px; padding: 16px; }
+.origin { font: 600 14px ui-monospace, monospace; overflow-wrap: anywhere; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.actions { display: flex; gap: 8px; margin-top: 12px; }
+.actions button { text-align: center; }

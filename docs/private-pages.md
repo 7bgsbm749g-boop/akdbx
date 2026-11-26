@@ -19,8 +19,8 @@ Unix-socket route for existing deployments.
 
 Every route has the same limit on failed attempts: see
 [Failed attempts block the link](#failed-attempts-block-the-link).
-Every route also takes a key file and a hardware key on the page: see
-[Key file and hardware key](#key-file-and-hardware-key).
+Every route also takes a key file and a hardware key on the page, and a vault
+with no master password: see [Key file and hardware key](#key-file-and-hardware-key).
 
 `akdbx setup` (0.27.0+) sets up the loopback page and one access route in
 the order of [Unlock from the internet](#unlock-from-the-internet). It checks
@@ -530,41 +530,58 @@ the native host cannot write `config.js`.
 ## Key file and hardware key
 
 The unlock page (and the extension pairing page while the vault is locked)
-has a **Key file or hardware key** section under the master password. The
-master password is always required.
+has a **Key file or hardware key** section under the master password. A vault
+with no master password unlocks with an empty password field and its key
+file, its hardware key, or both.
 
 - **Key file.** Choose the vault's key file. The browser sends it in the
   same form as the password, over the page's HTTPS connection. On the relay
   route, TLS ends at the broker, so the relay sees only encrypted bytes. The
   broker keeps the file in memory for later saves and never writes it to
   disk. The field is not shown when the broker was started with
-  `--keyfile`: that key file stays on the broker's computer, and an uploaded
-  one is refused. Upload limit: 1 MiB.
-- **Hardware key.** KeePassXC's YubiKey HMAC-SHA1 challenge-response, for a
-  KDBX 4 vault with an Argon2 KDF. A browser cannot reach that function of
-  the key, so the page shows the vault's challenge as a command:
+  `--keyfile`: that key file stays on the broker's computer, an uploaded one
+  is refused, and an empty password is refused, so the link alone never
+  opens such a vault. Upload limit: 1 MiB.
+- **Hardware key.** HMAC-SHA1 challenge-response, as other KeePass apps use
+  it for a KDBX 4 vault with an Argon2 KDF. Select **Use my hardware key**,
+  then **Unlock**, and touch the key when it flashes. akdbx talks to the key
+  with its own code and the operating system's libraries, over USB (YubiKey,
+  OnlyKey) or a smart card or NFC reader (YubiKey, Nitrokey 3, Fidesmo,
+  VivoKey Apex, Dangerous Things FlexSecure). It asks slot 2, then slot 1.
 
-  ```sh
-  ykman otp calculate 2 <128 hex digits>
-  ```
+A web page cannot reach this function of a key in any browser (pages get
+security keys only through WebAuthn, a different function). So the page
+uses one of two routes, and says which:
 
-  Run it on any computer with the key (change `2` to `1` for slot 1), touch
-  the key, and enter the 40-character response on the page. The command
-  sends the same 64 bytes that KeePassXC sends, so both fixed and variable
-  input slots answer as they do in KeePassXC. The response is a key secret:
-  treat it like the password. The broker keeps it in memory only.
+1. **The broker's computer.** When a key is plugged into the computer that
+   runs the broker, the broker asks it after you select **Unlock**.
+2. **The browsing computer.** Otherwise the page asks the akdbx browser
+   extension (0.16.0+) on the computer where you opened it. The extension's
+   native host asks the key there, and the page sends the response to the
+   broker inside the same HTTPS request as the password. The extension
+   answers at once for its own broker's origin. For another akdbx broker
+   (for example your server's page opened on your laptop), the page must
+   serve a valid akdbx identity, and the extension asks you once in its own
+   window, which the page cannot draw or click; it remembers your answer for
+   that address. Other pages get no answer, so they cannot tell that the
+   extension is installed.
+
+A response is a key secret: the broker keeps it in memory only, like the
+password. A key that is not found, not touched in time or not set up for
+challenge-response gets a `409` page that says so, and the attempt does not
+count. On Linux, the user who runs akdbx needs access to the key's `hidraw`
+device (the udev rule that the key's maker ships); on macOS, a key on USB
+needs Input Monitoring for the app that runs akdbx.
 
 A vault unlocked with a hardware key keeps its KDF seed (the challenge) when
 the broker saves it; the master seed and IVs still change on every save.
 Otherwise every save would need a new touch of the key, and the broker holds
-only the response. KeePassXC then opens the saved vault with the same key. A
-merge source must open with the same keys, so merges from a vault with
-another challenge are refused.
-
-If the vault file changed after the page opened (for example a save in
-KeePassXC made a new challenge), the page shows the new command and the
-attempt does not count. A KDBX 3 vault or an AES-KDF vault shows no hardware
-key field: KeePassXC mixes the response into those in another way.
+only the response. Other KeePass apps then open the saved vault with the same
+key. A merge source must open with the same keys, so a merge from a vault with
+another challenge is refused. If the vault file changed after the page opened
+(another app saved it with a new challenge), the page asks for the key again
+and the attempt does not count. A KDBX 3 or AES-KDF vault shows no hardware
+key field: those mix the response in another way.
 
 ## Failed attempts block the link
 
@@ -576,10 +593,10 @@ your agent for a new one. Failed attempts on the extension pairing page count
 toward the same three, and a block or a new link invalidates every pairing
 link made before it. Parallel requests cannot exceed the limit: the broker
 reserves each attempt before it starts the key derivation. Only a wrong
-password, key file or hardware key response counts: an empty or malformed
-form gets `400`, a response to an old challenge gets `409` with the new
-command, and a vault file or store error gets a "could not open the vault"
-page; none of these uses an attempt.
+password, key file or hardware key counts: an empty or malformed form gets
+`400`, a hardware key that gives no response (or one for an old challenge)
+gets `409`, and a vault file or store error gets a "could not open the
+vault" page; none of these uses an attempt.
 
 The block is saved in a private file, so a broker restart, a logout or a
 reboot keeps it. On Linux the file is in

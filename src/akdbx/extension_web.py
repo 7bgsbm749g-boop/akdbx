@@ -30,8 +30,9 @@ def handle_pairing(handler, state):
     from .broker import is_wrong_credentials
     from .totp import https_origin
     from .unlock_keys import ChallengeChanged
-    from .web_unlock import (HARDWARE_CHANGED, KEY_FIELDS, OPEN_FAILED, _page, _submit, body_limit,
-                             is_multipart, keys_section, open_with_keys, parse_unlock_body,
+    from .hardware_key import TOUCH_TIMEOUT, HardwareKeyError
+    from .web_unlock import (HARDWARE_CHANGED, KEY_FIELDS, OPEN_FAILED, _page, _submit, body_limit, call_opener,
+                             computer_name, hardware_problem, is_multipart, keys_section, parse_unlock_body,
                              unlock_credentials)
     if urlsplit(handler.path).path != ROUTE:
         return False
@@ -98,6 +99,8 @@ def handle_pairing(handler, state):
             raise ValueError
         password, keys = unlock_credentials(values, state.keyfile)
         values = None
+        if password is None and not broker.locked:
+            raise ValueError  # Pairing an unlocked broker checks the master password it holds.
     except Exception:
         send(HTTPStatus.BAD_REQUEST, '<p>Request rejected.</p>')
         return True
@@ -128,14 +131,17 @@ def handle_pairing(handler, state):
             ok = False
             keys_used = keys is not None
             if broker.locked:
+                if keys is not None and keys.broker_key and hasattr(handler, 'server'):
+                    handler.server.extend_request(handler.request, TOUCH_TIMEOUT + 5)
                 try:
-                    vault = open_with_keys(state, password, keys)
+                    vault = call_opener(state, password, keys)
                 except Exception as exc:
                     password = keys = None
-                    if isinstance(exc, ChallengeChanged):
-                        # The response answers another challenge: not a failed attempt.
+                    if isinstance(exc, (ChallengeChanged, HardwareKeyError)):
+                        # No response, or one for another challenge: not a failed attempt.
                         state.cancel_attempt(attempt)
-                        send(HTTPStatus.CONFLICT, form(HARDWARE_CHANGED, keys_open=True))
+                        send(HTTPStatus.CONFLICT, form(HARDWARE_CHANGED if isinstance(exc, ChallengeChanged)
+                                                       else hardware_problem(exc, computer_name()), keys_open=True))
                         return True
                     if not is_wrong_credentials(exc):
                         # A store or I/O error is not a failed attempt.
@@ -150,7 +156,7 @@ def handle_pairing(handler, state):
                 # Keys from a page that was opened while the vault was locked
                 # are not checked: the held master password decides.
                 held = getattr(broker.vault, 'password', None)
-                ok = isinstance(held, str) and bool(held) and hmac.compare_digest(
+                ok = isinstance(held, str) and bool(held) and isinstance(password, str) and hmac.compare_digest(
                     password.encode('utf-8'), held.encode('utf-8'))
             password = keys = None
             if not ok:
@@ -159,7 +165,7 @@ def handle_pairing(handler, state):
                     return True
                 send(HTTPStatus.UNAUTHORIZED, form(
                     'AKDBX could not unlock the vault. Check the master password, key file and hardware '
-                    'key response.' if keys_used and broker.locked else 'The master password is not correct.',
+                    'key.' if keys_used and broker.locked else 'The master password is not correct.',
                     keys_open=keys_used and broker.locked))
                 return True
         if not hub.approve(token):
