@@ -10,12 +10,13 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from akdbx import android_cli, android_route
+from akdbx import android_cli, android_route, cdp_peer
 from akdbx.android_route import (AndroidError, CHROME_DELIVERY, DELIVERY, GOOGLE_SIGNER,
                                  ORIGIN_MISMATCH, asset_link_allows, load_devices)
 from akdbx.broker import Broker
@@ -118,6 +119,39 @@ def test_configuration_others_may_change_is_refused(tmp_path):
     os.chmod(path, 0o600)
     os.chmod(path.parent, 0o777)
     with pytest.raises(AndroidError, match='folder is writable'):
+        load_devices(path)
+
+
+def _acl(*arguments):
+    subprocess.run(['/bin/chmod', *arguments], check=True, capture_output=True, timeout=10)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS ACLs')
+@pytest.mark.parametrize('target, entry', [('file', 'group:everyone allow read'),
+                                           ('file', 'group:everyone allow write'),
+                                           ('folder', 'group:everyone allow add_file,delete_child'),
+                                           ('folder', 'group:everyone allow list')])
+def test_macos_device_file_or_folder_with_an_allow_acl_is_refused(tmp_path, target, entry):
+    path = write_config(tmp_path / 'cfg' / 'android.json', {'phone': DEVICE})
+    assert set(load_devices(path)) == {'phone'}
+    _acl('+a', entry, str(path if target == 'file' else path.parent))
+    with pytest.raises(AndroidError, match=r'grants access to other accounts \(macOS ACL\)'):
+        load_devices(path)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS private-file rules')
+def test_macos_device_file_accepts_deny_acls_and_refuses_hard_links(tmp_path):
+    path = write_config(tmp_path / 'cfg' / 'android.json', {'phone': DEVICE})
+    try:
+        # Deny-only entries, such as the home folder's delete protection, grant nothing.
+        _acl('+a', 'group:everyone deny delete', str(path.parent))
+        _acl('+a', 'group:everyone deny delete', str(path))
+        assert set(load_devices(path)) == {'phone'}
+    finally:
+        # The deny entry also stops the owner, and so pytest, from deleting them.
+        _acl('-N', str(path), str(path.parent))
+    os.link(path, tmp_path / 'android-copy.json')
+    with pytest.raises(AndroidError, match='must not have other hard links'):
         load_devices(path)
 
 
@@ -280,6 +314,7 @@ def test_status_reports_android_capabilities(device_file):
     status = broker.dispatch({'action': 'ping'})
     assert status['android_fill_protocol'] == 1 and status['android_devices_configured'] is True
     assert status['android_fill_delivery'] == DELIVERY and status['android_chrome_delivery'] == CHROME_DELIVERY
+    assert status['android_managed_emulators'] is sys.platform.startswith('linux')
 
 
 APP = [field('21'), field('22', password=True)]
@@ -803,7 +838,7 @@ class FakeAdbServer:
         self.listener.close()
 
 
-@pytest.mark.skipif(os.name == 'nt', reason='Linux peer check')
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX loopback peer check')
 def test_values_reach_the_device_only_in_stdin_packets_of_the_verified_connection(tmp_path):
     server = FakeAdbServer({'ok': True, 'delivered': True, 'results': [{'accepted': True, 'confirmed': True}]})
     adb = tmp_path / 'adb'
@@ -822,20 +857,174 @@ def test_values_reach_the_device_only_in_stdin_packets_of_the_verified_connectio
         server.close()
 
 
-@pytest.mark.skipif(os.name == 'nt', reason='Linux peer check')
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX loopback peer check')
 def test_a_helper_run_refuses_an_adb_port_of_another_account(tmp_path, monkeypatch):
     server = FakeAdbServer({'ok': True})
+    adb = tmp_path / 'adb'
+    adb.write_text('#!/bin/sh\nexit 1\n')
+    adb.chmod(0o700)
     try:
-        runner = android_route.Adb(android_route.Device('phone', '/bin/true', server.port, 'emulator-5584'))
+        runner = android_route.Adb(android_route.Device('phone', str(adb), server.port, 'emulator-5584'))
 
         def other_owner(connection):
-            raise android_route.TargetError()
-        monkeypatch.setattr('akdbx.browser_password.verify_peer', other_owner)
+            raise cdp_peer.PeerError()
+        monkeypatch.setattr(cdp_peer, 'verify_peer', other_owner)
         with pytest.raises(AndroidError, match='another account'):
             runner.helper({'op': 'fill', 'fields': [{'value': SECRET}]}, install=False)
         assert server.stdin == []
     finally:
         server.close()
+
+
+class _Forward:
+    """adb's side of `adb forward tcp:0 localabstract:chrome_devtools_remote` for one port."""
+
+    def __init__(self, port):
+        self.port, self.calls = port, []
+
+    def forward_devtools(self):
+        self.calls.append('forward')
+        return self.port
+
+    def remove_forward(self, port):
+        self.calls.append(('remove', port))
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX loopback peer check')
+def test_devtools_forward_of_this_user_gets_the_handshake_and_is_removed():
+    """The attached device's Chrome forward passes this host's kernel owner check first."""
+    import base64
+    import socket
+    import threading
+    from akdbx.browser_password import CDP
+    requests, done = [], threading.Event()
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        listener.settimeout(5)
+        forward = _Forward(listener.getsockname()[1])
+
+        def serve():
+            connection, _ = listener.accept()
+            with connection:
+                connection.settimeout(5)
+                data = b''
+                while b'\r\n\r\n' not in data and len(data) < 8192:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                requests.append(data)
+                key = next(line.split(b':', 1)[1].strip() for line in data.splitlines()
+                           if line.lower().startswith(b'sec-websocket-key:'))
+                accept = base64.b64encode(hashlib.sha1(key + b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest())
+                connection.sendall(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n'
+                                   b'Connection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + b'\r\n\r\n')
+                done.wait(5)
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        cdp = CDP(android_route.ChromeDevTools(forward))
+        try:
+            assert cdp.socket.getstatus() == 101
+            # The loopback port exists only until the connection opens.
+            assert forward.calls == ['forward', ('remove', forward.port)]
+        finally:
+            done.set()
+            cdp.close()
+            thread.join(5)
+    assert len(requests) == 1 and requests[0].startswith(b'GET /devtools/browser HTTP/1.1\r\n')
+
+
+FOREIGN_ADB = """import os, socket, sys
+with socket.socket() as listener:
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(8)
+    listener.settimeout(15)
+    print(listener.getsockname()[1], os.getuid(), flush=True)
+    for _ in range(int(sys.argv[1])):
+        connection, _ = listener.accept()
+        with connection:
+            connection.settimeout(5)
+            print(len(connection.recv(8192)), flush=True)
+"""
+
+
+def test_foreign_adb_server_and_devtools_forward_receive_no_bytes(tmp_path, monkeypatch):
+    """Another account's loopback listener on the adb port: setup, probes, helper runs and the
+    Chrome DevTools forward all refuse, and it receives zero bytes on each connection."""
+    if os.environ.get('AKDBX_TEST_FOREIGN_UID') != '1':
+        pytest.skip('foreign-UID regression requires AKDBX_TEST_FOREIGN_UID=1 and passwordless sudo')
+    import select
+    import shutil
+    from akdbx import android_setup
+    from akdbx.browser_password import CDP
+    from akdbx.cli import parser
+    from akdbx.target import TargetError
+    from test_card_target import _foreign_account_command
+    sudo = shutil.which('sudo')
+    assert sudo is not None, 'foreign-UID regression requires sudo -n'
+    expected_uid, argv = _foreign_account_command(sudo)
+    adb = tmp_path / 'adb'
+    adb.write_text('#!/bin/sh\necho "adb ran" >&2\nexit 1\n')
+    adb.chmod(0o700)
+    cfg = tmp_path / 'cfg' / 'devices.json'
+    monkeypatch.setenv('AKDBX_ANDROID_DEVICES', str(cfg))
+    with subprocess.Popen([*argv, FOREIGN_ADB, '4'], cwd='/', stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True) as process:
+        def startup_failure(reason):
+            if process.poll() is None:
+                process.terminate()  # sudo relays SIGTERM to the listener
+            _, error = process.communicate(timeout=10)
+            pytest.fail(f'foreign adb listener {reason} (exit {process.returncode}): {error.strip()[-800:]}')
+        try:
+            if not select.select([process.stdout], [], [], 15)[0]:
+                startup_failure('did not start in 15 s')
+            header = process.stdout.readline().split()
+            if len(header) != 2:
+                startup_failure(f'printed {header!r} instead of its port and UID')
+            port, uid = map(int, header)
+            assert uid == expected_uid, f'listener runs as UID {uid}, expected foreign UID {expected_uid}'
+            runner = android_route.Adb(android_route.Device('phone', str(adb), port, 'emulator-5584'))
+            # 1. A probe never takes another account's listener for this user's adb server.
+            with pytest.raises(AndroidError, match='the adb server port belongs to another account'):
+                runner.server_running()
+            # 2. A helper run (a value travels on this connection) refuses before its first byte.
+            with pytest.raises(AndroidError, match='another account'):
+                runner.helper({'op': 'fill', 'fields': [{'value': SECRET}]}, install=False)
+            # 3. A Chrome DevTools forward port that another account holds gets no handshake.
+            forward = _Forward(port)
+            with pytest.raises(TargetError):
+                CDP(android_route.ChromeDevTools(forward))
+            assert forward.calls == ['forward', ('remove', port)]
+            # 4. Setup refuses the port and writes no device file.
+            setup = parser().parse_args(['android', 'setup', '--device', 'tablet', '--attach', 'R5CT1234',
+                                         '--adb', str(adb), '--adb-port', str(port)])
+            with pytest.raises(AndroidError, match='the adb server port belongs to another account'):
+                android_setup.setup(setup)
+            assert not cfg.exists()
+            output, error = process.communicate(timeout=30)
+            # Exit 0 proves the listener accepted all four connections.
+            assert process.returncode == 0, f'foreign adb listener failed: {error.strip()[-800:]}'
+            assert output.split() == ['0', '0', '0', '0'], f'foreign adb listener received bytes: {output!r}'
+        finally:
+            if process.poll() is None:
+                process.terminate()  # sudo relays SIGTERM to the listener
+            process.wait(timeout=10)
+
+
+def test_foreign_adb_test_does_not_start_process_without_opt_in(monkeypatch):
+    monkeypatch.delenv('AKDBX_TEST_FOREIGN_UID', raising=False)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('foreign-UID process started without opt-in'))
+    with pytest.raises(pytest.skip.Exception):
+        test_foreign_adb_server_and_devtools_forward_receive_no_bytes(None, monkeypatch)
+
+
+def test_required_foreign_adb_test_fails_when_sudo_is_missing(monkeypatch):
+    import shutil
+    monkeypatch.setenv('AKDBX_TEST_FOREIGN_UID', '1')
+    monkeypatch.setattr(shutil, 'which', lambda _: None)
+    with pytest.raises(AssertionError, match='requires sudo'):
+        test_foreign_adb_server_and_devtools_forward_receive_no_bytes(None, monkeypatch)
 
 
 # ----- CLI --------------------------------------------------------------------
