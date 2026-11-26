@@ -76,6 +76,35 @@ browser); native apps use a fresh `pin-native-target --mode code` pin. An
 Android device uses a fresh `akdbx android pin --mode sms` pin (see
 `android_fill_modes`).
 
+## Setup and test pages (0.53.0)
+
+After `sms-add-source` or `sms-test-page`, the user sets up the phone and sends
+a test text. Do not poll `sms-sources` for it. Require
+`sms_notifications_any_text: true`, then register a wait for the next text
+from that source, with or without a code:
+
+```bash
+akdbx subscribe-sms --source iphone --any-text --webhook-url-file /private/temporary/url-file
+```
+
+Register it before `sms-add-source` (a subscription can name a source that
+does not exist yet) or at least before you share the page, so the test text
+cannot come first. `--any-text` needs `--source` and takes no `--since` or
+`--recent`. In T3, use the same webhook task steps as above; its prompt checks
+`sms-sources` for the source's `last_received` and `last_result` and resumes
+the original task. The event adds `result` and has a `message_id` only when a
+code was kept:
+
+```json
+{"event": "akdbx.sms-received", "source": "iphone", "message_id": null, "result": "no-code-word", "subscription_id": "…", "event_id": "…"}
+```
+
+`result: "no-code-word"` from a test text means that forwarding works, but
+only texts with the filter word reach the inbox; that is normal for a test
+text without the word `code`. A text from another source does not wake the
+wait, and an `--any-text` wait never wakes an ordinary code wait. The receipt
+and `sms-subscription-status` show `any_text: true` and the `result`.
+
 ## Restarts
 
 A broker restart loses the received texts. A saved subscription then waits for

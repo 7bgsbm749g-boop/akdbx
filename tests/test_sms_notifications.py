@@ -25,6 +25,7 @@ def events(tmp_path):
     broker.sms_notifications.close()
     broker.sms_notifications = SmsNotifications(sender=lambda *args: sent.append(args))
     broker.sms.on_text = broker.sms_notifications.publish_text
+    broker.sms.on_any_text = broker.sms_notifications.publish_any
     try:
         yield broker, sent
     finally:
@@ -128,3 +129,104 @@ def test_cli_shows_the_locked_receipt_for_subscriptions():
     locked = dict(ok=False, error='vault locked', unlock_url='https://box.example.test/?token=' + 'a' * 43)
     for command in ('subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms'):
         assert sms_cli.valid_receipt(SimpleNamespace(command=command), locked)
+
+
+def test_any_text_wait_for_a_setup_page_wakes_on_a_text_without_a_code(events):
+    broker, sent = events
+    # Registered before the source exists: the setup page cannot race it.
+    receipt = broker.dispatch(request(source='iphone', any_text=True))
+    key = receipt['subscription_id']
+    assert receipt == dict(ok=True, subscription_id=key, state='subscribed', attempts=0, source='iphone',
+                           message_id=None, any_text=True, result=None, expires_in=None)
+    code_wait = broker.dispatch(request(URL + '-code', source='iphone'))['subscription_id']
+    token = broker.sms.add_source('iphone', 'shortcut')
+    other = broker.sms.add_source('ipad', 'shortcut')
+    assert broker.sms.receive(other, 'Me', 'setup test from another phone') == 'dropped'
+    assert broker.sms_notifications.status(key)['state'] == 'subscribed'  # another source wakes nothing
+    assert broker.sms.receive(token, 'Me', 'Shortcut setup test 2026') == 'dropped'
+    status = terminal(broker, key)
+    assert status['state'] == 'delivered' and status['result'] == 'no-code-word' and status['message_id'] is None
+    [(url, payload)] = sent
+    assert url == URL and payload == dict(event='akdbx.sms-received', source='iphone', message_id=None,
+                                          result='no-code-word', subscription_id=key, event_id=payload['event_id'])
+    assert 'Shortcut' not in json.dumps(payload) and '2026' not in json.dumps(payload)
+    # A dropped text never wakes an ordinary code wait.
+    assert broker.sms_notifications.status(code_wait)['state'] == 'subscribed'
+
+
+def test_any_text_wait_reports_a_kept_code_with_its_message_id(events):
+    broker, sent = events
+    token = broker.sms.add_source('iphone', 'shortcut')
+    key = broker.dispatch(request(source='iphone', any_text=True))['subscription_id']
+    assert broker.sms.receive(token, 'Google', TEXT) == 'kept'
+    status = terminal(broker, key)
+    message = broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages'][0]['id']
+    assert status['result'] == 'code' and status['message_id'] == message
+    assert sent[0][1]['result'] == 'code' and '482913' not in json.dumps(sent)
+
+
+@pytest.mark.parametrize('extra', [dict(any_text=True), dict(any_text=True, source='iphone', since=1.0),
+                                   dict(any_text='yes', source='iphone')])
+def test_any_text_needs_one_source_and_no_since(events, extra):
+    broker, _ = events
+    assert broker.dispatch(request(**extra)) == dict(
+        ok=False, error='an any-text sms subscription needs one source and no since time')
+
+
+def test_any_text_wait_survives_a_restart(tmp_path):
+    state = tmp_path / 'state'
+    state.mkdir(mode=0o700)
+    first = SmsNotifications(sender=lambda *args: None, state_path=state / 'notify.sms')
+    key = first.subscribe_text(dict(request(source='iphone'), any_text=True), received=lambda *a: None)['subscription_id']
+    first.close()
+    assert json.loads((state / 'notify.sms').read_text())[0]['any_text'] is True
+    sent = []
+    second = SmsNotifications(sender=lambda *args: sent.append(args), state_path=state / 'notify.sms')
+    try:
+        assert second.status(key)['any_text'] is True and second.status(key)['source'] == 'iphone'
+        second.publish_text('iphone', 'a' * 32)  # a code wait's event does not reach it
+        assert second.status(key)['state'] == 'subscribed'
+        second.publish_any('iphone', None, 'empty')
+        wait_for(lambda: sent)
+        assert sent[0][1]['result'] == 'empty' and sent[0][1]['message_id'] is None
+    finally:
+        second.close()
+
+
+def test_any_text_cli_receipts_are_strict():
+    args = SimpleNamespace(command='subscribe-sms', any_text=True)
+    good = dict(ok=True, subscription_id='b' * 32, state='subscribed', attempts=0, source='iphone', message_id=None,
+                any_text=True, result=None, expires_in=None)
+    assert sms_cli.valid_receipt(args, good)
+    assert sms_cli.valid_receipt(SimpleNamespace(command='sms-subscription-status'),
+                                 {k: v for k, v in dict(good, result='no-code').items() if k != 'expires_in'})
+    assert not sms_cli.valid_receipt(args, dict(good, result='482913'))
+    assert not sms_cli.valid_receipt(args, {k: v for k, v in good.items() if k not in {'any_text', 'result'}})
+    assert not sms_cli.valid_receipt(SimpleNamespace(command='subscribe-sms', any_text=False), good)
+
+
+def test_any_text_cli_needs_a_source_and_a_new_broker(monkeypatch, capsys, tmp_path):
+    from akdbx import cli
+    file = tmp_path / 'callback'
+    file.write_text(URL)
+    file.chmod(0o600)
+    calls = []
+    caps = dict(ok=True, sms_protocol=1, sms_notifications_supported=True, sms_notifications_protocol=1)
+
+    def broker(_, payload, **kwargs):
+        calls.append(payload)
+        if payload['action'] == 'ping':
+            return caps
+        return dict(ok=True, subscription_id='c' * 32, state='subscribed', attempts=0, source='iphone',
+                    message_id=None, any_text=True, result=None, expires_in=None)
+    monkeypatch.setattr(cli, 'request', broker)
+    for argv in (['subscribe-sms', '--any-text', '--webhook-url-file', str(file)],
+                 ['subscribe-sms', '--source', 'iphone', '--any-text', '--webhook-url-file', str(file)]):
+        assert cli.main(argv) == 1
+        assert 'subscription request not sent' in capsys.readouterr().out
+    assert [c['action'] for c in calls] == ['ping', 'ping']
+    caps['sms_notifications_any_text'] = True
+    assert cli.main(['subscribe-sms', '--source', 'iphone', '--any-text', '--webhook-url-file', str(file)]) == 0
+    captured = capsys.readouterr()
+    assert URL not in captured.out + captured.err and json.loads(captured.out)['any_text'] is True
+    assert calls[-1]['any_text'] is True and calls[-1]['source'] == 'iphone' and 'since' not in calls[-1]

@@ -14,6 +14,8 @@ From 0.50.3, `docs/support-matrix.md` lists every fill and capture operation by 
 
 From 0.52.0: macOS native fields fill passwords, logins and generated passwords (checked by masked length); Firefox captures authenticator QR codes; the toolbar popup fills address fields with the agent pin checks and offers texted codes; QR capture refuses any image that loads with CORS from another origin on every route; Android fills wait for a cold-booted device instead of reporting a lost connection.
 
+From 0.53.0: every private save page (password, authenticator key and import, identity, card) sends a one-shot `akdbx.write-result` webhook when it is saved, fails, is cancelled or expires (`subscribe-write`), and `subscribe-sms --any-text` wakes when an SMS setup or test page receives its test text. Agents resume on the event instead of polling.
+
 Verify a download before installing it:
 
 ```sh

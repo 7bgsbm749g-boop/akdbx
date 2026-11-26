@@ -24,6 +24,7 @@ SUBSCRIPTION_ERRORS = {'unknown or expired sms subscription',
                        'unlock notification protocol 1 required',
                        'webhook must be an HTTPS URL without credentials or fragment',
                        'subscription TTL must be 0 (until unlock/cancel) or 60–3600 seconds',
+                       'an any-text sms subscription needs one source and no since time',
                        'sms notifications stopped', 'sms subscription limit reached',
                        'notification could not be saved; subscription not registered'}
 PIN_ARGS = ('page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field')
@@ -91,6 +92,9 @@ def add_parsers(commands):
                                                    'event at once')
     since.add_argument('--recent', type=int, metavar='SECONDS',
                        help='a text already received in the last SECONDS seconds sends the event at once')
+    since.add_argument('--any-text', action='store_true',
+                       help="for a setup or test page: wake on the next text this --source forwards, with or "
+                            "without a code; the event adds the text's result (0.53.0+)")
     p.add_argument('--ttl', type=int, default=0,
                    help='0 waits until a text or cancel (default); 60–3600 seconds only for an explicitly '
                         'time-limited wait')
@@ -157,6 +161,14 @@ def _subscription_receipt(args, response):
     keys = {'ok', 'subscription_id', 'state', 'attempts', 'source', 'message_id'}
     if args.command == 'subscribe-sms':
         keys.add('expires_in')
+    if 'any_text' in response:
+        # An any-text wait (0.53.0+) also reports the forwarded text's result.
+        keys |= {'any_text', 'result'}
+        if (response['any_text'] is not True or response['result'] is not None and response['result'] not in RESULTS
+                or args.command == 'subscribe-sms' and not getattr(args, 'any_text', False)):
+            return False
+    elif args.command == 'subscribe-sms' and getattr(args, 'any_text', False):
+        return False
     return (set(response) == keys
             and isinstance(response['subscription_id'], str) and re.fullmatch('[a-f0-9]{32}', response['subscription_id'])
             and response['state'] in SUBSCRIPTION_STATES
@@ -235,6 +247,11 @@ def run(args, request):
             print(json.dumps(dict(ok=False, error='broker lacks SMS notification protocol 1; require broker 0.40.0 '
                                                   'or newer; subscription request not sent')))
             return 1
+        if args.command == 'subscribe-sms' and args.any_text and (
+                args.source is None or caps.get('sms_notifications_any_text') is not True):
+            print(json.dumps(dict(ok=False, error='--any-text needs --source and broker 0.53.0 or newer '
+                                                  '(sms_notifications_any_text); subscription request not sent')))
+            return 1
         payload = dict(action=args.command, sms_protocol=PROTOCOL)
         if args.command in {'sms-add-source', 'sms-remove-source', 'sms-test-page'}:
             payload['name'] = args.name
@@ -289,6 +306,8 @@ def run(args, request):
                 time.time() - args.recent if args.recent is not None else None)
             if since is not None:
                 payload['since'] = since
+            if args.any_text:
+                payload['any_text'] = True
         elif args.command in {'sms-subscription-status', 'unsubscribe-sms'}:
             payload['subscription_id'] = args.subscription_id
         elif args.command == 'fill-sms-code':

@@ -1076,6 +1076,9 @@ class SmsInbox:
         # Called with (source, message_id) after a text with a code is kept;
         # the broker sets it to wake SMS webhook subscriptions.
         self.on_text = None
+        # Called with (source, message_id or None, result) after any accepted
+        # text, kept or dropped: it wakes a setup page's any-text waits.
+        self.on_any_text = None
         self._load()
 
     # Private state file -------------------------------------------------
@@ -1325,20 +1328,22 @@ class SmsInbox:
             code, source.last_result = reading.code, reading.result
             source.count += 1
             self.condition.notify_all()
-            if code is None:
-                return 'dropped'
-            self._prune()
-            message = Message(secrets.token_hex(16), source.name, clean_sender(sender, code), reading.preview, code,
-                              now, self.wall_clock())
-            self.messages.append(message)
-            del self.messages[:-MAX_MESSAGES]
-            self.condition.notify_all()
-        if self.on_text is not None:
-            try:
-                self.on_text(message.source, message.id)
-            except Exception:
-                pass  # A notification failure never drops a received text.
-        return 'kept'
+            message = None
+            if code is not None:
+                self._prune()
+                message = Message(secrets.token_hex(16), source.name, clean_sender(sender, code), reading.preview,
+                                  code, now, self.wall_clock())
+                self.messages.append(message)
+                del self.messages[:-MAX_MESSAGES]
+                self.condition.notify_all()
+        for hook, arguments in ((self.on_text, (source.name, message.id) if message else None),
+                                (self.on_any_text, (source.name, message.id if message else None, reading.result))):
+            if hook is not None and arguments is not None:
+                try:
+                    hook(*arguments)
+                except Exception:
+                    pass  # A notification failure never drops a received text.
+        return 'kept' if message else 'dropped'
 
     def newest(self, source: str | None, since: float) -> tuple[str, str] | None:
         """The newest kept text received at or after ``since``: (source, message id), or None."""
