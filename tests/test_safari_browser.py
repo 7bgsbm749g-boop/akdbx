@@ -52,7 +52,9 @@ def startup_diagnostics(folder):
         if path.is_symlink() or not path.is_file() or path.suffix not in ('.log', '.txt', '.json'):
             continue
         with path.open('rb') as stream:
-            content = stream.read(160 * 1024).decode(errors='replace')
+            data = stream.read(2 * 1024 * 1024).decode(errors='replace')
+        # Screenshot responses contain large base64 bodies, not startup facts.
+        content = '\n'.join(line for line in data.splitlines() if len(line) <= 8192)[:160 * 1024]
         for value in values:
             content = content.replace(value, '<CI value>')
         (destination / f'{count}-{path.name}').write_text(content)
@@ -89,8 +91,11 @@ def test_actual_safari_loads_the_native_app_and_attaches_to_its_local_broker(tmp
         for candidate in (app, appex, appex / 'Contents/Resources'):
             installed = None
             try:
-                installed = driver.execute('installWebExtension', {'type': 'path', 'path': str(candidate)})['value']
+                result = driver.execute('installWebExtension', {'type': 'path', 'path': str(candidate)})['value']
+                assert isinstance(result, dict) and isinstance(result.get('extension'), str), result
+                installed = result['extension']
                 attempts.append(dict(path=candidate.name, installed=installed))
+                print('Installed native candidate: ' + json.dumps(attempts[-1], sort_keys=True))
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline:
                     if any(channel.browser == 'safari' for channel in list(local_broker.extension.channels.values())):
@@ -102,7 +107,12 @@ def test_actual_safari_loads_the_native_app_and_attaches_to_its_local_broker(tmp
                 attempts.append(dict(path=candidate.name, error=type(error).__name__, detail=str(error)[:1200]))
             finally:
                 if installed:
-                    driver.execute('uninstallWebExtension', {'extensionId': quote(installed, safe='')})
+                    try:
+                        driver.execute('uninstallWebExtension', {'extensionId': quote(installed, safe='')})
+                    except Exception as error:
+                        attempts.append(dict(path=candidate.name, cleanup_error=str(error)[:1200]))
+                        print('Native installation attempts: ' + json.dumps(attempts, sort_keys=True))
+                        raise
         print('Native installation attempts: ' + json.dumps(attempts, sort_keys=True))
         pytest.fail('Safari did not attach its native extension to the synthetic local broker')
     finally:
