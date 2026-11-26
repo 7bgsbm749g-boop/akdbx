@@ -10,13 +10,11 @@ never sees one in plain text.
 Install commands write a small launcher and a host manifest in this user's
 own folders and register the manifest for one browser:
 
-* Windows (per user, ``HKEY_CURRENT_USER``): Chrome reads
-  ``Software\\Google\\Chrome\\NativeMessagingHosts``; Edge reads
-  ``Software\\Microsoft\\Edge\\NativeMessagingHosts``; Helium, a Chromium-branded
-  build, reads ``Software\\Chromium\\NativeMessagingHosts`` and then Chrome's key.
-* Linux: the host manifest goes in the browser's user-data folder:
-  ``~/.config/google-chrome``, ``~/.config/microsoft-edge`` or
-  ``~/.config/net.imput.helium`` (each under ``NativeMessagingHosts``).
+Windows uses a per-user registry key pointing to an absolute manifest path.
+Linux and macOS use per-user manifest folders. Chrome, Chromium, Brave,
+Edge, Helium and Firefox are supported. Some browsers share a registration.
+The separate authenticator importer (``browser_import``) registers its own
+host name through the same browser and OS table below.
 """
 from __future__ import annotations
 
@@ -29,6 +27,7 @@ from pathlib import Path
 import re
 import secrets
 import shlex
+import shutil
 import socket
 import struct
 import sys
@@ -47,13 +46,21 @@ EXTENSION_KEY = ('MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxc7bzfI9oXFOvC2UNI
                  'AOlAyV2inpkrCPI2LMaJuhex3+cep32fMlPDdVyMf/Q/bp0jND91nrxT1C3ZHiM52GrKBDWnjR+E8gQ1q/nQM+7g22VY53oPfae'
                  'hsdiTXfZxHcsz4SUkdA4efd/CZX2XXofRB1mYxKjmtm2RUG5uBFp5OHmjoj3mhLEwR8pOxyN99gxkRcsaOTCQ45HQXzjXJs124yA'
                  'GzXx8B9Fuebbl4bXS9E7pNc0rmz5Mriq5BciZcI/UamdIVqyTSGHSPwa+PZAC2OUd1Iv7qG7YEpnqxBbBi8GQtQIDAQAB')
+# One browser/OS registration table for both akdbx native hosts: the fill
+# extension (HOST_NAME) and the authenticator importer (browser_import.HOST_NAME).
 WINDOWS_KEYS = {
     'chrome': r'Software\Google\Chrome\NativeMessagingHosts',
     'edge': r'Software\Microsoft\Edge\NativeMessagingHosts',
     'helium': r'Software\Chromium\NativeMessagingHosts',
+    'chromium': r'Software\Chromium\NativeMessagingHosts',
+    'brave': r'Software\Google\Chrome\NativeMessagingHosts',
     'firefox': r'Software\Mozilla\NativeMessagingHosts',
 }
-LINUX_DIRS = {'chrome': 'google-chrome', 'edge': 'microsoft-edge', 'helium': 'net.imput.helium'}
+LINUX_DIRS = {'chrome': 'google-chrome', 'edge': 'microsoft-edge', 'helium': 'net.imput.helium',
+              'chromium': 'chromium', 'brave': 'BraveSoftware/Brave-Browser'}
+# Under ~/Library/Application Support. Brave reads Chrome's folder.
+MACOS_DIRS = {'chrome': 'Google/Chrome', 'edge': 'Microsoft Edge', 'helium': 'net.imput.helium',
+              'chromium': 'Chromium', 'brave': 'Google/Chrome', 'firefox': 'Mozilla'}
 
 
 class FrameError(Exception):
@@ -244,15 +251,23 @@ def data_home():
     return Path(base) / 'akdbx' / 'extension-host'
 
 
+def registration_browser(browser):
+    # Both hosts reuse one registration wherever two browsers read the same key or folder.
+    if os.name == 'nt' and browser == 'chromium':
+        return 'helium'
+    if (sys.platform == 'darwin' or os.name == 'nt') and browser == 'brave':
+        return 'chrome'
+    return browser
+
+
 def linux_manifest_dir(browser):
+    """This user's native host manifest folder on Linux or macOS, for either akdbx host."""
     if sys.platform == 'darwin':
-        names = {'chrome': 'Google/Chrome', 'edge': 'Microsoft Edge', 'helium': 'net.imput.helium',
-                 'firefox': 'Mozilla'}
-        return Path.home() / 'Library' / 'Application Support' / names[browser] / 'NativeMessagingHosts'
+        return Path.home() / 'Library' / 'Application Support' / MACOS_DIRS[browser] / 'NativeMessagingHosts'
     if browser == 'firefox':
         return Path.home() / '.mozilla' / 'native-messaging-hosts'
-    if browser in ('chrome', 'helium'):
-        # Chrome and Helium use CHROME_CONFIG_HOME before XDG_CONFIG_HOME.
+    if browser in ('chrome', 'helium', 'chromium'):
+        # Chrome, Chromium and Helium use CHROME_CONFIG_HOME before XDG_CONFIG_HOME.
         base = os.environ.get('CHROME_CONFIG_HOME') or os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
     else:
         base = os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
@@ -260,9 +275,11 @@ def linux_manifest_dir(browser):
 
 
 def paths(browser, manifest_dir=None):
+    browser = registration_browser(browser)
     home = data_home()
     if os.name == 'nt':
-        return dict(launcher=home / f'{browser}.cmd', manifest=home / f'{HOST_NAME}.{browser}.json',
+        directory = Path(manifest_dir).absolute() if manifest_dir else home
+        return dict(launcher=home / f'{browser}.cmd', manifest=directory / f'{HOST_NAME}.{browser}.json',
                     registry='HKEY_CURRENT_USER\\' + WINDOWS_KEYS[browser] + '\\' + HOST_NAME)
     directory = Path(manifest_dir) if manifest_dir else linux_manifest_dir(browser)
     return dict(launcher=home / f'{browser}.sh', manifest=directory / f'{HOST_NAME}.json')
@@ -297,7 +314,7 @@ def _launcher_text(browser, python, socket_path, source=None):
 
 def expected_launcher(browser, python, socket_path):
     """The launcher this akdbx writes now: on Linux and macOS it names this akdbx's own folder."""
-    return _launcher_text(browser, python, socket_path, None if os.name == 'nt' else package_root())
+    return _launcher_text(registration_browser(browser), python, socket_path, None if os.name == 'nt' else package_root())
 
 
 def check_python(python, source):
@@ -397,7 +414,7 @@ def launcher_state(browser):
     launcher = paths(browser)['launcher']
     if _file_kind(launcher) == 'missing':
         return 'missing'
-    current = _parse_launcher(launcher, browser)
+    current = _parse_launcher(launcher, registration_browser(browser))
     if current is None:
         return 'foreign'
     if os.name != 'nt' and current['source'] != package_root():
@@ -435,24 +452,99 @@ def _replace_file(path, text, mode):
         raise
 
 
-def install(browser, *, socket_path=None, manifest_dir=None, python=None):
+def detected_firefox_package():
+    """Recognize common confined Firefox launchers. A native build can coexist with either package."""
+    executable = shutil.which('firefox')
+    if executable:
+        path = Path(executable)
+        if path.parent == Path('/snap/bin') or path.resolve().name == 'snap':
+            return 'snap'
+        if path.is_file():
+            with path.open('rb') as stream:
+                header = stream.read(4096)
+            if header.startswith(b'#!') and b'/snap/bin/firefox' in header:
+                return 'snap'
+        return 'native'
+    if Path('/snap/bin/firefox').exists():
+        return 'snap'
+    if (shutil.which('org.mozilla.firefox') or
+            any((base / 'app/org.mozilla.firefox/current/active').is_dir()
+                for base in (Path.home() / '.local/share/flatpak', Path('/var/lib/flatpak')))):
+        return 'flatpak'
+    return 'native'
+
+
+def check_firefox_bridge(package):
+    """Probe the host desktop session without granting new sandbox permissions."""
+    import subprocess
+    if package not in ('snap', 'flatpak'):
+        raise ValueError('expected snap or flatpak')
+    for bus, path, interface in (
+        ('org.freedesktop.NativeMessagingProxy', '/org/freedesktop/nativemessagingproxy',
+         'org.freedesktop.NativeMessagingProxy'),
+        ('org.freedesktop.portal.Desktop', '/org/freedesktop/portal/desktop',
+         'org.freedesktop.portal.WebExtensions'),
+    ):
+        try:
+            probe = subprocess.run(
+                ['gdbus', 'introspect', '--session', '--dest', bus, '--object-path', path, '--xml'],
+                capture_output=True, timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if probe.returncode == 0 and f'<interface name="{interface}">'.encode() in probe.stdout:
+            return
+    raise ValueError(f'Firefox {package} requires the native messaging proxy or WebExtensions portal. '
+                     'Could not verify either with gdbus on this desktop session. Use a standard Firefox build.')
+
+
+def same_windows_manifest(registered, manifest):
+    if registered == str(manifest):
+        return True
+    # Windows can enable case sensitivity per directory. Confirm a case-only
+    # spelling difference with the filesystem before changing the registration.
+    if Path(registered) != manifest:
+        return False
+    try:
+        return manifest.samefile(registered)
+    except FileNotFoundError:
+        return False
+
+
+def windows_registered_manifest(browser):
+    import winreg
+    key = WINDOWS_KEYS[registration_browser(browser)] + '\\' + HOST_NAME
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
+            value, kind = winreg.QueryValueEx(handle, '')
+            if kind != winreg.REG_SZ or not isinstance(value, str):
+                raise ValueError('invalid native host registry value; expected a manifest path')
+            return value
+    except FileNotFoundError:
+        return None
+
+
+def install(browser, *, socket_path=None, manifest_dir=None, python=None, firefox_package=None):
     """Write the launcher and manifest, then register the host for one browser."""
     if browser not in BROWSERS:
         raise ValueError('unsupported extension browser')
+    if firefox_package is None and browser == 'firefox' and sys.platform.startswith('linux'):
+        firefox_package = detected_firefox_package()
+    if firefox_package is not None:
+        if browser != 'firefox' or not sys.platform.startswith('linux'):
+            raise ValueError('--firefox-package applies only to Firefox on Linux')
+        if firefox_package != 'native':
+            if manifest_dir is not None:
+                raise ValueError('confined Firefox uses the host Mozilla manifest directory')
+            check_firefox_bridge(firefox_package)
+    browser = registration_browser(browser)
     python = str(Path(python or sys.executable).absolute())
     socket_path = (str(socket_path) if os.name == 'nt' else str(Path(socket_path).absolute())) if socket_path else None
     source = None if os.name == 'nt' else package_root()
     where = paths(browser, manifest_dir)
     launcher, manifest = where['launcher'], where['manifest']
     if os.name == 'nt':
-        import winreg
-        key = WINDOWS_KEYS[browser] + '\\' + HOST_NAME
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
-                current = winreg.QueryValueEx(handle, '')[0]
-        except OSError:
-            current = None
-        if current not in (None, str(manifest)):
+        current = windows_registered_manifest(browser)
+        if current is not None and not same_windows_manifest(current, manifest):
             raise ValueError('another org.akdbx.extension host is registered for this browser; uninstall it first')
     if _file_kind(manifest) == 'other':
         raise ValueError(f'{manifest} is a link or not a regular file; akdbx never writes through it. Remove it first')
@@ -467,12 +559,12 @@ def install(browser, *, socket_path=None, manifest_dir=None, python=None):
     launcher.parent.mkdir(parents=True, exist_ok=True)
     manifest.parent.mkdir(parents=True, exist_ok=True)
     _replace_file(launcher, text, 0o700)
-    _replace_file(manifest, json.dumps(_manifest(launcher, browser=browser), indent=2), 0o644)
+    _replace_file(manifest, json.dumps(_manifest(launcher, HOST_NAME, browser=browser), indent=2), 0o644)
     if os.name == 'nt':
         import winreg
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, WINDOWS_KEYS[browser] + '\\' + HOST_NAME) as handle:
             winreg.SetValueEx(handle, '', 0, winreg.REG_SZ, str(manifest))
-    return {k: str(v) for k, v in where.items()}
+    return dict(registration_browser=browser, **{k: str(v) for k, v in where.items()})
 
 
 def refresh(*, python=None, socket_path=None):
@@ -486,7 +578,7 @@ def refresh(*, python=None, socket_path=None):
     socket_path = (str(socket_path) if os.name == 'nt' else str(Path(socket_path).absolute())) if socket_path else None
     source = None if os.name == 'nt' else package_root()
     found = {}
-    for browser in BROWSERS:
+    for browser in dict.fromkeys(map(registration_browser, BROWSERS)):
         launcher = paths(browser)['launcher']
         kind = _file_kind(launcher)
         if kind == 'missing':
@@ -511,20 +603,19 @@ def refresh(*, python=None, socket_path=None):
 
 def uninstall(browser, *, manifest_dir=None):
     """Remove only this installer's registration, manifest and launcher."""
+    browser = registration_browser(browser)
     where = paths(browser, manifest_dir)
     launcher, manifest = where['launcher'], where['manifest']
     removed = []
     if os.name == 'nt':
         import winreg
         key = WINDOWS_KEYS[browser] + '\\' + HOST_NAME
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as handle:
-                current = winreg.QueryValueEx(handle, '')[0]
-            if current == str(manifest):
-                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
-                removed.append('registry')
-        except OSError:
-            pass
+        current = windows_registered_manifest(browser)
+        if current is not None and not same_windows_manifest(current, manifest):
+            return []
+        if current is not None:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key)
+            removed.append('registry')
     if _owned_manifest(manifest, launcher):
         manifest.unlink()
         removed.append('manifest')
@@ -683,10 +774,11 @@ def add_parser(commands):
     for name in ('install', 'uninstall'):
         command = actions.add_parser(name, help=f'{name} the native-messaging host for one browser (this user only)')
         command.add_argument('--browser', required=True, choices=BROWSERS)
-        if os.name != 'nt':
-            command.add_argument('--manifest-dir', type=Path,
-                                 help='NativeMessagingHosts folder of a custom user-data folder, for example '
-                                      '<browser_profile_root>/slot1/NativeMessagingHosts for an agent desktop slot')
+        command.add_argument('--manifest-dir', type=Path,
+                             help='manifest folder (Windows registers this path for all profiles of this user)')
+        if name == 'install' and sys.platform.startswith('linux'):
+            command.add_argument('--firefox-package', choices=('native', 'snap', 'flatpak'),
+                                 help='check the native messaging bridge for confined Firefox before installing')
         if name == 'install':
             command.add_argument('--python', type=Path, help=python_help)
     refresh_command = actions.add_parser(
@@ -703,7 +795,7 @@ def run(args, socket_path=None, unlock_origin=None):
     try:
         if args.extension_command == 'install':
             where = install(args.browser, socket_path=socket_path, manifest_dir=getattr(args, 'manifest_dir', None),
-                            python=args.python)
+                            python=args.python, firefox_package=getattr(args, 'firefox_package', None))
             print(json.dumps(dict(ok=True, browser=args.browser,
                                   extension_id=FIREFOX_EXTENSION_ID if args.browser == 'firefox' else EXTENSION_ID,
                                   host=HOST_NAME,
@@ -724,7 +816,10 @@ def run(args, socket_path=None, unlock_origin=None):
             print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, extension_version=built_version(),
                                   host=HOST_NAME, protocol=PROTOCOL,
                                   akdbx_source=package_root(),
-                                  browsers={b: {**{k: str(v) for k, v in paths(b).items()},
+                                  browsers={b: {'registration_browser': registration_browser(b),
+                                                **{k: str(v) for k, v in paths(b).items()},
+                                                **({'registered_manifest': windows_registered_manifest(b)}
+                                                   if os.name == 'nt' else {}),
                                                 'extension_id': FIREFOX_EXTENSION_ID if b == 'firefox' else EXTENSION_ID,
                                                 'launcher_state': launcher_state(b)} for b in BROWSERS}), indent=2))
         return 0

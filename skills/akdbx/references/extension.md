@@ -22,9 +22,9 @@ The extension is the user's browser, not a disguise. Do not use it to
 impersonate anyone, to get past a block a site applied to this user or account
 on purpose, or with someone else's account or card.
 
-Supported browsers: Helium, Google Chrome and Microsoft Edge on Windows and
-Linux; Chrome and Edge on macOS; and Firefox 153+ on all three platforms
-(0.47.0+). Chromium uses the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg`;
+Windows, Linux and macOS support Helium, Google Chrome, Microsoft Edge and
+Firefox 153+ (0.47.0+). After 0.48.0, the installer also accepts Chromium and
+Brave. See `extension_host_browsers` in broker status. The Chromium family uses the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg`;
 Firefox uses `akdbx@akdbx.org`. Both use host name `org.akdbx.extension`.
 See [Firefox setup and installation limits](../../../docs/firefox.md).
 
@@ -475,7 +475,7 @@ See [docs/windows.md](../../../docs/windows.md#browser-extension-route) and the
 README for install commands. In short:
 
 ```bash
-akdbx extension install --browser helium   # or chrome, edge
+akdbx extension install --browser helium   # all three desktops: chrome, edge, helium, chromium, brave or firefox
 akdbx extension build --output /path/to/akdbx-extension
 ```
 
@@ -513,7 +513,16 @@ akdbx.extension_host`, so the interpreter must have this akdbx installed.
   `stale` (another akdbx folder, an older `-m` launcher on Linux, or a missing
   interpreter: run `refresh`), `foreign` (not written by akdbx) or `missing`.
 
-**Agent desktop slots.** Each slot's Chrome uses its own user-data folder
+**Windows custom manifest location.** Use `extension install --browser NAME
+--manifest-dir DIR` to put the manifest in a chosen directory. The browser
+looks up the absolute path in HKCU for all its profiles. Use the same directory
+with `uninstall` before moving the registration. Chromium and Helium share a
+registration on Windows. Brave uses Chrome’s registration on Windows and macOS.
+Install, refresh and uninstall affect the shared host. The `registration_browser`
+in the install result identifies the launcher and its label in broker status.
+A Chromium-branded browser can prefer an existing Chromium key over Chrome’s key.
+
+**Linux and macOS Chromium profiles.** Each slot's Chrome uses its own user-data folder
 `<browser_profile_root>/<slot>`, and Chrome reads native-messaging manifests
 from that folder. Install the host once per slot whose Chrome loads the
 extension:

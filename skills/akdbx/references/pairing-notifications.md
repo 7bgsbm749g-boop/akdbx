@@ -71,7 +71,7 @@ code.
 {"event": "akdbx.extension-paired", "browser": "chrome", "subscription_id": "…", "event_id": "…"}
 ```
 
-`browser` is `helium`, `chrome` or `edge`. The event has no code, link, key or
+`browser` identifies the launcher (`helium`, `chrome`, `edge`, `chromium`, `brave` or `firefox`). The event has no code, link, key or
 vault data. A lost HTTP response can repeat the event with the same
 `event_id`: handle it once. A delivered receipt proves only that the host
 accepted the event; always check `status` before you fill.
