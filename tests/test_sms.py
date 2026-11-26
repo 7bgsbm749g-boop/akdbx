@@ -453,6 +453,75 @@ def test_cli_prints_metadata_and_refuses_receipts_with_codes(capsys):
     assert code == 2 and '482913' not in out.out + out.err
 
 
+EXTENSION_PING = dict(PING, extension_protocol=1, extension_delivery='extension-dom-v1', extension_code_protocol=1,
+                      extension_code_min_version='0.13.0', default_fill_route='cdp',
+                      extension_browsers=[dict(browser='chrome', paired=True, version='0.13.0.7',
+                                               version_status='current')])
+CODE_TOP = 'https://login.example.test/u/mfa'
+CODE_PIN = ['pin-code-target', '--page-id', '0a1b2c3d.5', '--frame-id', 'DOC', '--top-url', CODE_TOP,
+            '--frame-url', CODE_TOP, '--selector', '#otp']
+
+
+def browsers(paired=True, version='0.13.0.7'):
+    return [dict(browser='chrome', paired=paired, version=version, version_status='current')]
+
+
+def test_cli_pins_a_code_through_the_extension_only_when_broker_and_extension_can(capsys, monkeypatch):
+    monkeypatch.delenv('AGENT_DESKTOP_SLOT', raising=False)
+    receipt = dict(ok=True, field='one-time-code', target='c' * 64, expires_in=30, code_delivery='extension-dom-v1')
+    code, sent, out = run_cli(CODE_PIN + ['--route', 'extension'], [EXTENSION_PING, receipt], capsys)
+    assert code == 0 and sent[1]['route'] == 'extension' and json.loads(out.out) == receipt
+    # One current paired browser is enough; the broker picks the page's browser.
+    two = dict(EXTENSION_PING, extension_browsers=[dict(browsers()[0], version_status='mismatch'), browsers()[0]])
+    code, sent, _ = run_cli(CODE_PIN + ['--route', 'extension'], [two, receipt], capsys)
+    assert code == 0 and len(sent) == 2
+    # The broker's default route needs no option; the broker applies it.
+    code, sent, _ = run_cli(CODE_PIN, [dict(EXTENSION_PING, default_fill_route='extension'), receipt], capsys)
+    assert code == 0 and 'route' not in sent[1]
+    # A receipt of the other route is withheld.
+    code, _, out = run_cli(CODE_PIN + ['--route', 'extension'],
+                           [EXTENSION_PING, dict(receipt, code_delivery='cdp-code-element-v1')], capsys)
+    assert code == 2 and 'c' * 64 not in out.out + out.err
+    # Refused before anything is sent: an old broker, an old or unpaired extension, or a browser slot.
+    for caps, argv, error in (
+            (dict(PING, extension_protocol=1, extension_delivery='extension-dom-v1'), [],
+             'broker lacks extension code protocol 1'),
+            (dict(EXTENSION_PING, extension_browsers=browsers(version='0.12.0.3')), [],
+             'no paired akdbx fill extension 0.13.0 or newer'),
+            (dict(EXTENSION_PING, extension_browsers=browsers(paired=False)), [],
+             'no paired akdbx fill extension 0.13.0 or newer'),
+            (dict(EXTENSION_PING, extension_browsers=[]), [], 'no paired akdbx fill extension 0.13.0 or newer'),
+            (dict(EXTENSION_PING, extension_browsers=[dict(browsers()[0], version_status='mismatch')]), [],
+             'runs a stale build or another build than this broker'),
+            (dict(EXTENSION_PING, extension_browsers=[dict(browsers()[0], version_status='stale')]), [],
+             'runs a stale build or another build than this broker'),
+            (EXTENSION_PING, ['--browser-slot', 'slot2'], 'browser slot applies only to the cdp route')):
+        code, sent, out = run_cli(CODE_PIN + ['--route', 'extension'] + argv, [caps], capsys)
+        assert code == 1 and len(sent) == 1 and error in json.loads(out.out)['error'], (caps, out.out)
+    # A broker without extension code pins takes them over CDP, even with an extension default route.
+    cdp = dict(receipt, code_delivery='cdp-code-element-v1')
+    code, sent, _ = run_cli(CODE_PIN, [dict(PING, default_fill_route='extension'), cdp], capsys)
+    assert code == 0 and 'route' not in sent[1]
+    code, sent, _ = run_cli(CODE_PIN + ['--route', 'cdp'], [EXTENSION_PING, cdp], capsys)
+    assert code == 0 and sent[1]['route'] == 'cdp'
+    # macOS: no CDP profile for codes, but the extension route still pins.
+    mac = dict(EXTENSION_PING, code_browser_configured=False, default_fill_route='extension')
+    code, _, out = run_cli(CODE_PIN + ['--route', 'cdp'], [mac], capsys)
+    assert code == 1 and 'no browser profile for code fills' in out.out
+    code, _, _ = run_cli(CODE_PIN, [mac, receipt], capsys)
+    assert code == 0
+
+
+def test_cli_accepts_an_extension_code_fill_receipt_without_a_code(capsys):
+    receipt = dict(ok=True, filled='one-time-code', code_delivery='extension-dom-v1')
+    code, sent, out = run_cli(['fill-sms-code', 'a' * 32, '--target', 'b' * 64], [PING, receipt], capsys)
+    assert code == 0 and json.loads(out.out) == receipt and 'route' not in sent[1]
+    hook = dict(ok=True, name='twilio-us', kind='twilio', filled='webhook-url', code_delivery='extension-dom-v1')
+    code, _, out = run_cli(['sms-add-source', 'twilio-us', '--kind', 'twilio', '--target', 'b' * 64], [PING, hook],
+                           capsys)
+    assert code == 0 and json.loads(out.out) == hook
+
+
 def test_x11_fill_reads_the_challenge_url_from_a_private_file(tmp_path, capsys):
     from akdbx import page_url
     from akdbx.cli import parser

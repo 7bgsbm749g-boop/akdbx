@@ -9,8 +9,12 @@ never see the code, the webhook token or the text itself.
 
 Require broker 0.40.0 or newer and `status` field `sms_protocol: 1`.
 On brokers that report `sms_fill_routes`, `cdp` requires a configured browser
-profile, `native` requires platform support for native controls, and `window`
-requires a supported window backend. An empty list means that the inbox works
+profile, `extension` requires a paired akdbx fill extension 0.13.0 or newer
+(`extension_code_protocol: 1`; see `extension_paired` and
+`extension_browsers`), `native` requires platform support for native controls,
+and `window` requires a supported window backend. Every desktop broker that
+reports `extension_code_protocol: 1` lists `extension`; on macOS it is the only
+page route (`["extension"]`). An empty list means that the inbox works
 but this broker has no desktop SMS fill route. Android `--mode sms` pins are not
 in this list: check `android_fill_modes` and `android_devices_configured`. The
 local target still needs to pass its pin checks.
@@ -64,7 +68,9 @@ akdbx sms-add-source twilio-us --kind twilio --target FRESH_PIN
 In the Twilio Console the field is **Phone Numbers > Active numbers > (number)
 > Messaging Configuration > A message comes in** (Webhook, HTTP POST). Save the
 configuration and check that Twilio shows it saved. If the fill does not
-finish, the receipt has a `private_url` fallback page.
+finish, the receipt has a `private_url` fallback page. In the paired browser,
+pin the console field with `--route extension` and the extension's page and
+document IDs instead (see below).
 
 A free Twilio trial is only for tests. It accepts texts only from its verified
 phone numbers, never from site short codes, so it cannot take real
@@ -124,7 +130,28 @@ KIND --replace` issues a new URL (the old one stops working at once);
    ```
 
    The DOM pin accepts one focused, visible, enabled `text`, `tel`, `number`
-   or `password` input on an exact HTTPS page. For six one-digit boxes, use
+   or `password` input on an exact HTTPS page, in the top document or in a
+   frame whose documents up to the top all have the top page's exact origin.
+
+   Through the paired browser extension (fill extension 0.13.0+; the default
+   route on macOS), take the page and document IDs from
+   `list-password-frames --route extension` and add `--route extension`:
+
+   ```bash
+   akdbx list-password-frames --route extension --top-url-file TOP
+   akdbx pin-code-target --route extension --page-id CHANNEL.TAB --frame-id DOCUMENT \
+     --top-url-file TOP --frame-url-file TOP --selector '#code'
+   akdbx fill-sms-code MESSAGE_ID --target FRESH_PIN
+   ```
+
+   Require `extension_code_protocol: 1`; the CLI refuses before it sends when
+   the broker lacks it or no paired extension is at least
+   `extension_code_min_version`. Without `--route`, the broker's
+   `default_fill_route` applies. The extension pin applies the same field
+   checks; `--browser-slot` does not apply to it. The code travels sealed
+   from the broker to the pinned element and fills it once.
+
+   For six one-digit boxes, use
    a window pin (on Linux this requires X11 or XWayland; on Windows use an HWND): `pin-target --pid ... --window ...`, then
    `fill-sms-code MESSAGE_ID --target WINDOW_PIN --target-url-file URL_FILE`
    (a mode-0600 file with the verified challenge URL; use `--target-url URL`
