@@ -238,3 +238,15 @@ def test_real_hidraw_device(virtual_key):
 @pytest.mark.parametrize('virtual_key', [dict(slot=1, touch=False)], indirect=True)
 def test_real_hidraw_device_on_slot_one(virtual_key):
     assert hardware_key.responses(SEED) == [expected()]
+
+
+def test_this_computer_lists_its_keys_without_error():
+    """The real OS discovery (hidraw, hid.dll and setupapi, IOKit, PC/SC) runs and fails closed."""
+    assert hardware_key.available() in (True, False)
+    try:
+        answers = hardware_key.responses(SEED, timeout=1)
+    except hardware_key.HardwareKeyError as exc:
+        assert str(exc) in {'no hardware key found', 'the hardware key was not touched in time',
+                            'the hardware key has no challenge-response slot set up'} or 'hardware key' in str(exc)
+    else:
+        assert all(len(answer) == 20 for answer in answers)

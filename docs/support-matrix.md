@@ -202,7 +202,7 @@ broker takes attached devices only (after 0.50.1).
 | Start at login | systemd user unit | logon task | LaunchAgent, 0.49.0 |
 | Desktop lock locks the vault | logind; Hyprland | session lock and suspend | screen lock and sleep, 0.49.0 |
 | Loopback HTTPS private page | ✅ 0.23.0 | ✅ 0.17.0 | ✅ 0.43.0 |
-| Unlock with a key file chosen on the page, or a YubiKey challenge-response (AD) | ✅ 0.50.1 · `linux` | ✅ 0.50.1 · `windows` (vault store only) | ✅ 0.50.1 · `macos-broker` |
+| Unlock with a key file chosen on the page (0.50.1), a hardware key, or no master password (AD) | ✅ · `linux` (virtual USB key on a real hidraw device), `linux-extension-browser` | ✅ · `windows` (vault store and device listing; no key on the runner) | ✅ · `macos-broker` (device listing; no key on the runner) |
 | Tailscale Serve to a Unix socket | ✅ | ◼ Tailscale Serve cannot proxy to a Unix socket on Windows | ✅ 0.43.0 |
 | akdbx relay | ✅ 0.26.0 | ✅ 0.26.0 | ✅ 0.43.0 · `macos-broker` |
 | Secret sinks (`deliver-secret`) | ✅ 0.20.0 files; root helper for other accounts | ✅ 0.48.0 private named pipe | ✅ same-user files · no CI; ◼ no root helper (needs systemd and Linux peer credentials) |
@@ -362,14 +362,19 @@ job, for the reason given. Only `test_relay_integration.py` and `test_android_em
   the broker yourself with `--password-browser-profile` as
   [macOS Chromium CDP](macos.md#chromium-cdp) describes.
 - **AD** The unlock page and, while the vault is locked, the extension pairing
-  page take a key file or a hardware key response on every access route
-  (loopback, Tailscale, relay). The master password is still required. The
-  key file field is hidden when the broker runs with `--keyfile`. The
-  hardware key is KeePassXC's YubiKey HMAC-SHA1 challenge-response for a
-  KDBX 4 vault with an Argon2 KDF; the page shows a `ykman otp calculate`
-  command, and the user enters its response. The `linux` and `macos-broker`
-  jobs test the whole page flow; the `windows` job tests only the Windows
-  vault store with both keys. See [Key file and hardware key](private-pages.md#key-file-and-hardware-key).
+  page take a key file and a hardware key on every access route (loopback,
+  Tailscale, relay), and unlock a vault with no master password. The key file
+  field is hidden when the broker runs with `--keyfile`, and then an empty
+  password is refused. A hardware key is HMAC-SHA1 challenge-response for a
+  KDBX 4 vault with an Argon2 KDF, over USB (YubiKey, OnlyKey) or a smart card
+  or NFC reader (YubiKey, Nitrokey 3, Fidesmo, VivoKey Apex, FlexSecure),
+  written in-house with the OS libraries. The broker asks a key on its own
+  computer, or the akdbx extension (0.16.0+) asks one on the browsing
+  computer. CI has no physical key: the `linux` job creates a virtual USB key
+  through `/dev/uhid`, and `linux-extension-browser` unlocks with it through
+  the real extension and native host. The smart card transport and the
+  Windows and macOS USB transports are tested only up to device listing. See
+  [Key file and hardware key](private-pages.md#key-file-and-hardware-key).
 - **AE** Attach mode only (`android setup --attach`, or a device file written
   by hand). The `macos-broker` job proves the host side on macOS: the kernel
   owner check of the loopback adb server and of the DevTools forward,

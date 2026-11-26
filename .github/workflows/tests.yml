@@ -112,7 +112,7 @@ jobs:
       - name: Darwin IPC, TLS, encrypted persistence, and extension contract
         run: >-
           python -m pytest -q -rs tests/test_macos_native.py tests/test_protocol.py
-          tests/test_local_https.py tests/test_extension_route.py
+          tests/test_local_https.py tests/test_extension_route.py tests/test_hardware_key.py
           --basetemp="${{ runner.temp }}/m"
       - name: Verified CDP in native Chrome, including a foreign UID receiving zero bytes
         env:
@@ -185,6 +185,12 @@ jobs:
       - name: Install and remove per-user browser hosts
         run: python -m pytest -q tests/test_extension_host_install.py
       - run: sudo apt-get update && sudo apt-get install -y xvfb
+      # A virtual USB hardware key (tests/virtual_hardware_key.py) needs /dev/uhid.
+      - run: sudo modprobe uhid && test -c /dev/uhid
+      - name: Hardware key over a real kernel hidraw device
+        env:
+          AKDBX_REQUIRE_VIRTUAL_KEY: '1'
+        run: python -m pytest -q -rs tests/test_hardware_key.py --basetemp="${{ runner.temp }}/akdbx-hardware-key"
       - env:
           AKDBX_TEST_FOREIGN_UID: '1'  # Android: a foreign adb server gets zero bytes.
           AKDBX_REQUIRE_XVFB: '1'  # The X11 key-event transport and window-pin SMS fills on real Xvfb windows must not skip.
@@ -274,9 +280,12 @@ jobs:
             https://storage.googleapis.com/chrome-for-testing-public/153.0.8010.12/linux64/chrome-linux64.zip
           echo "8aac35011c18f6e2d10696154af89a5728ac2ddd6dc6fad24ffdf243c3fcfd5a  $RUNNER_TEMP/chrome-linux64.zip" | sha256sum --check
           unzip -q "$RUNNER_TEMP/chrome-linux64.zip" -d "$RUNNER_TEMP/cft"
+      # The hardware key test drives a virtual USB key through the real extension and native host.
+      - run: sudo modprobe uhid && test -c /dev/uhid
       - name: Extension route in Chrome for Testing
         env:
           AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
+          AKDBX_REQUIRE_VIRTUAL_KEY: '1'
           AKDBX_TEST_EXTENSION_BROWSER: ${{ runner.temp }}/cft/chrome-linux64/chrome
           # A disposable synthetic profile only; the runner may not allow Chromium's user-namespace sandbox.
           AKDBX_TEST_BROWSER_NO_SANDBOX: '1'

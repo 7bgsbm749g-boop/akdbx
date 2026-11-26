@@ -50,3 +50,12 @@ def test_windows_store_opens_with_an_uploaded_key_file_only_when_it_has_none(pri
     with pytest.raises(SaveError):
         WindowsVaultStore(path).open(MASTER, keyfile, UnlockKeys(keyfile=key))
     assert PyKeePass(io.BytesIO(serialize_encrypted(opened)), password=MASTER, keyfile=io.BytesIO(key)).root_group
+
+
+def test_windows_lists_hid_and_smart_card_keys_without_error():
+    """hid.dll, setupapi.dll and winscard.dll through ctypes: no key on the runner, and no crash."""
+    from akdbx import hardware_key
+    assert hardware_key.available() in (True, False)
+    assert isinstance(hardware_key._windows_devices(), list)
+    with pytest.raises(hardware_key.HardwareKeyError):
+        hardware_key.responses(b'\x01' * 32, timeout=1)
