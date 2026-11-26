@@ -266,7 +266,7 @@ def test_keyfile_and_rotation_guard(case,tmp_path,monkeypatch):
     for path in (target,source):
         v=PyKeePass(path,password=MASTER);v.keyfile=str(key);v.save()
     broker.vault=open_vault_with_password(target,MASTER,key)
-    assert admit(case)['ok']
+    result=admit(case);assert result['ok'],result
     key.write_bytes(b'changed synthetic key')
     result=admit(case);assert not result['ok'] and 'key file changed' in result['error']
 
