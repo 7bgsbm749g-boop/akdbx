@@ -206,3 +206,20 @@ def test_offscreen_sibling_leaves_focused_field_available(lab):
         assert command('inspect')[0] == 'visible-user'
     finally:
         target.close()
+
+
+@pytest.mark.parametrize('attribute', ['AXValue', 'AXSelectedText'])
+def test_sibling_without_settable_attribute_is_skipped(monkeypatch, lab, attribute):
+    from akdbx.macos_fields import AX, attr
+    manager, pid, _ = lab
+    original = AX.AXUIElementIsAttributeSettable
+
+    def settable(node, name, output):
+        if name == attribute and attr(node, 'AXRole') == 'AXTextArea':
+            return AX.kAXErrorAttributeUnsupported, False
+        return original(node, name, output)
+
+    monkeypatch.setattr(AX, 'AXUIElementIsAttributeSettable', settable)
+    window = listing(manager, pid)
+    assert not any(field['readonly'] for field in window['controls'])
+    assert window['controls'][focused(window)]['password'] is False

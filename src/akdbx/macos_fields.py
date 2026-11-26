@@ -45,8 +45,14 @@ def identity(pid):
     return executable, info.start_sec, info.start_usec
 
 
+class MissingAttribute(TargetError):
+    """An optional discovery candidate cannot supply a required field fact."""
+
+
 def result(pair):
     error, value = pair
+    if error in (AX.kAXErrorAttributeUnsupported, AX.kAXErrorNoValue):
+        raise MissingAttribute()
     if error == AX.kAXErrorAPIDisabled:
         raise AccessibilityRequired()
     if error != AX.kAXErrorSuccess or value is None:
@@ -116,7 +122,13 @@ class MacFields:
         self.controls = []
         self.base()
         for node, role in self.walk():
-            if role in TEXT and enabled(node, role) and visible(node) and field_facts(node, role) is not None:
+            if role not in TEXT:
+                continue
+            try:
+                eligible = enabled(node, role) and visible(node) and field_facts(node, role) is not None
+            except MissingAttribute:
+                continue
+            if eligible:
                 self.controls.append(node)
                 if len(self.controls) > 128:
                     raise TargetError()
