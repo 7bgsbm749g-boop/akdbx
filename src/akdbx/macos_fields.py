@@ -73,8 +73,10 @@ def visible(node):
     (x, y), (width, height) = position[1], size[1]
     if width <= 0 or height <= 0:
         return False
-    hit = result(AX.AXUIElementCopyElementAtPosition(SYSTEM, x + width / 2, y + height / 2, None))
-    return CFEqual(hit, node)
+    hit = AX.AXUIElementCopyElementAtPosition(SYSTEM, x + width / 2, y + height / 2, None)
+    if hit[0] == AX.kAXErrorNoValue:
+        return False
+    return CFEqual(result(hit), node)
 
 
 def enabled(node, role):
@@ -82,6 +84,20 @@ def enabled(node, role):
     # Stock NSTextView has no AXEnabled attribute. Its editability and
     # selectability are independent; focus and hit-testing are checked too.
     return role == 'AXTextArea' if state is None else bool(state)
+
+
+def field_facts(node, role):
+    subrole = optional(node, 'AXSubrole')
+    masked = role == 'AXTextField' and subrole == 'AXSecureTextField'
+    if not masked and optional(node, 'AXProtectedContent'):
+        return None
+    if subrole not in (None, 'AXSecureTextField', 'AXSearchField'):
+        return None
+    writable = result(AX.AXUIElementIsAttributeSettable(node, 'AXValue', None))
+    if not writable and (role != 'AXTextArea' or
+            result(AX.AXUIElementIsAttributeSettable(node, 'AXSelectedText', None))):
+        return None
+    return masked, not writable, role == 'AXTextArea'
 
 
 def count(node):
@@ -99,6 +115,13 @@ class MacFields:
         self.window = attr(self.app, 'AXFocusedWindow')
         self.controls = []
         self.base()
+        for node, role in self.walk():
+            if role in TEXT and enabled(node, role) and visible(node) and field_facts(node, role) is not None:
+                self.controls.append(node)
+                if len(self.controls) > 128:
+                    raise TargetError()
+
+    def walk(self):
         pending, budget, deadline = [self.window], 512, time.monotonic() + 3
         while pending:
             if budget <= 0 or time.monotonic() >= deadline:
@@ -109,10 +132,7 @@ class MacFields:
             role = attr(node, 'AXRole')
             if role in WEB:
                 raise TargetError()
-            if role in TEXT and enabled(node, role) and visible(node):
-                self.controls.append(node)
-                if len(self.controls) > 128:
-                    raise TargetError()
+            yield node, role
             pair = AX.AXUIElementGetAttributeValueCount(node, 'AXChildren', None)
             if pair[0] == AX.kAXErrorAttributeUnsupported:
                 continue
@@ -158,17 +178,10 @@ class MacFields:
         role = attr(node, 'AXRole')
         if role not in TEXT or not enabled(node, role) or not visible(node):
             raise TargetError()
-        subrole = optional(node, 'AXSubrole')
-        masked = role == 'AXTextField' and subrole == 'AXSecureTextField'
-        if not masked and optional(node, 'AXProtectedContent'):
+        facts = field_facts(node, role)
+        if facts is None:
             raise TargetError()
-        if subrole not in (None, 'AXSecureTextField', 'AXSearchField'):
-            raise TargetError()
-        writable = result(AX.AXUIElementIsAttributeSettable(node, 'AXValue', None))
-        if not writable and (role != 'AXTextArea' or
-                result(AX.AXUIElementIsAttributeSettable(node, 'AXSelectedText', None))):
-            raise TargetError()
-        return masked, not writable, role == 'AXTextArea'
+        return facts
 
     def focus(self, indices):
         self.base()
@@ -179,7 +192,14 @@ class MacFields:
         return matches[0]
 
     def check(self, indices, facts, focus):
-        if tuple(self.describe(i) for i in indices) != facts or self.focus(indices) != focus:
+        # The window must still be wholly native. Scanning also catches a
+        # replacement whose stale AX object still reports its former parent.
+        self.base()
+        remaining = set(indices)
+        for node, _ in self.walk():
+            remaining.difference_update([i for i in remaining if CFEqual(node, self.controls[i])])
+        if (remaining or any(fact[0] for fact in facts)
+                or tuple(self.describe(i) for i in indices) != facts or self.focus(indices) != focus):
             raise TargetError()
 
     def prepare(self, index, value):

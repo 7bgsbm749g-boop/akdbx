@@ -15,7 +15,12 @@ int main(int argc, const char **argv) {
         read.string = @"invented-read-🐈";
         read.editable = NO;
         read.selectable = YES;
-        NSArray *fields = @[plain, stock, read];
+        NSTextField *other = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 95, 350, 32)];
+        [other setAccessibilityRole:NSAccessibilityTextFieldRole];
+        other.editable = NO;
+        other.selectable = YES;
+        other.stringValue = @"read-only sibling";
+        NSArray *fields = @[plain, stock, read, other];
         for (NSView *field in fields) [window.contentView addSubview:field];
         [window makeKeyAndOrderFront:nil];
         [app activateIgnoringOtherApps:YES];
@@ -27,6 +32,11 @@ int main(int argc, const char **argv) {
             if (!cmd) return;
             [[NSFileManager defaultManager] removeItemAtPath:command error:NULL];
             if ([cmd hasPrefix:@"focus"]) [window makeFirstResponder:fields[[[cmd substringFromIndex:5] integerValue]]];
+            if ([cmd isEqual:@"partly-offscreen"]) {
+                // The read-only view falls below the display. The focused
+                // upper text field stays on screen.
+                [window setFrameOrigin:NSMakePoint(NSMinX(window.frame), NSMinY(window.screen.frame) - 200)];
+            }
             if ([cmd isEqual:@"replace"]) {
                 [plain removeFromSuperview];
                 NSTextField *other = [[NSTextField alloc] initWithFrame:plain.frame];

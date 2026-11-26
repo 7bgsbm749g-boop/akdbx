@@ -113,6 +113,9 @@ def test_secure_field_modes_are_refused_before_writing(lab):
         pin(manager, window, password, 'login', username_control=focused(window))
     with pytest.raises(TargetError):
         pin(manager, secure, password, 'password')
+    secure = listing(manager, pid)
+    with pytest.raises(TargetError):
+        pin(manager, secure, focused(secure), 'card', field='cc-number')
     assert command('inspect') == ['', '']
     assert set(manager.capabilities()['native_field_modes']) == {'username', 'totp', 'identity', 'card', 'read'}
 
@@ -133,9 +136,12 @@ def test_replaced_field_and_editable_read_refused(lab):
     finally:
         target.close()
 
+
 def test_embedded_web_area_is_refused(lab):
     manager, pid, command = lab
-    listing(manager, pid)
+    window = listing(manager, pid)
+    target = pin(manager, window, focused(window), 'username')
+    unused_window = listing(manager, pid)
     command('web')
     # WKWebView attaches its web process asynchronously.
     deadline = time.monotonic() + 6
@@ -145,9 +151,19 @@ def test_embedded_web_area_is_refused(lab):
             for session in scan(pid):
                 session.close()
         except TargetError:
-            return
+            break
         time.sleep(.1)
-    pytest.fail('accepted window with embedded WKWebView')
+    else:
+        pytest.fail('accepted window with embedded WKWebView')
+    with pytest.raises(TargetError):
+        pin(manager, unused_window, focused(unused_window), 'username')
+    try:
+        with pytest.raises(DeliveryError) as failure:
+            manager.deliver_password(target, 'username', 'fixture-user', '', {https_origin(ORIGIN)},
+                                     lambda: True, time.monotonic() + 4)
+        assert not failure.value.started and command('inspect')[0] == ''
+    finally:
+        target.close()
 
 
 def test_browser_process_is_refused(binary, tmp_path):
@@ -174,3 +190,19 @@ def test_missing_permission_has_fixed_response(monkeypatch, lab):
     broker = Broker(type('Vault', (), {'entries': []})(), object())
     response = broker.dispatch(dict(action='list-native-fields', native_protocol=1, pid=pid))
     assert response == dict(ok=False, delivery='not-started', error=ACCESSIBILITY_ERROR)
+
+
+def test_offscreen_sibling_leaves_focused_field_available(lab):
+    manager, pid, command = lab
+    before = listing(manager, pid)
+    assert any(field['readonly'] for field in before['controls'])
+    command('partly-offscreen')
+    after = listing(manager, pid)
+    assert not any(field['readonly'] for field in after['controls'])
+    target = pin(manager, after, focused(after), 'username')
+    try:
+        manager.deliver_password(target, 'username', 'visible-user', '', {https_origin(ORIGIN)},
+                                 lambda: True, time.monotonic() + 4)
+        assert command('inspect')[0] == 'visible-user'
+    finally:
+        target.close()
