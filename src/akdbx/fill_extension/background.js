@@ -959,7 +959,7 @@ async function popupProbe(message) {
   const results = await akdbxBrowser.scripting.executeScript({target: {tabId: tab.id, allFrames: true},
     func: () => globalThis.__akdbxContent ? globalThis.__akdbxContent.probe() : null});
   const best = results.filter(r => r.result && r.documentId).sort((a, b) => b.result.t - a.result.t)[0];
-  if (!best) return {ok: false, error: "click into a login, card or address field first"};
+  if (!best) return {ok: false, error: "click into a login, authenticator code, card or address field first"};
   const chain = await chainFor(tab.id, best.documentId);
   if (!chain || chain[0].url !== tab.url) return {ok: false, error: "page changed; try again"};
   const match = await brokerRequest("match", {tab_id: tab.id, document_id: best.documentId, top_url: tab.url, chain,
@@ -986,6 +986,7 @@ async function popupProbe(message) {
 }
 
 async function popupFill(message) {
+  const deadline = performance.timeOrigin + performance.now() + 4000;
   const session = sessions.get(message.session);
   sessions.delete(message.session);
   if (!session || Date.now() - session.created >= SESSION_MS || !Number.isInteger(message.index) ||
@@ -1016,8 +1017,14 @@ async function popupFill(message) {
     return {ok: false, error: "akdbx answer could not be verified; nothing filled"};
   }
   try {
-    const result = await run(session.tabId, session.documentId, (id, v) => globalThis.__akdbxContent.probeFill(id, v),
-      [session.probe, values]);
+    if (session.kind === "totp") {
+      await akdbxBrowser.runtime.sendMessage({op: "return-focus", session: message.session}).catch(() => {});
+    }
+    const result = session.kind === "totp"
+      ? await run(session.tabId, session.documentId, (id, v, end) => globalThis.__akdbxContent.popupTotp(id, v, end),
+          [session.probe, values, deadline])
+      : await run(session.tabId, session.documentId, (id, v) => globalThis.__akdbxContent.probeFill(id, v),
+          [session.probe, values]);
     return result === "filled" ? {ok: true} : {ok: false, error: result === "uncertain"
       ? "fill incomplete; check the page" : "field changed or hidden; nothing filled"};
   } catch {

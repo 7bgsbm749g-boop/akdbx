@@ -560,6 +560,7 @@ class ExtensionHub:
             approved = set(self.approved)
         state = dict(extension_protocol=PROTOCOL, extension_delivery=DELIVERY, extension_id=EXTENSION_ID,
                      extension_totp_protocol=1, extension_totp_min_version='0.10.0',
+                     extension_popup_totp_protocol=1, extension_popup_totp_min_version='0.12.0',
                      extension_capture_protocol=CAPTURE_PROTOCOL, extension_capture_delivery=CAPTURE_DELIVERY,
                      fill_routes=['extension'] if sys.platform == 'darwin' else list(ROUTES),
                      default_fill_route=self.default_route,
@@ -846,13 +847,16 @@ class ExtensionHub:
         from .writes import allowed_origins, passwordless_identity
         entries = []
         vault = self.broker.vault
-        if kind == 'login':
+        if kind in {'login', 'totp'}:
+            from .totp import configured
+            if kind == 'totp' and (len(chain) != 1 or not channel.supports((0, 12, 0))):
+                raise ExtensionError()
             target = https_origin(login_origin(chain))
             for entry in active_entries(vault):
                 try:
                     if is_card(entry) or is_identity(entry) or is_secret_record(entry):
                         continue
-                    if target not in allowed_origins(entry):
+                    if target not in allowed_origins(entry) or kind == 'totp' and not configured(entry):
                         continue
                     item = dict(title=entry.title or '', username=entry.username or '')
                     if passwordless_identity(entry):
@@ -951,6 +955,16 @@ class ExtensionHub:
                 self.broker._validate_credential_text(value)
                 if value:
                     values[role] = value
+        elif selection.kind == 'totp':
+            from .totp import MIN_VALIDITY, code_at, read_configuration
+            from .writes import allowed_origins
+            if roles != ['totp'] or formats or len(chain) != 1 or https_origin(top_url) not in allowed_origins(entry):
+                raise ExtensionError()
+            config = read_configuration(entry)
+            now = self.broker.wall_clock()
+            if config.period - now % config.period < MIN_VALIDITY:
+                return dict(ok=False, error='TOTP near expiry; open akdbx again after the code changes')
+            values['totp'] = code_at(config, now)
         elif selection.kind == 'card':
             from . import card_processor
             from .cards import FILL_FIELDS, value_for

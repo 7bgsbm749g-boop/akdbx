@@ -1705,3 +1705,57 @@ def test_child_frame_totp_uses_exact_frame_origin_and_retained_owner(harness):
     lab.evaluate("document.getElementById('login-frame').style.opacity='0'")
     assert not fill(pin)['ok']
     assert evaluate('otp.value === ""')
+
+
+def test_popup_totp_binds_the_account_field_and_single_use_selection(harness):
+    from totp_vectors import URI
+    lab, broker = harness.lab, harness.broker
+    lab.navigate('/login')
+    for entry in broker.vault.entries:
+        if entry.url and not isinstance(entry, (CardEntry, IdentityEntry)):
+            entry.otp = URI
+    broker.wall_clock = lambda: 1111111111
+    lab.evaluate("password.type='tel';password.autocomplete='one-time-code';password.id='otp'")
+    harness.focus('otp')
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    def probe():
+        found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+        assert found['ok'] and found['kind'] == 'totp' and len(found['entries']) == 1, found
+        return json.dumps(found['session'])
+    def fill(session):
+        return harness.worker_call(f'popupFill({{session: {session}, index: 0}})')
+    session = probe()
+    assert fill(session) == {'ok': True}
+    assert lab.digest('otp') == sha('050471')
+    assert fill(session)['ok'] is False
+    lab.evaluate("otp.value=''")
+    session = probe()
+    lab.evaluate("otp.maxLength=1; otp.removeAttribute('maxlength')")
+    assert not fill(session)['ok'] and lab.digest('otp') == EMPTY
+    session = probe()
+    lab.evaluate("otp.blur(); otp.focus()")
+    assert not fill(session)['ok'] and lab.digest('otp') == EMPTY
+
+
+def test_open_toolbar_popup_fills_totp_after_a_trusted_click(harness):
+    from totp_vectors import URI
+    lab, broker = harness.lab, harness.broker
+    lab.navigate('/login')
+    broker.vault.entries[0].otp = URI
+    broker.wall_clock = lambda: 1111111111
+    lab.evaluate("password.type='tel';password.autocomplete='one-time-code';password.id='otp'")
+    harness.focus('otp')
+    harness.worker_call('chrome.action.openPopup()')
+    observer = lab.observer
+    targets = observer.call('Target.getTargets')['targetInfos']
+    popup = next(t for t in targets if t['url'] == route.EXTENSION_ORIGIN + 'popup.html')
+    session = observer.call('Target.attachToTarget', dict(targetId=popup['targetId'], flatten=True))['sessionId']
+    deadline = time.monotonic() + 10
+    while not observer.evaluate('!!document.querySelector("#entries button")', session):
+        assert time.monotonic() < deadline, observer.evaluate('document.getElementById("status").textContent', session)
+        time.sleep(.05)
+    x, y = observer.evaluate('(() => {const r=document.querySelector("#entries button").getBoundingClientRect();'
+                             'return [r.x+r.width/2, r.y+r.height/2]})()', session)
+    for kind in ('mousePressed', 'mouseReleased'):
+        observer.call('Input.dispatchMouseEvent', dict(type=kind, x=x, y=y, button='left', clickCount=1), session=session)
+    lab.wait('otp.value === "050471"')

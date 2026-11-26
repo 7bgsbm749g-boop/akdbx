@@ -21,7 +21,7 @@ READ_DELIVERY = 'native-field-read-v1'
 TTL = 30
 MAX_PINS = 16
 MAX_TEXT = 65536
-MODES = ('username', 'password', 'login', 'totp', 'card', 'identity', 'read')
+MODES = ('username', 'password', 'login', 'totp', 'code', 'card', 'identity', 'read')
 
 
 def supported():
@@ -159,7 +159,7 @@ class NativeFields:
             if (any(type(i) is not int or not 0 <= i < len(session.controls) for i in indices)
                     or len(set(indices)) != len(indices) or indices[0] != discovery_focus):
                 raise TargetError()
-            field = request.get('field')
+            field = 'one-time-code' if mode == 'code' else request.get('field')
             if mode == 'card' and field not in CARD_FIELDS or mode == 'identity' and field not in IDENTITY_FIELDS:
                 raise TargetError()
             facts = tuple(session.describe(i) for i in indices)
@@ -233,7 +233,7 @@ class NativeFields:
     def fill(self, pin, value, field, ready, deadline=None, *, notify_page=False):
         from .browser_card import failure
         try:
-            if pin.kind not in {'card', 'identity'} or pin.field != field or notify_page:
+            if pin.kind not in {'card', 'identity', 'code'} or pin.field != field or notify_page:
                 raise DeliveryError(False)
             self._write(pin, (value,), ready, self.clock() + 4 if deadline is None else deadline)
             return dict(ok=True, filled=field, **{pin.kind + '_delivery': DELIVERY})

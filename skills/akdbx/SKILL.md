@@ -537,7 +537,9 @@ checks can still need the user. Details: [TOTP](references/totp.md) and
 
 **Texted (SMS) codes.** When a site texts a code, read it with `sms-wait`
 (masked previews only) and fill it with `fill-sms-code` into a fresh
-`pin-code-target` pin, instead of asking the user for the code. The user's
+`pin-code-target` pin. For a native application, check for `native` in
+`sms_fill_routes` and use `pin-native-target --mode code`. A window
+pin needs the independently verified challenge URL. The user's
 real phone number, forwarded by an iOS Shortcuts automation (`--kind
 shortcut`), is the recommended source: Google, many banks, WhatsApp and some
 other sites reject VoIP numbers, so a virtual number (`--kind twilio`) does not

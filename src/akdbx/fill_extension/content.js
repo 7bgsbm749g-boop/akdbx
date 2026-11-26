@@ -35,7 +35,7 @@
   const pins = new Map(), guards = new Map(), probes = new Map();
   const owners = new Map(), listens = new Map(), ownerProbes = new Map();
   const MAX_NODES = 50000, MAX_FRAMES = 256, LISTEN_MS = 5000;
-  let lastFocus = null;
+  let lastFocus = null, cancelOtpProbe = null;
 
   const randomId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)),
     b => b.toString(16).padStart(2, "0")).join("");
@@ -596,6 +596,7 @@
         type === "select" && ["cc-exp-month", "cc-exp-year"].includes(last))) {
       return {kind: "card", role: last};
     }
+    if (!processor && input && last === "one-time-code") return {kind: "totp", role: "totp"};
     if (input && type === "password") return {kind: "login", role: "password"};
     if (processor) return null;
     if (input && ["text", "email"].includes(type) && last === "username") return {kind: "login", role: "username"};
@@ -629,6 +630,9 @@
       first = {kind: "login", role: "username"};  // A sign-in form without hints.
     }
     if (!first || index < 0) return null;
+    // Only the top document can use the popup TOTP path. Framed codes need
+    // the owner guards that pin-password-target retains for each ancestor.
+    if (first.kind === "totp" && (!window.navigation || window !== window.top || self.origin !== location.origin)) return null;
     const fields = [{el: focus.el, role: first.role}];
     if (first.kind === "login") {
       const text = el => el instanceof HTMLInputElement && ["text", "email"].includes(el.type);
@@ -660,7 +664,37 @@
       item.form = item.el.form;
     }
     const id = randomId();
-    remember(probes, MAX_PROBES, id, {fields, focused: focus.el, created: performance.now()});
+    const probe = {fields, focused: focus.el, created: performance.now(), url: location.href};
+    if (first.kind === "totp") {
+      // The toolbar popup owns window focus while the user chooses. Remember
+      // any field change during that interval, including a change undone.
+      const el = focus.el;
+      if (cancelOtpProbe) cancelOtpProbe();
+      const invalidate = () => { probes.delete(id); probe.dispose(); };
+      const observe = new MutationObserver(records => {
+        if (records.some(r => r.type === "attributes" ? r.target === el :
+          Array.from(r.removedNodes).some(n => n === el || n.contains(el)))) invalidate();
+      });
+      observe.observe(document, {attributes: true, childList: true, subtree: true});
+      const changedFocus = e => { if (e.target !== el) invalidate(); };
+      const lostFocus = e => { if (e.target === el && (e.relatedTarget || document.hasFocus())) invalidate(); };
+      document.addEventListener("focusout", lostFocus, true);
+      document.addEventListener("focusin", changedFocus, true);
+      document.addEventListener("visibilitychange", invalidate);
+      window.navigation.addEventListener("navigate", invalidate);
+      const timer = setTimeout(invalidate, PIN_MS);
+      cancelOtpProbe = invalidate;
+      probe.dispose = () => {
+        cancelOtpProbe = null;
+        clearTimeout(timer);
+        observe.disconnect();
+        document.removeEventListener("focusout", lostFocus, true);
+        document.removeEventListener("focusin", changedFocus, true);
+        document.removeEventListener("visibilitychange", invalidate);
+        window.navigation.removeEventListener("navigate", invalidate);
+      };
+    }
+    remember(probes, MAX_PROBES, id, probe);
     return {id, t: focus.t, kind: first.kind, roles: fields.map(item => item.role), formats};
   }
 
@@ -701,10 +735,40 @@
       actual.replace(/\s/g, "") === expected.replace(/\s/g, "");
   }
 
+  async function popupTotp(id, values, deadline) {
+    // Closing the action popup restores focus to the page. Do not activate a
+    // tab or focus any field. A document that stays unfocused cannot fill.
+    const now = () => performance.timeOrigin + performance.now();
+    if (!document.hasFocus() && now() < deadline) {
+      await new Promise(resolve => {
+        const done = () => { clearTimeout(timer); window.removeEventListener("focus", done); resolve(); };
+        const timer = setTimeout(done, Math.max(0, deadline - now()));
+        window.addEventListener("focus", done);
+      });
+    }
+    const item = probes.get(id);
+    probes.delete(id);
+    if (!item || !item.dispose) return "refused";
+    item.dispose();
+    if (now() >= deadline || performance.now() - item.created >= PIN_MS ||
+        item.focused.form !== item.fields[0].form || document.activeElement !== item.focused || !document.hasFocus() ||
+        window !== window.top || self.origin !== location.origin) return "refused";
+    let pin;
+    try {
+      pin = CAPTURE(":focus", null, "totp", item.url, null, false, null);
+      if (pin.password !== item.focused) return "refused";
+      return PASSWORD_FILL.call(pin, "totp", "", values.totp, deadline - performance.timeOrigin) ? "filled" : "refused";
+    } catch {
+      return pin ? "uncertain" : "refused";
+    } finally {
+      if (pin) pin.dispose();
+    }
+  }
+
   function probeFill(id, values) {
     const item = probes.get(id);
     probes.delete(id);
-    if (!item || performance.now() - item.created >= PROBE_MS || document.activeElement !== item.focused ||
+    if (!item || item.dispose || performance.now() - item.created >= PROBE_MS || document.activeElement !== item.focused ||
         !shown(item.focused) || typeof values !== "object" || values === null) return "refused";
     const targets = item.fields.filter(field => typeof values[field.role] === "string");
     // A field that became hidden, disabled, detached or different never
@@ -730,7 +794,7 @@
       const item = pins.get(id);
       return Boolean(item && item.kind === "password" && item.mode === "totp" && item.state.check() && item.state.acceptsTotp(digits));
     },
-    pin, geometry, release, fill, read, guard, guardCheck, guardPoint, count, probe, probeFill,
+    pin, geometry, release, fill, read, guard, guardCheck, guardPoint, count, probe, probeFill, popupTotp,
     clear, challengeSpec, challengeHeld, painted,
     releaseGuard: id => guards.delete(id),
     ownerListen, ownerHeard, ownerDone, ownerProbe, ownerGuard, ownerCheck, ownerRelease,
