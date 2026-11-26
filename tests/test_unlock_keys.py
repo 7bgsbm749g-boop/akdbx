@@ -407,3 +407,32 @@ def test_pairing_page_hardware_key_branches_count_like_the_unlock_page():
     status, body = submit(YUBIKEY_SEED.hex(), '00' * 20)
     assert status == 401 and 'hardware key response' in body and '<details class="unlock-keys" open>' in body
     assert state.remaining() == 2 and broker.locked
+
+
+@pytest.mark.parametrize('data', [
+    b'a_b' + b'ab' * 30 + b'a',  # int(x, 16) accepts an underscore between digits
+    b'ab' * 31 + b'a\n',  # and surrounding whitespace
+    b' ' + b'ab' * 31 + b'a',
+])
+def test_a_64_byte_file_that_is_not_all_hex_digits_is_hashed_like_keepassxc(data):
+    assert len(data) == 64
+    assert unlock_keys.keyfile_key(data) == hashlib.sha256(data).digest()
+
+
+def test_keepassxc_vault_with_a_64_byte_non_hex_key_file_unlocks_by_upload(tmp_path):
+    cli = _keepassxc_cli()
+    folder = tmp_path / 'vault'
+    folder.mkdir(mode=0o700)
+    database, keyfile = folder / 'vault.kdbx', tmp_path / 'vault.key'
+    keyfile.write_bytes(b'a_b' + b'ab' * 30 + b'a')
+    subprocess.run([cli, 'db-create', '-q', '-p', '-t', '100', '--set-key-file', keyfile, database],
+                   input=f'{MASTER}\n{MASTER}\n'.encode(), check=True, timeout=120,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    database.chmod(0o600)
+    broker, server, socket_path, path = serve(tmp_path, database)
+    try:
+        status, _ = post(socket_path, path, [('password', MASTER)], [('keyfile', 'vault.key', keyfile.read_bytes())])
+        assert status == 200 and not broker.locked
+    finally:
+        server.shutdown()
+        server.server_close()

@@ -125,14 +125,11 @@ def keyfile_key(data: bytes) -> bytes:
         raise AttributeError
     except (etree.XMLSyntaxError, UnicodeDecodeError, AttributeError, TypeError):
         pass  # Not a key file in XML (also one without key data): hashed like KeePassXC does.
-    try:
-        int(data, 16)
-        is_hex = True
-    except ValueError:
-        is_hex = False
     if len(data) == 32:
         return data
-    if len(data) == 64 and is_hex:
+    # Hex only when all 64 bytes are hex digits, as KeePassXC checks. int(x, 16)
+    # also accepts underscores and surrounding whitespace.
+    if len(data) == 64 and not data.strip(b'0123456789abcdefABCDEF'):
         return bytes.fromhex(data.decode('ascii'))
     return hashlib.sha256(data).digest()
 
