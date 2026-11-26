@@ -103,7 +103,7 @@ pin, fill and receipt model. Agents choose with `--route extension|cdp`, and
 | Connection | Native-messaging host; values sealed to the extension (AES-256-GCM) | Chrome DevTools Protocol over loopback |
 | Setup | Install the host, load the extension, pair once per browser session | Configure the profile at broker start |
 | Sites see | The user's normal browser | A browser with a debugging port, which anti-bot checks often flag |
-| Also | The user can click the extension to fill a login, card or address; secret capture from 0.32.0 | Secret capture; works without an extension |
+| Also | The user can click the extension to fill a login, authenticator code, card or address; secret capture from 0.32.0 | Secret capture; works without an extension |
 
 **Prefer the extension route.** A debugging port gives every process of the same
 OS user full control of that browser profile, and anti-bot and anti-fraud checks
@@ -257,7 +257,7 @@ to `list-password-frames`, `pin-password-target`, `pin-card-target` and
 `pin-identity-target`; the list, single-use pin, fresh handle and receipt model
 of the CDP route is unchanged, with `extension-dom-v1` receipts. The user can
 also click the extension (toolbar button, context menu or Alt+Shift+K) and
-pick a saved login, card or address for the focused field; the popup shows
+pick a saved login, authenticator, card or address for the focused field; the popup shows
 metadata only. `status` advertises `extension_protocol: 1`, `fill_routes`,
 `default_fill_route` (`serve --default-fill-route`), `extension_connected`,
 `extension_paired`, and `extension_version_expected`. Each `extension_browsers`
@@ -857,6 +857,10 @@ returns it to the inbox. `pin-code-target` pins one focused, visible, enabled
 card transport's same-origin, hit-tested DOM guards, CDP route). For six
 one-digit boxes, `fill-sms-code` also takes a `pin-target` token (on Linux, an X11 or XWayland window; on Windows, an HWND) with
 `--target-url`, or `--target-url-file` for a challenge URL that holds a token.
+For a native app, use `pin-native-target --mode code` and the same
+`fill-sms-code` command. Status lists supported SMS destinations in
+`sms_fill_routes`. An empty list means the broker can receive texts but has
+no supported fill route.
 The iPhone filter forwards only texts with the word `code`; a second automation
 with `OTP` covers sites that say only that. See
 [the SMS workflow](skills/akdbx/references/sms.md).
@@ -928,8 +932,10 @@ akdbx fill-totp FRESH_SEARCH_HANDLE --target-url 'https://example.com/challenge'
 
 Use `--route cdp` for the configured CDP browser on Linux/Windows. The paired
 extension route works on Linux/Windows/macOS, including the native macOS broker,
-and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. TOTP uses
-the extension's agent route; the manual popup keeps its existing workflows.
+and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. For a
+human-click fill, focus a top-page input marked `autocomplete="one-time-code"`
+and choose the account in the popup. This needs extension 0.12.0+ and
+`extension_popup_totp_protocol: 1`.
 Only a single focused visible editable `text`, `tel`, `number` or `password`
 input is supported, with stable metadata and no conflicting password/card hints.
 Split-digit inputs and unsupported format constraints refuse. Six/eight digit

@@ -293,3 +293,19 @@ def test_changed_desktop_or_browser_host_refuses_before_write(lab, monkeypatch, 
             win32gui.DestroyWindow(browser)
         if atom:
             win32gui.UnregisterClass(atom, cls.hInstance)
+
+
+def test_real_win32_sms_control_keeps_leading_zero(lab):
+    manager, entries = lab
+    win32gui.SetFocus(entries[0])
+    window = discover(manager)
+    focused = next(f['control'] for f in window['controls'] if f['focused'])
+    receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                               control=focused, mode='code', service_url=SITE))
+    pin = manager.take(receipt['target'], 'code')
+    try:
+        assert manager.fill(pin, '012345', 'one-time-code', lambda: True) == dict(
+            ok=True, filled='one-time-code', code_delivery='native-field-v1')
+        assert win32gui.GetWindowText(entries[0]) == '012345'
+    finally:
+        pin.close()

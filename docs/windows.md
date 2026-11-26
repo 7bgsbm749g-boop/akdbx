@@ -95,7 +95,7 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
 ## Native desktop field pins
 
 Native field protocol 1 supports passwords, combined login, generated passwords,
-usernames, TOTP, cards, addresses and read-only secret capture in Unicode Win32
+usernames, TOTP, SMS codes, cards, addresses and read-only secret capture in Unicode Win32
 Edit controls. The post-0.48 backend adds WinForms TextBox and WPF TextBox
 and PasswordBox. Look for `native_field_windows_uia: true` in status.
 WinForms retains the Edit HWND and its mask and style checks. WPF uses the
