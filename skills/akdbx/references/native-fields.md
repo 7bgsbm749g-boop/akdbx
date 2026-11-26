@@ -1,7 +1,7 @@
 # Native desktop fields (0.44.0)
 
 Native field protocol 1 adds password, combined login, generated-password,
-username, TOTP, card and address fills, and read-only secret capture outside a
+username, TOTP, SMS code, card and address fills, and read-only secret capture outside a
 browser. Check `native_field_supported: true`, integer `native_field_protocol: 1`
 and `native_field_delivery: "native-field-v1"` in `status`.
 
@@ -91,6 +91,11 @@ address, pin `--mode identity --field address-line1`, then use `fill-identity`
 with the same field. The existing expiry/year and telephone formats still
 apply. Multiline street addresses require a multiline native control.
 `--notify-page` is unavailable for native controls.
+
+For a texted verification code, require `code` in `native_field_modes`. Pin
+the focused unmasked input with `--mode code` and the app's verified service
+URL. Use `fill-sms-code MESSAGE_ID --target NATIVE_TARGET`. The receipt
+reports `code_delivery: native-field-v1`. See [SMS](sms.md).
 
 For TOTP, pin `--mode totp`, then use the normal `fill-totp` command with its
 matching `--target-url`. Clock/expiry checks remain active through delivery.
