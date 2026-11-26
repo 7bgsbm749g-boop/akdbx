@@ -396,13 +396,14 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
 # world and decodes them with the vendored jsQR (passed in as `jsQR`). The
 # checks of a text read pin apply, with a grid hit test over the whole element
 # instead of the text boxes. An image URL must be on the page's own origin (or
-# a data: URL), and a source that taints the canvas refuses: convertToBlob
-# rejects before any decode, also where the caller could read a tainted canvas
-# (a Firefox content script with <all_urls>). No code, two or more codes, or a
-# value that is not one line of text refuses the pin. The read draws the element again and must get the same
-# pixels (an <svg>: the same shapes, transforms and paint), so a change after the pin
-# refuses. The decoded value stays in the renderer until the broker's own read
-# call; no pixel or value is ever returned to the caller.
+# a data: URL) and load without CORS, and a source that taints the canvas
+# refuses: convertToBlob rejects before any decode, also where the caller could
+# read a tainted canvas (a Firefox content script with <all_urls>). No code, two
+# or more codes, or a value that is not one line of text refuses the pin. The
+# read draws the element again and must get the same pixels (an <svg>: the same
+# shapes, transforms and paint), so a change after the pin refuses. The decoded
+# value stays in the renderer until the broker's own read call; no pixel or
+# value is ever returned to the caller.
 QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
   const sameOrigin = () => frameOrigin === null || (location.origin === frameOrigin && self.origin === frameOrigin);
   if (typeof jsQR !== 'function' || !isSecureContext || location.href !== url || !sameOrigin() || !document.hasFocus() ||
@@ -446,10 +447,12 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
   // An image's own URL must be on the page's origin, or a data: URL, checked
   // before anything is drawn: a Firefox content script with <all_urls> host
   // access reads another origin's pixels even without CORS (see originClean()).
+  // The image must not load in CORS mode (crossorigin): after a redirect to
+  // another origin that allows the read, its canvas stays origin-clean.
   const ownImage = () => {
     let source;
     try { source = new URL(element.currentSrc); } catch { return false; }
-    return source.protocol === 'data:' || source.origin === location.origin;
+    return source.protocol === 'data:' || source.origin === location.origin && element.crossOrigin === null;
   };
   // The source on opaque white, as on a page, at most MAX pixels a side.
   const painted = () => {

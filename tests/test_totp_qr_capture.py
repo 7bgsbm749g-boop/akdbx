@@ -133,6 +133,9 @@ PAGES = {
     '/qr/bare.png': (qr_fixture.png(qr_fixture.rows(KEY)), *PNG),
     '/qr/link.png': (qr_fixture.png(qr_fixture.rows('https://signup.example.com/help/two-factor')), *PNG),
     '/qr/blank.png': (qr_fixture.png(['0' * 40] * 40), *PNG),
+    # A URL on the page's own origin whose image comes from another origin, without and with CORS.
+    '/qr/redirect.png': (b'', 'image/png', {'Location': 'https://evil.example.net/qr/key.png'}),
+    '/qr/redirect-cors.png': (b'', 'image/png', {'Location': 'https://evil.example.net/qr/key-cors.png'}),
     '/qr-img': enrollment('<img id=qr src="/qr/key.png" alt="QR code">'),
     '/qr-inverted': enrollment('<img id=qr src="/qr/inverted.png" alt="QR code">'),
     '/qr-rounded': enrollment('<img id=qr src="/qr/key.png" alt="QR code" style="border-radius:24px">'),
@@ -161,6 +164,9 @@ PAGES = {
     '/qr-cross-origin': enrollment('<img id=qr src="https://evil.example.net/qr/key.png" alt="QR code">'),
     '/qr-cross-origin-cors': enrollment('<img id=qr crossorigin=anonymous src="https://evil.example.net/qr/key-cors.png" '
                                         'alt="QR code">'),
+    '/qr-redirect': enrollment('<img id=qr src="/qr/redirect.png" alt="QR code">'),
+    # CORS mode: another origin that allows the read keeps the canvas origin-clean after the redirect.
+    '/qr-redirect-cors': enrollment('<img id=qr crossorigin=anonymous src="/qr/redirect-cors.png" alt="QR code">'),
     # The page draws a cross-origin image (no CORS) into its own canvas: the canvas is tainted.
     '/qr-canvas-tainted': enrollment('<canvas id=qr></canvas>').replace('window.ready = true;', '''
 const picture = new Image();
@@ -409,11 +415,12 @@ def test_other_code_forms_and_a_strict_image_policy_capture(qr, page):
     assert 'secret=' + KEY in stored(qr)[1]
 
 
-@pytest.mark.parametrize('page', ['/qr-cross-origin', '/qr-cross-origin-cors', '/qr-canvas-tainted', '/qr-two',
-                                  '/qr-two-sizes', '/qr-blank', '/qr-covered', '/qr-text', '/qr-svg-text'])
+@pytest.mark.parametrize('page', ['/qr-cross-origin', '/qr-cross-origin-cors', '/qr-redirect', '/qr-redirect-cors',
+                                  '/qr-canvas-tainted', '/qr-two', '/qr-two-sizes', '/qr-blank', '/qr-covered', '/qr-text',
+                                  '/qr-svg-text'])
 def test_a_cross_origin_image_two_codes_no_code_a_cover_or_text_refuse_the_pin(qr, page):
     url = open_page(qr, page)
-    if page.startswith('/qr-cross-origin'):
+    if page.startswith(('/qr-cross-origin', '/qr-redirect')):
         qr.lab.wait("document.getElementById('qr').complete && document.getElementById('qr').naturalWidth > 0")
     refused = pin(qr, url)
     assert refused == failure(), refused

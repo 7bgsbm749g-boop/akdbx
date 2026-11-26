@@ -82,7 +82,10 @@ refuses with `target unavailable`.
   and any source that taints the canvas (the pin decodes only a canvas that
   passes `convertToBlob`'s origin-clean check, so a redirect from the page's
   origin to another one refuses too, also in a Firefox content script with
-  `<all_urls>` host access), no QR code, two or more codes, a code
+  `<all_urls>` host access), an `<img>` that is not a `data:` URL and loads in
+  CORS mode (a `crossorigin` attribute: after a redirect to another origin that
+  allows the read, its canvas stays origin-clean; CDP route after akdbx 0.51.0,
+  fill extension 0.15.1), no QR code, two or more codes, a code
   that is not an `otpauth://totp/` URI (a bare key, HOTP, a link), and an
   element whose pixels (an `<svg>`: shapes, transforms or paint) changed after
   the pin. The element must show whole and uncovered: a 5 x 5 grid of points
