@@ -146,7 +146,9 @@ def test_documented_first_launch_uses_extension_route(tmp_path, monkeypatch, pri
                      '--tls-cert', str(cert), '--tls-key', str(key), *cdp_options]) == 0
     assert seen[0]['fill_routes'] == ['cdp', 'extension']
     assert seen[0]['default_fill_route'] == ('cdp' if cdp_options else 'extension')
-    assert seen[0]['sms_protocol'] == 1 and seen[0]['sms_fill_routes'] == (['cdp'] if cdp_options else [])
+    # SMS codes fill a page through the paired extension, and through CDP once a profile is configured.
+    assert seen[0]['sms_protocol'] == 1 and seen[0]['sms_fill_routes'] == (['cdp', 'extension'] if cdp_options else ['extension'])
+    assert seen[0]['extension_code_protocol'] == 1 and seen[0]['code_browser_configured'] is bool(cdp_options)
 
 
 @native

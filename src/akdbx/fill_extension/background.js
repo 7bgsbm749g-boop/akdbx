@@ -851,7 +851,7 @@ async function fill(message) {
       return {state: "refused"};
     }
     const guardId = processorGuards.get(facts.pin_id);
-    const hit = (facts.kind === "card" || facts.kind === "identity") && await enhancedSecurity();
+    const hit = ["card", "identity", "code"].includes(facts.kind) && await enhancedSecurity();
     let result = "refused";
     // "off": no cover check; "pixels" or "both": see seen(); null: covered.
     let cover = "off";

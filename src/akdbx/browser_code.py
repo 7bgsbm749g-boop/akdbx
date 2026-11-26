@@ -2,8 +2,9 @@
 
 It reuses the card transport and its same-origin, hit-tested DOM guards, with
 a derived pin script: one focused, visible, enabled plain input; any
-autocomplete value. The shared card script, which the browser extension also
-embeds, stays unchanged.
+autocomplete value. The shared card script stays unchanged. The browser
+extension embeds both: its code pins (``--route extension``) run this derived
+script, so both routes apply the same field rules.
 """
 import sys
 
@@ -49,6 +50,10 @@ class BrowserCodes(BrowserCards):
     def capabilities(self):
         cdp = self.configured
         routes = ['cdp'] if cdp else []
+        # The broker adds the extension route to this manager (RoutedTargets): a
+        # paired fill extension 0.13.0 or newer takes code pins on Linux, Windows
+        # and macOS. `extension_paired` says whether one is paired now.
+        routes.append('extension')
         if native_fields.supported():
             routes.append('native')
         if sys.platform.startswith('linux') or sys.platform == 'win32':
