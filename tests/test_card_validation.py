@@ -134,7 +134,7 @@ def test_page_script_reads_card_values_only_for_local_checks():
     # identity, both public; no input value can reach it.
     hardware = script[script.index('function askExtension'):script.index('async function hardwareResponses')]
     assert hardware.count('postMessage(') == 1 and 'value' not in hardware
-    assert ('window.postMessage({akdbx_hardware: "request", akdbx_hardware_id: id, challenge, identity}, '
+    assert ('window.postMessage({akdbx_hardware: "request", akdbx_hardware_id: id, challenge, identity, proof}, '
             'location.origin)') in hardware
     script = script.replace(hardware, '')
     assert not re.search(r'\b(console|localStorage|sessionStorage|indexedDB|XMLHttpRequest|sendBeacon|postMessage|innerHTML)\b', script)

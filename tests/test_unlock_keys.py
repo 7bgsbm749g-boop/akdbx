@@ -394,21 +394,47 @@ def test_vault_without_master_password_with_an_uploaded_key_file_may_use_the_bro
         server.server_close()
 
 
-def test_a_failed_broker_key_offers_the_browsing_computer_key(tmp_path, broker_key):
+def route_checked(page):
+    import re
+    match = re.search(rb'<input type="radio" name="hardware_route" value="(\w+)" data-route="\w+" checked>', page)
+    return match.group(1).decode() if match else None
+
+
+def test_both_routes_stay_selectable_and_only_a_missing_key_moves_the_choice(tmp_path, broker_key):
     database = private_copy(tmp_path, YUBIKEY_VAULT)
     broker, server, socket_path, path = serve(tmp_path, database)
+    fields = [('password', YUBIKEY_PASSWORD), ('hardware', 'on'), ('hardware_route', 'broker')]
     try:
         status, _, page = call(socket_path, 'GET', path)
-        assert b'data-hardware-route="broker"' in page
+        assert b'data-hardware-route="broker"' in page and route_checked(page) == 'broker'
+        assert b'Plugged into this computer (akdbx extension)' in page
+        # A late touch or a wrong key/password keeps the broker's key first: the user retries there.
+        broker_key.error = hardware_key.TouchTimeout()
+        status, page = post(socket_path, path, fields)
+        assert status == 409 and route_checked(page) == 'broker'
+        broker_key.error, broker_key.secret = None, b'\x03' * 20
+        status, page = post(socket_path, path, fields)
+        assert status == 401 and route_checked(page) == 'broker'
+        # No usable key on the broker's computer: this computer's key comes first, the broker's stays offered.
         broker_key.error = hardware_key.HardwareKeyError('the hardware key has no challenge-response slot set up')
-        status, page = post(socket_path, path, [('password', YUBIKEY_PASSWORD), ('hardware', 'on')])
-        assert status == 409 and b'data-hardware-route="extension"' in page
-        broker_key.error, broker_key.secret = None, b'\x03' * 20  # another key on the broker's computer
-        status, page = post(socket_path, path, [('password', YUBIKEY_PASSWORD), ('hardware', 'on')])
-        assert status == 401 and b'data-hardware-route="extension"' in page
+        status, page = post(socket_path, path, fields)
+        assert status == 409 and route_checked(page) == 'browser' and b'value="broker"' in page
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_an_empty_key_file_does_not_replace_the_password(tmp_path, broker_key):
+    """A key file that decodes to no key adds nothing: it cannot stand in for the user's key."""
+    empty = (b'<?xml version="1.0"?><KeyFile><Meta><Version>2.0</Version></Meta><Key><Data Hash="'
+             + hashlib.sha256(b'').digest()[:4].hex().upper().encode() + b'"> </Data></Key></KeyFile>')
+    assert unlock_keys.keyfile_key(empty) == b''
+    with pytest.raises(ValueError):
+        unlock_credentials({'password': [''], 'hardware': ['on'], 'keyfile': [empty]}, None)
+    with pytest.raises(ValueError):
+        unlock_credentials({'password': [''], 'keyfile': [empty]}, None)
+    # With a password it is only a (useless) extra key, as in other KeePass apps.
+    assert unlock_credentials({'password': [MASTER], 'keyfile': [empty]}, None)[0] == MASTER
 
 
 def test_page_carries_the_broker_identity_for_the_extension(tmp_path, broker_key):
@@ -428,6 +454,21 @@ def test_page_carries_the_broker_identity_for_the_extension(tmp_path, broker_key
     import re
     attribute = re.search(rb'data-hardware-identity="([^"]*)"', page).group(1).decode()
     assert json.loads(html_lib.unescape(attribute)) == identity.message()
+    # A fresh signature by the same key for this page's challenge: a copied public statement proves nothing.
+    proof = json.loads(html_lib.unescape(re.search(rb'data-hardware-proof="([^"]*)"', page).group(1).decode()))
+    statement = proof['statement']
+    assert statement['challenge'] == YUBIKEY_SEED.hex() and statement['key_id'] == identity.key_id
+    assert statement['origin'] == identity.origin and statement['type'] == 'akdbx-hardware'
+    import time
+    assert abs(statement['issued'] - time.time()) < 60
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+    from akdbx.broker_identity import _unb64url, canonical_bytes
+    raw = _unb64url(proof['signature'])
+    key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), _unb64url(identity.public_key))
+    key.verify(encode_dss_signature(int.from_bytes(raw[:32], 'big'), int.from_bytes(raw[32:], 'big')),
+               canonical_bytes(statement), ec.ECDSA(hashes.SHA256()))
 
 
 def test_kdbx3_vault_page_offers_no_hardware_key(tmp_path, broker_key):
@@ -588,6 +629,19 @@ def test_unlocked_vault_without_master_password_pairs_with_its_keys():
     assert status == 200 and broker.vault is held and broker.extension.approved
     # The unlock link is not spent: only an unlock does that.
     assert state.token == token and state.remaining() == 2
+
+
+def test_unlocked_pairing_refuses_keys_for_a_vault_file_that_changed():
+    from akdbx.web_unlock import UnlockState
+    broker, path = pairing(locked=False)
+    broker.vault = SimpleNamespace(entries=[], password=None, _akdbx_store=SimpleNamespace(verified_encrypted=b'held'))
+
+    def opener(_database, password, _keyfile, keys=None):
+        return SimpleNamespace(entries=[], password=None, _akdbx_store=SimpleNamespace(verified_encrypted=b'changed'))
+    state = UnlockState(broker, None, None, opener)
+    status, body = pair(path, state, [('password', ''), ('confirmed', 'yes')], [('keyfile', 'k', b'synthetic key')])
+    assert status == 409 and 'changed after it was unlocked' in body
+    assert state.remaining() == 3 and not broker.extension.approved
 
 
 # ----- the real kernel path ------------------------------------------------------

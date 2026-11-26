@@ -558,10 +558,11 @@ security keys only through WebAuthn, a different function). So the page
 uses one of two routes, and says which:
 
 1. **The broker's computer.** When a key with a challenge-response applet or
-   a USB key is plugged into the computer that runs the broker, the broker
-   asks it after you select **Unlock**, together with the master password.
-   If that key gives no response or the wrong one, the page offers the key on
-   your computer instead.
+   a USB key is plugged into the computer that runs the broker, the page lets
+   you choose it or the key on your computer. The broker asks its own key
+   after you select **Unlock**, together with the master password. If it
+   finds no usable key there, the page selects your computer's key for the
+   next try; after a late touch or a wrong password it keeps the broker's.
 2. **The browsing computer.** Otherwise the page asks the akdbx browser
    extension (0.17.0+) on the computer where you opened it. The extension's
    native host asks the key there, and the page sends the response to the
@@ -569,12 +570,15 @@ uses one of two routes, and says which:
    needs no broker on that computer. The extension answers at once for its
    own broker's origin. For another akdbx broker (for example your server's
    page opened on your laptop), the page carries that broker's signed
-   identity; the extension checks it without a request to the site and,
-   right after you select **Unlock**, asks you once in its own window, which
-   the page cannot draw or click. It remembers your answer for that identity
-   key at that address; another key there is a new question. A page learns
-   that the extension is installed only when it carries a valid akdbx
-   identity and you click on it.
+   identity and a fresh signature by the same key for this vault's challenge
+   (valid for an hour). The extension checks both without a request to the
+   site and, right after you select **Unlock**, asks you once in its own
+   window, which the page cannot draw or click. It remembers your answer for
+   that identity key at that address. Each later request needs a new
+   signature by that key, so a server that takes over the address and copies
+   the public identity gets nothing, and another key there is a new
+   question. A page learns that the extension is installed only when it
+   carries a valid, fresh akdbx signature and you click on it.
 
 A response is a key secret: the broker keeps it in memory only, like the
 password. A key that is not found, not touched in time or not set up for

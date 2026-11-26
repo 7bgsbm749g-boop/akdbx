@@ -987,18 +987,22 @@ async function allowedIdentities() {
     typeof item.key_id === "string") : [];
 }
 
-// "yes", "ask" (a verified identity, not allowed yet, during a click) or "no".
+// "yes", "ask" (a verified identity, not allowed yet, during a click) or "no". Another origin
+// needs its broker's origin statement and a fresh signature by the same key for this challenge:
+// a copy of the public statement, at an address that changed hands, proves nothing.
 async function hardwareAllowed(origin, message) {
   if (akdbxTrust.trustedOrigin(await storedTrust(), builtConfig()) === origin) return {allowed: "yes"};
-  let identity = null;
+  let identity = null, proven = false;
   try {
-    if (typeof message.identity === "string" && message.identity.length <= MAX_HARDWARE_IDENTITY) {
+    if (typeof message.identity === "string" && message.identity.length <= MAX_HARDWARE_IDENTITY &&
+        typeof message.proof === "string" && message.proof.length <= MAX_HARDWARE_IDENTITY) {
       identity = await akdbxTrust.verifyIdentity(JSON.parse(message.identity));
+      proven = await akdbxTrust.verifyHardwareProof(JSON.parse(message.proof), identity, message.challenge);
     }
   } catch {
     identity = null;
   }
-  if (!identity || identity.origin !== origin) return {allowed: "no"};
+  if (!identity || !proven || identity.origin !== origin) return {allowed: "no"};
   if ((await allowedIdentities()).some(item => item.origin === origin && item.key_id === identity.key_id)) {
     return {allowed: "yes"};
   }

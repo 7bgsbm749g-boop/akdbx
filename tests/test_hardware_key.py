@@ -115,7 +115,8 @@ def test_linux_discovery_matches_vendor_and_keyboard_interface(tmp_path, monkeyp
         (device / 'uevent').write_text(f'HID_ID={hid_id}\nHID_NAME=synthetic\n')
         (device / 'report_descriptor').write_bytes(descriptor)
     monkeypatch.setattr(hardware_key, 'SYSFS_HIDRAW', tmp_path)
-    assert [d.path for d in hardware_key._linux_devices()] == ['/dev/hidraw0', '/dev/hidraw2']
+    assert [(d.path, d.vendor) for d in hardware_key._linux_devices()] == [('/dev/hidraw0', 0x1050),
+                                                                           ('/dev/hidraw2', 0x1D50)]
     assert hardware_key.top_usage(DESCRIPTOR) == (1, 6) and hardware_key.top_usage(fido) == (0xF1D0, 1)
 
 
@@ -126,7 +127,7 @@ def test_no_key_and_no_answer_are_distinct(monkeypatch):
         hardware_key.responses(SEED)
     key = Key(SECRET, 2, False, False)
     key.process = lambda frame: None  # no slot set up
-    monkeypatch.setattr(hardware_key, '_hid_sessions', lambda: iter([lambda: FakeTransport(key)]))
+    monkeypatch.setattr(hardware_key, '_hid_sessions', lambda: iter([(0x1050, lambda: FakeTransport(key))]))
     with pytest.raises(hardware_key.HardwareKeyError, match='no challenge-response slot') as caught:
         hardware_key.responses(SEED)
     assert not isinstance(caught.value, hardware_key.NoHardwareKey)
@@ -135,7 +136,7 @@ def test_no_key_and_no_answer_are_distinct(monkeypatch):
 def test_responses_ask_every_key_and_slot(monkeypatch):
     first, second = Key(SECRET, 2, False, False), Key(b'\x01' * 20, 1, False, False)
     monkeypatch.setattr(hardware_key, '_hid_sessions',
-                        lambda: iter([lambda: FakeTransport(first), lambda: FakeTransport(second)]))
+                        lambda: iter([(0x1050, lambda: FakeTransport(first)), (0x1050, lambda: FakeTransport(second))]))
     monkeypatch.setattr(hardware_key, '_Pcsc', lambda: (_ for _ in ()).throw(OSError()))
     assert hardware_key.responses(SEED) == [expected(), expected(secret=b'\x01' * 20)]
 
@@ -228,11 +229,53 @@ def test_only_cards_with_a_challenge_response_applet_count(monkeypatch):
     assert hardware_key.available() is True
 
 
-def test_a_key_that_answered_over_usb_is_not_asked_again_as_a_card(monkeypatch):
+class FakeReaders:
+    """PC/SC readers: each name maps to the HMAC secret of the card on it, or None (no applet)."""
+
+    def __init__(self, cards, slow=0.0):
+        self.cards, self.slow, self.asked = cards, slow, []
+
+    def readers(self):
+        return list(self.cards)
+
+    def connect(self, reader):
+        return reader
+
+    def transmit(self, card, apdu):
+        if apdu[1] == 0xA4:
+            return b'', 0x9000 if self.cards[card] is not None else 0x6A82
+        self.asked.append(card)
+        time.sleep(self.slow)
+        if apdu[2] != 0x38:
+            return b'', 0x6A80  # slot 1 not set up
+        return hmac.new(self.cards[card], apdu[5:].rstrip(apdu[-1:]), hashlib.sha1).digest(), 0x9000
+
+    def disconnect(self, card):
+        pass
+
+    def close(self):
+        pass
+
+
+def test_a_usb_key_is_not_asked_again_through_its_own_reader_but_an_nfc_key_is(monkeypatch):
     key = Key(SECRET, 2, False, False)
-    monkeypatch.setattr(hardware_key, '_hid_sessions', lambda: iter([lambda: FakeTransport(key)]))
-    monkeypatch.setattr(hardware_key, '_Pcsc', lambda: pytest.fail('the smart card interface was asked too'))
-    assert hardware_key.responses(SEED) == [expected()]
+    nfc = b'\x07' * 20
+    readers = FakeReaders({b'Yubico YubiKey OTP+FIDO+CCID 00 00': SECRET, b'ACS ACR122U PICC Interface 00 00': nfc})
+    monkeypatch.setattr(hardware_key, '_hid_sessions', lambda: iter([(0x1050, lambda: FakeTransport(key))]))
+    monkeypatch.setattr(hardware_key, '_Pcsc', lambda: readers)
+    assert hardware_key.responses(SEED) == [expected(), expected(secret=nfc)]
+    assert all(reader.startswith(b'ACS') for reader in readers.asked)
+
+
+def test_a_card_slot_starts_only_with_time_for_its_touch(monkeypatch):
+    monkeypatch.setattr(hardware_key, '_hid_sessions', lambda: iter(()))
+    readers = FakeReaders({b'ACS ACR122U PICC Interface 00 00': SECRET})
+    monkeypatch.setattr(hardware_key, '_Pcsc', lambda: readers)
+    assert hardware_key.responses(SEED, timeout=20) == [expected()]
+    readers.asked.clear()
+    with pytest.raises(hardware_key.TouchTimeout):
+        hardware_key.responses(SEED, timeout=hardware_key.CARD_WAIT - 1)
+    assert readers.asked == []
 
 
 # ----- the real kernel path (Linux) ---------------------------------------------

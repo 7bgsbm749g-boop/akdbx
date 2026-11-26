@@ -53,11 +53,13 @@ import json
 import os
 from pathlib import Path
 import re
+import time
 
 from .relay import PrivateFolder
 
 STATEMENT_TYPE = 'akdbx-origin'
 CHANNEL_TYPE = 'akdbx-channel'
+HARDWARE_TYPE = 'akdbx-hardware'
 STATEMENT_VERSION = 1
 MAX_SEQ = 2 ** 53 - 1
 FILE_VERSION = 1
@@ -145,6 +147,19 @@ class Identity:
         """
         return self._sign({'type': CHANNEL_TYPE, 'v': STATEMENT_VERSION, 'key_id': self.key_id,
                            'broker_key': b64url(broker_key), 'extension_key': b64url(extension_key)})
+
+    def sign_hardware(self, challenge_hex, now=None):
+        """Sign one unlock page's hardware key request: this origin, this key, the vault's challenge, the time.
+
+        The page carries it to the akdbx extension, which releases a key's response
+        to another broker's origin only with a fresh one from the identity key the
+        user allowed. A copy of the public origin statement proves nothing.
+        Signed bytes: ``{"challenge":C,"issued":T,"key_id":K,"origin":O,"type":"akdbx-hardware","v":1}``
+        with the same canonical encoding; T is Unix seconds.
+        """
+        statement = {'type': HARDWARE_TYPE, 'v': STATEMENT_VERSION, 'origin': self.origin, 'key_id': self.key_id,
+                     'challenge': challenge_hex, 'issued': int(time.time() if now is None else now)}
+        return {'statement': statement, 'signature': self._sign(statement)}
 
     def __repr__(self):
         return f'Identity(origin={self.origin!r}, seq={self.seq}, key_id={self.key_id!r})'

@@ -52,7 +52,7 @@ def parse_form(raw: bytes, **options) -> dict[str, list[str]]:
 _DISPOSITION = re.compile(r'form-data; name="([^"\r\n]*)"(?:; filename="([^"\r\n]*)")?')
 _BOUNDARY = re.compile(r"[0-9A-Za-z'()+_,./:=?-]{1,70}")
 # The page's key file and hardware key fields.
-KEY_FIELDS = frozenset({'keyfile', 'challenge', 'response', 'hardware'})
+KEY_FIELDS = frozenset({'keyfile', 'challenge', 'response', 'hardware', 'hardware_route'})
 
 
 def is_multipart(headers) -> bool:
@@ -142,7 +142,7 @@ def unlock_credentials(values: dict[str, list], configured_keyfile) -> tuple[str
     if keyfile is not None and configured_keyfile is not None:
         raise ValueError('the broker already has a key file')
     hardware = one('hardware', str)
-    if hardware not in (None, 'on'):
+    if hardware not in (None, 'on') or one('hardware_route', str) not in (None, 'broker', 'browser'):
         raise ValueError('invalid hardware field')
     texts = values.get('response', [])
     if len(texts) > MAX_RESPONSES or any(not isinstance(text, str) for text in texts):
@@ -165,6 +165,11 @@ def unlock_credentials(values: dict[str, list], configured_keyfile) -> tuple[str
     if not password:
         if keyfile is None and not responses:
             raise ValueError('empty password')
+        if not responses:
+            # The key file is then the user's only key: it must add key material.
+            from .unlock_keys import keyfile_key
+            if not keyfile_key(keyfile):
+                raise ValueError('the key file has no key')
         password = None
     return password, keys
 
@@ -192,15 +197,31 @@ def hardware_problem(exc, computer: str) -> str:
     return f"The hardware key did not answer: {exc}." + tail
 
 
+def _compact(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(',', ':'))
+
+
+def browsing_first(keys, exc) -> bool:
+    """After the broker's own key found nothing usable, offer this computer's key first.
+
+    A late touch or a wrong password keeps the broker's key first.
+    """
+    from .hardware_key import HardwareKeyError, TouchTimeout
+    return (keys is not None and keys.broker_key and isinstance(exc, HardwareKeyError)
+            and not isinstance(exc, TouchTimeout))
+
+
 def keys_section(state, *, open_section: bool = False, browsing_key: bool = False) -> str:
     """The form's key file and hardware key fields; empty when the vault can use neither.
 
     The key file field shows when the broker has no key file of its own. The
     hardware key field shows for a vault that can use one (KDBX 4, Argon2).
-    The page uses the key on the broker's computer when one is plugged in
-    there, and otherwise (or with ``browsing_key``, after the broker's key
-    failed) asks the akdbx extension on the browsing computer. The page carries
-    the broker's signed identity, so the extension checks it without a request.
+    When the broker's computer has a key, the user chooses it or the key on
+    the browsing computer (``browsing_key`` preselects the latter after the
+    broker's key found nothing usable); otherwise the page asks the akdbx
+    extension on the browsing computer. The page carries the broker's signed
+    identity and a fresh signature for its challenge, which the extension
+    checks without a request to the site.
     """
     from . import hardware_key
     parts, names = [], []
@@ -215,25 +236,38 @@ def keys_section(state, *, open_section: bool = False, browsing_key: bool = Fals
         names.append('hardware key')
         computer = html.escape(computer_name())
         try:
-            here = not browsing_key and hardware_key.available()
+            here = hardware_key.available()
         except Exception:
             here = False
         identity = getattr(getattr(state.broker, 'extension', None), 'identity', None)
-        try:
-            signed = json.dumps(identity.message(), sort_keys=True, separators=(',', ':')) if identity else ''
-        except Exception:
-            signed = ''
-        signed = f' data-hardware-identity="{html.escape(signed, quote=True)}"' if signed else ''
-        where = (f'Touch the key on <strong>{computer}</strong> when it flashes.' if here else
-                 'Plug the key into this computer and touch it when it flashes. The akdbx browser '
-                 'extension talks to the key.')
+        signed = ''
+        if identity is not None:
+            try:
+                # The extension checks both without a request to the site: the public origin
+                # statement, and a fresh signature by the same key for this page's challenge.
+                signed = (f' data-hardware-identity="{html.escape(_compact(identity.message()), quote=True)}"'
+                          f' data-hardware-proof="{html.escape(_compact(identity.sign_hardware(seed.hex())), quote=True)}"')
+            except Exception:
+                signed = ''
         touch = html.escape(f'Touch the hardware key on {computer_name()} when it flashes.', quote=True)
+        choice = ''
+        if here:
+            # Both routes stay selectable; after the broker found no usable key, this computer comes first.
+            choice = ('<div class="hardware-route" role="radiogroup" aria-label="Where the key is">'
+                      f'<label><input type="radio" name="hardware_route" value="broker" data-route="broker"'
+                      f'{"" if browsing_key else " checked"}><span>Plugged into <strong>{computer}</strong></span></label>'
+                      '<label><input type="radio" name="hardware_route" value="browser" data-route="extension"'
+                      f'{" checked" if browsing_key else ""}><span>Plugged into this computer (akdbx extension)</span></label></div>')
+            where = 'Touch the key when it flashes.'
+        else:
+            where = ('Plug the key into this computer and touch it when it flashes. The akdbx browser '
+                     'extension talks to the key.')
         parts.append(
             '<div class="field unlock-hardware"><label><input type="checkbox" name="hardware" value="on"'
             f' data-hardware-key data-hardware-route="{"broker" if here else "extension"}"'
             f' data-hardware-challenge="{seed.hex()}" data-touch-text="{touch}"{signed} aria-describedby="hardware-note">'
             'Use my hardware key</label>'
-            f'<p id="hardware-note" class="setup-note">{where}</p>'
+            f'{choice}<p id="hardware-note" class="setup-note">{where}</p>'
             f'<input type="hidden" name="challenge" value="{seed.hex()}"></div>')
     if not parts:
         return ''
@@ -1185,13 +1219,12 @@ def handler_for(state: UnlockState):
                     if keys is not None and keys.broker_key:
                         # The key on this computer waits up to its touch timeout.
                         from .hardware_key import TOUCH_TIMEOUT
-                        self.server.extend_request(self.request, TOUCH_TIMEOUT + 5)
+                        self.server.extend_request(self.request, TOUCH_TIMEOUT + 20)
                     try:
                         vault = call_opener(state, password, keys)
                     except Exception as exc:
                         from .hardware_key import HardwareKeyError
-                        # After the broker's own key failed, offer the key on the browsing computer.
-                        browsing = keys is not None and keys.broker_key
+                        browsing = browsing_first(keys, exc)
                         password, keys_used, keys = "", keys is not None, None
                         if isinstance(exc, (ChallengeChanged, HardwareKeyError)):
                             # No response, or one for another challenge: not a failed attempt.
@@ -1219,7 +1252,7 @@ def handler_for(state: UnlockState):
                              "AKDBX could not unlock the database. Check your master password and try again. ")
                             + (f"{left} attempts left for this link." if left != 1 else
                                "1 attempt left for this link; another failure blocks it."),
-                            keys_open=keys_used, browsing_key=browsing))
+                            keys_open=keys_used))
                         return
                     finally:
                         password, keys = "", None

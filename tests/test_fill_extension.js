@@ -998,6 +998,23 @@ test("the popup and its reset are reachable only from the popup page", () => {
 
 // ----- hardware key for unlock pages ---------------------------------------
 const HARDWARE_ANSWER = "ab".repeat(20);
+
+// A broker identity for `origin` and a signer for its per-page hardware statements (broker_identity.sign_hardware).
+async function hardwareBroker(origin) {
+  const pair = await crypto.subtle.generateKey({name: "ECDSA", namedCurve: "P-256"}, false, ["sign", "verify"]);
+  const point = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  const b64 = bytes => Buffer.from(bytes).toString("base64url");
+  const sign = async statement => b64(new Uint8Array(await crypto.subtle.sign({name: "ECDSA", hash: "SHA-256"},
+    pair.privateKey, new TextEncoder().encode(trust.canonical(statement)))));
+  const keyId = b64(new Uint8Array(await crypto.subtle.digest("SHA-256", point)));
+  const statement = {type: "akdbx-origin", v: 1, origin, seq: 1, key_id: keyId};
+  const identity = JSON.stringify({public_key: b64(point), statement, signature: await sign(statement)});
+  const proof = async (challenge, issued = Math.floor(Date.now() / 1000)) => {
+    const hardware = {type: "akdbx-hardware", v: 1, origin, key_id: keyId, challenge, issued};
+    return JSON.stringify({statement: hardware, signature: await sign(hardware)});
+  };
+  return {identity, proof, keyId};
+}
 const pageSender = (origin, extra = {}) =>
   ({id: "jjoamaejjkldcjcpgncoomoaagdfimhg", tab: {id: 3}, frameId: 0, url: origin + "/?token=synthetic", ...extra});
 
@@ -1043,36 +1060,45 @@ test("the trusted broker origin gets the hardware key's answer from its own host
   assert.deepEqual(await closed, {error: "unavailable"});
 });
 
-test("only a content script in a top HTTPS document may ask, and a page without a verified identity gets nothing", async () => {
+test("only a content script in a top HTTPS document may ask, and a page without a fresh signed identity gets nothing", async () => {
   const calls = [];
   const {listeners, posted, chrome} = loadBackground({builtOrigin: LOCAL, fetch: identityFetch("{}", {calls})});
   for (const sender of [pageSender(LOCAL, {frameId: 2}), pageSender(LOCAL, {tab: undefined}),
     pageSender(LOCAL, {id: "a".repeat(32)}), pageSender("http://example.com")]) {
     assert.equal(await askHardware(listeners, {op: "hardware-key-allowed"}, sender), "ignored");
   }
-  const other = "https://phishing.example";
-  // Another site's own statement does not verify for this origin, and a click does not change that.
-  const copied = JSON.stringify(await hostKeyStatement(RELAY));
-  for (const message of [{}, {identity: "not json", activation: true}, {identity: copied, activation: true}]) {
-    assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", ...message}, pageSender(other)),
-      {ok: false});
-    assert.deepEqual(await askHardware(listeners, {op: "hardware-key", challenge: "01".repeat(32), ...message},
-      pageSender(other)), {error: "denied"});
+  const other = "https://phishing.example", challenge = "01".repeat(32);
+  const relay = await hardwareBroker(RELAY), own = await hardwareBroker(other);
+  for (const message of [
+    {},
+    {identity: "not json", proof: "{}", activation: true},
+    // Another broker's statement and proof, copied: they name another origin.
+    {identity: relay.identity, proof: await relay.proof(challenge), activation: true},
+    // Its own statement without a proof, with an old proof, or a proof for another challenge.
+    {identity: own.identity, activation: true},
+    {identity: own.identity, proof: await own.proof(challenge, Math.floor(Date.now() / 1000) - 7200), activation: true},
+    {identity: own.identity, proof: await own.proof("02".repeat(32)), activation: true},
+  ]) {
+    assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", challenge, ...message},
+      pageSender(other)), {ok: false});
+    assert.deepEqual(await askHardware(listeners, {op: "hardware-key", challenge, ...message}, pageSender(other)),
+      {error: "denied"});
   }
   assert.equal(chrome.windows.opened.length, 0);
   assert.equal(posted.some(message => message.type === "hardware-key"), false);
   assert.deepEqual(calls, []);  // no request to the site: it cannot tell that the extension is there
 });
 
-test("another akdbx broker asks once, after a click, and the answer is bound to its identity key", async () => {
-  const identity = JSON.stringify(await hostKeyStatement(RELAY));
+test("another akdbx broker asks once, after a click, and the answer needs a fresh signature by the same key", async () => {
+  const broker = await hardwareBroker(RELAY), challenge = "02".repeat(32);
   const local = {};
   const {listeners, posted, chrome} = loadBackground({builtOrigin: LOCAL, local});
+  const fresh = async () => ({challenge, identity: broker.identity, proof: await broker.proof(challenge)});
   // Without a click on the page, a new identity gets no answer and no window.
-  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", identity}, pageSender(RELAY)), {ok: false});
-  const asked = {op: "hardware-key", challenge: "02".repeat(32), identity, activation: true};
-  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", identity, activation: true},
-    pageSender(RELAY)), {ok: true});
+  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", ...await fresh()}, pageSender(RELAY)),
+    {ok: false});
+  const asked = {op: "hardware-key", ...await fresh(), activation: true};
+  assert.deepEqual(await askHardware(listeners, {...asked, op: "hardware-key-allowed"}, pageSender(RELAY)), {ok: true});
   // The user closes the window: denied, nothing asked.
   let reply = askHardware(listeners, asked, pageSender(RELAY));
   await settleHardware(() => chrome.windows.opened.length === 1);
@@ -1093,17 +1119,19 @@ test("another akdbx broker asks once, after a click, and the answer is bound to 
   const request = posted.find(message => message.type === "hardware-key");
   fromHost(listeners, {type: "hardware-key", id: request.id, responses: [HARDWARE_ANSWER]});
   assert.deepEqual(await reply, {responses: [HARDWARE_ANSWER]});
-  const statement = JSON.parse(identity).statement;
-  assert.deepEqual(copy(local.hardware_key_identities), [{origin: RELAY, key_id: statement.key_id}]);
-  // Allowed: the same identity needs no click and no window next time.
-  const again = askHardware(listeners, {op: "hardware-key", challenge: "02".repeat(32), identity}, pageSender(RELAY));
+  assert.deepEqual(copy(local.hardware_key_identities), [{origin: RELAY, key_id: broker.keyId}]);
+  // Allowed: a fresh signature by the same key needs no click and no window next time.
+  const again = askHardware(listeners, {op: "hardware-key", ...await fresh()}, pageSender(RELAY));
   await settleHardware(() => posted.filter(message => message.type === "hardware-key").length === 2);
   assert.equal(chrome.windows.opened.length, 2);
   const next = posted.filter(message => message.type === "hardware-key").at(-1);
   fromHost(listeners, {type: "hardware-key", id: next.id, error: "timeout"});
   assert.deepEqual(await again, {error: "timeout"});
-  // Another broker at the same address (another identity key) is a new question.
-  const replaced = JSON.stringify(await hostKeyStatement(RELAY));
-  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", identity: replaced}, pageSender(RELAY)),
-    {ok: false});
+  // A server that later answers at this address with the copied public statement, but no fresh
+  // signature by that key, gets nothing; another key at the address is a new question.
+  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", challenge, identity: broker.identity},
+    pageSender(RELAY)), {ok: false});
+  const replaced = await hardwareBroker(RELAY);
+  assert.deepEqual(await askHardware(listeners, {op: "hardware-key-allowed", challenge, identity: replaced.identity,
+    proof: await replaced.proof(challenge)}, pageSender(RELAY)), {ok: false});
 });

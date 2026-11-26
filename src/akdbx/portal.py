@@ -182,6 +182,8 @@ button:disabled { cursor: default; opacity: .4; }
 .unlock-keys > summary:focus-visible { outline: 2px solid #ffffff5c; outline-offset: 3px; border-radius: 4px; }
 .unlock-keys[open] > summary { color: #fff; }
 .unlock-keys-body > .setup-note { margin: 0 !important; }
+.hardware-route { display: grid; gap: 6px; margin-top: 10px; }
+.field.unlock-hardware .hardware-route label { font-size: 13px; color: #ffffffcc; align-items: center; }
 .field.unlock-hardware label { display: flex; align-items: center; gap: 10px; margin: 0; color: #fff; font-size: 14px; }
 .unlock-keys .copy-field .copy-text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 button.copy-field {
@@ -641,7 +643,7 @@ SCRIPT = r""""use strict";
   // The akdbx extension on this computer asks the hardware key. The page sends
   // only the vault's challenge, which is not secret; the responses come back
   // for this one unlock request and are never stored.
-  function askExtension(challenge, identity) {
+  function askExtension(challenge, identity, proof) {
     return new Promise(resolve => {
       const id = crypto.randomUUID();
       let timer;
@@ -664,7 +666,7 @@ SCRIPT = r""""use strict";
       };
       window.addEventListener("message", listen);
       timer = setTimeout(() => done({error: "no-extension"}), 5000);
-      window.postMessage({akdbx_hardware: "request", akdbx_hardware_id: id, challenge, identity}, location.origin);
+      window.postMessage({akdbx_hardware: "request", akdbx_hardware_id: id, challenge, identity, proof}, location.origin);
     });
   }
   async function hardwareResponses(form, status) {
@@ -672,18 +674,21 @@ SCRIPT = r""""use strict";
     const key = form.querySelector("[data-hardware-key]");
     if (!key || !key.checked) return true;
     // The broker's own key never replaces the master password: with an empty
-    // password, the key must come from this computer.
+    // password and no key file, the key must come from this computer.
     const password = form.querySelector("#password"), required = password.required;
+    const file = form.querySelector("input[type=file]");
     password.required = true;  // Ask the browser whether the field is empty; its text is never read.
-    const empty = !password.checkValidity();
+    const empty = !password.checkValidity() && !(file && file.files.length);
     password.required = required;
-    if (key.getAttribute("data-hardware-route") !== "extension" && !empty) {
+    const chosen = form.querySelector("input[name=hardware_route]:checked");
+    const route = chosen ? chosen.getAttribute("data-route") : key.getAttribute("data-hardware-route");
+    if (route !== "extension" && !empty) {
       setStatus(status, key.getAttribute("data-touch-text"), "");
       return true;
     }
     setStatus(status, "Touch your hardware key when it flashes.", "");
     const reply = await askExtension(key.getAttribute("data-hardware-challenge"),
-      key.getAttribute("data-hardware-identity"));
+      key.getAttribute("data-hardware-identity"), key.getAttribute("data-hardware-proof"));
     const responses = Array.isArray(reply.responses) ?
       reply.responses.filter(item => typeof item === "string" && /^[0-9a-f]{40}$/.test(item)).slice(0, 4) : [];
     if (!responses.length) {

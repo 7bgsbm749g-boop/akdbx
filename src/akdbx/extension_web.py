@@ -31,9 +31,9 @@ def handle_pairing(handler, state):
     from .totp import https_origin
     from .unlock_keys import ChallengeChanged
     from .hardware_key import TOUCH_TIMEOUT, HardwareKeyError
-    from .web_unlock import (HARDWARE_CHANGED, KEY_FIELDS, OPEN_FAILED, _page, _submit, body_limit, call_opener,
-                             computer_name, hardware_problem, is_multipart, keys_section, parse_unlock_body,
-                             unlock_credentials)
+    from .web_unlock import (HARDWARE_CHANGED, KEY_FIELDS, OPEN_FAILED, _page, _submit, body_limit, browsing_first,
+                             call_opener, computer_name, hardware_problem, is_multipart, keys_section,
+                             parse_unlock_body, unlock_credentials)
     if urlsplit(handler.path).path != ROUTE:
         return False
     broker = state.broker
@@ -58,11 +58,11 @@ def handle_pairing(handler, state):
         held = getattr(broker.vault, 'password', None)
         return broker.locked or not (isinstance(held, str) and held)
 
-    def form(error='', keys_open=False):
+    def form(error='', keys_open=False, browsing_key=False):
         action = ROUTE + '?token=' + html.escape(token, quote=True)
         message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
         unlock = '<p>The vault is locked: this also unlocks it.</p>' if broker.locked else ''
-        keys = keys_section(state, open_section=keys_open) if by_keys() else ''
+        keys = keys_section(state, open_section=keys_open, browsing_key=browsing_key) if by_keys() else ''
         encoding = ' enctype="multipart/form-data"' if keys else ''
         # The unlock page's form and button: the shared script posts it, shows the busy
         # state and then replaces the sheet with the result page (success or error).
@@ -138,16 +138,18 @@ def handle_pairing(handler, state):
             checked, was_locked = by_keys(), broker.locked
             if checked:
                 if keys is not None and keys.broker_key and hasattr(handler, 'server'):  # the key's touch
-                    handler.server.extend_request(handler.request, TOUCH_TIMEOUT + 5)
+                    handler.server.extend_request(handler.request, TOUCH_TIMEOUT + 20)
                 try:
                     vault = call_opener(state, password, keys)
                 except Exception as exc:
+                    browsing = browsing_first(keys, exc)
                     password = keys = None
                     if isinstance(exc, (ChallengeChanged, HardwareKeyError)):
                         # No response, or one for another challenge: not a failed attempt.
                         state.cancel_attempt(attempt)
                         send(HTTPStatus.CONFLICT, form(HARDWARE_CHANGED if isinstance(exc, ChallengeChanged)
-                                                       else hardware_problem(exc, computer_name()), keys_open=True))
+                                                       else hardware_problem(exc, computer_name()), keys_open=True,
+                                                       browsing_key=browsing))
                         return True
                     if not is_wrong_credentials(exc):
                         # A store or I/O error is not a failed attempt.
@@ -155,8 +157,20 @@ def handle_pairing(handler, state):
                         send(HTTPStatus.SERVICE_UNAVAILABLE, form(OPEN_FAILED))
                         return True
                 else:
-                    # An open vault stays as it is: opening the file only proved the keys.
-                    ok = (broker.unlock(vault) or not broker.locked) if was_locked else True
+                    if was_locked:
+                        ok = broker.unlock(vault) or not broker.locked
+                    else:
+                        # The open vault stays as it is: opening the file only proved the keys, and only
+                        # for the vault in memory. A file that another app changed since is refused.
+                        def snapshot(item):
+                            return getattr(getattr(item, '_akdbx_store', None), 'verified_encrypted', None)
+                        if snapshot(vault) != snapshot(broker.vault):
+                            state.cancel_attempt(attempt)
+                            send(HTTPStatus.CONFLICT, form('The vault file changed after it was unlocked. Lock '
+                                                           'AKDBX, unlock it again, then pair. This attempt did '
+                                                           "not count toward the link's limit."))
+                            return True
+                        ok = True
                 if ok and was_locked:
                     state.record_success(attempt)
             else:

@@ -30,6 +30,8 @@ CHALLENGE_BYTES = 64
 RESPONSE_BYTES = 20
 # The key's own touch timeout is 15 s; allow for the transfer around it.
 TOUCH_TIMEOUT = 20.0
+# A smart card exchange cannot be stopped once sent: start one only with this much time left.
+CARD_WAIT = 15.0
 # HMAC-SHA1 challenge commands, slot 2 first: slot 1 usually holds an OTP.
 SLOT_COMMANDS = ((2, 0x38), (1, 0x30))
 # USB vendors and products that speak the challenge-response protocol.
@@ -193,6 +195,7 @@ OTP_USAGE = (0x01, 0x06)
 class Device:
     transport: str
     path: str
+    vendor: int = 0
 
 
 # ----- Linux hidraw ----------------------------------------------------------------
@@ -218,7 +221,7 @@ def _linux_devices():
                 continue
         except (OSError, KeyError, ValueError):
             continue
-        found.append(Device('hidraw', '/dev/' + entry.name))
+        found.append(Device('hidraw', '/dev/' + entry.name, int(vendor, 16)))
     return found
 
 
@@ -349,7 +352,7 @@ def _windows_devices():
                 finally:
                     hid.HidD_FreePreparsedData(parsed)
                 if (caps.UsagePage, caps.Usage) == OTP_USAGE:
-                    found.append(Device('winhid', path))
+                    found.append(Device('winhid', path, attributes.VendorID))
             finally:
                 kernel32.CloseHandle(handle)
     finally:
@@ -447,7 +450,7 @@ class _MacSession:
                 number = lambda name: _mac_number(self.iokit, self.cf, device, name)  # noqa: E731
                 if (_allowed(number(b'VendorID') or 0, number(b'ProductID') or 0)
                         and (number(b'PrimaryUsagePage'), number(b'PrimaryUsage')) == OTP_USAGE):
-                    self.devices.append(device)
+                    self.devices.append((device, number(b'VendorID')))
         finally:
             self.cf.CFRelease(found)
 
@@ -592,20 +595,20 @@ def card_hmac(transmit, command: int, challenge: bytes) -> bytes:
 
 # ----- discovery and the public API ------------------------------------------------
 def _hid_sessions():
-    """Yield (open, close) pairs for each matching HID interface on this computer."""
+    """Yield (USB vendor, open) for each matching HID interface on this computer."""
     if sys.platform == 'win32':
         for device in _windows_devices():
-            yield lambda path=device.path: _WinHid(path)
+            yield device.vendor, lambda path=device.path: _WinHid(path)
     elif sys.platform == 'darwin':
         session = _MacSession()
         try:
-            for device in session.devices:
-                yield lambda device=device: _MacHid(session, device)
+            for device, vendor in session.devices:
+                yield vendor, lambda device=device: _MacHid(session, device)
         finally:
             session.close()
     else:
         for device in _linux_devices():
-            yield lambda path=device.path: _Hidraw(path)
+            yield device.vendor, lambda path=device.path: _Hidraw(path)
 
 
 def _safe(generator):
@@ -663,10 +666,11 @@ def responses(challenge: bytes, *, timeout: float = TOUCH_TIMEOUT,
     and HardwareKeyError when keys are found but none answers.
     """
     deadline = time.monotonic() + timeout
-    found, answers, failure = False, [], None
+    found, answers, failure, hid_yubico = False, [], None, False
     with _LOCK:
-        for opener in _safe(_hid_sessions()):
+        for vendor, opener in _safe(_hid_sessions()):
             found = True
+            hid_yubico = hid_yubico or vendor == YUBICO_VID
             try:
                 transport = opener()
             except HardwareKeyError as exc:
@@ -685,23 +689,25 @@ def responses(challenge: bytes, *, timeout: float = TOUCH_TIMEOUT,
                 failure = HardwareKeyError('the hardware key could not be read')
             finally:
                 transport.close()
-        # A USB key that answered over HID is also a smart card reader: never ask it twice.
+        # A USB YubiKey that HID already asked is also a smart card reader named after it: never ask it twice.
         try:
-            pcsc = None if answers or isinstance(failure, TouchTimeout) else _Pcsc()
+            pcsc = None if isinstance(failure, TouchTimeout) else _Pcsc()
         except Exception:
             pcsc = None
         if pcsc is not None:
             try:
                 for reader in pcsc.readers():
-                    if time.monotonic() > deadline:
-                        failure = failure or TouchTimeout()
-                        break
+                    if hid_yubico and b'yubico' in reader.lower():
+                        continue
                     card = pcsc.connect(reader)
                     if card is None:
                         continue
                     found = True
                     try:
                         for _, command in SLOT_COMMANDS:
+                            if deadline - time.monotonic() < CARD_WAIT:
+                                failure = failure or TouchTimeout()
+                                break
                             try:
                                 answers.append(card_hmac(lambda apdu: pcsc.transmit(card, apdu), command, challenge))
                             except _Rejected:
