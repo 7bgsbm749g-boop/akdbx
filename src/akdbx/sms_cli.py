@@ -107,11 +107,18 @@ def _extension_code_refusal(caps):
             or not isinstance(minimum, str) or not EXTENSION_VERSION_FORMAT.fullmatch(minimum)):
         return 'broker lacks extension code protocol 1; request not sent'
     browsers = caps.get('extension_browsers')
-    if not isinstance(browsers, list) or not any(
-            isinstance(b, dict) and b.get('paired') is True and valid_extension_version(b.get('version'))
-            and version_parts(b['version']) >= version_parts(minimum) for b in browsers):
+    able = [b for b in browsers if isinstance(b, dict) and b.get('paired') is True
+            and valid_extension_version(b.get('version')) and version_parts(b['version']) >= version_parts(minimum)
+            ] if isinstance(browsers, list) else []
+    if not able:
         return (f'no paired akdbx fill extension {minimum} or newer is connected: rebuild the folder the browser '
                 'loads with `akdbx extension build`, reload it and pair it; request not sent')
+    # The broker refuses a stale or another build with a long message; name the fix here instead.
+    if all(b.get('version_status') in ('stale', 'mismatch') for b in able):
+        return ('the paired akdbx extension runs a stale build or another build than this broker\'s '
+                '(version_status in extension_browsers): restart the browser, or rebuild the folder it loads with '
+                '`akdbx extension build` (restart the broker if akdbx was updated), reload it and pair it again; '
+                'request not sent')
     return None
 
 

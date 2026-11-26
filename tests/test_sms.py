@@ -471,6 +471,10 @@ def test_cli_pins_a_code_through_the_extension_only_when_broker_and_extension_ca
     receipt = dict(ok=True, field='one-time-code', target='c' * 64, expires_in=30, code_delivery='extension-dom-v1')
     code, sent, out = run_cli(CODE_PIN + ['--route', 'extension'], [EXTENSION_PING, receipt], capsys)
     assert code == 0 and sent[1]['route'] == 'extension' and json.loads(out.out) == receipt
+    # One current paired browser is enough; the broker picks the page's browser.
+    two = dict(EXTENSION_PING, extension_browsers=[dict(browsers()[0], version_status='mismatch'), browsers()[0]])
+    code, sent, _ = run_cli(CODE_PIN + ['--route', 'extension'], [two, receipt], capsys)
+    assert code == 0 and len(sent) == 2
     # The broker's default route needs no option; the broker applies it.
     code, sent, _ = run_cli(CODE_PIN, [dict(EXTENSION_PING, default_fill_route='extension'), receipt], capsys)
     assert code == 0 and 'route' not in sent[1]
@@ -487,6 +491,10 @@ def test_cli_pins_a_code_through_the_extension_only_when_broker_and_extension_ca
             (dict(EXTENSION_PING, extension_browsers=browsers(paired=False)), [],
              'no paired akdbx fill extension 0.13.0 or newer'),
             (dict(EXTENSION_PING, extension_browsers=[]), [], 'no paired akdbx fill extension 0.13.0 or newer'),
+            (dict(EXTENSION_PING, extension_browsers=[dict(browsers()[0], version_status='mismatch')]), [],
+             'runs a stale build or another build than this broker'),
+            (dict(EXTENSION_PING, extension_browsers=[dict(browsers()[0], version_status='stale')]), [],
+             'runs a stale build or another build than this broker'),
             (EXTENSION_PING, ['--browser-slot', 'slot2'], 'browser slot applies only to the cdp route')):
         code, sent, out = run_cli(CODE_PIN + ['--route', 'extension'] + argv, [caps], capsys)
         assert code == 1 and len(sent) == 1 and error in json.loads(out.out)['error'], (caps, out.out)
