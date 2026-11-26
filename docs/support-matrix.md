@@ -35,9 +35,9 @@ CI jobs (all in `.github/workflows/`):
 
 | Job | Workflow | What it runs |
 | --- | --- | --- |
-| `linux` | `tests.yml` | Unit and contract suites on Ubuntu, including Android with a simulated device, and window-pin key events (usernames, TOTP, SMS codes) to real windows of an isolated Xvfb display |
+| `linux` | `tests.yml` | Unit and contract suites on Ubuntu, including Android with a simulated device, the X11 key-event transport, and window-pin SMS code fills to real windows of an isolated Xvfb display |
 | `linux-native-fields` | `tests.yml` | Real GTK and Qt apps on X11, XWayland and native Wayland (Weston), including window-pin usernames and SMS codes to a GTK entry |
-| `native-merge` | `tests.yml` | Merge, admission, recovery and key-file suites with full Git history, and the full-cost admission deadlines |
+| `native-merge` | `tests.yml` | Merge, admission, recovery and key-file suites with full Git history and a pinned KeePassXC 2.7.10 as the independent reference, with no skips; the full-cost admission deadlines |
 | `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, cover checks |
 | `macos-extension-browser` | `tests.yml` | Chrome for Testing 153 (arm64) with the built extension on macOS 15: the extension suite, TOTP, and QR capture on the CDP and extension routes |
 | `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension |
@@ -145,7 +145,7 @@ install from 0.49.0.
 | `capture-totp`, text key (top document) | ✅ 0.35.0 (ext 0.6.0 for grouped keys) · `linux-extension-browser` | ✅ 0.35.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
 | `capture-totp`, QR code (top document) | ✅ 0.50.1 (ext 0.14.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` |
 | SMS code | ✅ 0.50.1 (ext 0.13.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` |
-| Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ same · `macos-extension-browser` (S) |
+| Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ login and card 0.43.0, TOTP 0.49.0 · `macos-extension-browser` (S) |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
 ## Extension route, Firefox
@@ -210,13 +210,13 @@ broker takes attached devices only (after 0.50.1).
 
 ## Tests that CI skips
 
-Every `tests/test_*.py` file runs in at least one CI job. These cases still
-skip there, for the reason given:
+Every `tests/test_*.py` file is in at least one CI job. Some cases skip in a
+job, for the reason given. Only `test_relay_integration.py` runs in no job.
 
 | Cases | Reason |
 | --- | --- |
-| The independent KeePassXC merge comparison (`tests/keepassxc_reference.py`) in `test_admission.py`, `test_group_admission.py`, `test_group_selection.py`, `test_merge.py` and `test_versions.py`, and the KeePassXC cases of `test_protected_decoding.py` and `test_unlock_keys.py` | They need `/usr/bin/keepassxc-cli`, and the comparison needs exactly KeePassXC 2.7.10. CI installs no KeePassXC. Run them on a host that has KeePassXC 2.7.10. |
-| `test_relay_integration.py` | It needs the akdbx-relay server from its own repository, which this CI does not install. |
+| `test_relay_integration.py` (skipped in `linux`) | It needs the akdbx-relay server from its own repository, which this CI does not install. |
+| The KeePassXC case of `test_unlock_keys.py` (skipped in `linux`, left out in `macos-broker`) | It needs `/usr/bin/keepassxc-cli`. `native-merge` installs KeePassXC 2.7.10 and runs it, with the KeePassXC cases of the merge files. |
 | Cases for one operating system in a shared file | They run in that system's job. |
 
 ## Notes
@@ -277,7 +277,10 @@ skip there, for the reason given:
   Linux job forces that order and proves the fix. The Windows job runs
   headless Edge, where the page keeps its focus while the popup is open, so
   the race cannot happen there: the fix is not proven in a headed Windows
-  browser. If a popup TOTP fill reports `field changed or hidden; nothing
+  browser. The macOS job runs headless Chrome for Testing and checks the
+  order as the Windows job does: it forces the race only when the popup
+  takes the page's focus, so the fix is not proven in a headed macOS browser
+  either. If a popup TOTP fill reports `field changed or hidden; nothing
   filled`, focus the field and choose the account again.
 - **T** `akdbx android setup` refuses on Windows, so the operator writes the
   device file by hand (private DACL and trusted folders required; 0.50.1 added
