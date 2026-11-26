@@ -1696,9 +1696,9 @@ class Setup:
             if self.socket_explicit:
                 argv += ['--socket', str(self.socket) + '-capture']
         else:
-            from .extension_host import linux_manifest_dir
+            # The importer picks the browser's folder and creates it when missing (Brave on macOS uses Chrome's).
             name = 'agentic-kdbx-unlock.sock' if Path(self.socket).name == 'agentic-kdbx.sock' else 'akdbx-unlock.sock'
-            argv += ['--socket', Path(self.socket).with_name(name), '--manifest-dir', linux_manifest_dir(browser)]
+            argv += ['--socket', Path(self.socket).with_name(name), '--browser', browser]
         applied = self.change('features', f'register the capture native host for {browser}',
                               [shell_command(argv, self.windows)], lambda: self._checked(argv), selected=True,
                               key='capture_host')
