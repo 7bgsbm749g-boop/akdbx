@@ -19,7 +19,7 @@ from pathlib import Path
 from threading import Event
 from typing import Callable, Protocol
 
-from .native_fields import NativeFields, NativePin, DELIVERY as NATIVE_DELIVERY
+from .native_fields import ACCESSIBILITY_ERROR, AccessibilityRequired, NativeFields, NativePin, DELIVERY as NATIVE_DELIVERY
 from .target import TargetPins, TargetError, DeliveryError, DELIVERY, capabilities as target_capabilities, failure as target_failure
 from .writes import (WriteManager, WriteError, generated_capabilities, sso_capabilities, passwordless_capabilities, passwordless_identity,
                      additional_origins, additional_urls, additional_urls_capabilities, allowed_origins,
@@ -567,6 +567,8 @@ class Broker:
         if action in {'list-native-fields', 'pin-native-target'}:
             try:
                 return self.native.discover(request) if action == 'list-native-fields' else self.native.pin(request)
+            except AccessibilityRequired:
+                return dict(ok=False, error=ACCESSIBILITY_ERROR, delivery='not-started')
             except Exception:
                 return target_failure()
         if action == 'pin-target':

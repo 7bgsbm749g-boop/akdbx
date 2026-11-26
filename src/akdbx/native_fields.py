@@ -24,8 +24,15 @@ MAX_TEXT = 65536
 MODES = ('username', 'password', 'login', 'totp', 'card', 'identity', 'read')
 
 
+ACCESSIBILITY_ERROR = 'macOS Accessibility permission required for the broker'
+
+
+class AccessibilityRequired(TargetError):
+    pass
+
+
 def supported():
-    return sys.platform.startswith('linux') or sys.platform == 'win32'
+    return sys.platform.startswith('linux') or sys.platform in {'win32', 'darwin'}
 
 
 def backend():
@@ -33,6 +40,8 @@ def backend():
         from .linux_fields import scan
     elif sys.platform == 'win32':
         from .windows_fields import scan
+    elif sys.platform == 'darwin':
+        from .macos_fields import scan
     else:
         raise TargetError()
     return scan
@@ -76,7 +85,11 @@ class NativeFields:
         self.lock = threading.RLock()
 
     def capabilities(self):
-        return dict(native_field_protocol=PROTOCOL, native_field_supported=supported(),
+        status = {}
+        if sys.platform == 'darwin':
+            from HIServices import AXIsProcessTrusted
+            status['native_field_accessibility_granted'] = bool(AXIsProcessTrusted())
+        return dict(**status, native_field_protocol=PROTOCOL, native_field_supported=supported(),
                     native_field_delivery=DELIVERY, native_field_read_delivery=READ_DELIVERY,
                     native_field_modes=list(MODES) if supported() else [])
 

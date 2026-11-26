@@ -7,17 +7,13 @@ permissions:
 jobs:
   appkit:
     runs-on: macos-15
-    strategy:
-      matrix:
-        control: [plain, text, read, secure]
     timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - run: |
-          swiftc tests/appkit_probe.swift -o "$RUNNER_TEMP/ax-probe"
-          "$RUNNER_TEMP/ax-probe" app ${{ matrix.control }} &
-          target=$!
-          trap 'kill "$target" || true' EXIT
-          "$RUNNER_TEMP/ax-probe" "$target"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[test]'
+      - run: AKDBX_TEST_APPKIT=1 python -m pytest -q tests/test_macos_fields.py -x
