@@ -1484,14 +1484,30 @@ def dispatch(broker, request: dict, delivery_ready) -> dict:
 
 
 def _consume_target(broker, request):
-    """A DOM code pin, or an X11 pin-target pin. Either way the token is spent."""
+    """Spend the target once, including on a request for the wrong operation."""
     from .browser_card import CardTargetError
     token = request.get('target')
+    if hasattr(broker, 'android'):
+        pin = broker.android.take(token)
+        if pin is not None:
+            if (pin.mode != 'sms' or type(request.get('target_protocol')) is not int
+                    or request['target_protocol'] != 1 or request.get('action') != 'fill-sms-code'):
+                pin.close()
+                raise CardTargetError()
+            return 'android', pin
     try:
         return 'dom', broker.code_targets.consume(token)
     except CardTargetError:
         pass
     return 'x11', broker.targets.consume({'target': token, 'target_protocol': request.get('target_protocol')})
+
+
+def _android_site_matches(pin, request):
+    from .totp import TotpError, https_origin
+    try:
+        return pin.origin == https_origin(request.get('target_url'))
+    except TotpError:
+        return False
 
 
 def _deadline(broker, request):
@@ -1505,6 +1521,11 @@ def _deadline(broker, request):
 def _deliver(broker, route, pin, value, field, ready, deadline):
     """Type ``value`` through the pinned DOM field or X11 window; a fill receipt."""
     from .target import DELIVERY as X11_DELIVERY, DeliveryError
+    if route == 'android':
+        try:
+            return broker.android.fill_element(pin, value, field, ready, deadline)
+        finally:
+            pin.close()
     if route == 'dom':
         try:
             return broker.code_targets.fill(pin, value, field, ready, deadline)
@@ -1587,13 +1608,15 @@ def _fill(broker, request, delivery_ready):
             broker.sms.restore(message)
             return _failure()
         return dict(ok=False, error='unknown or expired SMS message')
-    close = (lambda: broker.code_targets._close(pin)) if route == 'dom' else (lambda: None)
+    close = (lambda: broker.code_targets._close(pin)) if route == 'dom' else pin.close if route == 'android' else (lambda: None)
     if message is None:
         close()
         return dict(ok=False, error='unknown or expired SMS message')
     refusal = None
     if route == 'x11' and not _https_url(request.get('target_url')):
         refusal = dict(ok=False, error='autofill not started: X11 code fill needs --target-url')
+    elif route == 'android' and not _android_site_matches(pin, request):
+        refusal = dict(ok=False, error='autofill not started: Android SMS fill needs a matching HTTPS target URL')
     elif route == 'dom' and pin['field'] != 'one-time-code':
         refusal = _failure()
     else:

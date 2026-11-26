@@ -1198,3 +1198,21 @@ def test_generated_password_refuses_totp_pin_and_consumes_both_references(deploy
     assert path.read_bytes() == before and not typer.events
     if route == 'extension':
         assert not extension.filled and 'check-totp' not in extension.calls and 'fill' not in extension.calls
+
+
+def test_generated_password_checks_asserted_url_against_android_pin(deployed, tmp_path):
+    from test_android_route import DEVICE, app_broker, fill_requests, pin, statements, write_config
+    broker, _, _, _ = deployed
+    device_file = write_config(tmp_path / 'device' / 'android.json', {'phone': DEVICE})
+    device_broker, _ = app_broker(device_file)
+    broker.android = device_broker.android
+    broker.android.fetch = lambda url: statements()
+    for site, expected in [('https://other.test', False), ('https://example.test', True)]:
+        staged = begin(broker, 'generate-password', single_field=True)
+        target = pin(broker, mode='password', field='22', app_site=site)
+        result = broker.dispatch(dict(action='fill-generated', handle=staged['fill_handles']['password'],
+                                      target_url='https://example.test/reset', target=target['target'], target_protocol=1))
+        assert result['ok'] is expected
+        if expected:
+            assert result['target_delivery'] == 'android-accessibility-set-text-v1'
+    assert len(fill_requests()) == 1

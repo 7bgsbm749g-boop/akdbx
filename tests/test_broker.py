@@ -79,7 +79,9 @@ def target_capabilities():
                 secret_capture_protocol=1, secret_capture_delivery='chromium-dom-read-v1', secret_sink_protocol=1, secret_sinks=[],
                 totp_capture_protocol=1, android_fill_protocol=1, android_fill_delivery='android-accessibility-set-text-v1',
                 android_chrome_delivery='android-chrome-verified-dom-v1',
-                android_fill_modes=['login', 'username', 'password', 'totp'], android_devices_configured=False,
+                android_generated_password=True, android_read_delivery='android-chrome-verified-read-v1',
+                android_fill_modes=['login', 'username', 'password', 'totp', 'sms', 'card', 'identity', 'read'],
+                android_devices_configured=False,
                 sms_protocol=1, sms_notifications_supported=True, sms_notifications_protocol=1, sms_source_kinds=['shortcut', 'twilio', 'webhook'], sms_sources_configured=0,
                 sms_message_ttl=600, code_protocol=1, code_browser_configured=False, code_delivery='cdp-code-element-v1', **NativeFields().capabilities())
 

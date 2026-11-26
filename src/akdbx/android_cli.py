@@ -29,7 +29,7 @@ TOKEN = re.compile(r'[0-9a-f]{64}')
 def add_parser(commands):
     android = commands.add_parser(
         COMMAND, help='Android devices: inspect the focused app, pin a verified field, fill it (no secret output)',
-        description=('Fill a login, password, username or authenticator code into one verified field of the '
+        description=('Pin fields for verified fills and Chrome reads in the '
                      'focused app on an Android device that the operator configured for the broker. '
                      'The value goes from the broker to an akdbx helper on the device over adb standard input; '
                      'it is never an argument, typed key, clipboard content or output.'))
@@ -43,7 +43,8 @@ def add_parser(commands):
     pin.add_argument('--mode', required=True, choices=MODES)
     pin.add_argument('--field', required=True,
                      help='a field value from android inspect: the password field (login, password), the username '
-                          'field (username) or the code field (totp). A page field must be focused (tap it first)')
+                          'field (username), code field (totp or sms), or selected card, identity or read field. Tap a page field first')
+    pin.add_argument('--purpose', help='card or identity field name, such as cc-number or email')
     pin.add_argument('--username-field', help='field value of the username field; login mode only')
 
     pin.add_argument('--app-site', help=('exact HTTPS origin whose Digital Asset Links name this app; needed for '
@@ -162,6 +163,8 @@ def _request(args, request, leases):
                        'mode': args.mode, 'field': args.field}
             if args.username_field is not None:
                 payload['username_field'] = args.username_field
+            if getattr(args, 'purpose', None) is not None:
+                payload['purpose'] = args.purpose
             if args.app_site is not None:
                 payload['app_site'] = args.app_site
 

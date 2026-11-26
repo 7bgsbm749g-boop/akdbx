@@ -70,9 +70,9 @@ def add_parsers(commands):
     p = commands.add_parser('fill-sms-code', help='fill the code of one received text; returns no code')
     p.add_argument('message', help='message id from sms-wait')
     p.add_argument('--target', required=True,
-                   help='fresh pin-code-target token, or a pin-target token for X11 keyboard delivery')
+                   help='fresh pin-code-target, android pin --mode sms, or X11 pin-target token')
     page_url.add(p, 'target-url', required=False,
-                 help='independently verified HTTPS challenge URL; required with a pin-target token')
+                 help='independently verified HTTPS challenge URL; required for Android and X11')
     p = commands.add_parser('subscribe-sms', help='register a one-shot HTTPS webhook for the next verification text '
                                                   '(event akdbx.sms-received with the message id; never the code)')
     p.add_argument('--webhook-url-file', required=True, type=Path,
@@ -180,7 +180,10 @@ def valid_receipt(args, response):
                 and response['field'] == args.field and _token(response['target'])
                 and response['expires_in'] == TTL and response['code_delivery'] == DELIVERY)
     if args.command == 'fill-sms-code':
-        return response in (dict(ok=True, filled='one-time-code', code_delivery=DELIVERY),
+        from .android_route import CHROME_DELIVERY as ANDROID_CHROME, DELIVERY as ANDROID_APP
+        return response in (dict(ok=True, filled='one-time-code', target_delivery=ANDROID_CHROME),
+                            dict(ok=True, filled='one-time-code', target_delivery=ANDROID_APP),
+                            dict(ok=True, filled='one-time-code', code_delivery=DELIVERY),
                             dict(ok=True, filled='one-time-code', target_delivery=X11_DELIVERY))
     return False
 

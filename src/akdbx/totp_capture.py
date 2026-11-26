@@ -126,20 +126,24 @@ class TotpCaptures:
         pin = None
         try:
             try:
-                # An extension read pin, else a CDP one; either way the token is used up.
+                # Spend the pin once, including a native read pin refused for lack of a verified origin.
                 token = request.get('target')
                 if hasattr(broker, 'native'):
                     pin = broker.native.take(token, 'read')
                     if pin is not None:
                         return dict(ok=False, error='authenticator capture refused: native controls cannot verify '
                                                     'the site origin; nothing saved')
-                pin = broker.extension.take(token, 'read') if hasattr(broker, 'extension') else None
+                pin = broker.android.take(token) if hasattr(broker, 'android') else None
+                if pin is None:
+                    pin = broker.extension.take(token, 'read') if hasattr(broker, 'extension') else None
                 if pin is None:
                     pin = broker.passwords.consume(token)
             except Exception:
                 return dict(ok=False, error=REFUSED)
             from .secrets_capture import CAPTURE_DELIVERY as CDP_DELIVERY
             from .extension_route import ExtensionPin, CAPTURE_DELIVERY as EXTENSION_DELIVERY
+            from .android_route import AndroidPin, READ_DELIVERY as ANDROID_READ_DELIVERY
+            android = isinstance(pin, AndroidPin)
             extension = isinstance(pin, ExtensionPin)
             if pin.mode != 'read':
                 return dict(ok=False, error=REFUSED)
@@ -156,7 +160,7 @@ class TotpCaptures:
                 return dict(ok=False, error=str(exc))
             started = lambda: ready() and broker.clock() < deadline
             try:
-                value = (broker.extension if extension else broker.passwords).read(pin, origins, started, deadline)
+                value = (broker.android if android else broker.extension if extension else broker.passwords).read(pin, origins, started, deadline)
                 uri = parse_setup(value, label=values['username']).uri()
                 if parse_setup(uri).uri() != uri:
                     raise TotpError('unsupported label')  # The save check reads it back the same way.
@@ -187,7 +191,7 @@ class TotpCaptures:
             finally:
                 uri = None
             return dict(ok=True, state='pending', totp_configured=had_otp, metadata=values,
-                        capture_delivery=EXTENSION_DELIVERY if extension else CDP_DELIVERY)
+                        capture_delivery=ANDROID_READ_DELIVERY if android else EXTENSION_DELIVERY if extension else CDP_DELIVERY)
         finally:
             if pin is not None:
                 try:

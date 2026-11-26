@@ -527,6 +527,8 @@ class FakeCDP:
                 return {'result': {'value': 1000.0}}
             if expression == android_route.QUICK_STATE:
                 return {'result': {'value': self.shown}}
+            if expression.startswith(android_route.KEY_PROOF):
+                return {'result': {'type': 'object', 'objectId': 'STRUCTURED'}}
             if expression.startswith(android_route.PAGE_FIELD):
                 selector = json.loads('[' + expression[len(android_route.PAGE_FIELD) + 1:-1] + ']')[0]
                 if selector == '#missing':
@@ -540,9 +542,11 @@ class FakeCDP:
             declaration = params['functionDeclaration']
             if 'this.focused' in declaration:
                 return {'result': {'value': self.focused}}
+            if 'this.prepare()' in declaration:
+                return {'result': {'value': True}}
             if 'this.prepare' in declaration:
                 return {'result': {'value': [self.max_length, self.input_type]}}
-            if 'this.read' in declaration:
+            if 'this.read' in declaration or 'this.proof()' in declaration:
                 if self.hostile:
                     # A peer that is not Chrome: it never saw the keys and can only guess.
                     return {'result': {'value': True if len(self.calls) % 2 else 'a' * 16}}
@@ -890,3 +894,56 @@ def test_too_many_same_site_tabs_are_refused_within_the_budget(device_file, monk
     broker, _ = chrome_broker(device_file, cdp)
     monkeypatch.setattr(android_route, 'TAB_ATTACH_BUDGET', 0.0)
     assert 'too many tabs' in pin(broker, mode='totp', field='#code')['error']
+
+
+@pytest.mark.parametrize(('mode', 'purpose'), [('card', 'cc-name'), ('identity', 'email')])
+def test_android_app_structured_fill_is_bound_to_its_field_purpose(device_file, mode, purpose):
+    broker, scene = app_broker(device_file)
+    targets = broker.card_targets if mode == 'card' else broker.identity_targets
+    for field_name in ('wrong', purpose):
+        receipt = pin(broker, mode=mode, purpose=purpose, field='21', app_site='https://example.com')
+        target = targets.consume(receipt['target'])
+        try:
+            result = targets.fill(target, 'fixture', field_name, lambda: True, broker.clock() + 4)
+        finally:
+            targets._close(target)
+        assert result['ok'] is (field_name == purpose)
+    assert len(fill_requests()) == 1
+
+
+def test_android_sms_pin_spent_but_message_restored_for_wrong_site(device_file, tmp_path):
+    from akdbx.sms import SmsInbox
+    from test_sms import call
+    broker, scene = app_broker(device_file)
+    broker.sms = SmsInbox(tmp_path / 'state/sms.json')
+    token = broker.sms.add_source('fixture', 'shortcut')
+    broker.sms.receive(token, 'Fixture', 'Your verification code is 1234')
+    [message] = call(broker, 'sms-wait')['messages']
+    for url in ('https://other.example', 'https://example.com/challenge'):
+        target = pin(broker, mode='sms', field='21', app_site='https://example.com')['target']
+        result = call(broker, 'fill-sms-code', message=message['id'], target=target,
+                      target_protocol=1, target_url=url)
+        assert result['ok'] is (url == 'https://example.com/challenge')
+        assert broker.android.take(target) is None
+    assert len(fill_requests()) == 1
+    assert call(broker, 'sms-wait')['messages'] == []
+
+
+@pytest.mark.parametrize('mode,purpose', [('read', None), ('sms', None), ('card', 'cc-name'), ('identity', 'email')])
+def test_chrome_structured_operation_refuses_an_unverified_peer(device_file, mode, purpose):
+    cdp = FakeCDP('https://example.com/challenge', shows_typed=False)
+    broker, _ = chrome_broker(device_file, cdp)
+    receipt = pin(broker, mode=mode, field='#test', **({'purpose': purpose} if purpose else {}))
+    target = broker.android.take(receipt['target'])
+    try:
+        if mode == 'read':
+            with pytest.raises(android_route.TargetError):
+                broker.android.read(target, {target.origin}, lambda: True, broker.clock() + 4)
+        else:
+            result = broker.android.fill_element(target, 'fixture', purpose or 'one-time-code',
+                                                 lambda: True, broker.clock() + 4)
+            assert not result['ok']
+        assert not any('this.capture()' in p.get('functionDeclaration', '') or
+                       'this.write(value' in p.get('functionDeclaration', '') for _, p in cdp.calls if p)
+    finally:
+        target.close()

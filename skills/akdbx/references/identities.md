@@ -1,5 +1,7 @@
 # Save and fill identity details (0.18.2)
 
+For identity field operations on Android, see [Android pins and commands](android.md#additional-android-operations-after-0470).
+
 Require `identity_protocol: 1` and `identity_delivery: "cdp-identity-element-v1"`
 from `akdbx status`. Delivery also requires `identity_browser_configured: true`.
 The broker uses its configured password browser profile, or the card browser
