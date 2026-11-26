@@ -36,8 +36,7 @@ from selenium.webdriver.firefox.service import Service
 from akdbx import broker_identity, extension_host
 from akdbx.broker import Broker, open_vault_with_password, serve
 from akdbx.extension_route import CAPTURE_DELIVERY, DELIVERY
-from test_extension_route import CARD, CardEntry, IdentityEntry
-from test_writes import MASTER, template  # noqa: F401
+from test_extension_route import CARD, MASTER, CardEntry, IdentityEntry, template  # noqa: F401
 from akdbx.local_https import start_local_unlock_server
 from test_broker import Entry, Vault
 from test_windows_unlock import certificates  # noqa: F401
@@ -250,12 +249,19 @@ def firefox_lab(private_dir, certificates, request):
         driver.get(origin)
         driver.install_addon(str(addon), temporary=True)
         deadline = time.monotonic() + 20
-        while not broker.extension.channels and not errors and time.monotonic() < deadline:
+        # Native attachment registers the channel before it creates the pairing.
+        token = None
+        while not errors and time.monotonic() < deadline:
+            with broker.extension._lock:
+                if len(broker.extension.channels) == 1:
+                    channel, = broker.extension.channels.values()
+                    assert channel.browser == 'firefox'
+                    token = next((t for t, (digest, _) in broker.extension.pairings.items()
+                                  if digest == channel.digest), None)
+            if token is not None:
+                break
             time.sleep(.05)
-        assert not errors and len(broker.extension.channels) == 1, errors
-        channel = next(iter(broker.extension.channels.values()))
-        assert channel.browser == 'firefox'
-        token = next(token for token, (digest, _) in broker.extension.pairings.items() if digest == channel.digest)
+        assert token is not None and not errors, 'Firefox did not establish a pairing'
         assert broker.extension.approve(token)
         driver.get(url)
         yield SimpleNamespace(driver=driver, broker=broker, url=url, settings=f'moz-extension://{extension_uuid}/options.html')
@@ -383,6 +389,12 @@ def field_digest(driver, field):
     return driver.execute_async_script('const done=arguments[1]; digest(arguments[0]).then(done)', field)
 
 
+def fill_card(lab, pin):
+    entry, = lab.broker.dispatch(dict(action='search-cards', card_protocol=1))['entries']
+    return lab.broker.dispatch(dict(action='fill-card', card_protocol=1, handle=entry['handle'],
+                                   target=pin['target'], field='cc-number'))
+
+
 @pytest.mark.parametrize('processor', [None, *PROCESSORS])
 def test_firefox_card_delivery(firefox_lab, processor):
     lab = firefox_lab
@@ -401,9 +413,7 @@ def test_firefox_card_delivery(firefox_lab, processor):
         request.update(processor=processor.split('-')[0], processor_protocol=1)
     pin = lab.broker.dispatch(request)
     assert pin['ok'], pin
-    entry, = lab.broker.dispatch(dict(action='search-cards', card_protocol=1))['entries']
-    receipt = lab.broker.dispatch(dict(action='fill-card', card_protocol=1, handle=entry['handle'],
-                                       target=pin['target'], field='cc-number'))
+    receipt = fill_card(lab, pin)
     assert receipt == dict(ok=True, filled='cc-number', card_delivery=DELIVERY)
     assert field_digest(lab.driver, field) == hashlib.sha256(CARD['number'].encode()).hexdigest()
 
@@ -528,17 +538,21 @@ def test_firefox_enhanced_card_cover(firefox_lab):
     # Native widget paint can hide the challenge colour even on an uncovered input.
     lab.driver.execute_script("number.style.appearance = 'none'")
     request = dict(action='pin-card-target', card_protocol=1, field='cc-number', selector='#number', **target)
+    lab.broker.vault.entries.append(CardEntry(title='Test card', uuid='test-card'))
+
+    pin = lab.broker.dispatch(request)
+    assert pin['ok'], pin
+    assert fill_card(lab, pin) == dict(ok=True, filled='cc-number', card_delivery=DELIVERY)
+    assert field_digest(lab.driver, 'number') == hashlib.sha256(CARD['number'].encode()).hexdigest()
+    lab.driver.execute_script("number.value = ''")
     pin = lab.broker.dispatch(request)
     assert pin['ok'], pin
     lab.driver.execute_script("""const cover = document.createElement('div');
         cover.style.cssText = 'position:fixed;inset:0;background:white;pointer-events:none';
         document.body.append(cover)""")
     assert not lab.broker.dispatch(request)['ok']
-    lab.broker.vault.entries.append(CardEntry(title='Test card', uuid='test-card'))
-    entry, = lab.broker.dispatch(dict(action='search-cards', card_protocol=1))['entries']
-    receipt = lab.broker.dispatch(dict(action='fill-card', card_protocol=1, handle=entry['handle'],
-                                     target=pin['target'], field='cc-number'))
-    assert not receipt['ok'] and field_digest(lab.driver, 'number') == hashlib.sha256(b'').hexdigest()
+    assert not fill_card(lab, pin)['ok']
+    assert field_digest(lab.driver, 'number') == hashlib.sha256(b'').hexdigest()
 
 
 def test_firefox_card_in_clipped_drawer(firefox_lab):
@@ -551,8 +565,14 @@ def test_firefox_card_in_clipped_drawer(firefox_lab):
         drawer.append(input);
     """)
     request = dict(action='pin-card-target', card_protocol=1, field='cc-number', selector='#number', **target)
-    result = firefox_lab.broker.dispatch(request)
-    assert result['ok'], result
+    firefox_lab.broker.vault.entries.append(CardEntry(title='Test card', uuid='test-card'))
+    pin = firefox_lab.broker.dispatch(request)
+    assert pin['ok'], pin
+    assert fill_card(firefox_lab, pin) == dict(ok=True, filled='cc-number', card_delivery=DELIVERY)
+    assert field_digest(firefox_lab.driver, 'number') == hashlib.sha256(CARD['number'].encode()).hexdigest()
+    firefox_lab.driver.execute_script("number.value = ''")
+    pin = firefox_lab.broker.dispatch(request)
+    assert pin['ok'], pin
     firefox_lab.driver.execute_script("""
         const drawer = document.querySelector('#number').parentNode;
         const host = document.createElement('div');
@@ -562,3 +582,5 @@ def test_firefox_card_in_clipped_drawer(firefox_lab):
     """)
     refused = firefox_lab.broker.dispatch(request)
     assert not refused['ok']
+    assert not fill_card(firefox_lab, pin)['ok']
+    assert field_digest(firefox_lab.driver, 'number') == hashlib.sha256(b'').hexdigest()
