@@ -123,9 +123,10 @@ DOM hit test on both routes.
 
 From 0.34.0 (fill extension 0.5.0) the extension has a settings page (the cog
 in its popup). Its experimental **Enhanced security** setting, off by default,
-makes card, address and read pins on the extension route refuse a field or
-secret under any cover, click-through and inert ones included. The browser's
-own occlusion test (`IntersectionObserver` v2) decides too, and a pixel check
+checks for paint over the tested points on card, address and read targets,
+including click-through and inert covers. Where the browser supports
+`IntersectionObserver` visibility tracking, akdbx also checks the whole element
+for occlusion. Firefox 161 uses the pixel check alone. The pixel check
 paints the field in a random colour for about a tenth of a second and a tab
 screenshot must show that colour (one check at each pin and each fill). Turning
 it on asks the browser for the `<all_urls>` permission; the check needs a
@@ -550,13 +551,13 @@ with a trunk `0` (`07...`) when `--calling-code` names a country whose trunk
 `0` is never part of the number (`TRUNK_ZERO`, from Google libphonenumber
 metadata; `tools/trunk_zero_table.py` prints it). Other countries, such as
 Italy, refuse instead of guessing. From 0.36.3 (fill extension 0.7.2), card
-and identity pins on the extension route accept an ancestor `clip-path: inset(...)` (only `px` or
+and identity pins on the extension route (Firefox requires fill extension 0.11.1+) accept an ancestor `clip-path: inset(...)` (only `px` or
 `%` lengths, no `round`) when the field's whole border box lies inside the
 inset rectangle and nothing from that ancestor up scales, rotates, zooms,
 slots it into a shadow tree or puts it in an SVG viewport: a side drawer
 whose negative inset only trims its shadow. Every other clip
 shape, `clip`, masks, filters and `backdrop-filter` still refuse. The CDP
-route still refuses every `clip-path`, because it cannot see closed shadow
+route still refuses every `clip-path`, because its page script cannot inspect closed shadow
 roots. See
 [identity workflows](skills/akdbx/references/identities.md) for
 supported fields, target discovery and example commands.

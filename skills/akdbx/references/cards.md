@@ -51,7 +51,8 @@ CSS selector without reading any filled values. Do not infer these identifiers
 from an X11 window ID. Bring the actual field into view. Main frames and
 same-origin iframes with matching `autocomplete="cc-…"` fields use the default
 route. For Adyen, Computop or Stripe card iframes, use the explicit processor
-routes below.
+routes below. In Firefox, choose `--route extension` and use the document ID
+from `list-password-frames`. The extension checks the actual processor URL.
 Other cross-origin frames, shadow DOM and unannotated fields must be refused.
 
 ```bash
@@ -192,7 +193,7 @@ and browser-native hit testing before and after dispatch. The native hit tests
 include covers with `pointer-events:none` and require the retained input and
 iframe-owner nodes. Even a transparent overlay can cause a conservative refusal.
 Mask-box images and other unsupported CSS effects are refused. From 0.36.3 the
-extension route accepts an ancestor `clip-path: inset(...)` that holds the whole
+extension route (Firefox needs fill extension 0.11.1+) accepts an ancestor `clip-path: inset(...)` that holds the whole
 input ([clipped drawer or modal](identities.md#field-inside-a-clipped-drawer-or-modal-0363));
 the CDP route, other clip shapes and an inset on the merchant's iframe owner
 still refuse. Cross-process parent and child

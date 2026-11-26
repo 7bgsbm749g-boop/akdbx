@@ -89,7 +89,7 @@
         const identity = kind === "identity";
         state = CARD_PIN(spec.selector, spec.field, frameURL, topURL, spec.processor || false, identity,
           identity && typeof spec.field_purpose === "string" ? spec.field_purpose : false,
-          identity && spec.allow_autocomplete_off === true);
+          identity && spec.allow_autocomplete_off === true, shadowRootOf);
       }
     } catch {
       state = null;
@@ -254,6 +254,13 @@
     return id;
   }
 
+  // Only extension content scripts have these accessors. Undefined means no proof.
+  function shadowRootOf(el) {
+    const dom = (globalThis.browser || globalThis.chrome)?.dom;
+    return typeof dom?.openOrClosedShadowRoot === "function"
+      ? dom.openOrClosedShadowRoot(el) : el.openOrClosedShadowRoot;
+  }
+
   // Every open or closed shadow root of this document; null when the page is too large.
   function shadowRoots(doc = document) {
     const found = [];
@@ -263,9 +270,7 @@
       const root = pending.pop();
       for (const el of root.querySelectorAll("*")) {
         if (++seen > MAX_NODES) return null;
-        const dom = (globalThis.browser || globalThis.chrome)?.dom;
-        const shadow = typeof dom?.openOrClosedShadowRoot === "function"
-          ? dom.openOrClosedShadowRoot(el) : el.openOrClosedShadowRoot;
+        const shadow = shadowRootOf(el);
         if (shadow === undefined) return null;  // An unavailable closed-root check refuses the pin.
         if (shadow) {
           found.push(shadow);
