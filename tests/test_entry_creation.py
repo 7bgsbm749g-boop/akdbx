@@ -27,7 +27,7 @@ def create(broker, flow, values):
     if flow == 'generated':
         for reference in prepared['fill_handles'].values():
             result = broker.dispatch(dict(action='fill-generated', handle=reference,
-                target_url=values['url'], **target_request(broker)))
+                target_url=values['url'], **target_request(broker, 'password')))
             assert result['ok'], result
         result = broker.dispatch(dict(action='commit-password', write_handle=prepared['write_handle'],
                                       site_accepted=True))
@@ -151,7 +151,7 @@ def test_distinct_origin_creation_keeps_exact_accepted_metadata(template, tmp_pa
         if quoted == 'unicode':
             selected = next(item for item in search['entries'] if item['url'] == values['url'])
             assert broker.dispatch(dict(action='fill', handle=selected['handle'], mode='username',
-                                        **target_request(broker)))['ok']
+                                        **target_request(broker, 'username')))['ok']
             assert broker.typer.events[-1] == ('type', account)
         backups = list(path.parent.glob('.*.akdbx-backup-*'))
         assert len(backups) == 1 and stat.S_IMODE(backups[0].stat().st_mode) == 0o600
