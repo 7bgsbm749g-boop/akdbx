@@ -1,6 +1,7 @@
 """Same-user Windows sink helper. Only its private startup file selects destinations."""
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import time
@@ -17,7 +18,8 @@ def local_path(value):
     if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z]:\\[^\x00-\x1f<>:"|?*]+', value):
         raise sinks.SinkError('sink path must be a normalized local Windows path')
     path = Path(value)
-    if (str(path) != value or any(part == '..' or part.endswith((' ', '.')) or Path(part).is_reserved()
+    reserved = getattr(os.path, 'isreserved', lambda part: Path(part).is_reserved())
+    if (str(path) != value or any(part == '..' or part.endswith((' ', '.')) or reserved(part)
                                   for part in path.parts[1:])):
         raise sinks.SinkError('sink path must be a normalized local Windows path')
     return path

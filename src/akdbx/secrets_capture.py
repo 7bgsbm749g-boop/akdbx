@@ -114,7 +114,10 @@ class SecretCaptures:
         self._sink_locks = {sink['path']: threading.Lock() for sink in self.config['sinks'].values()}
 
     def capabilities(self):
-        return dict(capabilities(self.config['sinks']), windows_secret_sink_pipe=os.name == 'nt')
+        status = capabilities(self.config['sinks'])
+        if os.name == 'nt':
+            status['windows_secret_sink_pipe'] = True
+        return status
 
     # ---- capture -------------------------------------------------------
     def capture(self, request, ready):

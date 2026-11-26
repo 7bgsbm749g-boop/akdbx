@@ -13,6 +13,7 @@ if sys.platform != 'win32':
 
 from akdbx import windows_rpc as rpc, windows_security as security, windows_sinks
 from akdbx.broker import Broker, open_vault_with_password
+from akdbx.protocol import ProtocolError
 from akdbx.sink_helper import SinkError
 from akdbx.secrets_capture import CAPTURED_FIELDS
 from test_windows_browser import set_dacl, PUBLIC
@@ -65,7 +66,8 @@ def test_operator_sink_delivers_only_a_receipt(config, private_dir, synthetic_va
             assert security.read_private(path)[0] == expected
 
 
-@pytest.mark.parametrize('case', ['public-config', 'public-destination', 'other-definition', 'hard-link', 'other-integrity'])
+@pytest.mark.parametrize('case', ['public-config', 'public-destination', 'other-definition', 'hard-link',
+                                  'server-integrity', 'client-integrity'])
 def test_helper_refuses_without_modifying_destination(config, private_dir, monkeypatch, case):
     path = private_dir / 'test.env'
     security.write_new(path, b'OTHER=keep\n')
@@ -74,6 +76,7 @@ def test_helper_refuses_without_modifying_destination(config, private_dir, monke
         with pytest.raises(SinkError):
             windows_sinks.load_config(config)
         return
+    refused = threading.Event()
     client = windows_sinks.load_config(config)
     server = windows_sinks.load_config(config)
     if case == 'public-destination':
@@ -83,9 +86,16 @@ def test_helper_refuses_without_modifying_destination(config, private_dir, monke
     elif case == 'other-definition':
         server['sinks']['test']['key'] = 'DIFFERENT'
     else:
-        def refuse(_):
-            raise PermissionError()
-        monkeypatch.setattr(security, 'require_same_integrity', refuse)
-    with helper(server), pytest.raises((SinkError, PermissionError)):
+        # Exercise each end separately. A client that accepts the helper still
+        # cannot deliver to a helper that refuses the connecting client.
+        main = threading.current_thread()
+        def check(_):
+            if (threading.current_thread() is main) == (case == 'server-integrity'):
+                refused.set()
+                raise PermissionError()
+        monkeypatch.setattr(security, 'require_same_integrity', check)
+    with helper(server), pytest.raises((SinkError, OSError, ProtocolError)):
         windows_sinks.deliver(client, client['sinks']['test'], 'synthetic-token')
+    if case.endswith('-integrity'):
+        assert refused.is_set()
     assert path.read_bytes() == b'OTHER=keep\n'
