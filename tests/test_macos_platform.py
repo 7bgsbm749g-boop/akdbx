@@ -88,13 +88,13 @@ def test_guided_setup_launches_locked_broker_and_installs_hosts(tmp_path, monkey
         launcher = Path(manifest['path'])
         assert launcher.is_file()
         assert launcher.read_text().startswith('#!/bin/sh')
+        assert browser_import.load_config(browser_import.config_path())['socket'] == str(socket.with_name('u'))
+        assert cli.main(args) == 0
+        assert json.loads(capsys.readouterr().out)['stages']['login']['state'] == 'done'
         # An existing configuration for the original origin cannot count as ready for another origin.
         stale = [f'https://localhost:{free_port()}' if arg == origin else arg for arg in args]
         assert cli.main(stale) != 0
         assert json.loads(capsys.readouterr().out)['stages']['features']['state'] == 'failed'
-        assert browser_import.load_config(browser_import.config_path())['socket'] == str(socket.with_name('u'))
-        assert cli.main(args) == 0
-        assert json.loads(capsys.readouterr().out)['stages']['login']['state'] == 'done'
     finally:
         subprocess.run(['/bin/launchctl', 'bootout', job], capture_output=True, timeout=15)
 

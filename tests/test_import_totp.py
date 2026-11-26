@@ -359,6 +359,16 @@ def test_native_exception_never_reveals_key(monkeypatch):
     assert json.loads(output.getvalue()[4:])['ok'] is False
 
 
+def assert_registered_executable(manifest, executable):
+    if sys.platform == 'darwin':
+        import shlex
+        launcher = Path(manifest['path'])
+        assert launcher.stat().st_mode & 0o777 == 0o700
+        assert shlex.split(launcher.read_text().splitlines()[-1]) == ['exec', str(executable), '$@']
+    else:
+        assert manifest['path'] == str(executable)
+
+
 def test_host_install_is_explicit_and_refuses_overwrite(tmp_path,monkeypatch):
     from types import SimpleNamespace
     base=tmp_path/'configuration';base.mkdir(mode=0o700)
@@ -373,7 +383,7 @@ def test_host_install_is_explicit_and_refuses_overwrite(tmp_path,monkeypatch):
     assert path.stat().st_mode & 0o777==0o600
     assert browser_import.load_config(path)['extension_id']=='a'*32
     saved=manifest.read_bytes();config=path.read_bytes()
-    assert json.loads(saved)['path']==str(executable)
+    assert_registered_executable(json.loads(saved), executable)
     with pytest.raises(ValueError):browser_import.install_host(args)
     assert manifest.read_bytes()==saved and path.read_bytes()==config
 
@@ -398,7 +408,7 @@ def test_host_install_records_invoked_script_without_path_lookup(tmp_path, compe
         cwd=tmp_path,capture_output=True,text=True,timeout=15)
     assert result.returncode==0,result.stderr
     manifest=json.loads((manifests/(browser_import.HOST_NAME+'.json')).read_text())
-    assert manifest['path']==str(executable)
+    assert_registered_executable(manifest, executable)
 
 
 def test_importer_capabilities_are_independent_and_strict():
