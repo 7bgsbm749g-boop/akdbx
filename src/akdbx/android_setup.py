@@ -1,4 +1,7 @@
-"""Optional Linux Android setup. The SDK and device data stay outside the vault."""
+"""Optional Android setup: attach on Linux and macOS, managed emulators on Linux.
+
+The SDK and device data stay outside the vault.
+"""
 import argparse
 import hashlib
 import json
@@ -12,8 +15,8 @@ import tempfile
 import urllib.request
 import zipfile
 
-from .android_route import (AVD_NAME, Adb, AndroidError, CONFIG_ENV, DEVICE_NAME, Device, MAX_DEVICES, SERIAL,
-                            _read_private_file, default_config_path, load_devices)
+from .android_route import (AVD_NAME, MANAGED_LINUX_ONLY, Adb, AndroidError, CONFIG_ENV, DEVICE_NAME, Device,
+                            MAX_DEVICES, SERIAL, _read_private_file, default_config_path, load_devices)
 
 
 IMAGE = 'system-images;android-35;google_apis_playstore;x86_64'
@@ -24,16 +27,18 @@ def config_path():
 
 
 def add_parsers(sub):
-    setup = sub.add_parser('setup', help='connect an existing device or provision an on-demand Google Play emulator')
+    setup = sub.add_parser('setup', help=('connect an existing device (Linux, macOS) or provision an on-demand '
+                                          'Google Play emulator (Linux)'))
     choice = setup.add_mutually_exclusive_group()
     choice.add_argument('--attach', metavar='ADB_SERIAL', help='connect a device you manage; never start or stop it')
-    choice.add_argument('--create', action='store_true', help='create a private persistent stock Google Play AVD')
-    choice.add_argument('--manage-avd', metavar='AVD', help='explicitly manage an existing, stopped AVD')
+    choice.add_argument('--create', action='store_true', help='create a private persistent stock Google Play AVD (Linux)')
+    choice.add_argument('--manage-avd', metavar='AVD', help='explicitly manage an existing, stopped AVD (Linux)')
     setup.add_argument('--device', default='android', help='device name in the broker configuration')
     setup.add_argument('--adb', type=Path, help='adb executable for --attach')
     setup.add_argument('--adb-port', type=int, help='adb server port for attached devices (5037) or reserved emulator notification port (5043)')
     setup.add_argument('--emulator-port', type=int, default=5584, help='private even console port (managed)')
-    setup.add_argument('--sdk', type=Path, help='Android SDK root (default: ANDROID_HOME or ~/Android/Sdk)')
+    setup.add_argument('--sdk', type=Path, help=('Android SDK root (default: ANDROID_HOME, then ~/Android/Sdk; '
+                                                 '~/Library/Android/sdk on macOS)'))
     setup.add_argument('--avd-home', type=Path, help='AVD registry containing NAME.ini, or directory for a new AVD')
     setup.add_argument('--idle-seconds', type=int, default=180, help='stop after last operation (120–3600 seconds)')
     for name, help_text in [('wake', 'boot a managed emulator before requesting a mobile approval'),
@@ -45,8 +50,9 @@ def add_parsers(sub):
 
 
 def android_sdk(args):
+    default = Path.home() / ('Library/Android/sdk' if sys.platform == 'darwin' else 'Android/Sdk')
     sdk = (args.sdk or Path(os.environ.get('ANDROID_HOME') or os.environ.get('ANDROID_SDK_ROOT')
-                            or Path.home() / 'Android/Sdk')).resolve()
+                            or default)).resolve()
     return sdk
 
 
@@ -114,18 +120,28 @@ def provision(sdk, avd_home, name):
 
 
 def setup(args):
-    if not sys.platform.startswith('linux'):
-        raise AndroidError('the Android broker and emulator setup require Linux')
+    linux = sys.platform.startswith('linux')
+    if not (linux or sys.platform == 'darwin'):
+        raise AndroidError('android setup runs on Linux and macOS; on Windows write the private device file '
+                           'by hand (see the akdbx Android reference)')
     import fcntl
     name = args.device
     if not DEVICE_NAME.fullmatch(name):
         raise AndroidError('invalid Android device name')
+    if not linux and (args.create or args.manage_avd):
+        # Refuse before any download, systemd call or file write.
+        raise AndroidError(MANAGED_LINUX_ONLY + ' (android setup --attach SERIAL)')
     if not any((args.attach, args.create, args.manage_avd)):
         if not sys.stdin.isatty():
-            raise AndroidError('select --attach SERIAL, --create, or --manage-avd NAME')
-        answer = input('Create an on-demand Google Play emulator or attach an existing device? [create/attach] ')
+            raise AndroidError('select --attach SERIAL, --create, or --manage-avd NAME' if linux
+                               else 'select --attach SERIAL (managed emulators require Linux)')
+        answer = (input('Create an on-demand Google Play emulator or attach an existing device? [create/attach] ')
+                  if linux else 'attach')
         if answer.strip().lower() == 'attach':
-            args.attach = input('ADB serial: ').strip()
+            args.attach = input('ADB serial: ' if linux else
+                                'Managed emulators require Linux. ADB serial of the device or emulator to attach: ').strip()
+            if not args.attach:
+                raise AndroidError('no device selected')
         elif answer.strip().lower() == 'create':
             args.create = True
         else:
@@ -139,7 +155,9 @@ def setup(args):
         if not SERIAL.fullmatch(args.attach):
             raise AndroidError('invalid adb serial')
         serial = args.attach
-        adb = (args.adb or Path(shutil.which('adb') or sdk / 'platform-tools/adb')).resolve()
+        adb = args.adb or Path(shutil.which('adb') or sdk / 'platform-tools/adb')
+        # Homebrew links adb into a versioned folder that an upgrade removes: keep the link on macOS.
+        adb = Path(os.path.abspath(adb)) if sys.platform == 'darwin' else adb.resolve()
     else:
         if not (args.create or args.manage_avd) or args.adb:
             raise AndroidError('managed setup uses the SDK platform-tools/adb')

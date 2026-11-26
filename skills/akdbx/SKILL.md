@@ -31,7 +31,7 @@ session.
 | Merge two vaults | [Merge](references/merge.md), [preservation format](references/preservation-format.md) |
 | Snapshot admission (review prototype) | [Admission](references/snapshot-admission.md), [group selection](references/group-selection.md), [selection verification](references/selection-verification.md) |
 | Open the private pages from any device (no Tailscale) | [The akdbx relay](#the-akdbx-relay) |
-| macOS host | Use the paired browser extension. Check `lock_event_sources.macos` for desktop lock and `relay.connected` when using the relay. |
+| macOS host | Use the paired browser extension. Check `lock_event_sources.macos` for desktop lock and `relay.connected` when using the relay. Android: attached devices only (`android_managed_emulators: false`). |
 | Windows host | [Windows operation](references/windows.md) |
 | Fill login, generated password, SMS, card or identity fields on Android, capture a shown-once value in Chrome, or wake an emulator for a mobile approval | [Android devices](references/android.md) |
 | Set akdbx up for a user (first install, or add a part later) | [First-time setup](#first-time-setup) |
@@ -102,7 +102,7 @@ workflow owns.
 On Windows, read [Windows operation](references/windows.md) first: the
 transport is a named pipe, and native-window pins use HWNDs instead of X11
 windows. The private HTTPS page works the same way on every platform. The managed Android emulator, Hyprland lock
-and Linux agent-desktop slot window pins are Linux-specific. The Tailscale Serve Unix socket works on Linux and macOS.
+and Linux agent-desktop slot window pins are Linux-specific; a macOS broker drives attached Android devices (after 0.50.1). The Tailscale Serve Unix socket works on Linux and macOS.
 
 The maintained source of this skill is the repository's `skills/akdbx`
 directory. A local install links the agent's skills directory to it (a

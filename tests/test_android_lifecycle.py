@@ -33,7 +33,7 @@ def registry(path, device):
     path.chmod(0o600)
 
 
-@pytest.mark.skipif(sys.platform != 'linux', reason='Linux device ownership')
+@pytest.mark.skipif(sys.platform not in ('linux', 'darwin'), reason='POSIX device ownership')
 def test_attach_and_repeat_preserve_other_devices(tmp_path, monkeypatch):
     cfg = tmp_path / 'devices.json'
     original = Device('external', '/usr/bin/adb', 5037, 'ABC')
@@ -62,6 +62,134 @@ def test_attach_and_repeat_preserve_other_devices(tmp_path, monkeypatch):
     with pytest.raises(AndroidError, match='already registered'):
         android_setup.setup(setup)
     assert load_devices(cfg) == devices
+
+
+FAKE_ADB = """#!/bin/sh
+# Answers like adb for one online device. Records the server port and arguments.
+printf '%s %s\\n' "$ANDROID_ADB_SERVER_PORT" "$*" >> "$AKDBX_FAKE_ADB_LOG"
+case "$3 $4 $5" in
+  'get-state  ') echo device ;;
+  'shell settings get') echo 0 ;;
+esac
+"""
+
+
+@pytest.mark.skipif(sys.platform not in ('linux', 'darwin'), reason='POSIX loopback peer check')
+def test_attach_setup_checks_the_real_adb_server_owner_then_writes_a_private_file(tmp_path, monkeypatch):
+    """No fake transport: the kernel owner check of a real loopback adb server, then adb itself."""
+    from test_android_route import FakeAdbServer
+    cfg = tmp_path / 'cfg' / 'devices.json'
+    log = tmp_path / 'adb.log'
+    monkeypatch.setenv('AKDBX_ANDROID_DEVICES', str(cfg))
+    monkeypatch.setenv('AKDBX_FAKE_ADB_LOG', str(log))
+    monkeypatch.setenv('ANDROID_ADB_SERVER_PORT', '1')  # The caller's adb settings never reach adb.
+    adb = tmp_path / 'bin' / 'adb'
+    adb.parent.mkdir()
+    adb.write_text(FAKE_ADB)
+    adb.chmod(0o700)
+    server = FakeAdbServer({'ok': True})
+    try:
+        setup = args('setup', '--device', 'tablet', '--attach', 'R5CT1234', '--adb', str(adb),
+                     '--adb-port', str(server.port))
+        assert android_setup.setup(setup) == {'ok': True, 'device': 'tablet', 'changed': True}
+    finally:
+        server.close()
+    assert cfg.stat().st_mode & 0o777 == 0o600 and cfg.parent.stat().st_mode & 0o777 == 0o700
+    stored = str(adb) if sys.platform == 'darwin' else str(adb.resolve())
+    assert load_devices(cfg) == {'tablet': Device('tablet', stored, server.port, 'R5CT1234')}
+    port = str(server.port)
+    assert log.read_text().splitlines() == [
+        f'{port} -s R5CT1234 get-state',
+        f'{port} -s R5CT1234 shell settings put secure speak_password 0',
+        f'{port} -s R5CT1234 shell settings get secure speak_password']
+    # The peer check connects and closes; no adb request reaches the server.
+    assert server.services == [] and server.stdin == []
+
+
+def _host(monkeypatch, module, platform):
+    """Run one module's platform branch on this host; a native run needs no change."""
+    if sys.platform != platform:
+        from types import SimpleNamespace
+        monkeypatch.setattr(module, 'sys', SimpleNamespace(platform=platform, stdin=sys.stdin))
+
+
+@pytest.mark.parametrize('platform', ['darwin', 'linux'])
+def test_attach_keeps_a_macos_adb_link_that_upgrades_retarget(tmp_path, monkeypatch, platform):
+    """Homebrew links adb into a versioned folder; Linux keeps storing the resolved file."""
+    cfg = tmp_path / 'cfg' / 'devices.json'
+    monkeypatch.setenv('AKDBX_ANDROID_DEVICES', str(cfg))
+    _host(monkeypatch, android_setup, platform)
+    real = tmp_path / 'Caskroom' / '36.0.0' / 'platform-tools' / 'adb'
+    real.parent.mkdir(parents=True)
+    real.touch(mode=0o700)
+    link = tmp_path / 'bin' / 'adb'
+    link.parent.mkdir()
+    link.symlink_to(real)
+
+    class Transport:
+        def __init__(self, device):
+            pass
+
+        def run(self, *command):
+            import subprocess
+            output = {('get-state',): b'device', ('shell', 'settings', 'get', 'secure', 'speak_password'): b'0'}
+            return subprocess.CompletedProcess(command, 0, output.get(command, b''))
+
+    monkeypatch.setattr(android_setup, 'Adb', Transport)
+    android_setup.setup(args('setup', '--attach', 'R5CT1234', '--adb', str(link)))
+    stored = load_devices(cfg)['android'].adb
+    assert stored == (str(link) if platform == 'darwin' else str(real.resolve()))
+
+
+@pytest.mark.parametrize('flags', [['--create'], ['--manage-avd', 'Pixel_9'], ['--create', '--device', 'pixel']])
+def test_managed_setup_is_refused_on_macos_before_any_change(tmp_path, monkeypatch, flags):
+    cfg = tmp_path / 'cfg' / 'devices.json'
+    monkeypatch.setenv('AKDBX_ANDROID_DEVICES', str(cfg))
+    _host(monkeypatch, android_setup, 'darwin')
+    monkeypatch.setattr(android_setup.subprocess, 'run', lambda *a, **k: pytest.fail(f'ran {a!r}'))
+    monkeypatch.setattr(android_setup.urllib.request, 'urlopen', lambda *a, **k: pytest.fail('downloaded'))
+    with pytest.raises(AndroidError, match='require a Linux host with systemd --user and KVM.*--attach SERIAL'):
+        android_setup.setup(args('setup', *flags))
+    assert not cfg.parent.exists()
+
+
+def test_macos_setup_without_a_choice_offers_only_attach(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setenv('AKDBX_ANDROID_DEVICES', str(tmp_path / 'cfg' / 'devices.json'))
+    monkeypatch.setattr(android_setup, 'sys', SimpleNamespace(platform='darwin', stdin=SimpleNamespace(isatty=lambda: False)))
+    with pytest.raises(AndroidError, match=r'select --attach SERIAL \(managed emulators require Linux\)'):
+        android_setup.setup(args('setup'))
+    prompts = []
+    monkeypatch.setattr(android_setup, 'sys', SimpleNamespace(platform='darwin', stdin=SimpleNamespace(isatty=lambda: True)))
+    monkeypatch.setattr('builtins.input', lambda prompt: prompts.append(prompt) or '  ')
+    with pytest.raises(AndroidError, match='no device selected'):
+        android_setup.setup(args('setup'))
+    assert prompts == ['Managed emulators require Linux. ADB serial of the device or emulator to attach: ']
+    assert not (tmp_path / 'cfg').exists()
+
+
+def test_windows_setup_still_refuses_and_names_the_manual_file(tmp_path, monkeypatch):
+    monkeypatch.setenv('AKDBX_ANDROID_DEVICES', str(tmp_path / 'cfg' / 'devices.json'))
+    _host(monkeypatch, android_setup, 'win32')
+    for flags in (['--attach', 'R5CT1234'], ['--create']):
+        with pytest.raises(AndroidError, match='runs on Linux and macOS; on Windows write the private device file'):
+            android_setup.setup(args('setup', *flags))
+    assert not (tmp_path / 'cfg').exists()
+
+
+def test_managed_entry_on_macos_is_refused_with_the_linux_reason(tmp_path, monkeypatch, capsys):
+    """A registry copied from Linux: no wake, no adb, and the reason instead of 'asleep'."""
+    cfg = tmp_path / 'devices.json'
+    registry(cfg, managed(tmp_path))
+    monkeypatch.setenv('AKDBX_ANDROID_DEVICES', str(cfg))
+    _host(monkeypatch, android_lifecycle, 'darwin')
+    monkeypatch.setattr(android_lifecycle, '_start', lambda *a: pytest.fail('started a worker'))
+    targets = AndroidTargets(cfg, adb_factory=lambda device: pytest.fail('contacted adb'))
+    assert targets.capabilities()['android_managed_devices']['phone']['state'] == 'unsupported'
+    with pytest.raises(AndroidError, match='require a Linux host with systemd --user and KVM'):
+        targets.inspect({'action': 'android-inspect', 'device': 'phone'})
+    assert android_cli.run(args('wake', '--device', 'phone'), None) == 1
+    assert 'require a Linux host with systemd --user and KVM' in capsys.readouterr().out
 
 
 def test_status_list_and_locked_commands_leave_emulator_asleep(tmp_path, monkeypatch):

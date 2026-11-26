@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 
-from .android_route import AndroidError, Device
+from .android_route import MANAGED_LINUX_ONLY, AndroidError, Device
 
 
 def unit_name(device: Device) -> str:
@@ -54,7 +54,7 @@ def use(device: Device):
         yield
         return
     if not sys.platform.startswith('linux'):
-        raise AndroidError('managed Android emulators require Linux with systemd --user and KVM')
+        raise AndroidError(MANAGED_LINUX_ONLY)
     unit, directory = runtime(device)
     address = str(directory / 'ready')
     deadline = time.monotonic() + 210
