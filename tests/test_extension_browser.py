@@ -1087,7 +1087,10 @@ def test_the_cog_opens_the_settings_and_the_switch_turns_enhanced_security_on_an
     while harness.worker_call(SETTINGS) != dict(enhanced_security=True):
         assert time.monotonic() < deadline, harness.worker_call(SETTINGS)
         time.sleep(.05)
-    assert observer.evaluate(state, options) == dict(disabled=False, checked=True, status='')
+    # The page saves the setting first, then shows the saved state and unlocks the switch.
+    while (shown := observer.evaluate(state, options)) != dict(disabled=False, checked=True, status=''):
+        assert time.monotonic() < deadline, shown
+        time.sleep(.05)
     # The service worker reads the setting: a click-through cover now refuses.
     observer.call('Page.bringToFront', session=lab.session)
     url = lab.navigate('/secret-covered')
