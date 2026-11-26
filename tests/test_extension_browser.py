@@ -1794,6 +1794,10 @@ def test_popup_totp_fills_after_the_closing_popup_returns_focus(harness):
     that checked inside that event refused at random (about 1 run in 28 of the toolbar popup test).
     This test holds the popup open, starts the fill while the page has no focus, then closes the
     popup as its return-focus handler does. The field must get the code once.
+
+    Headless Edge on Windows (the Windows CI browser) keeps the page focused while the popup is open,
+    and no other window takes a headless page's focus. There the call never waits, so the race cannot
+    happen; the test still checks the one fill. On Linux the popup must take the focus.
     """
     from totp_vectors import URI
     lab, broker = harness.lab, harness.broker
@@ -1813,7 +1817,12 @@ def test_popup_totp_fills_after_the_closing_popup_returns_focus(harness):
     while not observer.evaluate('!!document.querySelector("#entries button")', session):
         assert time.monotonic() < deadline, observer.evaluate('document.getElementById("status").textContent', session)
         time.sleep(.05)
-    lab.wait('!document.hasFocus() && document.activeElement === otp')
+    if sys.platform == 'win32':
+        lab.wait('document.activeElement === otp')
+        held = not lab.evaluate('document.hasFocus()')
+    else:
+        lab.wait('!document.hasFocus() && document.activeElement === otp')
+        held = True
     # Instrumentation only: note when the worker sends the code call to the page.
     harness.worker_call('(() => { const call = run; globalThis.codeSent = false; run = (...args) => {'
                         ' if (String(args[2]).includes("popupTotp")) globalThis.codeSent = true; return call(...args); };'
@@ -1825,8 +1834,9 @@ def test_popup_totp_fills_after_the_closing_popup_returns_focus(harness):
     while not harness.worker_call('codeSent'):
         assert time.monotonic() < deadline, 'the worker did not send the code call'
         time.sleep(.02)
-    time.sleep(.3)  # The call is in the page now, waiting for focus (the fill allows 4 seconds).
-    assert lab.evaluate('!document.hasFocus()') and lab.digest('otp') == EMPTY
+    if held:
+        time.sleep(.3)  # The call is in the page now, waiting for focus (the fill allows 4 seconds).
+        assert lab.evaluate('!document.hasFocus()') and lab.digest('otp') == EMPTY
     observer.evaluate('window.close()', session)
     assert harness.worker_call('codeFill') == {'ok': True}
     assert lab.digest('otp') == sha('050471') and lab.evaluate('codeEvents') == 1
