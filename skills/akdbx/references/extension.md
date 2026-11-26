@@ -287,7 +287,7 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   cannot cross modes. The exact challenge URL and authorized entry origin
   must match the field document before OTP access. Deadlines and format checks
   run in the renderer too; no keyboard fallback. This is the CLI/agent route,
-  supported on Linux/Windows/macOS; manual popup behavior is unchanged.
+  supported on Linux/Windows/macOS.
   See [TOTP](totp.md), including child frames and pending enrollment.
 - `fill-generated` and `commit-password` work unchanged with a password-mode extension pin.
 - Cards: `pin-card-target --route extension` takes the same options. `--frame-url`
@@ -348,6 +348,12 @@ address label). The fill happens only after a trusted click in the popup.
 Logins fill the focused field and its partner field in the same form; cards
 and addresses fill the recognised visible fields of the same form. Hidden,
 disabled and detached fields never receive a value.
+
+In fill extension 0.12.0 or later, the popup can fill a saved authenticator
+code on the top HTTPS page. Require `extension_popup_totp_protocol: 1`. Focus
+an input marked `autocomplete="one-time-code"` and select the matching account.
+The popup closes to return focus to the field before delivery. Framed
+challenges use a TOTP pin with retained frame owners.
 
 Stripe's classic Card Element frame (`elements-inner-card-<hash>.html`) is
 pin-route only. Its inputs have no ID, so the popup does not offer or fill a

@@ -12,14 +12,14 @@ secrets that a site shows once, and merging encrypted vaults.
 
 Source and issue tracker: [7bgsbm749g-boop/akdbx](https://github.com/7bgsbm749g-boop/akdbx).
 Releases are on [GitHub Releases](https://github.com/7bgsbm749g-boop/akdbx/releases):
-one wheel per version for Linux and Windows, with `SHA256SUMS` and a
+one wheel per version for Linux, macOS and Windows, with `SHA256SUMS` and a
 build-provenance attestation. See [Releasing akdbx](docs/releasing.md) to cut a
 release or upgrade a broker.
 
 ## Quick start: akdbx setup
 
 Install akdbx (a release wheel or `pip install -e .` in a checkout), then run
-one guided command (0.27.0+; the same on Linux and Windows):
+one guided command (0.27.0+; also available on macOS after 0.48.0):
 
 ```sh
 akdbx setup
@@ -29,7 +29,7 @@ It asks a few questions with defaults and takes you from install to a working
 broker. The broker is the only required part; every other stage is optional
 and can be skipped (`--skip STAGE`):
 
-1. **System check**: Python, the desktop (Linux X11/Wayland or Windows), and optional
+1. **System check**: Python, the desktop (Linux X11/Wayland, macOS or Windows), and optional
    tools (mkcert, Tailscale, Chromium browsers). It
    reports gaps and installs no system software.
 2. **Vault**: your existing `.kdbx` file and key file, checked with the
@@ -44,8 +44,9 @@ and can be skipped (`--skip STAGE`):
    another public tunnel that does not decrypt (instructions only); or a proxy
    that decrypts HTTPS, which setup warns about and does not configure. See
    [Unlock from the internet](#unlock-from-the-internet).
-5. **Start at login**: a systemd user service on Linux, a logon task for your
-   user on Windows. Setup never starts a second broker. The service runs
+5. **Start at login**: a systemd user service on Linux, a macOS LaunchAgent, or a logon
+   task on Windows. Setup checks the selected RPC endpoint before it starts the service. Use the same
+   socket as any broker that already serves this vault. The service runs
    `akdbx serve --no-print-unlock-link`, so the journal or task output never
    keeps the unlock link: run `akdbx status` to get it.
 6. **Fill route**: the browser extension (`akdbx extension install` and
@@ -71,7 +72,7 @@ akdbx setup --yes --json --vault ~/vaults/passwords.kdbx --create-cert \
 ```
 
 Setup saves its answers (paths and choices, never a secret) in a private file:
-`~/.config/akdbx/setup.json` on Linux, `%LOCALAPPDATA%\akdbx\setup.json` on
+`~/.config/akdbx/setup.json` on Linux and macOS, `%LOCALAPPDATA%\akdbx\setup.json` on
 Windows. `akdbx setup --help` lists every flag.
 
 ## How it works
@@ -102,7 +103,7 @@ pin, fill and receipt model. Agents choose with `--route extension|cdp`, and
 | Connection | Native-messaging host; values sealed to the extension (AES-256-GCM) | Chrome DevTools Protocol over loopback |
 | Setup | Install the host, load the extension, pair once per browser session | Configure the profile at broker start |
 | Sites see | The user's normal browser | A browser with a debugging port, which anti-bot checks often flag |
-| Also | The user can click the extension to fill a login, card or address; secret capture from 0.32.0 | Secret capture; works without an extension |
+| Also | The user can click the extension to fill a login, authenticator code, card or address; secret capture from 0.32.0 | Secret capture; works without an extension |
 
 **Prefer the extension route.** A debugging port gives every process of the same
 OS user full control of that browser profile, and anti-bot and anti-fraud checks
@@ -153,8 +154,8 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 
 - **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
   checks, private HTTPS unlock and encrypted vault writes. Chrome, Edge and Firefox (0.47.0+)
-  native-host locations are supported. Native window delivery, CDP and guided
-  setup are unavailable. Safari's Apple wrapper is a separate delivery. See
+  native-host locations are supported. After 0.48.0, guided setup installs a login LaunchAgent and the broker
+  locks on macOS screen-lock notifications. Native window delivery and CDP are unavailable. Safari's Apple wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).
 - **Linux** (X11 or Wayland desktop): the original platform. The setup notes in this
   README and the [VPS setup reference](skills/akdbx/references/vps-setup.md)
@@ -239,7 +240,7 @@ limits are in [Android devices](skills/akdbx/references/android.md).
 - The Unix socket and its directory are mode `0600` and `0700`. The CLI rejects
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
   peer UID before sending a request.
-- The broker starts locked. The user enters the master password only on the private HTTPS unlock page, never in chat, terminal input, arguments, or environment variables. The page is HTTPS on `127.0.0.1` with the broker's own certificate, or (Linux only) a Unix socket behind Tailscale Serve; it never binds the LAN or tailnet and never serves plain HTTP over TCP. Through the optional akdbx relay, TLS still ends in the broker: the relay forwards only encrypted bytes, and the broker trusts no name, certificate or header from it without checking.
+- The broker starts locked. The user enters the master password only on the private HTTPS unlock page, never in chat, terminal input, arguments, or environment variables. The page is HTTPS on `127.0.0.1` with the broker's own certificate, or (Linux or macOS) a Unix socket behind Tailscale Serve; it never binds the LAN or tailnet and never serves plain HTTP over TCP. Through the optional akdbx relay, TLS still ends in the broker: the relay forwards only encrypted bytes, and the broker trusts no name, certificate or header from it without checking.
 - After unlock, browser password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. Native field pins use retained masked native controls. Neither path sends password keys or Tab. Unsupported targets refuse delivery without terminal approval.
 - Errors are deliberately generic after the typing boundary.
 
@@ -255,7 +256,7 @@ to `list-password-frames`, `pin-password-target`, `pin-card-target` and
 `pin-identity-target`; the list, single-use pin, fresh handle and receipt model
 of the CDP route is unchanged, with `extension-dom-v1` receipts. The user can
 also click the extension (toolbar button, context menu or Alt+Shift+K) and
-pick a saved login, card or address for the focused field; the popup shows
+pick a saved login, authenticator, card or address for the focused field; the popup shows
 metadata only. `status` advertises `extension_protocol: 1`, `fill_routes`,
 `default_fill_route` (`serve --default-fill-route`), `extension_connected`,
 `extension_paired`, and `extension_version_expected`. Each `extension_browsers`
@@ -415,7 +416,7 @@ event. A broker restart keeps the block. Only
 user confirms that the failures were theirs; see
 [Failed attempts block the link](docs/private-pages.md#failed-attempts-block-the-link).
 
-Linux and Windows serve the same page. [Private HTTPS pages](docs/private-pages.md)
+Linux, macOS and Windows serve the same page. [Private HTTPS pages](docs/private-pages.md)
 describes its setups:
 
 - **Loopback HTTPS page** (`--tls-cert`, `--tls-key`): the broker serves HTTPS
@@ -429,7 +430,7 @@ describes its setups:
   in the address; brokers registered earlier used `:8443` and move by
   themselves at their next start). The relay forwards the encrypted connection
   and cannot read it; see [Unlock from the internet](#unlock-from-the-internet).
-- **Tailscale Serve Unix socket** (Linux only, no TLS options): the earlier
+- **Tailscale Serve Unix socket** (Linux or macOS, no TLS options): the earlier
   Linux route. The backend listens only on a Unix-domain socket in the
   broker's private runtime directory, and Tailscale Serve supplies HTTPS and
   the authenticated identity header. Windows has no such route, because
@@ -440,7 +441,7 @@ containing an HTTP, malformed, credential-bearing, or different-origin unlock
 link. Every deployment must configure the client with the intended origin
 using global `--unlock-origin HTTPS_ORIGIN` (or `AKDBX_UNLOCK_ORIGIN`) before the
 subcommand. With neither, the CLI uses the origin of an enabled akdbx relay
-(0.26.0+), then `https://localhost:9443`. The same setting configures the broker's private-page origin at startup; the built-in default is `https://localhost:9443` on both platforms (before 0.23.0, Linux used a non-routable example). Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
+(0.26.0+), then `https://localhost:9443`. The same setting configures the broker's private-page origin at startup; the built-in default is `https://localhost:9443` on every platform (before 0.23.0, Linux used a non-routable example). Existing deployments must set their current trusted origin before updating the CLI or restarting the broker. Keep real hostnames and deployment paths in private configuration, outside Git. A broker running under a separately configured account likewise
 requires global `--broker-uid UID` (or `AKDBX_BROKER_UID`).
 
 The master password travels inside the HTTPS connection directly to the local broker. It is never returned to the CLI or agent. Run `akdbx lock` to lock immediately and keep the broker available for a fresh private unlock.
@@ -451,6 +452,7 @@ handles and fill targets, and keeps the saved database and paired browsers. Comp
 remain available after a fresh unlock until their original expiry. Get the new link with
 `akdbx status`. Unlocking the desktop leaves the vault locked.
 
+On macOS the login session reports screen lock, sleep and wake (`lock_event_sources.macos`).
 On Windows the broker listens for session-lock and suspend/resume messages in its desktop session.
 On Linux it listens to systemd-logind through `/usr/bin/gdbus` for the user's session lock and system sleep. With `systemd-inhibit` installed and logind's
 sleep-delay permission, the broker holds a bounded delay while it locks. It also locks on resume.
@@ -481,7 +483,7 @@ Key-file databases are supported with `serve DB --keyfile KEY`. Ctrl-C stops the
 
 ## Unlock from the internet
 
-Linux and Windows have the same choices. In order of recommendation:
+Linux, macOS and Windows have the same choices. In order of recommendation:
 
 1. **Local only**: the loopback HTTPS page on the broker's computer.
 2. **A private proxy** such as Tailscale Serve: only your tailnet can reach the
@@ -854,6 +856,10 @@ returns it to the inbox. `pin-code-target` pins one focused, visible, enabled
 card transport's same-origin, hit-tested DOM guards, CDP route). For six
 one-digit boxes, `fill-sms-code` also takes a `pin-target` token (on Linux, an X11 or XWayland window; on Windows, an HWND) with
 `--target-url`, or `--target-url-file` for a challenge URL that holds a token.
+For a native app, use `pin-native-target --mode code` and the same
+`fill-sms-code` command. Status lists supported SMS destinations in
+`sms_fill_routes`. An empty list means the broker can receive texts but has
+no supported fill route.
 The iPhone filter forwards only texts with the word `code`; a second automation
 with `OTP` covers sites that say only that. See
 [the SMS workflow](skills/akdbx/references/sms.md).
@@ -925,8 +931,10 @@ akdbx fill-totp FRESH_SEARCH_HANDLE --target-url 'https://example.com/challenge'
 
 Use `--route cdp` for the configured CDP browser on Linux/Windows. The paired
 extension route works on Linux/Windows/macOS, including the native macOS broker,
-and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. TOTP uses
-the extension's agent route; the manual popup keeps its existing workflows.
+and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. For a
+human-click fill, focus a top-page input marked `autocomplete="one-time-code"`
+and choose the account in the popup. This needs extension 0.12.0+ and
+`extension_popup_totp_protocol: 1`.
 Only a single focused visible editable `text`, `tel`, `number` or `password`
 input is supported, with stable metadata and no conflicting password/card hints.
 Split-digit inputs and unsupported format constraints refuse. Six/eight digit
@@ -1184,8 +1192,8 @@ unlock. Old handles do not survive a restart. See the
 command.
 
 Remote unlock requires Tailscale Serve to proxy HTTPS either to the broker's
-Unix socket (Linux) or to the broker's own HTTPS listener through a verified
-`https://127.0.0.1:PORT` target (Linux and Windows). Never map it to plain
+Unix socket (Linux or macOS) or to the broker's own HTTPS listener through a verified
+`https://127.0.0.1:PORT` target (Linux, macOS and Windows). Never map it to plain
 HTTP on a loopback TCP port or to an `https+insecure://` target: another local
 user could take that port while the broker is stopped. Root must install a
 Unix-socket mapping with Tailscale 1.98.9 or newer (older versions had a

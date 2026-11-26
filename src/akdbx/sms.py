@@ -1484,22 +1484,37 @@ def dispatch(broker, request: dict, delivery_ready) -> dict:
 
 
 def _consume_target(broker, request):
-    """Spend the target once, including on a request for the wrong operation."""
+    """Spend one native control, Android, DOM field or window pin, including refused pins.
+
+    Each manager pops only its own tokens, so a token is spent once, by its owner.
+    """
     from .browser_card import CardTargetError
     token = request.get('target')
-    if hasattr(broker, 'android'):
-        pin = broker.android.take(token)
-        if pin is not None:
-            if (pin.mode != 'sms' or type(request.get('target_protocol')) is not int
-                    or request['target_protocol'] != 1 or request.get('action') != 'fill-sms-code'):
-                pin.close()
-                raise CardTargetError()
-            return 'android', pin
+    native = broker.native.take(token, 'code')
+    if native is not None:
+        if type(request.get('target_protocol')) is not int or request['target_protocol'] != 1:
+            native.close()
+            raise SmsError('invalid target protocol')
+        return 'native', native
+    android = broker.android.take(token)
+    if android is not None:
+        if (android.mode != 'sms' or type(request.get('target_protocol')) is not int
+                or request['target_protocol'] != 1 or request.get('action') != 'fill-sms-code'):
+            android.close()
+            raise CardTargetError()
+        return 'android', android
     try:
         return 'dom', broker.code_targets.consume(token)
     except CardTargetError:
         pass
-    return 'x11', broker.targets.consume({'target': token, 'target_protocol': request.get('target_protocol')})
+    return 'window', broker.targets.consume({'target': token, 'target_protocol': request.get('target_protocol')})
+
+
+def _close_target(broker, route, pin):
+    if route in {'native', 'android'}:
+        pin.close()
+    elif route == 'dom':
+        broker.code_targets._close(pin)
 
 
 def _android_site_matches(pin, request):
@@ -1519,18 +1534,21 @@ def _deadline(broker, request):
 
 
 def _deliver(broker, route, pin, value, field, ready, deadline):
-    """Type ``value`` through the pinned DOM field or X11 window; a fill receipt."""
-    from .target import DELIVERY as X11_DELIVERY, DeliveryError
+    """Type ``value`` through the pinned field or window; a fill receipt."""
+    from .target import DELIVERY as WINDOW_DELIVERY, DeliveryError
     if route == 'android':
         try:
             return broker.android.fill_element(pin, value, field, ready, deadline)
         finally:
             pin.close()
-    if route == 'dom':
+    if route in {'native', 'dom'}:
+        manager = broker.native if route == 'native' else broker.code_targets
         try:
-            return broker.code_targets.fill(pin, value, field, ready, deadline)
+            return manager.fill(pin, value, field, ready, deadline)
         finally:
-            broker.code_targets._close(pin)
+            _close_target(broker, route, pin)
+    if route != 'window':
+        return _failure()
     remaining = deadline - broker.clock()
     if remaining <= 0 or not broker._keyboard_lock.acquire(timeout=remaining):
         return dict(ok=False, error='autofill not started: request expired')
@@ -1538,7 +1556,7 @@ def _deliver(broker, route, pin, value, field, ready, deadline):
         if not ready():
             return dict(ok=False, error='autofill not started: request expired')
         broker.typer.deliver(pin, [value], ready)
-        return dict(ok=True, filled=field, target_delivery=X11_DELIVERY)
+        return dict(ok=True, filled=field, target_delivery=WINDOW_DELIVERY)
     except DeliveryError as exc:
         from .target import failure
         return failure(exc.started)
@@ -1564,8 +1582,7 @@ def _add_source(broker, request, delivery_ready):
         except Exception:
             return _failure()
         if route != 'dom' or pin['field'] != 'webhook-url':
-            if route == 'dom':
-                broker.code_targets._close(pin)
+            _close_target(broker, route, pin)
             return _failure()
     try:
         token = inbox_token = broker.sms.add_source(request.get('name'), request.get('kind'),
@@ -1608,24 +1625,30 @@ def _fill(broker, request, delivery_ready):
             broker.sms.restore(message)
             return _failure()
         return dict(ok=False, error='unknown or expired SMS message')
-    close = (lambda: broker.code_targets._close(pin)) if route == 'dom' else pin.close if route == 'android' else (lambda: None)
     if message is None:
-        close()
+        _close_target(broker, route, pin)
         return dict(ok=False, error='unknown or expired SMS message')
     refusal = None
-    if route == 'x11' and not _https_url(request.get('target_url')):
+    if route == 'window' and not _https_url(request.get('target_url')):
         refusal = dict(ok=False, error='autofill not started: window code fill needs --target-url')
     elif route == 'android' and not _android_site_matches(pin, request):
         refusal = dict(ok=False, error='autofill not started: Android SMS fill needs a matching HTTPS target URL')
+    elif route == 'native' and 'target_url' in request:
+        from .totp import https_origin, TotpError
+        try:
+            if https_origin(request['target_url']) != pin.origin:
+                refusal = _failure()
+        except TotpError:
+            refusal = _failure()
     elif route == 'dom' and pin['field'] != 'one-time-code':
         refusal = _failure()
-    else:
+    if refusal is None:
         try:
             deadline = _deadline(broker, request)
         except SmsError as exc:
             refusal = dict(ok=False, error=str(exc))
     if refusal is not None:
-        close()
+        _close_target(broker, route, pin)
         broker.sms.restore(message)
         return refusal
     ready = lambda: delivery_ready() and broker.clock() < deadline

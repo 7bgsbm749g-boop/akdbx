@@ -8,6 +8,11 @@ fill the code straight into the challenge field. You see only a masked preview
 never see the code, the webhook token or the text itself.
 
 Require broker 0.40.0 or newer and `status` field `sms_protocol: 1`.
+On brokers that report `sms_fill_routes`, `cdp` requires a configured browser
+profile, `native` requires platform support for native controls, and `window`
+requires a supported window backend. An empty list means that the inbox works
+but this broker has no SMS fill route. The local target still needs to pass its
+pin checks.
 `sms_sources_configured` tells you how many phone numbers forward texts.
 
 ## Two kinds of phone number
@@ -123,6 +128,10 @@ KIND --replace` issues a new URL (the old one stops working at once);
    `fill-sms-code MESSAGE_ID --target WINDOW_PIN --target-url-file URL_FILE`
    (a mode-0600 file with the verified challenge URL; use `--target-url URL`
    only for a URL that holds no token).
+   In a native app, pin the focused, editable, unmasked whole-code control
+   with `pin-native-target --mode code --service-url HTTPS_URL`, then run
+   `fill-sms-code MESSAGE_ID --target NATIVE_PIN`. Verify the app and service
+   independently. If supplied, `--target-url` must match the asserted origin.
 4. Check the site's result (signed-in page, next step), not the field.
 
 Each code is filled once. A fill that never started (expired or refused pin)

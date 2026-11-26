@@ -955,6 +955,130 @@ def test_android_sms_pin_spent_but_message_restored_for_wrong_site(device_file, 
     assert call(broker, 'sms-wait')['messages'] == []
 
 
+class NativeCodeSession:
+    """A native control session that records writes instead of touching a real app."""
+
+    def __init__(self):
+        self.writes, self.closed = [], False
+
+    def check(self, indices, facts, focus):
+        if self.closed:
+            raise android_route.TargetError()
+
+    def prepare(self, index, value):
+        pass
+
+    def write(self, index, value, before):
+        before()
+        self.writes.append(value)
+
+    def close(self):
+        self.closed = True
+
+
+def test_each_sms_route_spends_only_its_own_token_once(device_file, tmp_path, monkeypatch):
+    """Native, Android, DOM and window tokens each fill once through their owner; replays and
+    tokens from another route or mode are spent, refused and leave the code in the inbox."""
+    import secrets
+    from types import SimpleNamespace
+    from akdbx.native_fields import NativePin
+    from akdbx.sms import Message, SmsInbox
+    from test_sms import call, x11_target
+    broker, _ = app_broker(device_file)
+    broker.sms = SmsInbox(tmp_path / 'state/sms.json', clock=broker.clock)
+    broker.unlock_link = SimpleNamespace(origin='https://unlock.example')
+    site = 'https://example.com/challenge'
+    sessions, dom_fills, dom_closed = [], [], []
+
+    def native_target(kind='code'):
+        token, session = secrets.token_hex(32), NativeCodeSession()
+        sessions.append(session)
+        broker.native.pins[token] = NativePin(session, kind, kind, (0,), (('', '', False),), 0,
+                                              ('https', 'example.com', 443),
+                                              'one-time-code' if kind == 'code' else None, broker.clock() + 60)
+        return token
+
+    def dom_target():
+        token = secrets.token_hex(32)
+        broker.code_targets.pins[token] = dict(cdp=None, field='one-time-code', expires=broker.clock() + 60)
+        return token
+
+    monkeypatch.setattr(broker.code_targets, 'fill', lambda pin, value, field, ready, deadline:
+                        dom_fills.append(value) or dict(ok=True, filled=field, code_delivery='cdp-code-element-v1'))
+    monkeypatch.setattr(broker.code_targets, '_close', dom_closed.append)
+
+    def android_target(mode='sms', **extra):
+        return pin(broker, mode=mode, field='21', app_site='https://example.com', **extra)['target']
+
+    codes = iter(f'{n:06d}' for n in range(482910, 483000))
+
+    def message():
+        code = next(codes)
+        broker.sms.restore(Message(secrets.token_hex(16), 'fixture', 'Example', 'Your code', code,
+                                   broker.clock(), broker.wall_clock()))
+        return broker.sms.messages[-1].id, code
+
+    def inbox():
+        return {m.id for m in broker.sms.messages}
+
+    def fill(target, **extra):
+        # A None value leaves that request field out.
+        message_id, code = message()
+        fields = {k: v for k, v in {'target_protocol': 1, 'target_url': site, **extra}.items() if v is not None}
+        return call(broker, 'fill-sms-code', message=message_id, target=target, **fields), message_id, code
+
+    def delivered():
+        return dict(native=[w for s in sessions for w in s.writes], android=len(fill_requests()),
+                    dom=list(dom_fills), window=[e for e in broker.typer.events if e[0] == 'type'])
+
+    makers = dict(native=native_target, android=android_target, dom=dom_target, window=lambda: x11_target(broker))
+    receipts = dict(native=dict(code_delivery='native-field-v1'), android=dict(target_delivery=DELIVERY),
+                    dom=dict(code_delivery='cdp-code-element-v1'), window=dict(target_delivery='x11-send-event-v1'))
+    expected = dict(native=[], android=0, dom=[], window=[])
+    for route, make in makers.items():
+        token = make()
+        result, message_id, code = fill(token)
+        assert result == dict(ok=True, filled='one-time-code', **receipts[route]), route
+        assert message_id not in inbox()
+        if route == 'android':
+            expected['android'] += 1
+        else:
+            expected[route].append(('type', code) if route == 'window' else code)
+        assert delivered() == expected, route
+        # Replay: refused before any delivery, and the second code stays.
+        result, message_id, _ = fill(token)
+        assert not result['ok'] and message_id in inbox(), route
+        assert delivered() == expected, route
+    assert all(s.closed for s in sessions) and len(dom_closed) == 1
+    assert not broker.native.pins and not broker.code_targets.pins and not broker.android._pins
+
+    # A token from another route or mode is spent by its owner, refused, and cannot be reused.
+    wrong = [
+        (native_target('password'), {}),       # native control pinned for a password
+        (native_target(), {'target_protocol': 2}),
+        (native_target(), {'target_url': 'https://other.example/'}),
+        (android_target('card', purpose='cc-name'), {}),
+        (android_target(), {'target_protocol': 2}),
+        (android_target(), {'target_url': 'https://other.example/'}),
+        (android_target(), {'target_url': None}),
+    ]
+    for token, extra in wrong:
+        result, message_id, _ = fill(token, **extra)
+        assert not result['ok'] and message_id in inbox(), extra
+        for retry in ({}, {'target_protocol': 1, 'target_url': site}):
+            result, message_id, _ = fill(token, **retry)
+            assert not result['ok'] and message_id in inbox(), extra
+    # An Android code pin given to another SMS operation is spent too.
+    token = android_target()
+    receipt = call(broker, 'sms-add-source', name='webhook', kind='twilio', target=token, target_protocol=1,
+                   start_deadline=broker.clock() + 4)
+    assert receipt['ok'] is False and broker.sms.list_sources() == []
+    result, message_id, _ = fill(token)
+    assert not result['ok'] and message_id in inbox()
+    assert delivered() == expected
+    assert all(s.closed for s in sessions) and not broker.native.pins and not broker.android._pins
+
+
 @pytest.mark.parametrize('mode,purpose', [('read', None), ('sms', None), ('card', 'cc-name'), ('identity', 'email')])
 def test_chrome_structured_operation_refuses_an_unverified_peer(device_file, mode, purpose):
     cdp = FakeCDP('https://example.com/challenge', shows_typed=False)

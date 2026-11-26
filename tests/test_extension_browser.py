@@ -1087,7 +1087,10 @@ def test_the_cog_opens_the_settings_and_the_switch_turns_enhanced_security_on_an
     while harness.worker_call(SETTINGS) != dict(enhanced_security=True):
         assert time.monotonic() < deadline, harness.worker_call(SETTINGS)
         time.sleep(.05)
-    assert observer.evaluate(state, options) == dict(disabled=False, checked=True, status='')
+    # The page saves the setting first, then shows the saved state and unlocks the switch.
+    while (shown := observer.evaluate(state, options)) != dict(disabled=False, checked=True, status=''):
+        assert time.monotonic() < deadline, shown
+        time.sleep(.05)
     # The service worker reads the setting: a click-through cover now refuses.
     observer.call('Page.bringToFront', session=lab.session)
     url = lab.navigate('/secret-covered')
@@ -1637,11 +1640,12 @@ def test_a_rebuild_with_other_contents_runs_the_new_worker_after_a_browser_resta
     stamped = rebuild(monkeypatch, folder, unlock_origin=origin)
     assert stamped != first and json.loads((folder / 'manifest.json').read_text())['version'] == stamped
     with chromium_lab(private_dir, *certificates, restart=True, **run) as lab:
-        # Chromium registers the new worker at startup. Edge on Windows can first start the registered old
-        # worker, which then finds the newer build on disk and reloads into it.
+        # Chromium registers the new worker at startup. Chromium or Edge can first start the worker it
+        # registered on the previous launch, which then finds the newer build on disk and reloads into it.
+        # That earlier worker ran either the old files or the rebuilt ones (see the restart above).
         deadline = time.monotonic() + 30
         while (runs := worker_value(lab, RUNS)) != [stamped, True, 'function']:
-            assert runs == [first, False, 'function'] and time.monotonic() < deadline, runs
+            assert runs in ([first, False, 'function'], [first, True, 'function']) and time.monotonic() < deadline, runs
             time.sleep(.2)
 
 
@@ -1705,3 +1709,87 @@ def test_child_frame_totp_uses_exact_frame_origin_and_retained_owner(harness):
     lab.evaluate("document.getElementById('login-frame').style.opacity='0'")
     assert not fill(pin)['ok']
     assert evaluate('otp.value === ""')
+
+
+def test_popup_totp_binds_the_account_field_and_single_use_selection(harness):
+    from totp_vectors import URI
+    lab, broker = harness.lab, harness.broker
+    lab.navigate('/login')
+    for entry in broker.vault.entries:
+        if entry.url and not isinstance(entry, (CardEntry, IdentityEntry)):
+            entry.otp = URI
+    broker.wall_clock = lambda: 1111111111
+    lab.evaluate("password.type='tel';password.autocomplete='one-time-code';password.id='otp'")
+    harness.focus('otp')
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    def probe():
+        found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+        assert found['ok'] and found['kind'] == 'totp' and len(found['entries']) == 1, found
+        return json.dumps(found['session'])
+    def fill(session):
+        return harness.worker_call(f'popupFill({{session: {session}, index: 0}})')
+    session = probe()
+    assert fill(session) == {'ok': True}
+    assert lab.digest('otp') == sha('050471')
+    assert fill(session)['ok'] is False
+    lab.evaluate("otp.value=''")
+    session = probe()
+    pending_handles = set(harness.hub.selections)
+    lab.evaluate("otp.maxLength=1; otp.removeAttribute('maxlength')")
+    assert fill(session) == {'ok': False, 'error': 'code field changed or expired; open akdbx again'}
+    assert pending_handles == set(harness.hub.selections) and lab.digest('otp') == EMPTY
+    session = probe()
+    lab.evaluate("otp.blur(); otp.focus()")
+    assert not fill(session)['ok'] and lab.digest('otp') == EMPTY
+
+
+@pytest.mark.parametrize('digits', [6, 8])
+def test_open_toolbar_popup_checks_totp_length_before_closing(harness, digits):
+    from totp_vectors import URI
+    lab, broker = harness.lab, harness.broker
+    lab.navigate('/login')
+    broker.vault.entries[0].otp = URI + f'&digits={digits}'
+    broker.wall_clock = lambda: 1111111111
+    lab.evaluate("password.maxLength=6;password.type='tel';password.autocomplete='one-time-code';password.id='otp'")
+    harness.focus('otp')
+    harness.worker_call('chrome.action.openPopup()')
+    observer = lab.observer
+    targets = observer.call('Target.getTargets')['targetInfos']
+    popup = next(t for t in targets if t['url'] == route.EXTENSION_ORIGIN + 'popup.html')
+    session = observer.call('Target.attachToTarget', dict(targetId=popup['targetId'], flatten=True))['sessionId']
+    deadline = time.monotonic() + 10
+    while not observer.evaluate('!!document.querySelector("#entries button")', session):
+        assert time.monotonic() < deadline, observer.evaluate('document.getElementById("status").textContent', session)
+        time.sleep(.05)
+    x, y = observer.evaluate('(() => {const r=document.querySelector("#entries button").getBoundingClientRect();'
+                             'return [r.x+r.width/2, r.y+r.height/2]})()', session)
+    for kind in ('mousePressed', 'mouseReleased'):
+        observer.call('Input.dispatchMouseEvent', dict(type=kind, x=x, y=y, button='left', clickCount=1), session=session)
+    if digits == 6:
+        lab.wait('otp.value === "050471"')
+    else:
+        while 'cannot accept this code' not in observer.evaluate('document.getElementById("status").textContent', session):
+            assert time.monotonic() < deadline
+            time.sleep(.05)
+        assert lab.digest('otp') == EMPTY
+
+
+def test_popup_totp_requires_a_match_bound_to_this_probe(harness, monkeypatch):
+    from totp_vectors import URI
+    lab, broker = harness.lab, harness.broker
+    lab.navigate('/login')
+    broker.vault.entries[0].otp = URI
+    lab.evaluate("password.type='tel';password.autocomplete='one-time-code';password.id='otp'")
+    harness.focus('otp')
+    [channel] = broker.extension.channels.values()
+    seal = channel.seal
+
+    def seal_other_probe(payload, context):
+        if context == 'match':
+            payload['facts']['probe_id'] = '0' * 32
+        return seal(payload, context)
+
+    monkeypatch.setattr(channel, 'seal', seal_other_probe)
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+    assert not found['ok'] and 'entries' not in found

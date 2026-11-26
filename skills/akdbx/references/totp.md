@@ -26,6 +26,12 @@ The CLI checks capabilities before sending TOTP requests. Updating installed
 source does not change an old running process; coordinate its normal restart
 and private unlock, without disrupting another live workflow.
 
+For a human-click fill, extension 0.12.0+ and a broker reporting
+`extension_popup_totp_protocol: 1` support a focused top-page input marked
+`autocomplete="one-time-code"`. Open the toolbar popup and choose the saved
+account. The broker uses its active TOTP configuration. Use an explicit TOTP
+pin for a frame or pending enrollment.
+
 Search the exact service and account. An entry with `totp_configured: true`
 has an OTP field, which can still be malformed or unsupported. Select the
 provider's entry for a provider challenge; a destination site's entry is not
@@ -39,8 +45,8 @@ whole-code input. For Chromium browser delivery, require integer
 `browser_totp_protocol: 1`. Use CDP on Linux/Windows or the paired extension on
 Linux/Windows/macOS (including the native macOS broker). Extension TOTP requires
 integer `extension_totp_protocol: 1` and fill extension **0.10.0** or newer; an
-older loaded extension is refused before pinning. These are agent/CLI routes;
-the extension's manual popup keeps its existing login/card/address workflow.
+older loaded extension is refused before pinning. The human-click workflow
+above uses a separate popup selection.
 
 ```bash
 akdbx list-password-frames --route extension --top-url 'https://example.com/challenge'
