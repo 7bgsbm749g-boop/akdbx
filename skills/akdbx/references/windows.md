@@ -41,7 +41,7 @@ steps are the same as in `SKILL.md`; its private folder is
   the [browser extension route](extension.md) with `extension_paired: true`
   when the browser has no debugging port (Helium, Chrome or Edge). For
   window pins require `target_fill_delivery: "win32-char-v1"` and target
-  protocol 1. `target_fill_modes: ["username"]` describes window pins only.
+  protocol 1. `target_fill_modes: ["username", "totp", "sms-code"]` describes window pins only.
 - When locked, give the exact returned private HTTPS link to the user. A
   loopback link opens on the **Windows machine** only; a link on the configured
   Tailscale Serve origin opens on any tailnet device, and a link on the relay
@@ -94,7 +94,7 @@ TextBox, or WPF TextBox or PasswordBox. The post-0.48 backend reports
 `native_field_windows_uia: true`. Discover the focused field, then use the
 single-use pin for the requested fill or read-only capture.
 
-## Username and TOTP fills with a numeric window pin
+## Window pins for usernames and TOTP
 
 - Independently verify the application's PID and top-level HWND. Focus the
   intended field. Call `pin-target --pid VERIFIED_PID --window VERIFIED_HWND`.
@@ -102,8 +102,7 @@ single-use pin for the requested fill or read-only capture.
 - Use a fresh search handle and target pin for each
   `fill HANDLE --mode username --target PIN` or `fill-totp`. A window pin
   refuses `--mode password`, `--mode login` and `fill-generated`: a browser's
-  address bar shares its page's HWND, so a numeric window pin cannot authorize a
-  password.
+  address bar shares its page's HWND, so browser passwords require a DOM pin.
 - A success receipt confirms directed message dispatch, not application
   acceptance. Some apps ignore synthetic `WM_CHAR` messages. Stop on uncertain
   or partial delivery; do not retry or fall back to global input/clipboard.

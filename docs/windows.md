@@ -30,7 +30,7 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
   code field on the CDP route.
 - Read pins for `capture-secret` and `capture-totp`. Secret sinks use a
   same-user named pipe. See [Secret sinks](secret-sinks.md#windows-named-pipe).
-- Username and TOTP fills to a pinned window (`win32-char-v1`). A window pin
+- Username, TOTP and SMS code fills to a pinned window (`win32-char-v1`). A window pin
   never receives a password: a browser's address bar shares its page's
   top-level HWND and focus identity, so an HWND pin cannot prove that a
   password field has focus. `--mode password`, `--mode login` and
@@ -104,7 +104,7 @@ provides typed COM interfaces without a separate automation toolkit. The
 broker checks the process, window, retained element, runtime ID, mask and
 focus. Read pins require visible, read-only unmasked text. WPF accepts
 single-line values only. Password fields must remain masked; login pins name both controls and
-never use Tab. Legacy numeric HWND pins keep their username/TOTP-only contract.
+never use Tab. Legacy numeric HWND pins support usernames, TOTP and SMS codes.
 Browser pages keep using DOM delivery. The caller asserts the service used by
 the native app; an HWND cannot attest a tab, URL or DOM field. See
 [Native desktop fields](../skills/akdbx/references/native-fields.md).
@@ -530,7 +530,7 @@ apply without change. The CLI checks `status` first and refuses a
 password-bearing request before dispatch when the broker has no password
 browser profile.
 
-Username and TOTP fills to a native application use a window pin:
+To use a window pin for a username or TOTP fill:
 
 ```powershell
 .\.venv\Scripts\akdbx.exe pin-target --pid VERIFIED_PID --window VERIFIED_TOP_LEVEL_HWND
@@ -557,9 +557,9 @@ a continuously retained pipe instance prevent endpoint replacement during a run.
 `status` advertises `password_fill_protocol: 1`, `password_fill_delivery:
 "chromium-password-dom-v1"`, `password_browser_configured`, `cards_supported`,
 `card_delivery: "cdp-card-element-v1"`, `card_browser_configured`,
-`target_fill_delivery: "win32-char-v1"` and `target_fill_modes: ["username"]`.
-The last value describes window pins only: they fill usernames and, through
-`fill-totp`, authenticator codes.
+`target_fill_delivery: "win32-char-v1"` and `target_fill_modes: ["username", "totp", "sms-code"]`.
+Linux and Windows list the same window operations: `fill --mode username`,
+`fill-totp` and `fill-sms-code`.
 
 DOM pins retain the actual elements, the native value setter and the document in
 an isolated world. The broker never resolves a replacement by selector at fill

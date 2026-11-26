@@ -51,6 +51,26 @@ def discover(manager):
     return manager.discover(dict(action='list-native-fields', native_protocol=1, pid=os.getpid()))['windows'][0]
 
 
+def test_sms_window_pin_delivers_to_focused_edit(lab):
+    from types import SimpleNamespace
+    from akdbx.broker import Broker
+    from akdbx.sms import Message
+    from akdbx.windows_target import WindowsTyper
+
+    _, entries = lab
+    broker = Broker(SimpleNamespace(entries=[]), WindowsTyper())
+    win32gui.SetFocus(entries[0])
+    pin = broker.dispatch(dict(action='pin-target', target_protocol=1, pid=os.getpid(),
+                               window=win32gui.GetParent(entries[0])))
+    assert pin['ok'], pin
+    message = Message('1' * 32, 'fixture', 'test', '***', '482913', broker.clock(), broker.wall_clock())
+    broker.sms.restore(message)
+    result = broker.dispatch(dict(action='fill-sms-code', sms_protocol=1, message=message.id,
+                                  target_protocol=1, target=pin['target'], target_url=SITE))
+    assert result == dict(ok=True, filled='one-time-code', target_delivery='win32-char-v1')
+    assert win32gui.GetWindowText(entries[0]) == message.code
+
+
 def test_real_win32_login_and_readonly_secret_capture(lab):
     manager, entries = lab
     win32gui.SetFocus(entries[0])

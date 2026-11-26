@@ -30,7 +30,8 @@ because UI Automation does not expose the TextBox AcceptsReturn setting.
 Qt, WinUI, UWP, Java, Flutter, RichEdit and VCL controls are outside the
 verified set. The broker refuses other UI Automation providers. There are
 no global keys, Tab, clipboard or automatic submit actions. Legacy numeric
-`pin-target` X11/HWND pins still accept only username and TOTP delivery. They
+`pin-target` pins accept usernames, TOTP and SMS codes on X11, XWayland or Windows.
+Native Wayland windows have no XID; use AT-SPI field pins there. Window pins
 cannot authorize passwords or the other native field operations.
 
 ## Verify the destination

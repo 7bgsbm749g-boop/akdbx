@@ -127,7 +127,7 @@ def test_window_pin_never_receives_a_password(mode):
     result = broker.dispatch(dict(action='fill', handle=handle, mode=mode, target=pin['target'], target_protocol=1))
     assert result == failure()
     status = broker.dispatch({'action': 'ping'})
-    assert status['target_fill_modes'] == ['username'] and status['password_browser_configured'] is False
+    assert status['target_fill_modes'] == ['username', 'totp', 'sms-code'] and status['password_browser_configured'] is False
 
 
 @pytest.mark.parametrize('case', ['other-path', 'http', 'fragment', 'page-id', 'frame-id', 'ambiguous-selector',
