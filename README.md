@@ -19,7 +19,7 @@ release or upgrade a broker.
 ## Quick start: akdbx setup
 
 Install akdbx (a release wheel or `pip install -e .` in a checkout), then run
-one guided command (0.27.0+; also available on macOS after 0.48.0):
+one guided command (0.27.0+; also available on macOS from 0.49.0):
 
 ```sh
 akdbx setup
@@ -154,7 +154,7 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 
 - **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
   checks, private HTTPS unlock and encrypted vault writes. The native host supports Chrome, Edge, Helium
-  and Firefox 153+ (0.47.0+); Chromium and Brave are supported after 0.48.0. After 0.48.0, guided setup
+  and Firefox 153+ (0.47.0+); Chromium and Brave are supported from 0.49.0. From 0.49.0, guided setup
   installs a login LaunchAgent, the broker locks on macOS screen-lock notifications, and the QR importer
   also registers for Chromium and Brave. Native window delivery and CDP are unavailable. Safari's Apple
   wrapper is a separate delivery. See
@@ -292,7 +292,7 @@ ciphertext. This adds `cryptography` as a runtime dependency. Origin
 and frame identity come from the browser, never from page content; cards go
 only to merchant frames or to the supported processor frames below them. On
 Linux, Chromium-family hosts use the browser’s `NativeMessagingHosts` folder.
-Run `akdbx extension info` to see each location. After 0.48.0,
+Run `akdbx extension info` to see each location. From 0.49.0,
 `extension_host_browsers` in `status` lists the supported installer names. From 0.31.1 the Linux and macOS launcher names the folder
 of the akdbx that installed it, so the host runs that akdbx even when the
 interpreter has another one; see [host launcher](skills/akdbx/references/extension.md#host-launcher-0311).
