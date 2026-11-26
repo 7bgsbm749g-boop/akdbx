@@ -928,10 +928,12 @@ def test_an_aria_dropdown_whose_list_changes_owner_refuses(chrome):
     assert evaluate(chrome, 'events') == []
 
 
-def test_an_ignored_dropdown_click_is_uncertain_even_when_the_label_equals_an_option_value(chrome):
+# '#stale-label' shows 8, the data-value of option 9 (values counted from 0); '#stale-value' carries
+# value=9 (October, counted from 0), which equals option 9's text. Both pages ignore the click.
+@pytest.mark.parametrize('selector,label', [('#stale-label', '8'), ('#stale-value', 'October')])
+def test_an_ignored_dropdown_click_is_uncertain_whatever_the_stale_label_or_value(chrome, selector, label):
     page = hintless(chrome)
-    # The button shows 8, the data-value of option 9 (values counted from 0); the page ignores the click.
-    target = hintless_pin(chrome, page, '#stale-label', 'cc-exp-month', field_purpose='cc-exp-month')
+    target = hintless_pin(chrome, page, selector, 'cc-exp-month', field_purpose='cc-exp-month')
     assert target['ok'], target
     assert fill(chrome, target, 'cc-exp-month') == failure(True)
-    assert evaluate(chrome, "document.querySelector('#stale-label').firstElementChild.textContent") == '8'
+    assert evaluate(chrome, f"document.querySelector('{selector}').firstElementChild.textContent") == label

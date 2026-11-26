@@ -366,8 +366,8 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
     // the option stays selected.
     for (let i = 0; i < 24; ++i) {
       if (!el.isConnected) return 'uncertain';
-      const shows = [el, ...el.querySelectorAll('*')].some(n => chosen.includes(text(n))) ||
-        [el.getAttribute('data-value'), el.getAttribute('value')].some(v => v !== null && chosen.includes(v.trim()));
+      // The button's own value attributes never confirm: they may be stale.
+      const shows = [el, ...el.querySelectorAll('*')].some(n => chosen.includes(text(n)));
       if (shows || option.isConnected && option.getAttribute('aria-selected') === 'true') return 'filled';
       await pause();
     }
