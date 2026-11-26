@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import ssl
 import stat
 import threading
 import time
@@ -407,6 +408,59 @@ def test_streams_are_spliced_to_the_real_tls_page(fake, page):
         client.stop()
     assert not any(secret_of() in line for line in logs)
     assert any('connected; the private pages are at ' + page.config.origin in line for line in logs)
+
+
+def test_idle_relay_read_allows_a_reply_without_overlapping_tls_calls(fake, page, monkeypatch):
+    # The relay waits for the local reply before sending another frame. A blocking
+    # SSL_read here would overlap SSL_write on the very same OpenSSL connection.
+    reading = threading.Event()
+    entered = threading.Event()
+    overlap = threading.Event()
+    recv, send = ssl.SSLSocket.recv, ssl.SSLSocket.send
+
+    def observe_read(sock, *args):
+        if threading.current_thread().name != 'akdbx-relay-stream' or sock.gettimeout() == relay_module.CONNECT_TIMEOUT:
+            return recv(sock, *args)  # Includes the WebSocket upgrade.
+        reading.set()
+        entered.set()
+        try:
+            return recv(sock, *args)
+        finally:
+            reading.clear()
+
+    def observe_write(sock, *args):
+        if threading.current_thread().name == 'akdbx-relay-stream-up' and reading.is_set():
+            overlap.set()
+        return send(sock, *args)
+
+    monkeypatch.setattr(ssl.SSLSocket, 'recv', observe_read)
+    monkeypatch.setattr(ssl.SSLSocket, 'send', observe_write)
+    client, _ = client_for(fake, page)
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1', 0))
+        listener.listen()
+        listener.settimeout(5)
+        client.local_port = listener.getsockname()[1]
+        waiter = None
+        client.start()
+        try:
+            assert client.connected.wait(5)
+            waiter = fake.open_stream()
+            with listener.accept()[0] as local:
+                local.settimeout(5)
+                peer = waiter['ws']
+                peer.sock.settimeout(5)
+                assert entered.wait(5)
+                local.sendall(b'reply')
+                assert peer.recv() == (2, b'reply')
+                peer.send_binary(b'x')
+                assert local.recv(1) == b'x'
+                assert not overlap.is_set(), 'stream read and write entered TLS together'
+        finally:
+            client.stop()
+            if waiter is not None:
+                waiter['ws'].abort()
+                waiter['done'].set()
 
 
 def test_the_client_reconnects_after_the_relay_drops_it(fake, page):
