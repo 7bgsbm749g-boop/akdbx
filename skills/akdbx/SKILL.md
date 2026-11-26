@@ -676,7 +676,9 @@ checks can still need the user. Details: [TOTP](references/totp.md) and
 (also on macOS from 0.50.1 with a configured profile) check for `cdp`.
 For a native application, check for `native` in
 `sms_fill_routes` and use `pin-native-target --mode code`. A window
-pin needs the independently verified challenge URL. The user's
+pin needs the independently verified challenge URL. The user can also fill a
+text from the fill extension's popup (0.15.0+, `extension_popup_sms_protocol`);
+you need not act for that. The user's
 real phone number, forwarded by an iOS Shortcuts automation (`--kind
 shortcut`), is the recommended source: Google, many banks, WhatsApp and some
 other sites reject VoIP numbers, so a virtual number (`--kind twilio`) does not

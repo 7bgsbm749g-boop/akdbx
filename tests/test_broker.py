@@ -843,6 +843,7 @@ def expected_extension_capabilities():
     return {"extension_protocol": 1, "extension_delivery": "extension-dom-v1",
             "extension_totp_protocol": 1, "extension_totp_min_version": "0.10.0",
             "extension_popup_totp_protocol": 1, "extension_popup_totp_min_version": "0.12.0",
+            "extension_popup_sms_protocol": 1, "extension_popup_sms_min_version": "0.15.0",
             "extension_code_protocol": 1, "extension_code_min_version": "0.13.0",
             "extension_qr_capture_min_version": "0.14.0",
             "extension_capture_protocol": 1, "extension_capture_delivery": "extension-dom-read-v1",

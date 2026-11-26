@@ -17,7 +17,18 @@ function versionText(manifest) {
   return /^\d{1,5}\.\d{1,5}\.\d{1,5}(\.\d{1,5})?$/.test(version) ? "akdbx extension " + version : "akdbx extension";
 }
 
+// How long ago a text arrived, in words.
+function age(seconds) {
+  const minutes = Math.floor(Math.max(0, Number(seconds) || 0) / 60);
+  return minutes < 1 ? "just now" : minutes === 1 ? "1 minute ago" : minutes + " minutes ago";
+}
+
 function label(kind, entry) {
+  // A texted code (fill extension 0.15.0): its sender and masked preview, never the code.
+  if (kind === "totp" && entry.kind === "sms") {
+    return ["Text from " + (entry.sender || entry.source), entry.preview + " (" + entry.code_length +
+      "-digit code, " + age(entry.age_seconds) + ")"];
+  }
   if (kind === "totp") return [entry.title, entry.username + " (authenticator code)"];
   if (kind === "card") return [entry.title, `${entry.brand} •••• ${entry.last_four}`];
   if (kind === "login") return [entry.title, entry.username + (entry.passwordless ? " (no password)" : "")];
@@ -95,10 +106,13 @@ async function main() {
     return;
   }
   if (!found.entries.length) {
-    status.textContent = `No saved ${found.kind === "login" ? "login" : found.kind} matches ${found.origin}.`;
+    status.textContent = found.kind === "totp" ? `No authenticator code or text matches ${found.origin}.`
+      : `No saved ${found.kind === "login" ? "login" : found.kind} matches ${found.origin}.`;
     return;
   }
-  status.textContent = `Choose what to fill on ${found.origin}:`;
+  // akdbx cannot tell which site sent a text: the user checks its sender and words.
+  status.textContent = found.entries.some(entry => entry.kind === "sms")
+    ? `Choose what to fill on ${found.origin}. Fill a text only if this site sent it:` : `Choose what to fill on ${found.origin}:`;
   for (const entry of found.entries) {
     const item = document.createElement("li");
     const button = document.createElement("button");
@@ -133,4 +147,4 @@ if (typeof document !== "undefined" && typeof akdbxBrowser !== "undefined" && ak
     document.getElementById("status").textContent = "akdbx request failed.";
   });
 }
-if (typeof module !== "undefined") module.exports = {userGesture, privateLink, label, versionText};
+if (typeof module !== "undefined") module.exports = {userGesture, privateLink, label, versionText, age};

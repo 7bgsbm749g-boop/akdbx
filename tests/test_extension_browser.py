@@ -36,6 +36,7 @@ from akdbx.cards import FIELDS, MARKER
 from akdbx.identities import MARKER as IDENTITY_MARKER, property_key as identity_property
 from akdbx.target import failure
 from test_broker import Entry, Vault
+from popup_fixtures import ADDRESS, ADDRESS_FORM, ADDRESS_TITLE, DECOYS, FILLED, AddressEntry
 from test_windows_unlock import certificates  # noqa: F401
 from windows_chromium_lab import FORM, ORIGIN, chromium_lab
 
@@ -424,6 +425,10 @@ async function digestName(name, index = 0) {
              + DIGEST),
     '/sms-frame': ('<!doctype html><meta charset="utf-8"><style>input{width:160px;height:24px}</style>'
                    '<input id="otp" autocomplete="one-time-code" maxlength="6">'),
+    '/address': '<!doctype html><meta charset="utf-8">' + ADDRESS_FORM + DIGEST,
+    '/address-framed': ('<!doctype html><meta charset="utf-8"><style>body{margin:0}iframe{width:300px;height:470px;border:0}'
+                        '</style><iframe id="same" src="/address"></iframe>'
+                        '<iframe id="other" src="https://auth.example.com/address"></iframe>'),
     '/sms-framed': ('<!doctype html><meta charset="utf-8"><h1>Outer page</h1>'
                     '<iframe id="same" src="/sms-frame" style="width:300px;height:80px;border:0"></iframe>'
                     '<iframe id="other" src="https://auth.example.com/sms-frame" style="width:300px;height:80px;'
@@ -2025,3 +2030,185 @@ def test_a_cover_added_after_an_sms_code_pin_refuses_the_fill(harness, private_d
     assert pin['ok'], pin
     assert fill_code(broker, message, pin) == dict(ok=True, filled='one-time-code', code_delivery=route.DELIVERY)
     assert lab.digest('otp') == sha(SMS_CODE)
+
+
+# ----- the toolbar popup: addresses and texted codes (fill extension 0.15.0) -----------
+def open_popup(harness):
+    """Open the toolbar popup as the user's button press does; its session once it lists entries."""
+    observer = harness.lab.observer
+    harness.worker_call('chrome.action.openPopup()')
+    deadline = time.monotonic() + 10
+    while not (found := [t for t in observer.call('Target.getTargets')['targetInfos']
+                         if t['url'] == route.EXTENSION_ORIGIN + 'popup.html']):
+        assert time.monotonic() < deadline, 'the popup did not open'
+        time.sleep(.05)
+    session = observer.call('Target.attachToTarget', dict(targetId=found[0]['targetId'], flatten=True))['sessionId']
+    while not observer.evaluate('!!document.querySelector("#entries button")', session):
+        assert time.monotonic() < deadline, observer.evaluate('document.getElementById("status").textContent', session)
+        time.sleep(.05)
+    return session
+
+
+def click_entry(harness, session, text):
+    """A trusted mouse click, as the user's, on the popup entry that shows `text`."""
+    observer = harness.lab.observer
+    point = observer.evaluate('(text => { const button = [...document.querySelectorAll("#entries button")]'
+                              '.find(b => b.textContent.includes(text)); if (!button) return null;'
+                              ' const r = button.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })'
+                              f'({json.dumps(text)})', session)
+    assert point, observer.evaluate('document.body.innerText', session)
+    for kind in ('mousePressed', 'mouseReleased'):
+        observer.call('Input.dispatchMouseEvent', dict(type=kind, x=point[0], y=point[1], button='left', clickCount=1),
+                      session=session)
+
+
+def test_toolbar_popup_fills_an_address_with_the_identity_pin_rules(harness):
+    """A trusted click fills the focused address field and its partners with the agent identity pin's checks
+    and the input and change events of --notify-page. Another address part, a field outside the viewport, a wrong
+    input type or token list and a field under a hidden ancestor stay empty: the popup before 0.15.0 filled them."""
+    lab, broker = harness.lab, harness.broker
+    broker.vault.entries.append(AddressEntry(uuid='address', title=ADDRESS_TITLE, path=('Root', 'Web', ADDRESS_TITLE)))
+    lab.navigate('/address')
+    harness.focus('given')
+    session = open_popup(harness)
+    listed = lab.observer.evaluate('document.body.innerText', session)
+    assert ADDRESS_TITLE in listed and ADDRESS['postal-code'] not in listed and 'address and contact details' in listed
+    click_entry(harness, session, ADDRESS_TITLE)
+    lab.wait('addressEvents.includes("change:mail")')
+    assert {field: lab.digest(field) for field in FILLED} == {field: sha(value) for field, value in FILLED.items()}
+    assert {field: lab.digest(field) for field in DECOYS} == {field: EMPTY for field in DECOYS}
+    assert lab.evaluate('addressEvents') == [f'{kind}:{field}' for field in FILLED for kind in ('input', 'change')]
+    print(json.dumps(dict(browser=lab.version, kind=harness.kind, popup='identity', trusted_click=True)))
+
+
+def test_popup_address_fill_refuses_a_field_changed_after_the_probe(harness):
+    """Each field keeps its pin's checks until the fill: a partner that the page hides refuses the whole fill."""
+    lab, broker = harness.lab, harness.broker
+    broker.vault.entries.append(AddressEntry(uuid='address', title=ADDRESS_TITLE, path=('Root', 'Web', ADDRESS_TITLE)))
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    for change in ("document.getElementById('postal').style.visibility = 'hidden'",
+                   "document.getElementById('postal').setAttribute('autocomplete', 'postal-code')",
+                   "document.body.insertAdjacentHTML('afterbegin', '<div style=\"position:fixed;inset:0;background:#fff\"></div>')"):
+        lab.navigate('/address')
+        harness.focus('given')
+        found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+        assert found['ok'] and found['kind'] == 'identity', found
+        index = next(e['index'] for e in found['entries'] if e['title'] == ADDRESS_TITLE)
+        lab.evaluate(change)
+        result = harness.worker_call(f'popupFill({{session: {json.dumps(found["session"])}, index: {index}}})')
+        assert result == {'ok': False, 'error': 'field changed or hidden; nothing filled'}, change
+        assert all(lab.digest(field) == EMPTY for field in FILLED) and lab.evaluate('addressEvents') == []
+
+
+FRAME_DIGEST = ("(async id => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder()"
+                ".encode(document.getElementById(id).value))), b => b.toString(16).padStart(2, '0')).join(''))")
+
+
+def test_popup_address_fill_reaches_a_frame_of_the_top_origin_and_never_another_origin(harness):
+    """As the agent identity pin: only frames whose documents up to the top all have the top page's origin."""
+    lab, broker = harness.lab, harness.broker
+    broker.vault.entries.append(AddressEntry(uuid='address', title=ADDRESS_TITLE, path=('Root', 'Web', ADDRESS_TITLE)))
+    lab.navigate('/address-framed')
+    lab.wait("document.readyState === 'complete'")
+    same = same_site_frame(harness, ORIGIN + '/address', ready='given')
+    other = same_site_frame(harness, 'https://auth.example.com/address', ready='given')
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    other("window.focus(); document.getElementById('given').focus()")
+    refused = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+    assert refused['ok'] is False and 'entries' not in refused, refused
+    same("window.focus(); document.getElementById('given').focus()")
+    found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+    assert found['ok'] and found['kind'] == 'identity' and found['origin'] == ORIGIN, found
+    index = next(e['index'] for e in found['entries'] if e['title'] == ADDRESS_TITLE)
+    assert harness.worker_call(f'popupFill({{session: {json.dumps(found["session"])}, index: {index}}})') == {'ok': True}
+    digest = lambda frame, field: frame(f'{FRAME_DIGEST}({json.dumps(field)})', await_promise=True)  # noqa: E731
+    assert {field: digest(same, field) for field in FILLED} == {field: sha(value) for field, value in FILLED.items()}
+    assert all(digest(same, field) == EMPTY for field in DECOYS)
+    assert all(digest(other, field) == EMPTY for field in (*FILLED, *DECOYS))
+
+
+def test_toolbar_popup_fills_a_texted_code_once_and_never_shows_it(harness, private_dir):
+    """A trusted click on a text in the open popup: the popup closes, the page gets the focus back, the agent
+    code pin's checks pin the field, and only then does the broker spend the text and seal its code to the page."""
+    lab, broker = harness.lab, harness.broker
+    sms_source(harness, private_dir)()
+    lab.navigate('/sms')
+    harness.focus('otp')
+    lab.evaluate("window.codeEvents = 0; otp.addEventListener('input', () => codeEvents++)")
+    session = open_popup(harness)
+    listed = lab.observer.evaluate('document.body.innerText', session)
+    assert 'Text from Google' in listed and '[code] is your Google verification code.' in listed, listed
+    assert 'Fill a text only if this site sent it' in listed and SMS_CODE not in listed
+    click_entry(harness, session, 'Text from Google')
+    lab.wait('codeEvents === 1')
+    assert lab.digest('otp') == sha(SMS_CODE) and lab.digest('boxes') == EMPTY
+    assert sms_inbox(broker) == [] and not broker.extension.pins
+    assert lab.evaluate('document.hasFocus() && document.activeElement === otp')
+    time.sleep(.3)
+    assert lab.evaluate('codeEvents') == 1
+    print(json.dumps(dict(browser=lab.version, kind=harness.kind, popup='sms', trusted_click=True)))
+
+
+def popup_text_session(harness):
+    harness.focus('otp')
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+    assert found['ok'] and found['kind'] == 'totp' and [e['kind'] for e in found['entries']] == ['sms'], found
+    assert set(found['entries'][0]) == {'index', 'kind', 'source', 'sender', 'preview', 'code_length', 'age_seconds'}
+    assert SMS_CODE not in json.dumps(found)
+    return json.dumps(found['session'])
+
+
+def popup_fill(harness, session):
+    return harness.worker_call(f'popupFill({{session: {session}, index: 0}})')
+
+
+# The page hides the field right after the broker released the code (instrumentation in the worker).
+HIDE_AFTER_RELEASE = ('(() => { const call = brokerRequest; globalThis.unhook = () => { brokerRequest = call; };'
+                      ' brokerRequest = async (op, payload, timeout) => { const answer = await call(op, payload, timeout);'
+                      ' if (op === "release") await chrome.scripting.executeScript({target: {tabId: payload.tab_id},'
+                      ' func: () => { document.getElementById("otp").style.visibility = "hidden"; }}); return answer; };'
+                      ' return true; })()')
+
+
+def test_a_popup_text_is_spent_only_after_its_code_pin_holds_and_comes_back_when_nothing_filled(harness, private_dir):
+    lab, broker = harness.lab, harness.broker
+    message = sms_source(harness, private_dir)()
+    lab.navigate('/sms')
+    # A field under an opaque cover fails the code pin's hit test: the broker never releases the text.
+    session = popup_text_session(harness)
+    lab.evaluate("document.body.insertAdjacentHTML('beforeend', '<div id=\"cover\" style=\"position:fixed;inset:0;background:#fff\"></div>')")
+    assert popup_fill(harness, session) == {'ok': False, 'error': 'field changed or hidden; nothing filled'}
+    assert sms_inbox(broker) == [message] and lab.digest('otp') == EMPTY and not broker.extension.pins
+    lab.evaluate("document.getElementById('cover').remove()")
+    # Released, then the field changed: nothing reached it, and the sealed token put the text back once.
+    session = popup_text_session(harness)
+    assert harness.worker_call(HIDE_AFTER_RELEASE) is True
+    try:
+        assert popup_fill(harness, session) == {'ok': False, 'error': 'field changed or hidden; nothing filled'}
+    finally:
+        harness.worker_call('(unhook(), true)')
+    # The restore spent its token.
+    assert sms_inbox(broker) == [message] and lab.digest('otp') == EMPTY and not broker.extension.restores
+    # The text fills once; the replayed selection fills nothing.
+    lab.evaluate("document.getElementById('otp').style.visibility = ''")
+    session = popup_text_session(harness)
+    assert popup_fill(harness, session) == {'ok': True}
+    assert lab.digest('otp') == sha(SMS_CODE) and sms_inbox(broker) == []
+    assert popup_fill(harness, session) == {'ok': False, 'error': 'selection expired; open akdbx again'}
+
+
+@pytest.mark.usefixtures('enhanced')
+def test_with_enhanced_security_a_covered_field_gets_no_popup_text(harness, private_dir):
+    """The agent code pin's cover check runs on the popup's pin too, before the broker spends the text."""
+    lab, broker = harness.lab, harness.broker
+    message = sms_source(harness, private_dir)()
+    lab.navigate('/sms')
+    session = popup_text_session(harness)
+    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div id=\"cover\" style=\"{COVER}\"></div>')")
+    assert popup_fill(harness, session) == {'ok': False, 'error': 'field covered or changed; nothing filled'}
+    assert sms_inbox(broker) == [message] and lab.digest('otp') == EMPTY
+    lab.evaluate("document.getElementById('cover').remove()")
+    session = popup_text_session(harness)
+    assert popup_fill(harness, session) == {'ok': True}
+    assert lab.digest('otp') == sha(SMS_CODE) and sms_inbox(broker) == []

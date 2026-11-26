@@ -282,7 +282,8 @@ to `list-password-frames`, `pin-password-target`, `pin-card-target` and
 `pin-identity-target`; the list, single-use pin, fresh handle and receipt model
 of the CDP route is unchanged, with `extension-dom-v1` receipts. The user can
 also click the extension (toolbar button, context menu or Alt+Shift+K) and
-pick a saved login, authenticator, card or address for the focused field; the popup shows
+pick a saved login, authenticator, card or address, or (fill extension 0.15.0+) a
+texted code from the SMS inbox, for the focused field; the popup shows
 metadata only. `status` advertises `extension_protocol: 1`, `fill_routes`,
 `default_fill_route` (`serve --default-fill-route`), `extension_connected`,
 `extension_paired`, and `extension_version_expected`. Each `extension_browsers`
@@ -978,7 +979,9 @@ extension route works on Linux/Windows/macOS, including the native macOS broker,
 and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. For a
 human-click fill, focus a top-page input marked `autocomplete="one-time-code"`
 and choose the account in the popup. This needs extension 0.12.0+ and
-`extension_popup_totp_protocol: 1`.
+`extension_popup_totp_protocol: 1`. From extension 0.15.0
+(`extension_popup_sms_protocol: 1`) the popup also lists the texts in the SMS
+inbox for that field; see the skill's SMS reference.
 Only a single focused visible editable `text`, `tel`, `number` or `password`
 input is supported, with stable metadata and no conflicting password/card hints.
 Split-digit inputs and unsupported format constraints refuse. Six/eight digit

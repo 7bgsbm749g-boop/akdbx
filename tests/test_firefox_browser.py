@@ -37,6 +37,7 @@ from akdbx import broker_identity, extension_host
 from akdbx.broker import Broker, open_vault_with_password, serve
 from akdbx.extension_route import CAPTURE_DELIVERY, DELIVERY
 from test_extension_route import CARD, MASTER, CardEntry, IdentityEntry, template  # noqa: F401
+from popup_fixtures import ADDRESS_FORM, ADDRESS_TITLE, DECOYS, FILLED, AddressEntry
 from akdbx.local_https import start_local_unlock_server
 from test_broker import Entry, Vault
 from test_windows_unlock import certificates  # noqa: F401
@@ -98,6 +99,8 @@ def fixture_markup(path):
             return f'<iframe id=processor src="{endpoint}" style="width:500px;height:150px"></iframe>'
         if path == urlsplit(endpoint).path:
             return markup
+    if path == '/address':
+        return ADDRESS_FORM
     if path == '/fields':
         return ('<input id=number autocomplete=cc-number><input id=given autocomplete=given-name>'
                 '<input id=new-password type=password autocomplete=new-password>'
@@ -489,6 +492,45 @@ def test_firefox_generated_password_and_capture(firefox_lab, private_dir):
     assert hashlib.sha256(key.encode()).digest() == hashlib.sha256(b'JBSWY3DPEHPK3PXP').digest()
 
 
+def click_popup_entry(lab, text=None):
+    """Open the toolbar popup and click one entry with Firefox's own WebDriver click (a trusted click).
+
+    ``text``: the entry that shows it; None: the popup must list exactly one entry.
+    """
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    driver = lab.driver
+    with driver.context(driver.CONTEXT_CHROME):
+        driver.execute_script("window.CustomizableUI.addWidgetToArea('akdbx_akdbx_org-browser-action', 'nav-bar')")
+        widget = driver.find_element('id', 'akdbx_akdbx_org-browser-action')
+        widget.find_element('css selector', '.unified-extensions-item-action-button').click()
+        # The toolbar panel is a XUL browser. WebDriver's switch_to.frame only
+        # accepts HTML frames. Use Firefox's own WebDriver click in the panel.
+        popup_url = lab.settings.replace('options.html', 'popup.html')
+        popup = WebDriverWait(driver, 8).until(lambda d: d.execute_script("""
+            return [...document.querySelectorAll('browser.webextension-popup-browser')]
+                .find(b => b.getBoundingClientRect().width > 0 &&
+                    b.browsingContext?.currentWindowGlobal?.documentURI.spec === arguments[0]) || null;
+        """, popup_url))
+        clicked = driver.execute_async_script("""
+            const [panel, text, done] = arguments;
+            (async () => {
+                const doc = panel.browsingContext.currentWindowGlobal;
+                const actor = doc.getActor("MarionetteCommands");
+                const all = await actor.findElements("css selector", "#entries button", {all:true, timeout:5000});
+                const buttons = text === null ? all : await actor.findElements("xpath",
+                    `//ul[@id="entries"]//button[contains(., ${JSON.stringify(text)})]`, {all:true, timeout:5000});
+                if (buttons.length !== 1) return "expected one matching entry, found " + buttons.length;
+                // Firefox 153 reads capabilities through toJSON(); newer releases use Map.get().
+                const capabilities = Object.assign(new Map([["moz:webdriverClick", true]]),
+                    {toJSON() { return {"moz:webdriverClick": true}; }});
+                await actor.clickElement(buttons[0], capabilities);
+                return "clicked";
+            })().then(done, e => done(String(e)));
+        """, popup, text)
+        assert clicked == 'clicked', clicked
+
+
 @pytest.mark.parametrize('firefox_lab', ['popup'], indirect=True)
 def test_firefox_user_click_popup(firefox_lab):
     from selenium.webdriver.support.ui import WebDriverWait
@@ -496,34 +538,47 @@ def test_firefox_user_click_popup(firefox_lab):
     driver = firefox_lab.driver
     assert field_digest(driver, 'password') == hashlib.sha256(b'').hexdigest()
     driver.find_element('id', 'username').click()
-    with driver.context(driver.CONTEXT_CHROME):
-        driver.execute_script("window.CustomizableUI.addWidgetToArea('akdbx_akdbx_org-browser-action', 'nav-bar')")
-        widget = driver.find_element('id', 'akdbx_akdbx_org-browser-action')
-        widget.find_element('css selector', '.unified-extensions-item-action-button').click()
-        # The toolbar panel is a XUL browser. WebDriver's switch_to.frame only
-        # accepts HTML frames. Use Firefox's own WebDriver click in the panel.
-        popup_url = firefox_lab.settings.replace('options.html', 'popup.html')
-        popup = WebDriverWait(driver, 8).until(lambda d: d.execute_script("""
-            return [...document.querySelectorAll('browser.webextension-popup-browser')]
-                .find(b => b.getBoundingClientRect().width > 0 &&
-                    b.browsingContext?.currentWindowGlobal?.documentURI.spec === arguments[0]) || null;
-        """, popup_url))
-        clicked = driver.execute_async_script("""
-            const [panel, done] = arguments;
-            (async () => {
-                const doc = panel.browsingContext.currentWindowGlobal;
-                const actor = doc.getActor("MarionetteCommands");
-                const buttons = await actor.findElements("css selector", "#entries button", {all:true, timeout:5000});
-                if (buttons.length !== 1) return "expected one matching entry";
-                // Firefox 153 reads capabilities through toJSON(); newer releases use Map.get().
-                const capabilities = Object.assign(new Map([["moz:webdriverClick", true]]),
-                    {toJSON() { return {"moz:webdriverClick": true}; }});
-                await actor.clickElement(buttons[0], capabilities);
-                return "clicked";
-            })().then(done, e => done(String(e)));
-        """, popup)
-        assert clicked == 'clicked', clicked
+    click_popup_entry(firefox_lab)
     WebDriverWait(driver, 5).until(lambda d: field_digest(d, 'password') == hashlib.sha256(PASSWORD.encode()).hexdigest())
+
+
+@pytest.mark.parametrize('firefox_lab', ['popup'], indirect=True)
+def test_firefox_popup_fills_an_address_with_the_identity_pin_rules(firefox_lab):
+    """A trusted click in Firefox's popup: the focused address field and its partners get the agent identity
+    pin's checks and --notify-page events; another address part and hidden, outside or mistyped fields stay empty."""
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    driver = firefox_lab.driver
+    firefox_lab.broker.vault.entries.append(AddressEntry(uuid='address', title=ADDRESS_TITLE))
+    driver.get(firefox_lab.url.replace('/login', '/address'))
+    driver.find_element('id', 'given').click()
+    click_popup_entry(firefox_lab, ADDRESS_TITLE)
+    WebDriverWait(driver, 5).until(lambda d: 'change:mail' in d.execute_script('return addressEvents'))
+    sha = lambda value: hashlib.sha256(value.encode()).hexdigest()  # noqa: E731
+    assert {field: field_digest(driver, field) for field in FILLED} == {f: sha(v) for f, v in FILLED.items()}
+    assert {field: field_digest(driver, field) for field in DECOYS} == {field: sha('') for field in DECOYS}
+    assert driver.execute_script('return addressEvents') == [f'{kind}:{field}' for field in FILLED
+                                                             for kind in ('input', 'change')]
+    assert driver.execute_script('return window.keyEvents') == 0
+
+
+@pytest.mark.parametrize('firefox_lab', ['popup'], indirect=True)
+def test_firefox_popup_fills_a_texted_code_once(firefox_lab, private_dir):
+    """A trusted click on a text in Firefox's popup fills its code once into the focused one-time-code field."""
+    from selenium.webdriver.support.ui import WebDriverWait
+    from akdbx.sms import SmsInbox
+
+    driver, broker = firefox_lab.driver, firefox_lab.broker
+    broker.sms = SmsInbox(private_dir / 'sms' / 'sources.json')
+    token = broker.sms.add_source('iphone', 'shortcut')
+    assert broker.sms.receive(token, 'Google', 'G-482913 is your Google verification code.') == 'kept'
+    driver.find_element('id', 'otp').click()
+    click_popup_entry(firefox_lab, 'Text from Google')
+    code = hashlib.sha256(b'482913').hexdigest()
+    WebDriverWait(driver, 8).until(lambda d: field_digest(d, 'otp') == code)
+    assert broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages'] == []
+    assert driver.execute_script('return window.keyEvents') == 0
+    assert driver.execute_script('return document.activeElement.id') == 'otp'
 
 
 @pytest.mark.parametrize('firefox_lab', ['settings'], indirect=True)

@@ -2118,3 +2118,100 @@ def test_a_code_pin_without_a_route_takes_the_brokers_default_route(monkeypatch)
     monkeypatch.setattr(broker.code_targets.cdp, 'pin', lambda r: calls.append(r) or dict(ok=True))
     broker.dispatch(request)
     assert calls == [{**{k: v for k, v in request.items() if k != 'sms_protocol'}, 'code_protocol': 1}]
+
+
+# ----- texted codes in the toolbar popup (fill extension 0.15.0) -----------------
+PROBE = 'a' * 32
+
+
+def popup_codes(broker, channel, probe=PROBE, top=TOP):
+    """The popup's sealed list for a focused one-time-code field, checked like background.js checks it."""
+    request = dict(kind='totp', probe_id=probe, **facts(top=top, tab=5))
+    result = broker.extension.popup(channel, dict(type='request', id='p1', op='match', **request))
+    if not result.get('ok'):
+        return result
+    opened = unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, result['sealed'], 'match')
+    # The list answers this live field probe only (PR #88's binding).
+    assert opened['facts'] == {k: request[k] for k in ('tab_id', 'document_id', 'chain', 'kind', 'probe_id')}
+    return opened['values']['entries']
+
+
+def release_code(broker, channel, handle, roles=('totp',), top=TOP):
+    return popup(broker, channel, 'release', handle=handle, roles=list(roles), formats={}, **facts(top=top, tab=5))
+
+
+def opened_release(channel, released, handle):
+    return unseal(EXTENSION_PRIVATE, EXTENSION_PUBLIC, channel.broker_public_key, released['sealed'], 'release:' + handle)
+
+
+def test_the_popup_offers_texts_for_a_one_time_code_field_as_metadata_only(tmp_path):
+    broker = sms_broker(tmp_path)
+    channel, _ = attach(broker, {})
+    message = sms_message(broker)
+    status = broker.dispatch(dict(action='ping'))
+    assert status['extension_popup_sms_protocol'] == 1 and status['extension_popup_sms_min_version'] == '0.15.0'
+    [row] = popup_codes(broker, channel)
+    assert set(row) == {'kind', 'source', 'sender', 'preview', 'code_length', 'age_seconds', 'handle'}
+    assert row['kind'] == 'sms' and row['sender'] == 'Google' and row['code_length'] == 6 and row['source'] == 'iphone'
+    assert '482913' not in json.dumps(row) and row['preview'] == '[code] is your Google verification code.'
+    assert broker.extension.selections[row['handle']].kind == 'sms'
+    # Only a one-time-code field gets texts; a login list never does.
+    assert all(e.get('kind') != 'sms' for e in popup(broker, channel, 'match', kind='login', **facts())['entries'])
+    # An older extension gets no text rows, and the text stays in the inbox.
+    old, _ = attach(broker, {})
+    old.version = '0.14.1.7'
+    assert popup_codes(broker, old) == []
+    assert inbox(broker) == [message]
+
+
+def test_a_popup_text_is_spent_once_and_only_its_sealed_token_puts_it_back(tmp_path):
+    now = [1000.0]
+    broker = sms_broker(tmp_path, now=now)
+    channel, _ = attach(broker, {})
+    message = sms_message(broker)
+    [row] = popup_codes(broker, channel)
+    # Wrong roles or another page: refused before the text is spent.
+    assert release_code(broker, channel, row['handle'], roles=('code',))['ok'] is False
+    assert inbox(broker) == [message]
+    [row] = popup_codes(broker, channel)
+    released = release_code(broker, channel, row['handle'])
+    assert set(released) == {'ok', 'sealed'} and '482913' not in json.dumps(released)
+    opened = opened_release(channel, released, row['handle'])
+    token = opened['values']['restore']
+    assert opened == dict(values=dict(code='482913', restore=token),
+                          facts=dict(tab_id=5, document_id='TOP', kind='sms', chain=[dict(document_id='TOP', url=TOP)],
+                                     roles=['totp'], formats={}))
+    # Spent: not in the inbox, not offered again, and the handle is single use.
+    assert inbox(broker) == [] and popup_codes(broker, channel) == []
+    assert release_code(broker, channel, row['handle'])['ok'] is False
+
+    def restore(by, value):
+        return broker.extension.popup(by, dict(type='request', id='p2', op='restore', token=value))
+    refused = dict(ok=False, error='extension request refused; page, frame or field not supported')
+    # The handle (which a relaying host sees) is not the token; another browser cannot use the token.
+    other, _ = attach(broker, {})
+    assert restore(channel, row['handle']) == refused and restore(other, token) == refused
+    assert inbox(broker) == []
+    assert restore(channel, token) == dict(ok=True) and inbox(broker) == [message]
+    assert restore(channel, token) == refused  # Once.
+    # A token too old puts nothing back.
+    [row] = popup_codes(broker, channel)
+    token = opened_release(channel, release_code(broker, channel, row['handle']), row['handle'])['values']['restore']
+    now[0] += route.RESTORE_TTL
+    assert restore(channel, token) == refused and inbox(broker) == []
+
+
+def test_a_text_expired_or_taken_by_the_agent_is_not_released_and_a_lock_drops_restores(tmp_path):
+    broker = sms_broker(tmp_path)
+    channel, _ = attach(broker, {})
+    message = sms_message(broker)
+    [row] = popup_codes(broker, channel)
+    # The agent route spent it first: the popup's handle finds no text.
+    assert broker.sms.take(message).id == message
+    assert release_code(broker, channel, row['handle']) == dict(ok=False, error='text expired or already used; open akdbx again')
+    message = sms_message(broker)
+    [row] = popup_codes(broker, channel)
+    assert release_code(broker, channel, row['handle'])['ok'] and broker.extension.restores
+    # A lock clears the inbox, and with it every way to put a released text back.
+    broker.lock()
+    assert not broker.extension.restores and not broker.sms.messages

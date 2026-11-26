@@ -140,8 +140,9 @@ SMS codes in the main and a same-origin child document (with replay, a hidden
 field, a wrong frame URL and a reloaded page refused), generated-password delivery, merchant card fields, and Adyen, Computop and both
 Stripe frame types. A loopback TLS fixture serves all processor pages. The suite
 also checks identity notification events, the toolbar popup's trusted click
-on a login (no Firefox test fills a TOTP code, card or address from the
-popup), and the pixel check on an uncovered and a covered field. For `capture-secret`
+on a login, an address (with the identity pin's checks, 0.15.0) and a texted
+code (0.15.0); no Firefox test fills a TOTP code or a card from the popup. It
+also checks the pixel check on an uncovered and a covered field. For `capture-secret`
 and `capture-totp`, it reopens a disposable encrypted vault to verify the
 result. CI runs this suite on Linux, macOS and Windows with Firefox 161, and on
 Linux with the minimum supported version, Firefox 153. The

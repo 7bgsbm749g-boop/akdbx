@@ -104,6 +104,13 @@ CODE_VERSION = (0, 13, 0)
 QR_VERSION = (0, 14, 0)
 # Identity pins with an explicit field purpose (pin-identity-target --field-purpose).
 FIELD_PURPOSE_VERSION = (0, 7, 0)
+# The toolbar popup offers the inbox's texted codes for a focused one-time-code field.
+POPUP_SMS_VERSION = (0, 15, 0)
+MAX_POPUP_TEXTS = 8
+# A popup text code that never reached the field goes back to the inbox only with
+# the sealed token that its release carried, within this many seconds.
+RESTORE_TTL = 30
+MAX_RESTORES = 16
 ROUTES = ('cdp', 'extension')
 CHROMIUM_BROWSERS = ('helium', 'chrome', 'edge', 'chromium', 'brave')
 BROWSERS = (*CHROMIUM_BROWSERS, 'firefox')
@@ -553,6 +560,7 @@ class ExtensionHub:
         self._paired_lock = threading.Lock()
         self.pins = {}
         self.selections = {}
+        self.restores = {}  # sealed restore token -> (SMS message, channel id, expiry)
         self._closed = False
         # The broker's signed origin statement (broker_identity.Identity), once serve announces it.
         self.identity = None
@@ -571,6 +579,8 @@ class ExtensionHub:
         state = dict(extension_protocol=PROTOCOL, extension_delivery=DELIVERY, extension_id=EXTENSION_ID,
                      extension_totp_protocol=1, extension_totp_min_version='0.10.0',
                      extension_popup_totp_protocol=1, extension_popup_totp_min_version='0.12.0',
+                     extension_popup_sms_protocol=1,
+                     extension_popup_sms_min_version='.'.join(map(str, POPUP_SMS_VERSION)),
                      extension_code_protocol=1, extension_code_min_version='.'.join(map(str, CODE_VERSION)),
                      extension_qr_capture_min_version='.'.join(map(str, QR_VERSION)),
                      extension_capture_protocol=CAPTURE_PROTOCOL, extension_capture_delivery=CAPTURE_DELIVERY,
@@ -656,6 +666,7 @@ class ExtensionHub:
         with self._lock:
             pins, self.pins = self.pins, {}
             self.selections.clear()
+            self.restores.clear()
             self.pairings.clear()
         for pin in pins.values():
             pin.close()
@@ -836,10 +847,12 @@ class ExtensionHub:
                 return dict(ok=False, error='vault locked', **({'unlock_url': self.broker.unlock_url}
                                                              if self.broker.unlock_url and not self.broker.unlock_blocked
                                                              else {}))
-            if op in {'match', 'release'}:
+            if op in {'match', 'release', 'restore'}:
+                handler = {'match': self._match, 'release': self._release, 'restore': self._restore}[op]
+
                 def perform():
                     with self.broker._vault_lock:
-                        return (self._match if op == 'match' else self._release)(channel, message)
+                        return handler(channel, message)
                 return self.broker.session.run(perform, self.broker._locked_response)
         except ExtensionError:
             pass
@@ -881,7 +894,9 @@ class ExtensionHub:
                         item['passwordless'] = True
                 except Exception:
                     continue
-                entries.append((item, entry))
+                entries.append((item, entry, kind))
+            if kind == 'totp' and channel.supports(POPUP_SMS_VERSION):
+                entries.extend(self._texts())
         elif kind == 'card':
             card_route(chain, processor_for(chain[-1]['url']) if len(chain) > 1 else None)
             from datetime import datetime, timezone
@@ -897,7 +912,7 @@ class ExtensionHub:
                     item = dict(title=info['title'], brand=info['brand'], last_four=info['last_four'])
                 except Exception:
                     continue
-                entries.append((item, entry))
+                entries.append((item, entry, kind))
         elif kind == 'identity':
             identity_route(chain)
             for entry in active_entries(vault):
@@ -907,16 +922,16 @@ class ExtensionHub:
                     item = dict(title=entry.title or '')
                 except Exception:
                     continue
-                entries.append((item, entry))
+                entries.append((item, entry, kind))
         else:
             raise ExtensionError()
         # Bound the encoded list before issuing handles: sealing grows it by about
         # a third (base64), and the transport refuses frames over 64 KiB.
         bounded, budget = [], MATCH_BUDGET
-        for item, entry in entries:
+        for item, entry, selected in entries:
             size = len(json.dumps(dict(item, handle='0' * 64), separators=(',', ':'))) + 1
             if all(len(str(v).encode('utf-8')) <= 1024 for v in item.values()) and size <= budget:
-                bounded.append((item, entry))
+                bounded.append((item, entry, selected))
                 budget -= size
             if len(bounded) == MAX_ENTRIES:
                 break
@@ -927,11 +942,11 @@ class ExtensionHub:
             for token, item in list(self.selections.items()):
                 if item.expires <= now:
                     self.selections.pop(token, None)
-            for item, entry in entries:
+            for item, entry, selected in entries:
                 while len(self.selections) >= MAX_MATCH_HANDLES:
                     self.selections.pop(next(iter(self.selections)))
                 handle = secrets.token_hex(32)
-                self.selections[handle] = Selection(entry, channel.id, tab_id, document_id, kind, chain,
+                self.selections[handle] = Selection(entry, channel.id, tab_id, document_id, selected, chain,
                                                     now + MATCH_TTL)
                 result.append(dict(item, handle=handle))
         # Seal the list so a relay cannot pair a shown label with another handle.
@@ -985,6 +1000,26 @@ class ExtensionHub:
             if config.period - now % config.period < MIN_VALIDITY:
                 return dict(ok=False, error='TOTP near expiry; open akdbx again after the code changes')
             values['totp'] = code_at(config, now)
+        elif selection.kind == 'sms':
+            # A texted code for the focused one-time-code field. The text is spent
+            # here, once; only the extension's sealed token puts it back (_restore).
+            if (roles != ['totp'] or formats or len(chain) != 1 or not channel.supports(POPUP_SMS_VERSION)
+                    or not isinstance(selection.entry, str)):
+                raise ExtensionError()
+            from .sms import SmsError
+            try:
+                text = self.broker.sms.take(selection.entry)
+            except SmsError:
+                return dict(ok=False, error='text expired or already used; open akdbx again')
+            token = secrets.token_hex(32)
+            with self._lock:
+                for key, (_, _, expires) in list(self.restores.items()):
+                    if expires <= self.clock():
+                        self.restores.pop(key, None)
+                while len(self.restores) >= MAX_RESTORES:
+                    self.restores.pop(next(iter(self.restores)))
+                self.restores[token] = (text, channel.id, self.clock() + RESTORE_TTL)
+            values.update(code=text.code, restore=token)
         elif selection.kind == 'card':
             from . import card_processor
             from .cards import FILL_FIELDS, value_for
@@ -1024,9 +1059,54 @@ class ExtensionHub:
         # The extension fills only if these broker-authorized facts equal its own.
         facts = dict(tab_id=tab_id, document_id=document_id, chain=chain, kind=selection.kind, roles=roles,
                      formats=formats)
-        sealed = channel.seal(dict(values=values, facts=facts), 'release:' + handle)
-        values.clear()
+        try:
+            sealed = channel.seal(dict(values=values, facts=facts), 'release:' + handle)
+        except Exception:
+            if selection.kind == 'sms':
+                self._put_back(values['restore'], channel)  # Nothing left the broker.
+            raise
+        finally:
+            values.clear()
         return dict(ok=True, sealed=sealed)
+
+    def _texts(self):
+        """The inbox's unexpired texts, newest first: metadata only, never a code.
+
+        A text names no site that akdbx can verify, so the popup shows each one's
+        sender and masked preview, and the user picks the one this site sent.
+        """
+        inbox = getattr(self.broker, 'sms', None)
+        if inbox is None:
+            return []
+        rows = []
+        for row in inbox.wait()[:MAX_POPUP_TEXTS]:
+            item = dict(kind='sms', source=row['source'], sender=row['sender'], preview=row['preview'],
+                        code_length=row['code_length'], age_seconds=row['age_seconds'])
+            rows.append((item, row['id'], 'sms'))
+        return rows
+
+    def _put_back(self, token, channel):
+        with self._lock:
+            item = self.restores.get(token) if isinstance(token, str) else None
+            if item is None or item[1] != channel.id:
+                return False
+            del self.restores[token]
+        if item[2] <= self.clock():
+            return False
+        self.broker.sms.restore(item[0])
+        return True
+
+    def _restore(self, channel, message):
+        """A popup text code that never reached the field goes back to the inbox, once.
+
+        Only the token sealed inside that release can do it, so a relaying host
+        that saw the handle cannot put a used code back.
+        """
+        if set(message) != {'type', 'id', 'op', 'token'} or not isinstance(message.get('token'), str):
+            raise ExtensionError()
+        if not self._put_back(message['token'], channel):
+            raise ExtensionError()
+        return dict(ok=True)
 
     # ----- agent route: discovery ----------------------------------------
     def _channels_for(self, request):
