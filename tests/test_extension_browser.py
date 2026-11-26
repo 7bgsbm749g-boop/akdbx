@@ -417,7 +417,20 @@ async function digestName(name, index = 0) {
   return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
 }
 </script>''',
+    # SMS verification codes: one whole-code field, six-box style and URL decoys, and two frames.
+    '/sms': ('<!doctype html><meta charset="utf-8"><style>input{display:block;margin:6px;width:160px;height:24px}</style>'
+             '<form><input id="otp" autocomplete="one-time-code" inputmode="numeric" maxlength="6">'
+             '<input id="boxes" maxlength="1"><input id="hook" type="url"><input id="check" type="checkbox"></form>'
+             + DIGEST),
+    '/sms-frame': ('<!doctype html><meta charset="utf-8"><style>input{width:160px;height:24px}</style>'
+                   '<input id="otp" autocomplete="one-time-code" maxlength="6">'),
+    '/sms-framed': ('<!doctype html><meta charset="utf-8"><h1>Outer page</h1>'
+                    '<iframe id="same" src="/sms-frame" style="width:300px;height:80px;border:0"></iframe>'
+                    '<iframe id="other" src="https://auth.example.com/sms-frame" style="width:300px;height:80px;'
+                    'border:0"></iframe>'),
 }
+SMS_TEXT = 'G-482913 is your Google verification code.'  # Synthetic only.
+SMS_CODE = '482913'
 
 
 def sha(value):
@@ -1793,3 +1806,166 @@ def test_popup_totp_requires_a_match_bound_to_this_probe(harness, monkeypatch):
     tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
     found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
     assert not found['ok'] and 'entries' not in found
+
+
+# ----- SMS verification codes (pin-code-target --route extension) -------------------
+def sms_source(harness, private_dir):
+    """A private SMS inbox with one source; each call of the result receives one synthetic text."""
+    from akdbx.sms import SmsInbox
+    broker = harness.broker
+    broker.sms = SmsInbox(Path(private_dir) / 'sms' / 'sources.json')
+    token = broker.sms.add_source('iphone', 'shortcut')
+
+    def text():
+        assert broker.sms.receive(token, 'Google', SMS_TEXT) == 'kept'
+        return sms_inbox(broker)[0]
+    return text
+
+
+def sms_inbox(broker):
+    return [m['id'] for m in broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages']]
+
+
+def code_pin(harness, url, selector='#otp', field='one-time-code', *, frame_id=None, frame_url=None, top=None):
+    listing = harness.frames(url)
+    assert listing['ok'], listing
+    return harness.broker.dispatch(dict(action='pin-code-target', sms_protocol=1, page_id=listing['page_id'],
+                                        frame_id=frame_id or listing['main_frame_id'], top_url=top or url,
+                                        frame_url=frame_url or url, selector=selector, field=field,
+                                        route='extension'))
+
+
+def fill_code(broker, message, pin):
+    return broker.dispatch(dict(action='fill-sms-code', sms_protocol=1, message=message, target=pin['target'],
+                                target_protocol=1, start_deadline=broker.clock() + 4))
+
+
+CODE_REFUSED = card_failure(kind='code')
+
+
+def test_an_sms_code_reaches_only_the_focused_pinned_field_once(harness, private_dir):
+    lab, broker = harness.lab, harness.broker
+    text = sms_source(harness, private_dir)
+    url = lab.navigate('/sms')
+    harness.focus('otp')
+    pin = code_pin(harness, url)
+    assert pin == dict(ok=True, target=pin['target'], expires_in=30, field='one-time-code', code_delivery=route.DELIVERY)
+    message = text()
+    receipt = fill_code(broker, message, pin)
+    assert receipt == dict(ok=True, filled='one-time-code', code_delivery=route.DELIVERY)
+    assert SMS_CODE not in json.dumps(receipt)
+    assert lab.digest('otp') == sha(SMS_CODE) and lab.digest('boxes') == EMPTY and lab.digest('hook') == EMPTY
+    events = lab.evaluate('syntheticEvents')
+    assert {e['field'] for e in events} == {'otp'} and not any(e['trusted'] for e in events)
+    # Replay: the text and the pin were each used once.
+    assert fill_code(broker, message, pin) == dict(ok=False, error='unknown or expired SMS message')
+    fresh = text()
+    assert fill_code(broker, fresh, pin) == CODE_REFUSED and sms_inbox(broker) == [fresh]
+    lab.evaluate("document.getElementById('otp').value = ''")
+    # Wrong fields: unfocused, a checkbox, a URL input.
+    lab.evaluate('document.activeElement.blur()')
+    assert code_pin(harness, url) == CODE_REFUSED
+    harness.focus('check')
+    assert code_pin(harness, url, '#check') == CODE_REFUSED
+    harness.focus('hook')
+    assert code_pin(harness, url, '#hook') == CODE_REFUSED
+    # A one-digit box pins, but the whole code does not fit: refused before any write, and the text stays.
+    harness.focus('boxes')
+    pin = code_pin(harness, url, '#boxes')
+    assert pin['ok'], pin
+    assert fill_code(broker, fresh, pin) == CODE_REFUSED and sms_inbox(broker) == [fresh]
+    # A webhook-URL pin never takes a code.
+    harness.focus('hook')
+    pin = code_pin(harness, url, '#hook', field='webhook-url')
+    assert pin['ok'], pin
+    assert fill_code(broker, fresh, pin) == CODE_REFUSED and sms_inbox(broker) == [fresh]
+    assert all(lab.digest(field) == EMPTY for field in ('otp', 'boxes', 'hook'))
+    assert not broker.extension.pins
+    print(json.dumps(dict(browser=lab.version, kind=harness.kind, route='extension', sms_code=True)))
+
+
+def test_an_sms_code_goes_to_a_same_origin_frame_and_never_to_another_origin(harness, private_dir):
+    lab, broker = harness.lab, harness.broker
+    text = sms_source(harness, private_dir)
+    url = lab.navigate('/sms-framed')
+    lab.wait("document.readyState === 'complete'")
+    same = same_site_frame(harness, ORIGIN + '/sms-frame', ready='otp')
+    other = same_site_frame(harness, 'https://auth.example.com/sms-frame', ready='otp')
+    frames = {f['origin']: f['frame_id'] for f in harness.frames(url)['frames'] if f['depth'] == 1}
+    # Another origin, even of the same site: never pinned.
+    other("window.focus(); document.getElementById('otp').focus()")
+    assert code_pin(harness, url, frame_id=frames['https://auth.example.com'],
+                    frame_url='https://auth.example.com/sms-frame') == CODE_REFUSED
+    same("window.focus(); document.getElementById('otp').focus()")
+    # The exact frame URL and the exact top URL.
+    assert code_pin(harness, url, frame_id=frames[ORIGIN], frame_url=url) == CODE_REFUSED
+    assert code_pin(harness, url, frame_id=frames[ORIGIN], frame_url=ORIGIN + '/sms-frame',
+                    top=ORIGIN + '/sms') == CODE_REFUSED
+    assert not broker.extension.pins
+    pin = code_pin(harness, url, frame_id=frames[ORIGIN], frame_url=ORIGIN + '/sms-frame')
+    assert pin['ok'], pin
+    assert fill_code(broker, text(), pin) == dict(ok=True, filled='one-time-code', code_delivery=route.DELIVERY)
+    assert same(f'document.getElementById("otp").value === "{SMS_CODE}"')
+    assert other('document.getElementById("otp").value === ""')
+
+
+def test_an_sms_code_is_refused_after_the_node_changes_the_page_navigates_or_the_pin_expires(harness, private_dir):
+    lab, broker = harness.lab, harness.broker
+    message = sms_source(harness, private_dir)()
+    url = lab.navigate('/sms')
+
+    def fresh_pin():
+        harness.focus('otp')
+        pin = code_pin(harness, url)
+        assert pin['ok'], pin
+        return pin
+
+    def refused(pin):
+        assert fill_code(broker, message, pin) == CODE_REFUSED
+        assert lab.digest('otp') == EMPTY and sms_inbox(broker) == [message] and not broker.extension.pins
+    # The page swaps the pinned node for a focused look-alike after the pin.
+    pin = fresh_pin()
+    lab.evaluate("{const old = document.getElementById('otp'), copy = old.cloneNode(); old.replaceWith(copy); "
+                 "copy.focus();}")
+    refused(pin)
+    # A navigation to the same URL is a new document.
+    pin = fresh_pin()
+    lab.navigate('/sms')
+    harness.focus('otp')
+    refused(pin)
+    # The broker's 30-second pin has expired.
+    pin = fresh_pin()
+    clock = broker.extension.clock
+    broker.extension.clock = lambda: clock() + 31
+    try:
+        refused(pin)
+    finally:
+        broker.extension.clock = clock
+    # The extension also applies the sealed maximum age itself: here the broker still
+    # delivers, but it authorizes no time after the pin, so the page refuses the value.
+    pin = fresh_pin()
+    broker.extension.pins[pin['target']].created = broker.clock() + 30
+    refused(pin)
+    # The text still fills a fresh pin.
+    pin = fresh_pin()
+    assert fill_code(broker, message, pin) == dict(ok=True, filled='one-time-code', code_delivery=route.DELIVERY)
+    assert lab.digest('otp') == sha(SMS_CODE) and sms_inbox(broker) == []
+
+
+@pytest.mark.usefixtures('enhanced')
+def test_a_cover_added_after_an_sms_code_pin_refuses_the_fill(harness, private_dir):
+    lab, broker = harness.lab, harness.broker
+    message = sms_source(harness, private_dir)()
+    url = lab.navigate('/sms')
+    harness.focus('otp')
+    pin = code_pin(harness, url)
+    assert pin['ok'], pin
+    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div id=\"cover\" style=\"{COVER}\"></div>')")
+    assert fill_code(broker, message, pin) == CODE_REFUSED
+    assert lab.digest('otp') == EMPTY and sms_inbox(broker) == [message]
+    lab.evaluate("document.getElementById('cover').remove()")
+    harness.focus('otp')
+    pin = code_pin(harness, url)
+    assert pin['ok'], pin
+    assert fill_code(broker, message, pin) == dict(ok=True, filled='one-time-code', code_delivery=route.DELIVERY)
+    assert lab.digest('otp') == sha(SMS_CODE)
