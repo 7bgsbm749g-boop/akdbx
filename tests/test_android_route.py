@@ -1191,6 +1191,22 @@ def test_android_pending_cli_requires_support_before_sending(capsys):
     code, sent, _ = run_cli(argv, [receipt], capsys, capabilities={**caps(), 'android_pending_totp': True})
     assert code == 0 and sent[-1]['pending'] is True
 
+def test_capture_totp_qr_refuses_and_consumes_an_android_read_pin_without_reading(device_file):
+    """QR read pins exist only on the CDP and extension routes: an Android read pin never takes --qr."""
+    from akdbx.totp_capture import QR_REFUSED
+    from akdbx.writes import metadata
+    cdp = FakeCDP('https://example.com/setup')
+    broker, _ = chrome_broker(device_file, cdp)
+    target = pin(broker, mode='read', field='#secret')['target']
+    entry = next(e for e in broker.vault.entries if e.username == 'synthetic-user')
+    result = broker.dispatch(dict(action='capture-totp', totp_capture_protocol=1, target=target, read_kind='qr',
+                                  handle=handle(broker, 'synthetic-user'), metadata=metadata(entry),
+                                  start_deadline=broker.clock() + 4))
+    assert result == dict(ok=False, error=QR_REFUSED)
+    assert not any('this.capture(' in p.get('functionDeclaration', '') for _, p in cdp.calls if p)
+    assert broker.android.take(target) is None
+
+
 def test_chrome_read_refuses_covered_text_when_the_center_is_exposed(device_file):
     cdp = FakeCDP('https://example.com/setup')
     broker, _ = chrome_broker(device_file, cdp)
