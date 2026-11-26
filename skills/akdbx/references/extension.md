@@ -548,9 +548,16 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
      rule) that paints only the pinned element in a random colour, takes a
      screenshot of the tab (`tabs.captureVisibleTab`), removes the rule, and
      checks the colour at the points CDP hit-tests: the centre of a field; for
-     a secret, a point every few pixels along each line of its text. A cover
-     of any kind, in any document or frame, changes those pixels, so the pin
-     refuses; a see-through veil also refuses. The field shows the colour for
+     a secret, a point every few pixels along the middle of each line of its
+     text. An ordinary cover over those points, in any document or frame (a
+     dialog, a banner, a popover, an inert or click-through layer), changes
+     those pixels, so the pin refuses; a see-through veil also refuses.
+     Limit: the check proves those points only, at the moment of the
+     screenshot. A page built against it can hide the rest of a secret's line
+     (a band above and below its middle), leave gaps at the checked points, or
+     remove its cover while the challenge colour is on (a page script can read
+     the element's computed style). Enhanced security stops covers that do not
+     know about akdbx, not a page that targets it. The field shows the colour for
      about a tenth of a second. The screenshot stays in the service worker and
      is dropped after the check. The element's own outline gets another colour,
      so one drawn over its content refuses; a secret element that draws its own
