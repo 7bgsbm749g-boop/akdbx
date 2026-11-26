@@ -11,7 +11,8 @@ import sys
 import time
 
 from . import android_lifecycle, android_setup
-from .android_route import Adb, AndroidError, CHROME_DELIVERY, DELIVERY, MODES, PROTOCOL, load_devices
+from .android_route import (Adb, AndroidError, CHROME_DELIVERY, DELIVERY, FILL_REPLY_TIMEOUT, MODES, PROTOCOL,
+                           load_devices)
 
 DELIVERIES = {DELIVERY, CHROME_DELIVERY}
 
@@ -21,8 +22,9 @@ FILL_ERROR = re.compile(r"(autofill (not started|outcome uncertain|failed)|vault
                         r"|mode must|unknown or expired handle|invalid handle)[^\n]{0,300}")
 FILLS = {'fill', 'fill-totp', 'google-sign-in'}
 # Response budgets in seconds. The fill-start deadline stays 4 seconds; a fill
-# that started may take the helper's whole run.
-TIMEOUTS = {'devices': 180, 'inspect': 60, 'pin': 60, 'fill': 60, 'fill-totp': 60, 'google-sign-in': 150}
+# that started may take the helper's whole run (android_route.FILL_REPLY_TIMEOUT).
+TIMEOUTS = {'devices': 180, 'inspect': 60, 'pin': 60, 'fill': FILL_REPLY_TIMEOUT, 'fill-totp': FILL_REPLY_TIMEOUT,
+            'google-sign-in': 150}
 TOKEN = re.compile(r'[0-9a-f]{64}')
 
 

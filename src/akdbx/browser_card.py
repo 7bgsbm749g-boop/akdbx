@@ -34,6 +34,12 @@ def failure(started=False, *, kind='card'):
                 f'{kind} fill not started: target unavailable, changed or unsupported; pin again')
 
 
+# An app field (native or Android) has no page whose handlers could see the value.
+NOTIFY_PAGE_REFUSED = dict(ok=False, delivery='not-started',
+                           error='identity fill not started: --notify-page needs a web page, and an app field has none; '
+                                 'pin again and fill without --notify-page')
+
+
 def secure_url(value):
     if (not isinstance(value, str) or len(value) > 4096 or not value.isascii()
             or any(ord(c) <= 32 or ord(c) == 127 for c in value) or '\\' in value):

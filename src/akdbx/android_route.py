@@ -83,6 +83,11 @@ RESULT_PREFIX = 'AKDBX-ANDROID-RESULT '
 DEVICE_DIR = '/data/local/tmp/akdbx'
 HELPER_MISSING = 86
 HELPER_TIMEOUT = 25.0
+# The CLI's reply budget for a fill that can reach an Android pin. The fill-start
+# deadline stays 4 seconds; a fill that started runs the helper's typed check,
+# which took 5 to 10 seconds right after a cold boot of the lab emulator (under
+# a second warm). A single-field fill is bounded by about 4 + HELPER_TIMEOUT + 9.
+FILL_REPLY_TIMEOUT = 60
 SIGN_IN_TIMEOUT = 140.0
 DEVICE_PROBE_TIMEOUT = 15.0
 DEVICE_LIST_BUDGET = 150.0
@@ -139,6 +144,16 @@ def capabilities(configured: bool) -> dict:
                 android_fill_modes=list(MODES), android_devices_configured=configured,
                 # Attached devices work on every broker host; managed emulators need systemd and KVM.
                 android_managed_emulators=sys.platform.startswith('linux'))
+
+
+def fill_reply(capabilities: dict) -> dict:
+    """Request options for a fill: the Android reply budget when the broker has Android devices.
+
+    A pin token does not show its route. With a shorter budget the CLI would
+    stop waiting during a started Android fill: the broker then refuses before
+    the value (its caller left), but the CLI can only report "connection lost".
+    """
+    return {'timeout': FILL_REPLY_TIMEOUT} if capabilities.get('android_devices_configured') is True else {}
 
 
 def default_config_path() -> Path:
@@ -1514,11 +1529,12 @@ class AndroidTargets:
         if (pin.mode not in ('card', 'identity', 'sms') or field !=
                 ('one-time-code' if pin.mode == 'sms' else pin.purpose)):
             return failure(kind=pin.mode)
+        if pin.dom is None and notify_page and pin.mode == 'identity':
+            from .browser_card import NOTIFY_PAGE_REFUSED
+            return dict(NOTIFY_PAGE_REFUSED)
         started = False
         try:
             if pin.dom is None:
-                if notify_page:
-                    raise TargetError()
                 self.deliver(pin, pin.mode, [value], ready, deadline)
             else:
                 dom, cutoff = self._verified_field(pin, ready, deadline)

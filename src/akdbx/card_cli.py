@@ -12,7 +12,7 @@ from .cards import FILL_FIELDS
 from .card_notifications import RESULTS
 from . import browser_slots, card_processor, page_lifetime, page_url
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
-from .android_route import CHROME_DELIVERY as ANDROID_CHROME_DELIVERY, DELIVERY as ANDROID_DELIVERY
+from .android_route import CHROME_DELIVERY as ANDROID_CHROME_DELIVERY, DELIVERY as ANDROID_DELIVERY, fill_reply
 from .native_fields import DELIVERY as NATIVE_DELIVERY
 
 NOTIFICATIONS = {'subscribe-card-save', 'card-save-subscription-status', 'unsubscribe-card-save'}
@@ -199,7 +199,7 @@ def run(args, request):
             payload.update(handle=args.handle, target=args.target, field=args.field, start_deadline=time.monotonic() + 4)
             if args.format is not None:
                 payload['format'] = args.format
-        response = request(payload)
+        response = request(payload, **(fill_reply(caps) if args.command == 'fill-card' else {}))
         if not valid_receipt(args.command, response, args):
             raise ValueError
     except Exception:
