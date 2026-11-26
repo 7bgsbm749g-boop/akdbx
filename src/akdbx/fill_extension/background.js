@@ -963,13 +963,14 @@ async function popupProbe(message) {
   const chain = await chainFor(tab.id, best.documentId);
   if (!chain || chain[0].url !== tab.url) return {ok: false, error: "page changed; try again"};
   const match = await brokerRequest("match", {tab_id: tab.id, document_id: best.documentId, top_url: tab.url, chain,
-    kind: best.result.kind});
+    kind: best.result.kind, ...(best.result.kind === "totp" ? {probe_id: best.result.id} : {})});
   if (!match || match.ok !== true) return {ok: false, error: (match && match.error) || "akdbx refused this field"};
   let entries;
   try {
     const sealed = await unseal(match.sealed, "match");
     const facts = sealed.facts;
     if (facts.tab_id !== tab.id || facts.document_id !== best.documentId || facts.kind !== best.result.kind ||
+        (best.result.kind === "totp" && facts.probe_id !== best.result.id) ||
         !sameChain(facts.chain, chain) || !Array.isArray(sealed.values.entries)) throw new Error();
     entries = sealed.values.entries;
   } catch {
@@ -996,6 +997,10 @@ async function popupFill(message) {
   if (!tab || tab.url !== session.topUrl || !chain || !sameChain(chain, session.chain)) {
     return {ok: false, error: "page changed; nothing filled"};
   }
+  const liveOtp = () => run(session.tabId, session.documentId, id => globalThis.__akdbxContent.liveOtp(id),
+    [session.probe]).catch(() => false);
+  const expired = {ok: false, error: "code field changed or expired; open akdbx again"};
+  if (session.kind === "totp" && !(await liveOtp())) return expired;
   const released = await brokerRequest("release", {handle: session.handles[message.index], tab_id: session.tabId,
     document_id: session.documentId, top_url: session.topUrl, chain, roles: session.roles, formats: session.formats});
   if (!released || released.ok !== true) {
@@ -1018,6 +1023,7 @@ async function popupFill(message) {
   }
   try {
     if (session.kind === "totp") {
+      if (!(await liveOtp()) || performance.timeOrigin + performance.now() >= deadline) return expired;
       await akdbxBrowser.runtime.sendMessage({op: "return-focus", session: message.session}).catch(() => {});
     }
     const result = session.kind === "totp"

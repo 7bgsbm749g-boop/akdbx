@@ -835,7 +835,12 @@ class ExtensionHub:
         return dict(ok=False, error='extension request refused; page, frame or field not supported')
 
     def _match(self, channel, message):
-        if set(message) != {'type', 'id', 'op', 'tab_id', 'document_id', 'top_url', 'chain', 'kind'}:
+        required = {'type', 'id', 'op', 'tab_id', 'document_id', 'top_url', 'chain', 'kind'}
+        if message.get('kind') == 'totp':
+            required.add('probe_id')
+            if not isinstance(message.get('probe_id'), str) or not PIN_ID.fullmatch(message['probe_id']):
+                raise ExtensionError()
+        if set(message) != required:
             raise ExtensionError()
         tab_id, document_id, top_url, chain = _facts(message)
         popup_route(chain)
@@ -918,6 +923,8 @@ class ExtensionHub:
                 result.append(dict(item, handle=handle))
         # Seal the list so a relay cannot pair a shown label with another handle.
         facts = dict(tab_id=tab_id, document_id=document_id, chain=chain, kind=kind)
+        if kind == 'totp':
+            facts['probe_id'] = message['probe_id']
         return dict(ok=True, sealed=channel.seal(dict(values=dict(entries=result), facts=facts), 'match'))
 
     def _release(self, channel, message):

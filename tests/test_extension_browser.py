@@ -1730,8 +1730,10 @@ def test_popup_totp_binds_the_account_field_and_single_use_selection(harness):
     assert fill(session)['ok'] is False
     lab.evaluate("otp.value=''")
     session = probe()
+    pending_handles = set(harness.hub.selections)
     lab.evaluate("otp.maxLength=1; otp.removeAttribute('maxlength')")
-    assert not fill(session)['ok'] and lab.digest('otp') == EMPTY
+    assert fill(session) == {'ok': False, 'error': 'code field changed or expired; open akdbx again'}
+    assert pending_handles == set(harness.hub.selections) and lab.digest('otp') == EMPTY
     session = probe()
     lab.evaluate("otp.blur(); otp.focus()")
     assert not fill(session)['ok'] and lab.digest('otp') == EMPTY
@@ -1759,3 +1761,24 @@ def test_open_toolbar_popup_fills_totp_after_a_trusted_click(harness):
     for kind in ('mousePressed', 'mouseReleased'):
         observer.call('Input.dispatchMouseEvent', dict(type=kind, x=x, y=y, button='left', clickCount=1), session=session)
     lab.wait('otp.value === "050471"')
+
+
+def test_popup_totp_requires_a_match_bound_to_this_probe(harness, monkeypatch):
+    from totp_vectors import URI
+    lab, broker = harness.lab, harness.broker
+    lab.navigate('/login')
+    broker.vault.entries[0].otp = URI
+    lab.evaluate("password.type='tel';password.autocomplete='one-time-code';password.id='otp'")
+    harness.focus('otp')
+    [channel] = broker.extension.channels.values()
+    seal = channel.seal
+
+    def seal_other_probe(payload, context):
+        if context == 'match':
+            payload['facts']['probe_id'] = '0' * 32
+        return seal(payload, context)
+
+    monkeypatch.setattr(channel, 'seal', seal_other_probe)
+    tab = "(await chrome.tabs.query({url: 'https://signup.example.com/*'}))[0].id"
+    found = harness.worker_call(f'(async () => popupProbe({{tab_id: {tab}}}))()')
+    assert not found['ok'] and 'entries' not in found

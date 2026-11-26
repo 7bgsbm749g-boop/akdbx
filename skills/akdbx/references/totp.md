@@ -45,8 +45,8 @@ whole-code input. For Chromium browser delivery, require integer
 `browser_totp_protocol: 1`. Use CDP on Linux/Windows or the paired extension on
 Linux/Windows/macOS (including the native macOS broker). Extension TOTP requires
 integer `extension_totp_protocol: 1` and fill extension **0.10.0** or newer; an
-older loaded extension is refused before pinning. These are agent/CLI routes;
-the extension's manual popup keeps its existing login/card/address workflow.
+older loaded extension is refused before pinning. The human-click workflow
+above uses a separate popup selection.
 
 ```bash
 akdbx list-password-frames --route extension --top-url 'https://example.com/challenge'

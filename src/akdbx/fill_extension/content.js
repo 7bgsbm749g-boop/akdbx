@@ -735,6 +735,13 @@
       actual.replace(/\s/g, "") === expected.replace(/\s/g, "");
   }
 
+  function liveOtp(id) {
+    const item = probes.get(id);
+    return Boolean(item && item.dispose && performance.now() - item.created < PIN_MS &&
+      document.activeElement === item.focused && shown(item.focused) && item.focused.form === item.fields[0].form &&
+      window === window.top && self.origin === location.origin && location.href === item.url);
+  }
+
   async function popupTotp(id, values, deadline) {
     // Closing the action popup restores focus to the page. Do not activate a
     // tab or focus any field. A document that stays unfocused cannot fill.
@@ -746,13 +753,10 @@
         window.addEventListener("focus", done);
       });
     }
+    if (!liveOtp(id) || now() >= deadline || !document.hasFocus()) return "refused";
     const item = probes.get(id);
     probes.delete(id);
-    if (!item || !item.dispose) return "refused";
     item.dispose();
-    if (now() >= deadline || performance.now() - item.created >= PIN_MS ||
-        item.focused.form !== item.fields[0].form || document.activeElement !== item.focused || !document.hasFocus() ||
-        window !== window.top || self.origin !== location.origin) return "refused";
     let pin;
     try {
       pin = CAPTURE(":focus", null, "totp", item.url, null, false, null);
@@ -794,7 +798,7 @@
       const item = pins.get(id);
       return Boolean(item && item.kind === "password" && item.mode === "totp" && item.state.check() && item.state.acceptsTotp(digits));
     },
-    pin, geometry, release, fill, read, guard, guardCheck, guardPoint, count, probe, probeFill, popupTotp,
+    pin, geometry, release, fill, read, guard, guardCheck, guardPoint, count, probe, probeFill, liveOtp, popupTotp,
     clear, challengeSpec, challengeHeld, painted,
     releaseGuard: id => guards.delete(id),
     ownerListen, ownerHeard, ownerDone, ownerProbe, ownerGuard, ownerCheck, ownerRelease,

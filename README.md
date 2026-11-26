@@ -929,8 +929,10 @@ akdbx fill-totp FRESH_SEARCH_HANDLE --target-url 'https://example.com/challenge'
 
 Use `--route cdp` for the configured CDP browser on Linux/Windows. The paired
 extension route works on Linux/Windows/macOS, including the native macOS broker,
-and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. TOTP uses
-the extension's agent route; the manual popup keeps its existing workflows.
+and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. For a
+human-click fill, focus a top-page input marked `autocomplete="one-time-code"`
+and choose the account in the popup. This needs extension 0.12.0+ and
+`extension_popup_totp_protocol: 1`.
 Only a single focused visible editable `text`, `tel`, `number` or `password`
 input is supported, with stable metadata and no conflicting password/card hints.
 Split-digit inputs and unsupported format constraints refuse. Six/eight digit

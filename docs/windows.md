@@ -95,7 +95,7 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
 ## Native desktop field pins
 
 Native field protocol 1 supports usernames, TOTP, passwords, combined login, generated passwords,
-cards, addresses and read-only secret capture in standard Unicode Win32 Edit
+SMS codes, cards, addresses and read-only secret capture in standard Unicode Win32 Edit
 controls. Password fields must remain masked; login pins name both controls and
 never use Tab. Legacy numeric HWND pins support usernames, TOTP and SMS codes.
 Browser pages keep using DOM delivery. The caller asserts the service used by
