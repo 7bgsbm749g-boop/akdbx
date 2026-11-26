@@ -355,7 +355,20 @@ def test_import_host_default_registration(tmp_path, browser, monkeypatch):
                 else root / '.config/microsoft-edge/NativeMessagingHosts')
         name = 'org.akdbx.private_import.json'
         assert json.loads((edge / name).read_bytes()) == json.loads((directory / name).read_bytes()) == spec
-        command[command.index('edge')] = 'helium'
+        # Chromium and Brave use the fill extension host's folders. Brave on macOS reads
+        # Chrome's folder, so Chrome's registration already serves it and a new one is refused.
+        from akdbx import extension_host
+        for other, folder in (('chromium', 'Chromium' if sys.platform == 'darwin' else 'chrome-config/chromium'),
+                              ('brave', 'Google/Chrome' if sys.platform == 'darwin'
+                               else '.config/BraveSoftware/Brave-Browser')):
+            command[command.index('--browser') + 1] = other
+            shared = sys.platform == 'darwin' and other == 'brave'
+            assert subprocess.run(command, capture_output=True).returncode == (1 if shared else 0)
+            folder = (root / 'Library/Application Support' if sys.platform == 'darwin' else root) / folder
+            folder /= 'NativeMessagingHosts'
+            assert folder == extension_host.linux_manifest_dir(other) == extension_host.paths(other)['manifest'].parent
+            assert json.loads((folder / name).read_bytes()) == spec
+        command[command.index('--browser') + 1] = 'helium'
         command[-1] = 'b' * 32
         assert subprocess.run(command, capture_output=True).returncode == 1
         assert browser_import.load_config(browser_import.config_path())['extension_id'] == 'a' * 32

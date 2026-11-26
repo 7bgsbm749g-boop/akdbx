@@ -109,7 +109,7 @@ directory junction on Windows needs no elevation), so it can be invoked as
 ### First-time setup
 
 `akdbx setup` (0.27.0+) takes a user from install to a working broker, on
-Linux and Windows, with macOS support after 0.48.0. On macOS, `--start-at-login` installs a per-user LaunchAgent. Native window pins, CDP and Safari are unavailable in this version. You can run it for the user without questions:
+Linux and Windows, with macOS support from 0.49.0. On macOS, `--start-at-login` installs a per-user LaunchAgent. Native window pins, CDP and Safari are unavailable in this version. You can run it for the user without questions:
 
 ```bash
 akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
@@ -294,9 +294,9 @@ Web fills can reach the page in two ways. Check `fill_routes`,
 `default_fill_route`, `extension_connected` and `extension_paired` in `status`.
 
 **Extension route (`--route extension`, 0.21.0+): prefer it when it is paired.**
-The akdbx extension runs in the user's everyday browser (Helium, Chrome or
-Edge) and receives sealed values from the broker through a native-messaging
-host. That browser has no remote-debugging port, it is the user's real browser
+The akdbx extension runs in the user's everyday browser (Helium, Chrome, Edge, Chromium, Brave or
+Firefox 153+) and receives sealed values from the broker through a native-messaging
+host. From 0.49.0, check `extension_host_browsers` for the installer names. That browser has no remote-debugging port, it is the user's real browser
 with its normal history and sessions, and nothing outside it drives the page.
 Sites see ordinary use by the user, which is what it is.
 
