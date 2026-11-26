@@ -10,26 +10,16 @@ import platform
 import plistlib
 import subprocess
 import sys
-import time
-from urllib.parse import quote
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 if sys.platform != 'darwin' or os.environ.get('AKDBX_REQUIRE_SAFARI_BROWSER') != '1':
     pytest.skip('requires the disposable actual Safari CI job', allow_module_level=True)
 
-from selenium import webdriver
-from selenium.webdriver.safari.service import Service
-
 from akdbx import safari
 from test_safari_native import local_broker  # noqa: F401
-
-
-class NativeSafariOptions(webdriver.SafariOptions):
-    def to_capabilities(self):
-        # Match Apple's empty-session prerequisite before product setup. The
-        # driver supplies its actual platform/version in the response.
-        return {'browserName': 'safari'}
 
 
 def startup_diagnostics(folder):
@@ -41,84 +31,58 @@ def startup_diagnostics(folder):
     (folder / 'safari-startup.json').write_text(json.dumps(dict(
         macos=platform.mac_ver()[0], architecture=platform.machine(), safari_processes=processes.stdout[:2048],
         screenshot_status=capture.returncode), indent=2))
-    # Safari's --diagnose logs are useful when session creation fails. Scrub
-    # inherited CI values before retaining any of those logs as artifacts.
-    destination = folder / 'safari-diagnostics'
-    destination.mkdir(exist_ok=True)
-    values = sorted({value for value in os.environ.values() if len(value) >= 12}, key=len, reverse=True)
-    root = Path.home() / 'Library/Logs/com.apple.WebDriver'
-    count = 0
-    for path in root.rglob('*'):
-        if path.is_symlink() or not path.is_file() or path.suffix not in ('.log', '.txt', '.json'):
-            continue
-        with path.open('rb') as stream:
-            data = stream.read(2 * 1024 * 1024).decode(errors='replace')
-        # Screenshot responses contain large base64 bodies, not startup facts.
-        content = '\n'.join(line for line in data.splitlines() if len(line) <= 8192)[:160 * 1024]
-        for value in values:
-            content = content.replace(value, '<CI value>')
-        (destination / f'{count}-{path.name}').write_text(content)
-        count += 1
-        if count == 10:
-            break
 
 
-def test_actual_safari_loads_the_native_app_and_attaches_to_its_local_broker(tmp_path, request):
-    service = Service(executable_path='/usr/bin/safaridriver', enable_logging=True,
-                      log_output=str(tmp_path / 'safaridriver.log'))
-    driver = None
-    attempts = []
+def test_actual_safari_loads_the_native_app_and_attaches_to_its_local_broker(tmp_path, local_broker):
+    # SafariDriver's temporary-resource installation cannot associate the
+    # native app handler. Exercise the packaged extension in normal Safari.
+    from safari_ui_project import create_project
+
+    observed = threading.Event()
+
+    class Observer(BaseHTTPRequestHandler):
+        def do_GET(self):
+            attached = self.path == '/attached' and any(
+                channel.browser == 'safari' for channel in list(local_broker.extension.channels.values()))
+            if attached:
+                observed.set()
+            data = b'attached' if attached else b'waiting'
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args):
+            pass
+
+    observer = ThreadingHTTPServer(('127.0.0.1', 0), Observer)
+    worker = threading.Thread(target=observer.serve_forever, daemon=True)
+    worker.start()
     try:
         info = plistlib.loads(Path('/Applications/Safari.app/Contents/Info.plist').read_bytes())
-        version = subprocess.run(['/usr/bin/safaridriver', '--version'], capture_output=True,
-                                 text=True, check=True, timeout=10).stdout[:512]
-        print('Before product setup: ' + json.dumps(dict(macos=platform.mac_ver()[0],
-              architecture=platform.machine(), safari=info.get('CFBundleShortVersionString'), driver=version)))
-        driver = webdriver.Safari(service=service, options=NativeSafariOptions())
-        driver.set_page_load_timeout(20)
-        driver.set_script_timeout(10)
-        print('Safari automation capabilities: ' + json.dumps(driver.capabilities, sort_keys=True))
-        driver.command_executor.add_command('installWebExtension', 'POST', '/session/$sessionId/webextension')
-        driver.command_executor.add_command('uninstallWebExtension', 'DELETE',
-                                            '/session/$sessionId/webextension/$extensionId')
-        driver.get('about:blank')
-        local_broker = request.getfixturevalue('local_broker')
+        print('Native Safari UI runtime: ' + json.dumps(dict(macos=platform.mac_ver()[0],
+              architecture=platform.machine(), safari=info.get('CFBundleShortVersionString'))))
         app = safari.build_app(tmp_path / 'Safari.app', unlock_origin='https://localhost:9443')
         subprocess.run(['open', '-g', str(app)], check=True, timeout=30)
-        appex, = (app / 'Contents/PlugIns').glob('*.appex')
-        # Verify which official install form preserves the native app handler.
-        # A resource-only load counts only if Safari really attaches to the broker.
-        for candidate in (app, appex, appex / 'Contents/Resources'):
-            installed = None
-            try:
-                result = driver.execute('installWebExtension', {'type': 'path', 'path': str(candidate)})['value']
-                assert isinstance(result, dict) and isinstance(result.get('extension'), str), result
-                installed = result['extension']
-                attempts.append(dict(path=candidate.name, installed=installed))
-                print('Installed native candidate: ' + json.dumps(attempts[-1], sort_keys=True))
-                deadline = time.monotonic() + 20
-                while time.monotonic() < deadline:
-                    if any(channel.browser == 'safari' for channel in list(local_broker.extension.channels.values())):
-                        driver.save_screenshot(str(tmp_path / 'actual-safari-native.png'))
-                        return
-                    time.sleep(.1)
-                attempts[-1]['native_attached'] = False
-            except Exception as error:
-                attempts.append(dict(path=candidate.name, error=type(error).__name__, detail=str(error)[:1200]))
-            finally:
-                if installed:
-                    try:
-                        driver.execute('uninstallWebExtension', {'extensionId': quote(installed, safe='')})
-                    except Exception as error:
-                        attempts.append(dict(path=candidate.name, cleanup_error=str(error)[:1200]))
-                        print('Native installation attempts: ' + json.dumps(attempts, sort_keys=True))
-                        raise
-        print('Native installation attempts: ' + json.dumps(attempts, sort_keys=True))
-        pytest.fail('Safari did not attach its native extension to the synthetic local broker')
+        project = create_project(tmp_path / 'safari-ui',
+                                 f'http://127.0.0.1:{observer.server_port}/attached')
+        log = tmp_path / 'safari-ui-xcode.log'
+        with log.open('wb') as stream:
+            result = subprocess.run(['xcodebuild', '-project', str(project), '-scheme', 'SafariUI',
+                '-destination', 'platform=macOS', '-derivedDataPath', str(tmp_path / 'ui-derived'),
+                '-parallel-testing-enabled', 'NO', '-maximum-test-execution-time-allowance', '180',
+                'test'], stdout=stream, stderr=subprocess.STDOUT, timeout=600)
+        assert result.returncode == 0, log.read_text(errors='replace')[-20000:]
+        assert observed.is_set(), 'Xcode UI test did not observe a real Safari native broker channel'
     finally:
-        try:
-            if driver:
-                driver.quit()
-        finally:
-            service.stop()
-            startup_diagnostics(tmp_path)
+        observer.shutdown()
+        observer.server_close()
+        worker.join(5)
+        log = tmp_path / 'safari-ui-xcode.log'
+        if log.exists():
+            content = log.read_text(errors='replace')
+            for value in sorted({value for value in os.environ.values() if len(value) >= 12}, key=len, reverse=True):
+                content = content.replace(value, '<CI value>')
+            log.write_text(content)
+        startup_diagnostics(tmp_path)

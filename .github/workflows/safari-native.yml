@@ -25,9 +25,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install -e '.[test]' selenium==4.38.0
-      - name: Enable the disposable runner's Safari automation
-        run: sudo /usr/bin/safaridriver --enable
+      - run: python -m pip install -e '.[test]'
       - name: Load the actual native extension in Safari
         env:
           AKDBX_REQUIRE_SAFARI_NATIVE: '1'
@@ -42,11 +40,11 @@ jobs:
           name: safari-browser-results-${{ matrix.os }}
           path: |
             ${{ runner.temp }}/safari-browser.xml
-            ${{ runner.temp }}/sb/**/safaridriver.log
-            ${{ runner.temp }}/sb/**/actual-safari-native.png
+            ${{ runner.temp }}/sb/**/safari-ui-xcode.log
+            ${{ runner.temp }}/sb/**/safari-ui/*.txt
+            ${{ runner.temp }}/sb/**/safari-ui/*.png
             ${{ runner.temp }}/sb/**/safari-startup.png
             ${{ runner.temp }}/sb/**/safari-startup.json
-            ${{ runner.temp }}/sb/**/safari-diagnostics/*
   safari-native:
     name: Native Safari bridge and developer app
     runs-on: macos-15
