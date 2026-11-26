@@ -13,7 +13,7 @@ import win32con
 import win32gui
 
 from akdbx.native_fields import NativeFields
-from akdbx.target import DeliveryError
+from akdbx.target import DeliveryError, TargetError
 from akdbx.totp import https_origin
 
 SITE = 'https://example.test/'
@@ -169,7 +169,7 @@ def test_managed_control_login_read_and_focus_change(managed_exe, toolkit):
         command('password')
         target = pin(window, 'login', password, username_control=user)
         try:
-            manager.deliver_password(target, 'login', 'invented-user', 'invented-password',
+            manager.deliver_password(target, 'login', 'invented-user\U0001F600', 'invented-password',
                                      {https_origin(SITE)}, lambda: True, time.monotonic() + 4)
         finally:
             target.close()
@@ -202,3 +202,46 @@ def test_managed_control_login_read_and_focus_change(managed_exe, toolkit):
             app.wait()
         reader.join(timeout=3)
         app.stdout.close()
+
+def test_higher_integrity_refuses_discovery(lab, monkeypatch):
+    from akdbx import windows_fields
+    manager, entries = lab
+    levels = iter((0x3000, 0x2000))
+    monkeypatch.setattr(windows_fields, 'integrity', lambda _: next(levels))
+    with pytest.raises(TargetError):
+        discover(manager)
+    assert win32gui.GetWindowText(entries[1]) == ''
+
+
+@pytest.mark.parametrize('change', ['secure-desktop', 'embedded-browser'])
+def test_changed_desktop_or_browser_host_refuses_before_write(lab, monkeypatch, change):
+    import win32service
+    manager, entries = lab
+    window = discover(manager)
+    password = next(f['control'] for f in window['controls'] if f['password'])
+    receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                               control=password, mode='password', service_url=SITE))
+    pin = manager.take(receipt['target'])
+    browser = atom = None
+    try:
+        if change == 'secure-desktop':
+            monkeypatch.setattr(win32service, 'GetUserObjectInformation', lambda *_: 'Winlogon')
+        else:
+            cls = win32gui.WNDCLASS()
+            cls.lpszClassName = 'Chrome_WidgetWin_AkdbxTest'
+            cls.lpfnWndProc = win32gui.DefWindowProc
+            cls.hInstance = win32api.GetModuleHandle(None)
+            atom = win32gui.RegisterClass(cls)
+            browser = win32gui.CreateWindowEx(0, atom, '', win32con.WS_CHILD,
+                                              0, 0, 1, 1, win32gui.GetParent(entries[1]),
+                                              0, cls.hInstance, None)
+        with pytest.raises(DeliveryError) as error:
+            manager.deliver_password(pin, 'password', '', 'must-not-arrive', {https_origin(SITE)},
+                                     lambda: True, time.monotonic() + 4)
+        assert not error.value.started and win32gui.GetWindowText(entries[1]) == ''
+    finally:
+        pin.close()
+        if browser:
+            win32gui.DestroyWindow(browser)
+        if atom:
+            win32gui.UnregisterClass(atom, cls.hInstance)

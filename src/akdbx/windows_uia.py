@@ -44,6 +44,7 @@ class WpfSession(WindowsFields):
         self.identity = native.snapshot(pid, window)
         self.types = comtypes.client.GetModule(str(Path(win32api.GetSystemDirectory()) / 'UIAutomationCore.dll'))
         self.uia = comtypes.client.CreateObject(self.types.CUIAutomation8, interface=self.types.IUIAutomation2)
+        self.uia.AutoSetFocus = False
         self.uia.ConnectionTimeout = 500
         self.uia.TransactionTimeout = 500
         self.root = self.uia.ElementFromHandle(window)
@@ -142,10 +143,23 @@ class WpfSession(WindowsFields):
     def write(self, index, value, before_write):
         element = self.controls[index]
         pattern = self._pattern(element, 'Value')
+        masked = self.describe(index)[0]
         before_write()
         pattern.SetValue(value)
-        # Count the document's character units without retrieving its text.
+        # Neither check retrieves field contents. A TextBox character unit is
+        # a caret step, which may span several UTF-16 units.
         span = self._pattern(element, 'Text').DocumentRange
+        if not masked:
+            if not value:
+                if span.CompareEndpoints(0, span, 1) != 0:
+                    raise TargetError()
+                return
+            match = span.FindText(value, False, False)
+            if (not match or match.CompareEndpoints(0, span, 0) != 0
+                    or match.CompareEndpoints(1, span, 1) != 0):
+                raise TargetError()
+            return
+        # A WPF PasswordBox presents one mask character per UTF-16 unit.
         end = span.Clone()
         span.MoveEndpointByRange(1, span, 0)
         length = len(value.encode('utf-16-le')) // 2

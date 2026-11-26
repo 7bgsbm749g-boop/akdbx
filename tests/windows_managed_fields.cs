@@ -39,7 +39,7 @@ class ManagedFields {
             window.Shown += (s, e) => Commands(a => window.Invoke(a), name => {
                 window.Activate();
                 (name == "user" ? user : name == "password" ? password : capture).Focus();
-            }, () => user.Text == "invented-user" && password.Text == "invented-password", window.Close);
+            }, () => user.Text == "invented-user\U0001F600" && password.Text == "invented-password", window.Close);
             Forms.Application.Run(window);
         } else {
             var window = new Wpf.Window { Width = 400, Height = 200 };
@@ -54,7 +54,7 @@ class ManagedFields {
             window.ContentRendered += (s, e) => Commands(a => window.Dispatcher.Invoke(a), name => {
                 window.Activate();
                 (name == "password" ? (Wpf.UIElement) password : name == "user" ? user : capture).Focus();
-            }, () => user.Text == "invented-user" && password.Password == "invented-password", window.Close);
+            }, () => user.Text == "invented-user\U0001F600" && password.Password == "invented-password", window.Close);
             new Wpf.Application().Run(window);
         }
     }
