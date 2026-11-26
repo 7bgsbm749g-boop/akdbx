@@ -31,8 +31,8 @@ from types import SimpleNamespace
 import pytest
 from pykeepass import PyKeePass, create_database
 
-if sys.platform != 'win32' and not sys.platform.startswith('linux'):
-    pytest.skip('native Windows or Linux required', allow_module_level=True)
+if sys.platform not in ('win32', 'darwin') and not sys.platform.startswith('linux'):
+    pytest.skip('native Windows, Linux or macOS required', allow_module_level=True)
 
 import qr_fixture
 import test_extension_browser as extension_lab

@@ -1,17 +1,18 @@
-"""The extension route in a real browser on native Windows or Linux; synthetic values only.
+"""The extension route in a real browser on native Windows, Linux or macOS; synthetic values only.
 
 A disposable headless profile loads the built extension. A uniquely named test
 host is registered for the duration of the test, then removed: on Windows under
 the browser's own native-messaging registry key (for Helium that is Chromium's
-key, so the test also proves where Helium looks), on Linux in the profile's
-NativeMessagingHosts folder. The broker runs on a test pipe or Unix socket with
+key, so the test also proves where Helium looks), on Linux and macOS in the
+profile's NativeMessagingHosts folder. The broker runs on a test pipe or Unix socket with
 a synthetic vault. Values reach pages only through the extension route; the
 pages report SHA-256 digests, so no test reads back a field value. The test
 observer uses the disposable profile's debugging port only to prepare pages.
 
-On Linux, set AKDBX_TEST_EXTENSION_BROWSER to a Chromium that still loads an
-unpacked extension (Chromium or Chrome for Testing; Google Chrome 137+ does
-not), and AKDBX_TEST_BROWSER_NO_SANDBOX=1 on a host without user namespaces.
+On Linux and macOS, set AKDBX_TEST_EXTENSION_BROWSER to a Chromium that still
+loads an unpacked extension (Chromium or Chrome for Testing; Google Chrome 137+
+does not), and on Linux AKDBX_TEST_BROWSER_NO_SANDBOX=1 on a host without user
+namespaces.
 """
 import hashlib
 import json
@@ -25,8 +26,8 @@ import uuid
 
 import pytest
 
-if sys.platform != 'win32' and not sys.platform.startswith('linux'):
-    pytest.skip('native Windows or Linux required', allow_module_level=True)
+if sys.platform not in ('win32', 'darwin') and not sys.platform.startswith('linux'):
+    pytest.skip('native Windows, Linux or macOS required', allow_module_level=True)
 
 from akdbx import broker_identity, extension_host, extension_route as route
 from akdbx.broker import Broker, serve
@@ -517,7 +518,7 @@ def grant_screenshots(extension):
 @pytest.fixture
 def harness(private_dir, certificates, monkeypatch, request):
     if sys.platform != 'win32':
-        certificates[1].chmod(0o600)  # The Linux page refuses a key other users could read.
+        certificates[1].chmod(0o600)  # The POSIX page refuses a key other users could read.
     binary = extension_browser()
     if binary is None:
         if os.environ.get('AKDBX_REQUIRE_EXTENSION_BROWSER') == '1':
@@ -1797,7 +1798,9 @@ def test_popup_totp_fills_after_the_closing_popup_returns_focus(harness):
 
     Headless Edge on Windows (the Windows CI browser) keeps the page focused while the popup is open,
     and no other window takes a headless page's focus. There the call never waits, so the race cannot
-    happen; the test still checks the one fill. On Linux the popup must take the focus.
+    happen; the test still checks the one fill. On Linux the popup must take the focus. Headless
+    Chrome for Testing on macOS is checked as Windows is: the race is forced only when the popup
+    takes the focus there.
     """
     from totp_vectors import URI
     lab, broker = harness.lab, harness.broker
@@ -1817,7 +1820,7 @@ def test_popup_totp_fills_after_the_closing_popup_returns_focus(harness):
     while not observer.evaluate('!!document.querySelector("#entries button")', session):
         assert time.monotonic() < deadline, observer.evaluate('document.getElementById("status").textContent', session)
         time.sleep(.05)
-    if sys.platform == 'win32':
+    if not sys.platform.startswith('linux'):
         lab.wait('document.activeElement === otp')
         held = not lab.evaluate('document.hasFocus()')
     else:
