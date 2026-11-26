@@ -653,11 +653,21 @@ KEY_PROOF = r"""(function(guard, field, mode, url) {
     window.removeEventListener('keyup', observe, true);
     clearTimeout(timer);
   };
-  return {focused: !!valid(), node: () => field, geometry() {
-    if (!valid()) return null;
-    if (mode !== 'read') return guard.geometry();
-    const box = field.getBoundingClientRect();
-    return {rootX: box.left + box.width / 2 + scrollX, rootY: box.top + box.height / 2 + scrollY};
+  return {focused: !!valid(), node: () => field, points() {
+    if (!valid()) return [];
+    if (mode !== 'read') return [guard.geometry()];
+    // Match the read guard's visibility probes for every rendered text line.
+    let rects;
+    if (field instanceof HTMLInputElement) {
+      rects = [field.getBoundingClientRect()];
+    } else {
+      const range = document.createRange();
+      range.selectNodeContents(field);
+      rects = Array.from(range.getClientRects());
+    }
+    if (rects.length > 16) return [];
+    return rects.flatMap(r => [r.left + 1, r.left + r.width / 2, r.right - 1].map(x =>
+      ({rootX: x + scrollX, rootY: r.top + r.height / 2 + scrollY})));
   }, prepare() {
     if (!valid()) return false;
     keys = '';
@@ -854,8 +864,10 @@ class ChromeFields:
 
     def check_exposed(self):
         from . import card_hit_test
-        if card_hit_test.input_point(self.connection, self.session, self.objects[0],
-                                     self.backend_node, self.frame_id) is None:
+        points = self.call(0, 'function() { return this.points(); }')
+        if (not isinstance(points, list) or not 1 <= len(points) <= 48
+                or not all(card_hit_test.hit(self.connection, self.session, point, self.backend_node, self.frame_id)
+                           for point in points)):
             raise AndroidError('the pinned field is covered or no longer visible')
 
     def call(self, index, declaration, *args, timeout=3):
@@ -1449,8 +1461,7 @@ class AndroidTargets:
                 or self.clock() >= pin.expires_at):
             raise TargetError()
         dom.check_exposed()
-        sample = dom.connection.call('Runtime.evaluate', {'expression': 'performance.now()', 'returnByValue': True},
-                                     dom.session)['result']['value']
+        sample = dom.call(0, 'function() { return performance.now(); }')
         remaining = min(pin.expires_at, deadline) - self.clock()
         if type(sample) not in (int, float) or remaining <= 0 or not ready():
             raise TargetError()

@@ -180,7 +180,7 @@ purpose. On Chrome, focus the field and use the matching HTML autocomplete
 token. The browser guard checks that the field is visible, exposed and still
 the same element. App identity fields do not support `--notify-page`.
 For a read pin, focus a visible read-only text input or a focusable text leaf.
-Supply a simple selector for that element. A leaf may need a selector from
+Supply a simple selector for that element. Read pins accept up to 16 rendered text rectangles. A leaf may need a selector from
 the page because `android inspect` lists input fields. The read pin checks
 that the shown value, focus and document stay the same. Capture keeps the
 value inside the broker. After `capture-totp`, use a fresh `--mode totp` pin

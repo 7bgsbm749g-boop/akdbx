@@ -508,6 +508,7 @@ class FakeCDP:
         self.objects = {}
         self.scene = None
         self.hit_node = 7
+        self.covered_x = None
 
     def call(self, method, params=None, session=None, *, timeout=3):
         self.calls.append((method, params))
@@ -522,7 +523,7 @@ class FakeCDP:
             return {'node': {'backendNodeId': 7}}
         if method == 'DOM.getNodeForLocation':
             assert params['ignorePointerEventsNone'] is True
-            return {'backendNodeId': self.hit_node, 'frameId': 'F1'}
+            return {'backendNodeId': 8 if params['x'] == self.covered_x else self.hit_node, 'frameId': 'F1'}
         if method == 'Runtime.releaseObject':
             return {}
         if method == 'Page.getFrameTree':
@@ -554,6 +555,11 @@ class FakeCDP:
             declaration = params['functionDeclaration']
             if 'this.node()' in declaration:
                 return {'result': {'objectId': 'field'}}
+            if 'return performance.now()' in declaration:
+                return {'result': {'value': 1000.0}}
+            if 'this.points()' in declaration:
+                return {'result': {'value': [{'rootX': 1, 'rootY': 20}, {'rootX': 12, 'rootY': 20},
+                                              {'rootX': 23, 'rootY': 20}]}}
             if 'this.geometry()' in declaration:
                 return {'result': {'value': {'rootX': 12, 'rootY': 20}}}
             if 'this.write(' in declaration:
@@ -1002,3 +1008,9 @@ def test_android_pending_cli_requires_support_before_sending(capsys):
     receipt = dict(ok=True, filled='totp', target_delivery=DELIVERY)
     code, sent, _ = run_cli(argv, [receipt], capsys, capabilities={**caps(), 'android_pending_totp': True})
     assert code == 0 and sent[-1]['pending'] is True
+
+def test_chrome_read_refuses_covered_text_when_the_center_is_exposed(device_file):
+    cdp = FakeCDP('https://example.com/setup')
+    broker, _ = chrome_broker(device_file, cdp)
+    cdp.covered_x = 1
+    assert not pin(broker, mode='read', field='#secret')['ok']
