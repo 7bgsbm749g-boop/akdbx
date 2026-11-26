@@ -224,10 +224,13 @@ broker takes attached devices only (after 0.50.1).
   count, visible range or text for a range. Its Accessibility value has one
   mask character (U+F79A, or U+200B when the field shows no bullets) for each
   UTF-16 unit. The broker accepts only a wholly masked value and compares its
-  length with the written text, so it never reads the password back. A field
-  that cuts or rejects the text gives an uncertain result. On a real macOS 26
-  runner, the masked length matched in every random write (300 of 300), with
-  Secure Event Input on. From 0.50.1 to 0.51.0 the broker refused these pins.
+  length with the written text; a stock field never gives the password back.
+  A field that cuts or rejects the text gives an uncertain result. A secure
+  field that already shows text is refused before the write; an empty one that
+  shows text after the write gives an uncertain result. On real macOS 15.8 and
+  26.7 runners, the masked length matched in every random write (300 of 300 on
+  each), with Secure Event Input on. From 0.50.1 to 0.51.0 the broker refused
+  these pins.
 - **G** `windows` sends a window-pin SMS code to a real Win32 Edit control over
   the same `win32-char-v1` transport. Usernames and TOTP have contract tests
   with simulated windows only; a real-app check is the manual

@@ -205,11 +205,12 @@ emulator, start it yourself (for example from Android Studio) and attach it.
   stock AppKit secure field (`NSSecureTextField`). This field reports no
   character count. Its Accessibility value has one mask character for each
   UTF-16 unit of the text, so the broker compares that length with the written
-  password. It never reads the password back. If the field holds a different
-  length after the write (for example, the app cuts the text at a maximum
-  length), the result is uncertain, never success. A secure field whose value
-  is not wholly mask characters is refused. Status lists `password` and
-  `login` in `native_field_modes`.
+  password. A stock field never gives the password back. If the field holds a
+  different length after the write (for example, the app cuts the text at a
+  maximum length), the result is uncertain, never success. A secure field that
+  already shows text instead of mask characters is refused before the write.
+  If an empty field shows text only after the write, the result is uncertain.
+  Status lists `password` and `login` in `native_field_modes`.
 - Numeric window pins remain unavailable. `CGEventPostToPid` directs input to a
   process and cannot bind a keyboard event to a field. Secure Event Input also
   restricts synthesized keyboard input. Status reports

@@ -137,8 +137,8 @@ def count(node):
 
 def masked_count(node):
     # A stock NSSecureTextField has no character count or text range. Its
-    # AXValue is one mask character per UTF-16 unit, never the text. Accept
-    # only a wholly masked value, so the broker never reads a password back.
+    # AXValue is one mask character per UTF-16 unit, never the text. Refuse a
+    # value with any other character: such a field may give text back.
     value = attr(node, 'AXValue')
     if not isinstance(value, str) or len(value) > MAX_TEXT or not set(value) <= MASKS:
         raise TargetError()
