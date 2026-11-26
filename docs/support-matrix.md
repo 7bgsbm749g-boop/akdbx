@@ -184,7 +184,7 @@ broker takes attached devices only (after 0.50.1).
 | Card, identity | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
 | Card processor iframes, child-frame login | ✗ (Z) | ✗ (Z) | ✗ (Z) |
 | notify-page (identity) | ✅ 0.50.1 Chrome pages · no CI; ⛔ app fields (K) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 Chrome pages · no CI (AE) |
-| Secret read, `capture-totp` text key | ✅ 0.50.1 Chrome pages · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
+| Secret read, `capture-totp` text key | ✅ 0.50.1 Chrome pages · no CI (AF) | ✅ 0.50.1 Chrome pages · no CI (T) | ✅ after 0.50.1 Chrome pages · no CI (AE) (AF) |
 | `capture-totp`, QR code | ✗ not built | ✗ not built | ✗ not built |
 | SMS code | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
 | Fields in an app's own web view | ◼ (AB) | ◼ (AB) | ◼ (AB) |
@@ -311,3 +311,8 @@ broker takes attached devices only (after 0.50.1).
   receives zero bytes. Inherent: no device or emulator runs in that CI,
   because GitHub's arm64 macOS runners have no nested virtualization. A macOS
   broker with a real device or emulator was not tested.
+- **AF** The `linux` and `macos-broker` jobs test only the Android read pin
+  and its refusals (an unverified DevTools peer, a QR capture, covered text)
+  with a simulated device; no test completes a secret read or a text-key
+  `capture-totp` through an Android pin. The broker refuses a read pin on an
+  app field, so reads work on Chrome pages only.
