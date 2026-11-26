@@ -67,9 +67,9 @@ For user-started authenticator QR import, use the separate 1.1.0+ importer.
 The default capture-only socket is `~/Library/Application Support/akdbx/run/u`.
 See [private import](../skills/akdbx/references/private-import.md) for browser builds and registration.
 
-## Chromium CDP (after 0.47.0)
+## Chromium CDP
 
-The extension remains the default. Before enabling CDP, verify that only trusted
+Versions after 0.47.0 support CDP on macOS. The extension remains the default. Before enabling CDP, verify that only trusted
 clients can reach the browser’s loopback TCP listener. For example, run Chrome
 and the broker inside a dedicated VM that only you can access, with no port
 forwarding. On a shared Mac, keep using the extension unless you have verified

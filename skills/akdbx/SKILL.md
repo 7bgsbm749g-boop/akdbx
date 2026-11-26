@@ -289,6 +289,10 @@ or forget a relay that another workflow's broker uses. Details:
 
 ## Choose the fill route
 
+On macOS, use CDP only when the operator has verified that only trusted clients
+can reach the debugging port. Route and profile status do not verify that
+isolation. Otherwise use the paired extension. See the [macOS CDP setup](https://github.com/7bgsbm749g-boop/akdbx/blob/main/docs/macos.md#chromium-cdp).
+
 Web fills can reach the page in two ways. Check `fill_routes`,
 `default_fill_route`, `extension_connected` and `extension_paired` in `status`.
 

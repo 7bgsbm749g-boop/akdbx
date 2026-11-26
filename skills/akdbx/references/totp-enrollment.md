@@ -1,5 +1,7 @@
 # Automatic authenticator enrollment (0.35.0)
 
+Before using CDP, verify [client isolation](target-fill.md#operator-configuration).
+
 Use this when the user authorized adding an authenticator app (TOTP) to a
 website account, for example GitHub's **Set up authenticator app**. The broker
 reads the setup key from the enrollment page itself, saves it to the correct

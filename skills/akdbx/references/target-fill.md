@@ -20,6 +20,10 @@ clients. There is no password keyboard fallback.
 
 ## Operator configuration
 
+Before starting Chromium with remote debugging, verify that only trusted clients
+can reach its loopback TCP port. On a shared Mac without verified isolation,
+use the paired extension. See the [macOS CDP setup](https://github.com/7bgsbm749g-boop/akdbx/blob/main/docs/macos.md#chromium-cdp).
+
 The operator must explicitly configure `serve --password-browser-profile PATH`
 or `AKDBX_PASSWORD_BROWSER_PROFILE`. PATH is the Chrome user data directory of
 the intended browser, started with `--user-data-dir=PATH` and

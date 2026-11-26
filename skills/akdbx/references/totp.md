@@ -1,5 +1,7 @@
 # TOTP authenticators
 
+Before using CDP, verify [client isolation](target-fill.md#operator-configuration).
+
 Use the broker to generate and enter authenticator codes for an authorized
 sign-in or access-confirmation challenge. This does not authorize changing a
 site's security settings. Reuse the shared browser session and verify the
