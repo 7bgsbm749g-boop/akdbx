@@ -171,6 +171,12 @@ def test_managed_control_login_read_and_focus_change(managed_exe, toolkit):
         try:
             manager.deliver_password(target, 'login', 'invented-user\U0001F600', 'invented-password',
                                      {https_origin(SITE)}, lambda: True, time.monotonic() + 4)
+        except DeliveryError as exc:
+            # This app has only invented values. Show the exact failing native
+            # call on CI, while broker-facing errors remain secret-free.
+            if exc.__context__ is not None:
+                raise exc.__context__ from None
+            raise
         finally:
             target.close()
         command('verify', 'match')
@@ -261,3 +267,10 @@ def test_changed_desktop_or_browser_host_refuses_before_write(lab, monkeypatch, 
             win32gui.DestroyWindow(browser)
         if atom:
             win32gui.UnregisterClass(atom, cls.hInstance)
+
+def test_uia_value_condition_preserves_utf16():
+    from comtypes.automation import VT_BSTR
+    from akdbx.windows_uia import value_condition_string
+    value = 'invented-\U0001F600'
+    condition = value_condition_string(value)
+    assert condition.vt == VT_BSTR and condition.value == value
