@@ -926,3 +926,12 @@ def test_an_aria_dropdown_whose_list_changes_owner_refuses(chrome):
     evaluate(chrome, "pidlInput_expiryMonth.setAttribute('aria-controls', 'year-list')")
     assert fill(chrome, target, 'cc-exp-month') == failure()
     assert evaluate(chrome, 'events') == []
+
+
+def test_an_ignored_dropdown_click_is_uncertain_even_when_the_label_equals_an_option_value(chrome):
+    page = hintless(chrome)
+    # The button shows 8, the data-value of option 9 (values counted from 0); the page ignores the click.
+    target = hintless_pin(chrome, page, '#stale-label', 'cc-exp-month', field_purpose='cc-exp-month')
+    assert target['ok'], target
+    assert fill(chrome, target, 'cc-exp-month') == failure(True)
+    assert evaluate(chrome, "document.querySelector('#stale-label').firstElementChild.textContent") == '8'

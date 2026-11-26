@@ -355,7 +355,9 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
     if (options === null) return refuse();
     const matches = options.filter(o => matching(o, forms));
     if (matches.length !== 1) return refuse();
-    const option = matches[0], chosen = names(option);
+    // Confirm only with what named the saved value: the visible text, and a value
+    // attribute only when it names it too (never a stale label equal to another value).
+    const option = matches[0], chosen = [text(option), ...names(option).slice(1).filter(n => forms.includes(n))];
     if (option.closest('a[href],label,summary,input,select,textarea,button:not([type="button" i])') ||
         option.querySelector('a[href],input,select,textarea,button,iframe,frame,object,embed') ||
         late() || !valid() || ariaOptions()?.includes(option) !== true) return refuse();

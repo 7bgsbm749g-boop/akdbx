@@ -37,6 +37,8 @@ HINTLESS = """<!doctype html><title>Synthetic hint-less card form</title>
 <button type=button id=one-based-names aria-haspopup=listbox aria-expanded=false aria-controls=one-list
   data-options="January February March April May June July August September October November December"
   data-values="1 2 3 4 5 6 7 8 9 10 11 12"><span>Month</span></button>
+<button type=button id=stale-label aria-haspopup=listbox aria-expanded=false aria-controls=stale-list
+  data-options="1 2 3 4 5 6 7 8 9 10 11 12" data-values="0 1 2 3 4 5 6 7 8 9 10 11" data-dead=1><span>8</span></button>
 <button type=button id=plain-button data-options="01 02 03 04 05 06 07 08 09 10 11 12"><span>Month</span></button>
 <button id=submit-dropdown aria-haspopup=listbox aria-expanded=false aria-controls=submit-list
   data-options="01 02 03 04 05 06 07 08 09 10 11 12"><span>Month</span></button>
@@ -71,7 +73,8 @@ for (const button of document.querySelectorAll('[data-options]')) {
         option.setAttribute('role', 'option'); option.setAttribute('aria-selected', 'false');
         if (button.dataset.disabled === label) option.setAttribute('aria-disabled', 'true');
         option.textContent = label;
-        option.addEventListener('click', () => {
+        // A widget that ignores the DOM click (it selects on another event).
+        if (!button.dataset.dead) option.addEventListener('click', () => {
           button.firstElementChild.textContent = label;
           events.push('choose:' + button.id + '=' + label);
           list.remove(); button.setAttribute('aria-expanded', 'false');
