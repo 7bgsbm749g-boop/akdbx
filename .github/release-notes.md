@@ -14,6 +14,8 @@ From 0.50.3, `docs/support-matrix.md` lists every fill and capture operation by 
 
 From 0.52.0: macOS native fields fill passwords, logins and generated passwords (checked by masked length); Firefox captures authenticator QR codes; the toolbar popup fills address fields with the agent pin checks and offers texted codes; QR capture refuses any image that loads with CORS from another origin on every route; Android fills wait for a cold-booted device instead of reporting a lost connection.
 
+After 0.52.0 (fill extension 0.16.0): the extension's experimental Enhanced security pixel check, its settings page and its `<all_urls>` permission request are removed. A page could beat the check, and the page that gets a value can read it anyway. The checks that stop hidden and invisible fields stay on both routes, and the CDP route still refuses a click-through cover. An extension that had the setting on keeps working. See the README section "Visibility checks: what they stop".
+
 Verify a download before installing it:
 
 ```sh

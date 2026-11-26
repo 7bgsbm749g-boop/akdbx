@@ -351,18 +351,14 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   origin which allows the read stays origin-clean, so it could show that
   origin's code. The pin also
   decodes only a canvas that passes `convertToBlob`'s origin-clean check. A
-  Firefox content script with `<all_urls>` host access (Enhanced security)
-  reads another origin's pixels from a tainted canvas, also for an `<img>`
-  whose URL on the page's origin redirects to another origin, and that check
-  stops it. The decoded value goes to the broker sealed, like a text read; no
-  pixel leaves the page. With enhanced security, the pixel challenge hides the
-  code's own pixels for a moment (the picture moves out of its clipped box, an
-  `<svg>`'s shapes are hidden), so the screenshot must show the challenge
-  colour on a grid of points over the whole code. From fill extension 0.14.2,
-  the challenge ignores the `::before` content that Firefox reports for every
-  `<img>` (its alt text, which a loaded image does not paint). An older
-  extension refuses a QR read pin with `target unavailable`; text reads are
-  unchanged.
+  Firefox content script with `<all_urls>` host access (fill extension 0.5.0
+  to 0.15.x could ask for it, and Firefox keeps that grant through an update;
+  see [Removed: Enhanced security](#removed-enhanced-security)) reads another
+  origin's pixels from a tainted canvas, also for an `<img>` whose URL on the
+  page's origin redirects to another origin, and that check stops it. The
+  decoded value goes to the broker sealed, like a text read; no pixel leaves
+  the page. An older extension refuses a QR read pin with `target
+  unavailable`; text reads are unchanged.
 - Identity pins with `--field-purpose` (0.35.1) need fill extension 0.7.0 or
   newer. An older extension gets no such pin: rebuild and reload it
   (`version_status` in `extension_browsers`).
@@ -410,7 +406,8 @@ focused field itself must stay the page's active element. So, as for
   on it or an ancestor, apart from an accepted `clip-path: inset()`), be
   enabled and editable, and pass the hit test at its centre, through every
   frame up to the top. A field outside the visible part of the page, or under
-  a cover, stays empty: scroll to it, focus it and open akdbx again.
+  a cover that takes pointer events, stays empty: scroll to it, focus it and
+  open akdbx again. The hit test does not see a click-through cover.
 - Only documents whose frames up to the top all have the top page's origin.
   The popup keeps each field's element from when it opened. Just before it
   writes a field, it pins that element again with all these checks, and the
@@ -450,8 +447,7 @@ so the popup lists every unexpired text, and the user picks the one this site
 sent. When the user clicks one, the popup closes and gives the focus back to
 the page. Then the agent code pin's checks (`pin-code-target`) pin the field:
 one focused, visible, enabled `text`, `tel`, `number` or `password` input that
-passes the hit test, in the top document only. With Enhanced security, the
-cover check runs on that pin. Only then does the broker spend the text, once,
+passes the hit test, in the top document only. Only then does the broker spend the text, once,
 and seal its code to that pin; if nothing reached the field, the extension
 puts the text back with a token sealed inside that release. See
 [SMS](sms.md#fill-from-the-toolbar-popup-fill-extension-0150).
@@ -499,77 +495,53 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   then gets the CDP route's owner guard (connected, visible, no `srcdoc`, safe
   `sandbox`, no attribute change), checked at pin and again before the fill or
   read.
-- Hit tests (default): there is no browser-native hit test. The checks use
+- Hit tests: there is no browser-native hit test. The checks use
   `elementFromPoint` in the isolated world, which skips click-through covers
-  (`pointer-events: none`, `inert` content, a popover's `::backdrop`). For card
-  and address fields the CDP route also runs `DOM.getNodeForLocation`, which
-  sees them (also for code fields); use the CDP route where a page may cover
-  such a field, unless the user turned on Enhanced security. Read pins use the same `elementFromPoint`
-  check on both routes, and password pins have no hit test on either.
-- Covers (Enhanced security: experimental, off by default; 0.34.0+, fill
-  extension 0.5.0). The user turns it on in the extension's settings page (the
-  cog in the popup, or the browser's extension options); an agent does not.
-  The page first asks the browser for the optional `<all_urls>` host access,
-  and stores the setting only when the browser grants it. Turning it off keeps
-  that access: Chrome's `permissions.remove` of `<all_urls>` also withholds the
-  required `https://*/*` access. On, but without that access (not granted, or
-  removed later on the browser's extension page), every card, address, code and
-  read pin refuses; the settings page shows a warning. The broker does not see the
-  setting: a refused pin looks like any other refused pin, so when the pins of
-  an ordinary page keep refusing on the extension route, the user can turn the
-  setting off or the agent can use the CDP route. With the setting on, a card,
-  address, code (fill extension 0.13.0+) or read pin needs proof that nothing is
-  painted over the field or the secret. The popup runs this check for a texted
-  code (0.15.0+), not for the logins, cards and addresses that it fills. `elementFromPoint` cannot give it (it
-  skips click-through and inert covers), and no list of selectors names every
-  cover. The extension asks the browser instead, in two steps, at the pin and
-  again at the fill or read:
-  1. The occlusion test, where the browser provides it. Firefox 161 lacks
-     `IntersectionObserverEntry.isVisible` and uses step 2 on its own.
-     [Firefox cover checks](../../../docs/firefox.md#enhanced-security) describes the limits.
-     In Chromium, `IntersectionObserver` with `trackVisibility` runs the
-     browser's own occlusion hit test: the one CDP's `DOM.getNodeForLocation`
-     runs (pointer-events and `inert` ignored, visual overflow included), over
-     the whole box of the element, through every parent frame. A cross-origin
-     parent reports the occlusion of the whole `<iframe>` to its child, so a
-     processor frame also sees a cover in the merchant page. A popover, a
-     `::backdrop`, an exit transition, any pseudo-element, an inert or
-     shadow-root cover: each is a box above the element, so the answer is
-     "not visible". Opacity below 1, a filter or a distorting transform on the
-     element's chain give the same answer. The fill or read runs in the task
-     that delivers a fresh "visible" answer. The test needs a rendered tab.
-  2. The pixel challenge, for every card, address, code and read check. Step 1 does
-     not count paint that the element's own ancestors draw over it (a
-     negative-offset outline, also around a processor iframe), and it is
-     all-or-nothing for the whole box: a floating label, an icon in the field,
-     an element over another part of a processor frame, or the transparent
-     `::backdrop` of a cookie popover elsewhere also fail it.
-     The service worker then adds one user-origin rule (it beats every author
-     rule) that paints only the pinned element in a random colour, takes a
-     screenshot of the tab (`tabs.captureVisibleTab`), removes the rule, and
-     checks the colour at the points CDP hit-tests: the centre of a field; for
-     a secret, a point every few pixels along each line of its text. A cover
-     of any kind, in any document or frame, changes those pixels, so the pin
-     refuses; a see-through veil also refuses. The field shows the colour for
-     about a tenth of a second. The screenshot stays in the service worker and
-     is dropped after the check. The element's own outline gets another colour,
-     so one drawn over its content refuses; a secret element that draws its own
-     `::before`, `::after`, list marker or scroll markers refuses, because that
-     content would take the challenge colour. After the screenshot the points are measured
-     again; a layout shift refuses.
-  Costs and limits: `tabs.captureVisibleTab` needs the `<all_urls>` host
-  permission (asked for when the setting is turned on) and allows two
-  screenshots each second, so challenges run one at a time, about half a
-  second apart: each card or address field costs one challenge at its pin and
-  one at its fill. Colours are compared exactly. Chrome returns tab screenshots
-  in sRGB also when it renders for a colour-managed display: the tests pass with
-  forced Display P3 and scRGB profiles (`--force-color-profile`). A display
-  that still changed the colours would refuse, never fill. The tab must be the active tab of a window that renders.
-  Only a script that can read the field's own document can copy the colour
-  onto a cover in time, and such a script can read the filled value anyway;
-  a parent page cannot see the colour in a cross-origin processor frame. A
-  cover that comes and goes by itself is seen only if it is there at the pin
-  or at the fill.
+  (`pointer-events: none`, `inert` content, a popover's `::backdrop`). For card,
+  address and code fields the CDP route also runs `DOM.getNodeForLocation`,
+  which sees them; use the CDP route where a page may cover such a field. Read
+  pins use the same `elementFromPoint` check on both routes, and password pins
+  have no hit test on either. What each check stops, and what it cannot stop:
+  [Visibility checks](../../../README.md#visibility-checks-what-they-stop).
+
+### Removed: Enhanced security
+
+Fill extension 0.5.0 to 0.15.x (akdbx 0.34.0 to 0.52.0) had an experimental
+**Enhanced security** setting, off by default, on a settings page (the cog in
+the popup). With it on, card, address, code and read pins also needed the
+browser's occlusion test (`IntersectionObserver` with `trackVisibility`, in
+Chromium) and a pixel check: a user-origin style painted the target in a random
+colour, a tab screenshot (`tabs.captureVisibleTab`) had to show that colour at
+sampled points, and the check needed the optional `<all_urls>` host access.
+
+Fill extension 0.16.0 (after akdbx 0.52.0) removes the setting, the settings
+page, the cog, the `<all_urls>` request and both checks:
+
+- A page could beat the pixel check. It can read the check's colour from the
+  target's computed style and remove its cover while the colour shows (a
+  covered secret was read and a covered card field filled this way on 0.15.1),
+  and it can cover the text between the sampled points. A check of every pixel
+  refused ordinary pages.
+- The occlusion test alone refused ordinary pages: a floating label, a copy
+  button, a cookie banner elsewhere on the page and a transparent layer (5 of
+  9 test pages). Firefox has no such test.
+- The page that receives a value can read it anyway, so no cover check can
+  keep a value from it ([Visibility checks](../../../README.md#visibility-checks-what-they-stop)).
+
+The DOM checks and the frame-owner checks stay; they are the checks that run
+with the setting off, which was the default. An extension that had the setting
+on keeps working: 0.16.0 ignores the stored setting, and its fills and reads
+are the same as with the setting off. `akdbx extension build` removes the old
+settings page files from the build folder. The broker never saw the setting,
+so no `status` field changes.
+
+The extension does not remove an `<all_urls>` access that a user granted to an
+older build: in Chrome, `permissions.remove` of `<all_urls>` also withholds the
+required `https://*/*` access. Tested: Chrome for Testing 153 no longer applies
+the access once the 0.16.0 manifest no longer lists it. Firefox 161 still grants
+it after the update, until the temporary add-on is removed (when Firefox
+exits). 0.16.0 never uses it, and the Firefox QR check above still refuses a
+tainted canvas with it.
 
 ## Setup
 

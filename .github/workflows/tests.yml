@@ -262,14 +262,6 @@ jobs:
           AKDBX_TEST_EXTENSION_BROWSER: ${{ runner.temp }}/cft/chrome-linux64/chrome
           AKDBX_TEST_BROWSER_NO_SANDBOX: '1'
         run: python -m pytest -q -rs tests/test_totp_browser.py -k extension --basetemp="${{ runner.temp }}/akdbx-totp-extension" --junitxml="${{ runner.temp }}/extension-totp.xml"
-      - name: Cover checks as a wide-gamut display renders them
-        env:
-          AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
-          AKDBX_TEST_EXTENSION_BROWSER: ${{ runner.temp }}/cft/chrome-linux64/chrome
-          AKDBX_TEST_BROWSER_NO_SANDBOX: '1'
-          # The pixel challenge compares exact colours; tab screenshots must stay sRGB on a colour-managed display.
-          AKDBX_TEST_BROWSER_EXTRA_ARGS: '--force-color-profile=display-p3-d65'
-        run: python -m pytest -q -rs tests/test_extension_browser.py -k "cover or reads or fills or wrapped" --basetemp="${{ runner.temp }}/akdbx-tests-p3"
       - name: Authenticator QR capture on the CDP and extension routes
         env:
           AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
@@ -278,13 +270,6 @@ jobs:
           AKDBX_TEST_BROWSER: ${{ runner.temp }}/cft/chrome-linux64/chrome
           AKDBX_TEST_BROWSER_NO_SANDBOX: '1'
         run: python -m pytest -q -rs tests/test_totp_qr_capture.py --basetemp="${{ runner.temp }}/akdbx-qr" --junitxml="${{ runner.temp }}/qr-capture.xml"
-      - name: QR pixel challenge as a wide-gamut display renders it
-        env:
-          AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
-          AKDBX_TEST_EXTENSION_BROWSER: ${{ runner.temp }}/cft/chrome-linux64/chrome
-          AKDBX_TEST_BROWSER_NO_SANDBOX: '1'
-          AKDBX_TEST_BROWSER_EXTRA_ARGS: '--force-color-profile=display-p3-d65'
-        run: python -m pytest -q -rs tests/test_totp_qr_capture.py -k enhanced --basetemp="${{ runner.temp }}/akdbx-qr-p3"
       - name: Require every extension browser case to run
         run: |
           python - <<'PY'

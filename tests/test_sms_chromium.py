@@ -59,6 +59,26 @@ def test_unfocused_wrong_type_and_too_short_inputs_are_refused(page):
     assert [m['id'] for m in page.broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages']] == [message_id]
 
 
+COVER = ("document.body.insertAdjacentHTML('beforeend', '<div id=\"cover\" style=\"position:fixed;inset:0;"
+         "background:white;z-index:2147483647;pointer-events:none\"></div>'); true")
+
+
+def test_a_click_through_cover_refuses_the_code_pin_and_a_later_fill(page):
+    """The native hit test sees a cover that elementFromPoint skips: no pin, and no fill after the pin."""
+    evaluate(page, COVER)
+    assert pin(page, '#otp')['ok'] is False
+    evaluate(page, "document.getElementById('cover').remove(); true")
+    target = pin(page, '#otp')
+    assert target['ok'] is True
+    message_id = message(page)
+    evaluate(page, COVER)
+    refused = page.broker.dispatch(dict(action='fill-sms-code', sms_protocol=1, message=message_id,
+                                        target=target['target'], target_protocol=1))
+    assert refused['ok'] is False and evaluate(page, 'document.querySelector("#otp").value') == ''
+    # Nothing reached the field, so the text stays in the inbox.
+    assert [m['id'] for m in page.broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages']] == [message_id]
+
+
 def test_webhook_url_is_typed_into_a_pinned_field_and_never_returned(page):
     target = pin(page, '#hook', field='webhook-url')
     assert target['ok'] is True

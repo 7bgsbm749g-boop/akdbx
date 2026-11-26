@@ -45,7 +45,7 @@ from akdbx.secrets_capture import CAPTURE_DELIVERY as CDP_CAPTURE
 from akdbx.target import failure
 from akdbx.totp_capture import OLD_BROKER, PENDING_FIELD, QR_REFUSED, REFUSED
 from test_broker import Vault
-from test_extension_browser import NoKeys, certificates, enhanced, harness, private_dir, trusted  # noqa: F401
+from test_extension_browser import NoKeys, certificates, harness, private_dir, trusted  # noqa: F401
 from windows_chromium_lab import ORIGIN, browser_binary, chromium_lab
 
 
@@ -138,7 +138,6 @@ PAGES = {
     '/qr/redirect-cors.png': (b'', 'image/png', {'Location': 'https://evil.example.net/qr/key-cors.png'}),
     '/qr-img': enrollment('<img id=qr src="/qr/key.png" alt="QR code">'),
     '/qr-inverted': enrollment('<img id=qr src="/qr/inverted.png" alt="QR code">'),
-    '/qr-rounded': enrollment('<img id=qr src="/qr/key.png" alt="QR code" style="border-radius:24px">'),
     '/qr-data-url': enrollment('<img id=qr alt="QR code" src="data:image/png;base64,'
                                + base64.b64encode(qr_fixture.png(ROWS)).decode() + '">'),
     '/qr-canvas': enrollment('<canvas id=qr></canvas>', 'const ROWS = ' + json.dumps(ROWS) + ';\n'
@@ -577,43 +576,3 @@ def test_cli_sends_no_qr_request_to_a_broker_without_qr_capture(monkeypatch, cap
     cli.main(['capture-totp', '--target', 'a' * 64, '--handle', 'HANDLE', *meta])
     assert [p.get('read_kind') for p in sent] == ['qr', 'qr', None]
     capsys.readouterr()
-
-
-# ----- extension only: enhanced security's pixel challenge -----------------------------------
-@pytest.fixture
-def qr_extension(tmp_path, template, harness):  # noqa: F811
-    path = kdbx(tmp_path, template)
-    harness.broker.vault = open_vault_with_password(path, MASTER)
-    trusted(harness)
-
-    def where(url):
-        listing = harness.frames(url)
-        return dict(page_id=listing['page_id'], frame_id=listing['main_frame_id'], route='extension')
-
-    return SimpleNamespace(route='extension', broker=harness.broker, lab=harness.lab, where=where, path=path,
-                           pin_delivery=EXTENSION_PIN_DELIVERY, capture_delivery=EXTENSION_CAPTURE)
-
-
-CHALLENGE_GONE = "getComputedStyle(document.getElementById('qr')).boxShadow === 'none'"
-
-
-@pytest.mark.usefixtures('enhanced')
-@pytest.mark.parametrize('page', ['/qr-img', '/qr-canvas', '/qr-svg', '/qr-rounded'])
-def test_with_enhanced_security_a_shown_code_passes_the_pixel_challenge(qr_extension, page):
-    q = qr_extension
-    url = open_page(q, page)
-    pinned = pin(q, url)
-    assert pinned['ok'], pinned
-    assert capture(q, pinned['target']) == receipt(q)
-    assert q.lab.evaluate(CHALLENGE_GONE)
-
-
-@pytest.mark.usefixtures('enhanced')
-def test_with_enhanced_security_a_click_through_cover_over_the_code_refuses(qr_extension):
-    q = qr_extension
-    url = open_page(q, '/qr-img')
-    # pointer-events: none passes the DOM hit test; the screenshot still shows the cover.
-    q.lab.evaluate("document.body.insertAdjacentHTML('beforeend', '<div style=\"position:absolute;left:40px;top:60px;"
-                   "width:60px;height:60px;background:#fff;pointer-events:none\"></div>')")
-    assert pin(q, url) == failure()
-    assert q.lab.evaluate(CHALLENGE_GONE) and nothing_saved(q)
