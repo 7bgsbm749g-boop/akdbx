@@ -29,7 +29,10 @@ UNCONFIRMED = 'Pairing result not confirmed. Open the pairing page again from th
 def handle_pairing(handler, state):
     from .broker import is_wrong_credentials
     from .totp import https_origin
-    from .web_unlock import OPEN_FAILED, _page, _submit, parse_form
+    from .unlock_keys import ChallengeChanged
+    from .web_unlock import (HARDWARE_CHANGED, KEY_FIELDS, OPEN_FAILED, _page, _submit, body_limit,
+                             is_multipart, keys_section, open_with_keys, parse_unlock_body,
+                             unlock_credentials)
     if urlsplit(handler.path).path != ROUTE:
         return False
     broker = state.broker
@@ -47,17 +50,21 @@ def handle_pairing(handler, state):
                                    'choose <strong>Open the pairing page</strong> for a new link.</p>')
         return True
 
-    def form(error=''):
+    def form(error='', keys_open=False):
         action = ROUTE + '?token=' + html.escape(token, quote=True)
         message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
         unlock = '<p>The vault is locked: this also unlocks it.</p>' if broker.locked else ''
+        # Only an unlock can use a key file or hardware key; pairing an
+        # unlocked broker checks the master password it holds.
+        keys = keys_section(state, open_section=keys_open) if broker.locked else ''
+        encoding = ' enctype="multipart/form-data"' if keys else ''
         # The unlock page's form and button: the shared script posts it, shows the busy
         # state and then replaces the sheet with the result page (success or error).
         return (f'{message}<p>A browser extension asks to fill from akdbx. Continue only if the akdbx '
                 f'extension popup on this computer shows this code:</p><p><strong>{html.escape(code)}</strong></p>'
                 f'{unlock}<form data-unlock-form data-wait-text="{WAIT}" data-unconfirmed-text="{UNCONFIRMED}" '
-                f'method="post" action="{action}" autocomplete="off">'
-                + field('Master password', 'password', autocomplete='current-password', autofocus=True) +
+                f'method="post" action="{action}"{encoding} autocomplete="off">'
+                + field('Master password', 'password', autocomplete='current-password', autofocus=True) + keys +
                 '<label><input type="checkbox" name="confirmed" value="yes" required>'
                 'The extension shows this code</label>' + _submit('Pair the extension', 'Pairing the extension\u2026') +
                 '</form><p id="unlock-status" class="portal-status unlock-status" role="status" aria-live="polite"></p>')
@@ -77,17 +84,20 @@ def handle_pairing(handler, state):
         if not isinstance(origin, str) or not isinstance(base, str) or https_origin(origin) != https_origin(base):
             raise ValueError
         length = int(handler.headers.get('Content-Length', '0'))
-        if (handler.headers.get('Content-Type', '').split(';')[0] != 'application/x-www-form-urlencoded'
-                or not 0 < length <= MAX_BODY):
+        if ((handler.headers.get('Content-Type', '').split(';')[0] != 'application/x-www-form-urlencoded'
+                and not is_multipart(handler.headers))
+                or not 0 < length <= body_limit(handler.headers, MAX_BODY)):
             raise ValueError
         raw = handler.rfile.read(length)
         if len(raw) != length:
             raise ValueError
-        values = parse_form(raw)
-        if set(values) != {'password', 'confirmed'} or any(len(v) != 1 for v in values.values()) \
-                or values['confirmed'] != ['yes'] or not values['password'][0]:
+        values = parse_unlock_body(handler.headers, raw)
+        raw = b''
+        if not {'password', 'confirmed'} <= set(values) <= {'password', 'confirmed'} | KEY_FIELDS \
+                or values.pop('confirmed') != ['yes']:
             raise ValueError
-        password = values['password'][0]
+        password, keys = unlock_credentials(values, state.keyfile)
+        values = None
     except Exception:
         send(HTTPStatus.BAD_REQUEST, '<p>Request rejected.</p>')
         return True
@@ -116,11 +126,17 @@ def handle_pairing(handler, state):
                                                'extension button again for a new link.</p>')
                 return True
             ok = False
+            keys_used = keys is not None
             if broker.locked:
                 try:
-                    vault = state.opener(state.database, password, state.keyfile)
+                    vault = open_with_keys(state, password, keys)
                 except Exception as exc:
-                    password = ''
+                    password = keys = None
+                    if isinstance(exc, ChallengeChanged):
+                        # The response answers another challenge: not a failed attempt.
+                        state.cancel_attempt(attempt)
+                        send(HTTPStatus.CONFLICT, form(HARDWARE_CHANGED, keys_open=True))
+                        return True
                     if not is_wrong_credentials(exc):
                         # A store or I/O error is not a failed attempt.
                         state.cancel_attempt(attempt)
@@ -131,15 +147,20 @@ def handle_pairing(handler, state):
                 if ok:
                     state.record_success(attempt)
             else:
+                # Keys from a page that was opened while the vault was locked
+                # are not checked: the held master password decides.
                 held = getattr(broker.vault, 'password', None)
                 ok = isinstance(held, str) and bool(held) and hmac.compare_digest(
                     password.encode('utf-8'), held.encode('utf-8'))
-            password = ''
+            password = keys = None
             if not ok:
                 if state.record_failure(attempt) or state.blocked:
                     send(HTTPStatus.FORBIDDEN, blocked)
                     return True
-                send(HTTPStatus.UNAUTHORIZED, form('The master password is not correct.'))
+                send(HTTPStatus.UNAUTHORIZED, form(
+                    'AKDBX could not unlock the vault. Check the master password, key file and hardware '
+                    'key response.' if keys_used and broker.locked else 'The master password is not correct.',
+                    keys_open=keys_used and broker.locked))
                 return True
         if not hub.approve(token):
             send(HTTPStatus.NOT_FOUND, '<p>This pairing request expired. Open akdbx in the browser again.</p>')

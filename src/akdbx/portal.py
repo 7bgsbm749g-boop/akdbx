@@ -176,6 +176,13 @@ button:disabled { cursor: default; opacity: .4; }
   .wizard.is-passed .done-mark circle, .wizard.is-passed .done-mark path { animation: none; stroke-dashoffset: 0; }
 }
 .setup-note { margin: 10px 0 0 !important; color: #ffffff8c; font-size: 12px; line-height: 1.55; }
+.unlock-keys { min-width: 0; }
+.unlock-keys-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; margin-top: 12px; }
+.unlock-keys > summary { cursor: pointer; color: #ffffffb3; font-size: 13px; line-height: 1.5; padding: 2px 0; }
+.unlock-keys > summary:focus-visible { outline: 2px solid #ffffff5c; outline-offset: 3px; border-radius: 4px; }
+.unlock-keys[open] > summary { color: #fff; }
+.unlock-keys-body > .setup-note { margin: 0 !important; }
+.unlock-keys .copy-field .copy-text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 button.copy-field {
   display: block; text-align: left; min-height: 0; padding: 13px 16px 12px; border: 1px solid #ffffff1a;
   border-top-color: #ffffff20; border-radius: 14px; background: linear-gradient(135deg, #ffffff04, transparent 55%), #00000038;
@@ -486,9 +493,9 @@ SCRIPT = r""""use strict";
       box.classList.add("is-copied");
       clearTimeout(box.drawTimer);
       box.drawTimer = setTimeout(() => box.classList.add("is-drawn"), 900);
-      label.textContent = "Link copied to clipboard";
+      label.textContent = box.getAttribute("data-copied-text") || "Link copied to clipboard";
     } else {
-      label.textContent = "Copy failed. Press and hold the link, then tap Copy.";
+      label.textContent = box.getAttribute("data-copy-failed-text") || "Copy failed. Press and hold the link, then tap Copy.";
     }
   });
   function setBusy(form, busy) {
@@ -507,8 +514,10 @@ SCRIPT = r""""use strict";
   }
   async function post(form) {
     // Standard form encoding is used only for the authorized same-origin POST.
+    // A form with a key file field posts multipart, so the file bytes stay exact.
+    const data = new FormData(form);
     const response = await fetch(form.action, {
-      method: "POST", body: new URLSearchParams(new FormData(form)),
+      method: "POST", body: form.enctype === "multipart/form-data" ? data : new URLSearchParams(data),
       credentials: "same-origin", cache: "no-store", redirect: "error"
     });
     if (!response.headers.get("Content-Type")?.startsWith("text/html")) throw new Error();

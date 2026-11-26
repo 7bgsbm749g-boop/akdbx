@@ -442,7 +442,7 @@ retry an uncertain fill automatically or read back a real password to check it.
 
 ## Remaining X11 operations
 
-After 0.47.0, Linux and Windows brokers list the numeric window operations in
+From 0.49.0, Linux and Windows brokers list the numeric window operations in
 `target_fill_modes: ["username", "totp", "sms-code"]`. These correspond to
 `fill --mode username`, `fill-totp` and `fill-sms-code`.
 

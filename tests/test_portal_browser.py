@@ -27,7 +27,10 @@ def start_bridge(socket):
             length = int(self.headers.get('Content-Length', 0))
             assert 0 <= length <= 49152
             body = self.rfile.read(length) if length else None
-            code, headers, page = call(socket, self.command, self.path, body, timeout=12)
+            # The unlock form posts multipart when it has a key file field.
+            code, headers, page = call(socket, self.command, self.path, body, timeout=12,
+                                       content_type=self.headers.get('Content-Type',
+                                                                     'application/x-www-form-urlencoded'))
             self.send_response(code)
             for key, value in headers.items():
                 if key.lower() not in {'server', 'date'}:
@@ -559,3 +562,57 @@ def test_pairing_page_shows_the_unlock_busy_state_then_successfully_paired(synth
                         "'The extension is paired with akdbx until the browser or the broker restarts.')", session)
     assert cdp.evaluate("document.querySelector('form') === null", session)
     assert broker.extension.approved == [channel.digest]
+
+
+def test_key_file_and_hardware_response_reach_the_broker_byte_for_byte(synthetic_chromium, tmp_path):
+    """The page's own script posts the key file as multipart, so its bytes stay exact."""
+    import shutil
+    from pathlib import Path
+    from akdbx.unlock_keys import padded_challenge
+    from test_unlock_keys import YUBIKEY_RESPONSE, YUBIKEY_SEED, YUBIKEY_VAULT
+    _, _, cdp, session, _, _ = synthetic_chromium
+    received = []
+    broker = Broker(None, RecordingTyper())
+
+    def opener(_database, _password, keyfile, keys=None):
+        # Only the synthetic key material is kept; the password is not inspected.
+        received.append((keyfile, keys))
+        return Vault([Entry()])
+    folder = tmp_path / 'vault'
+    folder.mkdir(mode=0o700)
+    database = folder / 'vault.kdbx'
+    shutil.copyfile(YUBIKEY_VAULT, database)
+    socket = tmp_path / 'private' / 'portal.sock'
+    server, url = start_unlock_server(broker, database, None, socket, 'http://127.0.0.1', opener=opener)
+    bridge, worker = start_bridge(socket)
+    key = tmp_path / 'synthetic.key'
+    key.write_bytes(bytes(range(256)) * 3 + b'\r\n--\r\n\x00')
+    try:
+        parts = urlsplit(url)
+        cdp.call('Emulation.setDeviceMetricsOverride', {
+            'width': 390, 'height': 844, 'deviceScaleFactor': 1, 'mobile': True}, session)
+        navigate(cdp, session, f'http://127.0.0.1:{bridge.server_port}{parts.path}?{parts.query}')
+        assert cdp.evaluate("document.querySelector('form').enctype", session) == 'multipart/form-data'
+        assert cdp.evaluate("document.querySelector('.unlock-keys').open", session) is False
+        cdp.evaluate("document.querySelector('.unlock-keys summary').click()", session)
+        command = cdp.evaluate("document.querySelector('.unlock-keys [data-copy]').getAttribute('data-copy')", session)
+        assert command == 'ykman otp calculate 2 ' + padded_challenge(YUBIKEY_SEED).hex()
+        assert cdp.evaluate("document.documentElement.scrollWidth <= innerWidth", session) is True
+        document = cdp.call('DOM.getDocument', {}, session)
+        node = cdp.call('DOM.querySelector', {'nodeId': document['root']['nodeId'], 'selector': '#keyfile'}, session)
+        cdp.call('DOM.setFileInputFiles', {'files': [str(key)], 'nodeId': node['nodeId']}, session)
+        for selector, text in (('#password', 'public-synthetic-test-only'), ('#response', YUBIKEY_RESPONSE)):
+            cdp.evaluate(f"document.querySelector('{selector}').focus()", session)
+            cdp.call('Input.insertText', {'text': text}, session)
+        cdp.evaluate("document.querySelector('.unlock-submit').click()", session)
+        wait_for(cdp, session, "document.querySelector('h1').textContent === 'Vault unlocked'")
+        assert not broker.locked and len(received) == 1
+        keyfile, keys = received[0]
+        assert keyfile is None and keys.keyfile == Path(key).read_bytes()
+        assert keys.challenge == YUBIKEY_SEED and keys.response == bytes.fromhex(YUBIKEY_RESPONSE)
+    finally:
+        bridge.shutdown()
+        bridge.server_close()
+        worker.join(3)
+        server.shutdown()
+        server.server_close()

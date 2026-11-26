@@ -23,6 +23,10 @@ from . import cards
 from .extension_route import EXTENSION_ORIGIN
 from .portal import content_security_policy, field, render
 from .writes import group_paths
+from .unlock_keys import (
+    CHALLENGE_BYTES, KEYFILE_LIMIT, RESPONSE_BYTES, ChallengeChanged, UnlockKeys,
+    padded_challenge, parse_hex, read_challenge,
+)
 from .runtime import (
     acquire_lifecycle_lock,
     prepare_private_runtime_directory,
@@ -44,6 +48,163 @@ def parse_form(raw: bytes, **options) -> dict[str, list[str]]:
     if _INVALID_ESCAPE.search(raw):
         raise ValueError('invalid percent escape')
     return parse_qs(raw.decode('utf-8'), strict_parsing=True, errors='strict', **options)
+# Content types the browser sends for a form with a file input.
+_DISPOSITION = re.compile(r'form-data; name="([^"\r\n]*)"(?:; filename="([^"\r\n]*)")?')
+_BOUNDARY = re.compile(r"[0-9A-Za-z'()+_,./:=?-]{1,70}")
+# The page's key file and hardware key fields.
+KEY_FIELDS = frozenset({'keyfile', 'challenge', 'response'})
+
+
+def is_multipart(headers) -> bool:
+    return headers.get('Content-Type', '').split(';')[0].strip().lower() == 'multipart/form-data'
+
+
+def body_limit(headers, plain: int) -> int:
+    """The largest body: an uploaded key file may be up to KEYFILE_LIMIT."""
+    return KEYFILE_LIMIT + plain if is_multipart(headers) else plain
+
+
+def parse_multipart(raw: bytes, content_type: str) -> dict[str, list]:
+    """Strictly parse a browser's multipart form, byte for byte.
+
+    A text part gives a str, a file part (with a filename) gives bytes. Any
+    malformed part, header or boundary raises ValueError.
+    """
+    from email.message import Message
+    header = Message()
+    header['Content-Type'] = content_type
+    boundary = header.get_param('boundary')
+    if not isinstance(boundary, str) or not _BOUNDARY.fullmatch(boundary):
+        raise ValueError('invalid boundary')
+    delimiter = b'--' + boundary.encode('ascii')
+    close = b'\r\n' + delimiter + b'--'
+    if not raw.startswith(delimiter + b'\r\n'):
+        raise ValueError('invalid body')
+    end = raw.rfind(close)
+    if end < 0 or raw[end + len(close):] not in (b'', b'\r\n'):
+        raise ValueError('invalid body')
+    values: dict[str, list] = {}
+    for part in raw[len(delimiter) + 2:end].split(b'\r\n' + delimiter + b'\r\n'):
+        head, separator, content = part.partition(b'\r\n\r\n')
+        if not separator:
+            raise ValueError('invalid part')
+        disposition = None
+        for line in head.decode('utf-8').split('\r\n'):
+            name, colon, value = line.partition(':')
+            if not colon:
+                raise ValueError('invalid part header')
+            name = name.strip().lower()
+            if name == 'content-disposition':
+                if disposition is not None:
+                    raise ValueError('invalid part header')
+                disposition = _DISPOSITION.fullmatch(value.strip())
+                if disposition is None:
+                    raise ValueError('invalid part header')
+            elif name != 'content-type':
+                raise ValueError('invalid part header')
+        if disposition is None:
+            raise ValueError('invalid part')
+        if delimiter in content:
+            raise ValueError('invalid part')
+        value = content if disposition.group(2) is not None else content.decode('utf-8')
+        values.setdefault(disposition.group(1), []).append(value)
+    return values
+
+
+def parse_unlock_body(headers, raw: bytes) -> dict[str, list]:
+    """An urlencoded or multipart unlock form; raise ValueError when it is malformed."""
+    if is_multipart(headers):
+        return parse_multipart(raw, headers.get('Content-Type', ''))
+    return parse_form(raw)
+
+
+def unlock_credentials(values: dict[str, list], configured_keyfile) -> tuple[str, UnlockKeys | None]:
+    """The password and the page's keys from a parsed form; raise ValueError when invalid.
+
+    The master password is always required: a key file on the broker's
+    computer must never unlock with the link alone.
+    """
+    def one(name, kind):
+        found = values.get(name, [])
+        if len(found) > 1 or any(not isinstance(item, kind) for item in found):
+            raise ValueError('invalid field')
+        return found[0] if found else None
+
+    password = one('password', str)
+    if not password:
+        raise ValueError('no password')
+    keyfile = one('keyfile', bytes)
+    if keyfile == b'':
+        keyfile = None  # The browser sends an empty part when no file is chosen.
+    if keyfile is not None and configured_keyfile is not None:
+        raise ValueError('the broker already has a key file')
+    challenge_text, response_text = one('challenge', str), one('response', str)
+    response = challenge = None
+    if response_text is not None and response_text.strip():
+        response = parse_hex(response_text, RESPONSE_BYTES)
+        challenge_text = ''.join((challenge_text or '').split())
+        if not 2 <= len(challenge_text) <= 2 * CHALLENGE_BYTES or len(challenge_text) % 2:
+            raise ValueError('invalid challenge')
+        challenge = parse_hex(challenge_text, len(challenge_text) // 2)
+    if keyfile is None and response is None:
+        return password, None
+    return password, UnlockKeys(keyfile=keyfile, challenge=challenge, response=response)
+
+
+def open_with_keys(state, password, keys):
+    """Call the state's opener; the page's keys go only to an opener that takes them."""
+    if keys is None:
+        return state.opener(state.database, password, state.keyfile)
+    return state.opener(state.database, password, state.keyfile, keys=keys)
+
+
+HARDWARE_CHANGED = ("The vault changed after this page opened, so the hardware key challenge changed. "
+                    "This attempt did not count toward the link's limit. Run the new command below, "
+                    "then enter its response.")
+KEY_COPIED = ('<span class="copy-done" aria-hidden="true"><span>Command copied</span>'
+              '<svg viewBox="0 0 24 24" focusable="false">'
+              '<circle cx="12" cy="12" r="10.5" pathLength="1" transform="rotate(-90 12 12)"/>'
+              '<path d="M7.2 12.4l3.2 3.2 6.4-6.8" pathLength="1"/></svg></span>')
+
+
+def keys_section(state, *, open_section: bool = False) -> str:
+    """The form's key file and hardware key fields; empty when the vault can use neither.
+
+    The key file field shows when the broker has no key file of its own. The
+    hardware key field shows for a vault with a KeePassXC challenge (KDBX 4,
+    Argon2). The challenge is read from the vault file for each page.
+    """
+    parts, names = [], []
+    if state.keyfile is None:
+        names.append('key file')
+        parts.append('<div class="field"><label for="keyfile">Key file</label>'
+                     '<input id="keyfile" name="keyfile" type="file" aria-describedby="keyfile-note">'
+                     '<p id="keyfile-note" class="setup-note">Only if the vault uses one. The broker keeps it '
+                     'in memory and never saves it.</p></div>')
+    seed = read_challenge(state.database)
+    if seed is not None:
+        names.append('hardware key')
+        command = 'ykman otp calculate 2 ' + padded_challenge(seed).hex()
+        quoted = html.escape(command, quote=True)
+        parts.append(
+            '<p class="setup-note">YubiKey challenge-response (KeePassXC): a browser cannot reach the key. '
+            'On a computer with the key, run this command, touch the key and enter the response. '
+            'For slot 1, change 2 to 1.</p>'
+            f'<button type="button" class="copy-field" data-copy="{quoted}" data-copied-text="Command copied"'
+            ' data-copy-failed-text="Copy failed. Press and hold the command, then tap Copy.">'
+            '<span class="copy-label" aria-live="polite">Command (tap to copy)</span>'
+            f'<span class="copy-text">{quoted}</span>{KEY_COPIED}</button>'
+            f'<input type="hidden" name="challenge" value="{seed.hex()}">'
+            + field('Hardware key response', 'response', required=False, maxlength=48,
+                    note='<p class="setup-note">The 40 characters the command prints.</p>'))
+    if not parts:
+        return ''
+    summary = ' or '.join(names)
+    summary = summary[0].upper() + summary[1:]
+    return (f'<details class="unlock-keys"{" open" if open_section else ""}>'
+            f'<summary>{html.escape(summary)}</summary><div class="unlock-keys-body">{"".join(parts)}</div></details>')
+
+
 REQUEST_IO_TIMEOUT = 5.0
 CONNECTION_TIMEOUT = 15.0
 
@@ -861,14 +1022,17 @@ def handler_for(state: UnlockState):
                 return False
             return True
 
-        def _unlock_page(self, token: str, error: str = "") -> bytes:
+        def _unlock_page(self, token: str, error: str = "", *, keys_open: bool = False) -> bytes:
             # Always the token that authorized this request, never state.token:
             # a caller with an old link must not see its replacement.
             action = "?token=" + html.escape(token, quote=True)
+            keys = keys_section(state, open_section=keys_open)
             password_field = field('Master password', 'password', autocomplete='current-password', autofocus=True)
             message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
+            encoding = ' enctype="multipart/form-data"' if keys else ''
             body = (f'{message}<p>{self._unlock_line()}</p>'
-                    f'<form data-unlock-form method="post" action="{action}" autocomplete="off">{password_field}'
+                    f'<form data-unlock-form method="post" action="{action}"{encoding} autocomplete="off">'
+                    f'{password_field}{keys}'
                     '<button type="submit" class="portal-submit unlock-submit"'
                     ' data-idle-label="Unlock AKDBX" data-busy-label="Unlocking AKDBX\u2026">'
                     '<span class="button-label">Unlock AKDBX</span>'
@@ -893,7 +1057,7 @@ def handler_for(state: UnlockState):
                 length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 length = 0
-            if length <= 0 or length > MAX_BODY:
+            if length <= 0 or length > body_limit(self.headers, MAX_BODY):
                 self._bad_request()
                 return
             raw = self.rfile.read(length)
@@ -905,16 +1069,16 @@ def handler_for(state: UnlockState):
                 return
             # Parse before reserving: a malformed or empty form is not an attempt.
             try:
-                values = parse_form(raw)
-                passwords = values.get("password", [])
-                if len(passwords) != 1 or not passwords[0]:
+                values = parse_unlock_body(self.headers, raw)
+                if not set(values) <= {'password'} | KEY_FIELDS:
                     raise ValueError
-                password = passwords[0]
+                password, keys = unlock_credentials(values, state.keyfile)
             except ValueError:
                 self._bad_request()
                 return
             finally:
                 raw = b""
+                values = None
             attempt = state.reserve_attempt(identity)
             if attempt is None:
                 password = ""
@@ -938,9 +1102,15 @@ def handler_for(state: UnlockState):
                     if self._send_status(state.attempt_status(attempt, submitted_token)):
                         return
                     try:
-                        vault = state.opener(state.database, password, state.keyfile)
+                        vault = open_with_keys(state, password, keys)
                     except Exception as exc:
-                        password = ""
+                        password, keys_used, keys = "", keys is not None, None
+                        if isinstance(exc, ChallengeChanged):
+                            # The response answers another challenge: not a failed attempt.
+                            state.cancel_attempt(attempt)
+                            self._send(HTTPStatus.CONFLICT, self._unlock_page(
+                                submitted_token, HARDWARE_CHANGED, keys_open=True))
+                            return
                         if not is_wrong_credentials(exc):
                             # A store or I/O error says nothing about the
                             # password: it never counts toward the block.
@@ -954,12 +1124,15 @@ def handler_for(state: UnlockState):
                         left = state.remaining()
                         self._send(HTTPStatus.UNAUTHORIZED, self._unlock_page(
                             submitted_token,
-                            "AKDBX could not unlock the database. Check your master password and try again. "
+                            ("AKDBX could not unlock the database. Check your master password, key file "
+                             "and hardware key response, and try again. " if keys_used else
+                             "AKDBX could not unlock the database. Check your master password and try again. ")
                             + (f"{left} attempts left for this link." if left != 1 else
-                               "1 attempt left for this link; another failure blocks it.")))
+                               "1 attempt left for this link; another failure blocks it."),
+                            keys_open=keys_used))
                         return
                     finally:
-                        password = ""
+                        password, keys = "", None
 
                     state.broker.unlock(vault)
                     state.record_success(attempt)  # invalidate the submitted URL

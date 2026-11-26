@@ -125,7 +125,7 @@ sleep and wake in the GUI login session. Losing a listening helper locks the vau
 
 ## Chromium CDP
 
-Versions after 0.49.0 support CDP on macOS. The extension remains the default. Before enabling CDP, verify that only trusted
+Versions from 0.50.0 support CDP on macOS. The extension remains the default. Before enabling CDP, verify that only trusted
 clients can reach the browser’s loopback TCP listener. For example, run Chrome
 and the broker inside a dedicated VM that only you can access, with no port
 forwarding. On a shared Mac, keep using the extension unless you have verified
@@ -186,7 +186,7 @@ emulator, start it yourself (for example from Android Studio) and attach it.
 
 ## Limits
 
-- Native field protocol 1 (after 0.49.0) supports retained Accessibility text
+- Native field protocol 1 (0.50.0+) supports retained Accessibility text
   controls in the frontmost native app. In System Settings → Privacy & Security →
   Accessibility, grant access to the process macOS identifies for the broker.
   Check `native_field_accessibility_granted: true` in `akdbx status`. The broker
@@ -206,7 +206,7 @@ emulator, start it yourself (for example from Android Studio) and attach it.
   neither runs in Safari.
 - SMS ingest is available. SMS codes fill web pages through the paired extension,
   or through a CDP code pin once a browser profile is configured (`sms_fill_routes`
-  then lists `cdp`). From the version after 0.49.0 they also fill native app fields with
+  then lists `cdp`). From 0.50.0 they also fill native app fields with
   `pin-native-target --mode code`, so status lists `native` too. A window pin has no SMS route on macOS.
 - Android: attached devices only. The managed emulator requires a Linux host
   with systemd and KVM. CI has no Android device or emulator on macOS:
