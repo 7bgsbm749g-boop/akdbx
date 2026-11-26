@@ -101,7 +101,7 @@ it serves only this capture request, as the capture pipe does on Windows.
 ```
 
 On Linux and macOS, `--browser chrome|edge|helium|firefox` selects the
-browser's per-user native host directory. After 0.48.0, `--browser
+browser's per-user native host directory. From 0.49.0, `--browser
 chromium|brave` is also accepted. The importer uses the fill extension host's
 directory for each browser, with its own host name `org.akdbx.private_import`.
 On Linux, Chrome, Chromium and Helium honor `CHROME_CONFIG_HOME` before
@@ -123,7 +123,7 @@ manifest. It refuses to overwrite existing files. Use the same config environmen
 when the browser starts the host. No database/password/key is stored in this config.
 Neither build nor install reads the vault or restarts the browser/broker.
 
-On macOS, guided setup after 0.48.0 (`--capture-host --capture-browser
+On macOS, guided setup from 0.49.0 (`--capture-host --capture-browser
 chrome|edge|helium|chromium|brave`) runs this installer with `--browser BROWSER`
 and the default capture socket. The installer uses that browser's
 `NativeMessagingHosts` folder and creates it when it is missing. A browser started from Finder
@@ -133,7 +133,7 @@ does not get `XDG_CONFIG_HOME`. With a configuration folder other than
 starts the recorded script. A second registration reuses it only if it is identical.
 
 On Windows (0.22.0+) use `akdbx-browser-import.exe install-host --browser
-chrome|edge|helium --extension-id EXTENSION_ID --origin ORIGIN`. After 0.48.0,
+chrome|edge|helium --extension-id EXTENSION_ID --origin ORIGIN`. From 0.49.0,
 `--browser brave` uses Chrome's registry key and `--browser chromium` uses
 Helium's key, as for the fill extension host. One registration serves both
 browsers of a pair. A second install for the pair is refused, and

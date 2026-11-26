@@ -75,7 +75,7 @@ the two formats share one folder.
 
 `akdbx extension info` reports the paths and launcher state. Run
 `akdbx extension refresh` if an upgrade moves the broker package. For Linux Snap or Flatpak builds, run the host installer outside
-the sandbox in the user’s graphical session. After 0.48.0 it recognizes the
+the sandbox in the user’s graphical session. From 0.49.0 it recognizes the
 usual launchers. Use `--firefox-package snap` or `--firefox-package flatpak`
 to select the intended package explicitly, or `native` for an unconfined
 build on the same machine. The installer checks the session bus with `gdbus`
