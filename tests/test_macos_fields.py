@@ -137,33 +137,50 @@ def test_replaced_field_and_editable_read_refused(lab):
         target.close()
 
 
+def web_children(pid):
+    # The fixture window has one group: the WKWebView host.
+    from akdbx.macos_fields import AX, attr
+    window = attr(AX.AXUIElementCreateApplication(pid), 'AXFocusedWindow')
+    hosts = [node for node in attr(window, 'AXChildren') if attr(node, 'AXRole') == 'AXGroup']
+    assert len(hosts) == 1
+    error, count = AX.AXUIElementGetAttributeValueCount(hosts[0], 'AXChildren', None)
+    assert error == AX.kAXErrorSuccess
+    return count
+
+
 def test_embedded_web_area_is_refused(lab):
+    from akdbx.macos_fields import EmbeddedWeb, scan
     manager, pid, command = lab
-    window = listing(manager, pid)
-    target = pin(manager, window, focused(window), 'username')
-    unused_window = listing(manager, pid)
-    command('web')
-    # WKWebView attaches its web process asynchronously.
-    deadline = time.monotonic() + 6
-    from akdbx.macos_fields import scan
-    while time.monotonic() < deadline:
-        try:
-            for session in scan(pid):
-                session.close()
-        except TargetError:
-            break
-        time.sleep(.1)
-    else:
-        pytest.fail('accepted window with embedded WKWebView')
-    with pytest.raises(TargetError):
-        pin(manager, unused_window, focused(unused_window), 'username')
+    # One target and one unused listing per state, all taken while the window was native.
+    states = []
+    for _ in range(2):
+        window = listing(manager, pid)
+        states.append((pin(manager, window, focused(window), 'username'), listing(manager, pid)))
     try:
-        with pytest.raises(DeliveryError) as failure:
-            manager.deliver_password(target, 'username', 'fixture-user', '', {https_origin(ORIGIN)},
-                                     lambda: True, time.monotonic() + 4)
-        assert not failure.value.started and command('inspect')[0] == ''
+        command('web')
+        assert web_children(pid) == 0
+        for attached, (target, unused) in enumerate(states):
+            if attached:
+                # The web process attaches its page about a second later.
+                deadline = time.monotonic() + 8
+                while web_children(pid) == 0:
+                    assert time.monotonic() < deadline, 'WKWebView content did not attach'
+                    time.sleep(.05)
+            with pytest.raises(EmbeddedWeb):
+                scan(pid)
+            with pytest.raises(EmbeddedWeb):
+                pin(manager, unused, focused(unused), 'username')
+            with pytest.raises(DeliveryError) as failure:
+                manager.deliver_password(target, 'username', 'fixture-user', '', {https_origin(ORIGIN)},
+                                         lambda: True, time.monotonic() + 4)
+            assert not failure.value.started and isinstance(failure.value.__context__, EmbeddedWeb)
+            assert command('inspect')[0] == ''
+            if not attached:
+                # Refused while WebKit exposed no web content.
+                assert web_children(pid) == 0
     finally:
-        target.close()
+        for target, _ in states:
+            target.close()
 
 
 def test_browser_process_is_refused(binary, tmp_path):

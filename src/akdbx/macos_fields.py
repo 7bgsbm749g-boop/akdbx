@@ -13,6 +13,9 @@ from .target import TargetError
 SYSTEM = AX.AXUIElementCreateSystemWide()
 TEXT = {'AXTextField', 'AXTextArea'}
 WEB = {'AXWebArea', 'AXHTMLContent'}
+# WKWebView adds this WebKit parameterized attribute to its host group. The
+# host reports no children while its web process attaches or is suspended.
+WEBKIT_HOST = 'AXConvertRelativeFrame'
 BROWSERS = {'safari', 'safari technology preview', 'google chrome', 'chromium', 'microsoft edge',
             'firefox', 'firefox developer edition', 'brave browser', 'opera', 'helium', 'arc',
             'vivaldi', 'orion', 'zen', 'waterfox', 'tor browser', 'duckduckgo'}
@@ -49,6 +52,10 @@ class MissingAttribute(TargetError):
     """An optional discovery candidate cannot supply a required field fact."""
 
 
+class EmbeddedWeb(TargetError):
+    """The window hosts web content. Native pins never fill a web document."""
+
+
 def result(pair):
     error, value = pair
     if error in (AX.kAXErrorAttributeUnsupported, AX.kAXErrorNoValue):
@@ -67,6 +74,17 @@ def attr(node, name):
 def optional(node, name):
     pair = AX.AXUIElementCopyAttributeValue(node, name, None)
     return None if pair[0] in (AX.kAXErrorAttributeUnsupported, AX.kAXErrorNoValue) else result(pair)
+
+
+def web(node, role):
+    if role in WEB:
+        return True
+    if role != 'AXGroup':
+        return False
+    pair = AX.AXUIElementCopyParameterizedAttributeNames(node, None)
+    if pair[0] in (AX.kAXErrorAttributeUnsupported, AX.kAXErrorNoValue):
+        return False
+    return WEBKIT_HOST in result(pair)
 
 
 def visible(node):
@@ -121,7 +139,9 @@ class MacFields:
         self.window = attr(self.app, 'AXFocusedWindow')
         self.controls = []
         self.base()
-        for node, role in self.walk():
+        # Check the whole window before hit-testing candidates. A web view
+        # that covers a sibling must be the refusal, not a hit-test error.
+        for node, role in list(self.walk()):
             if role not in TEXT:
                 continue
             try:
@@ -142,8 +162,8 @@ class MacFields:
             budget -= 1
             self.owner(node)
             role = attr(node, 'AXRole')
-            if role in WEB:
-                raise TargetError()
+            if web(node, role):
+                raise EmbeddedWeb()
             yield node, role
             pair = AX.AXUIElementGetAttributeValueCount(node, 'AXChildren', None)
             if pair[0] == AX.kAXErrorAttributeUnsupported:
@@ -182,8 +202,8 @@ class MacFields:
             self.owner(current)
             if CFEqual(current, self.window):
                 break
-            if attr(current, 'AXRole') in WEB:
-                raise TargetError()
+            if web(current, attr(current, 'AXRole')):
+                raise EmbeddedWeb()
             current = attr(current, 'AXParent')
         else:
             raise TargetError()

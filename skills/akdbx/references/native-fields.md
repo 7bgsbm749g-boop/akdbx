@@ -21,7 +21,10 @@ Supported controls:
   fills require an unmasked writable field. Password and combined login modes
   are unavailable because stock AppKit secure fields omit the count. Read pins require selectable,
   read-only, unmasked text with a bounded accessible range. Browser windows
-  and embedded web areas are refused. See [macOS setup](../../../docs/macos.md).
+  and embedded web areas are refused. A window that contains a WebKit view
+  (`WKWebView`) is refused from the moment the view is added. This is also true
+  before its page loads and while WebKit hides its content.
+  See [macOS setup](../../../docs/macos.md).
 
 This is directed **control** delivery: Linux uses the retained AT-SPI editable
 text object, and Windows uses `WM_SETTEXT` to the exact child HWND. There are
