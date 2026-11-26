@@ -65,11 +65,18 @@ build. See [Firefox setup](firefox.md); its macOS host manifest goes under
 
 ## Limits
 
-- The broker supports the extension route only. CDP profile options are
+- For browser fills, the broker supports the extension route only. CDP profile options are
   refused before startup; this release does not claim macOS CDP peer verification.
-- Native application/window fills are unavailable. Status reports
-  `target_fill_delivery: "unavailable"` and an empty `target_fill_modes` list;
-  there is no keyboard or clipboard fallback.
+- Native field protocol 1 (after 0.47.0) supports retained Accessibility text
+  controls in the frontmost native app. In System Settings → Privacy & Security →
+  Accessibility, grant access to the process macOS identifies for the broker.
+  Check `native_field_accessibility_granted: true` in `akdbx status`. The broker
+  checks permission without prompting. It can operate only on fields that
+  pass the [native field checks](../skills/akdbx/references/native-fields.md).
+- Numeric window pins remain unavailable. `CGEventPostToPid` directs input to a
+  process and cannot bind a keyboard event to a field. Secure Event Input also
+  restricts synthesized keyboard input. Status reports
+  `target_fill_delivery: "unavailable"` and an empty `target_fill_modes` list.
 - From 0.46.0, `merge`, `admit` and `merge-status` use the built-in
   engine and the same encrypted snapshot and recovery protocol as Linux.
 - The guided `akdbx setup` command and login-service installation are not yet

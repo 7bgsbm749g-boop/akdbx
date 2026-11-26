@@ -16,4 +16,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[test]'
-      - run: AKDBX_TEST_APPKIT=1 python -m pytest -q tests/test_macos_fields.py -x
+      - run: AKDBX_TEST_APPKIT=1 python -m pytest -q tests/test_macos_fields.py --tb=short

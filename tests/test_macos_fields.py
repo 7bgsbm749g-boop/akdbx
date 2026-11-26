@@ -45,6 +45,12 @@ def lab(binary, tmp_path):
             return json.loads(result.read_text())
 
         command('focus0')
+        from akdbx.macos_fields import AX, attr
+        app = AX.AXUIElementCreateApplication(process.pid)
+        deadline = time.monotonic() + 8
+        while not attr(app, 'AXFrontmost'):
+            assert time.monotonic() < deadline, 'AppKit fixture did not become frontmost'
+            time.sleep(.05)
         yield manager, process.pid, command
     finally:
         manager.close()

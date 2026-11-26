@@ -15,7 +15,13 @@ Supported controls:
 - Windows 10/11: visible, enabled, Unicode Win32 `Edit` controls in the active
   window, in the broker's user and desktop session. Custom controls, browser
   controls, secure desktop and higher-integrity targets are unsupported.
-- macOS native controls are not implemented. Its extension route is unchanged.
+- macOS (after 0.47.0) uses Accessibility in the frontmost native window. Check
+  `native_field_accessibility_granted: true`. Each control must be visible at
+  its center and support a character count. Password and login fills require
+  the secure text subrole. Stock AppKit secure fields omit the count and are
+  refused before either login field is written. Read pins require selectable,
+  read-only, unmasked text with a bounded accessible range. Browser windows
+  and embedded web areas are refused. See [macOS setup](../../../docs/macos.md).
 
 This is directed **control** delivery: Linux uses the retained AT-SPI editable
 text object, and Windows uses `WM_SETTEXT` to the exact child HWND. There are

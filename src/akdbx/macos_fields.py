@@ -137,7 +137,7 @@ class MacFields:
         if not AX.AXIsProcessTrusted():
             raise AccessibilityRequired()
         if (self.app is None or identity(self.pid) != self.identity
-                or not CFEqual(attr(SYSTEM, 'AXFocusedApplication'), self.app)
+                or not attr(self.app, 'AXFrontmost')
                 or not CFEqual(attr(self.app, 'AXFocusedWindow'), self.window)
                 or attr(self.window, 'AXRole') != 'AXWindow' or attr(self.window, 'AXMinimized')):
             raise TargetError()
@@ -159,15 +159,20 @@ class MacFields:
         if role not in TEXT or not enabled(node, role) or not visible(node):
             raise TargetError()
         subrole = optional(node, 'AXSubrole')
-        masked = subrole == 'AXSecureTextField' or bool(optional(node, 'AXProtectedContent'))
+        masked = role == 'AXTextField' and subrole == 'AXSecureTextField'
+        if not masked and optional(node, 'AXProtectedContent'):
+            raise TargetError()
         if subrole not in (None, 'AXSecureTextField', 'AXSearchField'):
             raise TargetError()
         writable = result(AX.AXUIElementIsAttributeSettable(node, 'AXValue', None))
+        if not writable and (role != 'AXTextArea' or
+                result(AX.AXUIElementIsAttributeSettable(node, 'AXSelectedText', None))):
+            raise TargetError()
         return masked, not writable, role == 'AXTextArea'
 
     def focus(self, indices):
         self.base()
-        focused = attr(SYSTEM, 'AXFocusedUIElement')
+        focused = attr(self.app, 'AXFocusedUIElement')
         matches = [i for i in indices if CFEqual(focused, self.controls[i])]
         if len(matches) != 1:
             raise TargetError()

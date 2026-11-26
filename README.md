@@ -139,7 +139,9 @@ authenticator setup key printed in space-separated Base32 groups, for
 From 0.44.0, native apps can use **native field pins** for passwords, combined logins,
 generated passwords, usernames, TOTP codes, cards, addresses and read-only
 secret capture. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
-uses exact Unicode Win32 Edit controls. Native apps have no browser origin:
+uses exact Unicode Win32 Edit controls. On macOS (after 0.47.0), native fields
+use Accessibility with permission granted to the broker. Stock AppKit password
+fields omit the character count required to verify delivery and are refused. Native apps have no browser origin:
 the service URL is a caller assertion and is matched to login/capture origins,
 not claimed as OS URL verification. See [Native desktop fields](skills/akdbx/references/native-fields.md)
 for supported controls, explicit field selection and limits.
@@ -150,9 +152,9 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 
 ## Platforms
 
-- **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
+- **macOS** (0.43.0+): local broker with browser-extension delivery, native Unix peer
   checks, private HTTPS unlock and encrypted vault writes. Chrome, Edge and Firefox (0.47.0+)
-  native-host locations are supported. Native window delivery, CDP and guided
+  native-host locations are supported. Native field pins use Accessibility (after 0.47.0). Numeric window delivery, CDP and guided
   setup are unavailable. Safari's Apple wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).
 - **Linux** (X11 desktop): the original platform. The setup notes in this
