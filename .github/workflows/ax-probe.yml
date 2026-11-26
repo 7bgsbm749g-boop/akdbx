@@ -7,6 +7,9 @@ permissions:
 jobs:
   appkit:
     runs-on: macos-15
+    strategy:
+      matrix:
+        control: [plain, text, read, secure]
     timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
@@ -14,7 +17,7 @@ jobs:
           persist-credentials: false
       - run: |
           swiftc tests/appkit_probe.swift -o "$RUNNER_TEMP/ax-probe"
-          "$RUNNER_TEMP/ax-probe" app &
+          "$RUNNER_TEMP/ax-probe" app ${{ matrix.control }} &
           target=$!
           trap 'kill "$target" || true' EXIT
           "$RUNNER_TEMP/ax-probe" "$target"

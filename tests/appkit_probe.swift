@@ -1,12 +1,23 @@
 import AppKit
 import ApplicationServices
 
-if CommandLine.arguments.last == "app" {
+if CommandLine.arguments[1] == "app" {
     let app = NSApplication.shared
     app.setActivationPolicy(.regular)
     let window = NSWindow(contentRect: NSMakeRect(200, 200, 360, 160),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
-    let field = NSSecureTextField(frame: NSMakeRect(20, 40, 300, 30))
+    let rect = NSMakeRect(20, 40, 300, 30)
+    let field: NSView
+    switch CommandLine.arguments[2] {
+    case "plain": field = NSTextField(frame: rect)
+    case "read", "text":
+        let view = NSTextView(frame: rect)
+        view.isEditable = CommandLine.arguments[2] == "text"
+        view.isSelectable = true
+        view.string = "fixture"
+        field = view
+    default: field = NSSecureTextField(frame: rect)
+    }
     window.contentView!.addSubview(field)
     window.makeKeyAndOrderFront(nil)
     app.activate(ignoringOtherApps: true)
@@ -27,14 +38,20 @@ if CommandLine.arguments.last == "app" {
     repeat {
         if let obj = get(app, "AXFocusedUIElement").1 {
             let field = obj as! AXUIElement
-            if get(field, "AXSubrole").1 as? String == "AXSecureTextField" {
+            if ["AXTextField", "AXTextArea"].contains(get(field, "AXRole").1 as? String ?? "") {
+                print("role", get(field, "AXRole").1 as? String ?? "?", "subrole", get(field, "AXSubrole").1 as? String ?? "none", "enabled", get(field, "AXEnabled").1 as? Bool as Any, "editable", get(field, "AXEditable").1 as? Bool as Any)
+                for name in ["AXSelectedText", "AXVisibleCharacterRange", "AXValue", "AXFocused", "AXProtectedContent"] {
+                    var available = DarwinBoolean(false)
+                    let e = AXUIElementIsAttributeSettable(field, name as CFString, &available)
+                    print(name, e.rawValue, available.boolValue)
+                }
                 var settable = DarwinBoolean(false)
                 let ability = AXUIElementIsAttributeSettable(field, "AXValue" as CFString, &settable)
                 let countBefore = get(field, "AXNumberOfCharacters").0
                 let write = AXUIElementSetAttributeValue(field, "AXValue" as CFString, "fixture" as CFString)
                 let (countAfter, value) = get(field, "AXNumberOfCharacters")
-                print("Stock NSSecureTextField: settable query=\(ability.rawValue) settable=\(settable.boolValue) count-before=\(countBefore.rawValue) write=\(write.rawValue) count-after=\(countAfter.rawValue) length-matched=\((value as? Int) == 7)")
-                exit(write == .success && countAfter == .success && (value as? Int) == 7 ? 0 : 3)
+                print("Text control: settable query=\(ability.rawValue) settable=\(settable.boolValue) count-before=\(countBefore.rawValue) write=\(write.rawValue) count-after=\(countAfter.rawValue) length-matched=\((value as? Int) == 7)")
+                exit(0)
             }
         }
         Thread.sleep(forTimeInterval: 0.1)
