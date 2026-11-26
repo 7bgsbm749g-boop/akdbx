@@ -18,7 +18,7 @@ Then check the selected route:
   `extension_totp_protocol: 1` and a paired extension **0.10.0** or newer.
 - Native desktop fields: `native_field_supported: true`, integer
   `native_field_protocol: 1` and `native_field_delivery: native-field-v1`.
-  Linux X11/Wayland and supported Windows controls use the
+  Linux X11/Wayland, supported Windows controls and macOS (0.50.0+) use the
   [native field workflow](native-fields.md) with `--mode totp`.
 - Current Window: `target_fill_delivery: x11-send-event-v1` on Linux (X11 or XWayland windows) or
   `win32-char-v1` on Windows. This method is unavailable on macOS; its
@@ -43,8 +43,8 @@ without gaining password fill or password generation privileges.
 ## Fill a saved code
 
 Verify the exact challenge page and account, then focus one visible editable
-whole-code input. For Chromium browser delivery, require integer
-`browser_totp_protocol: 1`. Use CDP on Linux/Windows/macOS or the paired extension on
+whole-code input. For browser delivery (Chromium, or Firefox on the extension
+route), require integer `browser_totp_protocol: 1`. Use CDP on Linux/Windows/macOS or the paired extension on
 Linux/Windows/macOS (including the native macOS broker). Extension TOTP requires
 integer `extension_totp_protocol: 1` and fill extension **0.10.0** or newer; an
 older loaded extension is refused before pinning. The human-click workflow

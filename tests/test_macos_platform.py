@@ -47,6 +47,21 @@ def test_launchagent_refuses_unowned_content_and_link(tmp_path):
     assert other.read_bytes() == b'keep'
 
 
+def test_guided_setup_cdp_refusal_names_the_manual_route(tmp_path, monkeypatch, capsys):
+    # CDP works on macOS from 0.50.0; only guided setup does not configure it.
+    home = tmp_path / 'home'
+    (home / 'Library').mkdir(parents=True)
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(home / 'config'))
+    args = ['--socket', str(tmp_path / 'run' / 's'), 'setup', '--dry-run', '--json', '--skip', 'system',
+            '--vault', str(tmp_path / 'vault.kdbx'), '--cdp-profile', str(tmp_path / 'cdp')]
+    assert cli.main(args) == 2
+    error = json.loads(capsys.readouterr().out)['error']
+    assert error.startswith('guided setup does not configure the CDP route on macOS; omit --cdp-profile')
+    assert '--password-browser-profile' in error and 'requires the extension route' not in error
+    assert not (tmp_path / 'cdp').exists()
+
+
 @pytest.mark.skipif(os.environ.get('AKDBX_MACOS_RUNNER') != '1', reason='disposable macOS GUI session only')
 def test_guided_setup_launches_locked_broker_and_installs_hosts(tmp_path, monkeypatch, private_pair, capsys):
     from pykeepass import create_database

@@ -7,6 +7,9 @@ The native host supports Chrome, Edge, Helium and Firefox 153+. From 0.49.0,
 use `--browser chromium` for Chromium or `--browser brave` for Brave. Brave
 reads Chrome’s host folder, so both use one launcher and registration.
 
+The [support matrix](support-matrix.md) lists each operation on macOS next to
+Linux and Windows, with the CI job that proves it.
+
 Safari requires a containing app, a Safari native-messaging adapter and
 signatures for the app and extension. Direct macOS distribution also requires
 Developer ID signing and notarization. See Apple’s [packaging guide](https://developer.apple.com/documentation/safariservices/packaging-a-web-extension-for-safari)
@@ -86,6 +89,9 @@ akdbx setup --yes --vault /absolute/path/to/vault.kdbx \
   --browser chrome --start-at-login
 ```
 
+Setup configures the extension route only: it refuses `--cdp-profile` on
+macOS. To add CDP, see [Chromium CDP](#chromium-cdp).
+
 Use `--dry-run --json` to check the plan. The login stage installs
 `~/Library/LaunchAgents/org.akdbx.broker.plist`. It uses the selected Python and
 vault, starts locked, and suppresses the unlock link in service output. Setup
@@ -110,7 +116,8 @@ sleep and wake in the GUI login session. Losing a listening helper locks the vau
   configured HTTPS origin. See [SMS sources](../skills/akdbx/references/sms.md).
 - SMS codes fill web pages through the paired extension (fill extension
   0.13.0+, `extension_code_protocol: 1`): `pin-code-target --route extension`,
-  then `fill-sms-code`. Status reports `sms_fill_routes: ["extension"]` and
+  then `fill-sms-code`. Without a CDP profile, status reports
+  `sms_fill_routes: ["extension", "native"]` and
   `code_browser_configured: false`. The extension applies the CDP code pin's
   field, focus, origin, single-use and expiry checks, and the code never
   reaches the agent. CI proves this route on macOS in Firefox.
@@ -125,7 +132,9 @@ sleep and wake in the GUI login session. Losing a listening helper locks the vau
 
 ## Chromium CDP
 
-Versions from 0.50.0 support CDP on macOS. The extension remains the default. Before enabling CDP, verify that only trusted
+Versions from 0.50.0 support CDP on macOS. The extension remains the default,
+and guided setup does not configure CDP: start the broker with the options
+below yourself. Before enabling CDP, verify that only trusted
 clients can reach the browser’s loopback TCP listener. For example, run Chrome
 and the broker inside a dedicated VM that only you can access, with no port
 forwarding. On a shared Mac, keep using the extension unless you have verified
@@ -155,6 +164,9 @@ refuses delivery. See [browser pins](../skills/akdbx/references/target-fill.md).
   Check `native_field_accessibility_granted: true` in `akdbx status`. The broker
   checks permission without prompting. It can operate only on fields that
   pass the [native field checks](../skills/akdbx/references/native-fields.md).
+  Password, login and generated-password pins are refused: a stock AppKit
+  secure field (`NSSecureTextField`) reports no character count, so the broker
+  cannot verify delivery. Use the extension or CDP route for passwords.
 - Numeric window pins remain unavailable. `CGEventPostToPid` directs input to a
   process and cannot bind a keyboard event to a field. Secure Event Input also
   restricts synthesized keyboard input. Status reports
@@ -171,8 +183,10 @@ refuses delivery. See [browser pins](../skills/akdbx/references/target-fill.md).
   or through a CDP code pin once a browser profile is configured (`sms_fill_routes`
   then lists `cdp`). From 0.50.0 they also fill native app fields with
   `pin-native-target --mode code`, so status lists `native` too. A window pin has no SMS route on macOS.
-- The managed Android emulator requires a Linux host with KVM. The Linux
-  privileged secret-sink helper requires Linux peer credentials and systemd.
+- The managed Android emulator requires a Linux host with KVM, and attached
+  Android devices are not supported on a macOS broker in this release. The
+  Linux privileged secret-sink helper requires Linux peer credentials and
+  systemd; same-user file sinks use the shared POSIX code, with no macOS CI.
 - iOS and iPadOS cannot run this Python broker. This is macOS support only.
 
 ## Validation
@@ -184,6 +198,8 @@ separate AppKit application. The native field tests require the runner’s exist
 Accessibility grant and fail if it is missing. It also installs and removes the
 native host for each supported browser, runs guided setup with the
 LaunchAgent, the capture host and lock notifications in the runner's GUI
-session, and runs peer checks and DOM fills in Chrome. It installs the same wheel in the release workflow. Linux simulations are not evidence of native macOS
+session, and runs peer checks and DOM fills in Chrome. The `firefox-extension-browser` job runs
+the real Firefox extension on macOS 15; no CI job loads the Chromium extension
+on macOS (only its protocol tests run there). It installs the same wheel in the release workflow. Linux simulations are not evidence of native macOS
 behavior. Safari application signing, installation and live browser behavior
 belong to the separate Safari extension delivery.

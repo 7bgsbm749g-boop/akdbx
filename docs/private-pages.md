@@ -183,7 +183,7 @@ To stop remote unlock, remove the proxy with `tailscale serve --https=9443 off`.
 
 ## Unlock from the internet
 
-Choose the route that exposes the page to the fewest people. Linux and
+Choose the route that exposes the page to the fewest people. Linux, macOS and
 Windows have the same choices, in this order of recommendation:
 
 1. **Local only** (most secure). Use the [loopback HTTPS page](#loopback-https-page)

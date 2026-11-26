@@ -104,7 +104,9 @@ provides typed COM interfaces without a separate automation toolkit. The
 broker checks the process, window, retained element, runtime ID, mask and
 focus. Read pins require visible, read-only unmasked text. WPF accepts
 single-line values only. Password fields must remain masked; login pins name both controls and
-never use Tab. Legacy numeric HWND pins support usernames, TOTP and SMS codes.
+never use Tab. CI sends SMS codes to a real Win32 Edit control only; no test
+sends one to a WinForms or WPF control yet. UWP, WinUI and Qt controls are not
+proven. Legacy numeric HWND pins support usernames, TOTP and SMS codes.
 Browser pages keep using DOM delivery. The caller asserts the service used by
 the native app; an HWND cannot attest a tab, URL or DOM field. See
 [Native desktop fields](../skills/akdbx/references/native-fields.md).
@@ -691,7 +693,10 @@ It exercises browser TOTP on Chrome CDP and the Edge extension, CDP read capture
 TOTP enrollment, autocomplete-off and identity notifications on Chrome, and
 processor frames and SMS code fills on Edge. The sink suite runs the native pipe
 and checks private file delivery and refusal cases.
-It does not prove that a native application accepts directed window messages.
+The `Win32, WinForms and WPF native fields` step also sends an SMS code
+through a window pin to a real Win32 Edit control. It does not prove that
+other native applications accept directed window messages. The
+[support matrix](support-matrix.md) lists the CI job for each Windows cell.
 
 ### Desktop acceptance check for window pins
 

@@ -309,8 +309,8 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   and must be the document's exact URL; every document from the top page to
   the field must have the top page's exact origin. The code goes sealed to the
   pinned element, once; it never reaches the agent or the keyboard. Receipts
-  carry `code_delivery: "extension-dom-v1"`. On macOS this is the only page
-  route for SMS codes. See [SMS](sms.md).
+  carry `code_delivery: "extension-dom-v1"`. The CDP code pin is the other
+  page route (on macOS from 0.50.0, with a configured profile). See [SMS](sms.md).
 - Identities: `pin-identity-target --route extension`, same rules as the CDP
   route; only frames of the top origin.
 - Secret capture (0.32.0+, fill extension 0.4.0): `pin-password-target --mode read
@@ -338,8 +338,8 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   only a key printed as one token.
 - A setup QR code (`pin-password-target --mode read --qr --route extension`,
   then `capture-totp --qr`; broker `totp_qr_capture_protocol: 1`) needs fill
-  extension 0.14.0 or newer (`extension_qr_capture_min_version`) in Helium,
-  Chrome or Edge. For that pin the service worker injects the bundled jsQR
+  extension 0.14.0 or newer (`extension_qr_capture_min_version`) in a
+  Chromium-family browser (Helium, Chrome, Edge, Chromium or Brave). For that pin the service worker injects the bundled jsQR
   (`jsQR.js`, shipped with its licence) into the page's isolated world, and
   the content script decodes the pinned `<img>`, `<canvas>` or inline `<svg>`
   there with the CDP route's checks. An image must come from the page's own

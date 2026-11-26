@@ -94,13 +94,14 @@ TextBox, or WPF TextBox or PasswordBox. The 0.50.0 backend reports
 `native_field_windows_uia: true`. Discover the focused field, then use the
 single-use pin for the requested fill or read-only capture.
 
-## Window pins for usernames and TOTP
+## Window pins for usernames, TOTP and SMS codes
 
 - Independently verify the application's PID and top-level HWND. Focus the
   intended field. Call `pin-target --pid VERIFIED_PID --window VERIFIED_HWND`.
   HWND values can be decimal or `0x` hex.
 - Use a fresh search handle and target pin for each
-  `fill HANDLE --mode username --target PIN` or `fill-totp`. A window pin
+  `fill HANDLE --mode username --target PIN`, `fill-totp` or
+  `fill-sms-code MESSAGE_ID --target PIN --target-url-file FILE`. A window pin
   refuses `--mode password`, `--mode login` and `fill-generated`: a browser's
   address bar shares its page's HWND, so browser passwords require a DOM pin.
 - A success receipt confirms directed message dispatch, not application

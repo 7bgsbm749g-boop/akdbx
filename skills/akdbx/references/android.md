@@ -1,8 +1,11 @@
 # Android devices (0.36.0+)
 
-`akdbx android` fills a login, username, password or authenticator code into
-one verified field of the focused app on an Android device or emulator that
-the operator configured. It covers Google account sign-in (for example Google
+`akdbx android` fills a login, username, password or authenticator code
+(0.36.0), and from 0.50.0 a generated password, SMS code, card or identity
+field, into one verified field of the focused app on an Android device or
+emulator that the operator configured. From 0.50.0 it also reads shown-once
+values in Chrome ([additional operations](#additional-android-operations-0500)).
+It covers Google account sign-in (for example Google
 Play), pages in Chrome and Chrome Custom Tabs (for example GitHub Mobile's
 sign-in, which opens github.com in a Custom Tab), and native app fields whose
 app a site names in its Digital Asset Links.
