@@ -161,7 +161,7 @@ Android SDK level and `speak_password`.
    Then submit with a tap or Enter and check the result on screen. Do not
    retry a fill whose `delivery` is `uncertain`; inspect first.
 
-## Additional Android operations (0.50.0+)
+## Additional Android operations (0.50.1+)
 
 Use a fresh `akdbx android pin --device NAME --field FIELD` for each command.
 Check `android_fill_modes` for the required mode. For a native app also supply
