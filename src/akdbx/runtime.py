@@ -5,6 +5,7 @@ import os
 import socket
 import stat
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 if os.name != 'nt':
@@ -30,6 +31,32 @@ def _validate_trusted_ancestor(info: os.stat_result, path: Path, owner_uid: int,
         # used to replace the entire private runtime directory.
         if info.st_uid != 0 or not (info.st_mode & stat.S_ISVTX):
             raise RuntimeError(f"runtime ancestor is replaceable by another user: {path}")
+
+
+@contextmanager
+def trusted_user_directory(path, *, create_leaf=False):
+    """Open an owned leaf below trusted ancestors without following symlinks."""
+    path = Path(path).absolute()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(path.anchor, flags)
+    current = Path(path.anchor)
+    try:
+        for part in path.parts[1:]:
+            current /= part
+            if create_leaf and current == path:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            _validate_trusted_ancestor(os.fstat(fd), current, os.getuid(), fd)
+        if os.fstat(fd).st_uid != os.getuid():
+            raise PermissionError('directory belongs to another user')
+        yield fd
+    finally:
+        os.close(fd)
 
 
 def prepare_private_runtime_directory(

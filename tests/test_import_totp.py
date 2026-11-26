@@ -359,6 +359,16 @@ def test_native_exception_never_reveals_key(monkeypatch):
     assert json.loads(output.getvalue()[4:])['ok'] is False
 
 
+def assert_registered_executable(manifest, executable):
+    if sys.platform == 'darwin':
+        import shlex
+        launcher = Path(manifest['path'])
+        assert launcher.stat().st_mode & 0o777 == 0o700
+        assert shlex.split(launcher.read_text().splitlines()[-1]) == ['exec', str(executable), '$@']
+    else:
+        assert manifest['path'] == str(executable)
+
+
 def test_host_install_is_explicit_and_refuses_overwrite(tmp_path,monkeypatch):
     from types import SimpleNamespace
     base=tmp_path/'configuration';base.mkdir(mode=0o700)
@@ -373,9 +383,75 @@ def test_host_install_is_explicit_and_refuses_overwrite(tmp_path,monkeypatch):
     assert path.stat().st_mode & 0o777==0o600
     assert browser_import.load_config(path)['extension_id']=='a'*32
     saved=manifest.read_bytes();config=path.read_bytes()
-    assert json.loads(saved)['path']==str(executable)
+    assert_registered_executable(json.loads(saved), executable)
     with pytest.raises(ValueError):browser_import.install_host(args)
     assert manifest.read_bytes()==saved and path.read_bytes()==config
+
+
+def unix_install_args(tmp_path, monkeypatch, folder):
+    from types import SimpleNamespace
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'configuration'))
+    executable = tmp_path / 'akdbx-browser-import'
+    executable.write_text('#!/bin/sh\nexit 1\n')
+    executable.chmod(0o700)
+    monkeypatch.setattr(sys, 'argv', [str(executable)])
+    return executable, SimpleNamespace(extension_id='a'*32, socket=tmp_path/'u', origin='https://localhost:9443',
+                                       manifest_dir=folder)
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Unix native host registration')
+def test_host_install_registration_is_private_under_shared_umask(tmp_path, monkeypatch):
+    folder = tmp_path / 'NativeMessagingHosts'
+    folder.mkdir(mode=0o755)
+    executable, args = unix_install_args(tmp_path, monkeypatch, folder)
+    saved = os.umask(0o002)
+    try:
+        browser_import.install_host(args)
+    finally:
+        os.umask(saved)
+    manifest = folder / (browser_import.HOST_NAME + '.json')
+    assert manifest.stat().st_mode & 0o777 == 0o600
+    assert browser_import.config_path().stat().st_mode & 0o777 == 0o600
+    assert_registered_executable(json.loads(manifest.read_text()), executable)
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Unix native host registration')
+def test_host_install_refuses_replaceable_manifest_directory(tmp_path, monkeypatch):
+    folder = tmp_path / 'NativeMessagingHosts'
+    folder.mkdir()
+    folder.chmod(0o775)
+    _, args = unix_install_args(tmp_path, monkeypatch, folder)
+    with pytest.raises(RuntimeError, match='writable by other users'):
+        browser_import.install_host(args)
+    assert not browser_import.config_path().exists()
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='the Finder launcher is macOS only')
+def test_macos_launcher_is_shared_only_when_identical(tmp_path, monkeypatch):
+    from akdbx.extension_host import linux_manifest_dir
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    executable, args = unix_install_args(tmp_path, monkeypatch, None)
+    origin, socket, name = args.origin, args.socket, browser_import.HOST_NAME + '.json'
+    for browser in ('chrome', 'edge'):
+        args.browser = browser
+        browser_import.install_host(args)
+        assert browser_import.registration_matches(browser, executable, origin, socket)
+    assert not browser_import.registration_matches('chrome', executable, 'https://localhost:9444', socket)
+    launcher = browser_import.config_path().with_name(browser_import.LAUNCHER)
+    script = launcher.read_bytes()
+    # Another console script would need another launcher; the shared one stays unchanged.
+    other = tmp_path / 'other' / 'akdbx-browser-import'
+    other.parent.mkdir()
+    other.write_text('#!/bin/sh\nexit 1\n')
+    other.chmod(0o700)
+    monkeypatch.setattr(sys, 'argv', [str(other)])
+    args.browser = 'helium'
+    with pytest.raises(ValueError, match='different private import launcher'):
+        browser_import.install_host(args)
+    assert not (linux_manifest_dir('helium') / name).exists() and launcher.read_bytes() == script
+    assert not browser_import.registration_matches('chrome', other, origin, socket)
+    launcher.chmod(0o720)
+    assert not browser_import.registration_matches('chrome', executable, origin, socket)
 
 
 @pytest.mark.parametrize('competing_install', [False, True])
@@ -398,7 +474,7 @@ def test_host_install_records_invoked_script_without_path_lookup(tmp_path, compe
         cwd=tmp_path,capture_output=True,text=True,timeout=15)
     assert result.returncode==0,result.stderr
     manifest=json.loads((manifests/(browser_import.HOST_NAME+'.json')).read_text())
-    assert manifest['path']==str(executable)
+    assert_registered_executable(manifest, executable)
 
 
 def test_importer_capabilities_are_independent_and_strict():
@@ -418,12 +494,25 @@ def test_native_host_subprocess_to_private_broker(deployed,tmp_path):
     root=tmp_path/'native-configuration';root.mkdir(mode=0o700)
     directory=root/'akdbx';directory.mkdir(mode=0o700)
     config=directory/'browser-import.json'
-    config.write_text(json.dumps({'extension_id':'a'*32,'origin':'https://node.example:9443','socket':str(socket)}))
-    config.chmod(0o600)
+    env = {**os.environ, 'XDG_CONFIG_HOME': str(root),
+           'PYTHONPATH': str(Path(__file__).parent.parent / 'src')}
+    if sys.platform == 'darwin':
+        import sysconfig
+        manifests = tmp_path / 'NativeMessagingHosts'
+        program = Path(sysconfig.get_path('scripts')) / 'akdbx-browser-import'
+        subprocess.run([str(program), 'install-host', '--extension-id', 'a'*32,
+                        '--origin', 'https://node.example:9443', '--socket', str(socket),
+                        '--manifest-dir', str(manifests)], env=env, check=True, capture_output=True, timeout=15)
+        manifest = json.loads((manifests / (browser_import.HOST_NAME + '.json')).read_text())
+        host = [manifest['path']]
+        del env['XDG_CONFIG_HOME']  # A browser launched by Finder.
+    else:
+        config.write_text(json.dumps({'extension_id':'a'*32,'origin':'https://node.example:9443','socket':str(socket)}))
+        config.chmod(0o600)
+        host = [sys.executable, '-m', 'akdbx.browser_import']
     message=json.dumps({'private_url':prepared['private_url'],'source_url':'https://example.test/setup','payloads':[URI]}).encode()
-    result=subprocess.run([sys.executable,'-m','akdbx.browser_import','chrome-extension://'+'a'*32+'/'],
-        input=struct.pack('<I',len(message))+message,capture_output=True,timeout=15,
-        env={**os.environ,'XDG_CONFIG_HOME':str(root),'PYTHONPATH':str(Path(__file__).parent.parent/'src')})
+    result=subprocess.run([*host, 'chrome-extension://'+'a'*32+'/'], input=struct.pack('<I',len(message))+message,
+                          capture_output=True,timeout=15,env=env)
     assert result.returncode==0 and result.stderr==b''
     assert json.loads(result.stdout[4:])==browser_import.RECEIPT
     assert KEY.encode() not in result.stdout+result.stderr
