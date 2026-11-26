@@ -103,7 +103,7 @@ CODE_VERSION = (0, 13, 0)
 # Identity pins with an explicit field purpose (pin-identity-target --field-purpose).
 FIELD_PURPOSE_VERSION = (0, 7, 0)
 ROUTES = ('cdp', 'extension')
-CHROMIUM_BROWSERS = ('helium', 'chrome', 'edge')
+CHROMIUM_BROWSERS = ('helium', 'chrome', 'edge', 'chromium', 'brave')
 BROWSERS = (*CHROMIUM_BROWSERS, 'firefox')
 FIREFOX_EXTENSION_ID = 'akdbx@akdbx.org'
 TTL = 30
@@ -568,6 +568,7 @@ class ExtensionHub:
                      extension_capture_protocol=CAPTURE_PROTOCOL, extension_capture_delivery=CAPTURE_DELIVERY,
                      fill_routes=['extension'] if sys.platform == 'darwin' else list(ROUTES),
                      default_fill_route=self.default_route,
+                     extension_host_browsers=list(BROWSERS),
                      extension_connected=bool(channels),
                      extension_paired=any(c.digest in approved for c in channels),
                      extension_version_expected=built_version(),

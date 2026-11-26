@@ -334,7 +334,9 @@ def install_host(args):
 
 
 def windows_paths(browser):
-    from .extension_host import WINDOWS_KEYS
+    # The fill host's table: Brave shares Chrome's key and Chromium shares Helium's.
+    from .extension_host import WINDOWS_KEYS, registration_browser
+    browser = registration_browser(browser)
     home = Path(os.environ['LOCALAPPDATA']) / 'akdbx' / 'browser-import'
     return dict(manifest=home / f'{HOST_NAME}.{browser}.json', key=WINDOWS_KEYS[browser] + '\\' + HOST_NAME)
 

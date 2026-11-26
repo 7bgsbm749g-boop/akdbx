@@ -296,6 +296,14 @@ def test_broken_unused_firefox_alias_does_not_stop_chrome_setup(home, vault, pai
     assert json.loads((folder / 'manifest.json').read_text())['key'] == extension_host.EXTENSION_KEY
 
 
+def test_without_a_browser_the_gap_names_every_supported_browser(home, vault, pair, capsys, monkeypatch):
+    from akdbx.extension_route import BROWSERS
+    monkeypatch.setattr(setup_cli.Setup, '_browsers', lambda self: {})
+    code, result, _ = setup(*base(vault, pair, '--dry-run'), capsys=capsys)
+    [gap] = [gap for gap in result['stages']['system']['gaps'] if 'browser found' in gap]
+    assert all(browser in gap for browser in BROWSERS), gap
+
+
 def test_without_a_terminal_it_needs_yes_or_dry_run(home, vault, capsys):
     code, _, runner = setup('--vault', str(vault))
     assert code == 2 and runner.calls == []
@@ -898,8 +906,25 @@ def test_the_capture_host_is_built_then_installed_with_its_extension_id(home, va
                             runner=runner, capsys=capsys)
     socket = Path(os.environ['XDG_RUNTIME_DIR']) / 'akdbx' / 'akdbx-unlock.sock'
     assert runner.commands() == [[tool, 'install-host', '--extension-id', extension_id, '--origin',
-                                  'https://localhost:9443', '--socket', str(socket), '--manifest-dir',
-                                  str(home / '.config/google-chrome/NativeMessagingHosts')]]
+                                  'https://localhost:9443', '--socket', str(socket), '--browser', 'chrome']]
+
+
+def test_the_capture_host_command_creates_a_missing_browser_folder(home, vault, pair, capsys):
+    # Brave on macOS reads Chrome's folder, which is missing when Chrome never ran. The setup
+    # command lets the importer create the browser's folder, as the direct command does.
+    from akdbx import browser_import, extension_host
+    capture = home / '.local/share/akdbx/capture-extension'
+    capture.mkdir(parents=True)
+    (capture / 'manifest.json').write_text('{}')
+    runner = Runner()
+    setup(*base(vault, pair, '--capture-host', '--capture-browser', 'brave', '--capture-extension-id', 'a' * 32),
+          runner=runner, capsys=capsys)
+    [command] = runner.commands()
+    folder = extension_host.linux_manifest_dir('brave')
+    assert not folder.parent.exists()
+    subprocess.run([str(part) for part in command], check=True, capture_output=True)
+    spec = json.loads((folder / (browser_import.HOST_NAME + '.json')).read_bytes())
+    assert spec['allowed_origins'] == ['chrome-extension://' + 'a' * 32 + '/']
 
 
 def test_a_skill_folder_or_another_link_is_never_replaced(home, vault, pair, tmp_path, capsys):

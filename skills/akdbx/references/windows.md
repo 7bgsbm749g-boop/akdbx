@@ -39,7 +39,7 @@ steps are the same as in `SKILL.md`; its private folder is
   `password_fill_protocol: 1`, `password_fill_delivery:
   "chromium-password-dom-v1"` and `password_browser_configured: true`, or use
   the [browser extension route](extension.md) with `extension_paired: true`
-  when the browser has no debugging port (Helium, Chrome or Edge). For
+  when the browser has no debugging port (Helium, Chrome, Edge, Chromium, Brave or Firefox 153+). For
   window pins require `target_fill_delivery: "win32-char-v1"` and target
   protocol 1. `target_fill_modes: ["username", "totp", "sms-code"]` describes window pins only.
 - When locked, give the exact returned private HTTPS link to the user. A
