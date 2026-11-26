@@ -10,6 +10,8 @@ Every operation, per route and platform, with the CI job that proves it and the 
 
 From 0.50.1, the private unlock page also accepts a vault key file or a KeePassXC YubiKey challenge-response (KDBX 4, Argon2). Linux CI tests the whole page flow, Windows CI the vault store, and macOS has no CI for it yet. Version 0.50.0 was tagged but not published; its changes ship in 0.50.1.
 
+From 0.50.3, `docs/support-matrix.md` lists every fill and capture operation by route and platform, with the release and CI job that prove each one or the reason for the gap.
+
 Verify a download before installing it:
 
 ```sh
