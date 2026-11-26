@@ -82,7 +82,8 @@ def web(node, role):
     if role != 'AXGroup':
         return False
     pair = AX.AXUIElementCopyParameterizedAttributeNames(node, None)
-    if pair[0] in (AX.kAXErrorAttributeUnsupported, AX.kAXErrorNoValue):
+    if pair[0] in (AX.kAXErrorAttributeUnsupported, AX.kAXErrorParameterizedAttributeUnsupported,
+                   AX.kAXErrorNoValue):
         return False
     return WEBKIT_HOST in result(pair)
 

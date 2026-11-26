@@ -9,7 +9,13 @@ int main(int argc, const char **argv) {
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(200, 200, 450, 380)
             styleMask:NSWindowStyleMaskTitled backing:NSBackingStoreBuffered defer:NO];
-        NSTextField *plain = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 320, 350, 32)];
+        // A native accessibility group holds the plain field. The web-view
+        // check must pass ordinary groups.
+        NSView *group = [[NSView alloc] initWithFrame:NSMakeRect(10, 310, 370, 52)];
+        group.accessibilityElement = YES;
+        group.accessibilityRole = NSAccessibilityGroupRole;
+        NSTextField *plain = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 10, 350, 32)];
+        [group addSubview:plain];
         NSSecureTextField *stock = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(20, 215, 350, 32)];
         NSTextView *read = [[NSTextView alloc] initWithFrame:NSMakeRect(20, 145, 350, 44)];
         read.string = @"invented-read-🐈";
@@ -21,7 +27,7 @@ int main(int argc, const char **argv) {
         other.selectable = YES;
         other.stringValue = @"read-only sibling";
         NSArray *fields = @[plain, stock, read, other];
-        for (NSView *field in fields) [window.contentView addSubview:field];
+        for (NSView *view in @[group, stock, read, other]) [window.contentView addSubview:view];
         [window makeKeyAndOrderFront:nil];
         [app activateIgnoringOtherApps:YES];
         [window makeFirstResponder:plain];
@@ -40,7 +46,7 @@ int main(int argc, const char **argv) {
             if ([cmd isEqual:@"replace"]) {
                 [plain removeFromSuperview];
                 NSTextField *other = [[NSTextField alloc] initWithFrame:plain.frame];
-                [window.contentView addSubview:other];
+                [group addSubview:other];
                 [window makeFirstResponder:other];
             }
             if ([cmd isEqual:@"web"]) {

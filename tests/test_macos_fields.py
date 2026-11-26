@@ -137,12 +137,20 @@ def test_replaced_field_and_editable_read_refused(lab):
         target.close()
 
 
-def web_children(pid):
-    # The fixture window has one group: the WKWebView host.
-    from akdbx.macos_fields import AX, attr
+def groups(pid):
+    # The fixture window has one native group and, after 'web', the WKWebView host.
+    from akdbx.macos_fields import AX, WEBKIT_HOST, attr
     window = attr(AX.AXUIElementCreateApplication(pid), 'AXFocusedWindow')
-    hosts = [node for node in attr(window, 'AXChildren') if attr(node, 'AXRole') == 'AXGroup']
-    assert len(hosts) == 1
+    found = [node for node in attr(window, 'AXChildren') if attr(node, 'AXRole') == 'AXGroup']
+    hosts = [node for node in found
+             if WEBKIT_HOST in (AX.AXUIElementCopyParameterizedAttributeNames(node, None)[1] or ())]
+    return len(found) - len(hosts), hosts
+
+
+def web_children(pid):
+    from akdbx.macos_fields import AX
+    native, hosts = groups(pid)
+    assert native == 1 and len(hosts) == 1
     error, count = AX.AXUIElementGetAttributeValueCount(hosts[0], 'AXChildren', None)
     assert error == AX.kAXErrorSuccess
     return count
@@ -151,6 +159,8 @@ def web_children(pid):
 def test_embedded_web_area_is_refused(lab):
     from akdbx.macos_fields import EmbeddedWeb, scan
     manager, pid, command = lab
+    # The pinned field sits in a native group that the web-view check passes.
+    assert groups(pid) == (1, [])
     # One target and one unused listing per state, all taken while the window was native.
     states = []
     for _ in range(2):
