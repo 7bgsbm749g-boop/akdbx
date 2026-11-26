@@ -233,11 +233,32 @@ def test_missing_permission_has_fixed_response(monkeypatch, lab):
     assert response == dict(ok=False, delivery='not-started', error=ACCESSIBILITY_ERROR)
 
 
+def settle(pid):
+    # AppKit reports a moved frame at once. The WindowServer, which routes the
+    # desktop hit test, applies the move later. Wait until both agree.
+    from Quartz import CGWindowListCopyWindowInfo, kCGNullWindowID, kCGWindowListOptionOnScreenOnly
+    from akdbx.macos_fields import AX, attr
+    window = attr(AX.AXUIElementCreateApplication(pid), 'AXFocusedWindow')
+    deadline = time.monotonic() + 5
+    while True:
+        point = AX.AXValueGetValue(attr(window, 'AXPosition'), AX.kAXValueCGPointType, None)[1]
+        size = AX.AXValueGetValue(attr(window, 'AXSize'), AX.kAXValueCGSizeType, None)[1]
+        frame = tuple(round(v) for v in (point[0], point[1], size[0], size[1]))
+        shown = [tuple(round(w['kCGWindowBounds'][k]) for k in ('X', 'Y', 'Width', 'Height'))
+                 for w in CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID) or ()
+                 if w['kCGWindowOwnerPID'] == pid and w['kCGWindowLayer'] == 0]
+        if frame in shown:
+            return
+        assert time.monotonic() < deadline, 'the WindowServer did not apply the window move'
+        time.sleep(.02)
+
+
 def test_offscreen_sibling_leaves_focused_field_available(lab):
     manager, pid, command = lab
     before = listing(manager, pid)
     assert any(field['readonly'] for field in before['controls'])
     command('partly-offscreen')
+    settle(pid)
     after = listing(manager, pid)
     assert not any(field['readonly'] for field in after['controls'])
     target = pin(manager, after, focused(after), 'username')
