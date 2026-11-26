@@ -571,77 +571,132 @@ launcher; reinstall the other slots afterwards.
 
 ## Agent desktop slot without DevTools
 
-Use this as soon as a bot check or site block stops you in an agent desktop
-slot (seen: DataDome on a SoundCloud sign-up, Cloudflare "Verifying…" that
-does not finish). Apply all the steps below together, in this order, before
-the next attempt. Do not try them one at a time: a home IP alone did not
-pass, because the check also detects the open DevTools connection ("use
-of developer or inspection tools"). Every route that needs that connection
-fails: the CDP route, the `browser_*` tools and `browser_prepare`. Each
-refused attempt makes the next one harder.
+Use this **from the first load** of a page that has a bot check (see
+[Known bot-check sites](#known-bot-check-sites) and the probe below), and
+before **every** retry after a block. Seen: DataDome on SoundCloud and npm
+sign-ups, Cloudflare "Verifying…" that does not finish. A page that loads
+once in a Chrome with an open DevTools connection ("use of developer or
+inspection tools") flags the profile, and every later attempt starts as a
+known bot. Every route that needs that connection fails: the CDP route, the
+`browser_*` tools and `browser_prepare`. A home IP alone did not pass.
+
+### Known bot-check sites
+
+| Site | Check | Notes |
+| --- | --- | --- |
+| `npmjs.com` (sign-up, sign-in) | Cloudflare challenge, then GitHub's DataDome | The block page says "Access is temporarily restricted" with a GitHub logo. GitHub's DataDome keys sit under both `npmjs.com` and `github.com`. |
+| `soundcloud.com` (sign-up) | DataDome | Passed through the home IP proxy. |
+
+Add each new site that you meet to this table in the same change as your
+task.
+
+### Probe before the first load
+
+From the host, never from the slot browser:
+
+```bash
+UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
+curl -s -D headers.txt -o body.html -A "$UA" https://SITE/PAGE
+grep -i -E '^(x-datadome|x-dd-b|cf-mitigated)|^set-cookie: *datadome' headers.txt
+grep -c -i -E 'captcha-delivery|datadome|challenges.cloudflare.com' body.html
+```
+
+Any match, a site in the table, or doubt: use this whole procedure from the
+first load.
+
+### Host parts
 
 Two parts depend on the host. Use the host's own tools for them; its agent
 guidance names them. Without such tools, use the user's everyday browser.
 
-- **Chrome without DevTools (required):** restart only the slot's Chrome
+- **Browser without DevTools (required):** restart only the slot's browser
   without `--remote-debugging-port`, and keep it so until you finish.
-- **Home IP proxy (optional, recommended):** send only the slot's Chrome
+- **Home IP proxy (optional, recommended):** send only the slot's browser
   traffic out through the user's home (residential) internet connection, for
   example an SSH SOCKS tunnel (`ssh -N -D 127.0.0.1:PORT HOME_HOST`) and Chrome
   `--proxy-server=socks5://127.0.0.1:PORT` with
   `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`. Make it fail
-  closed: if the tunnel stops, Chrome must get no connection, never the
-  datacenter IP. Without a home IP proxy, do all the other steps; a
-  datacenter IP makes a pass less likely.
+  closed: if the tunnel stops, the browser must get no connection, never the
+  datacenter IP.
 - **Slow, hung or refused:** a home connection is often slow (seen: about
   100 KB/s), so pages through the proxy can take 10-60 seconds. Measure it
   before you judge a page. Content that still arrives is slow, not refused.
-  *Refused* means an explicit message ("blocked", "failed", "try again", an
-  error code): stop; it counts as an attempt. *Hung* means a check that still
-  shows "Verifying…" after 90 seconds with no message. Seen: Cloudflare hung
-  through a home IP proxy in every setup and passed at once on the direct IP,
-  while DataDome passed through the proxy. So on a hang with the proxy on,
-  remove the proxy and try once on the direct IP, with every other step kept.
+  *Refused* means an explicit message ("blocked", "failed", "try again",
+  "Access is temporarily restricted", an error code): stop; it counts as an
+  attempt. *Hung* means a check that still shows "Verifying…" after 90
+  seconds with no message. Seen: Cloudflare hung through a home IP proxy in
+  every setup and passed at once on the direct IP, while DataDome passed
+  through the proxy.
 
-1. **Remove every trace of the blocked attempt first.** A refused attempt
-   leaves the bot check's state in the slot profile: its cookie (for
-   DataDome, `datadome`), its storage inside the site's pages, and cached
-   files. With that state, the next attempt starts as a known bot. Remove
-   only the data of the blocked site and of its bot-check vendor (for
-   DataDome: `captcha-delivery.com`, `datado.me`, `datadome.co`, also as
-   partitioned data under the site). Keep the data of every other site,
-   also the same vendor's data for other sites. Print only cookie names and
-   domains, never values.
-   - While the slot's Chrome still has DevTools (before you remove it),
-     from a page session: find the matching cookies with
-     `Storage.getCookies` (also partitioned ones) and remove each with
-     `Network.deleteCookies`; run `Storage.clearDataForOrigin` for each site
-     and vendor origin with an explicit list of storage types; run
-     `Network.clearBrowserCache`.
-   - Then stop the slot and make sure that no Chrome uses its profile. Look
-     in the `Local Storage/leveldb` and `Service Worker/Database` stores for
-     keys that name the site, for example the vendor's partitioned keys
-     `https://geo.captcha-delivery.com/^0https://SITE`. Delete them, then
-     copy every live entry into a new store and put it in place of the old
-     one. Compaction can keep deleted-key markers, and `grep` cannot see
-     inside compressed blocks, so check with a LevelDB iterator.
-   - Start Chrome once and check that it opens the rebuilt stores (same
-     entry count, less the removed keys). Then delete every backup you
-     made, because the backups hold the old data.
-   - Other slots seeded from the same master profile can hold the same
-     cookies. Clean another slot only if it was part of the blocked attempt
-     and no other agent uses it.
-2. **Restart Chrome first, pair after.** Pairing lasts only until the browser
-   restarts, and both host changes restart the slot's Chrome. Before you load
-   or pair the extension, restart the slot's Chrome without DevTools and, if
-   available, with the home IP proxy. Check the exit IP (for example
-   `https://api.ipify.org`) with desktop input before the real page.
+### Remove all traces
+
+Do this before the first attempt on a profile that ever loaded the site,
+and before **every** retry. "Most of the data" is not enough: one key that
+is left (seen: a DataDome key in storage partitioned under another site)
+marks the next attempt. Print only names, domains and counts, never values.
+
+What to remove:
+
+- **The blocked site, everything:** cookies (also partitioned ones and
+  cookies that other sites set while it was the top-level site), Local
+  Storage, Session Storage, IndexedDB, Cache Storage, service workers and
+  their caches, File System, Shared Storage, storage partitioned under the
+  site, client hints and other per-site content settings in `Preferences`,
+  network state (`Network Persistent State`, `Reporting and NEL`), DIPS
+  records, history and the HTTP cache.
+- **The bot-check vendor, everywhere in the profile:** its origins (for
+  DataDome: `captcha-delivery.com`, `datadome.co`, `datado.me`) under every
+  top-level site, cookies and storage keys whose name contains the vendor
+  (for example `datadome`, `ddSession_datadome`) on any site, and the same
+  check's data under other sites of the same owner (npm's DataDome is
+  GitHub's: remove its keys under `github.com` too). Keep the other data of
+  those other sites, for example a GitHub sign-in.
+
+How:
+
+1. Stop the browser that uses the profile and make sure that no process has
+   it open. Edit nothing while the browser runs: it writes its in-memory
+   state back on exit, and a copy taken while it runs can miss keys that it
+   has not written yet.
+2. SQLite stores (`Cookies`, `History`, `Reporting and NEL`, `DIPS`, `Shared
+   Dictionary/db`, `SharedStorage`): delete the matching rows.
+3. LevelDB stores (`Local Storage/leveldb`, `Session Storage`, `Service
+   Worker/Database`): delete the matching keys (for Session Storage also the
+   `map-ID-` entries of a removed `namespace-` key), then compact the whole
+   key range so that no old file keeps a value or a deleted-key marker.
+4. Folders named for a matching origin (`IndexedDB/https_SITE_0.*`, Cache
+   Storage folders whose index names the origin): delete them. Delete the
+   HTTP cache and code cache folders.
+5. JSON stores (`Preferences` content settings, `Network Persistent State`):
+   remove the matching entries.
+6. **Prove it:** scan every LevelDB store record by record, including
+   deleted records, and every other file in the profile by name and
+   content, for the site, the vendor and the vendor's key names. The scan
+   must find nothing. A cleanup that you have not proved complete is not
+   done: do not retry on it.
+7. Start the browser once and check that the stores open (same entry
+   counts, less the removed keys). Delete every backup that you made: the
+   backups hold the old data.
+
+Other slots seeded from the same master profile can hold the same data.
+Clean another slot only if it was part of the attempt and no other agent
+uses it.
+
+### Steps
+
+1. **Remove all traces** (above), and prove it.
+2. **Restart the browser first, pair after.** Pairing lasts only until the
+   browser restarts, and both host changes restart the slot's browser.
+   Before you load or pair the extension, restart the slot's browser without
+   DevTools and, if available, with the home IP proxy. Check the exit IP
+   (for example `https://api.ipify.org`) with desktop input before the real
+   page.
 3. **Desktop input only.** From now on use only `vps_computer` desktop
-   actions on the Chrome window (`list_windows` for the new pid and window id,
-   `get_window_state`, `click`, `type_text`, `press_key`, `hotkey`, `drag`),
-   with `delivery_mode: "foreground"`; background input does not reach an
-   unfocused Chromium. Never call `browser_*`, `browser_prepare` or any CDP
-   script on this slot.
+   actions on the browser window (`list_windows` for the new pid and window
+   id, `get_window_state`, `click`, `type_text`, `press_key`, `hotkey`,
+   `drag`), with `delivery_mode: "foreground"`; background input does not
+   reach an unfocused Chromium. Never call `browser_*`, `browser_prepare` or
+   any CDP script on this slot.
 4. **Load the extension once per slot profile.** Build it and register the
    native host for that profile's own folder (a custom `--user-data-dir` reads
    `NativeMessagingHosts` inside it):
@@ -672,9 +727,17 @@ guidance names them. Without such tools, use the user's everyday browser.
    uneven steps, then check the result. Fill the password only through the
    extension: `list-password-frames`, `pin-password-target` and
    `fill`/`fill-generated` with `--route extension`. Do not look at the field.
-   Dismiss Chrome's own "Save password?" prompt; save the entry in akdbx.
-7. **Clean up.** Remove the home IP proxy, restart the slot's Chrome with
-   DevTools again (the pairing ends), then `end_session`.
+   Dismiss the browser's own "Save password?" prompt; save the entry in akdbx.
+7. **If it is refused, change the method.** Remove all traces again and
+   prove it, then change one part and try again: the direct IP instead of
+   the home IP (or the reverse), Firefox (the extension supports Firefox
+   153+), a new empty profile for that browser, another slot. Record what
+   each attempt used and its result, and never repeat a refused
+   combination. Keep going until it passes or the site states a block on
+   this user or account on purpose.
+8. **Clean up.** Remove the home IP proxy, restart the slot's browser with
+   DevTools again (the pairing ends), delete any temporary profile you made,
+   then `end_session`.
 
 ## Errors
 
