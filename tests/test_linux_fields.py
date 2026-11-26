@@ -182,6 +182,32 @@ def test_window_pin_delivers_to_active_gtk_window(lab):
     assert command(directory)[0] == Entry().username
 
 
+@pytest.mark.parametrize('lab', ['x11', 'xwayland'], indirect=True)
+def test_window_pin_sms_code_reaches_the_active_gtk_entry_once(lab, tmp_path):
+    from akdbx.broker import Broker
+    from akdbx.target import X11Typer
+    from test_broker import Entry, Vault
+    _, pid, directory = lab
+    command(directory, focus=0)
+    broker = Broker(Vault([Entry()]), X11Typer(), sms_sources_path=tmp_path / 'state' / 'sms.json')
+    token = broker.sms.add_source('iphone', 'shortcut')
+    broker.sms.receive(token, 'Google', 'G-482913 is your Google verification code.')
+    [row] = broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages']
+    deadline = time.monotonic() + 5
+    while True:
+        pin = broker.dispatch(dict(action='pin-target', target_protocol=1, pid=pid,
+                                   window=int((directory / 'xid').read_text())))
+        if pin['ok']:
+            break
+        assert time.monotonic() < deadline, pin
+        time.sleep(.05)
+    result = broker.dispatch(dict(action='fill-sms-code', sms_protocol=1, message=row['id'], target=pin['target'],
+                                  target_protocol=1, target_url='https://accounts.google.com/signin/challenge'))
+    assert result == dict(ok=True, filled='one-time-code', target_delivery='x11-send-event-v1')
+    assert command(directory)[0] == '482913'
+    assert broker.dispatch(dict(action='sms-wait', sms_protocol=1, timeout=0))['messages'] == []
+
+
 @pytest.mark.parametrize('lab', ['xwayland'], indirect=True)
 def test_xwayland_registration_preserves_live_x11_connection(lab):
     from contextlib import closing

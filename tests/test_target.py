@@ -183,6 +183,9 @@ def test_compatible_cli_passes_target_protocol_and_rejects_missing_delivery_rece
 @pytest.fixture
 def isolated_x11(tmp_path, monkeypatch):
     if not shutil.which('Xvfb'):
+        # CI sets AKDBX_REQUIRE_XVFB, so these real X11 delivery tests never skip there.
+        if os.environ.get('AKDBX_REQUIRE_XVFB') == '1':
+            pytest.fail('AKDBX_REQUIRE_XVFB=1 but Xvfb is not installed')
         pytest.skip('optional synthetic X11 regression requires Xvfb')
     read_fd, write_fd = os.pipe()
     process = subprocess.Popen(['Xvfb', '-displayfd', str(write_fd), '-screen', '0', '640x480x24', '-nolisten', 'tcp'],
@@ -282,3 +285,43 @@ def test_native_wrong_foreground_refused_without_events(isolated_x11):
     with pytest.raises(DeliveryError) as error:
         X11Typer().deliver(pin, ['synthetic-only'], lambda: True)
     assert not error.value.started and key_events(lab) == []
+
+
+def test_native_sms_code_reaches_only_the_pinned_window_once(isolated_x11, tmp_path):
+    """The window-pin SMS route (fill-sms-code with a pin-target token) on a real X server."""
+    lab = isolated_x11
+    broker = Broker(Vault([Entry()]), X11Typer(), sms_sources_path=tmp_path / 'state' / 'sms.json')
+    token = broker.sms.add_source('iphone', 'shortcut')
+    broker.sms.receive(token, 'Google', 'G-482913 is your Google verification code.')
+    [row] = broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages']
+
+    def pin():
+        result = broker.dispatch(dict(action='pin-target', pid=os.getpid(), window=lab.windows[0].id,
+                                      target_protocol=1))
+        assert result['ok'] and result['target_delivery'] == DELIVERY, result
+        return result['target']
+
+    def fill(target, **extra):
+        return broker.dispatch(dict(action='fill-sms-code', sms_protocol=1, message=row['id'], target=target,
+                                    target_protocol=1, **extra))
+
+    url = dict(target_url='https://accounts.google.com/signin/challenge')
+    # No verified page URL: refused before any key, and the text stays.
+    assert fill(pin())['error'] == 'autofill not started: window code fill needs --target-url'
+    # Another window took the focus after the pin: no key, and the text stays.
+    target = pin()
+    lab.activate(lab.windows[1])
+    assert fill(target, **url) == failure(False)
+    assert key_events(lab) == []
+    lab.activate(lab.windows[0])
+    receipt = fill(pin(), **url)
+    assert receipt == dict(ok=True, filled='one-time-code', target_delivery='x11-send-event-v1')
+    assert '482913' not in json.dumps(receipt)
+    events = key_events(lab)
+    assert len(events) == 2 * 6 and {e[0] for e in events} == {lab.windows[0].id}
+    decoded = [lab.display.keycode_to_keysym(code, 1 if state & lab.X.ShiftMask else 0)
+               for _, kind, code, state in events if kind == lab.X.KeyPress]
+    assert decoded == [ord(c) for c in '482913']
+    # One text gives one fill: the spent text sends nothing to a new pin.
+    assert fill(pin(), **url) == dict(ok=False, error='unknown or expired SMS message')
+    assert key_events(lab) == []

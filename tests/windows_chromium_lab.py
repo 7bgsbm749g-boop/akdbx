@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import ssl
 import subprocess
+import sys
 import threading
 import time
 
@@ -137,6 +138,33 @@ class Lab:
         return self.evaluate("Array.from(document.querySelectorAll('input')).every(e => !e.value)")
 
 
+def developer_mode(observer):
+    """Turn developer mode on as the chrome://extensions toggle does, and confirm it.
+
+    Chrome on macOS treats extensions.ui.developer_mode as a tracked preference and
+    resets a value that it did not write itself, so the Preferences file of a new
+    profile cannot turn it on there. Without it, Chrome blocks the unpacked
+    extension when it reloads into a new build.
+    """
+    target = observer.call('Target.createTarget', {'url': 'chrome://extensions/'})['targetId']
+    try:
+        session = observer.call('Target.attachToTarget', dict(targetId=target, flatten=True))['sessionId']
+        deadline = time.monotonic() + 30
+        while not observer.evaluate("typeof chrome === 'object' && !!chrome.developerPrivate", session):
+            assert time.monotonic() < deadline, 'chrome://extensions did not load'
+            time.sleep(.1)
+        on = observer.evaluate('new Promise(resolve => chrome.developerPrivate.updateProfileConfiguration('
+                               '{inDeveloperMode: true}, () => chrome.developerPrivate.getProfileConfiguration('
+                               'found => resolve(found.inDeveloperMode))))', session, await_promise=True)
+        assert on is True, 'developer mode did not turn on'
+    finally:
+        observer.call('Target.closeTarget', {'targetId': target})
+        deadline = time.monotonic() + 5
+        while any(t['targetId'] == target for t in observer.call('Target.getTargets')['targetInfos']):
+            assert time.monotonic() < deadline, 'chrome://extensions did not close'
+            time.sleep(.05)
+
+
 @contextmanager
 def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extension=None, hosts=(), native_hosts=None,
                  restart=False):
@@ -206,6 +234,9 @@ def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extens
     # Optional extra switches for one run, for example --force-color-profile=display-p3-d65 to render as a
     # colour-managed display would.
     sandbox += os.environ.get('AKDBX_TEST_BROWSER_EXTRA_ARGS', '').split()
+    if sys.platform == 'darwin':
+        # The disposable profile keeps its cookie key in memory, so no Keychain prompt can block a CI run.
+        sandbox.append('--use-mock-keychain')
     if native_hosts:
         # Linux Chromium reads user-level native-messaging hosts from the profile folder.
         (profile / 'NativeMessagingHosts').mkdir(mode=0o700, exist_ok=restart)
@@ -247,6 +278,8 @@ def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extens
                     break
             time.sleep(.05)
         assert session, 'synthetic Chromium page did not initialize'
+        if extension is not None and sys.platform == 'darwin':
+            developer_mode(observer)
         version = observer.call('Browser.getVersion')['product']
         yield Lab(process, observer, session, page_id, profile, origin, version)
     finally:

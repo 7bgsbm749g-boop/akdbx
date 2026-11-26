@@ -123,6 +123,9 @@ jobs:
             tests/test_cdp_profile_chromium.py tests/test_sms_chromium.py \
             tests/test_card_chromium.py::test_private_identity_save_and_cli_fill_on_real_loopback_https \
             tests/test_card_processor.py::test_stripe_card_element_fills_each_exact_field_once \
+            tests/test_card_chromium.py::test_real_transport_fills_only_pinned_field_and_reports_no_values \
+            tests/test_card_processor.py::test_attested_oopif_fills_retained_field_without_secret_receipts \
+            tests/test_card_computop.py::test_computop_fills_only_the_attested_field \
             tests/test_card_target.py::test_foreign_uid_endpoint_receives_no_websocket_bytes \
             tests/test_password_endpoint.py::test_real_connected_peer_uid_before_accept \
             --basetemp="$HOME/cdp" --junitxml="$RUNNER_TEMP/macos-cdp.xml"
@@ -145,7 +148,8 @@ jobs:
             tests/test_android_lifecycle.py::test_run_refuses_offline_attached_device_before_launch \
             --basetemp="$RUNNER_TEMP/android" --junitxml="$RUNNER_TEMP/macos-android.xml"
           python -c 'import sys, xml.etree.ElementTree as E; cases = E.parse(sys.argv[1]).findall(".//testcase"); sys.exit(not cases or any(c.find("skipped") is not None for c in cases))' "$RUNNER_TEMP/macos-android.xml"
-      - name: macOS setup, LaunchAgent, lock notifications and private page transports
+      # Key unlock: the KeePassXC compatibility case needs /usr/bin/keepassxc-cli, which this runner lacks.
+      - name: macOS setup, LaunchAgent, lock notifications, key unlock and private page transports
         env:
           AKDBX_MACOS_RUNNER: '1'
         run: |
@@ -163,6 +167,8 @@ jobs:
             tests/test_import_totp.py::test_host_install_refuses_replaceable_manifest_directory \
             tests/test_import_totp.py::test_macos_launcher_is_shared_only_when_identical \
             tests/test_import_totp.py::test_native_host_subprocess_to_private_broker \
+            tests/test_unlock_keys.py \
+            --deselect tests/test_unlock_keys.py::test_keepassxc_key_file_vault_unlocks_by_upload_and_stays_readable_by_keepassxc \
             --basetemp="$RUNNER_TEMP/p" --junitxml="$RUNNER_TEMP/platform.xml"
           python -c 'import sys, xml.etree.ElementTree as E; sys.exit(bool(E.parse(sys.argv[1]).findall(".//skipped")))' "$RUNNER_TEMP/platform.xml"
   linux:
@@ -181,7 +187,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y xvfb
       - env:
           AKDBX_TEST_FOREIGN_UID: '1'  # Android: a foreign adb server gets zero bytes.
-        run: python -m pytest -q tests/test_vault_lock.py tests/test_protocol.py tests/test_cli.py tests/test_broker.py tests/test_writes.py tests/test_web_unlock.py tests/test_totp.py tests/test_target.py tests/test_target_guards.py tests/test_password_frames_policy.py tests/test_additional_urls.py tests/test_save_secret.py tests/test_secret_sinks.py tests/test_generated_native_clock.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_local_https.py tests/test_windows_native.py tests/test_extension_route.py tests/test_relay.py tests/test_relay_integration.py tests/test_setup.py tests/test_page_url_file.py tests/test_broker_identity.py tests/test_browser_slots.py tests/test_extension_launcher.py tests/test_pairing_notifications.py tests/test_android_route.py tests/test_android_lifecycle.py tests/test_android_emulator.py tests/test_entry_organize.py tests/test_entry_edit.py tests/test_unlock_keys.py --basetemp="${{ runner.temp }}/akdbx-tests"
+          AKDBX_REQUIRE_XVFB: '1'  # The X11 key-event transport and window-pin SMS fills on real Xvfb windows must not skip.
+        run: python -m pytest -q tests/test_vault_lock.py tests/test_protocol.py tests/test_cli.py tests/test_broker.py tests/test_writes.py tests/test_web_unlock.py tests/test_totp.py tests/test_target.py tests/test_target_guards.py tests/test_password_frames_policy.py tests/test_additional_urls.py tests/test_save_secret.py tests/test_secret_sinks.py tests/test_generated_native_clock.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_local_https.py tests/test_windows_native.py tests/test_extension_route.py tests/test_relay.py tests/test_relay_integration.py tests/test_setup.py tests/test_page_url_file.py tests/test_broker_identity.py tests/test_browser_slots.py tests/test_extension_launcher.py tests/test_pairing_notifications.py tests/test_android_route.py tests/test_android_lifecycle.py tests/test_android_emulator.py tests/test_entry_organize.py tests/test_entry_edit.py tests/test_unlock_keys.py tests/test_entry_creation.py tests/test_write_readiness.py tests/test_sms.py tests/test_sms_reading.py tests/test_sms_real_formats.py tests/test_sms_notifications.py tests/test_page_lifetime.py --basetemp="${{ runner.temp }}/akdbx-tests"
       - run: node --test tests/test_fill_extension.js
       # The bundled Android helper dex must be the build of its Java source.
       - name: Android helper build is reproducible
@@ -218,11 +225,35 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -e '.[test]'
+      # The independent merge reference (tests/keepassxc_reference.py) is exactly KeePassXC 2.7.10;
+      # Ubuntu 24.04 ships an older one. The group admission and selection fixtures need it too.
+      - name: Install pinned KeePassXC 2.7.10 as the independent reference
+        run: |
+          curl --fail --location --max-time 300 --max-filesize 67108864 --output "$RUNNER_TEMP/KeePassXC.AppImage" \
+            https://github.com/keepassxreboot/keepassxc/releases/download/2.7.10/KeePassXC-2.7.10-x86_64.AppImage
+          echo "3f8308a4d905d067367d541b4dccd5e80700798039046ffc388ede4f50887b36  $RUNNER_TEMP/KeePassXC.AppImage" | sha256sum --check
+          chmod 700 "$RUNNER_TEMP/KeePassXC.AppImage"
+          (cd "$RUNNER_TEMP" && ./KeePassXC.AppImage --appimage-extract > /dev/null)
+          sudo mv "$RUNNER_TEMP/squashfs-root" /opt/keepassxc-2.7.10
+          sudo chown -R root:root /opt/keepassxc-2.7.10
+          # Old brokers (test_admission.py) need a root-owned engine at this fixed path and run it without PATH.
+          # The CLI finds its bundled libraries through RUNPATH $ORIGIN/../lib.
+          printf '#!/bin/sh\nexec /opt/keepassxc-2.7.10/usr/bin/keepassxc-cli "$@"\n' | sudo tee /usr/bin/keepassxc-cli > /dev/null
+          sudo chmod 755 /usr/bin/keepassxc-cli
+          test "$(/usr/bin/keepassxc-cli --version)" = 2.7.10
       - name: Merge encrypted vaults without an external engine
-        run: >-
-          python -m pytest -q tests/test_merge.py tests/test_native_merge_edges.py tests/test_refresh_merge.py tests/test_selection.py
-          tests/test_versions.py tests/test_signature_resources.py
-          --basetemp="${{ runner.temp }}/native-merge"
+        run: |
+          python -m pytest -q -rs tests/test_merge.py tests/test_native_merge_edges.py tests/test_refresh_merge.py tests/test_selection.py \
+            tests/test_versions.py tests/test_signature_resources.py \
+            tests/test_admission.py tests/test_group_admission.py tests/test_group_selection.py tests/test_upload_contract.py \
+            tests/test_recovery_paths.py tests/test_keyfile_paths.py tests/test_import_compat.py tests/test_protected_decoding.py \
+            tests/test_verification_resources.py tests/test_target_legacy.py \
+            tests/test_unlock_keys.py::test_keepassxc_key_file_vault_unlocks_by_upload_and_stays_readable_by_keepassxc \
+            --basetemp="$RUNNER_TEMP/native-merge" --junitxml="$RUNNER_TEMP/native-merge.xml"
+          python -c 'import sys, xml.etree.ElementTree as E; cases = E.parse(sys.argv[1]).findall(".//testcase"); skipped = [c.get("name") for c in cases if c.find("skipped") is not None]; print(len(cases), "cases,", len(skipped), "skipped", skipped[:5]); sys.exit(len(cases) < 500 or bool(skipped))' "$RUNNER_TEMP/native-merge.xml"
+      # Full-cost KDBX 4.1 (Argon2id, 64 MiB) admission must meet its 30-second deadline on a CI runner.
+      - name: Full-cost admission deadlines
+        run: python -m pytest -q -rs tests/test_admission_performance.py --basetemp="${{ runner.temp }}/admission-performance"
   linux-extension-browser:
     # The extension route in a real browser: secret capture and frame owners.
     # Google Chrome 137+ ignores --load-extension; Chrome
@@ -299,6 +330,69 @@ jobs:
           qr = list(ET.parse(os.path.join(os.environ['RUNNER_TEMP'], 'qr-capture.xml')).iter('testcase'))
           assert len(qr) >= 40 and not any(c.find('skipped') is not None for c in qr), 'QR capture cases must run without skips'
           PY
+  macos-extension-browser:
+    # The Chromium extension route on macOS 15 (arm64). Google Chrome 137+ ignores
+    # --load-extension; Chrome for Testing still loads the unpacked test extension.
+    # Test folders are under $HOME: the CDP endpoint check refuses a profile below
+    # a folder that other accounts can write.
+    name: Chromium extension (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -e '.[test]'
+      - name: Install pinned Chrome for Testing
+        run: |
+          test "$(uname -m)" = arm64
+          curl --fail --location --max-time 300 --max-filesize 268435456 --output "$RUNNER_TEMP/chrome-mac-arm64.zip" \
+            https://storage.googleapis.com/chrome-for-testing-public/153.0.8010.12/mac-arm64/chrome-mac-arm64.zip
+          echo "930e2a2c15addbaca1fe9b07bfa520667bced556d7988707186819cb4279ef3b  $RUNNER_TEMP/chrome-mac-arm64.zip" | shasum -a 256 --check
+          ditto -x -k "$RUNNER_TEMP/chrome-mac-arm64.zip" "$RUNNER_TEMP/cft"
+          browser="$RUNNER_TEMP/cft/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+          "$browser" --version
+          echo "AKDBX_TEST_EXTENSION_BROWSER=$browser" >> "$GITHUB_ENV"
+      - name: Extension route in Chrome for Testing
+        run: |
+          umask 077
+          python -m pytest -q -rs tests/test_extension_browser.py --basetemp="$HOME/ext" --junitxml="$RUNNER_TEMP/extension-browser.xml"
+      - name: TOTP delivery through real extension pins
+        run: |
+          umask 077
+          python -m pytest -q -rs tests/test_totp_browser.py -k extension --basetemp="$HOME/totp" --junitxml="$RUNNER_TEMP/extension-totp.xml"
+      - name: Authenticator QR capture on the CDP and extension routes
+        env:
+          AKDBX_REQUIRE_QR_CHROMIUM: '1'
+        run: |
+          umask 077
+          AKDBX_TEST_BROWSER="$AKDBX_TEST_EXTENSION_BROWSER" python -m pytest -q -rs tests/test_totp_qr_capture.py \
+            --basetemp="$HOME/qr" --junitxml="$RUNNER_TEMP/qr-capture.xml"
+      - name: Require every macOS extension case to run
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          for name, minimum in (('extension-browser.xml', 20), ('extension-totp.xml', 1), ('qr-capture.xml', 40)):
+              cases = list(ET.parse(os.path.join(os.environ['RUNNER_TEMP'], name)).iter('testcase'))
+              skipped = sum(case.find('skipped') is not None for case in cases)
+              assert len(cases) >= minimum and skipped == 0, f'{name}: {len(cases)} cases, {skipped} skipped'
+              print(f'{name}: all {len(cases)} cases ran without skips.')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: macos-extension-browser-logs
+          path: |
+            ${{ runner.temp }}/*.xml
+            ~/ext/**/synthetic-chromium.log
+            ~/totp/**/synthetic-chromium.log
+            ~/qr/**/synthetic-chromium.log
   windows:
     runs-on: windows-latest
     timeout-minutes: 25

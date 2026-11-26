@@ -88,8 +88,9 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
   refuses a card or address field under a click-through cover. From 0.34.0
   (fill extension 0.5.0) the experimental Enhanced security setting (the cog in
   the extension popup, off by default) also refuses a card, address or secret
-  target under any cover, with the browser's occlusion test and a pixel check
-  of the active tab. Pairing is held in memory only: a
+  target under an ordinary cover, with the browser's occlusion test and a pixel
+  check of the active tab (a page built to defeat the check can still pass it;
+  see the limit in [the extension reference](../skills/akdbx/references/extension.md)). Pairing is held in memory only: a
   browser or broker restart needs a new pairing with the master password.
 
 ## Native desktop field pins

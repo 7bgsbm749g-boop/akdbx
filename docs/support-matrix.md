@@ -36,12 +36,14 @@ CI jobs (all in `.github/workflows/`):
 
 | Job | Workflow | What it runs |
 | --- | --- | --- |
-| `linux` | `tests.yml` | Unit and contract suites on Ubuntu, including Android with a simulated device |
-| `linux-native-fields` | `tests.yml` | Real GTK and Qt apps on X11, XWayland and native Wayland (Weston) |
+| `linux` | `tests.yml` | Unit and contract suites on Ubuntu, including Android with a simulated device, the X11 key-event transport, and window-pin SMS code fills to real windows of an isolated Xvfb display |
+| `linux-native-fields` | `tests.yml` | Real GTK and Qt apps on X11, XWayland and native Wayland (Weston), including window-pin usernames and SMS codes to a GTK entry |
+| `native-merge` | `tests.yml` | Merge, admission, recovery and key-file suites with full Git history and a pinned KeePassXC 2.7.10 as the independent reference, with no skips; the full-cost admission deadlines |
 | `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, cover checks |
+| `macos-extension-browser` | `tests.yml` | Chrome for Testing 153 (arm64) with the built extension on macOS 15: the extension suite, TOTP, and QR capture on the CDP and extension routes |
 | `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension: fills, TOTP, secret reads, QR capture (also with `<all_urls>`), SMS codes |
 | `windows` | `tests.yml` | Named pipe, real Win32, WinForms and WPF apps, Chrome and Edge CDP, the extension in Edge, QR capture |
-| `macos-broker` | `tests.yml` | macOS 15: AppKit fields, Darwin IPC and TLS, Chrome CDP with a foreign-user listener, guided setup and LaunchAgent, Android attach host checks with a simulated device |
+| `macos-broker` | `tests.yml` | macOS 15: AppKit fields, Darwin IPC and TLS, Chrome CDP (logins, identities, SMS codes, cards on the page and in Adyen, Computop and Stripe frames) with a foreign-user listener, key-file and hardware-key unlock, guided setup and LaunchAgent, Android attach host checks with a simulated device |
 | `card-safety` | `card-safety.yml` | Real Chrome CDP: cards, processor frames, identities, SMS codes, agent desktop slots |
 | `synthetic-password-fields` | `password-fields.yml` | Real Chrome CDP: passwords, child frames, secret capture, TOTP, QR capture, slot window pins |
 | `synthetic-import` | `private-import.yml` | The private authenticator QR importer |
@@ -53,7 +55,7 @@ CI jobs (all in `.github/workflows/`):
 | [Window pin](#window-pin-pin-target) (`pin-target`) | ✅ 0.9.0: usernames, TOTP, SMS codes | ✅ XWayland windows only (0.49.0); ◼ native Wayland surfaces (D) | ✅ 0.17.0, HWND: usernames, TOTP, SMS codes | ◼ unavailable (E) |
 | [Native field](#native-field-pin-native-target) (`pin-native-target`) | ✅ 0.44.0, AT-SPI | ✅ 0.44.0, AT-SPI | ✅ 0.44.0 Win32 Edit; 0.50.1 WinForms, WPF | ✅ 0.50.1, Accessibility; passwords from 0.52.0 (F) |
 | [CDP](#cdp-route) (`--route cdp`) | ✅ <0.16 | ✅ <0.16 | ✅ 0.17.0 | ✅ 0.50.1 |
-| [Extension, Chromium family](#extension-route-chromium-family) | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.43.0, no real-browser CI (P) |
+| [Extension, Chromium family](#extension-route-chromium-family) | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.43.0 (P) |
 | [Extension, Firefox 153+](#extension-route-firefox) | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 |
 | [Android](#android-route-akdbx-android) (`akdbx android`) | ✅ 0.36.0 | ✅ 0.36.0 | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1, attached devices only (AE) |
 | Safari | — | — | — | ✗ not built (W) |
@@ -76,7 +78,7 @@ DOM, tab or origin proof.
 | Card, identity | ⛔ (B) | ⛔ (B) | ⛔ (B) | ◼ (E) |
 | Card processor iframes, child-frame login, notify-page, popup | — | — | — | — |
 | Secret read, `capture-totp` (text or QR) | ◼ (C) | ◼ (C) | ◼ (C) | ◼ (E) |
-| SMS code (split boxes) | ✅ 0.40.0 · contract test (`linux`) (H) | ✅ XWayland (0.49.0); ◼ native (D) | ✅ 0.49.0 · `windows` | ◼ (E) |
+| SMS code (split boxes) | ✅ 0.40.0 · `linux`, `linux-native-fields` (H) | ✅ XWayland (0.49.0) · `linux-native-fields`; ◼ native (D) | ✅ 0.49.0 · `windows` | ◼ (E) |
 | Agent desktop slot window | ✅ 0.35.3 · `synthetic-password-fields` | ✅ 0.35.3 (the slot has its own X display) | ✗ (I) | ◼ (E) |
 
 ## Native field (`pin-native-target`)
@@ -111,14 +113,14 @@ connection before the WebSocket handshake.
 | Username, password, login | ✅ <0.16 · `synthetic-password-fields` | ✅ 0.17.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | Generated password | ✅ <0.16 · `synthetic-password-fields` | ✅ 0.17.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | TOTP | ✅ 0.45.0 · `synthetic-password-fields` | ✅ 0.45.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
-| Card | ✅ 0.14.0 · `card-safety` | ✅ 0.17.0 · `windows` | ✅ 0.50.1 · no CI for merchant-page fields (N) |
-| Card processor iframes | ✅ Adyen 0.14.0, Computop 0.14.2, Stripe 0.18.1, Stripe Card Element 0.24.0 · `card-safety` | ✅ 0.17.0 Adyen and Computop, 0.18.1 Stripe · `windows` (Edge) | ✅ 0.50.1 Stripe Card Element · `macos-broker`; Adyen and Computop: no CI |
+| Card | ✅ 0.14.0 · `card-safety` | ✅ 0.17.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
+| Card processor iframes | ✅ Adyen 0.14.0, Computop 0.14.2, Stripe 0.18.1, Stripe Card Element 0.24.0 · `card-safety` | ✅ 0.17.0 Adyen and Computop, 0.18.1 Stripe · `windows` (Edge) | ✅ 0.50.1 Adyen, Computop and Stripe Card Element · `macos-broker` |
 | Identity | ✅ 0.18.2 · `card-safety` | ✅ 0.18.2 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | Child-frame login | ✅ 0.16.0 · `synthetic-password-fields` | ✅ 0.17.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | notify-page (identity) | ✅ 0.41.0 · `card-safety` | ✅ 0.41.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | Secret read (`capture-secret`), also in child frames | ✅ 0.20.0 · `synthetic-password-fields` | ✅ 0.20.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | `capture-totp`, text key | ✅ 0.35.0 · `synthetic-password-fields` | ✅ 0.35.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
-| `capture-totp`, QR code | ✅ 0.50.1 · `synthetic-password-fields` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · no CI |
+| `capture-totp`, QR code | ✅ 0.50.1 · `synthetic-password-fields` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` (Chrome for Testing) |
 | SMS code | ✅ 0.40.0 · `card-safety` | ✅ 0.40.0 · `windows` (Edge) | ✅ 0.50.1 · `macos-broker` |
 | Popup human click | — | — | — |
 | Agent desktop slots (`--browser-slot`) | ✅ 0.30.0 · `card-safety` | ✅ 0.30.0 · no CI | ✅ 0.50.1 · `macos-broker` |
@@ -131,20 +133,20 @@ install from 0.49.0.
 
 | Operation | Linux (X11 or Wayland) | Windows | macOS |
 | --- | --- | --- | --- |
-| Username, password, login | ✅ 0.21.0 · `linux-extension-browser` | ✅ 0.21.0 · `windows` (Edge) | ✅ 0.43.0 · no CI (P) |
-| Generated password | ✅ 0.21.0 · no CI (Q) | ✅ 0.21.0 · no CI (Q) | ✅ 0.43.0 · no CI (P) |
-| TOTP | ✅ 0.45.0 (ext 0.10.0) · `linux-extension-browser` | ✅ 0.45.0 · `windows` | ✅ 0.45.0 · no CI (P) |
-| Card | ✅ 0.21.0 · `linux-extension-browser` | ✅ 0.21.0 · `windows` | ✅ 0.43.0 · no CI (P) |
-| Card processor iframes | ✅ 0.21.0 (Card Element: ext 0.2.0) · `linux-extension-browser` | ✅ 0.21.0 Stripe · `windows` | ✅ 0.43.0 · no CI (P) |
-| Identity | ✅ 0.21.0 · `linux-extension-browser` | ✅ 0.21.0 · `windows` | ✅ 0.43.0 · no CI (P) |
-| Child-frame login | ✅ 0.32.0 (ext 0.4.0) · `linux-extension-browser` | ✅ 0.32.0 · `windows` | ✅ 0.43.0 · no CI (P) |
-| notify-page (identity) | ✅ 0.41.0 (ext 0.9.0) · `linux-extension-browser` | ✅ 0.41.0 · `windows` | ✅ 0.43.0 · no CI (P) |
-| Secret read, top document | ✅ 0.32.0 (ext 0.4.0) · `linux-extension-browser` | ✅ 0.32.0 · `windows` | ✅ 0.43.0 · no CI (P) |
+| Username, password, login | ✅ 0.21.0 · `linux-extension-browser` | ✅ 0.21.0 · `windows` (Edge) | ✅ 0.43.0 · `macos-extension-browser` |
+| Generated password | ✅ 0.21.0 · `linux-extension-browser` (Q) | ✅ 0.21.0 · `windows` (Q) | ✅ 0.43.0 · `macos-extension-browser` (Q) |
+| TOTP | ✅ 0.45.0 (ext 0.10.0) · `linux-extension-browser` | ✅ 0.45.0 · `windows` | ✅ 0.45.0 · `macos-extension-browser` |
+| Card | ✅ 0.21.0 · `linux-extension-browser` | ✅ 0.21.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
+| Card processor iframes | ✅ 0.21.0 (Card Element: ext 0.2.0) · `linux-extension-browser` | ✅ 0.21.0 Stripe · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
+| Identity | ✅ 0.21.0 · `linux-extension-browser` | ✅ 0.21.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
+| Child-frame login | ✅ 0.32.0 (ext 0.4.0) · `linux-extension-browser` | ✅ 0.32.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
+| notify-page (identity) | ✅ 0.41.0 (ext 0.9.0) · `linux-extension-browser` | ✅ 0.41.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
+| Secret read, top document | ✅ 0.32.0 (ext 0.4.0) · `linux-extension-browser` | ✅ 0.32.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
 | Secret read, child frame | ⛔ (O) | ⛔ (O) | ⛔ (O) |
-| `capture-totp`, text key (top document) | ✅ 0.35.0 (ext 0.6.0 for grouped keys) · `linux-extension-browser` | ✅ 0.35.0 · `windows` | ✅ 0.43.0 · no CI (P) |
-| `capture-totp`, QR code (top document) | ✅ 0.50.1 (ext 0.14.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · no CI (P) |
-| SMS code | ✅ 0.50.1 (ext 0.13.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · no CI (P) |
-| Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0); address with the identity pin's checks and texted (SMS) code from 0.52.0 (ext 0.15.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ 0.43.0; address and texted code from 0.52.0 · no CI (P) |
+| `capture-totp`, text key (top document) | ✅ 0.35.0 (ext 0.6.0 for grouped keys) · `linux-extension-browser` | ✅ 0.35.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
+| `capture-totp`, QR code (top document) | ✅ 0.50.1 (ext 0.14.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` |
+| SMS code | ✅ 0.50.1 (ext 0.13.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` |
+| Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0); address with the identity pin's checks and texted (SMS) code from 0.52.0 (ext 0.15.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ login and card 0.43.0, TOTP 0.49.0; address and texted code from 0.52.0 · `macos-extension-browser` (R) (S) |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
 ## Extension route, Firefox
@@ -200,12 +202,24 @@ broker takes attached devices only (after 0.50.1).
 | Start at login | systemd user unit | logon task | LaunchAgent, 0.49.0 |
 | Desktop lock locks the vault | logind; Hyprland | session lock and suspend | screen lock and sleep, 0.49.0 |
 | Loopback HTTPS private page | ✅ 0.23.0 | ✅ 0.17.0 | ✅ 0.43.0 |
-| Unlock with a key file chosen on the page, or a YubiKey challenge-response (AD) | ✅ 0.50.1 · `linux` | ✅ 0.50.1 · `windows` (vault store only) | ✅ 0.50.1 · no CI |
+| Unlock with a key file chosen on the page, or a YubiKey challenge-response (AD) | ✅ 0.50.1 · `linux` | ✅ 0.50.1 · `windows` (vault store only) | ✅ 0.50.1 · `macos-broker` |
 | Tailscale Serve to a Unix socket | ✅ | ◼ Tailscale Serve cannot proxy to a Unix socket on Windows | ✅ 0.43.0 |
 | akdbx relay | ✅ 0.26.0 | ✅ 0.26.0 | ✅ 0.43.0 · `macos-broker` |
 | Secret sinks (`deliver-secret`) | ✅ 0.20.0 files; root helper for other accounts | ✅ 0.48.0 private named pipe | ✅ same-user files · no CI; ◼ no root helper (needs systemd and Linux peer credentials) |
 | Private authenticator QR importer | ✅ 0.12.0 Chromium, 0.48.0 Firefox · `linux-extension-browser`, `firefox-extension-browser` | ✅ 0.22.0 Chromium, 0.48.0 Firefox · `windows` (registration and pipe) | ✅ 0.48.0 · `macos-broker` (registration and socket) |
 | Merge and snapshot admission | ✅ 0.8.0 | ✅ 0.17.0 | ✅ 0.46.0 |
+
+## Tests that CI skips
+
+Every `tests/test_*.py` file is in at least one CI job. Some cases skip in a
+job, for the reason given. Only `test_relay_integration.py` and `test_android_emulator.py` run in no job.
+
+| Cases | Reason |
+| --- | --- |
+| `test_relay_integration.py` (skipped in `linux`) | It needs the akdbx-relay server from its own repository, which this CI does not install. |
+| `test_android_emulator.py` (every case skipped in `linux`) | They need KVM, an Android SDK with a Play system image and a running emulator or device; they run by hand on a Linux host (note X). |
+| The KeePassXC case of `test_unlock_keys.py` (skipped in `linux`, left out in `macos-broker`) | It needs `/usr/bin/keepassxc-cli`. `native-merge` installs KeePassXC 2.7.10 and runs it, with the KeePassXC cases of the merge files. |
+| Cases for one operating system in a shared file | They run in that system's job. |
 
 ## Notes
 
@@ -236,10 +250,11 @@ broker takes attached devices only (after 0.50.1).
   the same `win32-char-v1` transport. Usernames and TOTP have contract tests
   with simulated windows only; a real-app check is the manual
   [desktop acceptance check](windows.md#desktop-acceptance-check-for-window-pins).
-- **H** No test sends an SMS code to a real X11 window. `tests/test_sms.py`
-  tests the window route with a simulated window, and no CI job runs that
-  test. The `linux` job fills through a simulated window token in the
-  cross-route test of `tests/test_android_route.py`.
+- **H** The `linux` job sends the code through a window pin to a real window
+  of an isolated Xvfb display and checks the exact key events: only the
+  pinned window gets them, once. A missing `--target-url` or a changed focus
+  sends no key and keeps the text. The `linux-native-fields` job types the
+  code into a real GTK entry on X11 and on XWayland.
 - **I** Not built: slot window pins find the slot Chrome's X display, and
   Windows has none. The broker refuses with `browser slot window pins need
   Linux X11`.
@@ -256,18 +271,18 @@ broker takes attached devices only (after 0.50.1).
   broker consumes the pin and saves nothing.
 - **M** The broker accepts code pins on WinForms and WPF controls, but no test
   sends an SMS code to them.
-- **N** The `macos-broker` CDP tests fill identities (also with `--notify-page`), a Stripe Card Element
-  frame and every login mode. No macOS test fills a card field on the
-  merchant page itself; it uses the same transport as the Stripe frame.
 - **O** Refused by design: the extension cannot map a child frame's text
   position exactly through every parent document (padding, transforms). Use
   the CDP route for a secret or setup key in a same-site child frame.
-- **P** The `macos-broker` job runs the extension protocol tests
-  (`test_extension_route.py`) but no real Chromium browser with the built
-  extension. Google Chrome 137 and later ignore `--load-extension`. On macOS,
-  real-browser extension fills are proven in Firefox only.
-- **Q** The real-browser generated-password test runs in Firefox. In Chromium,
-  `fill-generated` uses the same password pin that the login tests prove.
+- **P** The `macos-extension-browser` job loads the built extension in
+  Chrome for Testing 153 on macOS 15 and runs the same suite as Linux, with
+  no skips. CI uses Chrome for Testing because Google Chrome 137 and later
+  ignore `--load-extension`; the extension, its host and the broker are the
+  same in Google Chrome, Helium, Edge, Chromium and Brave.
+- **Q** The real-browser test generates an entry, fills the new-password and
+  confirmation fields through the extension, checks that a spent handle
+  fills nothing, and saves the encrypted vault. Before this test, only
+  Firefox ran a real-browser generated-password fill.
 - **R** From fill extension 0.15.0 the popup fills an address with the agent
   identity pin's checks on each field (autocomplete grammar, input types,
   style guard, hit test through same-origin frames, one section and address
@@ -285,7 +300,10 @@ broker takes attached devices only (after 0.50.1).
   Linux job forces that order and proves the fix. The Windows job runs
   headless Edge, where the page keeps its focus while the popup is open, so
   the race cannot happen there: the fix is not proven in a headed Windows
-  browser. If a popup TOTP fill reports `field changed or hidden; nothing
+  browser. The macOS job runs headless Chrome for Testing and checks the
+  order as the Windows job does: it forces the race only when the popup
+  takes the page's focus, so the fix is not proven in a headed macOS browser
+  either. If a popup TOTP fill reports `field changed or hidden; nothing
   filled`, focus the field and choose the account again.
 - **T** `akdbx android setup` refuses on Windows, so the operator writes the
   device file by hand (private DACL and trusted folders required; 0.50.1 added
@@ -349,9 +367,9 @@ broker takes attached devices only (after 0.50.1).
   key file field is hidden when the broker runs with `--keyfile`. The
   hardware key is KeePassXC's YubiKey HMAC-SHA1 challenge-response for a
   KDBX 4 vault with an Argon2 KDF; the page shows a `ykman otp calculate`
-  command, and the user enters its response. The `linux` job tests the whole
-  page flow; the `windows` job tests only the Windows vault store with both
-  keys. See [Key file and hardware key](private-pages.md#key-file-and-hardware-key).
+  command, and the user enters its response. The `linux` and `macos-broker`
+  jobs test the whole page flow; the `windows` job tests only the Windows
+  vault store with both keys. See [Key file and hardware key](private-pages.md#key-file-and-hardware-key).
 - **AE** Attach mode only (`android setup --attach`, or a device file written
   by hand). The `macos-broker` job proves the host side on macOS: the kernel
   owner check of the loopback adb server and of the DevTools forward,

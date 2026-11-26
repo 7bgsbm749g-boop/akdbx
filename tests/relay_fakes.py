@@ -358,12 +358,18 @@ class FakeRelay:
             return sock.sendall(answer)
         self._json(sock, *answer)
 
-    def _upgrade(self, sock, headers):
+    def _upgrade(self, sock, headers, register=None):
+        """Answer 101. ``register`` runs first, under the send lock: the broker counts as connected
+        when it reads the 101, and no frame of this socket can go out before the 101."""
         accept = base64.b64encode(hashlib.sha1(headers['sec-websocket-key'].encode() + GUID).digest()).decode()
-        sock.sendall(('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
-                      f'Sec-WebSocket-Accept: {accept}\r\n\r\n').encode())
+        ws = FakeWS(sock)
+        with ws.lock:
+            if register is not None:
+                register(ws)
+            sock.sendall(('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+                          f'Sec-WebSocket-Accept: {accept}\r\n\r\n').encode())
         sock.settimeout(None)
-        return FakeWS(sock)
+        return ws
 
     def _certificate(self, sock, headers, body):
         broker = self._broker(headers)
@@ -392,10 +398,15 @@ class FakeRelay:
                 self.reject_connects -= 1
         if broker is None or refuse:
             return self._error(sock, 401, 'unauthorized')
-        ws = self._upgrade(sock, headers)
-        old, self.control = self.control, ws
-        if old is not None:
-            old.close(4000)
+        replaced = []
+
+        def register(ws):
+            # Before the 101: a phone request right after the broker connects finds this control socket.
+            replaced.append(self.control)
+            self.control = ws
+        ws = self._upgrade(sock, headers, register)
+        if replaced[0] is not None:
+            replaced[0].close(4000)
         self.control_connects += 1
         self.control_ready.set()
         try:
