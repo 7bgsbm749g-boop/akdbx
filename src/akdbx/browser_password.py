@@ -357,6 +357,10 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
     return found === element || !isInput && element.contains(found);
   };
   const opaque = value => !/^(?:transparent|rgba\([^)]*,\s*0(?:\.0*)?\))$/.test(value.trim());
+  // The last whole pixel at the end of a text box. Chromium hit-tests a box only
+  // up to round(right) - 1: with a fractional right edge below .5 (an inline
+  // <code> or <span> whose box ends with the text), right - 1 falls outside it.
+  const end = t => Math.round(t.right) - 1.5;
   const shown = r => {
     const s = getComputedStyle(element);
     if (!opaque(s.color) || !opaque(s.webkitTextFillColor || s.color) || parseFloat(s.fontSize) < 4 ||
@@ -370,7 +374,7 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
     return rects.length > 0 && rects.every(t => t.width > 0 && t.height > 0 && t.left >= 0 && t.top >= 0 &&
       t.right <= innerWidth && t.bottom <= innerHeight && t.left >= r.left - 1 && t.right <= r.right + 1 &&
       t.top >= r.top - 1 && t.bottom <= r.bottom + 1 &&
-      [t.left + 1, t.left + t.width / 2, t.right - 1].every(x => hit(x, t.top + t.height / 2)));
+      [t.left + 1, t.left + t.width / 2, end(t)].every(x => hit(x, t.top + t.height / 2)));
   };
   // Focus only, with no active selection anywhere: on X11 a selection is
   // published to PRIMARY.

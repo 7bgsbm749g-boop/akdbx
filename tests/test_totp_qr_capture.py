@@ -180,6 +180,16 @@ picture.src = 'https://evil.example.net/qr/key.png';'''),
     '/qr-covered': enrollment('<img id=qr src="/qr/key.png" alt="QR code"><div style="position:absolute;left:40px;top:60px;'
                               'width:60px;height:60px;background:#fff"></div>'),
     '/qr-text': enrollment('<code id=qr>' + KEY + '</code>'),
+    # An inline setup key whose text box ends below a half pixel: Chromium hit-tests the box only up to
+    # round(right) - 1, so a check point at right - 1 misses it. The page tunes the font size to get there.
+    '/text-inline-fraction': enrollment('<code id=qr>' + KEY + '</code>', '''
+const key = document.getElementById('qr');
+for (let size = 13; size < 19 && window.fraction === undefined; size += 1 / 16) {
+  key.style.fontSize = size + 'px';
+  const range = document.createRange(); range.selectNodeContents(key);
+  const right = range.getClientRects()[0].right;
+  if (right - Math.floor(right) > 0.05 && right - Math.floor(right) < 0.45) window.fraction = right - Math.floor(right);
+}'''),
     # The enrollment step inside a same-origin child frame (CDP route only; the extension reads the top document).
     '/qr-framed': '<!doctype html><meta charset="utf-8"><title>Synthetic settings</title><h1>Security</h1>'
                   '<iframe id=setup src="/qr-img" style="width:520px;height:420px;border:0"></iframe>'
@@ -456,6 +466,16 @@ def test_a_qr_pin_only_with_qr_capture_and_never_for_secret_capture(qr):
         assert pin(qr, url, **change) == failure(), change
     entry = PyKeePass(str(qr.path), password=MASTER).find_entries(title=VALUES['title'], first=True)
     assert entry.otp is None and PENDING_FIELD not in entry.custom_properties and 'client_secret' not in entry.custom_properties
+
+
+def test_an_inline_text_key_that_ends_below_a_half_pixel_captures_as_text(qr):
+    # Not a QR case: the text read pin's own end-of-text hit test, which capture-totp without --qr uses.
+    url = open_page(qr, '/text-inline-fraction')
+    assert 0 < qr.lab.evaluate('window.fraction') < .5
+    text = pin(qr, url, read_kind=None)
+    assert text['ok'], text
+    assert capture(qr, text['target'], read_kind=None) == receipt(qr)
+    assert 'secret=' + KEY in stored(qr)[1]
 
 
 @pytest.mark.parametrize('qr', ['cdp'], indirect=True)  # The extension reads only in the top document, by design.
