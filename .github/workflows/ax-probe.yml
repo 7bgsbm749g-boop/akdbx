@@ -1,0 +1,20 @@
+name: AppKit field feasibility
+on:
+  push:
+    branches: [t3/parity-macos-native]
+permissions:
+  contents: read
+jobs:
+  appkit:
+    runs-on: macos-15
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: |
+          swiftc tests/appkit_probe.swift -o "$RUNNER_TEMP/ax-probe"
+          "$RUNNER_TEMP/ax-probe" app &
+          target=$!
+          trap 'kill "$target" || true' EXIT
+          "$RUNNER_TEMP/ax-probe" "$target"
