@@ -12,6 +12,11 @@ BROWSERS = {'chrome.exe', 'chromium.exe', 'firefox.exe', 'msedge.exe', 'helium.e
             'waterfox.exe', 'librewolf.exe'}
 READONLY, PASSWORD = 0x800, 0x20
 CONVERTING = 0x8 | 0x10 | 0x400  # ES_UPPERCASE, ES_LOWERCASE, ES_OEMCONVERT
+# SMTO_BLOCK | SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT: a hung window fails at once.
+MESSAGE_FLAGS = 0x23
+# A responsive app can take longer than 100 ms to answer while its change
+# handlers run (WinForms after WM_SETTEXT). Callers recheck the fill deadline.
+MESSAGE_TIMEOUT_MS = 1000
 
 
 def edit_class(name):
@@ -113,7 +118,8 @@ class WindowsFields:
 
     def message(self, hwnd, message, wparam=0, lparam=0):
         value = C.c_size_t()
-        if not self.native.api.SendMessageTimeoutW(hwnd, message, wparam, lparam, 0x23, 100, C.byref(value)):
+        if not self.native.api.SendMessageTimeoutW(hwnd, message, wparam, lparam, MESSAGE_FLAGS,
+                                                   MESSAGE_TIMEOUT_MS, C.byref(value)):
             raise TargetError()
         return value.value
 

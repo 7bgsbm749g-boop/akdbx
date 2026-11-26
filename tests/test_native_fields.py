@@ -365,3 +365,21 @@ def test_linux_dispatch_guard_runs_after_editable_interface_acquisition():
         manager.deliver_password(pin, 'password', '', 'must-not-arrive', ORIGINS, lambda: True, 14)
     assert not error.value.started and not session.values
     pin.close()
+
+
+def test_windows_field_messages_wait_for_a_busy_but_responsive_control():
+    """A control message waits up to MESSAGE_TIMEOUT_MS; a hung window still fails at once."""
+    import types
+    from akdbx import windows_fields
+    calls = []
+
+    class Api:
+        def SendMessageTimeoutW(self, hwnd, message, wparam, lparam, flags, timeout, result):
+            calls.append((flags, timeout))
+            return 1
+
+    session = windows_fields.WindowsFields.__new__(windows_fields.WindowsFields)
+    session.native = types.SimpleNamespace(api=Api())
+    session.message(1, 0x000E)
+    assert calls == [(0x23, windows_fields.MESSAGE_TIMEOUT_MS)] and windows_fields.MESSAGE_TIMEOUT_MS >= 1000
+    assert windows_fields.MESSAGE_FLAGS & 0x2  # SMTO_ABORTIFHUNG
