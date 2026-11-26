@@ -122,6 +122,9 @@ jobs:
             tests/test_web_unlock.py::test_tailscale_identity_and_one_time_web_unlock \
             tests/test_import_totp.py::test_host_install_is_explicit_and_refuses_overwrite \
             tests/test_import_totp.py::test_host_install_records_invoked_script_without_path_lookup \
+            tests/test_import_totp.py::test_host_install_registration_is_private_under_shared_umask \
+            tests/test_import_totp.py::test_host_install_refuses_replaceable_manifest_directory \
+            tests/test_import_totp.py::test_macos_launcher_is_shared_only_when_identical \
             tests/test_import_totp.py::test_native_host_subprocess_to_private_broker \
             --basetemp="$RUNNER_TEMP/p" --junitxml="$RUNNER_TEMP/platform.xml"
           python -c 'import sys, xml.etree.ElementTree as E; sys.exit(bool(E.parse(sys.argv[1]).findall(".//skipped")))' "$RUNNER_TEMP/platform.xml"

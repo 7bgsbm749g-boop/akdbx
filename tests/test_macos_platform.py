@@ -98,39 +98,3 @@ def test_guided_setup_launches_locked_broker_and_installs_hosts(tmp_path, monkey
     finally:
         subprocess.run(['/bin/launchctl', 'bootout', job], capture_output=True, timeout=15)
 
-
-def test_qr_registration_is_private_under_shared_umask(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from akdbx import browser_import
-    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path))
-    exe = tmp_path / 'akdbx-browser-import'
-    exe.touch(mode=0o700)
-    monkeypatch.setattr(sys, 'argv', [str(exe)])
-    folder = tmp_path / 'NativeMessagingHosts'
-    folder.mkdir(mode=0o755)
-    args = SimpleNamespace(extension_id='a'*32, socket=tmp_path/'u', origin='https://localhost:9443',
-                           manifest_dir=folder)
-    saved = os.umask(0o002)
-    try:
-        browser_import.install_host(args)
-    finally:
-        os.umask(saved)
-    manifest = folder / (browser_import.HOST_NAME + '.json')
-    assert manifest.stat().st_mode & 0o777 == 0o600
-
-
-def test_capture_host_refuses_replaceable_manifest_directory(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-    from akdbx import browser_import
-    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path))
-    exe = tmp_path / 'akdbx-browser-import'
-    exe.touch(mode=0o700)
-    monkeypatch.setattr(sys, 'argv', [str(exe)])
-    folder = tmp_path / 'NativeMessagingHosts'
-    folder.mkdir()
-    folder.chmod(0o775)
-    args = SimpleNamespace(extension_id='a'*32, socket=tmp_path/'u', origin='https://localhost:9443',
-                           manifest_dir=folder)
-    with pytest.raises(RuntimeError, match='writable by other users'):
-        browser_import.install_host(args)
-    assert not browser_import.config_path().exists()

@@ -388,6 +388,72 @@ def test_host_install_is_explicit_and_refuses_overwrite(tmp_path,monkeypatch):
     assert manifest.read_bytes()==saved and path.read_bytes()==config
 
 
+def unix_install_args(tmp_path, monkeypatch, folder):
+    from types import SimpleNamespace
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'configuration'))
+    executable = tmp_path / 'akdbx-browser-import'
+    executable.write_text('#!/bin/sh\nexit 1\n')
+    executable.chmod(0o700)
+    monkeypatch.setattr(sys, 'argv', [str(executable)])
+    return executable, SimpleNamespace(extension_id='a'*32, socket=tmp_path/'u', origin='https://localhost:9443',
+                                       manifest_dir=folder)
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Unix native host registration')
+def test_host_install_registration_is_private_under_shared_umask(tmp_path, monkeypatch):
+    folder = tmp_path / 'NativeMessagingHosts'
+    folder.mkdir(mode=0o755)
+    executable, args = unix_install_args(tmp_path, monkeypatch, folder)
+    saved = os.umask(0o002)
+    try:
+        browser_import.install_host(args)
+    finally:
+        os.umask(saved)
+    manifest = folder / (browser_import.HOST_NAME + '.json')
+    assert manifest.stat().st_mode & 0o777 == 0o600
+    assert browser_import.config_path().stat().st_mode & 0o777 == 0o600
+    assert_registered_executable(json.loads(manifest.read_text()), executable)
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='Unix native host registration')
+def test_host_install_refuses_replaceable_manifest_directory(tmp_path, monkeypatch):
+    folder = tmp_path / 'NativeMessagingHosts'
+    folder.mkdir()
+    folder.chmod(0o775)
+    _, args = unix_install_args(tmp_path, monkeypatch, folder)
+    with pytest.raises(RuntimeError, match='writable by other users'):
+        browser_import.install_host(args)
+    assert not browser_import.config_path().exists()
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='the Finder launcher is macOS only')
+def test_macos_launcher_is_shared_only_when_identical(tmp_path, monkeypatch):
+    from akdbx.extension_host import linux_manifest_dir
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    executable, args = unix_install_args(tmp_path, monkeypatch, None)
+    origin, socket, name = args.origin, args.socket, browser_import.HOST_NAME + '.json'
+    for browser in ('chrome', 'edge'):
+        args.browser = browser
+        browser_import.install_host(args)
+        assert browser_import.registration_matches(browser, executable, origin, socket)
+    assert not browser_import.registration_matches('chrome', executable, 'https://localhost:9444', socket)
+    launcher = browser_import.config_path().with_name(browser_import.LAUNCHER)
+    script = launcher.read_bytes()
+    # Another console script would need another launcher; the shared one stays unchanged.
+    other = tmp_path / 'other' / 'akdbx-browser-import'
+    other.parent.mkdir()
+    other.write_text('#!/bin/sh\nexit 1\n')
+    other.chmod(0o700)
+    monkeypatch.setattr(sys, 'argv', [str(other)])
+    args.browser = 'helium'
+    with pytest.raises(ValueError, match='different private import launcher'):
+        browser_import.install_host(args)
+    assert not (linux_manifest_dir('helium') / name).exists() and launcher.read_bytes() == script
+    assert not browser_import.registration_matches('chrome', other, origin, socket)
+    launcher.chmod(0o720)
+    assert not browser_import.registration_matches('chrome', executable, origin, socket)
+
+
 @pytest.mark.parametrize('competing_install', [False, True])
 def test_host_install_records_invoked_script_without_path_lookup(tmp_path, competing_install):
     """An absolute console command must not select a missing or competing PATH host."""
