@@ -270,6 +270,16 @@ def test_native_identity_fields_accept_saved_unicode_joiners(value):
     pin.close()
 
 
+def test_native_identity_notify_page_is_refused_by_name_before_any_value():
+    from akdbx.browser_card import NOTIFY_PAGE_REFUSED
+    manager, session, receipt, _ = setup('identity', field='email')
+    pin = manager.take(receipt['target'])
+    result = manager.fill(pin, 'synthetic@example.test', 'email', lambda: True, 14, notify_page=True)
+    assert result == NOTIFY_PAGE_REFUSED and 'an app field has none' in result['error']
+    assert session.values == {}
+    pin.close()
+
+
 @pytest.mark.parametrize('change', ['deadline', 'caller', 'focus'])
 def test_authorization_rechecked_inside_backend_before_dispatch(change):
     manager, session, receipt, now = setup()

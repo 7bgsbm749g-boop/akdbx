@@ -26,7 +26,7 @@ Supported controls:
   `native_field_accessibility_granted: true`. Each control must be visible at
   its center. An unmasked field must support a character count. Username, TOTP,
   SMS code and identity fills require an unmasked writable field. Password and
-  combined login modes (after 0.51.0) require a stock secure field
+  combined login modes (0.52.0+) require a stock secure field
   (`AXSecureTextField`); card fills accept either. Read pins require selectable,
   read-only, unmasked text with a bounded accessible range. Browser windows
   and embedded web areas are refused. A window that contains a WebKit view
@@ -119,7 +119,10 @@ field), then use `fill-card --target NATIVE_TARGET --field cc-number`. For an
 address, pin `--mode identity --field address-line1`, then use `fill-identity`
 with the same field. The existing expiry/year and telephone formats still
 apply. Multiline street addresses require a multiline native control.
-`--notify-page` is unavailable for native controls.
+`--notify-page` is unavailable for native controls: the broker refuses it
+before any value (from 0.52.0 the error says `--notify-page needs a web
+page, and an app field has none`). The pin is used up; pin again and fill
+without the option.
 
 For a texted verification code, require `code` in `native_field_modes`. Pin
 the focused unmasked input with `--mode code` and the app's verified service

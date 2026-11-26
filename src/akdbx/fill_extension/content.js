@@ -362,10 +362,9 @@
   //    in the field or the transparent backdrop of a popover elsewhere also make
   //    it false. Then the service worker runs a pixel challenge: a user-origin
   //    rule paints this one element in a random colour for a moment, and a
-  //    screenshot of the tab must show that colour at a field's checked point,
-  //    or at every pixel of a read's checked areas. Only this element can show it
-  //    there, and only if nothing is painted over it.
-  const OCCLUSION_MS = 400, PAINT_MS = 1000, MAX_AREAS = 200;
+  //    screenshot of the tab must show that colour at the checked points. Only
+  //    this element can show it there, and only if nothing is painted over it.
+  const OCCLUSION_MS = 400, PAINT_MS = 1000, MAX_POINTS = 600;
 
   // The same-origin documents above this one, each with the frame element that
   // holds the next one down, up to the top; null when one cannot be reached.
@@ -431,46 +430,54 @@
     return found.length === 1 && found[0] === el ? path : null;
   }
 
-  // The areas of a read pin, in the top viewport: the service worker requires the
-  // challenge colour at every pixel of each one. The challenge paints the element's
-  // padding box and its text in that one colour, so an area that nothing covers is
-  // uniform; a cover with gaps at fixed points (slits, a mesh) still changes pixels
-  // between them. Each area stays inside the padding box and clear of a focus ring
-  // (the challenge colour paints neither the border nor an outline): for a text
-  // input its whole inner box; for other text each line box, clipped to it.
-  function inner(el, insetX, insetY) {
-    const box = el.getBoundingClientRect(), style = getComputedStyle(el);
-    const area = [box.left + parseFloat(style.borderLeftWidth) + insetX, box.top + parseFloat(style.borderTopWidth) + insetY,
-      box.right - parseFloat(style.borderRightWidth) - insetX, box.bottom - parseFloat(style.borderBottomWidth) - insetY];
-    return area[2] > area[0] && area[3] > area[1] ? area : null;
-  }
-
-  function textAreas(el) {
-    const edge = 4, box = inner(el, edge, edge);
-    if (!box) return null;
-    if (el instanceof HTMLInputElement) return [box];
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    const areas = [];
-    for (const rect of range.getClientRects()) {
-      if (!(rect.width > 0 && rect.height > 0)) continue;  // An empty fragment shows no text.
-      const area = [Math.max(rect.left, box[0]), Math.max(rect.top, box[1]),
-        Math.min(rect.right, box[2]), Math.min(rect.bottom, box[3])];
-      // A line outside the checked box has no proof: refuse.
-      if (!(area[2] > area[0] && area[3] > area[1])) return null;
-      areas.push(area);
+  // The points of a read pin, inside the element's padding box and clear of a focus
+  // ring (the challenge colour paints neither the border nor an outline): for a
+  // text input its start, centre and end, as the hit tests; for other text a point
+  // every few pixels along each line, so a narrow cover over the text also refuses.
+  function textPoints(el) {
+    const box = el.getBoundingClientRect(), style = getComputedStyle(el), edge = 4;
+    const inner = {left: box.left + parseFloat(style.borderLeftWidth) + edge, right: box.right - parseFloat(style.borderRightWidth) - edge,
+      top: box.top + parseFloat(style.borderTopWidth) + edge, bottom: box.bottom - parseFloat(style.borderBottomWidth) - edge};
+    if (!(inner.right >= inner.left) || !(inner.bottom >= inner.top)) return null;
+    const input = el instanceof HTMLInputElement;
+    let rects = [box];
+    if (!input) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      rects = Array.from(range.getClientRects());
     }
-    return areas.length && areas.length <= MAX_AREAS ? areas : null;
+    if (!rects.length || rects.length * 3 > MAX_POINTS) return null;
+    const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
+    const each = Math.floor(MAX_POINTS / rects.length);
+    const points = [];
+    for (const rect of rects) {
+      const y = clamp(rect.top + rect.height / 2, inner.top, inner.bottom);
+      const from = clamp(rect.left + edge, inner.left, inner.right), to = clamp(rect.right - edge, inner.left, inner.right);
+      const count = input ? 3 : clamp(Math.ceil((to - from) / 6) + 1, 3, each);
+      for (let i = 0; i < count; ++i) points.push([from + (to - from) * i / (count - 1), y]);
+    }
+    return points;
   }
 
-  // The area of a QR read pin: its padding box from 10% to 90%, like the pin's own
-  // hit test, clear of a focus ring and of rounded corners, where the inset
-  // challenge colour does not paint. The challenge rule hides the code's own pixels
-  // (see the service worker), so every pixel of it must show the challenge colour.
-  function gridArea(el) {
-    const box = el.getBoundingClientRect();
-    const area = inner(el, Math.max(4, box.width * 0.1), Math.max(4, box.height * 0.1));
-    return area ? [area] : null;
+  // The points of a QR read pin: a grid over the padding box, at most 24 a side,
+  // from 10% to 90% of it like the pin's own hit test: clear of a focus ring and
+  // of rounded corners, where the inset challenge colour does not paint. The
+  // challenge rule hides the code's own pixels (see the service worker), so each
+  // point must show the challenge colour.
+  function gridPoints(el) {
+    const box = el.getBoundingClientRect(), style = getComputedStyle(el);
+    const x = Math.max(4, box.width * 0.1), y = Math.max(4, box.height * 0.1);
+    const left = box.left + parseFloat(style.borderLeftWidth) + x, right = box.right - parseFloat(style.borderRightWidth) - x;
+    const top = box.top + parseFloat(style.borderTopWidth) + y, bottom = box.bottom - parseFloat(style.borderBottomWidth) - y;
+    if (!(right > left) || !(bottom > top)) return null;
+    const count = size => Math.min(24, Math.max(3, Math.ceil(size / 6) + 1));
+    const columns = count(right - left), rows = count(bottom - top), points = [];
+    for (let i = 0; i < columns; ++i) {
+      for (let j = 0; j < rows; ++j) {
+        points.push([left + (right - left) * i / (columns - 1), top + (bottom - top) * j / (rows - 1)]);
+      }
+    }
+    return points.length <= MAX_POINTS ? points : null;
   }
 
   function ownPaint(el) {
@@ -496,8 +503,7 @@
   }
 
   // What the service worker needs for a pixel challenge: the element's selector
-  // and the point (a field) or the areas (a read) to look at, in the top
-  // document's viewport. A processor frame
+  // and the points to look at, in the top document's viewport. A processor frame
   // cannot see its parents: it gives its own point, and the merchant-side guard
   // maps it (guardPoint).
   function challengeSpec(id) {
@@ -511,8 +517,8 @@
         // the pixels could not tell it from the text: a secret element that draws a
         // ::before, ::after or list marker refuses.
         if (ownPaint(item.el)) return null;
-        const areas = item.state.check() && (item.qr ? gridArea(item.el) : textAreas(item.el));
-        return areas ? {path, areas, view: [innerWidth, innerHeight], qr: item.qr} : null;
+        const points = item.state.check() && (item.qr ? gridPoints(item.el) : textPoints(item.el));
+        return points ? {path, points, view: [innerWidth, innerHeight], qr: item.qr} : null;
       }
       const point = item.state.geometry();
       if (!point) return null;

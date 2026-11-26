@@ -1029,14 +1029,14 @@ def _command(args) -> int:
         return native_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                           expected_unlock_origin=args.unlock_origin))
     if args.command in card_cli.COMMANDS:
-        return card_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
-                                                        expected_unlock_origin=args.unlock_origin))
+        return card_cli.run(args, lambda payload, **kwargs: request(
+            args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))
     if args.command in pairing_cli.COMMANDS:
         return pairing_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                            expected_unlock_origin=args.unlock_origin))
     if args.command in identity_cli.COMMANDS:
-        return identity_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
-                                                            expected_unlock_origin=args.unlock_origin))
+        return identity_cli.run(args, lambda payload, **kwargs: request(
+            args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))
     if args.command == android_cli.COMMAND:
         return android_cli.run(args, lambda payload, **kwargs: request(
             args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))
@@ -1044,8 +1044,8 @@ def _command(args) -> int:
         return secret_cli.run(args, lambda payload, **kwargs: request(
             args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))
     if args.command in sms_cli.COMMANDS:
-        return sms_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
-                                                      expected_unlock_origin=args.unlock_origin))
+        return sms_cli.run(args, lambda payload, **kwargs: request(
+            args.socket, payload, broker_uid=args.broker_uid, expected_unlock_origin=args.unlock_origin, **kwargs))
     if args.command in capture_cli.COMMANDS:
         return capture_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                           expected_unlock_origin=args.unlock_origin))
@@ -1163,6 +1163,7 @@ def _command(args) -> int:
     identity_kind = 'SSO' if args.command == 'create-sso-entry' else 'passwordless'
     track_send = args.command in {'fill', 'fill-generated', 'fill-totp', 'commit-password'}
     send_started = False
+    reply = {}  # A fill that may reach an Android pin waits for the helper run.
 
     def mark_send():
         nonlocal send_started
@@ -1324,6 +1325,7 @@ def _command(args) -> int:
             if args.command in {'fill', 'fill-generated', 'fill-totp'}:
                 # Capability preflight does not use up the short start deadline.
                 payload['start_deadline'] = time.monotonic() + FILL_START_TIMEOUT
+                reply = android_route.fill_reply(capabilities)
         if args.command in IDENTITY_CREATES:
             capabilities = request(args.socket, {'action': 'ping'}, broker_uid=args.broker_uid,
                                    expected_unlock_origin=args.unlock_origin)
@@ -1397,7 +1399,7 @@ def _command(args) -> int:
         response = request(
             args.socket, payload, broker_uid=args.broker_uid,
             expected_unlock_origin=args.unlock_origin,
-            **({'before_send': mark_send} if track_send else {}),
+            **({'before_send': mark_send} if track_send else {}), **reply,
         )
     except (FileNotFoundError, ConnectionRefusedError):
         print("broker is not running", file=sys.stderr)

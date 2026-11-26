@@ -187,7 +187,7 @@ def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extens
             # A page is HTML text; another resource is (bytes, content type, extra headers).
             body, kind, headers = body if isinstance(body, tuple) else (body, 'text/html; charset=utf-8', {})
             data = body if isinstance(body, bytes) else body.encode()
-            self.send_response(200)
+            self.send_response(302 if 'Location' in headers else 200)
             self.send_header('Content-Type', kind)
             for name, value in headers.items():
                 self.send_header(name, value)

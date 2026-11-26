@@ -18,6 +18,7 @@ the routes and modes that this broker offers now (`fill_routes`,
 | --- | --- |
 | ✅ `0.x.0` · `job` | Supported from release `0.x.0`. `job` is the CI job that runs a real browser or app test of this operation on this platform. |
 | ✅ `0.x.0` · contract test (`job`) | Supported, but `job` tests it only with a simulated control, window or device, not a real app. |
+| ✅ `0.x.0` · real emulator test | Supported. `tests/test_android_emulator.py` proves it on a real Android emulator through the real broker and CLI. That test needs KVM, so it runs by hand on a Linux host, not in CI (note X). |
 | ✅ `0.x.0` · no CI | Supported by the same code as the other platforms, but no CI job tests it on this platform. Treat it as unproven there. |
 | ⛔ by design | The broker refuses it on purpose. The note gives the reason. |
 | ◼ inherent | The platform or route cannot do it safely. The note gives the reason. |
@@ -25,7 +26,7 @@ the routes and modes that this broker offers now (`fill_routes`,
 | — | The operation does not exist on this route. |
 
 `<0.16` means the feature shipped before the first release tag (`v0.16.0`).
-`after 0.50.1` and `after 0.51.0` mean merged on `main` for the next release after that version.
+`after 0.50.1` and `from 0.52.0` mean merged on `main` for the next release after that version.
 `v0.50.0` was tagged but never published (its release checks failed), so the
 features of PRs #81–#96 first ship in 0.50.1, together with key-file and
 hardware-key unlock (#98).
@@ -52,7 +53,7 @@ CI jobs (all in `.github/workflows/`):
 | Route | Linux X11 | Linux Wayland | Windows 10/11 | macOS |
 | --- | --- | --- | --- | --- |
 | [Window pin](#window-pin-pin-target) (`pin-target`) | ✅ 0.9.0: usernames, TOTP, SMS codes | ✅ XWayland windows only (0.49.0); ◼ native Wayland surfaces (D) | ✅ 0.17.0, HWND: usernames, TOTP, SMS codes | ◼ unavailable (E) |
-| [Native field](#native-field-pin-native-target) (`pin-native-target`) | ✅ 0.44.0, AT-SPI | ✅ 0.44.0, AT-SPI | ✅ 0.44.0 Win32 Edit; 0.50.1 WinForms, WPF | ✅ 0.50.1, Accessibility; passwords after 0.51.0 (F) |
+| [Native field](#native-field-pin-native-target) (`pin-native-target`) | ✅ 0.44.0, AT-SPI | ✅ 0.44.0, AT-SPI | ✅ 0.44.0 Win32 Edit; 0.50.1 WinForms, WPF | ✅ 0.50.1, Accessibility; passwords from 0.52.0 (F) |
 | [CDP](#cdp-route) (`--route cdp`) | ✅ <0.16 | ✅ <0.16 | ✅ 0.17.0 | ✅ 0.50.1 |
 | [Extension, Chromium family](#extension-route-chromium-family) | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.43.0 (P) |
 | [Extension, Firefox 153+](#extension-route-firefox) | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 |
@@ -90,8 +91,8 @@ assertion. Check `native_field_modes` in `status`.
 | Operation | Linux X11 | Linux Wayland | Windows | macOS |
 | --- | --- | --- | --- | --- |
 | Username | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms and WPF · `windows` (J) | ✅ 0.50.1 · `macos-broker` |
-| Password, login | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms TextBox and WPF PasswordBox · `windows` (J) | ✅ after 0.51.0 · `macos-broker` (F) |
-| Generated password | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · no CI | ✅ after 0.51.0 · `macos-broker` (F) |
+| Password, login | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms TextBox and WPF PasswordBox · `windows` (J) | ✅ from 0.52.0 · `macos-broker` (F) |
+| Generated password | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · no CI | ✅ from 0.52.0 · `macos-broker` (F) |
 | TOTP | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
 | Card | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
 | Identity | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
@@ -145,7 +146,7 @@ install from 0.49.0.
 | `capture-totp`, text key (top document) | ✅ 0.35.0 (ext 0.6.0 for grouped keys) · `linux-extension-browser` | ✅ 0.35.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
 | `capture-totp`, QR code (top document) | ✅ 0.50.1 (ext 0.14.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` |
 | SMS code | ✅ 0.50.1 (ext 0.13.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` |
-| Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0); address with the identity pin's checks and texted (SMS) code after 0.51.0 (ext 0.15.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ login and card 0.43.0, TOTP 0.49.0; address and texted code after 0.51.0 · `macos-extension-browser` (R) (S) |
+| Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0); address with the identity pin's checks and texted (SMS) code from 0.52.0 (ext 0.15.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ login and card 0.43.0, TOTP 0.49.0; address and texted code from 0.52.0 · `macos-extension-browser` (R) (S) |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
 ## Extension route, Firefox
@@ -165,9 +166,9 @@ runs as a temporary add-on; see [Firefox setup](firefox.md).
 | Secret read, top document | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
 | Secret read, child frame | ⛔ (O) | ⛔ (O) | ⛔ (O) |
 | `capture-totp`, text key | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
-| `capture-totp`, QR code (top document) | ✅ after 0.51.0 (ext 0.14.2) · `firefox-extension-browser` (V) | ✅ after 0.51.0 · `firefox-extension-browser` (V) | ✅ after 0.51.0 · `firefox-extension-browser` (V) |
+| `capture-totp`, QR code (top document) | ✅ from 0.52.0 (ext 0.14.2) · `firefox-extension-browser` (V) | ✅ from 0.52.0 · `firefox-extension-browser` (V) | ✅ from 0.52.0 · `firefox-extension-browser` (V) |
 | SMS code | ✅ 0.50.1 (ext 0.13.0) · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` |
-| Popup human click | ✅ login 0.47.0; address and texted (SMS) code after 0.51.0 (ext 0.15.0) · `firefox-extension-browser`; TOTP, card: no Firefox test (R) | ✅ login, address, texted code · `firefox-extension-browser` | ✅ login, address, texted code · `firefox-extension-browser` |
+| Popup human click | ✅ login 0.47.0; address and texted (SMS) code from 0.52.0 (ext 0.15.0) · `firefox-extension-browser`; TOTP, card: no Firefox test (R) | ✅ login, address, texted code · `firefox-extension-browser` | ✅ login, address, texted code · `firefox-extension-browser` |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
 ## Android route (`akdbx android`)
@@ -180,15 +181,15 @@ broker takes attached devices only (after 0.50.1).
 
 | Operation | Linux host (X11 or Wayland) | Windows host | macOS host |
 | --- | --- | --- | --- |
-| Username, password, login | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
-| Generated password | ✅ 0.50.1 · contract test (`linux`) (X) (Y) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · no CI (AE) |
-| TOTP | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
-| Card, identity | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
+| Username, password, login | ✅ 0.36.0 · contract test (`linux`); Chrome pages: real emulator test (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
+| Generated password | ✅ 0.50.1 · contract test (`linux`); Chrome pages: real emulator test, also right after a cold boot (X) (Y) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · no CI (AE) |
+| TOTP | ✅ 0.36.0 · contract test (`linux`); Chrome pages: real emulator test (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
+| Card, identity | ✅ 0.50.1 · contract test (`linux`); Chrome pages: real emulator test (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
 | Card processor iframes, child-frame login | ✗ (Z) | ✗ (Z) | ✗ (Z) |
-| notify-page (identity) | ✅ 0.50.1 Chrome pages · no CI; ⛔ app fields (K) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 Chrome pages · no CI (AE) |
-| Secret read, `capture-totp` text key | ✅ 0.50.1 Chrome pages · no CI (AF) | ✅ 0.50.1 Chrome pages · no CI (T) | ✅ after 0.50.1 Chrome pages · no CI (AE) (AF) |
+| notify-page (identity) | ✅ 0.50.1 Chrome pages · real emulator test (X); ⛔ app fields (K) | ✅ 0.50.1 · no CI (T); ⛔ app fields (K) | ✅ after 0.50.1 Chrome pages · no CI (AE); ⛔ app fields (K) |
+| Secret read, `capture-totp` text key | ✅ 0.50.1 Chrome pages · real emulator test (X) (AF) | ✅ 0.50.1 Chrome pages · no CI (T) | ✅ after 0.50.1 Chrome pages · no CI (AE) (AF) |
 | `capture-totp`, QR code | ✗ not built | ✗ not built | ✗ not built |
-| SMS code | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
+| SMS code | ✅ 0.50.1 · contract test (`linux`); Chrome pages: real emulator test (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
 | Fields in an app's own web view | ◼ (AB) | ◼ (AB) | ◼ (AB) |
 | Managed on-demand emulator (`android setup --create`) | ✅ 0.37.0 (x86-64, KVM, systemd 254+) | ✗ Linux only (AA) | ✗ Linux only (AA) |
 | Popup human click, agent desktop slots | — | — | — |
@@ -260,8 +261,10 @@ job, for the reason given. Only `test_relay_integration.py` runs in no job.
   PasswordBox use UI Automation (`native_field_windows_uia: true`). UWP, WinUI
   and Qt on Windows are not proven, and the broker refuses other UI
   Automation providers.
-- **K** Refused: a native control has no page to notify; `--notify-page`
-  refuses before delivery.
+- **K** Refused: a native control or an Android app field has no page to
+  notify; `--notify-page` refuses before delivery. From 0.52.0 the refusal
+  names the option (`--notify-page needs a web page, and an app field has
+  none`); before, it was the generic `target unavailable` refusal.
 - **L** Refused by design: the caller asserts the service URL, and the OS
   cannot verify that a website at that origin showed the setup key. The
   broker consumes the pin and saves nothing.
@@ -318,18 +321,36 @@ job, for the reason given. Only `test_relay_integration.py` runs in no job.
   `commit-totp`. They also show that the pin refuses another origin's image
   (with or without CORS), the redirect and a tainted canvas, with and without
   `<all_urls>`. Two codes or a changed element refuse, and so does a code that
-  is not TOTP.
+  is not TOTP. From fill extension 0.15.1 (and on the CDP route from 0.52.0),
+  an `<img>` that is not a `data:` URL and loads in CORS mode refuses on every
+  route. After a redirect to another origin that allows the read, its canvas
+  stays origin-clean. A canvas
+  tainted after the pin refuses even with identical pixels.
 - **W** Safari needs a containing Apple app, a Safari native-messaging adapter
   and Apple signing. A permanently installed (signed) Firefox add-on also
   needs the owner's Mozilla AMO credentials; until then Firefox uses a
   temporary add-on.
-- **X** CI checks the Android route with a simulated device. A stock Android
-  15 emulator on Linux ran the real fills before release; that run is not in
-  CI.
-- **Y** Known bug, not fixed yet: on a managed emulator that has just started
-  from a cold boot, `fill-generated` was seen twice to end with `connection
-  lost`. Treat that as an uncertain fill: check the field's result first, and
-  do not retry automatically.
+- **X** CI checks the Android route with a simulated device. From 0.52.0,
+  `tests/test_android_emulator.py` also proves every Chrome-page operation
+  on a real Android 15 Google Play emulator (Chrome 124) through the real
+  broker, CLI and helper: login, generated password through commit, TOTP,
+  card, identity with and without `--notify-page`, SMS code, `capture-secret`
+  through save, text-key `capture-totp` through `commit-totp`, and their
+  refusals. It needs KVM, so it runs by hand on a Linux host and is not in
+  CI. App fields have no real-device test.
+- **Y** Fixed from 0.52.0. Right after a cold boot, the helper's typed check
+  takes 5 to 10 seconds (about 1 second warm), and `fill-generated` waited
+  only 5 seconds for the broker's answer. Each fill then ended with
+  `autofill outcome uncertain: connection lost after request` (6 of 6 cold
+  boots before the fix), and the broker stopped before the value because
+  its caller had left. With Android devices configured, the fill commands
+  now wait up to 60 seconds, as `android fill` does; 10 of 10 cold boots
+  filled and saved. Login, password, generated-password and TOTP pins fill
+  right after a cold boot because the start deadline bounds only the first
+  key. Card, identity, SMS-code and read pins must finish the whole check
+  within the 4-second start deadline, so right after a cold boot they may
+  be refused `not-started` with nothing filled or read (3 of 5 identity
+  fills in the lab); a new pin 10 seconds later filled each time.
 - **Z** Not built: Android fields in frames are refused.
 - **AA** Not built: the managed emulator uses systemd user units and KVM.
   On macOS and Windows, setup and `android wake` refuse it, and `status`
@@ -356,8 +377,11 @@ job, for the reason given. Only `test_relay_integration.py` runs in no job.
   receives zero bytes. Inherent: no device or emulator runs in that CI,
   because GitHub's arm64 macOS runners have no nested virtualization. A macOS
   broker with a real device or emulator was not tested.
-- **AF** The `linux` and `macos-broker` jobs test only the Android read pin
-  and its refusals (an unverified DevTools peer, a QR capture, covered text)
-  with a simulated device; no test completes a secret read or a text-key
-  `capture-totp` through an Android pin. The broker refuses a read pin on an
-  app field, so reads work on Chrome pages only.
+- **AF** The `linux` and `macos-broker` jobs test the Android read pin and
+  its refusals (an unverified DevTools peer, a QR capture, covered text)
+  with a simulated device. From 0.52.0 the real emulator test (X) completes
+  `capture-secret` from pin through save and a text-key `capture-totp`
+  through the pending code and `commit-totp`, with the CDP route's refusals:
+  another site, a used pin, a changed value or key, covered text, an
+  editable field, prose. The broker refuses a read pin on an app field, so
+  reads work on Chrome pages only.

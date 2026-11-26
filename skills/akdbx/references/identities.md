@@ -159,6 +159,8 @@ For a form that tracks edits, use
 on the pinned field after setting its value. The page can validate, advance,
 or submit the form in response. Check its non-secret state before continuing.
 This option requires fill extension 0.9.0 or newer on the extension route.
+It also works on Android Chrome pages; native controls and Android app fields
+refuse it, because they have no page to notify.
 
 ### Field inside a clipped drawer or modal (0.36.3)
 

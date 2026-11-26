@@ -15,7 +15,7 @@ fields and a separate pin and fill command.
 
 Saved and generated passwords need a DOM pin (`chromium-password-dom-v1` on
 the CDP route, `extension-dom-v1` on the extension route), a native field pin
-(on macOS after 0.51.0) or an Android pin. A browser
+(on macOS from 0.52.0) or an Android pin. A browser
 window pin cannot identify an address bar, DOM field, tab, or origin. The broker
 therefore refuses password and login fills through `pin-target`, including old
 clients. There is no password keyboard fallback.

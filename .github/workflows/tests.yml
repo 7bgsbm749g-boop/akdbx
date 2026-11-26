@@ -188,7 +188,7 @@ jobs:
       - env:
           AKDBX_TEST_FOREIGN_UID: '1'  # Android: a foreign adb server gets zero bytes.
           AKDBX_REQUIRE_XVFB: '1'  # The X11 key-event transport and window-pin SMS fills on real Xvfb windows must not skip.
-        run: python -m pytest -q tests/test_vault_lock.py tests/test_protocol.py tests/test_cli.py tests/test_broker.py tests/test_writes.py tests/test_web_unlock.py tests/test_totp.py tests/test_target.py tests/test_target_guards.py tests/test_password_frames_policy.py tests/test_additional_urls.py tests/test_save_secret.py tests/test_secret_sinks.py tests/test_generated_native_clock.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_local_https.py tests/test_windows_native.py tests/test_extension_route.py tests/test_relay.py tests/test_relay_integration.py tests/test_setup.py tests/test_page_url_file.py tests/test_broker_identity.py tests/test_browser_slots.py tests/test_extension_launcher.py tests/test_pairing_notifications.py tests/test_android_route.py tests/test_android_lifecycle.py tests/test_entry_organize.py tests/test_entry_edit.py tests/test_unlock_keys.py tests/test_entry_creation.py tests/test_write_readiness.py tests/test_sms.py tests/test_sms_reading.py tests/test_sms_real_formats.py tests/test_sms_notifications.py tests/test_page_lifetime.py --basetemp="${{ runner.temp }}/akdbx-tests"
+        run: python -m pytest -q tests/test_vault_lock.py tests/test_protocol.py tests/test_cli.py tests/test_broker.py tests/test_writes.py tests/test_web_unlock.py tests/test_totp.py tests/test_target.py tests/test_target_guards.py tests/test_password_frames_policy.py tests/test_additional_urls.py tests/test_save_secret.py tests/test_secret_sinks.py tests/test_generated_native_clock.py tests/test_windows_target.py tests/test_windows_unlock.py tests/test_local_https.py tests/test_windows_native.py tests/test_extension_route.py tests/test_relay.py tests/test_relay_integration.py tests/test_setup.py tests/test_page_url_file.py tests/test_broker_identity.py tests/test_browser_slots.py tests/test_extension_launcher.py tests/test_pairing_notifications.py tests/test_android_route.py tests/test_android_lifecycle.py tests/test_android_emulator.py tests/test_entry_organize.py tests/test_entry_edit.py tests/test_unlock_keys.py tests/test_entry_creation.py tests/test_write_readiness.py tests/test_sms.py tests/test_sms_reading.py tests/test_sms_real_formats.py tests/test_sms_notifications.py tests/test_page_lifetime.py --basetemp="${{ runner.temp }}/akdbx-tests"
       - run: node --test tests/test_fill_extension.js
       # The bundled Android helper dex must be the build of its Java source.
       - name: Android helper build is reproducible
@@ -358,17 +358,6 @@ jobs:
           browser="$RUNNER_TEMP/cft/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
           "$browser" --version
           echo "AKDBX_TEST_EXTENSION_BROWSER=$browser" >> "$GITHUB_ENV"
-      # TEMPORARY (remove before merge): how Chrome on macOS paints the /secret-inert-text cover.
-      - name: Probe the inert-text cover
-        continue-on-error: true
-        run: |
-          umask 077
-          AKDBX_PROBE_DIR="$RUNNER_TEMP/probe" python -m pytest -q -s tests/probe_cover.py --basetemp="$HOME/probe"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: macos-cover-probe
-          path: ${{ runner.temp }}/probe
       - name: Extension route in Chrome for Testing
         run: |
           umask 077
