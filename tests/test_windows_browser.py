@@ -148,7 +148,7 @@ def test_ambiguous_or_missing_kernel_rows_refuse(case):
         windows_browser.server_pid(12345, 54321, rows)
 
 
-@pytest.mark.parametrize('case', ['other-user', 'pid-reused', 'not-loopback', 'table-unavailable', 'oversized-table',
+@pytest.mark.parametrize('case', ['other-user', 'different-integrity', 'pid-reused', 'not-loopback', 'table-unavailable', 'oversized-table',
                                   'slow-table'])
 def test_untrusted_peer_receives_no_websocket_bytes(profile, monkeypatch, case):
     """An owned stale port file cannot authorize a different peer."""
@@ -177,6 +177,9 @@ def test_untrusted_peer_receives_no_websocket_bytes(profile, monkeypatch, case):
             def refuse(_pid):
                 raise PermissionError('Windows peer must have the same user and desktop session')
             monkeypatch.setattr(security, 'verify_process', refuse)
+        elif case == 'different-integrity':
+            levels = iter([0x3000, 0x2000])
+            monkeypatch.setattr(security, 'integrity_level', lambda _: next(levels))
         elif case == 'pid-reused':
             answers = iter([os.getpid(), os.getpid() + 4])
             monkeypatch.setattr(windows_browser, 'server_pid', lambda *_: next(answers))

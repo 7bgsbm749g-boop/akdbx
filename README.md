@@ -161,7 +161,7 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
   (0.23.0+), optionally reached from other tailnet devices through Tailscale
   Serve or from any device through the akdbx relay (0.26.0+), or the earlier
   Tailscale Serve Unix-socket route.
-- **Windows** (0.17.0+): the same features. It uses local named pipes, Windows
+- **Windows** (0.17.0+): native broker and browser fills. It uses local named pipes, Windows
   access checks, a loopback HTTPS page (from 0.22.0 also reachable from other
   tailnet devices through Tailscale Serve, from 0.26.0 from any device through
   the akdbx relay) and directed Unicode window messages for

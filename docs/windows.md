@@ -4,12 +4,12 @@ Use native 64-bit Python 3.11 or newer on Windows 10/11 with an interactive
 desktop. WSL does not supply the native Windows backend. Install the same project;
 `pywin32` is installed on Windows and `python-xlib` is installed only on Linux.
 
-From 0.17.0 the Windows backend has the Linux feature set: password, login and
+From 0.17.0 the Windows backend supports password, login and
 generated-password fills through the Chromium DOM route, the full password-write
 workflow, cards, merge, snapshot admission and durable unlock notifications.
 The checks that prove each of these are in
 [Validation before production use](#validation-before-production-use). Three
-checks still need a person or a second account; see [Limits](#limits). From
+checks still need a person or a second account; see [desktop checks](#checks-that-need-a-person-or-a-second-account). From
 0.22.0 Windows also supports
 [unlock from another device](#unlock-from-another-device) through Tailscale
 Serve and the [browser native host for authenticator capture](#authenticator-capture-native-host).
@@ -22,6 +22,14 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
   exact HTTPS URL, page ID, main-frame ID (or a same-site child-frame route),
   selector, autocomplete token rules and a single-use 30-second target token.
   The broker must start with `--password-browser-profile`.
+- CDP TOTP fills to a pinned one-time-code field, including pending enrollment.
+  An explicit password purpose and `--allow-autocomplete-off` permit a password
+  field whose autocomplete attribute is exactly `off`.
+- Identity and address fills to retained DOM fields. `--notify-page` sends the
+  input and change events after an identity fill. SMS codes can fill a pinned
+  code field on the CDP route.
+- Read pins for `capture-secret` and `capture-totp`. Secret sinks use a
+  same-user named pipe. See [Secret sinks](secret-sinks.md#windows-named-pipe).
 - Username and TOTP fills to a pinned window (`win32-char-v1`). A window pin
   never receives a password: a browser's address bar shares its page's
   top-level HWND and focus identity, so an HWND pin cannot prove that a
@@ -70,9 +78,10 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
   the same desktop session. Run normally, without elevation. Secure desktop/UAC
   prompts and apps at a higher integrity level are not supported. Services
   without an interactive desktop cannot fill applications.
-- Card processor iframes (Adyen, Computop, Stripe) use the same code as Linux,
-  where CI tests them. On the CDP route only main-frame card fields have been
-  tested on Windows; the extension route is tested with a Stripe frame.
+- Windows CI exercises Adyen, Computop and Stripe processor frames with Edge CDP.
+  The extension suite includes a Stripe frame.
+- The managed Android emulator requires a Linux KVM host. Hyprland lock and
+  agent-desktop slot window pins require a Linux desktop.
 - The extension route (0.32.0+, fill extension 0.4.0) holds child-frame
   `<iframe>` owners and captures secrets in the top document, as the CDP route
   does. It has no browser-native hit test: by default only the CDP route
@@ -211,8 +220,8 @@ cannot trust: every ancestor must resist replacement by another user, and the
 profile directory and port file must grant no access outside this user, SYSTEM
 and administrators. It connects to `127.0.0.1` only. Before it sends any byte,
 it finds the process that owns the server side of that exact TCP connection in
-the kernel's connection table, and requires this Windows user and desktop
-session. It holds a process handle and reads the table a second time, so a
+the kernel's connection table, and requires the same Windows user, desktop
+session and token integrity level as the broker. It holds a process handle and reads the table a second time, so a
 reused PID or a different listener on a stale port receives nothing.
 
 A local debugging endpoint gives full control of that browser profile to every
@@ -655,7 +664,11 @@ the external engine used by that historical release.
 | Saves and pipe | Named pipe, DACL checks, encrypted saves, recovery receipts (unchanged from 0.15.0) | Pass |
 | Extension route (0.21.0) | `test_extension_browser.py` in a disposable Helium 144 and Edge profile: host found through the browser's own registry key, agent list/pin/fill of password and login, Stripe processor frame, user-click popup fill; refusals for wrong origin, cross-site frame, hidden field, processor markup on another host, locked broker. `test_extension_route.py`: pairing, policy, framing and size limits | Pass |
 
-Hosted Windows CI runs the same suites on every pull request and release tag.
+Hosted Windows CI runs Chrome CDP and Edge CDP with separate disposable profiles.
+It exercises browser TOTP on Chrome CDP and the Edge extension, CDP read capture,
+TOTP enrollment, autocomplete-off and identity notifications on Chrome, and
+processor frames and SMS code fills on Edge. The sink suite runs the native pipe
+and checks private file delivery and refusal cases.
 It does not prove that a native application accepts directed window messages.
 
 ### Desktop acceptance check for window pins

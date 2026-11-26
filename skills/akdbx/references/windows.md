@@ -3,15 +3,17 @@
 Use the installed Windows executable, typically
 `CHECKOUT\.venv\Scripts\akdbx.exe`, in the broker's Windows desktop session. Keep
 the existing signed-in app when it satisfies the task. From 0.17.0 the Windows
-backend has the same workflows as Linux: DOM password, login and
+backend supports: DOM password, login and
 generated-password fills, the full password-write workflow, cards, merge,
 snapshot admission and durable unlock notifications. The repository's
 `docs/windows.md` contains setup, the browser and engine requirements, and the
 validation record; this reference covers operation of an already configured
 broker.
 
-Every instruction in `SKILL.md` and the other references applies on Windows,
-with these replacements. The private HTTPS page is the same on both
+The managed Android emulator needs a Linux KVM host. Hyprland lock and agent-desktop
+slot window pins require a Linux desktop. Windows uses session lock events, HWNDs
+for window pins and HTTPS for Tailscale Serve. For same-session secret delivery,
+see the repository's `docs/secret-sinks.md`. The private HTTPS page is the same on both
 platforms: a loopback link opens on the broker's computer, a link on a
 Tailscale Serve origin (`--local-port`) opens on any tailnet device, and a link
 on an akdbx relay origin (`https://<id>.akdbx.link`, 0.26.0+; `:8443` before the

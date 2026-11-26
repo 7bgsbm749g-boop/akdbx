@@ -1,5 +1,6 @@
 """Shared real CDP and extension TOTP contract; disposable synthetic browsers only."""
 import json
+import sys
 import time
 from types import SimpleNamespace
 
@@ -16,6 +17,10 @@ from test_extension_browser import harness, private_dir, certificates  # noqa: F
 from totp_vectors import URI, KEY
 
 
+if sys.platform == 'win32':
+    from test_windows_chromium import lab as windows_lab
+
+
 @pytest.fixture(params=['cdp', 'extension'])
 def browser(request, tmp_path):
     if request.param == 'extension':
@@ -30,11 +35,16 @@ def browser(request, tmp_path):
         entry = broker.vault.entries[0]
         transport = h
     else:
-        lab, process, cdp, session, window, _ = request.getfixturevalue('synthetic_chromium')
-        evaluate = lambda expression: cdp.evaluate(expression, session)
+        if sys.platform == 'win32':
+            lab = request.getfixturevalue('windows_lab')
+            cdp, session, profile, evaluate = lab.observer, lab.session, lab.profile, lab.evaluate
+        else:
+            _, _, cdp, session, _, _ = request.getfixturevalue('synthetic_chromium')
+            profile = tmp_path / 'synthetic-chromium-profile'
+            evaluate = lambda expression: cdp.evaluate(expression, session)
         url = evaluate('location.href')
         entry = Entry(url=url)
-        broker = Broker(Vault([entry]), object(), password_browser_profile=tmp_path / 'synthetic-chromium-profile')
+        broker = Broker(Vault([entry]), object(), password_browser_profile=profile)
         page = next(t for t in cdp.call('Target.getTargets')['targetInfos'] if t['type'] == 'page' and t['url'] == url)
         frame = cdp.call('Page.getFrameTree', session=session)['frameTree']['frame']['id']
         spec = dict(page_id=page['targetId'], frame_id=frame)

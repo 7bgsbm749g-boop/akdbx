@@ -909,7 +909,7 @@ def test_unsafe_write_ancestry_preserves_read_only_unlock(tmp_path, template):
     assert not begin(broker)['ok']
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason='requires real directory permission denial')
+@pytest.mark.skipif(not hasattr(os, 'geteuid') or os.geteuid() == 0, reason='requires POSIX directory permission denial')
 def test_peer_prepared_merge_receipt_blocks_generated_reset_before_any_fill(deployed):
     """Another broker's interrupted merge is found before a site password changes."""
     broker, typer, path, _ = deployed
