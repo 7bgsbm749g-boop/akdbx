@@ -128,6 +128,11 @@ class TotpCaptures:
             try:
                 # An extension read pin, else a CDP one; either way the token is used up.
                 token = request.get('target')
+                if hasattr(broker, 'native'):
+                    pin = broker.native.take(token, 'read')
+                    if pin is not None:
+                        return dict(ok=False, error='authenticator capture refused: native controls cannot verify '
+                                                    'the site origin; nothing saved')
                 pin = broker.extension.take(token, 'read') if hasattr(broker, 'extension') else None
                 if pin is None:
                     pin = broker.passwords.consume(token)

@@ -21,6 +21,15 @@ or recovery options to finish it.
   A setup key printed in space-separated groups needs extension 0.6.0 or newer
   (an older one reads only a key printed as one token).
 
+Use a browser read pin to capture the setup key. A native read pin has only
+the caller's `--service-url`. The OS identifies the control but cannot verify
+the website origin. The broker consumes the native pin and refuses capture
+before reading the control.
+
+Extension read pins require the top document. The extension cannot verify
+the text's exact position and visibility through padded or transformed iframe
+owners. For a supported same-site child frame, use the CDP read route.
+
 The pending code fill uses the same TOTP pins as a saved code: retained DOM
 pins on CDP (Linux/Windows), the paired extension (Linux/Windows/macOS), native
 field pins (Linux X11/Wayland and supported Windows or macOS controls), or Current Window

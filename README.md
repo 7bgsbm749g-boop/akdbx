@@ -114,8 +114,8 @@ user's own browser. The CDP route stays for setups without the extension.
 From 0.32.0 (fill extension 0.4.0) the extension route also captures
 shown-once secrets shown in the top document, and it holds a child frame's
 `<iframe>` owner with the CDP route's owner guard (found with a nonce
-handshake). Read pins and password pins in a child frame then need fill
-extension 0.4.0; an older one is refused until it is built again. One check
+handshake). Top-document read pins and child-frame password pins require fill
+extension 0.4.0 or newer. Use CDP for supported same-site child-frame reads. One check
 stays weaker by default: the extension has no browser-native hit test, so only
 the CDP route refuses a card or address field under a click-through cover
 (`pointer-events: none`, `inert` or a popover backdrop). Read pins use the same
@@ -164,7 +164,7 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
   (0.23.0+), optionally reached from other tailnet devices through Tailscale
   Serve or from any device through the akdbx relay (0.26.0+), or the earlier
   Tailscale Serve Unix-socket route.
-- **Windows** (0.17.0+): the same features. It uses local named pipes, Windows
+- **Windows** (0.17.0+): native broker and browser fills. It uses local named pipes, Windows
   access checks, a loopback HTTPS page (from 0.22.0 also reachable from other
   tailnet devices through Tailscale Serve, from 0.26.0 from any device through
   the akdbx relay) and directed Unicode window messages for
@@ -856,7 +856,7 @@ Version 0.12.0 adds [private QR/Google transfer import and Chrome native capture
 The private setup page can decode QR images on the user's device, review a
 complete Google export batch, and save one explicitly selected account to an
 existing entry. It copies the existing key without removing phone accounts or
-changing website 2FA. An optional Linux Chrome extension sends one selected
+changing website 2FA. The separate importer (1.1.0+) for Chromium and Firefox 153+ on Linux, Windows and macOS sends one selected
 site's setup QR directly to a local native host/broker; private confirmation is
 still required before any save. The agent receives only receipts, never keys,
 codes or QR images. Authy/Microsoft export restrictions are not bypassed.
@@ -943,7 +943,8 @@ Algorithm references: [RFC 6238](https://www.rfc-editor.org/rfc/rfc6238) and
 When the user authorizes adding an authenticator app to a website account (for
 example GitHub's two-factor setup), the agent can enroll it with no private
 page and no user step. The broker reads the setup key from the site's page
-through a single-use read pin, the same route as
+through a single-use CDP or extension read pin. Native controls cannot verify
+the enrollment site's origin. For the browser pin checks, see
 [secret capture](skills/akdbx/references/secret-capture.md):
 
 ```bash

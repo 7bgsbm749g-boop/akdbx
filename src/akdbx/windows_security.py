@@ -55,6 +55,17 @@ def verify_process(pid):
     return handle, identity
 
 
+def integrity_level(handle):
+    with managed_handle(win32security.OpenProcessToken(handle, win32con.TOKEN_QUERY)) as token:
+        sid, _ = win32security.GetTokenInformation(token, win32security.TokenIntegrityLevel)
+        return sid.GetSubAuthority(sid.GetSubAuthorityCount() - 1)
+
+
+def require_same_integrity(peer):
+    if integrity_level(peer) != integrity_level(win32api.GetCurrentProcess()):
+        raise PermissionError('Windows peer must have the same integrity level')
+
+
 def private_attributes(*, directory=False):
     sid = current_identity()[0]
     # A private directory passes its DACL to the files created inside it.
@@ -252,7 +263,7 @@ def read_private_optional(path, *, limit):
         raise
 
 
-def replace_private(path, data):
+def replace_private(path, data, *, replace_existing=True):
     """Replace one private file through a flushed sibling; no partial content."""
     path = Path(os.path.abspath(path))
     temporary = path.with_name('.' + path.name + '.' + secrets.token_hex(8))
@@ -260,7 +271,7 @@ def replace_private(path, data):
         write_new(temporary, data)
         try:
             win32file.MoveFileEx(str(temporary), str(path),
-                                 win32con.MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+                                 (win32con.MOVEFILE_REPLACE_EXISTING if replace_existing else 0) | MOVEFILE_WRITE_THROUGH)
         except BaseException:
             with suppress(OSError):
                 temporary.unlink()

@@ -45,6 +45,12 @@ def prepare_private_runtime_directory(
     )
 
 
+def prepare_registration_directory(directory: Path, *, create_ancestors: bool):
+    """Browser-owned manifest folders may be readable, but only their owner may write."""
+    return _open_private_runtime_directory(directory, owner_uid=None, create=True,
+                                           create_ancestors=create_ancestors, private_leaf=False)
+
+
 def open_private_runtime_directory(
     directory: Path, *, owner_uid: int | None = None,
 ) -> tuple[Path, int]:
@@ -55,7 +61,7 @@ def open_private_runtime_directory(
 
 
 def _open_private_runtime_directory(
-    directory: Path, *, owner_uid: int | None, create: bool, create_ancestors=False,
+    directory: Path, *, owner_uid: int | None, create: bool, create_ancestors=False, private_leaf=True,
 ) -> tuple[Path, int]:
     owner_uid = os.getuid() if owner_uid is None else owner_uid
     directory = Path(os.path.abspath(os.fspath(directory)))
@@ -116,9 +122,12 @@ def _open_private_runtime_directory(
         if info.st_uid != owner_uid:
             os.close(leaf_fd)
             raise RuntimeError("runtime directory is not owned by the broker user")
-        if stat.S_IMODE(info.st_mode) != 0o700:
+        if private_leaf and stat.S_IMODE(info.st_mode) != 0o700:
             os.close(leaf_fd)
             raise RuntimeError("runtime directory must have mode 0700")
+        if info.st_mode & 0o022:
+            os.close(leaf_fd)
+            raise RuntimeError("registration directory is writable by other users")
         return directory, leaf_fd
     finally:
         os.close(current_fd)

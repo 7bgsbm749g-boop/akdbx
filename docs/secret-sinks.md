@@ -3,9 +3,9 @@
 `akdbx deliver-secret --sink NAME` writes a captured protected field into a
 `KEY=VALUE` environment file that the operator defined before the broker
 started. The agent names a sink; it never names a path, key, owner or
-command. Linux only in this release.
+command. Linux sinks date from 0.20.0. Windows named pipes date from 0.48.0.
 
-## Configuration
+## Linux configuration
 
 Pass the file with `akdbx serve --secret-sinks PATH` or `AKDBX_SECRET_SINKS`.
 The broker reads it once at start. The file must be a regular file owned by
@@ -128,3 +128,41 @@ akdbx-secret-sink.socket`. Any process of the broker group can ask the helper
 to write a value into a configured sink. It cannot read a value back, choose
 another path or run another command. Keep the helper copy, its configuration
 and both units owned by root.
+
+## Windows named pipe
+
+Check `status` for `windows_secret_sink_pipe: true` and the configured name in
+`secret_sinks`. Use the private directory from [Windows setup](windows.md#install-and-prepare-private-files).
+Save this JSON there as `sinks.json`, with the actual absolute destination path.
+The destination directory must already exist and have a private DACL.
+
+```json
+{
+  "version": 1,
+  "helper_pipe": "\\\\.\\pipe\\akdbx-example-sinks",
+  "sinks": {
+    "example-env": {
+      "entry_origin": "https://example.com",
+      "field": "client_secret",
+      "path": "C:\\Users\\Example\\AppData\\Local\\akdbx\\service.env",
+      "key": "CLIENT_SECRET"
+    }
+  }
+}
+```
+
+Run the helper from the installed Python environment in the broker's desktop
+session, under the same account and at the same integrity level:
+
+```powershell
+.\.venv\Scripts\python.exe -m akdbx.windows_sinks "$private\sinks.json"
+```
+
+Start the broker with `--secret-sinks "$private\sinks.json"`. Both processes
+load the configuration at startup. Restart both after edits. Use a separate
+local pipe name ending in `-sinks` for each helper. Both ends verify the peer
+before accepting a value. The helper checks the sink definition against the
+broker's copy, then replaces the file with a flushed private sibling. Existing
+LF or CRLF files keep their line endings. Unix owners, groups, modes
+and service restart commands are not part of this helper. The receipt reports
+`restarted: null`. Stop the foreground helper with Ctrl+C.

@@ -101,17 +101,23 @@ class SecretCaptures:
 
     def __init__(self, broker, sinks_path=None):
         self.broker = broker
-        if sinks_path is not None and os.name == 'nt':
-            raise SinkError('secret sinks are available only on Linux in this release')
-        self.config = (load_config(os.fspath(sinks_path), {0, os.getuid()}) if sinks_path is not None
-                       else dict(sinks={}, helper_socket=None, broker_uids=set()))
+        if sinks_path is None:
+            self.config = dict(sinks={}, helper_socket=None, broker_uids=set())
+        elif os.name == 'nt':
+            from .windows_sinks import load_config as load_windows_config
+            self.config = load_windows_config(sinks_path)
+        else:
+            self.config = load_config(os.fspath(sinks_path), {0, os.getuid()})
         # One delivery per sink at a time, from reading the field to the end of
         # the restart, so an older value cannot overtake a newer delivery.
         # Keyed by destination path, so two sink names for one file share it.
         self._sink_locks = {sink['path']: threading.Lock() for sink in self.config['sinks'].values()}
 
     def capabilities(self):
-        return capabilities(self.config['sinks'])
+        status = capabilities(self.config['sinks'])
+        if os.name == 'nt':
+            status['windows_secret_sink_pipe'] = True
+        return status
 
     # ---- capture -------------------------------------------------------
     def capture(self, request, ready):
@@ -312,6 +318,9 @@ class SecretCaptures:
 
     def _helper(self, sink, value):
         """Send the value to the root-owned helper only after proving the peer is root."""
+        if sink['writer'] == 'windows-pipe':
+            from .windows_sinks import deliver
+            return deliver(self.config, sink, value)
         path = self.config['helper_socket']
         info = os.stat(path, follow_symlinks=False)
         parent = os.stat(os.path.dirname(path), follow_symlinks=False)
