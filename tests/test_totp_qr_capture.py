@@ -20,6 +20,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import secrets
 import shutil
 import socket
@@ -73,6 +74,8 @@ TWO_ROWS = [a + b for a, b in zip(ROWS, OTHER_ROWS)]
 # broker's second look, after it blanks the first code, refuses the image.
 TWO_SIZES = qr_fixture.compose([(ROWS, 5, 0, 0), (OTHER_ROWS, 3, 250, 250)], 400, 400)
 PNG = ('image/png', {})
+PATH_SVG = qr_fixture.svg(ROWS, kind='path').replace('<svg ', '<svg id="qr" ', 1)
+DARK_PATH = re.search(r'<path fill="#000000" d="([^"]*)"/>', PATH_SVG)[1]
 
 
 def enrollment(body, script=''):
@@ -138,7 +141,12 @@ PAGES = {
     '/qr-canvas': enrollment('<canvas id=qr></canvas>', 'const ROWS = ' + json.dumps(ROWS) + ';\n'
                              + 'const NEXT_ROWS = ' + json.dumps(NEXT_ROWS) + ';\n' + CANVAS),
     '/qr-svg': enrollment(qr_fixture.svg(ROWS).replace('<svg ', '<svg id="qr" ', 1)),
-    '/qr-svg-path': enrollment(qr_fixture.svg(ROWS, kind='path').replace('<svg ', '<svg id="qr" ', 1)),
+    '/qr-svg-path': enrollment(PATH_SVG),
+    '/qr-svg-transform': enrollment(qr_fixture.svg(ROWS, kind='transform').replace('<svg ', '<svg id="qr" ', 1)),
+    # The code's path data comes from a style sheet (d: path(...)); the attribute holds a decoy dot.
+    '/qr-svg-css-d': enrollment('<style>#qr .code{d:path("' + DARK_PATH + '")}</style>'
+                                + PATH_SVG.replace('<path fill="#000000" d="' + DARK_PATH + '"/>',
+                                                   '<path class="code" fill="#000000" d="M0 0h1v1h-1z"/>')),
     '/qr-svg-stroke': enrollment(qr_fixture.svg(ROWS, kind='stroke').replace('<svg ', '<svg id="qr" ', 1)),
     '/qr-svg-styled': enrollment('<style>#qr .light{fill:#fff} #qr .dark{fill:#111}</style>'
                                  + qr_fixture.svg(ROWS, kind='styled').replace('<svg ', '<svg id="qr" ', 1)),
@@ -372,7 +380,7 @@ def test_a_qr_code_on_the_entry_origin_saves_a_pending_key_that_commit_promotes(
 
 
 @pytest.mark.parametrize('page', ['/qr-inverted', '/qr-data-url', '/qr-svg-csp', '/qr-img-csp', '/qr-svg-path',
-                                  '/qr-svg-stroke', '/qr-svg-styled'])
+                                  '/qr-svg-stroke', '/qr-svg-styled', '/qr-svg-transform', '/qr-svg-css-d'])
 def test_other_code_forms_and_a_strict_image_policy_capture(qr, page):
     url = open_page(qr, page)
     pinned = pin(qr, url)

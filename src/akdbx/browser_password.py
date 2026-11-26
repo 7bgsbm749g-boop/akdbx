@@ -488,11 +488,12 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
     return raster(element, element.width, element.height);
   };
   // An inline <svg>: its plain shapes (rect, circle, ellipse, line, polyline,
-  // polygon, path), drawn into the canvas with their computed paint and
-  // transform at the size the code shows (512 to 1024 pixels a side). Nothing is
-  // loaded, so no page policy can block it. Anything else that could paint (text,
-  // images, <use>, nested <svg>, gradients or patterns, clip paths, masks,
-  // filters, dashes) refuses rather than draw something other than the page shows.
+  // polygon, path), drawn into the canvas with their computed geometry, paint
+  // and transform at the size the code shows (512 to 1024 pixels a side).
+  // Nothing is loaded, so no page policy can block it. Anything else that could
+  // paint (text, images, <use>, nested <svg>, gradients or patterns, markers,
+  // clip paths, masks, filters, blend modes, dashes, vector-effect, paint-order)
+  // refuses rather than draw something other than the page shows.
   const PLAIN = new Set(['g', 'title', 'desc', 'metadata', 'style']);
   const SHAPES = new Set(['rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'path']);
   const COLOUR = /^(?:none|rgba?\([0-9., ]+\))$/;
@@ -511,26 +512,42 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
       const style = getComputedStyle(node), name = node.localName;
       if (style.display === 'none' || name === 'defs') return true;  // Not rendered.
       if (node.namespaceURI !== 'http://www.w3.org/2000/svg' || node !== element && !PLAIN.has(name) && !SHAPES.has(name) ||
-          style.clipPath !== 'none' || style.mask !== 'none' || style.filter !== 'none') return false;
+          style.clipPath !== 'none' || style.mask !== 'none' || style.filter !== 'none' ||
+          (style.mixBlendMode || 'normal') !== 'normal') return false;
       const alpha = opacity * parseFloat(style.opacity);
       if (!(alpha >= 0)) return false;
       if (SHAPES.has(name)) {
         const fill = style.fill, stroke = style.stroke, lineWidth = number(style.strokeWidth);
         if (!COLOUR.test(fill) || !COLOUR.test(stroke) || style.strokeDasharray !== 'none' || style.vectorEffect !== 'none' ||
-            style.paintOrder !== 'normal' || !(lineWidth >= 0)) return false;
+            style.paintOrder !== 'normal' || !(lineWidth >= 0) ||
+            [style.markerStart, style.markerMid, style.markerEnd].some(marker => (marker || 'none') !== 'none')) return false;
         if (style.visibility !== 'visible' || alpha === 0 || fill === 'none' && stroke === 'none') return true;
         let geometry;
         if (name === 'rect') {
-          if (node.rx.baseVal.value > 0 || node.ry.baseVal.value > 0) return false;
+          // Rounded corners from the computed rx and ry (a style sheet can set them; one alone sets both).
+          const radius = value => value === undefined || value === 'auto' ? null : number(value);
+          let rx = radius(style.rx), ry = radius(style.ry);
+          if (Number.isNaN(rx) || Number.isNaN(ry)) return false;  // A percentage or other unit.
+          if (style.rx === undefined) rx = node.rx.baseVal.value, ry = node.ry.baseVal.value;
+          rx = rx === null ? (ry === null ? 0 : ry) : rx;
+          ry = ry === null ? rx : ry;
           const box = node.getBBox();
-          geometry = [box.x, box.y, box.width, box.height];
+          geometry = [box.x, box.y, box.width, box.height, Math.min(rx, box.width / 2), Math.min(ry, box.height / 2)];
         } else if (name === 'circle' || name === 'ellipse') {
           const box = node.getBBox();
           geometry = [box.x, box.y, box.width, box.height];
         } else if (name === 'line') {
           geometry = [node.x1.baseVal.value, node.y1.baseVal.value, node.x2.baseVal.value, node.y2.baseVal.value];
         } else if (name === 'path') {
-          geometry = node.getAttribute('d') || '';
+          // The computed d: a style sheet's d: path(...) overrides the attribute.
+          const d = style.d;
+          if (d === undefined) geometry = node.getAttribute('d') || '';
+          else if (d === 'none') return true;
+          else {
+            const found = /^path\("([^"]*)"\)$/.exec(d);
+            if (!found) return false;
+            geometry = found[1];
+          }
         } else {
           geometry = Array.from({length: node.points.numberOfItems}, (_, i) => node.points.getItem(i)).flatMap(p => [p.x, p.y]);
         }
@@ -555,7 +572,7 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
     for (const op of drawing.ops) {
       const [a, b, c, d, e, f] = op.matrix, g = op.geometry, path = new Path2D();
       context.setTransform(sx * a, sy * b, sx * c, sy * d, sx * e, sy * f);
-      if (op.name === 'rect') path.rect(g[0], g[1], g[2], g[3]);
+      if (op.name === 'rect') g[4] > 0 || g[5] > 0 ? path.roundRect(g[0], g[1], g[2], g[3], [{x: g[4], y: g[5]}]) : path.rect(g[0], g[1], g[2], g[3]);
       else if (op.name === 'circle' || op.name === 'ellipse') path.ellipse(g[0] + g[2] / 2, g[1] + g[3] / 2, g[2] / 2, g[3] / 2, 0, 0, 2 * Math.PI);
       else if (op.name === 'line') { path.moveTo(g[0], g[1]); path.lineTo(g[2], g[3]); }
       else if (op.name === 'path') path.addPath(new Path2D(g));

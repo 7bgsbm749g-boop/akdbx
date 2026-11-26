@@ -181,6 +181,9 @@ def svg(lines, scale=4, kind='rects'):
     path: one filled path of unit squares in a viewBox of modules (qrcode.react).
     stroke: one stroked path of horizontal runs (node-qrcode, segno).
     styled: rectangles painted by a page style sheet class, not by attributes.
+    transform: unit modules 100 modules off the canvas, put back only by nested
+    scale and translate transforms (bacon-qr-code, segno, rqrcode), on a white
+    backdrop with rounded corners.
     """
     size, count = len(lines) * scale, len(lines)
     head = f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}"'
@@ -188,6 +191,10 @@ def svg(lines, scale=4, kind='rects'):
         d = ''.join(f'M{x} {y}h1v1h-1z' for y, line in enumerate(lines) for x, c in enumerate(line) if c == '1')
         return (f'{head} viewBox="0 0 {count} {count}" shape-rendering="crispEdges"><path fill="#FFFFFF" '
                 f'd="M0,0 h{count}v{count}H0z"/><path fill="#000000" d="{d}"/></svg>')
+    if kind == 'transform':
+        d = ''.join(f'M{x - 100} {y - 100}h1v1h-1z' for y, line in enumerate(lines) for x, c in enumerate(line) if c == '1')
+        return (f'{head}><rect width="{size}" height="{size}" rx="{scale * 2}" fill="#fff"/><g transform="scale({scale})">'
+                f'<g transform="translate(50 50)"><path transform="translate(50 50)" fill="#000" d="{d}"/></g></g></svg>')
     if kind == 'stroke':
         runs = []
         for y, line in enumerate(lines):
