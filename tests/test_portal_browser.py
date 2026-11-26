@@ -327,6 +327,27 @@ def test_card_page_checks_details_then_shows_busy_and_saved_states(synthetic_chr
         ok=True, state='saved', title='Synthetic travel card', group='')
 
 
+def test_save_page_shows_its_expiry_in_the_viewer_time_zone(synthetic_chromium, card_lab):
+    from datetime import datetime, timedelta, timezone
+    _, _, cdp, session, _, _ = synthetic_chromium
+    broker, _, base, _, _ = card_lab
+    prepared = begin_card(broker, valid_minutes=25)
+    cdp.call('Emulation.setTimezoneOverride', {'timezoneId': 'Asia/Kolkata'}, session)
+    try:
+        open_card_page(cdp, session, base, prepared)
+        shown = cdp.evaluate("[document.querySelector('time[data-local-time]').getAttribute('datetime'),"
+                             " document.getElementById('page-expiry').textContent]", session)
+    finally:
+        cdp.call('Emulation.setTimezoneOverride', {'timezoneId': ''}, session)
+    local = datetime.strptime(prepared['expires_at'], '%Y-%m-%dT%H:%M:%SZ').replace(
+        tzinfo=timezone.utc) + timedelta(hours=5, minutes=30)
+    assert shown[0] == prepared['expires_at']
+    # India has no daylight saving time: UTC+5:30 all year.
+    assert 'UTC' not in shown[1] and 'GMT+5:30' in shown[1]
+    assert any(local.strftime(form) in shown[1] for form in ('%H:%M', '%I:%M'))
+    assert shown[1].startswith('This page works until ') and shown[1].endswith('It stops sooner if the vault locks. After that, ask for a new save page.')
+
+
 def test_card_page_shows_broker_refusal_and_vault_change(synthetic_chromium, card_lab):
     _, _, cdp, session, _, _ = synthetic_chromium
     broker, socket, base, _, release = card_lab

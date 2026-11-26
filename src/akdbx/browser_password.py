@@ -395,10 +395,11 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
 # pin draws the element's own pixels into an offscreen canvas in this isolated
 # world and decodes them with the vendored jsQR (passed in as `jsQR`). The
 # checks of a text read pin apply, with a grid hit test over the whole element
-# instead of the text boxes. An image must come from the page's own origin (or
-# a data: URL), and a cross-origin (tainted) source refuses: getImageData
-# throws. No code, two or more codes, or a value that is not one line of text
-# refuses the pin. The read draws the element again and must get the same
+# instead of the text boxes. An image URL must be on the page's own origin (or
+# a data: URL), and a source that taints the canvas refuses: convertToBlob
+# rejects before any decode, also where the caller could read a tainted canvas
+# (a Firefox content script with <all_urls>). No code, two or more codes, or a
+# value that is not one line of text refuses the pin. The read draws the element again and must get the same
 # pixels (an <svg>: the same shapes, transforms and paint), so a change after the pin
 # refuses. The decoded value stays in the renderer until the broker's own read
 # call; no pixel or value is ever returned to the caller.
@@ -442,32 +443,43 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
     const selection = getSelection();
     return document.activeElement === element && (!selection || selection.isCollapsed);
   };
-  // Opaque white below the source, as on a page, then the pixels. getImageData
-  // throws for a source that tainted the canvas (cross-origin without CORS).
-  const raster = (source, width, height) => {
-    const scale = Math.min(1, MAX / Math.max(width, height));
-    const w = Math.max(1, Math.round(width * scale)), h = Math.max(1, Math.round(height * scale));
-    const context = new OffscreenCanvas(w, h).getContext('2d', {willReadFrequently: true});
-    context.fillStyle = '#fff';
-    context.fillRect(0, 0, w, h);
-    context.drawImage(source, 0, 0, w, h);
-    return context.getImageData(0, 0, w, h);
-  };
-  // An image's own URL must be on the page's origin, or a data: URL. The
-  // tainted-canvas check alone is not enough: an extension's content script
-  // may read some cross-origin pixels.
+  // An image's own URL must be on the page's origin, or a data: URL, checked
+  // before anything is drawn: a Firefox content script with <all_urls> host
+  // access reads another origin's pixels even without CORS (see originClean()).
   const ownImage = () => {
     let source;
     try { source = new URL(element.currentSrc); } catch { return false; }
     return source.protocol === 'data:' || source.origin === location.origin;
   };
-  const pixels = () => {
+  // The source on opaque white, as on a page, at most MAX pixels a side.
+  const painted = () => {
+    let width, height;
     if (kind === 'img') {
       if (!ownImage() || !element.complete || !(element.naturalWidth > 0 && element.naturalHeight > 0)) return null;
-      return raster(element, element.naturalWidth, element.naturalHeight);
+      width = element.naturalWidth, height = element.naturalHeight;
+    } else {
+      if (!(element.width > 0 && element.height > 0)) return null;
+      width = element.width, height = element.height;
     }
-    if (!(element.width > 0 && element.height > 0)) return null;
-    return raster(element, element.width, element.height);
+    const scale = Math.min(1, MAX / Math.max(width, height));
+    const w = Math.max(1, Math.round(width * scale)), h = Math.max(1, Math.round(height * scale));
+    const context = new OffscreenCanvas(w, h).getContext('2d', {willReadFrequently: true});
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, w, h);
+    context.drawImage(element, 0, 0, w, h);
+    return context;
+  };
+  const pixels = context => context && context.getImageData(0, 0, context.canvas.width, context.canvas.height);
+  // Only pixels the page itself may read. A source that is not origin-clean (an
+  // image of another origin without CORS, also behind a redirect from a URL on
+  // the page's origin, or a canvas that drew one) taints the canvas, and
+  // getImageData throws in a page or a Chromium isolated world. A Firefox content
+  // script with <all_urls> host access (Enhanced security) may read a tainted
+  // canvas anyway, so the pin decodes only after convertToBlob, which refuses a
+  // canvas that is not origin-clean whatever its caller may read.
+  const originClean = async context => {
+    if (context) await context.canvas.convertToBlob();
+    return context;
   };
   // An inline <svg>: its plain shapes (rect, circle, ellipse, line, polyline,
   // polygon, path), drawn into the canvas with their computed geometry, paint
@@ -646,7 +658,7 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
       drawing = shapes();
       decoded = drawing && decode(drawn(drawing));
     } else {
-      snapshot = pixels();
+      snapshot = pixels(await originClean(painted()));
       decoded = snapshot && decode(snapshot);
     }
     if (typeof decoded !== 'string' || !check() || !fitted()) throw 0;
@@ -662,7 +674,8 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
         const now = shapes();
         return now !== null && now.text === drawing.text;
       }
-      const now = pixels();
+      // Not decoded again: any change after the pin, to another origin's pixels too, refuses here.
+      const now = pixels(painted());
       if (!now || now.width !== snapshot.width || now.height !== snapshot.height) return false;
       const a = now.data, b = snapshot.data;
       for (let i = 0; i < a.length; ++i) if (a[i] !== b[i]) return false;

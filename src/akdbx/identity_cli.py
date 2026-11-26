@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from .browser_card import TTL, failure
 from .browser_identity import DELIVERY
-from . import browser_slots, page_url
+from . import browser_slots, page_lifetime, page_url
 from .identities import (COMMANDS, FAILED, FIELD_PURPOSE_PROTOCOL, FIELDS, FIELDS_PROTOCOL, FILL_FIELDS, REFUSED,
                          TEL_FORMATS, UPDATE_PROTOCOL, label_matches)
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
@@ -27,12 +27,14 @@ def add_parsers(commands):
     p.add_argument('--fields', type=field_list, metavar='FIELD[,FIELD...]',
                    help='show only these fields on the page, for example tel or tel,email; default: all. '
                         'Fields: ' + ', '.join(FIELDS))
+    page_lifetime.add_argument(p)
     p = commands.add_parser('update-identity', help='prepare a private page that adds or changes chosen fields of one identity')
     p.add_argument('handle', help='fresh handle from search-identities')
     p.add_argument('--title', required=True, help='exact title of the selected identity')
     p.add_argument('--group', required=True, help='exact group path of the selected identity')
     p.add_argument('--fields', required=True, type=field_list, metavar='FIELD[,FIELD...]',
                    help='the fields to add or change, for example tel. Fields: ' + ', '.join(FIELDS))
+    page_lifetime.add_argument(p)
     p = commands.add_parser('search-identities', help='find identities by non-secret label')
     p.add_argument('query')
     p.add_argument('--group', help='limit matches to this exact group path')
@@ -118,7 +120,7 @@ def valid_receipt(args, response):
         allowed = {'ok', 'error', 'unlock_url', 'unlock_blocked'} if error == 'vault locked' else {'ok', 'error'}
         return error in ERRORS and set(response) <= allowed
     if args.command in {'create-identity', 'update-identity'}:
-        if set(response) != {'ok', 'state', 'write_handle', 'private_url'}:
+        if not page_lifetime.valid_receipt(args, response):
             return False
         url = urlsplit(response['private_url'])
         return (response['state'] == 'pending' and _token(response['write_handle'])
@@ -169,7 +171,7 @@ def run(args, request):
                 type(caps.get('identity_update_protocol')) is not int or caps['identity_update_protocol'] != UPDATE_PROTOCOL):
             print(json.dumps(dict(ok=False, error='broker lacks identity update protocol 1; request not sent')))
             return 1
-        refusal = _option_refusal(args, caps)
+        refusal = _option_refusal(args, caps) or page_lifetime.refusal(args, caps)
         if refusal is not None:
             print(json.dumps(dict(ok=False, error=refusal + '; request not sent')))
             return 1
@@ -199,6 +201,7 @@ def run(args, request):
                 payload['fields'] = args.fields
             if args.command == 'update-identity':
                 payload['handle'] = args.handle
+            page_lifetime.add_request(args, payload)
         elif args.command == 'search-identities':
             payload['query'] = args.query
             if args.group is not None:

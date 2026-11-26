@@ -21,6 +21,11 @@ from .versions import active_entries, is_archive_group
 from .totp import TotpError, configured as totp_configured, https_origin, parse_setup
 
 MAX_WRITES = 64
+# Private identity and card save pages: an optional lifetime in whole minutes
+# (``valid_minutes``). The page stays single use and revision bound.
+PAGE_LIFETIME_PROTOCOL = 1
+PAGE_MINUTES_DEFAULT = 5
+PAGE_MINUTES_MAX = 30
 SSO_AUTH_METHODS = ('google', 'github')
 SSO_MARKER = 'akdbx.passwordless-sso'
 PASSWORDLESS_AUTH_METHODS = ('email_code',)
@@ -458,6 +463,53 @@ class Write:
     # Generated writes: set once at staging for a form with one new-password
     # field and no confirmation field. It never changes afterwards.
     single_field: bool = False
+    # Identity and card save pages: the wall-clock expiry the page shows.
+    expires_at: float | None = None
+
+
+def page_lifetime_capabilities():
+    return dict(save_page_lifetime_protocol=PAGE_LIFETIME_PROTOCOL, save_page_max_minutes=PAGE_MINUTES_MAX)
+
+
+def page_lifetime(request, lock_timeout):
+    """Seconds that a prepared identity or card save page stays valid.
+
+    ``valid_minutes`` is optional: a whole number from 1 to PAGE_MINUTES_MAX.
+    Without it the page stays valid for PAGE_MINUTES_DEFAULT minutes. A page
+    stops when the vault locks, and opening it is not vault activity, so the
+    lifetime never exceeds the idle lock timeout: a longer ``valid_minutes``
+    refuses, and the default is cut to the timeout. The reported expiry is
+    then the latest time the page can work.
+    """
+    if 'valid_minutes' not in request:
+        return min(PAGE_MINUTES_DEFAULT * 60, lock_timeout)
+    minutes = request['valid_minutes']
+    if type(minutes) is not int or not 1 <= minutes <= PAGE_MINUTES_MAX:
+        raise WriteError('valid_minutes must be a whole number from 1 to %d' % PAGE_MINUTES_MAX)
+    if minutes * 60 > lock_timeout:
+        raise WriteError('valid_minutes is longer than the vault lock timeout')
+    return minutes * 60
+
+
+def expiry_text(timestamp):
+    """An ISO 8601 UTC time to the second, for example 2026-11-26T12:30:00Z."""
+    return datetime.fromtimestamp(int(timestamp), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def prepared_page(broker, kind, request, values, **extra):
+    """Stage a pending identity or card save page and return its receipt."""
+    lifetime = page_lifetime(request, broker.session.timeout)
+    writes = broker.writes
+    writes._prune()
+    if len(writes.operations) >= MAX_WRITES:
+        raise WriteError('too many pending writes')
+    handle = secrets.token_hex(32)
+    op = Write(secrets.token_urlsafe(32), broker.clock() + lifetime, writes.revision, dict(values), kind=kind,
+               expires_at=broker.wall_clock() + lifetime, **extra)
+    writes.operations[handle] = op
+    return dict(ok=True, state='pending', write_handle=handle,
+                private_url=writes.public_base.rstrip('/') + '/' + kind + '?token=' + op.token,
+                expires_in=lifetime, expires_at=expiry_text(op.expires_at))
 
 
 class WriteManager:

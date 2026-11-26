@@ -38,9 +38,10 @@ owners. For a supported same-site child frame, use the CDP read route.
 For a setup QR code (`--qr`), `status` must also show integer
 `totp_qr_capture_protocol: 1`. On the extension route the QR read needs fill
 extension 0.14.0 or newer (`extension_qr_capture_min_version`) in a
-Chromium-family browser (Helium, Chrome, Edge, Chromium or Brave); a Firefox extension refuses QR read pins
-(`target unavailable`), because this path has no real-Firefox proof yet. Text
-key reads work there as before. A QR in a same-site child frame uses the CDP
+Chromium-family browser (Helium, Chrome, Edge, Chromium or Brave), or 0.14.2
+or newer in Firefox (`extension_qr_capture_firefox_min_version`, after akdbx
+0.51.0). An older Firefox build refuses QR read pins (`target unavailable`);
+text key reads work there as before. A QR in a same-site child frame uses the CDP
 read route, as text does. The CLI refuses `--qr` before it sends anything to a
 broker without the flag.
 
@@ -78,7 +79,10 @@ refuses with `target unavailable`.
   or the extension's content script. Pixels and the decoded value never reach
   the agent, a receipt or a log. It refuses, with nothing saved: an image from
   another origin (only the page's own origin or a `data:` URL; also with CORS)
-  and any source that taints the canvas, no QR code, two or more codes, a code
+  and any source that taints the canvas (the pin decodes only a canvas that
+  passes `convertToBlob`'s origin-clean check, so a redirect from the page's
+  origin to another one refuses too, also in a Firefox content script with
+  `<all_urls>` host access), no QR code, two or more codes, a code
   that is not an `otpauth://totp/` URI (a bare key, HOTP, a link), and an
   element whose pixels (an `<svg>`: shapes, transforms or paint) changed after
   the pin. The element must show whole and uncovered: a 5 x 5 grid of points

@@ -151,9 +151,10 @@ generated passwords, usernames, TOTP codes, cards, addresses and read-only
 secret capture, and from 0.49.0 for SMS codes. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
 uses exact Unicode Win32 Edit controls. From 0.50.1, the Windows backend also
 supports WinForms TextBox and retained WPF TextBox and PasswordBox controls. On macOS (0.50.1+), native fields
-use Accessibility with permission granted to the broker. Stock AppKit password
-fields omit the character count required to verify delivery. Password, combined
-login and generated-password modes are unavailable on macOS. Native read pins
+use Accessibility with permission granted to the broker. After 0.51.0, password,
+combined login and generated-password modes also work on macOS: a stock AppKit
+secure field has no character count, so the broker checks the length of its
+masked value. Native read pins
 cannot feed `capture-totp`, because the OS cannot verify the website origin. Native apps have no browser origin:
 the service URL is a caller assertion and is matched to login/capture origins,
 not claimed as OS URL verification. See [Native desktop fields](skills/akdbx/references/native-fields.md)
@@ -267,7 +268,7 @@ limits are in [Android devices](skills/akdbx/references/android.md).
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
   peer UID before sending a request.
 - The broker starts locked. The user enters the master password only on the private HTTPS unlock page, never in chat, terminal input, arguments, or environment variables. The page is HTTPS on `127.0.0.1` with the broker's own certificate, or (Linux or macOS) a Unix socket behind Tailscale Serve; it never binds the LAN or tailnet and never serves plain HTTP over TCP. Through the optional akdbx relay, TLS still ends in the broker: the relay forwards only encrypted bytes, and the broker trusts no name, certificate or header from it without checking.
-- After unlock, browser password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. Native field pins use retained masked native controls (not on macOS). Neither path sends password keys or Tab. Unsupported targets refuse delivery without terminal approval.
+- After unlock, browser password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. Native field pins use retained masked native controls (on macOS after 0.51.0). Neither path sends password keys or Tab. Unsupported targets refuse delivery without terminal approval.
 - Errors are deliberately generic after the typing boundary.
 
 This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Browser password fills require a short-lived DOM target pin; see [the target contract](skills/akdbx/references/target-fill.md). The broker verifies the exact HTTPS page, main frame and retained editable password input. Window pins (X11, XWayland or HWND) refuse password/login delivery. Application acceptance remains a caller check; malicious pages and compromised local processes are outside this boundary. Python cannot guarantee memory zeroization.
@@ -579,7 +580,11 @@ the page, and the stored fields, to the listed fields; without it the page
 shows all fields. `update-identity HANDLE --title --group --fields` (0.28.3)
 adds or changes the chosen fields of one existing identity, selected with a
 fresh `search-identities` handle; its page never shows the saved values, and
-the previous version stays in the entry history. `search-identities LABEL` returns
+the previous version stays in the entry history. From 0.51.0, both commands
+take `--valid-minutes N` (1 to 30, and not longer than the vault lock
+timeout; default 5) for a page that stays valid longer, and report
+`expires_in` and `expires_at` (UTC); the page shows the expiry time. A vault
+lock still ends the page. `search-identities LABEL` returns
 only labels, group paths and single-use handles. Login search excludes these
 records. `pin-identity-target` and `fill-identity` deliver one field to a
 verified and focused DOM element (CDP, or the extension in a Chromium browser
@@ -625,6 +630,10 @@ put them in command arguments, agent messages or notes. `update-card HANDLE
 the previous entry in KDBX History. `write-status` and `cancel-write` apply to
 these saves. Persistence reopens and verifies every protected field before
 replacing the encrypted vault. A private page expires after five minutes.
+From 0.51.0, `--valid-minutes N` (1 to 30, and not longer than the vault
+lock timeout) keeps it valid for N minutes. The receipt reports `expires_in`
+and `expires_at` (UTC), and the page shows the expiry time. The page stays
+single use and tied to the vault revision, and a vault lock still ends it.
 
 The page prefills `--title` and `--group`. The user can change the title, and
 on a new card can choose another existing group (the KeePass folder) from a
@@ -1033,10 +1042,11 @@ akdbx capture-totp --qr --target TARGET --handle HANDLE --title T --username U -
 ```
 
 The browser decodes the `<img>`, `<canvas>` or inline `<svg>` itself with the
-bundled jsQR (the CDP pin's isolated world, or the fill extension 0.14.0+
-content script in a Chromium-family browser; Firefox refuses QR pins for now). The
+bundled jsQR (the CDP pin's isolated world, or the fill extension content
+script: 0.14.0+ in a Chromium-family browser, 0.14.2+ in Firefox). The
 key goes only to the vault; pixels and the decoded value never reach the agent,
-a receipt or a log. An image from another origin, no code or two codes, a code
+a receipt or a log. An image from another origin (also behind a redirect), a
+canvas that drew one, no code or two codes, a code
 that is not an `otpauth://totp/` URI, and a change after the pin refuse with
 nothing saved. `capture-secret` never takes a QR pin.
 

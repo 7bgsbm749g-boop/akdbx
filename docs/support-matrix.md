@@ -25,7 +25,7 @@ the routes and modes that this broker offers now (`fill_routes`,
 | — | The operation does not exist on this route. |
 
 `<0.16` means the feature shipped before the first release tag (`v0.16.0`).
-`after 0.50.1` means merged on `main` for the next release after 0.50.1.
+`after 0.50.1` and `after 0.51.0` mean merged on `main` for the next release after that version.
 `v0.50.0` was tagged but never published (its release checks failed), so the
 features of PRs #81–#96 first ship in 0.50.1, together with key-file and
 hardware-key unlock (#98).
@@ -40,7 +40,7 @@ CI jobs (all in `.github/workflows/`):
 | `native-merge` | `tests.yml` | Merge, admission, recovery and key-file suites with full Git history and a pinned KeePassXC 2.7.10 as the independent reference, with no skips; the full-cost admission deadlines |
 | `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, cover checks |
 | `macos-extension-browser` | `tests.yml` | Chrome for Testing 153 (arm64) with the built extension on macOS 15: the extension suite, TOTP, and QR capture on the CDP and extension routes |
-| `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension |
+| `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension: fills, TOTP, secret reads, QR capture (also with `<all_urls>`), SMS codes |
 | `windows` | `tests.yml` | Named pipe, real Win32, WinForms and WPF apps, Chrome and Edge CDP, the extension in Edge, QR capture |
 | `macos-broker` | `tests.yml` | macOS 15: AppKit fields, Darwin IPC and TLS, Chrome CDP (logins, identities, SMS codes, cards on the page and in Adyen, Computop and Stripe frames) with a foreign-user listener, key-file and hardware-key unlock, guided setup and LaunchAgent, Android attach host checks with a simulated device |
 | `card-safety` | `card-safety.yml` | Real Chrome CDP: cards, processor frames, identities, SMS codes, agent desktop slots |
@@ -52,7 +52,7 @@ CI jobs (all in `.github/workflows/`):
 | Route | Linux X11 | Linux Wayland | Windows 10/11 | macOS |
 | --- | --- | --- | --- | --- |
 | [Window pin](#window-pin-pin-target) (`pin-target`) | ✅ 0.9.0: usernames, TOTP, SMS codes | ✅ XWayland windows only (0.49.0); ◼ native Wayland surfaces (D) | ✅ 0.17.0, HWND: usernames, TOTP, SMS codes | ◼ unavailable (E) |
-| [Native field](#native-field-pin-native-target) (`pin-native-target`) | ✅ 0.44.0, AT-SPI | ✅ 0.44.0, AT-SPI | ✅ 0.44.0 Win32 Edit; 0.50.1 WinForms, WPF | ✅ 0.50.1, Accessibility; ◼ no passwords (F) |
+| [Native field](#native-field-pin-native-target) (`pin-native-target`) | ✅ 0.44.0, AT-SPI | ✅ 0.44.0, AT-SPI | ✅ 0.44.0 Win32 Edit; 0.50.1 WinForms, WPF | ✅ 0.50.1, Accessibility; passwords after 0.51.0 (F) |
 | [CDP](#cdp-route) (`--route cdp`) | ✅ <0.16 | ✅ <0.16 | ✅ 0.17.0 | ✅ 0.50.1 |
 | [Extension, Chromium family](#extension-route-chromium-family) | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.43.0 (P) |
 | [Extension, Firefox 153+](#extension-route-firefox) | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 |
@@ -90,8 +90,8 @@ assertion. Check `native_field_modes` in `status`.
 | Operation | Linux X11 | Linux Wayland | Windows | macOS |
 | --- | --- | --- | --- | --- |
 | Username | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms and WPF · `windows` (J) | ✅ 0.50.1 · `macos-broker` |
-| Password, login | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms TextBox and WPF PasswordBox · `windows` (J) | ◼ (F) |
-| Generated password | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · no CI | ◼ (F) |
+| Password, login | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms TextBox and WPF PasswordBox · `windows` (J) | ✅ after 0.51.0 · `macos-broker` (F) |
+| Generated password | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · no CI | ✅ after 0.51.0 · `macos-broker` (F) |
 | TOTP | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
 | Card | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
 | Identity | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
@@ -165,7 +165,7 @@ runs as a temporary add-on; see [Firefox setup](firefox.md).
 | Secret read, top document | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
 | Secret read, child frame | ⛔ (O) | ⛔ (O) | ⛔ (O) |
 | `capture-totp`, text key | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
-| `capture-totp`, QR code | ✗ (V) | ✗ (V) | ✗ (V) |
+| `capture-totp`, QR code (top document) | ✅ after 0.51.0 (ext 0.14.2) · `firefox-extension-browser` (V) | ✅ after 0.51.0 · `firefox-extension-browser` (V) | ✅ after 0.51.0 · `firefox-extension-browser` (V) |
 | SMS code | ✅ 0.50.1 (ext 0.13.0) · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` |
 | Popup human click | ✅ login 0.47.0 · `firefox-extension-browser`; TOTP, card, address: no Firefox test | ✅ login · `firefox-extension-browser` | ✅ login · `firefox-extension-browser` |
 | Agent desktop slots | — (U) | — (U) | — (U) |
@@ -233,9 +233,17 @@ job, for the reason given. Only `test_relay_integration.py` runs in no job.
 - **E** Inherent: `CGEventPostToPid` directs input to a process, not a field,
   and Secure Event Input blocks synthesized keys. `status` reports
   `target_fill_delivery: "unavailable"` and empty `target_fill_modes`.
-- **F** Inherent: a stock AppKit secure field (`NSSecureTextField`) reports no
-  character count, so the broker cannot verify delivery. Password, login and
-  generated-password pins are refused. Use a browser route for passwords.
+- **F** A stock AppKit secure field (`NSSecureTextField`) has no character
+  count, visible range or text for a range. Its Accessibility value has one
+  mask character (U+F79A, or U+200B when the field shows no bullets) for each
+  UTF-16 unit. The broker accepts only a wholly masked value and compares its
+  length with the written text; a stock field never gives the password back.
+  A field that cuts or rejects the text gives an uncertain result. A secure
+  field that already shows text is refused before the write; an empty one that
+  shows text after the write gives an uncertain result. On real macOS 15.8 and
+  26.7 runners, the masked length matched in every random write (300 of 300 on
+  each), with Secure Event Input on. From 0.50.1 to 0.51.0 the broker refused
+  these pins.
 - **G** `windows` sends a window-pin SMS code to a real Win32 Edit control over
   the same `win32-char-v1` transport. Usernames and TOTP have contract tests
   with simulated windows only; a real-app check is the manual
@@ -288,9 +296,18 @@ job, for the reason given. Only `test_relay_integration.py` runs in no job.
   fills a device from a Windows broker.
 - **U** The extension runs in the user's own browser. `--browser-slot` applies
   only to the CDP route, and the broker refuses it with `--route extension`.
-- **V** Not built: Firefox content scripts can read some cross-origin pixels,
-  and this path has no real-Firefox proof yet. The broker refuses a QR read
-  pin from Firefox with `target unavailable`. Text keys capture as usual.
+- **V** A Firefox content script with `<all_urls>` host access (Enhanced
+  security grants it) reads another origin's pixels from a tainted canvas,
+  also for an `<img>` whose URL on the page's origin redirects to another
+  origin. Fill extension 0.14.2 decodes only a canvas that passes
+  `convertToBlob`'s origin-clean check, which that access does not skip
+  (`extension_qr_capture_firefox_min_version`). The broker refuses a QR read
+  pin from an older Firefox build with `target unavailable`. Real Firefox
+  tests capture a same-origin `<img>`, `<canvas>` and inline `<svg>` through
+  `commit-totp`. They also show that the pin refuses another origin's image
+  (with or without CORS), the redirect and a tainted canvas, with and without
+  `<all_urls>`. Two codes or a changed element refuse, and so does a code that
+  is not TOTP.
 - **W** Safari needs a containing Apple app, a Safari native-messaging adapter
   and Apple signing. A permanently installed (signed) Firefox add-on also
   needs the owner's Mozilla AMO credentials; until then Firefox uses a
