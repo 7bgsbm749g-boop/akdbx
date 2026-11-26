@@ -155,7 +155,9 @@ def test_visibility_controls_do_not_inspect_or_persist_secrets():
     outside = outside.replace('.map(control => [control, control.value])', '').replace('control.value = text', '')
     assert not re.search(r'\b(value|XMLHttpRequest|console|localStorage|sessionStorage)\b', outside)
     assert portal.SCRIPT.count('new FormData(form)') == 1
-    assert 'body: new URLSearchParams(new FormData(form))' in portal.SCRIPT
+    # Standard form encoding, except multipart for a form with a key file field.
+    assert ('body: form.enctype === "multipart/form-data" ? data : new URLSearchParams(data)'
+            in portal.SCRIPT)
     escaped = portal.field('Master <password>', 'secret"name')
     assert 'Master &lt;password&gt;' in escaped and 'id="secret&quot;name"' in escaped
 
