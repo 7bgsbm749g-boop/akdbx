@@ -332,8 +332,8 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   closed shadow roots and refuses it. An older extension also refuses it as
   `target unavailable, changed or unsupported`
   ([clipped drawer or modal](identities.md#field-inside-a-clipped-drawer-or-modal-0363)).
-- Read pins and password pins in a child frame need fill extension 0.4.0 or
-  newer; the broker refuses them from an older one. Build
+- Read pins in the top document and password pins in a child frame need fill
+  extension 0.4.0 or newer. Use CDP for supported same-site child-frame reads. Build
   the extension again and reload it. From 0.4.0 both sealing keys bind the
   version the extension reports, so a host that reports another version makes
   every sealed message fail.

@@ -114,8 +114,8 @@ user's own browser. The CDP route stays for setups without the extension.
 From 0.32.0 (fill extension 0.4.0) the extension route also captures
 shown-once secrets shown in the top document, and it holds a child frame's
 `<iframe>` owner with the CDP route's owner guard (found with a nonce
-handshake). Read pins and password pins in a child frame then need fill
-extension 0.4.0; an older one is refused until it is built again. One check
+handshake). Top-document read pins and child-frame password pins require fill
+extension 0.4.0 or newer. Use CDP for supported same-site child-frame reads. One check
 stays weaker by default: the extension has no browser-native hit test, so only
 the CDP route refuses a card or address field under a click-through cover
 (`pointer-events: none`, `inert` or a popover backdrop). Read pins use the same
