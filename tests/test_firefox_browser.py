@@ -4,11 +4,13 @@ Set AKDBX_TEST_FIREFOX and AKDBX_TEST_GECKODRIVER to run. The only registration
 is a unique test host, removed at teardown. Only synthetic values enter Firefox;
 the observer checks hashes rather than reading field values.
 """
+import base64
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
 import socket
 import ssl
@@ -33,9 +35,12 @@ from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service
 
+import qr_fixture
 from akdbx import broker_identity, extension_host
 from akdbx.broker import Broker, open_vault_with_password, serve
 from akdbx.extension_route import CAPTURE_DELIVERY, DELIVERY
+from akdbx.target import failure as pin_refused
+from akdbx.totp_capture import PENDING_FIELD, QR_REFUSED
 from test_extension_route import CARD, MASTER, CardEntry, IdentityEntry, template  # noqa: F401
 from akdbx.local_https import start_local_unlock_server
 from test_broker import Entry, Vault
@@ -88,7 +93,95 @@ PROCESSORS = {
 }
 
 
+def _b32(raw):
+    return base64.b32encode(raw).decode('ascii').rstrip('=')
+
+
+# Setup QR codes (capture-totp --qr): a fresh synthetic key on every run, which
+# no receipt, CLI output or log may contain. evil.example.net is another origin,
+# served by the same loopback fixture through the proxy.
+QR_KEY, QR_OTHER_KEY, QR_NEXT_KEY = (_b32(secrets.token_bytes(20)) for _ in range(3))
+QR_SECRETS = (QR_KEY, QR_OTHER_KEY, QR_NEXT_KEY, QR_KEY.lower())
+CROSS_ORIGIN = 'https://evil.example.net'
+QR_TITLE = 'Synthetic Firefox QR'
+
+
+def qr_uri(key, kind='totp'):
+    return f'otpauth://{kind}/Synthetic:synthetic-firefox?secret={key}&issuer=Synthetic'
+
+
+QR_ROWS, QR_NEXT_ROWS, QR_OTHER_ROWS = (qr_fixture.rows(qr_uri(k)) for k in (QR_KEY, QR_NEXT_KEY, QR_OTHER_KEY))
+QR_PNG = qr_fixture.png(QR_ROWS)
+QR_FILES = {  # path: (PNG bytes, extra headers)
+    '/qr/key.png': (QR_PNG, {}),
+    '/qr/key-cors.png': (QR_PNG, {'Access-Control-Allow-Origin': '*'}),
+    '/qr/next.png': (qr_fixture.png(QR_NEXT_ROWS), {}),
+    '/qr/two.png': (qr_fixture.png([a + b for a, b in zip(QR_ROWS, QR_OTHER_ROWS)]), {}),
+    '/qr/hotp.png': (qr_fixture.png(qr_fixture.rows(qr_uri(QR_KEY, 'hotp'))), {}),
+    # A URL on the page's own origin whose image comes from another origin.
+    '/qr/redirect.png': (b'', {'Location': CROSS_ORIGIN + '/qr/key.png'}),
+}
+QR_CANVAS = '''<canvas id=qr></canvas><script>
+var ROWS = __ROWS__, NEXT_ROWS = __NEXT_ROWS__;  // var: WebDriver scripts see window properties only.
+function draw(rows) {
+  const canvas = document.getElementById('qr'), scale = 4, context = canvas.getContext('2d');
+  canvas.width = canvas.height = rows.length * scale;
+  for (let y = 0; y < rows.length; y++) for (let x = 0; x < rows.length; x++) {
+    context.fillStyle = rows[y][x] === '1' ? '#000' : '#fff';
+    context.fillRect(x * scale, y * scale, scale, scale);
+  }
+}
+draw(ROWS); window.ready = true;</script>'''.replace('__ROWS__', json.dumps(QR_ROWS)).replace(
+    '__NEXT_ROWS__', json.dumps(QR_NEXT_ROWS))
+# The site's own check of the code from the app, for fill-totp --pending.
+QR_VERIFY = '''<label>Verify the code from the app <input id=otp autocomplete=one-time-code inputmode=numeric></label>
+<script>
+const KEY = __KEY__;
+function unb32(s) {
+  const a = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'; let bits = '';
+  for (const c of s) bits += a.indexOf(c).toString(2).padStart(5, '0');
+  return new Uint8Array(bits.match(/.{8}/g).map(b => parseInt(b, 2)));
+}
+async function code(step) {
+  const key = await crypto.subtle.importKey('raw', unb32(KEY), {name: 'HMAC', hash: 'SHA-1'}, false, ['sign']);
+  const counter = new DataView(new ArrayBuffer(8)); counter.setUint32(4, step);
+  const h = new Uint8Array(await crypto.subtle.sign('HMAC', key, counter.buffer));
+  const o = h[19] & 15, n = ((h[o] & 127) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3];
+  return String(n % 1000000).padStart(6, '0');
+}
+document.getElementById('otp').addEventListener('input', async e => {
+  const value = e.target.value;
+  if (value.length !== 6) return;
+  const step = Math.floor(Date.now() / 30000);
+  document.body.dataset.result = value === await code(step) || value === await code(step - 1) ? 'accepted' : 'rejected';
+});
+</script>'''.replace('__KEY__', json.dumps(QR_KEY))
+QR_PAGES = {
+    '/qr-img': '<img id=qr src="/qr/key.png" alt="QR code">',
+    '/qr-canvas': QR_CANVAS,
+    '/qr-svg': qr_fixture.svg(QR_ROWS).replace('<svg ', '<svg id="qr" ', 1),
+    '/qr-cross-origin': f'<img id=qr src="{CROSS_ORIGIN}/qr/key.png" alt="QR code">',
+    '/qr-cross-origin-cors': f'<img id=qr crossorigin=anonymous src="{CROSS_ORIGIN}/qr/key-cors.png" alt="QR code">',
+    '/qr-redirect': '<img id=qr src="/qr/redirect.png" alt="QR code">',
+    # The page draws another origin's image (no CORS) into its own canvas: the canvas is tainted.
+    '/qr-canvas-tainted': f'''<canvas id=qr></canvas><script>
+const picture = new Image();
+picture.onload = () => {{
+  const canvas = document.getElementById('qr');
+  canvas.width = picture.naturalWidth; canvas.height = picture.naturalHeight;
+  canvas.getContext('2d').drawImage(picture, 0, 0);
+  window.ready = true;
+}};
+picture.src = '{CROSS_ORIGIN}/qr/key.png';</script>''',
+    '/qr-two': '<img id=qr src="/qr/two.png" alt="QR codes">',
+    '/qr-hotp': '<img id=qr src="/qr/hotp.png" alt="QR code">',
+}
+
+
 def fixture_markup(path):
+    if path in QR_PAGES:
+        return ('<style>body{margin:0;font:14px sans-serif}img,canvas,svg{display:block;margin:8px}</style>'
+                '<p>Scan this QR code with your authenticator app.</p>' + QR_PAGES[path] + QR_VERIFY)
     for name, (endpoint, _, markup) in PROCESSORS.items():
         if path == '/computop' and name == 'computop':
             return (f'<iframe id=processor name=PGForm style="width:500px;height:150px"></iframe>'
@@ -128,6 +221,15 @@ def firefox_lab(private_dir, certificates, request):
             pass
 
         def do_GET(self):
+            if self.path in QR_FILES:
+                data, headers = QR_FILES[self.path]
+                self.send_response(302 if 'Location' in headers else 200)
+                for name, value in {'Content-Type': 'image/png', **headers}.items():
+                    self.send_header(name, value)
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             body = ('<!doctype html><meta charset=utf-8>' + fixture_markup(self.path) + DIGEST).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -155,7 +257,8 @@ def firefox_lab(private_dir, certificates, request):
             pass
 
         def do_CONNECT(self):
-            if self.path not in {urlsplit(item[0]).hostname + ':443' for item in PROCESSORS.values()}:
+            hosts = {urlsplit(endpoint).hostname for endpoint in [CROSS_ORIGIN, *(item[0] for item in PROCESSORS.values())]}
+            if self.path not in {host + ':443' for host in hosts}:
                 self.send_error(403)
                 return
             self.send_response_only(200)
@@ -170,17 +273,24 @@ def firefox_lab(private_dir, certificates, request):
     broker = None
     stop, errors = threading.Event(), []
     worker = driver = unlock = service = manifest = registration = None
+    mode = getattr(request, 'param', None)
+    vault_path = private_dir / 'synthetic.kdbx'
     try:
-        if getattr(request, 'param', None) == 'writable':
-            path = private_dir / 'synthetic.kdbx'
+        if mode in ('writable', 'qr', 'qr-enhanced'):
             data = request.getfixturevalue('template').read_bytes()
             if os.name == 'nt':
                 from akdbx.windows_security import write_new
-                write_new(path, data)
+                write_new(vault_path, data)
             else:
-                path.write_bytes(data)
-                path.chmod(0o600)
-            vault = open_vault_with_password(path, MASTER)
+                vault_path.write_bytes(data)
+                vault_path.chmod(0o600)
+            if mode != 'writable':  # The entry whose setup QR code the tests capture.
+                from pykeepass import PyKeePass
+                kdbx = PyKeePass(str(vault_path), password=MASTER)
+                kdbx.add_entry(kdbx.find_groups(name='Web', first=True), QR_TITLE, 'synthetic-firefox',
+                               'synthetic-qr-site-password', url=url)
+                kdbx.save()
+            vault = open_vault_with_password(vault_path, MASTER)
         else:
             vault = Vault([Entry(username='synthetic@example.test', password=PASSWORD, url=url)])
         broker = Broker(vault, NoKeys())
@@ -238,7 +348,7 @@ def firefox_lab(private_dir, certificates, request):
         env = dict(os.environ)
         if os.environ.get('AKDBX_FIREFOX_NO_SANDBOX') == '1':
             env['MOZ_DISABLE_CONTENT_SANDBOX'] = '1'
-        service_args = ['--allow-system-access'] if getattr(request, 'param', None) in ('popup', 'settings') else []
+        service_args = ['--allow-system-access'] if mode in ('popup', 'settings', 'qr-enhanced') else []
         if service_args:
             env["MOZ_REMOTE_ALLOW_SYSTEM_ACCESS"] = "1"
         service = Service(service_args=service_args, executable_path=DRIVER, log_output=str(private_dir / 'geckodriver.log'),
@@ -264,7 +374,8 @@ def firefox_lab(private_dir, certificates, request):
         assert token is not None and not errors, 'Firefox did not establish a pairing'
         assert broker.extension.approve(token)
         driver.get(url)
-        yield SimpleNamespace(driver=driver, broker=broker, url=url, settings=f'moz-extension://{extension_uuid}/options.html')
+        yield SimpleNamespace(driver=driver, broker=broker, url=url, vault=vault_path,
+                              settings=f'moz-extension://{extension_uuid}/options.html')
     finally:
         try:
             if driver:
@@ -651,3 +762,216 @@ def test_firefox_sms_code_fills_exact_main_and_child_documents_once(firefox_lab,
     message = text()
     assert fill(message, target) == refused and inbox() == [message]
     assert digest('otp') == hashlib.sha256(b'').hexdigest()
+
+
+# ----- capture-totp --qr: setup QR codes decoded by the Firefox content script -----
+
+def qr_values(lab):
+    return dict(title=QR_TITLE, username='synthetic-firefox', url=lab.url, group='Web')
+
+
+def qr_open(lab, page):
+    """Open a QR page and wait until its code shows (an image loaded, a canvas drawn)."""
+    from selenium.webdriver.support.ui import WebDriverWait
+    target, _ = navigate(lab, page)
+    WebDriverWait(lab.driver, 10).until(lambda d: d.execute_script("""
+        const e = document.getElementById('qr');
+        return e instanceof HTMLImageElement ? e.complete && e.naturalWidth > 0 :
+            e instanceof HTMLCanvasElement ? window.ready === true : e !== null"""))
+    return target
+
+
+def qr_focus(lab, selector):
+    """Focus the element by script, as the skill says (a picture is not focusable on its own)."""
+    from selenium.webdriver.support.ui import WebDriverWait
+    lab.driver.execute_script('const e = document.querySelector(arguments[0]); e.tabIndex = -1; e.focus();', selector)
+    WebDriverWait(lab.driver, 5).until(lambda d: d.execute_script(
+        'return document.hasFocus() && document.activeElement === document.querySelector(arguments[0])', selector))
+
+
+def qr_pin(lab, target, selector='#qr', **extra):
+    qr_focus(lab, selector)
+    request = dict(action='pin-password-target', password_protocol=1, selector=selector, mode='read',
+                   capture_protocol=1, read_kind='qr', **target, **extra)
+    return lab.broker.dispatch({k: v for k, v in request.items() if v is not None})
+
+
+def qr_handle(lab):
+    found = [e for e in lab.broker.dispatch(dict(action='search', query=QR_TITLE))['entries'] if e['title'] == QR_TITLE]
+    assert len(found) == 1
+    return found[0]
+
+
+def qr_capture(lab, token):
+    return lab.broker.dispatch(dict(action='capture-totp', totp_capture_protocol=1, target=token,
+                                    handle=qr_handle(lab)['handle'], metadata=qr_values(lab), read_kind='qr'))
+
+
+def qr_stored(lab):
+    from pykeepass import PyKeePass
+    entry = PyKeePass(str(lab.vault), password=MASTER).find_entries(title=QR_TITLE, first=True)
+    props = entry.custom_properties
+    return entry.otp, props.get(PENDING_FIELD), (entry.is_custom_property_protected(PENDING_FIELD)
+                                                 if PENDING_FIELD in props else None)
+
+
+def qr_nothing_saved(lab):
+    assert qr_stored(lab) == (None, None, None)
+    assert 'totp_pending' not in qr_handle(lab)
+    return True
+
+
+def qr_clean(*items):
+    text = json.dumps(items, default=str)
+    for value in QR_SECRETS:
+        assert value not in text
+    return True
+
+
+def qr_fill_pending(lab, target):
+    """Fill a code of the pending key into the page's verify field, then wait for the site's own check."""
+    from selenium.webdriver.support.ui import WebDriverWait
+    for _ in range(2):
+        lab.driver.execute_script("otp.value = ''; delete document.body.dataset.result")
+        qr_focus(lab, '#otp')
+        pin = lab.broker.dispatch(dict(action='pin-password-target', password_protocol=1, selector='#otp',
+                                       mode='totp', **target))
+        assert pin['ok'], pin
+        filled = lab.broker.dispatch(dict(action='fill-totp', handle=qr_handle(lab)['handle'], target=pin['target'],
+                                          target_protocol=1, target_url=target['top_url'], pending=True))
+        if 'retry_after' not in filled:
+            result = WebDriverWait(lab.driver, 5).until(lambda d: d.execute_script(
+                'return document.body.dataset.result || null'))
+            return filled, result
+        time.sleep(filled['retry_after'] + .2)
+    raise AssertionError('authenticator code stayed near expiry')
+
+
+def enhanced_security(lab):
+    """Turn on Enhanced security in the options page: Firefox grants the add-on <all_urls> host access."""
+    from selenium.webdriver.support.ui import WebDriverWait
+    lab.driver.get(lab.settings)
+    toggle = lab.driver.find_element('id', 'enhanced')
+    wait = WebDriverWait(lab.driver, 5)
+    wait.until(lambda _: toggle.is_enabled())
+    toggle.click()
+    wait.until(lambda _: toggle.is_enabled() and toggle.is_selected())
+    assert lab.driver.execute_async_script(
+        "browser.permissions.contains({origins: ['<all_urls>']}).then(arguments[0])") is True
+
+
+def qr_capture_and_commit(lab, page):
+    target = qr_open(lab, page)
+    pinned = qr_pin(lab, target)
+    assert pinned == dict(ok=True, target=pinned.get('target'), expires_in=30, target_delivery=DELIVERY), pinned
+    captured = qr_capture(lab, pinned['target'])
+    assert captured == dict(ok=True, state='pending', totp_configured=False, metadata=qr_values(lab),
+                            capture_delivery=CAPTURE_DELIVERY), captured
+    otp, pending, protected = qr_stored(lab)
+    assert otp is None and pending.startswith('otpauth://totp/') and 'secret=' + QR_KEY in pending and protected is True
+    assert qr_handle(lab).get('totp_pending') is True
+    assert qr_capture(lab, pinned['target'])['ok'] is False  # The pin was single use.
+    filled, result = qr_fill_pending(lab, target)
+    assert filled == dict(ok=True, filled='totp', target_delivery=DELIVERY) and result == 'accepted', (filled, result)
+    saved = lab.broker.dispatch(dict(action='commit-totp', totp_capture_protocol=1, handle=qr_handle(lab)['handle'],
+                                     metadata=qr_values(lab), decision='site-accepted'))
+    assert saved == dict(ok=True, state='saved', replaced=False, metadata=qr_values(lab)), saved
+    otp, pending, _ = qr_stored(lab)
+    assert pending is None and 'secret=' + QR_KEY in otp
+    listed = qr_handle(lab)
+    assert listed['totp_configured'] is True and 'totp_pending' not in listed
+    assert lab.driver.execute_script('return window.keyEvents') == 0
+    return [pinned, captured, filled, saved, listed]
+
+
+# Another origin's image with or without CORS, a URL on the page's origin that redirects to another origin,
+# a canvas that drew another origin's image, and two codes in one image: the pin refuses.
+QR_REFUSED_PAGES = ['qr-cross-origin', 'qr-cross-origin-cors', 'qr-redirect', 'qr-canvas-tainted', 'qr-two']
+
+
+def qr_refusals(lab):
+    for page in QR_REFUSED_PAGES:
+        target = qr_open(lab, page)
+        refused = qr_pin(lab, target)
+        assert refused == pin_refused(), (page, refused)
+        assert qr_nothing_saved(lab) and qr_clean(refused)
+
+
+@pytest.mark.parametrize('firefox_lab', ['qr'], indirect=True)
+@pytest.mark.parametrize('page', ['qr-img', 'qr-canvas', 'qr-svg'])
+def test_firefox_qr_code_on_the_page_origin_saves_a_pending_key_that_commit_promotes(firefox_lab, page, caplog, capsys):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    receipts = qr_capture_and_commit(firefox_lab, page)
+    out = capsys.readouterr()
+    assert qr_clean(*receipts, out.out, out.err, caplog.text)
+
+
+@pytest.mark.parametrize('firefox_lab', ['qr'], indirect=True)
+def test_firefox_qr_pin_refuses_other_origins_and_two_codes(firefox_lab):
+    qr_refusals(firefox_lab)
+
+
+@pytest.mark.parametrize('firefox_lab', ['qr-enhanced'], indirect=True)
+def test_firefox_qr_with_all_urls_host_access_still_reads_only_the_pages_own_pixels(firefox_lab, caplog, capsys):
+    """Enhanced security grants <all_urls>: the content script could then read a tainted canvas's pixels."""
+    import logging
+    caplog.set_level(logging.DEBUG)
+    lab = firefox_lab
+    enhanced_security(lab)
+    qr_refusals(lab)
+    # Every pin and read now also takes the pixel challenge.
+    receipts = qr_capture_and_commit(lab, 'qr-img')
+    for page in ('qr-canvas', 'qr-svg'):
+        pinned = qr_pin(lab, qr_open(lab, page))
+        assert pinned['ok'], (page, pinned)
+        captured = qr_capture(lab, pinned['target'])
+        assert captured == dict(ok=True, state='pending', totp_configured=True, metadata=qr_values(lab),
+                                capture_delivery=CAPTURE_DELIVERY), (page, captured)
+        receipts += [pinned, captured]
+        assert lab.driver.execute_script("return getComputedStyle(document.getElementById('qr')).boxShadow") == 'none'
+    # A click-through cover passes the DOM hit test; the screenshot still shows it.
+    target = qr_open(lab, 'qr-img')
+    lab.driver.execute_script("document.body.insertAdjacentHTML('beforeend', '<div style=\"position:absolute;left:40px;"
+                              "top:80px;width:60px;height:60px;background:#fff;pointer-events:none\"></div>')")
+    refused = qr_pin(lab, target)
+    assert refused == pin_refused(), refused
+    out = capsys.readouterr()
+    assert qr_clean(*receipts, refused, out.out, out.err, caplog.text)
+
+
+@pytest.mark.parametrize('firefox_lab', ['qr'], indirect=True)
+def test_firefox_qr_capture_refuses_a_code_that_is_not_totp_or_that_changed(firefox_lab):
+    lab = firefox_lab
+    # One readable code: the broker, not the page, decides what it holds.
+    target = qr_open(lab, 'qr-hotp')
+    pinned = qr_pin(lab, target)
+    assert pinned['ok'], pinned
+    refused = qr_capture(lab, pinned['target'])
+    assert refused == dict(ok=False, error=QR_REFUSED) and qr_clean(refused)
+    # The page draws another code into the same canvas: no DOM change, other pixels.
+    target = qr_open(lab, 'qr-canvas')
+    pinned = qr_pin(lab, target)
+    assert pinned['ok'], pinned
+    lab.driver.execute_script('draw(NEXT_ROWS)')
+    assert qr_capture(lab, pinned['target']) == dict(ok=False, error=QR_REFUSED)
+    # The page points the image at another code.
+    target = qr_open(lab, 'qr-img')
+    pinned = qr_pin(lab, target)
+    assert pinned['ok'], pinned
+    lab.driver.execute_script("document.getElementById('qr').src = '/qr/next.png'")
+    lab.driver.execute_script("return document.getElementById('qr').decode()")
+    assert qr_capture(lab, pinned['target']) == dict(ok=False, error=QR_REFUSED)
+    # An inline SVG whose paint changes.
+    target = qr_open(lab, 'qr-svg')
+    pinned = qr_pin(lab, target)
+    assert pinned['ok'], pinned
+    lab.driver.execute_script("document.querySelector('#qr g').setAttribute('fill', '#333')")
+    assert qr_capture(lab, pinned['target']) == dict(ok=False, error=QR_REFUSED)
+    # A text read pin is not a QR pin, and a QR pin is never a secret capture.
+    pinned = qr_pin(lab, target)
+    assert pinned['ok'], pinned
+    secret = lab.broker.dispatch(dict(action='capture-secret', capture_protocol=1, target=pinned['target'],
+                                      field='client_secret', metadata=qr_values(lab), handle=qr_handle(lab)['handle']))
+    assert secret['ok'] is False and 'refused' in secret['error'], secret
+    assert qr_nothing_saved(lab)

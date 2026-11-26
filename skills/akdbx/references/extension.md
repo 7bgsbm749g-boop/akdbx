@@ -339,19 +339,26 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
 - A setup QR code (`pin-password-target --mode read --qr --route extension`,
   then `capture-totp --qr`; broker `totp_qr_capture_protocol: 1`) needs fill
   extension 0.14.0 or newer (`extension_qr_capture_min_version`) in a
-  Chromium-family browser (Helium, Chrome, Edge, Chromium or Brave). For that pin the service worker injects the bundled jsQR
+  Chromium-family browser (Helium, Chrome, Edge, Chromium or Brave), or 0.14.2
+  or newer in Firefox (`extension_qr_capture_firefox_min_version`, after akdbx
+  0.51.0). For that pin the service worker injects the bundled jsQR
   (`jsQR.js`, shipped with its licence) into the page's isolated world, and
   the content script decodes the pinned `<img>`, `<canvas>` or inline `<svg>`
-  there with the CDP route's checks. An image must come from the page's own
-  origin or a `data:` URL: a content script may read some cross-origin pixels
-  that a tainted canvas would hide from the page, so the origin is checked
-  itself. The decoded value goes to the broker sealed, like a text read; no
+  there with the CDP route's checks. An image URL must be on the page's own
+  origin or be a `data:` URL, checked before anything is drawn. The pin also
+  decodes only a canvas that passes `convertToBlob`'s origin-clean check. A
+  Firefox content script with `<all_urls>` host access (Enhanced security)
+  reads another origin's pixels from a tainted canvas, also for an `<img>`
+  whose URL on the page's origin redirects to another origin, and that check
+  stops it. The decoded value goes to the broker sealed, like a text read; no
   pixel leaves the page. With enhanced security, the pixel challenge hides the
   code's own pixels for a moment (the picture moves out of its clipped box, an
   `<svg>`'s shapes are hidden), so the screenshot must show the challenge
-  colour on a grid of points over the whole code. An older extension, and
-  Firefox (no real-Firefox proof of this path yet), refuse a QR read pin with
-  `target unavailable`; text reads are unchanged.
+  colour on a grid of points over the whole code. From fill extension 0.14.2,
+  the challenge ignores the `::before` content that Firefox reports for every
+  `<img>` (its alt text, which a loaded image does not paint). An older
+  extension refuses a QR read pin with `target unavailable`; text reads are
+  unchanged.
 - Identity pins with `--field-purpose` (0.35.1) need fill extension 0.7.0 or
   newer. An older extension gets no such pin: rebuild and reload it
   (`version_status` in `extension_browsers`).

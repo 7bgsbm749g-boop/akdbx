@@ -1042,10 +1042,11 @@ akdbx capture-totp --qr --target TARGET --handle HANDLE --title T --username U -
 ```
 
 The browser decodes the `<img>`, `<canvas>` or inline `<svg>` itself with the
-bundled jsQR (the CDP pin's isolated world, or the fill extension 0.14.0+
-content script in a Chromium-family browser; Firefox refuses QR pins for now). The
+bundled jsQR (the CDP pin's isolated world, or the fill extension content
+script: 0.14.0+ in a Chromium-family browser, 0.14.2+ in Firefox). The
 key goes only to the vault; pixels and the decoded value never reach the agent,
-a receipt or a log. An image from another origin, no code or two codes, a code
+a receipt or a log. An image from another origin (also behind a redirect), a
+canvas that drew one, no code or two codes, a code
 that is not an `otpauth://totp/` URI, and a change after the pin refuse with
 nothing saved. `capture-secret` never takes a QR pin.
 
