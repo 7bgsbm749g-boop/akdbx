@@ -119,8 +119,9 @@ QR_FILES = {  # path: (PNG bytes, extra headers)
     '/qr/next.png': (qr_fixture.png(QR_NEXT_ROWS), {}),
     '/qr/two.png': (qr_fixture.png([a + b for a, b in zip(QR_ROWS, QR_OTHER_ROWS)]), {}),
     '/qr/hotp.png': (qr_fixture.png(qr_fixture.rows(qr_uri(QR_KEY, 'hotp'))), {}),
-    # A URL on the page's own origin whose image comes from another origin.
+    # A URL on the page's own origin whose image comes from another origin, without and with CORS.
     '/qr/redirect.png': (b'', {'Location': CROSS_ORIGIN + '/qr/key.png'}),
+    '/qr/redirect-cors.png': (b'', {'Location': CROSS_ORIGIN + '/qr/key-cors.png'}),
 }
 QR_CANVAS = '''<canvas id=qr></canvas><script>
 var ROWS = __ROWS__, NEXT_ROWS = __NEXT_ROWS__;  // var: WebDriver scripts see window properties only.
@@ -131,6 +132,20 @@ function draw(rows) {
     context.fillStyle = rows[y][x] === '1' ? '#000' : '#fff';
     context.fillRect(x * scale, y * scale, scale, scale);
   }
+}
+// After the pin: draw a picture fully transparent, so the pixels stay the same.
+// From another origin (no CORS) that still taints the canvas.
+function overdraw(src) {
+  return new Promise((done, failed) => {
+    const picture = new Image();
+    picture.onload = () => {
+      const context = document.getElementById('qr').getContext('2d');
+      context.globalAlpha = 0; context.drawImage(picture, 0, 0); context.globalAlpha = 1;
+      done(true);
+    };
+    picture.onerror = failed;
+    picture.src = src;
+  });
 }
 draw(ROWS); window.ready = true;</script>'''.replace('__ROWS__', json.dumps(QR_ROWS)).replace(
     '__NEXT_ROWS__', json.dumps(QR_NEXT_ROWS))
@@ -164,6 +179,8 @@ QR_PAGES = {
     '/qr-cross-origin': f'<img id=qr src="{CROSS_ORIGIN}/qr/key.png" alt="QR code">',
     '/qr-cross-origin-cors': f'<img id=qr crossorigin=anonymous src="{CROSS_ORIGIN}/qr/key-cors.png" alt="QR code">',
     '/qr-redirect': '<img id=qr src="/qr/redirect.png" alt="QR code">',
+    # CORS mode: another origin that allows the read keeps the canvas origin-clean after the redirect.
+    '/qr-redirect-cors': '<img id=qr crossorigin=anonymous src="/qr/redirect-cors.png" alt="QR code">',
     # The page draws another origin's image (no CORS) into its own canvas: the canvas is tainted.
     '/qr-canvas-tainted': f'''<canvas id=qr></canvas><script>
 const picture = new Image();
@@ -939,9 +956,10 @@ def qr_capture_and_commit(lab, page):
     return [pinned, captured, filled, saved, listed]
 
 
-# Another origin's image with or without CORS, a URL on the page's origin that redirects to another origin,
-# a canvas that drew another origin's image, and two codes in one image: the pin refuses.
-QR_REFUSED_PAGES = ['qr-cross-origin', 'qr-cross-origin-cors', 'qr-redirect', 'qr-canvas-tainted', 'qr-two']
+# Another origin's image with or without CORS, a URL on the page's origin that redirects to another origin
+# (without or with CORS), a canvas that drew another origin's image, and two codes in one image: the pin refuses.
+QR_REFUSED_PAGES = ['qr-cross-origin', 'qr-cross-origin-cors', 'qr-redirect', 'qr-redirect-cors', 'qr-canvas-tainted',
+                    'qr-two']
 
 
 def qr_refusals(lab):
@@ -950,6 +968,22 @@ def qr_refusals(lab):
         refused = qr_pin(lab, target)
         assert refused == pin_refused(), (page, refused)
         assert qr_nothing_saved(lab) and qr_clean(refused)
+
+
+def qr_tainted_after_pin(lab):
+    """The capture never compares another origin's pixels: a canvas tainted after the pin refuses, same pixels or not.
+
+    The page draws a picture fully transparent over the pinned canvas. From its own origin the canvas stays
+    origin-clean and the capture saves the key; from another origin it is tainted and the capture refuses,
+    though the pixels did not change.
+    """
+    for source, saved in (('/qr/key.png', True), (CROSS_ORIGIN + '/qr/key.png', False)):
+        pinned = qr_pin(lab, qr_open(lab, 'qr-canvas'))
+        assert pinned['ok'], pinned
+        assert lab.driver.execute_script('return overdraw(arguments[0])', source) is True
+        captured = qr_capture(lab, pinned['target'])
+        assert captured['ok'] is saved and (saved or captured == dict(ok=False, error=QR_REFUSED)), (source, captured)
+        assert qr_clean(captured)
 
 
 @pytest.mark.parametrize('firefox_lab', ['qr'], indirect=True)
@@ -965,6 +999,7 @@ def test_firefox_qr_code_on_the_page_origin_saves_a_pending_key_that_commit_prom
 @pytest.mark.parametrize('firefox_lab', ['qr'], indirect=True)
 def test_firefox_qr_pin_refuses_other_origins_and_two_codes(firefox_lab):
     qr_refusals(firefox_lab)
+    qr_tainted_after_pin(firefox_lab)
 
 
 @pytest.mark.parametrize('firefox_lab', ['qr-enhanced'], indirect=True)
@@ -991,6 +1026,7 @@ def test_firefox_qr_with_all_urls_host_access_still_reads_only_the_pages_own_pix
                               "top:80px;width:60px;height:60px;background:#fff;pointer-events:none\"></div>')")
     refused = qr_pin(lab, target)
     assert refused == pin_refused(), refused
+    qr_tainted_after_pin(lab)
     out = capsys.readouterr()
     assert qr_clean(*receipts, refused, out.out, out.err, caplog.text)
 

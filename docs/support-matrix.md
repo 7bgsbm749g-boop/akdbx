@@ -301,7 +301,10 @@ broker takes attached devices only (after 0.50.1).
   `commit-totp`. They also show that the pin refuses another origin's image
   (with or without CORS), the redirect and a tainted canvas, with and without
   `<all_urls>`. Two codes or a changed element refuse, and so does a code that
-  is not TOTP.
+  is not TOTP. From fill extension 0.14.3 (and on the CDP route after 0.51.0),
+  an `<img>` that loads in CORS mode refuses on every route. After a redirect to
+  another origin that allows the read, its canvas stays origin-clean. A canvas
+  tainted after the pin refuses even with identical pixels.
 - **W** Safari needs a containing Apple app, a Safari native-messaging adapter
   and Apple signing. A permanently installed (signed) Firefox add-on also
   needs the owner's Mozilla AMO credentials; until then Firefox uses a

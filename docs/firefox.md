@@ -103,7 +103,8 @@ From fill extension 0.14.2 (after akdbx 0.51.0), QR read pins for
 (`extension_qr_capture_firefox_min_version`). The content script decodes the
 pinned `<img>`, `<canvas>` or inline `<svg>` with the same checks as in
 Chromium. Only the top document is read, the image URL must be on the page's
-origin (or a `data:` URL), and the page must show exactly one code with an
+origin (or a `data:` URL) and, from fill extension 0.14.3, load without CORS
+(no `crossorigin` attribute). The page must show exactly one code with an
 `otpauth://totp/` URI. If the element changes after the pin, the capture
 refuses. The key is saved as pending until `commit-totp`. One Firefox
 difference needs an extra check. A content script with `<all_urls>` host
