@@ -232,13 +232,14 @@ def systemd_environment(name, value):
     return 'Environment="' + (name + '=' + value).replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
 
 
-def unit_text(argv, environment):
+def unit_text(argv, environment, *, graphical=False):
     """The systemd user unit that runs `akdbx serve`; marked so setup recognizes its own file."""
     lines = [
         f'# {MARKER}: written by akdbx setup. Run akdbx setup again to change it.',
         '[Unit]',
         'Description=akdbx KeePass autofill broker (starts locked; unlock on its private page)',
-        'After=graphical-session.target',
+        *(['PartOf=graphical-session.target', 'After=graphical-session-pre.target']
+          if graphical else ['After=graphical-session.target']),
         '',
         '[Service]',
         'Type=simple',
@@ -258,7 +259,7 @@ def unit_text(argv, environment):
         'RestartPreventExitStatus=2',
         '',
         '[Install]',
-        'WantedBy=default.target',
+        'WantedBy=graphical-session.target' if graphical else 'WantedBy=default.target',
         '',
     ]
     return '\n'.join(lines)
@@ -685,14 +686,18 @@ class Setup:
                 return False
         elif sys.platform.startswith('linux'):
             platform = 'linux'
-            session = self.env.get('XDG_SESSION_TYPE', '')
-            if self.env.get('DISPLAY'):
+            wayland = self.env.get('WAYLAND_DISPLAY') or self.env.get('XDG_SESSION_TYPE') == 'wayland'
+            if wayland:
+                desktop = 'Wayland desktop'
+                if self.env.get('DISPLAY'):
+                    desktop += f' (XWayland DISPLAY={self.env["DISPLAY"]})'
+                gaps.append('native Wayland apps use native field pins; numeric window pins require '
+                            'an active X11 or XWayland window on the broker display')
+            elif self.env.get('DISPLAY'):
                 desktop = f'X11 desktop (DISPLAY={self.env["DISPLAY"]})'
-                if session == 'wayland':
-                    gaps.append('this is a Wayland session: native-window fills need X11 (browser fills work)')
             else:
-                desktop = 'no X11 desktop in this environment'
-                gaps.append('DISPLAY is not set: native-window fills need an X11 desktop (browser fills work); '
+                desktop = 'no desktop display in this environment'
+                gaps.append('DISPLAY is not set: numeric window pins need X11 or XWayland; '
                             'run setup from the desktop session that the broker will use')
         else:
             platform = sys.platform
@@ -1360,10 +1365,12 @@ class Setup:
 
     def _login_linux(self, broker):
         path = self.unit_path()
+        graphical = bool(self.env.get('WAYLAND_DISPLAY') or self.env.get('XDG_SESSION_TYPE') == 'wayland')
+        x11 = [(name, self.env[name]) for name in ('DISPLAY', 'XAUTHORITY') if self.env.get(name)]
         try:
-            text = unit_text(self.serve_argv(service=True), [(name, self.env[name])
-                                                             for name in ('DISPLAY', 'XAUTHORITY')
-                                                             if self.env.get(name)])
+            # Wayland and XWayland socket names can change at each login.
+            # A graphical user unit inherits the session imported by the desktop.
+            text = unit_text(self.serve_argv(service=True), [] if graphical else x11, graphical=graphical)
         except ValueError as exc:
             self.record('login', 'failed', error=str(exc))
             return
@@ -1389,19 +1396,40 @@ class Setup:
             self.record('login', 'todo', unit=str(path))
             return
         enabled = self._unit_enabled(systemctl)
-        if not enabled:
-            applied = self.change('login', f'enable {SERVICE_NAME} so it starts at login',
-                                  [f'{systemctl} --user enable {SERVICE_NAME}'],
-                                  lambda: self._checked([systemctl, '--user', 'enable', SERVICE_NAME]), selected=True,
+        old_target = 'default.target' if graphical else 'graphical-session.target'
+        old_link = path.parent / (old_target + '.wants') / SERVICE_NAME
+        if not enabled or old_link.is_symlink():
+            verb = 'reenable' if enabled else 'enable'
+            applied = self.change('login', f'{verb} {SERVICE_NAME} so it starts at login',
+                                  [f'{systemctl} --user {verb} {SERVICE_NAME}'],
+                                  lambda: self._checked([systemctl, '--user', verb, SERVICE_NAME]), selected=True,
                                   key='start_at_login')
             if not applied:
                 self.record('login', self.outcome(applied), unit=str(path))
                 return
+        if graphical:
+            self.say('Wayland login needs the desktop to import its environment into systemd and start '
+                     'graphical-session.target. For standalone Hyprland, see the login hook in the README.')
         if broker['running'] is False:
+            commands = []
+            if graphical:
+                names = ('DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY', 'XDG_CURRENT_DESKTOP',
+                         'HYPRLAND_INSTANCE_SIGNATURE', 'XDG_SESSION_TYPE')
+                present = [name for name in names if self.env.get(name)]
+                absent = [name for name in names if name not in present]
+                if absent:
+                    commands.append([systemctl, '--user', 'unset-environment', *absent])
+                commands.append([systemctl, '--user', 'import-environment', *present])
+            commands.append([systemctl, '--user', 'start', SERVICE_NAME])
+            def start():
+                for command in commands:
+                    self._checked(command)
             applied = self.change('login', f'start {SERVICE_NAME} now (no broker runs yet)',
-                                  [f'{systemctl} --user start {SERVICE_NAME}'],
-                                  lambda: self._checked([systemctl, '--user', 'start', SERVICE_NAME]), selected=True)
+                                  [shell_command(cmd, False) for cmd in commands], start, selected=True)
             self.started_service = bool(applied)
+            if applied is False:
+                self.record('login', 'failed', unit=str(path))
+                return
         else:
             self.say('A broker already runs (or its check failed): setup does not start a second one. The service '
                      'starts at the next login.')

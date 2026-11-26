@@ -124,7 +124,7 @@ def test_broker_still_fills_windows_usernames():
     assert ''.join(chr(code) for _focus, code in native.sent) == 'synthetic-user'
 
 
-def test_windows_capabilities_advertise_only_username_fills(monkeypatch):
+def test_windows_capabilities_advertise_window_operations(monkeypatch):
     import akdbx.target as target
     monkeypatch.setattr(target.os, 'name', 'nt')
-    assert target.capabilities()['target_fill_modes'] == ['username']
+    assert target.capabilities()['target_fill_modes'] == ['username', 'totp', 'sms-code']
