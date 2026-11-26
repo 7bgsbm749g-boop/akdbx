@@ -181,7 +181,7 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
   page for both platforms.
 - **Android devices and emulators** (0.36.0+) support verified app fields and
   Chrome pages on a Linux broker, and on a macOS broker for attached devices
-  (after 0.49.0). The Android parity update adds generated
+  (after 0.50.1). The Android parity update adds generated
   passwords, SMS codes, card and identity fields, and Chrome read pins for
   shown-once secrets and authenticator enrollment.
   [Android setup and operations](skills/akdbx/references/android.md)
@@ -194,7 +194,7 @@ Setup uses Google's SDK to create a persistent Google Play virtual device.
 Android operations start it when needed. It stops three minutes after its
 last operation. Apps, their sign-ins and notification settings stay on disk.
 To connect a device you already run, use `akdbx android setup --attach SERIAL`.
-This also works on macOS (after 0.49.0), where `akdbx status` reports
+This also works on macOS (after 0.50.1), where `akdbx status` reports
 `android_managed_emulators: false`: run the emulator or device yourself. See
 [macOS Android devices](docs/macos.md#android-devices-after-0490).
 

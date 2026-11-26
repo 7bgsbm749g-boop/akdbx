@@ -147,7 +147,7 @@ owner must match the broker UID. The broker checks the profile ancestry,
 directory and port file for extended allow ACLs. An unverifiable peer or path
 refuses delivery. See [browser pins](../skills/akdbx/references/target-fill.md).
 
-## Android devices (after 0.49.0)
+## Android devices (after 0.50.1)
 
 A macOS broker drives an attached Android device or emulator with the same
 checks as Linux. You run the device and its adb server; akdbx never starts or

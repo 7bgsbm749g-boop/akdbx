@@ -102,7 +102,7 @@ workflow owns.
 On Windows, read [Windows operation](references/windows.md) first: the
 transport is a named pipe, and native-window pins use HWNDs instead of X11
 windows. The private HTTPS page works the same way on every platform. The managed Android emulator, Hyprland lock
-and Linux agent-desktop slot window pins are Linux-specific; a macOS broker drives attached Android devices (after 0.49.0). The Tailscale Serve Unix socket works on Linux and macOS.
+and Linux agent-desktop slot window pins are Linux-specific; a macOS broker drives attached Android devices (after 0.50.1). The Tailscale Serve Unix socket works on Linux and macOS.
 
 The maintained source of this skill is the repository's `skills/akdbx`
 directory. A local install links the agent's skills directory to it (a

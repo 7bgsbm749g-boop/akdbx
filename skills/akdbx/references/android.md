@@ -15,7 +15,7 @@ argument, never on the clipboard, and never in a response or log.
 | Broker host | `akdbx android setup` | Attached device or emulator | Managed emulator (`android_managed_emulators`) | Host proof |
 | --- | --- | --- | --- | --- |
 | Linux | `--attach`, `--create`, `--manage-avd` | Yes | Yes: x86-64, KVM and a systemd 254+ user manager | CI, and a real Android 15 Google Play emulator |
-| macOS (after 0.49.0) | `--attach` only | Yes, with the same owner checks as Linux | No: setup and `android wake` refuse (`false`) | CI on a macOS runner; no device or emulator (see [Limits](#limits)) |
+| macOS (after 0.50.1) | `--attach` only | Yes, with the same owner checks as Linux | No: setup and `android wake` refuse (`false`) | CI on a macOS runner; no device or emulator (see [Limits](#limits)) |
 | Windows | Refused: write the device file by hand | Yes, but no end-to-end host proof | No (`false`) | None |
 
 On every host the broker checks the kernel's owner of its own loopback
@@ -53,7 +53,7 @@ and sends the request on that connection's standard input.
 On the broker host, choose one setup command. Without arguments,
 `akdbx android setup` prompts at a terminal. The default device name is
 `android`; use `--device NAME` to select another. `--create` and
-`--manage-avd` need Linux; on macOS use `--attach` (after 0.49.0).
+`--manage-avd` need Linux; on macOS use `--attach` (after 0.50.1).
 
 - `akdbx android setup --create` provisions a persistent Android 35 Google Play
   x86-64 virtual device. It uses Google's Linux command-line tools, downloads
@@ -63,7 +63,7 @@ On the broker host, choose one setup command. Without arguments,
   as the user who runs the broker. Setup leaves the emulator off.
 - `akdbx android setup --attach SERIAL --adb-port 5037` registers an online
   device on a running adb server and disables spoken passwords. Its operator
-  controls its power and adb server. It works on Linux and, after 0.49.0, on
+  controls its power and adb server. It works on Linux and, after 0.50.1, on
   macOS. `--adb` defaults to `adb` on `PATH`, then `platform-tools/adb` in the
   SDK (`~/Library/Android/sdk` on macOS).
 - `akdbx android setup --manage-avd NAME --sdk /path/to/sdk --avd-home /path/to/avd`
@@ -267,7 +267,7 @@ reported as `uncertain`.
 - Managed emulators need Linux: their worker runs as a systemd user unit
   with a private runtime directory, and the stock image is x86-64 for KVM.
   On macOS and Windows the broker refuses a managed entry with that reason.
-- macOS (after 0.49.0): CI on a GitHub macOS runner proves the host side. A
+- macOS (after 0.50.1): CI on a GitHub macOS runner proves the host side. A
   real loopback adb server stand-in and a DevTools forward of the runner user
   pass the owner check. `android setup --attach` runs that check, then a
   stand-in adb, then writes the private file. One owned by another account
