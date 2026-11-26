@@ -70,11 +70,12 @@ MARKER = 'akdbx-setup'
 SAFE_WORD = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./:=\\')
 STATE_LIMIT = 64 * 1024
 LINUX_BROWSERS = {
-    'firefox': ('firefox',),
+    'firefox': ('firefox', 'org.mozilla.firefox'),
     'helium': ('helium', 'helium-browser'),
     'chrome': ('google-chrome', 'google-chrome-stable'),
     'edge': ('microsoft-edge', 'microsoft-edge-stable'),
     'chromium': ('chromium', 'chromium-browser'),
+    'brave': ('brave-browser', 'brave-browser-stable', 'brave'),
 }
 STATE_KEYS = ('vault', 'keyfile', 'tls_cert', 'tls_key', 'access', 'tailscale_name', 'tailnet_port',
               'local_port', 'start_at_login', 'browsers', 'extension_dir', 'firefox_extension_dir', 'cdp_profile', 'capture_host',
@@ -712,10 +713,8 @@ class Setup:
         }
         self.tools = tools
         if not tools['browsers']:
-            if self.macos:
-                gaps.append('no supported browser found in /Applications or ~/Applications')
-            else:
-                gaps.append('no supported Chromium browser (Helium, Chrome, Edge) found (needed for browser fills)')
+            where = ' in /Applications or ~/Applications' if self.macos else ''
+            gaps.append(f'no supported fill extension browser found{where} (expected ' + ', '.join(BROWSERS) + ')')
         self.say(f'Python {python}; {platform}: {desktop}')
         self.say('Built-in merge engine: ' + native_merge.ENGINE)
         self.say('mkcert: ' + (tools['mkcert'] or 'not found') + '; tailscale: ' + (tools['tailscale'] or 'not found'))
@@ -739,8 +738,12 @@ class Setup:
             local = self.env.get('LOCALAPPDATA', '')
             programs = [self.env.get(name, '') for name in ('ProgramFiles', 'ProgramFiles(x86)')]
             candidates = {
-                'firefox': [Path(base) / 'Mozilla Firefox' / 'firefox.exe' for base in programs if base],
+                'firefox': [Path(base) / 'Mozilla Firefox' / 'firefox.exe' for base in (*programs, local) if base],
                 'helium': [Path(local) / 'imput' / 'Helium' / 'Application' / 'chrome.exe'],
+                'brave': [Path(base) / 'BraveSoftware/Brave-Browser/Application/brave.exe'
+                          for base in (*programs, local) if base],
+                'chromium': [Path(base) / 'Chromium/Application/chrome.exe'
+                             for base in (*programs, local) if base],
                 'chrome': [Path(base) / 'Google' / 'Chrome' / 'Application' / 'chrome.exe'
                            for base in (*programs, local) if base],
                 'edge': [Path(base) / 'Microsoft' / 'Edge' / 'Application' / 'msedge.exe'
@@ -748,15 +751,17 @@ class Setup:
             }
             for name, paths in candidates.items():
                 for path in paths:
-                    if local and path.is_file():
+                    if path.is_absolute() and path.is_file():
                         found[name] = str(path)
                         break
         elif self.macos:
-            for name, bundle in (('chrome', 'Google Chrome'), ('edge', 'Microsoft Edge'),
-                                 ('firefox', 'Firefox'), ('helium', 'Helium')):
-                for root in (self.home / 'Applications', Path('/Applications')):
-                    path = root / (bundle + '.app')
-                    if path.is_dir():
+            bundles = {'chrome': 'Google Chrome', 'chromium': 'Chromium', 'brave': 'Brave Browser',
+                       'edge': 'Microsoft Edge', 'helium': 'Helium', 'firefox': 'Firefox'}
+            for name, bundle in bundles.items():
+                binary = 'firefox' if name == 'firefox' else bundle
+                for base in (self.home / 'Applications', Path('/Applications')):
+                    path = base / (bundle + '.app') / 'Contents/MacOS' / binary
+                    if path.is_file():
                         found[name] = str(path)
                         break
         else:
@@ -765,6 +770,12 @@ class Setup:
                     path = self.which(command)
                     if path:
                         found[name] = path
+                        break
+            if 'firefox' not in found:
+                exports = (self.home / '.local/share/flatpak', Path('/var/lib/flatpak'))
+                for path in (Path('/snap/bin/firefox'), *(base / 'exports/bin/org.mozilla.firefox' for base in exports)):
+                    if path.is_file():
+                        found['firefox'] = str(path)
                         break
         return found
 
@@ -1564,22 +1575,42 @@ class Setup:
         from .extension_host import LAUNCHER_LIMIT, _owned_manifest, _read_regular, expected_launcher, paths
         where = paths(browser)
         socket_path = str(self.socket) if self.socket_explicit else None
+        custom_manifest_dir = None
         try:
             expected = expected_launcher(browser, str(self.executable), socket_path).encode('utf-8')
             # Regular files only: a link at either path is never taken as installed.
-            installed = (_read_regular(where['launcher'], LAUNCHER_LIMIT) == expected
+            registered = True
+            if self.windows:
+                from .extension_host import same_windows_manifest, windows_registered_manifest
+                current = windows_registered_manifest(browser)
+                registered = current is not None
+                if current is not None:
+                    candidate = Path(current)
+                    # Reuse a custom local registration only when this installer owns its manifest.
+                    # Do not open a network path or repair an unrelated registry target.
+                    if not same_windows_manifest(current, where['manifest']):
+                        drive = candidate.drive.removeprefix('\\\\?\\')
+                        registered = (candidate.is_absolute() and len(drive) == 2 and drive.endswith(':')
+                                      and candidate.name.casefold() == where['manifest'].name.casefold()
+                                      and _owned_manifest(candidate, where['launcher']))
+                        if registered:
+                            custom_manifest_dir = candidate.parent
+                            where['manifest'] = candidate
+            installed = (registered and _read_regular(where['launcher'], LAUNCHER_LIMIT) == expected
                          and _owned_manifest(where['manifest'], where['launcher']))
-            if installed and self.windows:
-                import winreg
-                from .extension_host import HOST_NAME, WINDOWS_KEYS
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WINDOWS_KEYS[browser] + '\\' + HOST_NAME) as key:
-                    installed = winreg.QueryValueEx(key, '')[0] == str(where['manifest'])
+            if installed and browser == 'firefox' and sys.platform.startswith('linux'):
+                from .extension_host import check_firefox_bridge, detected_firefox_package
+                package = detected_firefox_package()
+                if package != 'native':
+                    check_firefox_bridge(package)
         except (OSError, ValueError):
             installed = False
         if installed:
             self.say(f'The extension host for {browser} is already installed.')
             return 'done'
         argv = self.akdbx_argv('extension', 'install', '--browser', browser)
+        if custom_manifest_dir is not None:
+            argv += ['--manifest-dir', str(custom_manifest_dir)]
         show = [shell_command(argv, self.windows), f'writes {where["launcher"]} and {where["manifest"]}'
                 + (f' and {where["registry"]}' if 'registry' in where else '')]
         applied = self.change('fill', f'install the native-messaging host for {browser}', show,
@@ -1668,8 +1699,10 @@ class Setup:
         if browser == 'firefox':
             self.step(f'Firefox 153 or newer: open about:debugging#/runtime/this-firefox, choose Load Temporary '
                       f'Add-on and select {folder / "manifest.json"}. The add-on ID is {FIREFOX_EXTENSION_ID}. '
-                      'A temporary add-on must be loaded again after Firefox restarts. Permanent installation '
-                      'requires a Mozilla-signed XPI.', 'fill')
+                      'For Snap or Flatpak, archive the contents of the build folder in a ZIP with manifest.json '
+                      'at its root and select the ZIP. After each rebuild, create a fresh ZIP and load it with '
+                      'Load Temporary Add-on. Load the add-on again after Firefox restarts. '
+                      'Permanent installation requires a Mozilla-signed XPI.', 'fill')
         else:
             self.step(f'Load the extension once in each Chromium browser: open chrome://extensions, turn on Developer mode, '
                   f'choose Load unpacked and select {folder} (extension ID {EXTENSION_ID}). After an akdbx update, '
@@ -1768,13 +1801,13 @@ class Setup:
             if self.socket_explicit:
                 argv += ['--socket', str(self.socket) + '-capture']
         else:
-            from .extension_host import linux_manifest_dir
+            # The importer picks the browser's folder and creates it when missing (Brave on macOS uses Chrome's).
             name = 'agentic-kdbx-unlock.sock' if Path(self.socket).name == 'agentic-kdbx.sock' else 'akdbx-unlock.sock'
             socket_path = Path(self.socket).with_name(name)
             if self.macos:
                 from .macos import macos_page_socket
                 socket_path = macos_page_socket(Path(self.socket))
-            argv += ['--socket', socket_path, '--manifest-dir', linux_manifest_dir(browser)]
+            argv += ['--socket', socket_path, '--browser', browser]
         applied = self.change('features', f'register the capture native host for {browser}',
                               [shell_command(argv, self.windows)], lambda: self._checked(argv), selected=True,
                               key='capture_host')
