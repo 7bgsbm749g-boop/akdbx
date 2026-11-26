@@ -736,6 +736,13 @@ def _config_text(origin, version, build_id):
             'globalThis.AKDBX_EXTENSION_VERSION = ' + json.dumps(version) + ';\n')
 
 
+# Files that older builds wrote and this build no longer ships: the Enhanced
+# security settings page of fill extension 0.5.0 to 0.15.x. A copy left in an
+# updated folder would still open at its extension URL and show a switch that
+# no longer does anything, so a build removes it.
+RETIRED_FILES = ('options.html', 'options.js', 'options.css')
+
+
 def build(destination, *, host_name=HOST_NAME, unlock_origin=None, browser='chrome'):
     """Write the unpacked extension. An existing folder must already hold this extension.
 
@@ -770,6 +777,8 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None, browser='chro
     version = built_version()
     written['manifest.json'] = _manifest_for(browser, written, version)
     destination.mkdir(parents=True, exist_ok=True)
+    for name in RETIRED_FILES:
+        (destination / name).unlink(missing_ok=True)
     for name, data in written.items():
         (destination / name).write_bytes(data)
     (destination / 'config.js').write_text(_config_text(origin, version, secrets.token_urlsafe(16)), encoding='utf-8')

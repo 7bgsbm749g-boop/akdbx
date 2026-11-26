@@ -50,23 +50,16 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, 
     action: {openPopup: async () => {}},
     tabs: {get: async () => null, query: async () => []},
     webNavigation: {getAllFrames: async () => []},
-    scripting: {executeScript: async () => [], insertCSS: async details => { screen.css.push(details); },
-      removeCSS: async details => { screen.removed.push(details); }},
+    scripting: {executeScript: async () => []},
   };
-  // The pixel challenge: the fake screenshot shows the colour of the last inserted rule,
-  // unless a test sets screen.shown to another colour (a cover) first.
-  const screen = {css: [], removed: [], captures: 0, shown: null};
+  // The worker takes no screenshot and adds no style sheet (the pixel check of fill
+  // extension 0.5.0 to 0.15.x did both): any such call is recorded here.
+  const screen = {css: [], captures: 0};
+  chrome.scripting.insertCSS = async details => { screen.css.push(details); };
   chrome.tabs.captureVisibleTab = async () => { screen.captures += 1; return "data:image/png;base64,AAAA"; };
-  const painted = () => screen.shown || screen.css[screen.css.length - 1].css.match(/rgb\((\d+), (\d+), (\d+)\)/).slice(1).map(Number);
-  class OffscreenCanvas {
-    getContext() {
-      return {drawImage() {}, getImageData: (x, y, w, h) => ({data: Uint8Array.from({length: w * h * 4},
-        (_, i) => i % 4 === 3 ? 255 : painted()[i % 4])})};
-    }
-  }
   const sandbox = {chrome, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, TextEncoder,
     TextDecoder, Uint8Array, AbortController, module: {exports: {}}, AKDBX_TRUSTED_ORIGIN: builtOrigin ?? null,
-    AKDBX_BUILD_ID: build, Blob, OffscreenCanvas, createImageBitmap: async () => ({width: 100, height: 100, close() {}})};
+    AKDBX_BUILD_ID: build};
   if (browserNamespace) sandbox.browser = chrome;  // Chromium148+ exposes both as the same API objects.
   if (version !== undefined) sandbox.AKDBX_EXTENSION_VERSION = version;
   // No network in these tests: the broker's HTTPS statement comes only from a scripted fetch,
@@ -96,14 +89,6 @@ test("a Chromium worker starts when browser and chrome namespaces are both prese
   const {listeners} = loadBackground({browserNamespace: true});
   assert.equal(typeof listeners.message, "function");
 });
-
-// What content.js answers to the cover checks of a pin, fill or read (undefined: another call).
-function coverAnswer(source, clear = true) {
-  if (source.includes(".clear(")) return clear;
-  if (source.includes(".challengeSpec(")) return {path: ":root>:nth-child(2)>:nth-child(1)", points: [[50, 50]], view: [100, 100]};
-  if (source.includes(".painted(") || source.includes(".challengeHeld(")) return true;
-  return undefined;
-}
 
 test("popup fills only from a trusted click with user activation", () => {
   assert.equal(userGesture({isTrusted: true}, {isActive: true}), true);
@@ -268,7 +253,7 @@ test("agent fill refuses a pin whose field spec differs from the sealed one", as
   const scripts = [];
   chrome.scripting.executeScript = async details => {
     scripts.push(details);
-    return [{result: details.files ? undefined : coverAnswer(String(details.func)) ?? "q".repeat(32)}];
+    return [{result: details.files ? undefined : "q".repeat(32)}];
   };
   // The relay asked the browser to pin the name field...
   const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card",
@@ -318,7 +303,7 @@ test("a read answers only a signed broker connection and facts sealed for that p
     if (details.files) return [{}];
     if (source.includes(".pin(")) return [{result: "r".repeat(32)}];
     if (source.includes(".read(")) return [{result: "sk_synthetic_value"}];
-    return [{result: coverAnswer(source) ?? true}];
+    return [{result: true}];
   };
   const spec = {selector: "#secret", frame_origin: null};
   const b64 = bytes => Buffer.from(bytes).toString("base64url");
@@ -397,7 +382,7 @@ test("released pins do not evict a live pin's spec record", async () => {
     if (details.files) return [{}];
     const source = String(details.func);
     if (source.includes(".pin(")) return [{result: String(next++).padStart(32, "0")}];
-    return [{result: source.includes(".fill(") ? "filled" : coverAnswer(source) ?? true}];
+    return [{result: source.includes(".fill(") ? "filled" : true}];
   };
   const spec = {selector: "#number", field: "cc-number", processor: null};
   const request = {tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card", spec};
@@ -415,15 +400,14 @@ test("released pins do not evict a live pin's spec record", async () => {
   assert.equal(result.state, "filled");
 });
 
-// A card pin and its fill with scripted cover checks: `clear` is the occlusion test's answer.
-// Enhanced security is on unless `enhanced` is false (the shipped default).
-const ENHANCED = {settings: {enhanced_security: true}};
-async function coveredFill({clear, shown = null, active = true, answer = null, enhanced = true}) {
-  const {exports, chrome, screen} = loadBackground({local: enhanced ? copy(ENHANCED) : {}});
+// A card pin and its fill with a scripted content script. `local` is the extension's
+// local storage: fill extension 0.5.0 to 0.15.x stored Enhanced security there.
+async function pinAndFill(local) {
+  const {exports, chrome, screen} = loadBackground({local});
   const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
   exports.setSealKey(key);
   const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
-  chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active, windowId: 1});
+  chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active: true, windowId: 1});
   chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
   const calls = [];
   chrome.scripting.executeScript = async details => {
@@ -431,207 +415,45 @@ async function coveredFill({clear, shown = null, active = true, answer = null, e
     const source = String(details.func);
     calls.push([source, details.args]);
     if (source.includes(".pin(")) return [{result: "c".repeat(32)}];
-    const special = answer && answer(source);
-    if (special) return special;
-    return [{result: source.includes(".fill(") ? "filled" : coverAnswer(source, clear) ?? true}];
+    return [{result: source.includes(".fill(") ? "filled" : true}];
   };
-  screen.shown = shown;
   const spec = {selector: "#number", field: "cc-number", processor: null};
   const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card", spec});
-  let result = null;
-  if (pinned.ok) {
-    const facts = {tab_id: 7, document_id: "DOC", chain, kind: "card", pin_id: pinned.pin_id, max_age_ms: 1000, spec};
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const data = await crypto.subtle.encrypt({name: "AES-GCM", iv, additionalData: new TextEncoder().encode("fill:" + pinned.pin_id)},
-      key, new TextEncoder().encode(JSON.stringify({values: {value: "4111111111111111"}, facts})));
-    const b64 = bytes => Buffer.from(bytes).toString("base64url");
-    result = await exports.fill({pin_id: pinned.pin_id, sealed: {iv: b64(iv), data: b64(data)}});
-  }
-  return {pinned, result, screen, fills: calls.filter(([source]) => source.includes(".fill("))};
+  const facts = {tab_id: 7, document_id: "DOC", chain, kind: "card", pin_id: pinned.pin_id, max_age_ms: 1000, spec};
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({name: "AES-GCM", iv, additionalData: new TextEncoder().encode("fill:" + pinned.pin_id)},
+    key, new TextEncoder().encode(JSON.stringify({values: {value: "4111111111111111"}, facts})));
+  const b64 = bytes => Buffer.from(bytes).toString("base64url");
+  const result = await exports.fill({pin_id: pinned.pin_id, sealed: {iv: b64(iv), data: b64(data)}});
+  return {pinned, result, screen, calls};
 }
 
-test("a clear occlusion test still takes the pixel challenge, and the fill runs its own occlusion test", async () => {
-  // An ancestor's outline over the field is no occluder for the occlusion test: the pixels decide too.
-  const {pinned, result, screen, fills} = await coveredFill({clear: true});
-  assert.equal(pinned.ok, true);
-  assert.equal(result.state, "filled");
-  assert.equal(screen.captures, 2);  // One challenge at the pin, one at the fill.
-  assert.equal(screen.css.length, 2);
-  // Both proofs held: content.js runs its own fresh occlusion test in the fill, not only the pixels.
-  assert.equal(fills[0][1][4], "both");
-});
-
-test("a clear occlusion test with a covered screenshot refuses", async () => {
-  const {pinned, screen} = await coveredFill({clear: true, shown: [255, 255, 255]});
-  assert.equal(pinned.ok, false);
-  assert.equal(screen.removed.length, 1);
-});
-
-test("an overlapped field fills only when the screenshot shows the challenge colour, and the rule is removed", async () => {
-  const {pinned, result, screen, fills} = await coveredFill({clear: false});
-  assert.equal(pinned.ok, true);
-  assert.equal(result.state, "filled");
-  assert.equal(fills[0][1][4], "pixels");
-  // One user-origin rule for the pinned element only, at the pin and at the fill, each removed again.
-  assert.equal(screen.css.length, 2);
-  for (const [i, rule] of screen.css.entries()) {
-    assert.equal(rule.origin, "USER");
-    assert.deepEqual(copy(rule.target), {tabId: 7, documentIds: ["DOC"]});
-    assert.match(rule.css, /^:root>:nth-child\(2\)>:nth-child\(1\)\{box-shadow:inset 0 0 0 9999px rgb\(\d+, \d+, \d+\)!important;/);
-    assert.deepEqual(copy(screen.removed[i]), copy(rule));
-  }
-  // Each challenge has its own random colour.
-  assert.notEqual(screen.css[0].css, screen.css[1].css);
-});
-
-test("a field that moved while the screenshot was taken refuses", async () => {
-  let specs = 0;
-  const {pinned, screen} = await coveredFill({clear: false, answer: source => {
-    if (!source.includes(".challengeSpec(")) return null;
-    specs += 1;
-    // The second measurement, after the screenshot, finds the field elsewhere.
-    const points = specs === 1 ? [[50, 50]] : [[50, 70]];
-    return [{result: {path: ":root>:nth-child(2)>:nth-child(1)", points, view: [100, 100]}}];
-  }});
-  assert.equal(pinned.ok, false);
-  assert.equal(specs, 2);
-  assert.equal(screen.removed.length, 1);  // The challenge rule is removed again.
-});
-
-test("a page that stops answering during a challenge does not hold the queue for the next one", async () => {
-  let hang = true;
-  const {exports, chrome, screen} = loadBackground({local: copy(ENHANCED)});
-  const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
-  chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active: true, windowId: 1});
-  chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
-  chrome.scripting.executeScript = async details => {
-    if (details.files) return [{}];
-    const source = String(details.func);
-    if (source.includes(".pin(")) return [{result: "d".repeat(32)}];
-    if (hang && source.includes(".challengeHeld(")) {
-      hang = false;
-      return new Promise(() => {});  // This renderer never answers.
-    }
-    return [{result: coverAnswer(source, false) ?? true}];
-  };
-  const spec = {selector: "#number", field: "cc-number", processor: null};
-  const request = {tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card", spec};
-  const first = await exports.pin(request);
-  assert.equal(first.ok, false);
-  const second = await exports.pin(request);
-  assert.equal(second.ok, true);
-  assert.ok(screen.removed.length >= 1);
-});
-
-test("a cover refuses: the screenshot does not show the challenge colour", async () => {
-  const {pinned, screen} = await coveredFill({clear: false, shown: [255, 255, 255]});
-  assert.equal(pinned.ok, false);
-  assert.equal(screen.captures, 2);  // A screenshot can be one frame late: it looks twice.
-  assert.equal(screen.removed.length, 1);
-});
-
-test("an overlapped field in a tab that is not the active one refuses with no screenshot", async () => {
-  const {pinned, screen} = await coveredFill({clear: false, active: false});
-  assert.equal(pinned.ok, false);
-  assert.equal(screen.captures, 0);
-  assert.equal(screen.css.length, 0);
-});
-
-test("with enhanced security off (the default) a fill takes no screenshot and content.js runs no cover check", async () => {
-  // A covered screenshot would refuse; with the setting off nothing looks at it.
-  const {pinned, result, screen, fills} = await coveredFill({clear: false, shown: [255, 255, 255], enhanced: false});
-  assert.equal(pinned.ok, true);
-  assert.equal(result.state, "filled");
-  assert.equal(screen.captures, 0);
-  assert.equal(screen.css.length, 0);
-  assert.equal(fills[0][1][4], "off");
-});
-
-test("a setting other than exactly true leaves enhanced security off", async () => {
-  for (const settings of [{enhanced_security: "true"}, {enhanced_security: 1}, [], null]) {
-    const {exports, chrome, screen} = loadBackground({local: {settings}});
-    const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
-    chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active: true, windowId: 1});
-    chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
-    chrome.scripting.executeScript = async details => [{result: details.files ? undefined : "e".repeat(32)}];
-    const spec = {selector: "#number", field: "cc-number", processor: null};
-    const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card", spec});
-    assert.equal(pinned.ok, true, JSON.stringify(settings));
+test("a stored Enhanced security setting is ignored: the pin and fill run the DOM checks only", async () => {
+  // Fill extension 0.5.0 to 0.15.x stored this when the user turned the setting on; 0.16.0 keeps filling.
+  for (const local of [{}, {settings: {enhanced_security: true}}, {settings: {enhanced_security: false}}]) {
+    const {pinned, result, screen, calls} = await pinAndFill(copy(local));
+    assert.equal(pinned.ok, true, JSON.stringify(local));
+    assert.equal(result.state, "filled");
+    // No screenshot, no style sheet, and no call to a cover check that content.js no longer has.
     assert.equal(screen.captures, 0);
+    assert.equal(screen.css.length, 0);
+    assert.ok(calls.every(([source]) => !/\.(clear|challengeSpec|challengeHeld|painted|guardPoint)\(/.test(source)));
+    // The fill gets the pin, kind, values and deadline only.
+    const fills = calls.filter(([source]) => source.includes(".fill("));
+    assert.equal(fills.length, 1);
+    assert.equal(fills[0][1].length, 4);
   }
 });
 
-test("an unreadable setting counts as on: the cover check runs", async () => {
-  const {exports, chrome, screen} = loadBackground();
-  chrome.storage.local.get = async () => { throw new Error("storage"); };
-  const chain = [{document_id: "DOC", url: "https://shop.example/checkout"}];
-  chrome.tabs.get = async () => ({id: 7, url: chain[0].url, active: true, windowId: 1});
-  chrome.webNavigation.getAllFrames = async () => [{frameId: 0, documentId: "DOC", url: chain[0].url}];
-  chrome.scripting.executeScript = async details => {
-    if (details.files) return [{}];
-    const source = String(details.func);
-    return [{result: source.includes(".pin(") ? "f".repeat(32) : coverAnswer(source) ?? true}];
-  };
-  screen.shown = [255, 255, 255];
-  const spec = {selector: "#number", field: "cc-number", processor: null};
-  const pinned = await exports.pin({tab_id: 7, document_id: "DOC", top_url: chain[0].url, frame_url: null, kind: "card", spec});
-  assert.equal(pinned.ok, false);
-  assert.equal(screen.captures, 2);
-});
-
-// ----- options page ---------------------------------------------------------
-const options = require(path.join(root, "options.js"));
-
-function optionsApi({grant = true, granted = false, local = {}} = {}) {
-  const calls = [];
-  const api = {
-    storage: {local: {get: async key => (key in local ? {[key]: copy(local[key])} : {}),
-      set: async items => { Object.assign(local, copy(items)); }}},
-    permissions: {
-      request: async request => { calls.push(["request", request]); if (grant) granted = true; return grant; },
-      contains: async request => { calls.push(["contains", request]); return granted; },
-      remove: async () => { calls.push(["remove"]); return true; },
-    },
-  };
-  return {api, calls, local};
-}
-
-test("the manifest asks for the screenshot access only when the user turns enhanced security on", () => {
+test("the manifest asks for https pages only and has no settings page", () => {
   assert.deepEqual(manifest.host_permissions, ["https://*/*"]);
-  assert.deepEqual(manifest.optional_host_permissions, ["<all_urls>"]);
-  assert.deepEqual(manifest.options_ui, {page: "options.html", open_in_tab: true});
-  assert.deepEqual(copy(options.ALL_SITES), {origins: ["<all_urls>"]});
-});
-
-test("turning enhanced security on asks the browser first, and stores it only when granted", async () => {
-  const {api, calls, local} = optionsApi({local: {settings: {other: 1}}});
-  assert.deepEqual(await options.setEnhanced(api, true), {on: true, granted: true, denied: false});
-  assert.deepEqual(calls[0], ["request", {origins: ["<all_urls>"]}]);  // First, in the click's activation.
-  assert.deepEqual(local.settings, {other: 1, enhanced_security: true});
-  const denied = optionsApi({grant: false});
-  assert.deepEqual(await options.setEnhanced(denied.api, true), {on: false, granted: false, denied: true});
-  assert.deepEqual(denied.local, {});
-});
-
-test("turning enhanced security off keeps the browser's access: removing <all_urls> also withholds https", async () => {
-  const {api, calls, local} = optionsApi({granted: true, local: {settings: {enhanced_security: true}}});
-  assert.deepEqual(await options.setEnhanced(api, false), {on: false, granted: true, denied: false});
-  assert.deepEqual(local.settings, {enhanced_security: false});
-  assert.ok(!calls.some(([name]) => name === "remove" || name === "request"));
-});
-
-test("the settings page reads the stored state and warns when the access is gone", async () => {
-  assert.deepEqual(await options.currentState(optionsApi().api), {on: false, granted: false, denied: false});
-  const lost = optionsApi({local: {settings: {enhanced_security: true}}});
-  const state = await options.currentState(lost.api);
-  assert.deepEqual(state, {on: true, granted: false, denied: false});
-  assert.equal(options.statusText(state)[0], "warning");
-  assert.deepEqual(options.statusText({on: true, granted: true, denied: false}), ["", ""]);
-  assert.deepEqual(options.statusText({on: false, granted: false, denied: false}), ["", ""]);
-  assert.equal(options.statusText({on: false, granted: false, denied: true})[0], "warning");
-  assert.equal(options.statusText({on: false, granted: true, denied: false})[0], "detail");
-  for (const settings of [null, [], "on"]) {
-    assert.deepEqual(await options.readSettings(optionsApi({local: {settings}}).api.storage.local), {});
+  assert.equal(manifest.optional_host_permissions, undefined);
+  assert.equal(manifest.options_ui, undefined);
+  for (const name of ["options.html", "options.js", "options.css"]) assert.equal(fs.existsSync(path.join(root, name)), false);
+  // The worker, the content script and the popup take no screenshot, add no style sheet and open no settings page.
+  for (const name of ["background.js", "content.js", "popup.js"]) {
+    const source = fs.readFileSync(path.join(root, name), "utf8");
+    assert.ok(!/captureVisibleTab|insertCSS|removeCSS|trackVisibility|openOptionsPage/.test(source), name);
   }
 });
 
@@ -641,9 +463,8 @@ test("popup footer shows the extension's own version", () => {
   assert.equal(versionText({version: "<b>1</b>"}), "akdbx extension");
   assert.equal(versionText(null), "akdbx extension");
   // An AMO-signed Firefox build (akdbx extension sign) has nine digits in its fourth part.
-  assert.equal(versionText({version: "0.15.2.111058001"}), "akdbx extension 0.15.2.111058001");
-  assert.equal(versionText({version: "0.15.2.1110580010"}), "akdbx extension");
-  assert.equal(options.versionText({version: "0.15.2.111058001"}), "akdbx extension 0.15.2.111058001");
+  assert.equal(versionText({version: "0.17.0.111058001"}), "akdbx extension 0.17.0.111058001");
+  assert.equal(versionText({version: "0.17.0.1110580010"}), "akdbx extension");
 });
 
 // ----- broker trust: signed origin statements ---------------------------------------
