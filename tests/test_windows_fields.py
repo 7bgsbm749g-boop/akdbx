@@ -111,3 +111,94 @@ def test_case_converting_styles_refuse_before_either_login_field_changes(lab, st
     assert not error.value.started
     assert win32gui.GetWindowText(entries[0]) == win32gui.GetWindowText(entries[1]) == ''
     pin.close()
+
+
+@pytest.fixture(scope='module')
+def managed_exe(tmp_path_factory):
+    from pathlib import Path
+    import subprocess
+    framework = Path(os.environ['SystemRoot']) / 'Microsoft.NET/Framework64/v4.0.30319'
+    exe = tmp_path_factory.mktemp('managed-fields') / 'fields.exe'
+    subprocess.run([str(framework / 'csc.exe'), '/nologo', '/target:exe', '/out:' + str(exe),
+                    '/r:System.Windows.Forms.dll', '/r:System.Xaml.dll',
+                    *('/r:' + str(framework / 'WPF' / (name + '.dll'))
+                      for name in ('WindowsBase', 'PresentationCore', 'PresentationFramework')),
+                    str(Path(__file__).with_name('windows_managed_fields.cs'))], check=True, timeout=30)
+    return exe
+
+
+@pytest.mark.parametrize('toolkit', ['winforms', 'wpf'])
+def test_managed_control_login_read_and_focus_change(managed_exe, toolkit):
+    import ctypes
+    import queue
+    import subprocess
+    import threading
+
+    app = subprocess.Popen([str(managed_exe), toolkit], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                           text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    messages = queue.Queue()
+
+    def listen():
+        for line in app.stdout:
+            messages.put(line.strip())
+
+    reader = threading.Thread(target=listen, daemon=True)
+    reader.start()
+    manager = NativeFields()
+
+    def command(name, expected='focused'):
+        app.stdin.write(name + '\n')
+        app.stdin.flush()
+        assert messages.get(timeout=10) == expected
+
+    def view():
+        return manager.discover(dict(action='list-native-fields', native_protocol=1, pid=app.pid))['windows'][0]
+
+    def pin(window, mode, control, **extra):
+        receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                                   mode=mode, service_url=SITE, control=control, **extra))
+        return manager.take(receipt['target'])
+
+    try:
+        assert messages.get(timeout=20) == 'ready'
+        ctypes.windll.user32.AllowSetForegroundWindow(app.pid)
+        command('user')
+        window = view()
+        user = next(f['control'] for f in window['controls'] if f['focused'])
+        password = next(f['control'] for f in window['controls'] if f['password'])
+        command('password')
+        target = pin(window, 'login', password, username_control=user)
+        try:
+            manager.deliver_password(target, 'login', 'invented-user', 'invented-password',
+                                     {https_origin(SITE)}, lambda: True, time.monotonic() + 4)
+        finally:
+            target.close()
+        command('verify', 'match')
+
+        window = view()
+        target = pin(window, 'password', next(f['control'] for f in window['controls'] if f['focused']))
+        command('capture')
+        try:
+            with pytest.raises(DeliveryError) as error:
+                manager.deliver_password(target, 'password', '', 'must-not-arrive',
+                                         {https_origin(SITE)}, lambda: True, time.monotonic() + 4)
+            assert not error.value.started
+        finally:
+            target.close()
+        command('verify', 'match')
+        window = view()
+        target = pin(window, 'read', next(f['control'] for f in window['controls'] if f['focused']))
+        try:
+            assert manager.read(target, {https_origin(SITE)}, lambda: True, time.monotonic() + 4) == 'invented-capture'
+        finally:
+            target.close()
+    finally:
+        manager.close()
+        app.stdin.close()
+        try:
+            app.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            app.kill()
+            app.wait()
+        reader.join(timeout=3)
+        app.stdout.close()

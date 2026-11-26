@@ -87,7 +87,14 @@ field, another for the confirmation field (none for a write staged with
 `--single-field`), the site's acceptance, then
 `commit-password --site-accepted -- WRITE_HANDLE`.
 
-## Username and TOTP fills in a native application
+## Native application field pins
+
+Use [native desktop fields](native-fields.md) for an exact Win32 Edit, WinForms
+TextBox, or WPF TextBox or PasswordBox. The post-0.47 backend reports
+`native_field_windows_uia: true`. Discover the focused field, then use the
+single-use pin for the requested fill or read-only capture.
+
+## Username and TOTP fills with a numeric window pin
 
 - Independently verify the application's PID and top-level HWND. Focus the
   intended field. Call `pin-target --pid VERIFIED_PID --window VERIFIED_HWND`.
@@ -95,7 +102,7 @@ field, another for the confirmation field (none for a write staged with
 - Use a fresh search handle and target pin for each
   `fill HANDLE --mode username --target PIN` or `fill-totp`. A window pin
   refuses `--mode password`, `--mode login` and `fill-generated`: a browser's
-  address bar shares its page's HWND, so only a DOM pin may receive a
+  address bar shares its page's HWND, so a numeric window pin cannot authorize a
   password.
 - A success receipt confirms directed message dispatch, not application
   acceptance. Some apps ignore synthetic `WM_CHAR` messages. Stop on uncertain

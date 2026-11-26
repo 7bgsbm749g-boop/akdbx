@@ -12,13 +12,20 @@ Supported controls:
   be available. X11 and Wayland use the same accessibility transport. Tests use
   real GTK delivery and Qt read-only capture on X11 and native Wayland under a nested Weston compositor;
   this is not certification of every toolkit or compositor.
-- Windows 10/11: visible, enabled, Unicode Win32 `Edit` controls in the active
-  window, in the broker's user and desktop session. Custom controls, browser
-  controls, secure desktop and higher-integrity targets are unsupported.
+- Windows 10/11: visible, enabled Win32 Edit controls, WinForms TextBox controls
+  and WPF TextBox and PasswordBox controls in the active native window.
+  Check `native_field_windows_uia: true` for the post-0.47 Windows backend.
+  The broker requires its own user and session, the Default input desktop
+  and a target at or below its integrity level. Browser controls are refused.
 - macOS native controls are not implemented. Its extension route is unchanged.
 
 This is directed **control** delivery: Linux uses the retained AT-SPI editable
-text object, and Windows uses `WM_SETTEXT` to the exact child HWND. There are
+text object, and Windows uses `WM_SETTEXT` to the exact Edit HWND or UI Automation
+ValuePattern on a retained WPF element. WPF also needs TextPattern to check the
+length without reading back the filled value. It supports single-line values
+because UI Automation does not expose the TextBox AcceptsReturn setting.
+Qt, WinUI, UWP, Java, Flutter, RichEdit and VCL controls are outside the
+verified set. The broker refuses other UI Automation providers. There are
 no global keys, Tab, clipboard or automatic submit actions. Legacy numeric
 `pin-target` X11/HWND pins still accept only username and TOTP delivery. They
 cannot authorize passwords or the other native field operations.
