@@ -125,22 +125,19 @@ shown-once secrets shown in the top document, and it holds a child frame's
 `<iframe>` owner with the CDP route's owner guard (found with a nonce
 handshake). Top-document read pins and child-frame password pins require fill
 extension 0.4.0 or newer. Use CDP for supported same-site child-frame reads. One check
-stays weaker by default: the extension has no browser-native hit test, so only
-the CDP route refuses a card or address field under a click-through cover
+is weaker: the extension has no browser-native hit test, so only
+the CDP route refuses a card, address or code field under a click-through cover
 (`pointer-events: none`, `inert` or a popover backdrop). Read pins use the same
-DOM hit test on both routes.
+DOM hit test on both routes. See [Visibility checks](#visibility-checks-what-they-stop).
 
-From 0.34.0 (fill extension 0.5.0) the extension has a settings page (the cog
-in its popup). Its experimental **Enhanced security** setting, off by default,
-checks for paint over the tested points on card, address and read targets,
-including click-through and inert covers. Where the browser supports
-`IntersectionObserver` visibility tracking, akdbx also checks the whole element
-for occlusion. Firefox 161 uses the pixel check alone. The pixel check
-paints the field in a random colour for about a tenth of a second and a tab
-screenshot must show that colour (one check at each pin and each fill). Turning
-it on asks the browser for the `<all_urls>` permission; the check needs a
-rendered, active tab and can refuse a safe page. See
-[the extension route](skills/akdbx/references/extension.md).
+Fill extension 0.5.0 to 0.15.x (akdbx 0.34.0 to 0.52.0) had an experimental,
+opt-in **Enhanced security** setting: a pixel check with tab screenshots for
+covers over card, address, code and read targets. After 0.52.0 (fill extension
+0.16.0) that setting, its settings page and its `<all_urls>` permission request
+are removed. A page could beat the check, and the page that gets a value can read
+it anyway. Fills and reads work as with the setting off; a stored setting is
+ignored. See [Visibility checks](#visibility-checks-what-they-stop) and
+[the extension route](skills/akdbx/references/extension.md#removed-enhanced-security).
 
 From 0.35.0 (fill extension 0.6.0) read pins on both routes also accept an
 authenticator setup key printed in space-separated Base32 groups, for
@@ -272,6 +269,35 @@ limits are in [Android devices](skills/akdbx/references/android.md).
 - Errors are deliberately generic after the typing boundary.
 
 This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Browser password fills require a short-lived DOM target pin; see [the target contract](skills/akdbx/references/target-fill.md). The broker verifies the exact HTTPS page, main frame and retained editable password input. Window pins (X11, XWayland or HWND) refuse password/login delivery. Application acceptance remains a caller check; malicious pages and compromised local processes are outside this boundary. Python cannot guarantee memory zeroization.
+
+### Visibility checks: what they stop
+
+The broker checks the exact HTTPS origin before a fill or a read. The page at
+that origin is the destination: its scripts can read a filled value at once,
+and it decides which text a secret shows. No check of covers or pixels can keep
+a value from that page, so akdbx does not try. The agent must verify the site
+and the field before it fills.
+
+The visibility checks stop the classic hidden-field autofill harvest: a form
+shows one field and hides others (an address, a phone number, a card, a
+password) so that the user does not see what it receives. Each pin is for one
+field that the agent chose, and that field must be one the user can see.
+
+| Check | Route | What it stops | Can a page that targets it get past it? |
+| --- | --- | --- | --- |
+| DOM checks. Every pin: `display: none`, `visibility`, `opacity: 0`, zero size, off-screen, `inert`; focus (every pin except card pins); visible owners of child frames. Card, address and code pins: the style guard (filter, mask, clip, blend; only an ancestor `clip-path: inset()` that holds the whole field) and the `elementFromPoint` hit test at the field centre, through each parent frame. Read pins: the hit test at the start, centre and end of each line of the secret's text (of the box for a text input), or a 5 x 5 grid over a QR code. | CDP and extension | Hidden, transparent, zero-size, off-screen and inert targets; for card, address and code fields also clipped fields and an opaque cover that takes pointer events; a hidden login frame | Yes: a cover with a hole at the tested points. On the extension route, also a click-through cover. |
+| CDP native hit test (`DOM.getNodeForLocation`, which ignores `pointer-events: none`) for card, address and code fields, at the pin and before and after the write | CDP | A click-through cover at the field centre: `pointer-events: none`, `inert`, a popover `::backdrop` | Yes: a cover with a hole at the tested point. |
+| `IntersectionObserver` v2 occlusion test (removed after 0.52.0) | Extension, Chromium, with Enhanced security | Any box over the element | It refused ordinary pages (5 of 9 test pages: a floating label, a copy button, a cookie banner elsewhere), Firefox has no such test, and it ran only beside the pixel check. |
+| Pixel check with tab screenshots (removed after 0.52.0) | Extension, with Enhanced security (opt-in) | A cover over the sampled points | Yes: a page can read the check's colour from its own style and remove its cover while the check runs, or cover the text between the sampled points. It needed the `<all_urls>` permission. |
+
+Password pins have no style guard and no hit test, on both routes: a cover
+over a visible, focused password field does not stop its fill. Read pins
+(`capture-secret`, `capture-totp`) have no style guard. A cover over a secret
+does not change the text that akdbx saves: the page shows that text itself.
+The toolbar popup's login, card and TOTP fills check that the focused field and
+its form partners are visible (no style guard, no hit test); its address and
+texted-code fills use the agent pin checks. Native field and Android pins have
+their own checks ([support matrix](docs/support-matrix.md)).
 
 ## Browser extension route (0.21.0)
 
@@ -713,7 +739,7 @@ for another detail still refuses. With `cc-exp-month` or `cc-exp-year` it also
 pins an ARIA dropdown button that owns one listbox (`aria-controls` or
 `aria-owns`): the broker opens it and chooses the one option that names the
 saved month or year, or refuses and leaves the selection as it was
-(`card_field_purpose_protocol: 1`, fill extension 0.16.0 on the extension route).
+(`card_field_purpose_protocol: 1`, fill extension 0.17.0 on the extension route).
 Main frames and same-origin iframes are supported. Version 0.14.0 adds the
 explicit `--processor adyen` pin option, gated by integer
 `card_processor_frames_protocol: 1` and `adyen` in `card_processors`.

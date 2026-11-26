@@ -945,7 +945,14 @@ def test_build_fills_the_content_script_from_the_cdp_route(tmp_path):
     import base64
     digest = hashlib.sha256(base64.b64decode(manifest['key'])).hexdigest()[:32]
     assert ''.join(chr(ord('a') + int(c, 16)) for c in digest) == route.EXTENSION_ID
-    extension_host.build(built)  # Updating the same extension folder is allowed.
+    # Updating the same extension folder is allowed. It removes the settings page that
+    # fill extension 0.5.0 to 0.15.x shipped: the manifest no longer names it.
+    for name in extension_host.RETIRED_FILES:
+        (built / name).write_text('stale')
+    extension_host.build(built)
+    assert not any((built / name).exists() for name in extension_host.RETIRED_FILES)
+    assert 'options_ui' not in manifest and 'optional_host_permissions' not in manifest
+    assert manifest['host_permissions'] == ['https://*/*']
     other = tmp_path / 'other'
     other.mkdir()
     (other / 'manifest.json').write_text('{}')
@@ -2035,8 +2042,8 @@ def test_a_card_purpose_pin_goes_only_to_an_extension_that_applies_it():
     broker = make_broker([CardEntry()])
     channel, extension = attach(broker, {5: [Document('TOP', TOP)]})
     purpose = dict(field_purpose='cc-exp-month')
-    # Fill extension 0.15.1 ignores a card purpose: it is never asked for such a pin.
-    reported, channel.version = channel.version, '0.15.1.3'
+    # Fill extension 0.16.0 ignores a card purpose: it is never asked for such a pin.
+    reported, channel.version = channel.version, '0.16.0.3'
     assert card_pin(broker, channel, 'TOP', 'cc-exp-month', **purpose) == card_failure()
     assert 'pin' not in extension.calls
     channel.version = reported

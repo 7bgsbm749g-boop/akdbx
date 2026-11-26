@@ -71,8 +71,9 @@ route. For Adyen, Computop or Stripe card iframes, use the explicit processor
 routes below. In Firefox, choose `--route extension` and use the document ID
 from `list-password-frames`. The extension checks the actual processor URL.
 The native hit tests and Chrome out-of-process iframe checks described below
-apply to the CDP route. See [Firefox cover checks](../../../docs/firefox.md#enhanced-security)
-for the extension’s DOM checks and optional screenshot check.
+apply to the CDP route. The extension uses the DOM checks only: it does not see
+a click-through cover over a field ([Firefox covers](../../../docs/firefox.md#covers),
+[visibility checks](../../../README.md#visibility-checks-what-they-stop)).
 Other cross-origin frames, shadow DOM and unannotated fields must be refused,
 except a main-frame or same-origin field whose purpose you verified (see
 [Field without an autocomplete hint](#field-without-an-autocomplete-hint-after-0520)).
@@ -173,11 +174,9 @@ the usual `ok` and field only.
 - The page's own handlers see the click, as they would for the user.
 
 The CDP route supports both forms. The extension route applies the same DOM
-checks and needs fill extension 0.16.0 or newer (`extension_browsers` in
+checks and needs fill extension 0.17.0 or newer (`extension_browsers` in
 `status` shows `version_status: "current"`); the broker refuses a card purpose
-pin to an older extension. With enhanced security on, the extension's pixel
-check can refuse a dropdown button whose own text colour covers its centre;
-use the CDP route for it then.
+pin to an older extension.
 
 ### Adyen processor frames
 

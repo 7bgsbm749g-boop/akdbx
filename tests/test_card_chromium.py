@@ -534,8 +534,21 @@ def test_same_origin_frame_is_bound_and_hidden_parent_is_refused(chrome):
     assert evaluate(chrome, "document.querySelector('iframe').contentDocument.getElementById('number').value") == ''
 
 
-def test_pointer_transparent_cover_blocks_fresh_main_frame_pin(chrome):
-    evaluate(chrome,"document.body.insertAdjacentHTML('beforeend','<div style=\"position:fixed;inset:0;background:white;z-index:2147483647;pointer-events:none\"></div>')")
+# Covers that the DOM's elementFromPoint skips: click-through (pointer-events: none), an inert
+# element, and the opaque ::backdrop of a popover. The CDP route's native hit test
+# (DOM.getNodeForLocation with ignorePointerEventsNone) sees each one.
+POINTER_TRANSPARENT_COVERS = {
+    'pointer-events': '<div style="position:fixed;inset:0;background:white;z-index:2147483647;pointer-events:none"></div>',
+    'inert': '<div inert style="position:fixed;inset:0;background:white;z-index:2147483647"></div>',
+    'popover-backdrop': ('<style>#p::backdrop{background:white}</style><div id="p" popover="manual" '
+                         'style="position:fixed;width:0;height:0;border:0;padding:0"></div>'),
+}
+
+
+@pytest.mark.parametrize('cover', POINTER_TRANSPARENT_COVERS.values(), ids=POINTER_TRANSPARENT_COVERS)
+def test_pointer_transparent_cover_blocks_fresh_main_frame_pin(chrome, cover):
+    evaluate(chrome, f"document.body.insertAdjacentHTML('beforeend', {json.dumps(cover)});"
+                     "document.getElementById('p')?.showPopover(); true")
     assert not pin(chrome)['ok']
     assert evaluate(chrome,"number.value === ''")
 

@@ -39,7 +39,7 @@ CI jobs (all in `.github/workflows/`):
 | `linux` | `tests.yml` | Unit and contract suites on Ubuntu, including Android with a simulated device, the X11 key-event transport, and window-pin SMS code fills to real windows of an isolated Xvfb display |
 | `linux-native-fields` | `tests.yml` | Real GTK and Qt apps on X11, XWayland and native Wayland (Weston), including window-pin usernames and SMS codes to a GTK entry |
 | `native-merge` | `tests.yml` | Merge, admission, recovery and key-file suites with full Git history and a pinned KeePassXC 2.7.10 as the independent reference, with no skips; the full-cost admission deadlines |
-| `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, cover checks |
+| `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, hidden-field and cover refusals |
 | `macos-extension-browser` | `tests.yml` | Chrome for Testing 153 (arm64) with the built extension on macOS 15: the extension suite, TOTP, and QR capture on the CDP and extension routes |
 | `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension: fills, TOTP, secret reads, QR capture (also with `<all_urls>`), SMS codes |
 | `windows` | `tests.yml` | Named pipe, real Win32, WinForms and WPF apps, Chrome and Edge CDP, the extension in Edge, QR capture |
@@ -122,6 +122,7 @@ connection before the WebSocket handshake.
 | `capture-totp`, text key | ✅ 0.35.0 · `synthetic-password-fields` | ✅ 0.35.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | `capture-totp`, QR code | ✅ 0.50.1 · `synthetic-password-fields` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` (Chrome for Testing) |
 | SMS code | ✅ 0.40.0 · `card-safety` | ✅ 0.40.0 · `windows` (Edge) | ✅ 0.50.1 · `macos-broker` |
+| Refuses a click-through cover over a card, address or code field (AG) | ✅ card 0.16.0, address 0.18.2, code 0.40.0 · `card-safety` | ✅ card 0.17.0, address 0.18.2, code 0.40.0 · no CI | ✅ 0.50.1 · no CI |
 | Popup human click | — | — | — |
 | Agent desktop slots (`--browser-slot`) | ✅ 0.30.0 · `card-safety` | ✅ 0.30.0 · no CI | ✅ 0.50.1 · `macos-broker` |
 
@@ -146,6 +147,7 @@ install from 0.49.0.
 | `capture-totp`, text key (top document) | ✅ 0.35.0 (ext 0.6.0 for grouped keys) · `linux-extension-browser` | ✅ 0.35.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
 | `capture-totp`, QR code (top document) | ✅ 0.50.1 (ext 0.14.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` |
 | SMS code | ✅ 0.50.1 (ext 0.13.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` |
+| Refuses a click-through cover over a field | ◼ (AG) | ◼ (AG) | ◼ (AG) |
 | Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0); address with the identity pin's checks and texted (SMS) code from 0.52.0 (ext 0.15.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ login and card 0.43.0, TOTP 0.49.0; address and texted code from 0.52.0 · `macos-extension-browser` (R) (S) |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
@@ -168,6 +170,7 @@ runs as a temporary add-on; see [Firefox setup](firefox.md).
 | `capture-totp`, text key | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
 | `capture-totp`, QR code (top document) | ✅ from 0.52.0 (ext 0.14.2) · `firefox-extension-browser` (V) | ✅ from 0.52.0 · `firefox-extension-browser` (V) | ✅ from 0.52.0 · `firefox-extension-browser` (V) |
 | SMS code | ✅ 0.50.1 (ext 0.13.0) · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` |
+| Refuses a click-through cover over a field | ◼ (AG) | ◼ (AG) | ◼ (AG) |
 | Popup human click | ✅ login 0.47.0; address and texted (SMS) code from 0.52.0 (ext 0.15.0) · `firefox-extension-browser`; TOTP, card: no Firefox test (R) | ✅ login, address, texted code · `firefox-extension-browser` | ✅ login, address, texted code · `firefox-extension-browser` |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
@@ -290,8 +293,7 @@ job, for the reason given. Only `test_relay_integration.py` and `test_android_em
   phone `--format`. It also lists the SMS inbox's texts for a focused
   top-page one-time-code field and fills the chosen code with the agent code
   pin's checks, once. akdbx cannot tell which site sent a text, so the user
-  picks it by its sender and masked preview. Enhanced security's cover check
-  runs for the popup's texted code, not for its login, card or address fills.
+  picks it by its sender and masked preview.
   Real-browser tests: Chrome for Testing and headless Edge
   (`test_extension_browser.py`), Firefox 153 and 161 on Linux, Windows and
   macOS (`test_firefox_browser.py`).
@@ -311,8 +313,9 @@ job, for the reason given. Only `test_relay_integration.py` and `test_android_em
   fills a device from a Windows broker.
 - **U** The extension runs in the user's own browser. `--browser-slot` applies
   only to the CDP route, and the broker refuses it with `--route extension`.
-- **V** A Firefox content script with `<all_urls>` host access (Enhanced
-  security grants it) reads another origin's pixels from a tainted canvas,
+- **V** A Firefox content script with `<all_urls>` host access (fill extension
+  0.5.0 to 0.15.x could ask for it, and Firefox keeps the grant through an
+  update) reads another origin's pixels from a tainted canvas,
   also for an `<img>` whose URL on the page's origin redirects to another
   origin. Fill extension 0.14.2 decodes only a canvas that passes
   `convertToBlob`'s origin-clean check, which that access does not skip
@@ -386,3 +389,18 @@ job, for the reason given. Only `test_relay_integration.py` and `test_android_em
   another site, a used pin, a changed value or key, covered text, an
   editable field, prose. The broker refuses a read pin on an app field, so
   reads work on Chrome pages only.
+- **AG** The CDP and extension routes refuse a hidden, transparent,
+  zero-size, off-screen or inert target (`linux-extension-browser`,
+  `card-safety`). Card, address and code pins also refuse a clipped field and a
+  cover that takes pointer events at the field centre, and a read pin a cover
+  over its text; password pins have no hit test. A
+  click-through cover (`pointer-events: none`, `inert`, a popover
+  `::backdrop`) is not seen by the DOM hit test. The CDP route's native hit
+  test (`DOM.getNodeForLocation`) refuses one at the field centre for card,
+  address and code fields; `card-safety` tests all three kinds of cover on a
+  card field and `pointer-events: none` on a code field. An extension has no
+  browser-native hit test, so the extension route cannot see one. Fill
+  extension 0.5.0 to 0.15.x had an opt-in pixel check for covers; after 0.52.0
+  it is removed, because a page could beat it and the page gets the value
+  anyway. A read pin uses the DOM hit test on both routes. See
+  [Visibility checks](../README.md#visibility-checks-what-they-stop).
