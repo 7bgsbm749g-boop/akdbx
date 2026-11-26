@@ -237,13 +237,17 @@ separate AppKit application. The native field tests require the runner’s exist
 Accessibility grant and fail if it is missing. It also installs and removes the
 native host for each supported browser, runs guided setup with the
 LaunchAgent, the capture host and lock notifications in the runner's GUI
-session, and runs peer checks and DOM fills in Chrome. It runs the Android
+session, and runs peer checks and DOM fills in Chrome, including cards on the
+page and in Adyen, Computop and Stripe frames, and key-file and hardware-key
+unlock on the private page. It runs the Android
 route suite with a fake device. A real loopback adb server stand-in and a
 DevTools forward owned by the runner user pass the kernel owner check.
 `android setup --attach` runs the real check and a stand-in adb, then writes
 the private device file. A stand-in owned by `_www` receives zero bytes from
 setup, probes, helper runs and the DevTools handshake. The `firefox-extension-browser` job runs
-the real Firefox extension on macOS 15; no CI job loads the Chromium extension
-on macOS (only its protocol tests run there). It installs the same wheel in the release workflow. Linux simulations are not evidence of native macOS
+the real Firefox extension on macOS 15. The `macos-extension-browser` job loads
+the built Chromium extension in Chrome for Testing 153 on macOS 15 and runs the
+extension suite, TOTP, and QR capture on the CDP and extension routes, with no
+skips (Google Chrome 137 and later ignore `--load-extension`). The broker job installs the same wheel in the release workflow. Linux simulations are not evidence of native macOS
 behavior. Safari application signing, installation and live browser behavior
 belong to the separate Safari extension delivery.
