@@ -47,6 +47,9 @@ service independently. `list-native-fields` returns only opaque IDs and flags;
 `pin-native-target` retains the exact controls. Never use a legacy numeric
 window pin for passwords, and never use native pins for browser pages. Native
 apps have no DOM; their service URL is a caller assertion, not URL attestation.
+On macOS check `native_field_accessibility_granted`. Grant access in System
+Settings if needed. Stock AppKit secure fields lack a verifiable character
+count, so use another authorized route when a password field is refused.
 
 ## Rules that always apply
 

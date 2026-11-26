@@ -14,10 +14,19 @@ Supported controls:
   this is not certification of every toolkit or compositor.
 - Windows 10/11: visible, enabled Win32 Edit controls, WinForms TextBox controls
   and WPF TextBox and PasswordBox controls in the active native window.
-  Check `native_field_windows_uia: true` for the post-0.48 Windows backend.
+  Check `native_field_windows_uia: true` for the Windows backend (after 0.49.0).
   The broker requires its own user and session, the Default input desktop
   and a target at or below its integrity level. Browser controls are refused.
-- macOS native controls are not implemented. Its extension route is unchanged.
+- macOS (after 0.49.0) uses Accessibility in the frontmost native window. Check
+  `native_field_accessibility_granted: true`. Each control must be visible at
+  its center and support a character count. Username, TOTP, SMS code, card and
+  identity fills require an unmasked writable field. Password and combined login modes
+  are unavailable because stock AppKit secure fields omit the count. Read pins require selectable,
+  read-only, unmasked text with a bounded accessible range. Browser windows
+  and embedded web areas are refused. A window that contains a WebKit view
+  (`WKWebView`) is refused from the moment the view is added. This is also true
+  before its page loads and while WebKit hides its content.
+  See [macOS setup](../../../docs/macos.md).
 
 This is directed **control** delivery: Linux uses the retained AT-SPI editable
 text object, and Windows uses `WM_SETTEXT` to the exact Edit HWND or UI Automation

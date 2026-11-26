@@ -3,7 +3,7 @@ import json
 import re
 import sys
 
-from .native_fields import DELIVERY, MODES, PROTOCOL, TTL
+from .native_fields import ACCESSIBILITY_ERROR, DELIVERY, MODES, PROTOCOL, TTL
 from .target import failure
 
 COMMANDS = {'list-native-fields', 'pin-native-target'}
@@ -25,7 +25,7 @@ def add_parsers(commands):
 
 def valid(response, command, args):
     if response.get('ok') is not True:
-        return (response.get('ok') is False and response.get('error') in {failure()['error'], 'vault locked'}
+        return (response.get('ok') is False and response.get('error') in {failure()['error'], 'vault locked', ACCESSIBILITY_ERROR}
                 and set(response) <= {'ok', 'error', 'delivery', 'unlock_url', 'unlock_blocked'}
                 and response.get('delivery', 'not-started') == 'not-started')
     if command == 'pin-native-target':
