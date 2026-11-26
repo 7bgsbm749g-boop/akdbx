@@ -567,7 +567,7 @@ class WriteManager:
         for op in self.operations.values():
             op.token = secrets.token_urlsafe(32)
             op.values = ({key: op.values[key] for key in ('title', 'group')}
-                         if op.kind == 'card' and op.state == 'saved' else {})
+                         if op.kind in {'card', 'identity'} and op.state == 'saved' else {})
             op.uuid = op.password = op.import_nonce = None
             op.filled.clear()
             op.fill_refs.clear()
@@ -1140,8 +1140,8 @@ class WriteManager:
             op.import_nonce = None
         self.notify_card(op)
         result = {'ok': True, 'state': op.state, **({'error': op.error} if op.error else {})}
-        if op.kind == 'card' and op.state == 'saved':
-            # The page can change the title and group; report what was saved.
+        if op.kind in {'card', 'identity'} and op.state == 'saved':
+            # The page can change the title (and a card's group); report what was saved.
             result.update(title=op.values['title'], group=op.values['group'])
         return result
 

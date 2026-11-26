@@ -581,7 +581,10 @@ the page, and the stored fields, to the listed fields; without it the page
 shows all fields. `update-identity HANDLE --title --group --fields` (0.28.3)
 adds or changes the chosen fields of one existing identity, selected with a
 fresh `search-identities` handle; its page never shows the saved values, and
-the previous version stays in the entry history. From 0.51.0, both commands
+the previous version stays in the entry history. From 0.52.1, the user may
+rename the identity on either page (same title rules and duplicate check as
+`--title`), and a saved `write-status` reports the saved `title` and `group`.
+From 0.51.0, both commands
 take `--valid-minutes N` (1 to 30, and not longer than the vault lock
 timeout; default 5) for a page that stays valid longer, and report
 `expires_in` and `expires_at` (UTC); the page shows the expiry time. A vault
@@ -644,8 +647,9 @@ detected Visa, Mastercard or American Express brand), the expiry (month 01 to
 12, not in the past) and the security-code length for the brand. It shows the
 detected brand and an error under each wrong field. The broker repeats the
 same checks, so a request that bypasses the page is refused; a refused form
-stays open for correction. The save button shows a busy state, then `Saved`,
-or `Page expired`, `Vault changed`, `Cancelled` or `Not confirmed`. A saved
+stays open for correction. The save button shows a busy state; a save then
+ends on a small `Success` screen (0.52.1), and a final error shows `Page
+expired`, `Vault changed`, `Cancelled` or `Not confirmed` on the button. A saved
 `write-status` includes the final non-secret `title` and `group`.
 
 `search-cards QUERY` returns only title, group, brand, last four digits and a

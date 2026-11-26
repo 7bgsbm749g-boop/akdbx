@@ -94,7 +94,7 @@ def test_private_save_reopens_protected_and_stays_out_of_login_and_logs(deployed
                                 url='https://example.test')) == {
         'ok': False, 'error': 'identity record has no site URLs'}
     response = broker.dispatch(dict(action='write-status', write_handle=pending['write_handle']))
-    assert response == dict(ok=True, state='saved')
+    assert response == dict(ok=True, state='saved', title=LABEL, group='Web')
     captured = capsys.readouterr()
     for value in (v for v in IDENTITY.values() if len(v) > 2):
         assert value not in page.decode() + receipt.decode() + json.dumps(result) + captured.out + captured.err + caplog.text
@@ -273,8 +273,9 @@ def test_cli_withholds_ambiguous_search_receipts(second, monkeypatch, capsys):
 
 
 def field_names(page):
+    """The identity value fields on the page, without its title and confirmation."""
     import re
-    return set(re.findall(rb'<input id="[^"]*" name="([^"]+)"', page)) - {b'confirmed'}
+    return set(re.findall(rb'<input id="[^"]*" name="([^"]+)"', page)) - {b'confirmed', b'title'}
 
 
 def test_field_subset_page_shows_and_stores_only_requested_fields(deployed, capsys):
@@ -294,7 +295,8 @@ def test_field_subset_page_shows_and_stores_only_requested_fields(deployed, caps
     assert code == 409 and b'data-save-result="rejected"' in rejected and b'>Failure</h1>' in rejected
     code, _, receipt = call(web, 'POST', private_path(pending), urlencode(tel))
     assert code == 200 and b'Identity saved to vault. You may close this page.' in receipt
-    assert broker.dispatch(dict(action='write-status', write_handle=pending['write_handle'])) == dict(ok=True, state='saved')
+    assert broker.dispatch(dict(action='write-status', write_handle=pending['write_handle'])) == dict(
+        ok=True, state='saved', title=LABEL, group='Web')
     entry = reopened(path).find_entries(title=LABEL, first=True)
     assert entry.get_custom_property(MARKER) == 'v1'
     stored = {s.find('Key').text for s in entry._element.findall('./String')}
@@ -384,15 +386,18 @@ def test_update_adds_or_changes_only_the_chosen_fields_and_keeps_history(deploye
     code, _, page = call(web, 'GET', private_path(pending))
     assert code == 200 and field_names(page) == {b'tel'}
     assert b'Update AKDBX identity' in page and b'Update identity in AKDBX' in page and b'Saved values are not shown' in page
-    # The page never shows a stored value; the input is empty.
-    assert b'value="' not in page.split(b'<form', 1)[1].replace(b'value="yes"', b'')
+    # The page never shows a stored value; the input is empty. Only the
+    # non-secret title is filled in, so the user can rename the identity.
+    assert b'value="' not in page.split(b'<form', 1)[1].replace(b'value="yes"', b'').replace(
+        f'id="title" name="title" type="text" autocomplete="off" maxlength="4096" value="{LABEL}"'.encode(), b'')
     # Only the chosen field is accepted.
     assert call(web, 'POST', private_path(pending), urlencode({'tel': IDENTITY['tel'], 'email': 'x@example.test',
                                                                'confirmed': 'yes'}))[0] == 400
     assert call(web, 'POST', private_path(pending), urlencode({'name': 'Other', 'confirmed': 'yes'}))[0] == 400
     code, _, receipt = call(web, 'POST', private_path(pending), urlencode({'tel': IDENTITY['tel'], 'confirmed': 'yes'}))
     assert code == 200 and b'Identity saved to vault. You may close this page.' in receipt
-    assert broker.dispatch(dict(action='write-status', write_handle=pending['write_handle'])) == dict(ok=True, state='saved')
+    assert broker.dispatch(dict(action='write-status', write_handle=pending['write_handle'])) == dict(
+        ok=True, state='saved', title=LABEL, group='Web')
     entry = reopened(path).find_entries(title=LABEL, first=True)
     assert entry.uuid == before.uuid and entry.get_custom_property(MARKER) == 'v1'
     assert stored(entry) == {'name': IDENTITY['name'], 'email': IDENTITY['email'], 'tel': IDENTITY['tel']}
@@ -795,3 +800,95 @@ def test_broker_refuses_an_inconsistent_purpose_before_any_browser_call(extra):
         field_purpose('card', dict(field='cc-number', field_purpose='cc-number'))
     assert field_purpose('identity', dict(field='tel')) == (False, False)
     assert field_purpose('identity', dict(field='tel', field_purpose='tel', allow_autocomplete_off=True)) == ('tel', True)
+
+
+def page_post(web, pending, **form):
+    return call(web, 'POST', private_path(pending), urlencode(form | {'confirmed': 'yes'}))
+
+
+def test_page_rename_saves_the_new_title_in_the_same_write(deployed):
+    broker, _, path, web = deployed
+    saved_identity(broker, web, tel=IDENTITY['tel'])
+    before = reopened(path).find_entries(title=LABEL, first=True)
+    pending = update(broker, search(broker)['entries'][0]['handle'], ['email'])
+    code, _, page = call(web, 'GET', private_path(pending))
+    # The title is an editable field that shows the current title.
+    assert code == 200 and f'name="title" type="text" autocomplete="off" maxlength="4096" value="{LABEL}"'.encode() in page
+    code, _, receipt = page_post(web, pending, email=IDENTITY['email'], title='Renamed shipping')
+    assert code == 200 and '“Renamed shipping” in Web.'.encode() in receipt
+    # The agent finds the identity again by the title that was saved.
+    status = dict(ok=True, state='saved', title='Renamed shipping', group='Web')
+    assert broker.dispatch(dict(action='write-status', write_handle=pending['write_handle'])) == status
+    assert [(e['title'], e['group']) for e in search(broker, '')['entries']] == [('Renamed shipping', 'Web')]
+    # The receipt kept after a lock has the saved title too.
+    broker.writes.keep_receipts()
+    assert broker.writes.status(pending['write_handle']) == status
+    vault = reopened(path)
+    assert vault.find_entries(title=LABEL) == []
+    entry = vault.find_entries(title='Renamed shipping', first=True)
+    assert entry.uuid == before.uuid
+    assert stored(entry) == {'tel': IDENTITY['tel'], 'email': IDENTITY['email']} and protected(entry, 'email')
+    # One write: one history version, which has the old title and fields.
+    assert len(entry.history) == 1 and entry.history[0].title == LABEL and stored(entry.history[0]) == stored(before)
+
+
+def test_create_page_saves_a_new_title(deployed):
+    broker, _, path, web = deployed
+    pending = begin(broker, fields=['tel'])
+    assert page_post(web, pending, tel=IDENTITY['tel'], title='Home shipping')[0] == 200
+    assert broker.dispatch(dict(action='write-status', write_handle=pending['write_handle'])) == dict(
+        ok=True, state='saved', title='Home shipping', group='Web')
+    vault = reopened(path)
+    assert vault.find_entries(title=LABEL) == []
+    assert stored(vault.find_entries(title='Home shipping', first=True)) == {'tel': IDENTITY['tel']}
+
+
+@pytest.mark.parametrize('form', [{}, {'title': LABEL}, {'title': ''}, {'title': '  '}])
+def test_an_unchanged_or_empty_title_keeps_the_old_title(deployed, form):
+    broker, _, path, web = deployed
+    saved_identity(broker, web, tel=IDENTITY['tel'])
+    pending = update(broker, search(broker)['entries'][0]['handle'], ['email'])
+    assert page_post(web, pending, email=IDENTITY['email'], **form)[0] == 200
+    assert broker.dispatch(dict(action='write-status', write_handle=pending['write_handle'])) == dict(
+        ok=True, state='saved', title=LABEL, group='Web')
+    entries = reopened(path).find_entries(title=LABEL)
+    assert len(entries) == 1 and stored(entries[0]) == {'tel': IDENTITY['tel'], 'email': IDENTITY['email']}
+
+
+@pytest.mark.parametrize('title', ['line\nbreak', 'tab\there', 'line separator', 'é' * 2049])
+def test_an_invalid_title_keeps_the_page_open_and_saves_nothing(deployed, title):
+    broker, _, path, web = deployed
+    saved_identity(broker, web, tel=IDENTITY['tel'])
+    before = reopened(path).find_entries(title=LABEL, first=True)
+    pending = update(broker, search(broker)['entries'][0]['handle'], ['email'])
+    code, _, page = page_post(web, pending, email=IDENTITY['email'], title=title)
+    assert code == 409 and b'data-save-result="rejected"' in page
+    assert b'Enter a title without line breaks or control characters, up to 4096 bytes.' in page
+    assert broker.dispatch(dict(action='write-status', write_handle=pending['write_handle'])) == dict(
+        ok=True, state='pending')
+    entry = reopened(path).find_entries(title=LABEL, first=True)
+    assert stored(entry) == stored(before) and entry.history == []
+    # The page stays open: a corrected title saves.
+    assert page_post(web, pending, email=IDENTITY['email'], title='Fixed shipping')[0] == 200
+    assert reopened(path).find_entries(title='Fixed shipping', first=True).uuid == before.uuid
+
+
+def test_a_title_another_identity_has_in_the_group_is_refused_on_the_page(deployed):
+    broker, _, path, web = deployed
+    saved_identity(broker, web, tel=IDENTITY['tel'])
+    other = begin(broker, fields=['email'], title='Other shipping')
+    assert page_post(web, other, email=IDENTITY['email'])[0] == 200
+    pending = update(broker, search(broker, LABEL)['entries'][0]['handle'], ['email'])
+    code, _, page = page_post(web, pending, email=IDENTITY['email'], title='Other shipping')
+    assert code == 409 and b'data-save-result="rejected"' in page
+    assert b'An identity with this title already exists in this group. Choose another title.' in page
+    created = begin(broker, fields=['tel'], title='Third shipping')
+    code, _, page = page_post(web, created, tel=IDENTITY['tel'], title=LABEL)
+    assert code == 409 and b'An identity with this title already exists in this group.' in page
+    vault = reopened(path)
+    assert stored(vault.find_entries(title=LABEL, first=True)) == {'tel': IDENTITY['tel']}
+    assert len(vault.find_entries(title='Other shipping')) == 1 and vault.find_entries(title='Third shipping') == []
+    # The page stays open for another title.
+    assert page_post(web, pending, email=IDENTITY['email'], title='Work shipping')[0] == 200
+    vault = reopened(path)
+    assert vault.find_entries(title=LABEL) == [] and len(vault.find_entries(title='Work shipping')) == 1

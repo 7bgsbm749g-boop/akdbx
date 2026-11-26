@@ -189,6 +189,20 @@ def _selected(vault, uuid, title, group):
     return same[0]
 
 
+def _title_ok(title):
+    """The create-identity and update-identity title rules."""
+    return _text(title, 4096) and len(title.encode()) <= 4096 and bool(title.strip())
+
+
+def _taken(vault, title, group, uuid):
+    """Another active identity already has this title in this group path."""
+    return any(is_identity(e) and e.uuid != uuid and _label(e) == (title, group) for e in active_entries(vault))
+
+
+TITLE_INVALID = 'Enter a title without line breaks or control characters, up to 4096 bytes.'
+TITLE_TAKEN = 'An identity with this title already exists in this group. Choose another title.'
+
+
 def is_identity(entry):
     element = getattr(entry, '_element', None)
     if element is not None:
@@ -342,7 +356,7 @@ class IdentityManager:
                 (not base <= keys or keys - (base | {'fields'})))
                 or not isinstance(values, dict) or set(values) != {'title', 'group'}
                 or any(not _text(v, 4096) or len(v.encode()) > 4096 for v in values.values())
-                or not values['title'].strip()):
+                or not _title_ok(values['title'])):
             raise WriteError()
         fields = requested_fields(request)
         page_lifetime(request, self.broker.session.timeout)
@@ -358,7 +372,12 @@ class IdentityManager:
         return prepared_page(self.broker, 'identity', request, values,
                              fields=fields, uuid=entry.uuid if update else None)
 
-    def submit(self, op, values, confirmed):
+    def submit(self, op, values, confirmed, title=None):
+        """Save the page's fields, and the title the user chose on the page.
+
+        An empty or missing ``title`` keeps the prepared title. A new title
+        goes into the same single write as the fields.
+        """
         if (not confirmed or op.kind != 'identity' or op.state != 'pending'
                 or op.revision != self.broker.writes.revision or op.expires <= self.broker.clock()
                 or not op.fields or set(values) != set(op.fields) or any(not _text(v, FIELD_LIMIT, allow_joiners=True) for v in values.values())):
@@ -369,6 +388,12 @@ class IdentityManager:
             return dict(ok=False, error='enter at least one field and use a two-letter country code if provided')
         if 'country' in values:
             values['country'] = country.upper()
+        old = op.values['title']
+        title = old if title is None or not title.strip() else title
+        if not _title_ok(title):
+            return dict(ok=False, error=TITLE_INVALID)
+        if _taken(self.broker.vault, title, op.values['group'], op.uuid):
+            return dict(ok=False, error=TITLE_TAKEN)
 
         update = op.uuid is not None
         if update:
@@ -378,20 +403,23 @@ class IdentityManager:
         def matches(candidate):
             group = group_for(candidate, op.values['group'])
             return group, [entry for entry in active_entries(candidate)
-                           if is_identity(entry) and entry.title == op.values['title'] and entry.group == group]
+                           if is_identity(entry) and entry.title == title and entry.group == group]
 
         def mutate(candidate):
             from pykeepass.entry import Entry
 
             if update:
-                entry = _selected(candidate, op.uuid, op.values['title'], op.values['group'])
+                entry = _selected(candidate, op.uuid, old, op.values['group'])
+                if _taken(candidate, title, op.values['group'], op.uuid):
+                    raise WriteError()
                 changed_at = _entry_changed_at(entry, self.broker.wall_clock)
                 entry.save_history()
+                entry.title = title
             else:
                 group, duplicates = matches(candidate)
                 if duplicates:
                     raise WriteError()
-                entry = Entry(title=op.values['title'], username='', password='', kp=candidate)
+                entry = Entry(title=title, username='', password='', kp=candidate)
                 group.append(entry)
                 entry.set_custom_property(MARKER, 'v1')
             for field, value in values.items():
@@ -402,7 +430,7 @@ class IdentityManager:
 
         def verify(candidate):
             if update:
-                entry = _selected(candidate, op.uuid, op.values['title'], op.values['group'])
+                entry = _selected(candidate, op.uuid, title, op.values['group'])
             else:
                 _, entries = matches(candidate)
                 if len(entries) != 1 or entries[0].get_custom_property(MARKER) != 'v1':
@@ -422,8 +450,10 @@ class IdentityManager:
             op.error = 'identity save failed; vault update not confirmed'
             return dict(ok=False, error=op.error)
         op.state = 'saved'
+        # write-status reports the title that was saved.
+        op.values = dict(op.values, title=title)
         self.broker.writes.invalidate_revision(op)
-        return dict(ok=True, state='saved')
+        return dict(ok=True, state='saved', **op.values)
 
 
 def label_matches(title, query, exact):
