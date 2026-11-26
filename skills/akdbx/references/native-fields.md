@@ -15,7 +15,7 @@ Supported controls:
 - Windows 10/11: visible, enabled, Unicode Win32 `Edit` controls in the active
   window, in the broker's user and desktop session. Custom controls, browser
   controls, secure desktop and higher-integrity targets are unsupported.
-- macOS (after 0.47.0) uses Accessibility in the frontmost native window. Check
+- macOS (after 0.48.0) uses Accessibility in the frontmost native window. Check
   `native_field_accessibility_granted: true`. Each control must be visible at
   its center and support a character count. Username, TOTP, card and identity
   fills require an unmasked writable field. Password and combined login modes
@@ -29,7 +29,8 @@ Supported controls:
 This is directed **control** delivery: Linux uses the retained AT-SPI editable
 text object, and Windows uses `WM_SETTEXT` to the exact child HWND. There are
 no global keys, Tab, clipboard or automatic submit actions. Legacy numeric
-`pin-target` X11/HWND pins still accept only username and TOTP delivery. They
+`pin-target` pins accept usernames, TOTP and SMS codes on X11, XWayland or Windows.
+Native Wayland windows have no XID; use AT-SPI field pins there. Window pins
 cannot authorize passwords or the other native field operations.
 
 ## Verify the destination

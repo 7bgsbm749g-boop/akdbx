@@ -31,11 +31,16 @@ def capabilities():
                     target_fill_modes=[])
     # Linux: `pin-target --browser-slot` pins a window of an agent desktop slot's Chrome on that slot's display.
     return dict(target_fill_required=True, target_fill_protocol=1, target_fill_delivery=DELIVERY,
-                **({'target_fill_modes': ['username']} if os.name == 'nt' else {'target_slot_protocol': SLOT_PROTOCOL}))
+                target_fill_modes=['username', 'totp', 'sms-code'],
+                **({} if os.name == 'nt' else {'target_slot_protocol': SLOT_PROTOCOL}))
 
 
 class TargetError(Exception):
     """Internal only: callers must return fixed, secret-free error text."""
+
+
+class WaylandWindowError(TargetError):
+    """No verified XWayland window for this pin."""
 
 
 class DeliveryError(TargetError):
@@ -162,9 +167,9 @@ def _connect(display):
     a cookie only from $XAUTHORITY; changing the broker's environment would
     race other threads, so one wrapper of `get_auth` reads thread-local state.
     """
-    from Xlib import display as xdisplay
+    from .x11_display import TargetDisplay
     if display is None:
-        return xdisplay.Display()
+        return TargetDisplay()
     from Xlib.support import connect
     with _AUTH_HOOK:
         if not getattr(connect.get_auth, '_akdbx', False):
@@ -178,7 +183,7 @@ def _connect(display):
             connect.get_auth = get_auth
     _SLOT.active = True
     try:
-        return xdisplay.Display('unix' + display)
+        return TargetDisplay('unix' + display)
     finally:
         _SLOT.active = False
 
@@ -371,7 +376,14 @@ class X11Typer:
         self.session_factory = session_factory
 
     def capture(self, pid, window, *, display=None):
-        session = self.session_factory(pid, window) if display is None else self.session_factory(pid, window, display)
+        try:
+            session = (self.session_factory(pid, window) if display is None
+                       else self.session_factory(pid, window, display))
+        except Exception:
+            if (sys.platform.startswith('linux') and display is None
+                    and (os.environ.get('WAYLAND_DISPLAY') or os.environ.get('XDG_SESSION_TYPE') == 'wayland')):
+                raise WaylandWindowError() from None
+            raise
         try:
             session.check()
             return session.identity

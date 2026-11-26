@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shlex
 import shutil
@@ -50,15 +51,23 @@ def lab(tmp_path, monkeypatch, request):
         while not wm_ready.exists():
             assert wm.poll() is None and time.monotonic() < deadline, 'Openbox did not start'
             time.sleep(.05)
-        if display == 'wayland':
+        if display in {'wayland', 'xwayland'}:
             assert shutil.which('weston'), 'native Wayland lab requires Weston'
             runtime = tmp_path / 'runtime'
             runtime.mkdir(mode=0o700)
             monkeypatch.setenv('XDG_RUNTIME_DIR', str(runtime))
             monkeypatch.setenv('WAYLAND_DISPLAY', 'akdbx-test')
-            monkeypatch.setenv('GDK_BACKEND', 'wayland')
+            monkeypatch.setenv('GDK_BACKEND', 'wayland' if display == 'wayland' else 'x11')
+            options = []
+            if display == 'xwayland':
+                binary = shutil.which('Xwayland')
+                assert binary, 'XWayland lab requires Xwayland'
+                config = tmp_path / 'weston.ini'
+                config.write_text(f'[xwayland]\npath={binary}\n')
+                options = ['--xwayland', '--config=' + str(config)]
+            weston_log = tmp_path / 'weston.log'
             weston = subprocess.Popen(['weston', '--backend=x11-backend.so', '--shell=kiosk-shell.so',
-                '--socket=akdbx-test', '--idle-time=0', '--log=' + str(tmp_path / 'weston.log')],
+                '--socket=akdbx-test', '--idle-time=0', '--log=' + str(weston_log), *options],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             children.append(weston)
             deadline = time.monotonic() + 10
@@ -66,6 +75,16 @@ def lab(tmp_path, monkeypatch, request):
                 assert weston.poll() is None, (tmp_path / 'weston.log').read_text()
                 assert time.monotonic() < deadline
                 time.sleep(.05)
+            if display == 'xwayland':
+                while True:
+                    match = re.search(r'listening on display (:\d+)', weston_log.read_text())
+                    if match:
+                        assert match[1] != os.environ['DISPLAY']
+                        (tmp_path / 'outer-display').write_text(os.environ['DISPLAY'])
+                        monkeypatch.setenv('DISPLAY', match[1])
+                        break
+                    assert weston.poll() is None and time.monotonic() < deadline, weston_log.read_text()
+                    time.sleep(.05)
         else:
             monkeypatch.setenv('GDK_BACKEND', 'x11')
         executable = os.environ.get('AKDBX_QT_TEST_PYTHON', sys.executable) if qt else sys.executable
@@ -135,6 +154,63 @@ def test_real_qt_readonly_capture_handles_reported_range_and_utf16_units(lab, va
     pin = manager.take(receipt['target'], 'read')
     assert manager.read(pin, {https_origin('https://example.test/')}, lambda: True, time.monotonic() + 4) == value
     pin.close()
+
+
+@pytest.mark.parametrize('lab', ['x11', 'xwayland'], indirect=True)
+def test_window_pin_delivers_to_active_gtk_window(lab):
+    from akdbx.broker import Broker
+    from akdbx.target import X11Typer
+    from test_broker import Entry, Vault
+    _, pid, directory = lab
+    command(directory, focus=0)
+    broker = Broker(Vault([Entry()]), X11Typer())
+    assert broker.dispatch({'action': 'ping'})['target_fill_modes'] == ['username', 'totp', 'sms-code']
+    # Mapping the GTK window is asynchronous. Wait for the compositor to
+    # publish the active XID and focus before dispatching a single fill.
+    deadline = time.monotonic() + 5
+    while True:
+        pin = broker.dispatch(dict(action='pin-target', target_protocol=1, pid=pid,
+                                   window=int((directory / 'xid').read_text())))
+        if pin['ok']:
+            break
+        assert time.monotonic() < deadline, pin
+        time.sleep(.05)
+    handle = broker.dispatch({'action': 'search'})['entries'][0]['handle']
+    result = broker.dispatch(dict(action='fill', target_protocol=1, target=pin['target'],
+                                  handle=handle, mode='username'))
+    assert result['ok'], result
+    assert command(directory)[0] == Entry().username
+
+
+@pytest.mark.parametrize('lab', ['xwayland'], indirect=True)
+def test_xwayland_registration_preserves_live_x11_connection(lab):
+    from contextlib import closing
+    from Xlib.ext import res
+    from akdbx.x11_display import TargetDisplay
+
+    _, _, directory = lab
+    with closing(TargetDisplay((directory / 'outer-display').read_text())) as x11:
+        with closing(TargetDisplay()) as xwayland:
+            # Servers are free to assign the same opcode. Check isolation as
+            # well as real X-Resource queries on both open connections.
+            assert x11.display.extension_major_opcodes is not xwayland.display.extension_major_opcodes
+            for connection in (xwayland, x11):
+                window = connection.screen().root.create_window(0, 0, 1, 1, 0, 0)
+                ids = connection.res_query_client_ids([dict(client=window.id, mask=res.LocalClientPIDMask)]).ids
+                assert len(ids) == 1 and list(ids[0].value) == [os.getpid()]
+
+
+@pytest.mark.parametrize('lab', ['wayland'], indirect=True)
+def test_native_wayland_window_pin_refusal(lab, monkeypatch):
+    from akdbx.broker import Broker
+    from akdbx.target import X11Typer
+    from test_broker import Entry, Vault
+    manager, pid, _ = lab
+    assert listing(manager, pid)['windows']
+    monkeypatch.delenv('DISPLAY')
+    broker = Broker(Vault([Entry()]), X11Typer())
+    result = broker.dispatch(dict(action='pin-target', target_protocol=1, pid=pid, window=42))
+    assert result['delivery'] == 'not-started' and 'list-native-fields' in result['error']
 
 
 def test_real_gtk_login_and_readonly_secret_capture(lab):

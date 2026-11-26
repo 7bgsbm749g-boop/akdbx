@@ -328,7 +328,7 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   (`version_status` in `extension_browsers`).
 - A card or identity field under an ancestor `clip-path: inset(...)` that holds
   the whole field (a side drawer that trims its shadow) pins from fill
-  extension 0.7.2 (akdbx 0.36.3), on this route only: the CDP route cannot see
+  extension 0.7.2 on Chromium, or 0.11.1 on Firefox: the CDP route’s page script cannot inspect
   closed shadow roots and refuses it. An older extension also refuses it as
   `target unavailable, changed or unsupported`
   ([clipped drawer or modal](identities.md#field-inside-a-clipped-drawer-or-modal-0363)).
@@ -416,7 +416,10 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   skips click-through and inert covers), and no list of selectors names every
   cover. The extension asks the browser instead, in two steps, at the pin and
   again at the fill or read:
-  1. The occlusion test. `IntersectionObserver` with `trackVisibility` runs the
+  1. The occlusion test, where the browser provides it. Firefox 161 lacks
+     `IntersectionObserverEntry.isVisible` and uses step 2 on its own.
+     [Firefox cover checks](../../../docs/firefox.md#enhanced-security) describes the limits.
+     In Chromium, `IntersectionObserver` with `trackVisibility` runs the
      browser's own occlusion hit test: the one CDP's `DOM.getNodeForLocation`
      runs (pointer-events and `inert` ignored, visual overflow included), over
      the whole box of the element, through every parent frame. A cross-origin

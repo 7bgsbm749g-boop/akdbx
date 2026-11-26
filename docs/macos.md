@@ -72,7 +72,7 @@ See [private import](../skills/akdbx/references/private-import.md) for browser b
 
 - For browser fills, the broker supports the extension route only. CDP profile options are
   refused before startup; this release does not claim macOS CDP peer verification.
-- Native field protocol 1 (after 0.47.0) supports retained Accessibility text
+- Native field protocol 1 (after 0.48.0) supports retained Accessibility text
   controls in the frontmost native app. In System Settings → Privacy & Security →
   Accessibility, grant access to the process macOS identifies for the broker.
   Check `native_field_accessibility_granted: true` in `akdbx status`. The broker

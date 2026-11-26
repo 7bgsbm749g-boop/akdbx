@@ -144,7 +144,7 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -e '.[test]'
       - run: python -m pip install 'PyQt6==6.8.1' 'PyQt6-Qt6==6.8.2'
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb openbox weston at-spi2-core dbus-x11 libgtk-3-0t64 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libxkbcommon-x11-0
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb openbox weston xwayland at-spi2-core dbus-x11 libgtk-3-0t64 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libxkbcommon-x11-0
       - name: Native delivery and encrypted saves on both Linux display systems
         env:
           AKDBX_TEST_NATIVE_LINUX: '1'
