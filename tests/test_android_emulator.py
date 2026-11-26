@@ -96,6 +96,17 @@ def stop_managed(device):
         time.sleep(.5)
 
 
+GEOMETRY = r'''(() => {
+  const e = document.querySelector(%s), r = e.getBoundingClientRect(), range = document.createRange();
+  range.selectNodeContents(e);
+  const rects = [...range.getClientRects()].map(t => [t.left, t.top, t.right, t.bottom]);
+  const hit = (x, y) => { const f = document.elementFromPoint(x, y); return f ? f.localName + '#' + f.id : null; };
+  return {viewport: [innerWidth, innerHeight, scrollX, scrollY], box: [r.left, r.top, r.right, r.bottom], rects,
+          hits: rects.map(([l, t, rr, b]) => [l + 1, (l + rr) / 2, Math.round(rr) - 1.5].map(x => hit(x, (t + b) / 2))),
+          active: document.activeElement && document.activeElement.id, focused: document.hasFocus()};
+})()'''
+
+
 class Chrome:
     """The test's own DevTools view of the device's Chrome: it loads the synthetic page and reads it back."""
 
@@ -104,37 +115,64 @@ class Chrome:
         self.connection = None
         self.session = None
 
+    def _fixture_tab(self):
+        """The session of a Chrome tab on the fixture site, or None (no DevTools socket or no such tab yet)."""
+        try:
+            if self.connection is None:
+                self.connection = self.route._cdp(self.adb)
+            pages = [t for t in self.connection.call('Target.getTargets')['targetInfos']
+                     if t['type'] == 'page' and t['url'].startswith(ORIGIN + '/')]
+            if not pages:
+                return None
+            return self.connection.call('Target.attachToTarget', {'targetId': pages[-1]['targetId'], 'flatten': True})['sessionId']
+        except Exception:
+            if self.connection is not None:
+                self.connection.close()
+                self.connection = None
+            return None
+
+    def _shown(self):
+        """Whether the fixture tab is the visible, focused page (a frozen background tab does not answer)."""
+        try:
+            self.connection.call('Page.bringToFront', session=self.session)
+            response = self.connection.call('Runtime.evaluate', {
+                'expression': "document.visibilityState === 'visible' && document.hasFocus()", 'returnByValue': True},
+                self.session, timeout=3)
+            return response.get('result', {}).get('value') is True
+        except Exception:
+            return False
+
     def open(self, html, timeout=90):
         self.adb.run('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP')
         self.adb.run('shell', 'wm', 'dismiss-keyguard')
-        # One application ID: Chrome reuses its tab instead of opening a new one each time.
-        self.adb.run('shell', 'am', 'start', '-W', '-a', 'android.intent.action.VIEW', '-d', URL,
-                     '--es', 'com.android.browser.application_id', 'org.akdbx.test', 'com.android.chrome',
-                     timeout=timeout).check_returncode()
         deadline = time.monotonic() + timeout
+        self.session = self._fixture_tab()
+        if self.session is None or not self._shown():
+            # Bring Chrome to the front. One application ID: Chrome reuses its tab instead of opening another.
+            self.adb.run('shell', 'am', 'start', '-W', '-a', 'android.intent.action.VIEW', '-d', URL,
+                         '--es', 'com.android.browser.application_id', 'org.akdbx.test', 'com.android.chrome',
+                         timeout=timeout).check_returncode()
+            while (session := self._fixture_tab()) is None:
+                assert time.monotonic() < deadline, 'Chrome did not show the fixture page'
+                time.sleep(1)
+            self.session = session
+            self.connection.call('Page.bringToFront', session=self.session)
+        # Load a fresh document through DevTools and wait for it: an intent (or a reload) still under way
+        # could replace the synthetic page after it is set. Right after a boot the network may still be down.
+        loaded = lambda: self.js("location.href + ' ' + document.readyState") == URL + ' complete'  # noqa: E731
         while True:
             try:
-                if self.connection is None:
-                    self.connection = self.route._cdp(self.adb)
-                pages = [t for t in self.connection.call('Target.getTargets')['targetInfos']
-                         if t['type'] == 'page' and t['url'] == URL]
-                if pages:
+                # The answer comes when the navigation commits: slow right after a boot.
+                self.connection.call('Page.navigate', {'url': URL}, self.session, timeout=30)
+                settle = time.monotonic() + 15
+                while time.monotonic() < settle and not loaded():
+                    time.sleep(.5)
+                if loaded():
                     break
             except Exception:
-                if self.connection is not None:
-                    self.connection.close()
-                    self.connection = None
-            assert time.monotonic() < deadline, 'Chrome did not show the fixture page'
-            time.sleep(1)
-        self.session = self.connection.call('Target.attachToTarget', {'targetId': pages[-1]['targetId'],
-                                                                       'flatten': True})['sessionId']
-        self.connection.call('Page.bringToFront', session=self.session)
-        # Right after a boot the network may still be down and Chrome shows its error page.
-        while self.js("location.href + ' ' + document.readyState") != URL + ' complete':
+                pass
             assert time.monotonic() < deadline, 'Chrome could not load the fixture page'
             time.sleep(2)
-            if self.js('location.href') != URL:
-                self.connection.call('Page.navigate', {'url': URL}, self.session)
         self.load(html)
         return self
 
@@ -157,6 +195,13 @@ class Chrome:
         while not self.js(f'document.hasFocus() && document.activeElement === document.querySelector({json.dumps(selector)})'):
             assert time.monotonic() < deadline, 'fixture field did not get the focus'
             time.sleep(.1)
+
+    def geometry(self, selector):
+        """Where the fixture element and its text are, for a refused pin's message (synthetic page only)."""
+        try:
+            return self.js(GEOMETRY % json.dumps(selector))
+        except Exception as exc:
+            return repr(exc)
 
     def close(self):
         if self.connection is not None:
@@ -189,7 +234,7 @@ class Lab:
         self.chrome.focus(selector)
         code, receipt, err = self.cli('android', 'pin', '--device', NAME, '--mode', mode, '--field', selector,
                                       *(('--purpose', purpose) if purpose else ()))
-        assert code == 0 and receipt['ok'], (receipt, err)
+        assert code == 0 and receipt['ok'], (receipt, err, self.chrome.geometry(selector))
         assert receipt['origin'] == ORIGIN and receipt['site_source'] == 'chrome'
         self.last_pin = receipt['target']
         return receipt['target']
@@ -307,13 +352,66 @@ def test_generated_password_refuses_a_page_of_another_site(lab):
 
 # ----- cold boot ------------------------------------------------------------
 
+def cold_generated(lab, round_, booted):
+    """A generated password: the 4-second start deadline bounds only the first key, so it must fill."""
+    lab.chrome.open(GENERATED_PAGE, timeout=180)
+    values, staged, (code, receipt, err), took = generated_fill(lab, f'Synthetic cold {round_}')
+    shown = lab.chrome.js('document.querySelector("#password").value')
+    if code != 0:
+        return code, took, 'not filled: ' + (err.strip() or json.dumps(receipt)), None
+    committed = lab.broker.dispatch(dict(action='commit-password', write_handle=staged['write_handle'], site_accepted=True))
+    saved = committed['ok'] and lab.stored(values['title']).password == shown
+    return code, took, 'filled' if receipt['ok'] and len(shown) >= 16 and saved else 'not saved', None
+
+
+def identity_handle(lab):
+    [selected] = lab.broker.dispatch(dict(action='search-identities', identity_protocol=1,
+                                          query='Synthetic Android identity'))['entries']
+    return selected['handle']
+
+
+def identity_fill(lab):
+    """Fill the saved identity's email with a fresh handle and pin (both are single use)."""
+    lab.chrome.js('document.querySelector("#email").value = ""')
+    target = lab.pin('identity', '#email', 'email')
+    started = time.monotonic()
+    code, receipt, err = lab.cli('fill-identity', identity_handle(lab), '--target', target, '--field', 'email')
+    took = time.monotonic() - started
+    shown = lab.chrome.js('document.querySelector("#email").value')
+    if code == 0:
+        return code, took, 'filled' if receipt['ok'] and shown == EMAIL else 'wrong receipt'
+    if code == 1:
+        return code, took, 'not started' if receipt.get('delivery') == 'not-started' and shown == '' else 'unclean refusal'
+    return code, took, 'outcome unknown: ' + err.strip()
+
+
+def cold_identity(lab, round_, booted):
+    """An identity field: its whole typed check must end within the start deadline, so it fills or refuses cleanly.
+
+    After a clean refusal, a new pin every 10 seconds must fill once the device has warmed up.
+    """
+    lab.chrome.open(IDENTITY_PAGE, timeout=180)
+    saved_identity(lab)
+    code, took, result = identity_fill(lab)
+    filled_after = time.monotonic() - booted if result == 'filled' else None
+    deadline = time.monotonic() + 180
+    while result == 'not started' and filled_after is None and time.monotonic() < deadline:
+        time.sleep(10)
+        if identity_fill(lab)[2] == 'filled':
+            filled_after = time.monotonic() - booted
+    return code, took, result, filled_after
+
+
 @pytest.mark.skipif(COLD_BOOTS < 1, reason='set AKDBX_TEST_ANDROID_COLD_BOOTS to cold-boot a managed emulator')
-def test_generated_fill_right_after_a_cold_boot_fills_or_refuses_cleanly(short_tmp, template, device, monkeypatch):  # noqa: F811
+def test_fills_right_after_a_cold_boot_never_leave_the_outcome_unknown(short_tmp, template, device, monkeypatch):  # noqa: F811
     """Regression: fill-generated right after a cold boot ended with 'connection lost' (exit 2, outcome uncertain).
 
-    Each round stops the managed emulator, boots it again from cold and fills at once. The fill must
-    either succeed (the field holds a generated password that the commit saves) or refuse with
-    delivery 'not-started' and an empty field. It must never leave the outcome unknown.
+    Each round stops the managed emulator, boots it again from cold and fills at once: even rounds a
+    generated password, odd rounds an identity field. Right after a cold boot the helper's typed check
+    takes 5 to 10 seconds. A generated password must fill and save. An identity field, whose typed
+    check must end within the 4-second start deadline, either fills or refuses with delivery
+    'not-started' and an empty field, and then fills when pinned again later. Neither may end with an
+    unknown outcome.
     """
     if device.managed is None:
         pytest.skip('cold boots need a managed emulator')
@@ -321,26 +419,21 @@ def test_generated_fill_right_after_a_cold_boot_fills_or_refuses_cleanly(short_t
     for round_ in range(COLD_BOOTS):
         stop_managed(device)
         booted = time.monotonic()
+        kind, fill = ('generated', cold_generated) if round_ % 2 == 0 else ('identity', cold_identity)
         with running(short_tmp / str(round_), template, device, monkeypatch) as lab:
-            lab.chrome.open(GENERATED_PAGE, timeout=180)
-            values, staged, (code, receipt, err), took = generated_fill(lab, f'Synthetic cold {round_}')
-            shown = lab.chrome.js('document.querySelector("#password").value')
-            if code == 0:
-                result = 'filled' if receipt['ok'] and len(shown) >= 16 else 'wrong receipt'
-                committed = lab.broker.dispatch(dict(action='commit-password', write_handle=staged['write_handle'],
-                                                     site_accepted=True))
-                if result == 'filled' and not (committed['ok'] and lab.stored(values['title']).password == shown):
-                    result = 'not saved'
-            elif code == 1:
-                result = 'not started' if receipt.get('delivery') == 'not-started' and shown == '' else 'unclean refusal'
-            else:
-                result = 'outcome unknown: ' + err.strip()
-            outcome = dict(round=round_, after_boot=round(time.monotonic() - booted - took, 1), fill_seconds=round(took, 2),
-                           exit=code, result=result)
-            outcomes.append(outcome)
-            print('cold boot', json.dumps(outcome), flush=True)
+            ready = time.monotonic()
+            code, took, result, filled_after = fill(lab, round_, booted)
+        outcome = dict(round=round_, kind=kind, boot_seconds=round(ready - booted, 1),
+                       fill_seconds=round(took, 2), exit=code, result=result)
+        if kind == 'identity':
+            outcome['filled_after_boot'] = None if filled_after is None else round(filled_after, 1)
+        outcomes.append(outcome)
+        print('cold boot', json.dumps(outcome), flush=True)
     print('cold boot summary', json.dumps(outcomes), flush=True)
-    assert all(o['result'] in ('filled', 'not started') for o in outcomes), outcomes
+    allowed = {'generated': {'filled'}, 'identity': {'filled', 'not started'}}
+    assert all(o['result'] in allowed[o['kind']] for o in outcomes), outcomes
+    # A refused identity fill works when pinned again on the warmed-up device.
+    assert all(o['filled_after_boot'] is not None for o in outcomes if o['kind'] == 'identity'), outcomes
 
 
 # ----- capture-secret -------------------------------------------------------
@@ -515,9 +608,7 @@ def saved_identity(lab):
     from urllib.parse import urlencode, urlsplit
     parts = urlsplit(pending['private_url'])
     assert call(lab.web, 'POST', parts.path + '?' + parts.query, urlencode({'email': EMAIL, 'confirmed': 'yes'}))[0] == 200
-    [selected] = lab.broker.dispatch(dict(action='search-identities', identity_protocol=1,
-                                          query='Synthetic Android identity'))['entries']
-    return selected['handle']
+    return identity_handle(lab)
 
 
 @pytest.mark.parametrize('notify', [True, False])

@@ -324,7 +324,12 @@ broker takes attached devices only (after 0.50.1).
   boots before the fix), and the broker stopped before the value because
   its caller had left. With Android devices configured, the fill commands
   now wait up to 60 seconds, as `android fill` does; 10 of 10 cold boots
-  filled and saved.
+  filled and saved. Login, password, generated-password and TOTP pins fill
+  right after a cold boot because the start deadline bounds only the first
+  key. Card, identity, SMS-code and read pins must finish the whole check
+  within the 4-second start deadline, so right after a cold boot they may
+  be refused `not-started` with nothing filled or read (3 of 5 identity
+  fills in the lab); a new pin 10 seconds later filled each time.
 - **Z** Not built: Android fields in frames are refused.
 - **AA** Not built: the managed emulator uses systemd user units and KVM.
   On macOS and Windows, setup and `android wake` refuse it, and `status`

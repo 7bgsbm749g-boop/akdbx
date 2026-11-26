@@ -217,16 +217,26 @@ and `akdbx android fill-totp --pending HANDLE --target TOKEN` for the site's
 confirmation step (requires `android_pending_totp: true`). Then run
 `commit-totp` with the site's result. In-app web views and frames remain unsupported.
 
-**Reply time.** The 4-second start deadline bounds the first key of a fill.
-A fill that has started runs the helper's typed check, which takes about a
-second on a warm device and 5 to 10 seconds right after a cold boot. When
-the broker has Android devices configured, `fill`, `fill-generated`,
-`fill-totp`, `fill-card`, `fill-identity` and `fill-sms-code` therefore wait
-up to 60 seconds for the broker's answer, as `akdbx android fill` does
-(after 0.51.0; `android_route.FILL_REPLY_TIMEOUT`). Before, these commands
-waited 5 seconds, so a fill right after a cold boot ended with `autofill
-outcome uncertain: connection lost after request`, and the broker then
-stopped before the value because its caller had left.
+**Reply time and cold boots.** Before each value the helper runs its typed
+check (below), which takes under a second on a warm device and 5 to 10
+seconds right after a cold boot. A managed emulator always starts from a
+cold boot.
+
+- Login, username, password, generated-password and TOTP pins: the 4-second
+  start deadline bounds the first key of the check, so a fill right after a
+  cold boot still fills. When the broker has Android devices configured,
+  `fill`, `fill-generated`, `fill-totp`, `fill-card`, `fill-identity` and
+  `fill-sms-code` wait up to 60 seconds for the broker's answer, as `akdbx
+  android fill` does (after 0.51.0). Before, they waited 5 seconds, and a
+  fill right after a cold boot ended with `autofill outcome uncertain:
+  connection lost after request`.
+- Card, identity, SMS-code and read pins: the whole typed check must end
+  within the 4-second start deadline. Right after a cold boot these fills,
+  `capture-secret` and `capture-totp` are refused with delivery
+  `not-started` and nothing filled or read. Search and pin again a few
+  seconds later: in the lab, the next pin 10 seconds later filled every time,
+  about a minute after the emulator started. To avoid the wait, wake the
+  device first (`akdbx android wake`, or hold it with `akdbx android run`).
 
 For these new Chrome read, SMS, card and identity pins, the helper sends
 random key events only to Chrome. The retained focused element must receive
