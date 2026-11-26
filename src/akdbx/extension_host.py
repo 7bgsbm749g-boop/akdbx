@@ -835,14 +835,21 @@ def firefox_signing_files(origin, version, *, host_name=HOST_NAME, build_id=None
 
 
 def xpi_bytes(files):
-    """A deterministic ZIP of the files, with manifest.json at the root (what AMO receives)."""
+    """A ZIP of the files, with manifest.json at the root (what AMO receives).
+
+    Its bytes depend only on the files, on every platform: entries are stored,
+    not compressed (zlib builds, such as zlib-ng in CPython for Windows, can
+    compress the same data differently), with fixed times, a fixed creating
+    system (zipfile writes 0 on Windows, 3 elsewhere) and fixed permissions.
+    """
     import io
     import zipfile
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as archive:
         for name in sorted(files):
             info = zipfile.ZipInfo(name, ZIP_TIME)
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = zipfile.ZIP_STORED
+            info.create_system = 3
             info.external_attr = 0o644 << 16
             archive.writestr(info, files[name])
     return buffer.getvalue()

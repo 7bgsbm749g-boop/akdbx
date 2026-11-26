@@ -426,7 +426,7 @@ def test_signed_versions_encode_this_builds_contents_and_stay_apart_from_unsigne
     assert not extension_route.valid_extension_version(first.rsplit('.', 1)[0] + '.1000000000')
 
 
-def test_the_signing_archive_holds_exactly_the_firefox_build_with_its_version(tmp_path):
+def test_the_signing_archive_holds_exactly_the_firefox_build_with_its_version(tmp_path, monkeypatch):
     version = extension_host.signed_version(7)
     files = extension_host.firefox_signing_files(ORIGIN, version)
     folder = extension_host.build(tmp_path / 'ff', unlock_origin=ORIGIN, browser='firefox')
@@ -444,6 +444,15 @@ def test_the_signing_archive_holds_exactly_the_firefox_build_with_its_version(tm
     again = extension_host.firefox_signing_files(ORIGIN, version)
     assert again['config.js'] != files['config.js']
     assert extension_host.xpi_bytes(files) == extension_host.xpi_bytes(dict(files))
+    # The same bytes when another platform builds it (zipfile records Windows as creating system 0).
+    here = extension_host.xpi_bytes(files)
+    monkeypatch.setattr(sys, 'platform', 'linux' if sys.platform == 'win32' else 'win32')
+    there = extension_host.xpi_bytes(files)
+    monkeypatch.undo()
+    assert there == here
+    with zipfile.ZipFile(io.BytesIO(here)) as archive:
+        assert {(i.compress_type, i.create_system, i.external_attr >> 16) for i in archive.infolist()} == {
+            (zipfile.ZIP_STORED, 3, 0o644)}
     with zipfile.ZipFile(io.BytesIO(extension_host.xpi_bytes(files))) as archive:
         assert sorted(archive.namelist()) == sorted(files) and 'manifest.json' in archive.namelist()
         assert all(archive.read(name) == files[name] for name in files)
