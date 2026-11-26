@@ -579,7 +579,11 @@ the page, and the stored fields, to the listed fields; without it the page
 shows all fields. `update-identity HANDLE --title --group --fields` (0.28.3)
 adds or changes the chosen fields of one existing identity, selected with a
 fresh `search-identities` handle; its page never shows the saved values, and
-the previous version stays in the entry history. `search-identities LABEL` returns
+the previous version stays in the entry history. From 0.51.0, both commands
+take `--valid-minutes N` (1 to 30, and not longer than the vault lock
+timeout; default 5) for a page that stays valid longer, and report
+`expires_in` and `expires_at` (UTC); the page shows the expiry time. A vault
+lock still ends the page. `search-identities LABEL` returns
 only labels, group paths and single-use handles. Login search excludes these
 records. `pin-identity-target` and `fill-identity` deliver one field to a
 verified and focused DOM element (CDP, or the extension in a Chromium browser
@@ -625,6 +629,10 @@ put them in command arguments, agent messages or notes. `update-card HANDLE
 the previous entry in KDBX History. `write-status` and `cancel-write` apply to
 these saves. Persistence reopens and verifies every protected field before
 replacing the encrypted vault. A private page expires after five minutes.
+From 0.51.0, `--valid-minutes N` (1 to 30, and not longer than the vault
+lock timeout) keeps it valid for N minutes. The receipt reports `expires_in`
+and `expires_at` (UTC), and the page shows the expiry time. The page stays
+single use and tied to the vault revision, and a vault lock still ends it.
 
 The page prefills `--title` and `--group`. The user can change the title, and
 on a new card can choose another existing group (the KeePass folder) from a

@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import json
 import re
-import secrets
 import unicodedata
 
 from .persistence import SaveError
 from .protocol import MAX_MESSAGE
 from .versions import active_entries
-from .writes import MAX_WRITES, Write, WriteError, _entry_changed_at, group_for
+from .writes import WriteError, _entry_changed_at, group_for, page_lifetime, prepared_page
 
 MARKER = 'akdbx.identity'
 FIELDS = {
@@ -338,13 +337,15 @@ class IdentityManager:
             raise WriteError() from None
         values = request.get('metadata')
         base = {'action', 'identity_protocol', 'metadata'}
-        if (((set(request) != base | {'handle', 'fields'}) if update else
-                (not base <= set(request) or set(request) - (base | {'fields'})))
+        keys = set(request) - {'valid_minutes'}
+        if (((keys != base | {'handle', 'fields'}) if update else
+                (not base <= keys or keys - (base | {'fields'})))
                 or not isinstance(values, dict) or set(values) != {'title', 'group'}
                 or any(not _text(v, 4096) or len(v.encode()) > 4096 for v in values.values())
                 or not values['title'].strip()):
             raise WriteError()
         fields = requested_fields(request)
+        page_lifetime(request, self.broker.session.timeout)
         writes = self.broker.writes
         writes._require_available()
         if update:
@@ -354,15 +355,8 @@ class IdentityManager:
             _selected(self.broker.vault, entry.uuid, values['title'], values['group'])
         else:
             group_for(self.broker.vault, values['group'])
-        writes._prune()
-        if len(writes.operations) >= MAX_WRITES:
-            raise WriteError()
-        handle = secrets.token_hex(32)
-        op = Write(secrets.token_urlsafe(32), self.broker.clock() + 300, writes.revision, dict(values), kind='identity',
-                   fields=fields, uuid=entry.uuid if update else None)
-        writes.operations[handle] = op
-        return dict(ok=True, state='pending', write_handle=handle,
-                    private_url=writes.public_base.rstrip('/') + '/identity?token=' + op.token)
+        return prepared_page(self.broker, 'identity', request, values,
+                             fields=fields, uuid=entry.uuid if update else None)
 
     def submit(self, op, values, confirmed):
         if (not confirmed or op.kind != 'identity' or op.state != 'pending'

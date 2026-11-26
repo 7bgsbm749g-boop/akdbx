@@ -716,7 +716,9 @@ adyen|computop|stripe` and the exact supported inputs. Card values go only to a
 verified DOM element: no keyboard, Tab or clipboard, and never the login fill
 commands. Save a new card with `create-card` (the user types the card on a
 private page; register a [card-save notification](references/card-save-notifications.md)
-first), and change one with `update-card`.
+first), and change one with `update-card`. For a user who needs more time,
+add `--valid-minutes N` (1 to 30, default 5; 0.51.0) to any card or identity
+save command, and give the `expires_at` time with the link.
 
 **Addresses and contacts** ([identities](references/identities.md)).
 Before saving, run `search-identities` for the user's existing identities. If

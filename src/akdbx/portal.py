@@ -444,6 +444,13 @@ SCRIPT = r""""use strict";
       setTimeout(swap, 200);
     }, 300);
   });
+  // A save page's expiry, written in UTC, in the viewer's own time zone.
+  document.querySelectorAll("time[data-local-time]").forEach(node => {
+    const when = new Date(node.getAttribute("datetime"));
+    if (!Number.isNaN(when.getTime())) {
+      node.textContent = when.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", timeZoneName: "short"});
+    }
+  });
   document.querySelectorAll("[data-wizard]").forEach(wizard => {
     wizard.classList.add("is-wizard");
     wizard.querySelector(".wizard-count").hidden = false;

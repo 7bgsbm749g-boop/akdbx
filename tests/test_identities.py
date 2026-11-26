@@ -280,7 +280,7 @@ def field_names(page):
 def test_field_subset_page_shows_and_stores_only_requested_fields(deployed, capsys):
     broker, _, path, web = deployed
     pending = begin(broker, fields=['tel'])
-    assert set(pending) == {'ok', 'state', 'write_handle', 'private_url'}
+    assert set(pending) == {'ok', 'state', 'write_handle', 'private_url', 'expires_in', 'expires_at'}
     code, _, page = call(web, 'GET', private_path(pending))
     assert code == 200 and field_names(page) == {b'tel'}
     assert b'Phone number' in page and b'Email address' not in page
@@ -380,7 +380,7 @@ def test_update_adds_or_changes_only_the_chosen_fields_and_keeps_history(deploye
     assert stored(before) == {'name': IDENTITY['name'], 'email': IDENTITY['email']} and before.history == []
     handle = search(broker)['entries'][0]['handle']
     pending = update(broker, handle, ['tel'])
-    assert set(pending) == {'ok', 'state', 'write_handle', 'private_url'} and pending['state'] == 'pending'
+    assert set(pending) == {'ok', 'state', 'write_handle', 'private_url', 'expires_in', 'expires_at'} and pending['state'] == 'pending'
     code, _, page = call(web, 'GET', private_path(pending))
     assert code == 200 and field_names(page) == {b'tel'}
     assert b'Update AKDBX identity' in page and b'Update identity in AKDBX' in page and b'Saved values are not shown' in page
