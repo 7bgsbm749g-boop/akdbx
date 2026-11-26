@@ -182,6 +182,7 @@ button:disabled { cursor: default; opacity: .4; }
 .unlock-keys > summary:focus-visible { outline: 2px solid #ffffff5c; outline-offset: 3px; border-radius: 4px; }
 .unlock-keys[open] > summary { color: #fff; }
 .unlock-keys-body > .setup-note { margin: 0 !important; }
+.field.unlock-hardware label { display: flex; align-items: center; gap: 10px; margin: 0; color: #fff; font-size: 14px; }
 .unlock-keys .copy-field .copy-text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 button.copy-field {
   display: block; text-align: left; min-height: 0; padding: 13px 16px 12px; border: 1px solid #ffffff1a;

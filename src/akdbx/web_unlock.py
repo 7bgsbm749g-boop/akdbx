@@ -217,18 +217,19 @@ def keys_section(state, *, open_section: bool = False) -> str:
             here = False
         where = (f'Touch the key on <strong>{computer}</strong> when it flashes.' if here else
                  'Plug the key into this computer and touch it when it flashes. The akdbx browser '
-                 'extension asks the key.')
+                 'extension talks to the key.')
         touch = html.escape(f'Touch the hardware key on {computer_name()} when it flashes.', quote=True)
         parts.append(
-            '<label class="unlock-hardware"><input type="checkbox" name="hardware" value="on" data-hardware-key'
-            f' data-hardware-route="{"broker" if here else "extension"}" data-hardware-challenge="{seed.hex()}"'
-            f' data-touch-text="{touch}" aria-describedby="hardware-note">'
+            '<div class="field unlock-hardware"><label><input type="checkbox" name="hardware" value="on"'
+            f' data-hardware-key data-hardware-route="{"broker" if here else "extension"}"'
+            f' data-hardware-challenge="{seed.hex()}" data-touch-text="{touch}" aria-describedby="hardware-note">'
             'Use my hardware key</label>'
-            f'<p id="hardware-note" class="setup-note">{where} If the vault has no master password, leave it '
-            'empty.</p>'
-            f'<input type="hidden" name="challenge" value="{seed.hex()}">')
+            f'<p id="hardware-note" class="setup-note">{where}</p>'
+            f'<input type="hidden" name="challenge" value="{seed.hex()}"></div>')
     if not parts:
         return ''
+    # A vault may have no master password: its key file or hardware key alone opens it.
+    parts.insert(0, '<p class="setup-note">No master password? Leave the password field empty.</p>')
     summary = ' or '.join(names)
     summary = summary[0].upper() + summary[1:]
     return (f'<details class="unlock-keys"{" open" if open_section else ""}>'
