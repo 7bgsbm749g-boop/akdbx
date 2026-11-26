@@ -101,7 +101,9 @@ it serves only this capture request, as the capture pipe does on Windows.
 ```
 
 On Linux and macOS, `--browser chrome|edge|helium|firefox` selects the
-browser's per-user native host directory. For a custom Chromium user-data
+browser's per-user native host directory. On Linux, Chrome and Helium honor
+`CHROME_CONFIG_HOME` before `XDG_CONFIG_HOME`. A second Chromium browser can
+reuse the same extension ID, private origin and capture socket. For a custom Chromium user-data
 root, pass `--manifest-dir /existing/chrome-user-data/NativeMessagingHosts`.
 Use a user-owned manifest directory under trusted, non-symlinked parents.
 On macOS pass `--socket "$HOME/Library/Application Support/akdbx/run/u"` for

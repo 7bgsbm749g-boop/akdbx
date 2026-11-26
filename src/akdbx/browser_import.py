@@ -194,6 +194,7 @@ def host_identity(args):
 
 def install_host(args):
     """Register the invoked console script without selecting another PATH install."""
+    import fcntl
     from .cli import _validate_unlock_url
     from .runtime import prepare_private_runtime_directory, prepare_registration_directory
     extension_id, allowed = host_identity(args)
@@ -212,6 +213,8 @@ def install_host(args):
     registration = None
     manifest = HOST_NAME + '.json'
     try:
+        # Serialize installers sharing a config, including rollback after a failed manifest write.
+        fcntl.flock(directory, fcntl.LOCK_EX)
         _, registration = prepare_registration_directory(manifest_dir, create_ancestors=args.manifest_dir is None)
         try:
             os.stat(manifest, dir_fd=registration, follow_symlinks=False)
@@ -219,10 +222,17 @@ def install_host(args):
             pass
         else:
             raise ValueError('native manifest already exists')
-        fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-        with os.fdopen(fd, 'w') as stream:
-            created = os.fstat(stream.fileno())
-            json.dump(dict(extension_id=extension_id, origin=args.origin.rstrip('/'), socket=str(args.socket.absolute())), stream)
+        config = dict(extension_id=extension_id, origin=args.origin.rstrip('/'), socket=str(args.socket.absolute()))
+        try:
+            existing = load_config(path)
+        except FileNotFoundError:
+            fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            with os.fdopen(fd, 'w') as stream:
+                created = os.fstat(stream.fileno())
+                json.dump(config, stream)
+        else:
+            if existing != config:
+                raise ValueError('a different private import configuration exists')
         # An explicit directory supports Chrome's existing custom user-data root.
         fd = os.open(manifest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=registration)
         with os.fdopen(fd, 'w') as stream:
