@@ -415,7 +415,7 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--unlock-url", help=argparse.SUPPRESS)
     start.add_argument("--notification-state", type=Path, help="private durable until-unlock subscription file; default beside broker socket. Linux saves a blocked unlock link beside this file when it is given, otherwise in ${XDG_STATE_HOME:-~/.local/state}/akdbx")
     start.add_argument('--secret-sinks', type=Path, default=os.environ.get('AKDBX_SECRET_SINKS'),
-                       help='operator sink configuration for deliver-secret (root- or broker-owned, not group/other writable)')
+                       help='operator sink configuration for deliver-secret (trusted ownership and permissions; private DACL on Windows)')
     start.add_argument('--sms-sources', type=Path,
                        help='private file of SMS verification sources (names, kinds and webhook token hashes); '
                             'default beside --notification-state, or in the per-user state folder')

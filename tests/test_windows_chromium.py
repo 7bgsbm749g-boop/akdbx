@@ -127,7 +127,7 @@ def test_window_pin_never_receives_a_password(mode):
     result = broker.dispatch(dict(action='fill', handle=handle, mode=mode, target=pin['target'], target_protocol=1))
     assert result == failure()
     status = broker.dispatch({'action': 'ping'})
-    assert status['target_fill_modes'] == ['username'] and status['password_browser_configured'] is False
+    assert status['target_fill_modes'] == ['username', 'totp', 'sms-code'] and status['password_browser_configured'] is False
 
 
 @pytest.mark.parametrize('case', ['other-path', 'http', 'fragment', 'page-id', 'frame-id', 'ambiguous-selector',
@@ -541,3 +541,89 @@ def test_installed_cli_creates_an_account_then_signs_in(lab, synthetic_vault, na
         assert secret not in output
     print(json.dumps(dict(browser=lab.version, cli_generate_fill_commit=True, cli_login_fill=True,
                           refusals=4, secrets_in_output=0)))
+
+
+def test_autocomplete_off_requires_explicit_pin(lab):
+    url = lab.evaluate('location.href')
+    broker = broker_for(lab)
+    lab.evaluate("document.getElementById('password').autocomplete='off'")
+    focus(lab, 'password')
+    request = pin_request(lab, url, password_purpose='current-password')
+    try:
+        assert broker.dispatch(request) == failure()
+        pin = broker.dispatch({**request, 'allow_autocomplete_off': True})
+        assert pin['ok'] and fill(broker, pin)['ok']
+        assert lab.digest('password') == sha(PASSWORD) and lab.digest('username') == EMPTY
+    finally:
+        broker.passwords.close()
+
+
+def test_identity_notifies_page_only_on_request(lab):
+    from test_extension_browser import IdentityEntry, identity_fill
+    broker = Broker(Vault([IdentityEntry(title='Synthetic phone')]), NoKeys(), password_browser_profile=lab.profile)
+    url = lab.evaluate('location.href')
+    lab.evaluate("""document.body.innerHTML='<input id="mail" type="email" autocomplete="email">';
+                    window.notified=[];
+                    for(const type of ['input','change']) mail.addEventListener(type,e=>notified.push(e.type));
+                    mail.focus()""")
+    try:
+        for options, events in [({}, ''), ({'notify_page': True}, 'input,change')]:
+            lab.evaluate("mail.value='';mail.focus()")
+            pin = broker.dispatch(dict(action='pin-identity-target', identity_protocol=1, page_id=lab.page_id,
+                                       frame_id=lab.main_frame, top_url=url, frame_url=url, field='email',
+                                       selector='#mail'))
+            assert pin['ok'], pin
+            assert identity_fill(broker, pin['target'], field='email', **options)['ok']
+            assert lab.digest('mail') == sha('synthetic-only@example.test')
+            assert lab.evaluate("notified.join(',')") == events
+    finally:
+        broker.identity_targets.close()
+
+
+def test_read_capture_saves_protected_field_and_pending_totp(lab, synthetic_vault, native_https_config):
+    from totp_vectors import KEY
+    origin, certificate, key, submit = native_https_config
+    import io
+    from akdbx import windows_security as security
+    url = lab.evaluate('location.href')
+    login = dict(title='Windows OTP', username='test', url=url, group='')
+    vault = PyKeePass(str(synthetic_vault), password='synthetic master')
+    vault.add_entry(vault.root_group, login['title'], login['username'], 'synthetic-password', url=url)
+    buffer = io.BytesIO()
+    vault.save(buffer)
+    security.replace_private(synthetic_vault, buffer.getvalue())
+    broker = Broker(None, NoKeys(), password_browser_profile=lab.profile)
+    server, unlock_url = start_windows_unlock_server(broker, synthetic_vault, None, origin, certificate, key)
+    values = dict(title='Windows capture', username='synthetic-user', url=url, group='')
+    try:
+        assert submit(unlock_url, {'password': 'synthetic master'})[0] == 200
+        lab.evaluate("""document.body.innerHTML='<code id="shown" tabindex="0"></code>';shown.focus()""")
+
+        def read(value):
+            lab.evaluate('shown.textContent=' + json.dumps(value))
+            focus(lab, 'shown')
+            pin = broker.dispatch(pin_request(lab, url, '#shown', 'read', capture_protocol=1))
+            assert pin['ok'], pin
+            return pin['target']
+
+        result = broker.dispatch(dict(action='capture-secret', capture_protocol=1, target=read('synthetic-token'),
+                                      create=True, field='client_secret', metadata=values))
+        assert result['ok'] and 'synthetic-token' not in json.dumps(result)
+        entry = PyKeePass(str(synthetic_vault), password='synthetic master').find_entries(title=values['title'], first=True)
+        assert entry.get_custom_property('client_secret') == 'synthetic-token'
+        assert entry.is_custom_property_protected('client_secret')
+
+        selected = broker.dispatch(dict(action='search', query=login['title']))['entries'][0]
+        result = broker.dispatch(dict(action='capture-totp', totp_capture_protocol=1, target=read(KEY),
+                                      handle=selected['handle'], metadata=login))
+        assert result['state'] == 'pending' and KEY not in json.dumps(result)
+        selected = broker.dispatch(dict(action='search', query=login['title']))['entries'][0]
+        result = broker.dispatch(dict(action='commit-totp', totp_capture_protocol=1, handle=selected['handle'],
+                                      metadata=login, decision='site-accepted'))
+        assert result['state'] == 'saved'
+        stored = PyKeePass(str(synthetic_vault), password='synthetic master').find_entries(title=login['title'], first=True)
+        assert KEY in stored.otp
+    finally:
+        broker.passwords.close()
+        server.shutdown()
+        server.server_close()

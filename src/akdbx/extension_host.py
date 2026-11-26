@@ -251,8 +251,8 @@ def linux_manifest_dir(browser):
         return Path.home() / 'Library' / 'Application Support' / names[browser] / 'NativeMessagingHosts'
     if browser == 'firefox':
         return Path.home() / '.mozilla' / 'native-messaging-hosts'
-    if browser == 'helium':
-        # Helium uses CHROME_CONFIG_HOME before XDG_CONFIG_HOME, like Chromium.
+    if browser in ('chrome', 'helium'):
+        # Chrome and Helium use CHROME_CONFIG_HOME before XDG_CONFIG_HOME.
         base = os.environ.get('CHROME_CONFIG_HOME') or os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
     else:
         base = os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')

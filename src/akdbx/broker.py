@@ -20,7 +20,7 @@ from threading import Event
 from typing import Callable, Protocol
 
 from .native_fields import NativeFields, NativePin, DELIVERY as NATIVE_DELIVERY
-from .target import TargetPins, TargetError, DeliveryError, DELIVERY, capabilities as target_capabilities, failure as target_failure
+from .target import TargetPins, TargetError, WaylandWindowError, DeliveryError, DELIVERY, capabilities as target_capabilities, failure as target_failure
 from .writes import (WriteManager, WriteError, generated_capabilities, sso_capabilities, passwordless_capabilities, passwordless_identity,
                      additional_origins, additional_urls, additional_urls_capabilities, allowed_origins,
                      entry_organize_capabilities, entry_edit_capabilities,
@@ -572,6 +572,11 @@ class Broker:
         if action == 'pin-target':
             try:
                 return self.targets.pin(request)
+            except WaylandWindowError:
+                return dict(ok=False, delivery='not-started', error=(
+                    'autofill not started: no verified active XWayland window on the broker display; '
+                    'window pins need X-Resource 1.2 and _NET_ACTIVE_WINDOW. Native Wayland has no '
+                    'window-directed keyboard input; use list-native-fields for supported native apps'))
             except SlotError as exc:
                 return {'ok': False, 'error': str(exc)}
             except Exception:

@@ -13,8 +13,8 @@ FIELDS = ('one-time-code', 'webhook-url')
 
 def _derive(script: str) -> str:
     replacements = (
-        ("(selector, field, frameURL, topURL, processor=false, identity=false, purpose=false, allowOff=false) => {",
-         "(selector, field, frameURL, topURL, processor=false, identity=false, purpose=false, allowOff=false, code=false) => {"),
+        ("(selector, field, frameURL, topURL, processor=false, identity=false, purpose=false, allowOff=false, shadowRootOf=null) => {",
+         "(selector, field, frameURL, topURL, processor=false, identity=false, purpose=false, allowOff=false, code=false, shadowRootOf=null) => {"),
         ("  if (!input && !select && !textarea) return null;\n",
          "  if (!input && !select && !textarea) return null;\n  if (code && !input) return null;\n"),
         ("  } else if (computop ? !knownComputopField() :",

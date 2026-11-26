@@ -71,6 +71,10 @@ gdk = C.CDLL('libgdk-3.so.0')
 get_display = bind(gdk, 'gdk_display_get_default', C.c_void_p, [])
 obj = C.CDLL('libgobject-2.0.so.0')
 get_name = bind(obj, 'g_type_name_from_instance', C.c_char_p, [C.c_void_p])
+if 'X11' in get_name(get_display()).decode():
+    get_window = bind(gtk, 'gtk_widget_get_window', C.c_void_p, [C.c_void_p])
+    get_xid = bind(gdk, 'gdk_x11_window_get_xid', C.c_ulong, [C.c_void_p])
+    (directory / 'xid').write_text(str(get_xid(get_window(window))))
 pending = directory / 'ready.tmp'
 pending.write_text(get_name(get_display()).decode())
 pending.replace(directory / 'ready')

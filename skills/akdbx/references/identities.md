@@ -145,10 +145,12 @@ lies inside the inset rectangle of that element's border box (each inset
 widened by a 0.1% rounding margin). Side drawers and modals often use a
 negative inset such as `inset(-32px 0px -32px -32px)` only to trim their own
 shadow; it hides nothing inside the drawer, so the field pins. The pin checks
-it again at the fill.
+it again at the fill. This requires fill extension 0.11.1 or newer on Firefox.
 
-The CDP route still refuses every `clip-path`: its page check cannot see
-closed shadow roots, and a closed shadow wrapper that mirrors the drawer keeps
+The CDP route still refuses every `clip-path`: its in-page JavaScript cannot inspect
+closed shadow roots. CDP itself can traverse shadow roots with
+`DOM.getDocument` and `pierce: true`. The in-page check must refuse the inset
+because it cannot exclude a hidden transform. A closed shadow wrapper that mirrors the drawer keeps
 its size but swaps the edges the inset clips. For a field in such a drawer,
 pin with `--route extension`:
 

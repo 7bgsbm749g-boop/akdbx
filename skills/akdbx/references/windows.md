@@ -3,15 +3,17 @@
 Use the installed Windows executable, typically
 `CHECKOUT\.venv\Scripts\akdbx.exe`, in the broker's Windows desktop session. Keep
 the existing signed-in app when it satisfies the task. From 0.17.0 the Windows
-backend has the same workflows as Linux: DOM password, login and
+backend supports: DOM password, login and
 generated-password fills, the full password-write workflow, cards, merge,
 snapshot admission and durable unlock notifications. The repository's
 `docs/windows.md` contains setup, the browser and engine requirements, and the
 validation record; this reference covers operation of an already configured
 broker.
 
-Every instruction in `SKILL.md` and the other references applies on Windows,
-with these replacements. The private HTTPS page is the same on both
+The managed Android emulator needs a Linux KVM host. Hyprland lock and agent-desktop
+slot window pins require a Linux desktop. Windows uses session lock events, HWNDs
+for window pins and HTTPS for Tailscale Serve. For same-session secret delivery,
+see the repository's `docs/secret-sinks.md`. The private HTTPS page is the same on both
 platforms: a loopback link opens on the broker's computer, a link on a
 Tailscale Serve origin (`--local-port`) opens on any tailnet device, and a link
 on an akdbx relay origin (`https://<id>.akdbx.link`, 0.26.0+; `:8443` before the
@@ -39,7 +41,7 @@ steps are the same as in `SKILL.md`; its private folder is
   the [browser extension route](extension.md) with `extension_paired: true`
   when the browser has no debugging port (Helium, Chrome or Edge). For
   window pins require `target_fill_delivery: "win32-char-v1"` and target
-  protocol 1. `target_fill_modes: ["username"]` describes window pins only.
+  protocol 1. `target_fill_modes: ["username", "totp", "sms-code"]` describes window pins only.
 - When locked, give the exact returned private HTTPS link to the user. A
   loopback link opens on the **Windows machine** only; a link on the configured
   Tailscale Serve origin opens on any tailnet device, and a link on the relay
@@ -85,7 +87,9 @@ field, another for the confirmation field (none for a write staged with
 `--single-field`), the site's acceptance, then
 `commit-password --site-accepted -- WRITE_HANDLE`.
 
-## Username and TOTP fills in a native application
+## Window pins for usernames and TOTP
+
+For supported native controls, prefer the [native field workflow](native-fields.md).
 
 - Independently verify the application's PID and top-level HWND. Focus the
   intended field. Call `pin-target --pid VERIFIED_PID --window VERIFIED_HWND`.
@@ -93,8 +97,7 @@ field, another for the confirmation field (none for a write staged with
 - Use a fresh search handle and target pin for each
   `fill HANDLE --mode username --target PIN` or `fill-totp`. A window pin
   refuses `--mode password`, `--mode login` and `fill-generated`: a browser's
-  address bar shares its page's HWND, so only a DOM pin may receive a
-  password.
+  address bar shares its page's HWND, so browser passwords require a DOM pin.
 - A success receipt confirms directed message dispatch, not application
   acceptance. Some apps ignore synthetic `WM_CHAR` messages. Stop on uncertain
   or partial delivery; do not retry or fall back to global input/clipboard.

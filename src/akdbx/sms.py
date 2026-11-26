@@ -1614,7 +1614,7 @@ def _fill(broker, request, delivery_ready):
         return dict(ok=False, error='unknown or expired SMS message')
     refusal = None
     if route == 'x11' and not _https_url(request.get('target_url')):
-        refusal = dict(ok=False, error='autofill not started: X11 code fill needs --target-url')
+        refusal = dict(ok=False, error='autofill not started: window code fill needs --target-url')
     elif route == 'android' and not _android_site_matches(pin, request):
         refusal = dict(ok=False, error='autofill not started: Android SMS fill needs a matching HTTPS target URL')
     elif route == 'dom' and pin['field'] != 'one-time-code':

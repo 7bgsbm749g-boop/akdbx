@@ -39,7 +39,7 @@ session.
 
 ## Native desktop apps
 
-For authorized password, combined login, generated-password, card, address or
+For authorized username, TOTP, password, combined login, generated-password, card, address or
 read-only secret capture in a native desktop app, use native field protocol 1
 and [the native field workflow](references/native-fields.md). Verify the app and
 service independently. `list-native-fields` returns only opaque IDs and flags;
@@ -97,8 +97,8 @@ workflow owns.
 
 On Windows, read [Windows operation](references/windows.md) first: the
 transport is a named pipe, and native-window pins use HWNDs instead of X11
-windows. The private HTTPS page works the same way on both platforms. Every workflow here works
-on Windows from 0.17.0.
+windows. The private HTTPS page works the same way on both platforms. The managed Android emulator, Hyprland lock,
+Tailscale Serve Unix socket and Linux agent-desktop slot window pins are Linux-specific.
 
 The maintained source of this skill is the repository's `skills/akdbx`
 directory. A local install links the agent's skills directory to it (a
@@ -479,8 +479,9 @@ Rules (full detail in [password field delivery](references/target-fill.md)):
   `--top-url-file FILE` (or `--frame-url-file FILE`) in place of the plain
   flag, and delete the file after the pin. Never shorten or change the URL.
   See [exact URL with a private token](references/target-fill.md#exact-url-with-a-private-token).
-- Native apps and username or TOTP fields outside a browser use window pins:
-  `pin-target --pid PID --window WINDOW` (X11 on Linux, HWND on Windows). A
+- Use native field pins for supported native apps, including apps on Wayland.
+  The numeric fallback for usernames, TOTP and SMS codes is
+  `pin-target --pid PID --window WINDOW` (X11 or XWayland on Linux, HWND on Windows). A
   window pin never accepts a password or login fill, because a browser's
   address bar shares its window. In an agent desktop slot, a window of the
   slot's Chrome needs `--browser-slot "$AGENT_DESKTOP_SLOT"` (0.35.3+, pass it
@@ -596,7 +597,7 @@ input next to a separate country picker takes `fill-identity --format national
 `07...` number needs `--calling-code`; some countries refuse it
 ([identities](references/identities.md#phone-number-next-to-a-country-picker)).
 From 0.36.3 (fill extension 0.7.2), a field in a side drawer or modal whose
-`clip-path: inset(...)` only trims its shadow pins with `--route extension`;
+`clip-path: inset(...)` only trims its shadow pins with `--route extension` (Firefox requires fill extension 0.11.1+);
 the CDP route and other clip shapes refuse
 ([clipped ancestors](references/identities.md#field-inside-a-clipped-drawer-or-modal-0363)). Names,
 addresses, phone numbers and emails never go in CLI arguments, output, logs or

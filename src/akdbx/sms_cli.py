@@ -70,9 +70,9 @@ def add_parsers(commands):
     p = commands.add_parser('fill-sms-code', help='fill the code of one received text; returns no code')
     p.add_argument('message', help='message id from sms-wait')
     p.add_argument('--target', required=True,
-                   help='fresh pin-code-target, android pin --mode sms, or X11 pin-target token')
+                   help='fresh pin-code-target token, an Android pin --mode sms token, or a pin-target token for window-directed delivery')
     page_url.add(p, 'target-url', required=False,
-                 help='independently verified HTTPS challenge URL; required for Android and X11')
+                 help='independently verified HTTPS challenge URL; required with an Android or pin-target token')
     p = commands.add_parser('subscribe-sms', help='register a one-shot HTTPS webhook for the next verification text '
                                                   '(event akdbx.sms-received with the message id; never the code)')
     p.add_argument('--webhook-url-file', required=True, type=Path,

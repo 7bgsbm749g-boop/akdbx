@@ -121,7 +121,7 @@ class LoopbackHTTPSServer(ThreadingUnixHTTPServer):
 
 
 def start_capture_socket(server, state, path):
-    """Linux: serve only the native host's ``/totp/capture`` on a private Unix socket.
+    """Linux and macOS: serve only the native host's ``/totp/capture`` on a private Unix socket.
 
     The browser native host sends a captured authenticator setup here, as on
     the Unix-socket route; Windows uses a capture pipe instead. The route

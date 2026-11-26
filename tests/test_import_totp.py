@@ -229,6 +229,14 @@ def test_native_host_framing_and_fixed_failure(monkeypatch):
         assert json.loads(output.getvalue()[4:])['ok'] is False
 
 
+def test_firefox_native_host_refuses_fill_addon_before_reading_input(monkeypatch):
+    config = {'extension_id': browser_import.FIREFOX_ID}
+    monkeypatch.setattr(browser_import, '_read_exact', lambda *_: pytest.fail('unexpected frame read'))
+    output = io.BytesIO()
+    browser_import.native_session(io.BytesIO(), output, config, 'akdbx@akdbx.org')
+    assert json.loads(output.getvalue()[4:])['ok'] is False
+
+
 def test_extension_build_no_profile_overwrite_and_private_configuration(tmp_path):
     target=tmp_path/'extension'
     browser_import.build_extension(target)

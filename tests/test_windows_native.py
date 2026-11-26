@@ -844,7 +844,7 @@ def test_windows_status_advertises_the_dom_route_only_with_a_profile(private_dir
     ready = status_of(Broker(type('Vault', (), {'entries': []})(), object(), password_browser_profile=private_dir,
                              card_browser_profile=private_dir))
     for status in (idle, ready):
-        assert status['target_fill_delivery'] == 'win32-char-v1' and status['target_fill_modes'] == ['username']
+        assert status['target_fill_delivery'] == 'win32-char-v1' and status['target_fill_modes'] == ['username', 'totp', 'sms-code']
         assert status['password_fill_protocol'] == 1 and status['password_fill_delivery'] == DELIVERY
         assert status['unlock_notifications_until_unlock'] is True and status['generated_entry_protocol'] == 1
     assert (idle['password_browser_configured'], idle['card_browser_configured']) == (False, False)
@@ -927,6 +927,7 @@ def test_native_host_install_registers_one_browser_and_uninstalls(private_dir, m
     monkeypatch.setitem(extension_host.WINDOWS_KEYS, 'chrome', test_key + r'\Chrome')
     monkeypatch.setitem(extension_host.WINDOWS_KEYS, 'edge', test_key + r'\Edge')
     monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    monkeypatch.setitem(extension_host.WINDOWS_KEYS, 'firefox', test_key + r'\Mozilla')
     pipe = rpc.PREFIX + 'akdbx-synthetic-capture'
     def args(browser, **extra):
         return SimpleNamespace(extension_id='a' * 32, origin='https://node.tailnet.ts.net:9443',
@@ -940,6 +941,16 @@ def test_native_host_install_registers_one_browser_and_uninstalls(private_dir, m
         assert manifest['path'] == str(browser_import.host_executable())
         assert manifest['path'].endswith('akdbx-browser-import.exe')
         assert manifest['allowed_origins'] == ['chrome-extension://' + 'a' * 32 + '/']
+        firefox = args('firefox')
+        firefox.extension_id = None
+        mozilla = browser_import.install_host_windows(firefox)
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, mozilla['key']) as handle:
+            assert winreg.QueryValueEx(handle, '')[0] == str(mozilla['manifest'])
+        spec = json.loads(mozilla['manifest'].read_bytes())
+        assert spec['allowed_extensions'] == [browser_import.FIREFOX_ID] and 'allowed_origins' not in spec
+        assert browser_import.load_config(browser_import.config_path('firefox'))['socket'] == pipe
+        browser_import.uninstall_host_windows(firefox)
+        assert not browser_import.config_path('firefox').exists()
         assert browser_import.load_config(browser_import.config_path())['socket'] == pipe
         with pytest.raises(ValueError):  # never replaces a registration
             browser_import.install_host_windows(args('chrome'))
@@ -964,9 +975,9 @@ def test_native_host_install_registers_one_browser_and_uninstalls(private_dir, m
             browser_import._check_config({'extension_id': 'a' * 32, 'origin': 'https://x.test',
                                           'socket': rpc.PREFIX + 'akdbx-synthetic'})
     finally:
-        for browser in ('chrome', 'edge'):
+        for browser in ('chrome', 'edge', 'firefox'):
             browser_import.uninstall_host_windows(SimpleNamespace(browser=browser))
-        for name in (r'\Edge', r'\Chrome', ''):
+        for name in (r'\Edge', r'\Chrome', r'\Mozilla', ''):
             try:
                 winreg.DeleteKey(winreg.HKEY_CURRENT_USER, test_key + name)
             except OSError:
