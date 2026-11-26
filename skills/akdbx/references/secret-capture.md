@@ -1,5 +1,7 @@
 # Capture a shown-once secret and deliver it (0.20.0)
 
+For shown-once secret operations on Android, see [Android pins and commands](android.md#additional-android-operations-after-0470).
+
 For an authenticator (TOTP) setup key, use `capture-totp` instead: see
 [automatic authenticator enrollment](totp-enrollment.md). It also reads a
 setup QR code (`pin-password-target --mode read --qr`, `capture-totp --qr`);

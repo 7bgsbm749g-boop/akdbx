@@ -1446,7 +1446,8 @@ class ExtensionHub:
 class RoutedTargets:
     """Card/identity target manager that adds the extension route to the CDP one."""
 
-    def __init__(self, cdp, hub, kind, *, native=None):
+    def __init__(self, cdp, hub, kind, *, native=None, android=None):
+        self.android = android
         self.cdp, self.hub, self.kind, self.native = cdp, hub, kind, native
 
     def __getattr__(self, name):
@@ -1454,7 +1455,7 @@ class RoutedTargets:
 
     def __setattr__(self, name, value):
         # Settings such as `profile` or `clock` belong to the CDP manager.
-        if name in {'cdp', 'hub', 'kind', 'native'}:
+        if name in {'cdp', 'hub', 'kind', 'native', 'android'}:
             object.__setattr__(self, name, value)
         else:
             setattr(self.cdp, name, value)
@@ -1484,6 +1485,11 @@ class RoutedTargets:
         from .browser_card import CardTargetError
         try:
             pin = self.native.take(token, self.kind) if self.native is not None else None
+            if pin is None and self.android is not None:
+                pin = self.android.take(token)
+                if pin is not None and pin.mode != self.kind:
+                    pin.close()
+                    raise CardTargetError()
             if pin is None:
                 pin = self.hub.take(token, self.kind)
         except TargetError:
@@ -1492,6 +1498,9 @@ class RoutedTargets:
 
     def fill(self, pin, value, field, ready, deadline=None, *, notify_page=False):
         from .native_fields import NativePin
+        from .android_route import AndroidPin
+        if isinstance(pin, AndroidPin):
+            return self.android.fill_element(pin, value, field, ready, deadline, notify_page=notify_page)
         if isinstance(pin, NativePin):
             return self.native.fill(pin, value, field, ready, deadline, notify_page=notify_page)
         if isinstance(pin, ExtensionPin):
@@ -1500,7 +1509,8 @@ class RoutedTargets:
 
     def _close(self, pin):
         from .native_fields import NativePin
-        if isinstance(pin, (ExtensionPin, NativePin)):
+        from .android_route import AndroidPin
+        if isinstance(pin, (AndroidPin, ExtensionPin, NativePin)):
             pin.close()
         else:
             self.cdp._close(pin)

@@ -3,6 +3,8 @@ Password and confirmation fills now require fresh DOM password pins from
 passwords. Read [password field delivery](target-fill.md) for operator setup,
 explicit selectors, supported controls, and race checks before this workflow.
 
+For generated password operations on Android, see [Android pins and commands](android.md#additional-android-operations-after-0470).
+
 # Create passwords and passwordless identity records
 
 Password workflows in this guide require CLI and broker version **0.12.0 or newer**

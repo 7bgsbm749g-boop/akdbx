@@ -1284,6 +1284,8 @@ def _command(args) -> int:
                     print(json.dumps({'ok': False, 'error': 'broker lacks DOM password delivery; target request not sent'}))
                     return 1
                 if (os.name == 'nt' and capabilities.get('password_browser_configured') is False and not extension_route
+                        and not (args.command == 'fill-generated' and capabilities.get('android_generated_password') is True
+                                 and capabilities.get('android_devices_configured') is True)
                         and not (args.command in {'fill', 'fill-generated'}
                                  and type(capabilities.get('native_field_protocol')) is int
                                  and capabilities['native_field_protocol'] == 1
@@ -1506,6 +1508,9 @@ def _command(args) -> int:
                 and type(capabilities.get('native_field_protocol')) is int
                 and capabilities['native_field_protocol'] == 1 and capabilities.get('native_field_supported') is True):
             expected_delivery = NATIVE_DELIVERY
+        if (args.command == 'fill-generated' and capabilities.get('android_generated_password') is True
+                and response.get('target_delivery') in android_cli.DELIVERIES):
+            expected_delivery = response['target_delivery']
         if response.get('target_delivery') != expected_delivery or invalid_pin or invalid_fill:
             print('target operation outcome unconfirmed: receipt rejected; do not retry automatically', file=sys.stderr)
             return 2
