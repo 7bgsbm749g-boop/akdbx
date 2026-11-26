@@ -422,7 +422,7 @@ def test_card_save_through_private_page_then_dom_fill(lab, synthetic_vault, nati
         assert [(item['title'], item['brand'], item['last_four']) for item in found] == [('Synthetic Visa', 'visa', '1111')]
         # Only the long values can be compared: a random handle can hold a short digit run.
         assert CARD['number'] not in json.dumps([found, staged]) and CARD['name'] not in json.dumps([found, staged])
-        assert set(staged) == {'ok', 'state', 'write_handle', 'private_url'}
+        assert set(staged) == {'ok', 'state', 'write_handle', 'private_url', 'expires_in', 'expires_at'}
 
         def card_pin(selector, field):
             return dict(action='pin-card-target', card_protocol=1, page_id=lab.page_id, frame_id=lab.main_frame,

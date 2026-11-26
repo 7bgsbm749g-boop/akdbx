@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from .browser_card import DELIVERY, failure
 from .cards import FILL_FIELDS
 from .card_notifications import RESULTS
-from . import browser_slots, card_processor, page_url
+from . import browser_slots, card_processor, page_lifetime, page_url
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
 from .android_route import CHROME_DELIVERY as ANDROID_CHROME_DELIVERY, DELIVERY as ANDROID_DELIVERY
 from .native_fields import DELIVERY as NATIVE_DELIVERY
@@ -42,6 +42,7 @@ def add_parsers(commands):
             p.add_argument('handle')
         p.add_argument('--title', required=True)
         p.add_argument('--group', required=True)
+        page_lifetime.add_argument(p)
     p = commands.add_parser('search-cards', help='find cards by non-secret label, brand or last four digits')
     p.add_argument('query', nargs='?', default='')
     p = commands.add_parser('pin-card-target', help='pin one exact HTTPS DOM payment field; no keyboard delivery')
@@ -81,7 +82,7 @@ def valid_receipt(command, response, args):
                 and (response.get('result') is None or response['result'] in RESULTS)
                 and response.get('expires_in') is None)
     if command in {'create-card', 'update-card'}:
-        return (set(response) == {'ok', 'state', 'write_handle', 'private_url'} and response.get('state') == 'pending'
+        return (page_lifetime.valid_receipt(args, response) and response.get('state') == 'pending'
                 and isinstance(response.get('write_handle'), str) and re.fullmatch('[a-f0-9]{64}', response['write_handle'])
                 and urlsplit(response.get('private_url', '')).path == '/card')
     if command == 'fill-card':
@@ -131,6 +132,10 @@ def run(args, request):
                 or caps.get('card_delivery') != DELIVERY):
             print(json.dumps(dict(ok=False, error='broker lacks card protocol 1; card request not sent')))
             return 1
+        refusal = page_lifetime.refusal(args, caps)
+        if refusal is not None:
+            print(json.dumps(dict(ok=False, error=refusal + '; card request not sent')))
+            return 1
         if args.command == 'pin-card-target':
             args.resolved_route = args.route or caps.get('default_fill_route') or 'cdp'
             if args.resolved_route == 'extension' and (type(caps.get('extension_protocol')) is not int
@@ -156,6 +161,7 @@ def run(args, request):
             payload['metadata'] = dict(title=args.title, group=args.group)
             if args.command == 'update-card':
                 payload['handle'] = args.handle
+            page_lifetime.add_request(args, payload)
         elif args.command == 'search-cards':
             payload['query'] = args.query
         elif args.command == 'pin-card-target':

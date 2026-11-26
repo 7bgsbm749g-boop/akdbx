@@ -2,13 +2,12 @@
 from __future__ import annotations
 
 import re
-import secrets
 import unicodedata
 from datetime import datetime, timezone
 
 from .persistence import SaveError
 from .versions import active_entries
-from .writes import Write, WriteError, MAX_WRITES, group_for, _entry_changed_at
+from .writes import WriteError, group_for, _entry_changed_at, page_lifetime, prepared_page
 
 MARKER = 'akdbx.card'
 FIELDS = {key: 'akdbx.card.' + key for key in ('name', 'number', 'month', 'year', 'csc')}
@@ -244,8 +243,9 @@ class CardManager:
         update = request['action'] == 'update-card'
         entry = self.broker._resolve(request.get('handle')) if update else None
         allowed = {'action', 'card_protocol', 'metadata'} | ({'handle'} if update else set())
-        if set(request) != allowed:
-            raise WriteError('card save accepts destination metadata only')
+        if set(request) - {'valid_minutes'} != allowed:
+            raise WriteError('card save accepts destination metadata and a page lifetime only')
+        page_lifetime(request)
         values = check_destination(request.get('metadata'))
         writes = self.broker.writes
         if not writes.available():
@@ -253,15 +253,7 @@ class CardManager:
         group_for(self.broker.vault, values['group'])
         if update and (not is_card(entry) or any(values[k] != metadata(entry)[k] for k in values)):
             raise WriteError('card metadata mismatch')
-        writes._prune()
-        if len(writes.operations) >= MAX_WRITES:
-            raise WriteError('too many pending writes')
-        handle = secrets.token_hex(32)
-        op = Write(secrets.token_urlsafe(32), self.broker.clock() + 300, writes.revision,
-                   dict(values), uuid=entry.uuid if entry else None, kind='card')
-        writes.operations[handle] = op
-        return dict(ok=True, state='pending', write_handle=handle,
-                    private_url=writes.public_base.rstrip('/') + '/card?token=' + op.token)
+        return prepared_page(self.broker, 'card', request, values, uuid=entry.uuid if entry else None)
 
     def submit(self, op, values, confirmed, destination=None):
         """Keep invalid forms pending; make attempted persistence failures terminal.

@@ -37,6 +37,17 @@ prepared, for later `search-cards` and `update-card`. `cancel-write`
 cancels a pending page. A save page expires after five minutes; a vault revision
 change invalidates it. A save receipt confirms vault persistence only.
 
+From 0.51.0, `create-card` and `update-card` take `--valid-minutes N` (a whole
+number from 1 to 30) when `akdbx status` shows `save_page_lifetime_protocol: 1`:
+the page then stays valid for N minutes instead of five. Use it when the user
+cannot enter the card at once, for example when the user asked for it or a page
+already expired unsaved. The receipt reports `expires_in` (seconds) and
+`expires_at` (UTC), and the page shows the expiry time in the viewer's time
+zone; tell the user the expiry time with the link. The page is still single
+use, still needs its token, and still becomes invalid when the vault changes.
+The CLI refuses a value outside 1 to 30 before sending; the broker refuses one
+too.
+
 Before giving the user a private save page, register the event-driven
 [card-save notification](card-save-notifications.md) so the authorized task can
 resume without asking the user to report completion. Require the advertised

@@ -22,7 +22,7 @@ from .identities import FIELDS as IDENTITY_FIELDS, FIELD_LIMIT as IDENTITY_FIELD
 from . import cards
 from .extension_route import EXTENSION_ORIGIN
 from .portal import content_security_policy, field, render
-from .writes import group_paths
+from .writes import expiry_text, group_paths
 from .unlock_keys import (
     CHALLENGE_BYTES, KEYFILE_LIMIT, RESPONSE_BYTES, ChallengeChanged, UnlockKeys,
     padded_challenge, parse_hex, read_challenge,
@@ -709,6 +709,20 @@ def _save_form(action: str, inner: str, label: str, busy: str, *, card: bool = F
             '<p id="save-status" class="portal-status" role="status" aria-live="polite"></p>')
 
 
+def _expiry_note(op) -> str:
+    """When an identity or card save page stops working.
+
+    The broker writes the time in UTC; the page script shows it in the
+    viewer's time zone. Minutes are cut, never rounded up.
+    """
+    if op.expires_at is None:
+        return ''
+    stamp = expiry_text(op.expires_at)
+    return (f'<p class="page-expiry" id="page-expiry">This page works until '
+            f'<time datetime="{stamp}" data-local-time>{stamp[11:16]} UTC</time>. '
+            'After that, ask for a new save page.</p>')
+
+
 def _card_form(op, action: str, groups: list) -> str:
     """Card save or update form. Title and group are non-secret and editable;
     an updated card keeps its group. Card values are never prefilled."""
@@ -883,6 +897,8 @@ def handler_for(state: UnlockState):
                         body = f'<dl>{destination}</dl><p>Save only after the website has accepted this password. This changes AKDBX only.</p>' + _save_form(
                             action, f'{password_fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this destination and password update</label>',
                             'Save to AKDBX', 'Saving password\u2026')
+                    if kind in {'card', 'identity'}:
+                        body = _expiry_note(op) + body
                     title = {'card': 'Update AKDBX card' if op.uuid else 'Save AKDBX card',
                              'identity': 'Update AKDBX identity' if op.uuid else 'Save AKDBX identity',
                              'totp': 'Confirm AKDBX authenticator', 'password': 'Confirm AKDBX password'}[kind]

@@ -50,7 +50,8 @@ the details on that page. The form accepts trimmed, single-line values and
 requires at least one value. Country code uses two letters (for example `DE`).
 The save button shows a busy bar while saving, then `Saved` or an error state
 (`Page expired`, `Not confirmed`); a correctable form error keeps the page
-open with the message under the button. The page expires after five minutes.
+open with the message under the button. The page expires after five minutes
+unless you ask for a longer lifetime (below).
 Only `state: "saved"` from `write-status` confirms persistence.
 Use `cancel-write` to cancel a pending page. The broker refuses a duplicate
 identity label in the same group.
@@ -72,8 +73,27 @@ with empty inputs; it never shows the saved values. A field the user leaves
 empty keeps its saved value, and at least one field must be filled in. Saving
 changes only the filled-in fields, keeps the `akdbx.identity=v1` marker and the
 protection on every field, and keeps the previous version in the entry
-history. The receipt, `write-status` states, `cancel-write`, five-minute
-expiry and save button are the same as for `create-identity`.
+history. The receipt, `write-status` states, `cancel-write`, page lifetime
+and save button are the same as for `create-identity`.
+
+## Page lifetime (0.51.0)
+
+```bash
+akdbx create-identity --title 'Home shipping' --group 'Personal' --fields tel --valid-minutes 25
+```
+
+`create-identity` and `update-identity` take `--valid-minutes N`: the private
+page stays valid for N whole minutes, from 1 to 30. Without it the page stays
+valid for 5 minutes. Use a longer lifetime when the user cannot enter the
+details at once, for example when the user asked for it or a page already
+expired unsaved. The receipt reports `expires_in` (seconds) and `expires_at`
+(UTC, for example `2026-11-26T12:30:00Z`), and the page shows the expiry time
+in the viewer's time zone. Tell the user the expiry time with the link. A
+longer lifetime changes nothing else: the page is still single use, still
+needs its token, and still becomes invalid when the vault changes. The CLI
+refuses a value outside 1 to 30 before sending, and refuses `--valid-minutes`
+unless `akdbx status` shows `save_page_lifetime_protocol: 1`; the broker
+refuses a value above `save_page_max_minutes` (30) too.
 
 ## Fill
 
