@@ -15,6 +15,8 @@ Supported controls:
 - Windows 10/11: visible, enabled Win32 Edit controls, WinForms TextBox controls
   and WPF TextBox and PasswordBox controls in the active native window.
   Check `native_field_windows_uia: true` for the Windows backend (0.50.0+).
+  A starting WPF app gets up to 2 s for its first UI Automation answer; a
+  UI Automation failure returns the fixed target error, so discover again.
   The broker requires its own user and session, the Default input desktop
   and a target at or below its integrity level. Browser controls are refused.
 - macOS (0.50.0+) uses Accessibility in the frontmost native window. Check

@@ -102,7 +102,10 @@ WinForms retains the Edit HWND and its mask and style checks. WPF uses the
 Windows-only comtypes binding to the system UIAutomationCore library. This
 provides typed COM interfaces without a separate automation toolkit. The
 broker checks the process, window, retained element, runtime ID, mask and
-focus. Read pins require visible, read-only unmasked text. WPF accepts
+focus. A WPF app gets up to 2 seconds to answer its first UI Automation
+request, because WPF builds its provider at that point; each later request
+gets 500 ms. Any UI Automation failure ends in the fixed target error.
+Read pins require visible, read-only unmasked text. WPF accepts
 single-line values only. Password fields must remain masked; login pins name both controls and
 never use Tab. Legacy numeric HWND pins support usernames, TOTP and SMS codes.
 Browser pages keep using DOM delivery. The caller asserts the service used by
