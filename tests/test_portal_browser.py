@@ -345,7 +345,7 @@ def test_save_page_shows_its_expiry_in_the_viewer_time_zone(synthetic_chromium, 
     # India has no daylight saving time: UTC+5:30 all year.
     assert 'UTC' not in shown[1] and 'GMT+5:30' in shown[1]
     assert any(local.strftime(form) in shown[1] for form in ('%H:%M', '%I:%M'))
-    assert shown[1].startswith('This page works until ') and shown[1].endswith('After that, ask for a new save page.')
+    assert shown[1].startswith('This page works until ') and shown[1].endswith('It stops sooner if the vault locks. After that, ask for a new save page.')
 
 
 def test_card_page_shows_broker_refusal_and_vault_change(synthetic_chromium, card_lab):

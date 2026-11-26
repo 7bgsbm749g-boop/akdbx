@@ -93,10 +93,13 @@ expired unsaved. The receipt reports `expires_in` (seconds) and `expires_at`
 (UTC, for example `2026-11-26T12:30:00Z`), and the page shows the expiry time
 in the viewer's time zone. Tell the user the expiry time with the link. A
 longer lifetime changes nothing else: the page is still single use, still
-needs its token, and still becomes invalid when the vault changes. The CLI
-refuses a value outside 1 to 30 before sending, and refuses `--valid-minutes`
-unless `akdbx status` shows `save_page_lifetime_protocol: 1`; the broker
-refuses a value above `save_page_max_minutes` (30) too.
+needs its token, and still becomes invalid when the vault changes. A vault
+lock (idle timeout, screen lock or `lock`) also ends the page, and opening
+the page does not keep the vault open, so a lifetime cannot be longer than the
+broker's `lock_timeout_seconds`; the default page is cut to it. The CLI
+refuses a value outside 1 to 30 or longer than the lock timeout before
+sending, and refuses `--valid-minutes` unless `akdbx status` shows
+`save_page_lifetime_protocol: 1`; the broker refuses such a value too.
 
 ## Fill
 

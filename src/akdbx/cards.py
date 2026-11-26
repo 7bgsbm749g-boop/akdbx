@@ -245,7 +245,7 @@ class CardManager:
         allowed = {'action', 'card_protocol', 'metadata'} | ({'handle'} if update else set())
         if set(request) - {'valid_minutes'} != allowed:
             raise WriteError('card save accepts destination metadata and a page lifetime only')
-        page_lifetime(request)
+        page_lifetime(request, self.broker.session.timeout)
         values = check_destination(request.get('metadata'))
         writes = self.broker.writes
         if not writes.available():

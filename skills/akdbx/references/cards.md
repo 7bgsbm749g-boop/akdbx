@@ -44,9 +44,11 @@ cannot enter the card at once, for example when the user asked for it or a page
 already expired unsaved. The receipt reports `expires_in` (seconds) and
 `expires_at` (UTC), and the page shows the expiry time in the viewer's time
 zone; tell the user the expiry time with the link. The page is still single
-use, still needs its token, and still becomes invalid when the vault changes.
-The CLI refuses a value outside 1 to 30 before sending; the broker refuses one
-too.
+use, still needs its token, and still becomes invalid when the vault changes
+or locks. Opening the page does not keep the vault open, so N cannot be longer
+than the broker's `lock_timeout_seconds`, and the default page is cut to it.
+The CLI refuses a value outside 1 to 30 or longer than the lock timeout before
+sending; the broker refuses one too.
 
 Before giving the user a private save page, register the event-driven
 [card-save notification](card-save-notifications.md) so the authorized task can

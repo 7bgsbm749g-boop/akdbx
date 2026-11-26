@@ -70,7 +70,7 @@ def page_expiry(web, prepared):
     assert code == 200
     stamp = prepared['expires_at']
     note = (f'This page works until <time datetime="{stamp}" data-local-time>{stamp[11:16]} UTC</time>. '
-            'After that, ask for a new save page.')
+            'It stops sooner if the vault locks. After that, ask for a new save page.')
     return note.encode() in page
 
 
@@ -168,6 +168,21 @@ def test_refused_update_lifetime_still_consumes_the_search_handle(clocked, updat
     assert broker.dispatch(dict(request, valid_minutes=25))['ok'] is False
 
 
+@pytest.mark.parametrize('prepare', [identity, card])
+def test_lifetime_never_outlasts_the_vault_lock_timeout(clocked, prepare):
+    """A page stops when the vault locks, and opening it is not vault activity."""
+    broker, path, web, now, advance = clocked
+    broker.session.timeout = 600
+    refused = prepare(broker, valid_minutes=11)
+    assert refused['ok'] is False and broker.writes.operations == {}
+    check_receipt(prepare(broker, valid_minutes=10), now, 600, '/' + ('identity' if prepare is identity else 'card'))
+    # The default page is cut to a lock timeout below five minutes.
+    broker.session.timeout = 120
+    short = prepare(broker)
+    check_receipt(short, now, 120, '/' + ('identity' if prepare is identity else 'card'))
+    assert broker.writes.get(short['write_handle']).expires == now['mono'] + 120
+
+
 def test_ping_reports_the_lifetime_protocol(deployed):
     broker = deployed[0]
     caps = broker.dispatch(dict(action='ping'))
@@ -177,7 +192,7 @@ def test_ping_reports_the_lifetime_protocol(deployed):
 IDENTITY_CAPS = dict(ok=True, identity_protocol=1, identity_delivery='cdp-identity-element-v1',
                      identity_fields_protocol=1, identity_update_protocol=1)
 CARD_CAPS = dict(ok=True, cards_supported=True, card_protocol=1, card_delivery='cdp-card-element-v1')
-LIFETIME_CAPS = dict(save_page_lifetime_protocol=1, save_page_max_minutes=30)
+LIFETIME_CAPS = dict(save_page_lifetime_protocol=1, save_page_max_minutes=30, lock_timeout_seconds=3600)
 
 
 def receipt(route, seconds=None):
@@ -220,6 +235,19 @@ def test_cli_sends_the_lifetime_and_checks_the_reported_expiry(monkeypatch, caps
     calls.clear()
     assert cli.main([*args, '--valid-minutes', '25']) == 1
     assert len(calls) == 1 and 'save page lifetime protocol 1' in capsys.readouterr().out
+    # A page longer than the vault lock timeout is refused before sending.
+    calls.clear()
+    replies.update(ping=caps | LIFETIME_CAPS | dict(lock_timeout_seconds=600))
+    assert cli.main([*args, '--valid-minutes', '11']) == 1
+    assert len(calls) == 1 and 'vault lock timeout (600 seconds' in capsys.readouterr().out
+    replies['save'] = receipt(route, 600)
+    assert cli.main([*args, '--valid-minutes', '10']) == 0
+    # The default page may be cut to a shorter lock timeout.
+    replies.update(ping=caps | LIFETIME_CAPS | dict(lock_timeout_seconds=120), save=receipt(route, 120))
+    assert cli.main(args) == 0
+    replies['save'] = receipt(route, 301)
+    assert cli.main(args) == 2
+    capsys.readouterr()
     # A receipt with another lifetime than the one asked for is withheld.
     replies.update(ping=caps | LIFETIME_CAPS, save=receipt(route, 300))
     assert cli.main([*args, '--valid-minutes', '25']) == 2

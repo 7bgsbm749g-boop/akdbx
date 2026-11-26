@@ -471,15 +471,23 @@ def page_lifetime_capabilities():
     return dict(save_page_lifetime_protocol=PAGE_LIFETIME_PROTOCOL, save_page_max_minutes=PAGE_MINUTES_MAX)
 
 
-def page_lifetime(request):
+def page_lifetime(request, lock_timeout):
     """Seconds that a prepared identity or card save page stays valid.
 
     ``valid_minutes`` is optional: a whole number from 1 to PAGE_MINUTES_MAX.
-    Without it the page stays valid for PAGE_MINUTES_DEFAULT minutes.
+    Without it the page stays valid for PAGE_MINUTES_DEFAULT minutes. A page
+    stops when the vault locks, and opening it is not vault activity, so the
+    lifetime never exceeds the idle lock timeout: a longer ``valid_minutes``
+    refuses, and the default is cut to the timeout. The reported expiry is
+    then the latest time the page can work.
     """
-    minutes = request.get('valid_minutes', PAGE_MINUTES_DEFAULT)
+    if 'valid_minutes' not in request:
+        return min(PAGE_MINUTES_DEFAULT * 60, lock_timeout)
+    minutes = request['valid_minutes']
     if type(minutes) is not int or not 1 <= minutes <= PAGE_MINUTES_MAX:
         raise WriteError('valid_minutes must be a whole number from 1 to %d' % PAGE_MINUTES_MAX)
+    if minutes * 60 > lock_timeout:
+        raise WriteError('valid_minutes is longer than the vault lock timeout')
     return minutes * 60
 
 
@@ -490,7 +498,7 @@ def expiry_text(timestamp):
 
 def prepared_page(broker, kind, request, values, **extra):
     """Stage a pending identity or card save page and return its receipt."""
-    lifetime = page_lifetime(request)
+    lifetime = page_lifetime(request, broker.session.timeout)
     writes = broker.writes
     writes._prune()
     if len(writes.operations) >= MAX_WRITES:

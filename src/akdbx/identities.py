@@ -345,7 +345,7 @@ class IdentityManager:
                 or not values['title'].strip()):
             raise WriteError()
         fields = requested_fields(request)
-        page_lifetime(request)
+        page_lifetime(request, self.broker.session.timeout)
         writes = self.broker.writes
         writes._require_available()
         if update:

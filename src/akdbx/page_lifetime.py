@@ -30,6 +30,11 @@ def refusal(args, caps):
             or type(caps.get('save_page_max_minutes')) is not int
             or args.valid_minutes > caps['save_page_max_minutes']):
         return f'broker lacks save page lifetime protocol {PAGE_LIFETIME_PROTOCOL} for {args.valid_minutes} minutes'
+    timeout = caps.get('lock_timeout_seconds')
+    if type(timeout) is not int or args.valid_minutes * 60 > timeout:
+        # The page stops when the vault locks; opening it does not keep the vault open.
+        return (f'--valid-minutes {args.valid_minutes} is longer than the broker\'s vault lock timeout '
+                f'({timeout} seconds of inactivity)')
     return None
 
 
@@ -47,8 +52,10 @@ def valid_receipt(args, response):
     requested = getattr(args, 'valid_minutes', None)
     if set(response) == RECEIPT:
         return requested is None
+    # The default page is cut to a vault lock timeout below five minutes.
+    seconds = response.get('expires_in')
     return (set(response) == RECEIPT | LIFETIME
-            and type(response['expires_in']) is int
-            and response['expires_in'] == 60 * (PAGE_MINUTES_DEFAULT if requested is None else requested)
+            and type(seconds) is int
+            and (1 <= seconds <= 60 * PAGE_MINUTES_DEFAULT if requested is None else seconds == 60 * requested)
             and isinstance(response['expires_at'], str)
             and re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z', response['expires_at']) is not None)

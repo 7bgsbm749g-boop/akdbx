@@ -720,7 +720,7 @@ def _expiry_note(op) -> str:
     stamp = expiry_text(op.expires_at)
     return (f'<p class="page-expiry" id="page-expiry">This page works until '
             f'<time datetime="{stamp}" data-local-time>{stamp[11:16]} UTC</time>. '
-            'After that, ask for a new save page.</p>')
+            'It stops sooner if the vault locks. After that, ask for a new save page.</p>')
 
 
 def _card_form(op, action: str, groups: list) -> str:
