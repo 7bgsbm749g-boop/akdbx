@@ -41,7 +41,7 @@ steps are the same as in `SKILL.md`; its private folder is
   the [browser extension route](extension.md) with `extension_paired: true`
   when the browser has no debugging port (Helium, Chrome, Edge, Chromium, Brave or Firefox 153+). For
   window pins require `target_fill_delivery: "win32-char-v1"` and target
-  protocol 1. `target_fill_modes: ["username"]` describes window pins only.
+  protocol 1. `target_fill_modes: ["username", "totp", "sms-code"]` describes window pins only.
 - When locked, give the exact returned private HTTPS link to the user. A
   loopback link opens on the **Windows machine** only; a link on the configured
   Tailscale Serve origin opens on any tailnet device, and a link on the relay
@@ -87,7 +87,9 @@ field, another for the confirmation field (none for a write staged with
 `--single-field`), the site's acceptance, then
 `commit-password --site-accepted -- WRITE_HANDLE`.
 
-## Username and TOTP fills in a native application
+## Window pins for usernames and TOTP
+
+For supported native controls, prefer the [native field workflow](native-fields.md).
 
 - Independently verify the application's PID and top-level HWND. Focus the
   intended field. Call `pin-target --pid VERIFIED_PID --window VERIFIED_HWND`.
@@ -95,8 +97,7 @@ field, another for the confirmation field (none for a write staged with
 - Use a fresh search handle and target pin for each
   `fill HANDLE --mode username --target PIN` or `fill-totp`. A window pin
   refuses `--mode password`, `--mode login` and `fill-generated`: a browser's
-  address bar shares its page's HWND, so only a DOM pin may receive a
-  password.
+  address bar shares its page's HWND, so browser passwords require a DOM pin.
 - A success receipt confirms directed message dispatch, not application
   acceptance. Some apps ignore synthetic `WM_CHAR` messages. Stop on uncertain
   or partial delivery; do not retry or fall back to global input/clipboard.

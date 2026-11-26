@@ -70,7 +70,7 @@ def add_parsers(commands):
     p = commands.add_parser('fill-sms-code', help='fill the code of one received text; returns no code')
     p.add_argument('message', help='message id from sms-wait')
     p.add_argument('--target', required=True,
-                   help='fresh pin-code-target token, or a pin-target token for X11 keyboard delivery')
+                   help='fresh pin-code-target token, or a pin-target token for window-directed delivery')
     page_url.add(p, 'target-url', required=False,
                  help='independently verified HTTPS challenge URL; required with a pin-target token')
     p = commands.add_parser('subscribe-sms', help='register a one-shot HTTPS webhook for the next verification text '

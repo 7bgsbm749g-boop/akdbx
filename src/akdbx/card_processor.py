@@ -78,19 +78,19 @@ STYLE_GUARD = r'''function insetContains(value, owner, rect, style) {
 // motion path or zoom would make the inset lengths differ from screen pixels.
 // So would an SVG viewport around a foreignObject, and a shadow tree into which
 // the element is slotted: its wrappers are not in the parentElement chain. Only
-// the extension can see closed shadow roots, so the CDP route (where chrome.dom
-// does not exist) never accepts an inset: a closed wrapper that mirrors the
+// the extension can see closed shadow roots, so the CDP page script has no such accessor
+// and never accepts an inset: a closed wrapper that mirrors the
 // element keeps its size but swaps the edges an inset clips (issue #69).
-function flatChain(element, style) {
+function flatChain(element, style, shadowRootOf) {
   const transform = style.getPropertyValue('transform').trim();
   if (transform !== '' && transform !== 'none') {
     if (!transform.startsWith('matrix(')) return false;
     const m = new DOMMatrixReadOnly(transform);
     if (!(m.is2D && m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1)) return false;
   }
-  const parent = element.parentElement, closed = globalThis.chrome?.dom?.openOrClosedShadowRoot;
+  const parent = element.parentElement;
   return element.namespaceURI === 'http://www.w3.org/1999/xhtml' && element.assignedSlot === null &&
-    typeof closed === 'function' && (parent === null || parent.shadowRoot === null && !closed(parent)) &&
+    typeof shadowRootOf === 'function' && (parent === null || parent.shadowRoot === null && shadowRootOf(parent) === null) &&
     ['rotate','scale','perspective','offset-path'].every(k =>
       ['', 'none'].includes(style.getPropertyValue(k).trim())) &&
     ['', '1'].includes(style.getPropertyValue('zoom').trim()) && (element.currentCSSZoom ?? 1) === 1;

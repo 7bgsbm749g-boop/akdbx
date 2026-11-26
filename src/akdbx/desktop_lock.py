@@ -205,6 +205,26 @@ def _windows(lock, stop, ready):
         win32gui.UnregisterClass(atom, wc.hInstance)
 
 
+def _macos(lock, stop, ready):
+    # Cocoa's main run loop must remain free to dispatch notifications.
+    helper = os.path.join(os.path.dirname(__file__), 'macos_lock_helper.py')
+    with subprocess.Popen([sys.executable, '-I', helper], stdin=subprocess.PIPE,
+                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
+        try:
+            while not stop.is_set():
+                if not select.select([proc.stdout], [], [], 0.5)[0]:
+                    continue
+                events = os.read(proc.stdout.fileno(), 4096)
+                if not events:
+                    return
+                if b'R' in events:
+                    ready()
+                if b'L' in events:
+                    lock()
+        finally:
+            proc.kill()
+
+
 @contextmanager
 def watch_locks(broker):
     stop = threading.Event()
@@ -235,8 +255,8 @@ def watch_locks(broker):
                       file=sys.stderr, flush=True)
             stop.wait(5)
 
-    sources = [_windows] if os.name == 'nt' else [_logind]
-    if os.name != 'nt' and os.environ.get('WAYLAND_DISPLAY') and (
+    sources = [_windows] if os.name == 'nt' else [_macos] if sys.platform == 'darwin' else [_logind]
+    if _logind in sources and os.environ.get('WAYLAND_DISPLAY') and (
             os.environ.get('HYPRLAND_INSTANCE_SIGNATURE') or 'hyprland' in os.environ.get('XDG_CURRENT_DESKTOP', '').lower()):
         sources.append(_hyprland)
     broker.lock_events = {source.__name__[1:]: 'starting' for source in sources}

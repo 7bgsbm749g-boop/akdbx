@@ -105,8 +105,8 @@ def test_setup_detects_each_supported_browser(home):
     from types import SimpleNamespace
     from akdbx import setup_cli
 
-    setup = SimpleNamespace(home=home, windows=os.name == 'nt', env={'LOCALAPPDATA': str(home)},
-                            which=lambda name: None)
+    setup = SimpleNamespace(home=home, windows=os.name == 'nt', macos=sys.platform == 'darwin',
+                            env={'LOCALAPPDATA': str(home)}, which=lambda name: None)
     if os.name == 'nt':
         executables = ['Mozilla Firefox/firefox.exe', 'imput/Helium/Application/chrome.exe',
                        'Google/Chrome/Application/chrome.exe', 'Microsoft/Edge/Application/msedge.exe',

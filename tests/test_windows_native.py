@@ -819,7 +819,7 @@ def test_windows_status_advertises_the_dom_route_only_with_a_profile(private_dir
     ready = status_of(Broker(type('Vault', (), {'entries': []})(), object(), password_browser_profile=private_dir,
                              card_browser_profile=private_dir))
     for status in (idle, ready):
-        assert status['target_fill_delivery'] == 'win32-char-v1' and status['target_fill_modes'] == ['username']
+        assert status['target_fill_delivery'] == 'win32-char-v1' and status['target_fill_modes'] == ['username', 'totp', 'sms-code']
         assert status['password_fill_protocol'] == 1 and status['password_fill_delivery'] == DELIVERY
         assert status['unlock_notifications_until_unlock'] is True and status['generated_entry_protocol'] == 1
     assert (idle['password_browser_configured'], idle['card_browser_configured']) == (False, False)
