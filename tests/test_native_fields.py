@@ -367,19 +367,116 @@ def test_linux_dispatch_guard_runs_after_editable_interface_acquisition():
     pin.close()
 
 
-def test_windows_field_messages_wait_for_a_busy_but_responsive_control():
-    """A control message waits up to MESSAGE_TIMEOUT_MS; a hung window still fails at once."""
-    import types
-    from akdbx import windows_fields
-    calls = []
 
-    class Api:
-        def SendMessageTimeoutW(self, hwnd, message, wparam, lparam, flags, timeout, result):
-            calls.append((flags, timeout))
-            return 1
+class SlowWin32:
+    """The real Win32 write path, with a fake app and one fake clock."""
 
-    session = windows_fields.WindowsFields.__new__(windows_fields.WindowsFields)
-    session.native = types.SimpleNamespace(api=Api())
-    session.message(1, 0x000E)
-    assert calls == [(0x23, windows_fields.MESSAGE_TIMEOUT_MS)] and windows_fields.MESSAGE_TIMEOUT_MS >= 1000
-    assert windows_fields.MESSAGE_FLAGS & 0x2  # SMTO_ABORTIFHUNG
+    def __init__(self, now, delays):
+        from akdbx import windows_fields
+        self.module, self.now, self.delays = windows_fields, now, delays
+        self.calls, self.text = [], {0: '', 1: '', 2: 'invented-capture'}
+
+    def SendMessageTimeoutW(self, hwnd, message, wparam, lparam, flags, timeout, result):
+        import ctypes as C
+        assert flags == self.module.MESSAGE_FLAGS and type(timeout) is int and timeout >= 1
+        self.calls.append((message, timeout))
+        delay = self.delays.get(message, 0)
+        if delay * 1000 > timeout:
+            self.now[0] += timeout / 1000
+            return 0  # Timed out. The app may still apply WM_SETTEXT later.
+        self.now[0] += delay
+        answer = {0x00D5: 30000, 0x000C: 1}.get(message)
+        if message == 0x000C:
+            self.text[hwnd] = C.wstring_at(lparam)
+        elif message in {0x000D, 0x000E}:
+            answer = len(self.text[hwnd].encode('utf-16-le')) // 2
+            if message == 0x000D:
+                C.memmove(lparam, C.create_unicode_buffer(self.text[hwnd]), (answer + 1) * C.sizeof(C.c_wchar))
+        result._obj.value = answer
+        return 1
+
+    def install(self, session):
+        """Keep the fake metadata checks; send the real Win32 messages."""
+        backend = object.__new__(self.module.WindowsFields)
+        backend.controls, backend.clock = session.controls, lambda: self.now[0]
+        backend.native = type('Native', (), {'api': self})()
+        # The Win32 facts also carry style, parent and control ID.
+        backend.describe = lambda index: session.describe(index) + (0, 0, index)
+        session.prepare, session.write, session.read = backend.prepare, backend.write, backend.read
+        return backend
+
+
+def test_windows_probes_keep_the_short_limit():
+    manager, session, receipt, now = setup('read')
+    app = SlowWin32(now, {})
+    app.install(session)
+    pin = manager.take(receipt['target'])
+    assert manager.read(pin, ORIGINS, lambda: True, 14) == 'invented-capture'
+    assert app.calls == [(0x000E, 100), (0x000D, 100), (0x000E, 100)]
+    assert app.module.PROBE_TIMEOUT_MS == 100 and app.module.MESSAGE_FLAGS & 0x2  # SMTO_ABORTIFHUNG
+    pin.close()
+
+
+def test_windows_slow_but_responsive_login_succeeds():
+    manager, session, receipt, now = setup('login')
+    # 250 ms per change handler: more than a probe may wait, less than a write.
+    app = SlowWin32(now, {0x000C: 0.25, 0x000E: 0.25})
+    app.install(session)
+    pin = manager.take(receipt['target'])
+    manager.deliver_password(pin, 'login', 'invented-user\U0001F600', 'invented-password', ORIGINS, lambda: True, 14)
+    assert app.calls == [(0x00D5, 100), (0x00D5, 100), (0x000C, 1000), (0x000E, 1000), (0x000C, 1000), (0x000E, 1000)]
+    assert app.text[0] == 'invented-user\U0001F600' and app.text[1] == 'invented-password' and now[0] == 11
+    pin.close()
+
+
+@pytest.mark.parametrize('case', ['after-length', 'in-settext', 'at-length', 'pin-expiry'])
+def test_windows_write_never_waits_past_the_deadline_and_ends_uncertain(case):
+    manager, session, receipt, now = setup()
+    delays = {'after-length': {0x000C: 0.25, 0x000E: 0.25}, 'in-settext': {0x000C: 0.75},
+              'at-length': {0x000C: 0.5}, 'pin-expiry': {0x000C: 0.25, 0x000E: 0.25}}[case]
+    app = SlowWin32(now, delays)
+    app.install(session)
+    pin = manager.take(receipt['target'])
+    deadline = 10.5
+    if case == 'pin-expiry':
+        # The pin expires before the caller's deadline: the pin expiry caps the wait.
+        deadline, now[0] = 100, pin.expires - 0.5
+    start = now[0]
+    with pytest.raises(DeliveryError) as error:
+        manager.deliver_password(pin, 'password', '', 'invented-password', ORIGINS, lambda: True, deadline)
+    assert error.value.started  # Uncertain: never reported as filled, never retried.
+    writes = [call for call in app.calls if call[0] != 0x00D5]
+    assert writes == {'after-length': [(0x000C, 500), (0x000E, 250)], 'in-settext': [(0x000C, 500)],
+                      'at-length': [(0x000C, 500)], 'pin-expiry': [(0x000C, 500), (0x000E, 250)]}[case]
+    assert now[0] == start + 0.5  # Exactly the time left, never a full second.
+    pin.close()
+
+
+@pytest.mark.parametrize('full', [False, True])
+def test_discovery_asks_the_app_outside_the_manager_lock(full):
+    import threading
+    session = Session()
+    manager = NativeFields(scan=lambda pid: [session])
+    taken = []
+    describe = session.describe
+
+    def slow_describe(index):
+        if index == 0:
+            # Another request takes a pin while this app is still answering.
+            other = threading.Thread(target=lambda: taken.append(manager.take('unknown')))
+            other.start()
+            other.join(timeout=5)
+            assert not other.is_alive() and taken == [None]
+            if full:
+                manager.pins.update({str(n): None for n in range(16)})
+        return describe(index)
+
+    session.describe = slow_describe
+    request = dict(action='list-native-fields', native_protocol=1, pid=123)
+    if full:
+        # Pins added meanwhile still count against the limit.
+        with pytest.raises(TargetError):
+            manager.discover(request)
+        assert session.closed and not manager.views
+    else:
+        assert len(manager.discover(request)['windows']) == 1 and len(manager.views) == 1

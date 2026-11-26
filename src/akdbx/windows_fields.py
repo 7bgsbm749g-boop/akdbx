@@ -3,6 +3,7 @@ import ctypes as C
 from dataclasses import replace
 from ctypes import wintypes as W
 from pathlib import PureWindowsPath
+import time
 
 from .target import TargetError
 from .windows_target import NativeWindows
@@ -14,9 +15,13 @@ READONLY, PASSWORD = 0x800, 0x20
 CONVERTING = 0x8 | 0x10 | 0x400  # ES_UPPERCASE, ES_LOWERCASE, ES_OEMCONVERT
 # SMTO_BLOCK | SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT: a hung window fails at once.
 MESSAGE_FLAGS = 0x23
-# A responsive app can take longer than 100 ms to answer while its change
-# handlers run (WinForms after WM_SETTEXT). Callers recheck the fill deadline.
-MESSAGE_TIMEOUT_MS = 1000
+# Scan, describe, focus, limit and read probes stay short, so discovery and
+# pinning stay well inside the CLI's response budget.
+PROBE_TIMEOUT_MS = 100
+# A responsive app can take longer to answer while its change handlers run
+# (WinForms during and after WM_SETTEXT). Only WM_SETTEXT and its length check
+# wait longer, and never past the pin expiry or the fill deadline.
+WRITE_TIMEOUT_MS = 1000
 
 
 def edit_class(name):
@@ -61,6 +66,8 @@ def check_native_window(gui, window):
 
 
 class WindowsFields:
+    clock = staticmethod(time.monotonic)
+
     def __init__(self, pid, window, native):
         import win32gui
         self.gui, self.pid, self.window, self.native = win32gui, pid, window, native
@@ -116,10 +123,10 @@ class WindowsFields:
         if tuple(self.describe(i) for i in indices) != facts or self.focus(indices) != focus:
             raise TargetError()
 
-    def message(self, hwnd, message, wparam=0, lparam=0):
+    def message(self, hwnd, message, wparam=0, lparam=0, timeout=PROBE_TIMEOUT_MS):
         value = C.c_size_t()
         if not self.native.api.SendMessageTimeoutW(hwnd, message, wparam, lparam, MESSAGE_FLAGS,
-                                                   MESSAGE_TIMEOUT_MS, C.byref(value)):
+                                                   timeout, C.byref(value)):
             raise TargetError()
         return value.value
 
@@ -130,10 +137,22 @@ class WindowsFields:
 
     def write(self, index, value, before_write):
         buffer = C.create_unicode_buffer(value)
-        before_write()
-        if not self.message(self.controls[index], 0x000C, 0, C.addressof(buffer)):  # WM_SETTEXT
+        # The broker returns the seconds left to the pin expiry or fill
+        # deadline. Without that bound, wait no longer than a probe.
+        left = before_write()
+        end = self.clock() + (left if type(left) in (int, float) else PROBE_TIMEOUT_MS / 1000)
+
+        def timeout():
+            # No time left after the write started: uncertain, never retried.
+            remaining = min(WRITE_TIMEOUT_MS, int((end - self.clock()) * 1000))
+            if remaining < 1:
+                raise TargetError()
+            return remaining
+
+        hwnd = self.controls[index]
+        if not self.message(hwnd, 0x000C, 0, C.addressof(buffer), timeout()):  # WM_SETTEXT
             raise TargetError()
-        if self.message(self.controls[index], 0x000E) != len(value.encode('utf-16-le')) // 2:
+        if self.message(hwnd, 0x000E, timeout=timeout()) != len(value.encode('utf-16-le')) // 2:
             raise TargetError()
 
     def read(self, index):
