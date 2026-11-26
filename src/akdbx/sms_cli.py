@@ -250,7 +250,10 @@ def run(args, request):
         elif args.command in {'sms-subscription-status', 'unsubscribe-sms'}:
             payload['subscription_id'] = args.subscription_id
         elif args.command == 'fill-sms-code':
-            if caps.get('sms_fill_routes') == []:
+            # Android SMS pins are advertised by the Android capabilities, not in sms_fill_routes.
+            modes = caps.get('android_fill_modes')
+            android = caps.get('android_devices_configured') is True and isinstance(modes, list) and 'sms' in modes
+            if caps.get('sms_fill_routes') == [] and not android:
                 print(json.dumps(dict(ok=False, error='broker has no SMS fill route; request not sent')))
                 return 1
             if not MESSAGE_ID.fullmatch(args.message):

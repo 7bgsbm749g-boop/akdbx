@@ -858,6 +858,32 @@ def run_cli(argv, responses, capsys, *, capabilities=None):
     return code, sent, capsys.readouterr()
 
 
+@pytest.mark.parametrize('android, sent_fill', [
+    (dict(android_devices_configured=True, android_fill_modes=['login', 'sms']), True),
+    (dict(android_devices_configured=False, android_fill_modes=['login', 'sms']), False),
+    (dict(android_devices_configured=True, android_fill_modes=['login']), False),
+    ({}, False)])
+def test_cli_sends_an_android_sms_fill_when_no_desktop_route_exists(capsys, android, sent_fill):
+    from akdbx import sms_cli
+    from akdbx.cli import parser
+    status = dict(ok=True, locked=False, sms_protocol=1, sms_fill_routes=[], **android)
+    receipt = dict(ok=True, filled='one-time-code', target_delivery=DELIVERY)
+    args = parser().parse_args(['fill-sms-code', 'a' * 32, '--target', 'b' * 64,
+                                '--target-url', 'https://example.com/challenge'])
+    sent = []
+    responses = [status, receipt]
+
+    def request(payload):
+        sent.append(payload)
+        return responses.pop(0)
+    code = sms_cli.run(args, request)
+    out = capsys.readouterr().out
+    assert [p['action'] for p in sent] == (['ping', 'fill-sms-code'] if sent_fill else ['ping'])
+    assert code == (0 if sent_fill else 1)
+    if not sent_fill:
+        assert 'no SMS fill route' in out
+
+
 def test_cli_fill_sends_no_value_and_prints_the_receipt(capsys):
     receipt = {'ok': True, 'filled': 'password', 'target_delivery': DELIVERY}
     code, sent, out = run_cli(['android', 'fill', 'a' * 64, '--target', 'b' * 64, '--mode', 'password'], [receipt], capsys)

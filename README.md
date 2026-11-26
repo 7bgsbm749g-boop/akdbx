@@ -859,7 +859,8 @@ one-digit boxes, `fill-sms-code` also takes a `pin-target` token (on Linux, an X
 For a native app, use `pin-native-target --mode code` and the same
 `fill-sms-code` command. Status lists supported SMS destinations in
 `sms_fill_routes`. An empty list means the broker can receive texts but has
-no supported fill route.
+no supported desktop fill route. An Android `--mode sms` pin is a separate
+destination: check `android_fill_modes` and `android_devices_configured`.
 The iPhone filter forwards only texts with the word `code`; a second automation
 with `OTP` covers sites that say only that. See
 [the SMS workflow](skills/akdbx/references/sms.md).

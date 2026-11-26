@@ -11,8 +11,9 @@ Require broker 0.40.0 or newer and `status` field `sms_protocol: 1`.
 On brokers that report `sms_fill_routes`, `cdp` requires a configured browser
 profile, `native` requires platform support for native controls, and `window`
 requires a supported window backend. An empty list means that the inbox works
-but this broker has no SMS fill route. The local target still needs to pass its
-pin checks.
+but this broker has no desktop SMS fill route. Android `--mode sms` pins are not
+in this list: check `android_fill_modes` and `android_devices_configured`. The
+local target still needs to pass its pin checks.
 `sms_sources_configured` tells you how many phone numbers forward texts.
 
 ## Two kinds of phone number
