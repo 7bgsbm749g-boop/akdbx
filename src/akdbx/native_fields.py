@@ -134,15 +134,23 @@ class NativeFields:
             with self.lock:
                 if not 0 < len(sessions) <= 8 or len(self.views) + len(self.pins) + len(sessions) > MAX_PINS:
                     raise TargetError()
-                for session in sessions:
-                    fields = []
-                    if not 0 < len(session.controls) <= 128:
-                        raise TargetError()
-                    focused = session.focus(range(len(session.controls)))
-                    for index in range(len(session.controls)):
-                        facts = session.describe(index)
-                        # No names, labels, titles, selected text or field values.
-                        fields.append(dict(control=index, password=facts[0], readonly=facts[1], focused=index == focused))
+            # Only this request holds these sessions. Ask the app outside the
+            # lock, so a slow app cannot delay other pins, takes or fills.
+            found = []
+            for session in sessions:
+                fields = []
+                if not 0 < len(session.controls) <= 128:
+                    raise TargetError()
+                focused = session.focus(range(len(session.controls)))
+                for index in range(len(session.controls)):
+                    facts = session.describe(index)
+                    # No names, labels, titles, selected text or field values.
+                    fields.append(dict(control=index, password=facts[0], readonly=facts[1], focused=index == focused))
+                found.append((session, focused, fields))
+            with self.lock:
+                if len(self.views) + len(self.pins) + len(sessions) > MAX_PINS:
+                    raise TargetError()
+                for session, focused, fields in found:
                     token = secrets.token_hex(32)
                     self.views[token] = (self.clock() + TTL, session, focused)
                     result.append(dict(window=token, controls=fields))
@@ -238,6 +246,8 @@ class NativeFields:
                 nonlocal started
                 self.check(pin, ready, deadline)
                 started = True
+                # A backend may bound a blocking write by this; others ignore it.
+                return min(pin.expires, deadline) - self.clock()
             for index, value in zip(pin.indices, values):
                 pin.session.write(index, value, before_write)
                 self.check(pin, ready, deadline)

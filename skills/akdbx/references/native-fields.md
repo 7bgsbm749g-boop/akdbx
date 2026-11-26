@@ -139,3 +139,7 @@ dispatch, or reports an uncertain result if a write may already have started.
 Do not retry an uncertain fill automatically. A length check detects truncation;
 it does not prove authentication or server-side acceptance. Check the app's
 non-secret result, and never read a filled real password back with GUI tools.
+On Windows, each Win32 discovery, focus and read message waits at most 100 ms.
+`WM_SETTEXT` and its length check wait up to 1 s for a busy app, never past
+the pin expiry or the fill deadline; a hung window fails at once. A timeout
+after the write starts is uncertain.
