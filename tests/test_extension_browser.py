@@ -134,8 +134,9 @@ DRAWER_PAGE = ('<!doctype html><meta charset="utf-8"><form>' + ''.join(DRAWERS_A
 SECRET = 'SynthCapture-0123456789abcdefOnly'
 GROUPED_KEY = 'jbsw y3dp ehpk 3pxp jbsw y3dp ehpk 3pxp'  # A synthetic Base32 setup key.
 SECRET_STYLE = '<style>body{margin:0}code,input{display:block;margin:4px;font:16px monospace}</style>'
+# A click-through cover (pointer-events: none) and an opaque cover that takes pointer events.
 COVER = 'position:fixed;left:0;top:0;width:900px;height:300px;background:#fff;pointer-events:none'
-FULL = 'position:fixed;inset:0;margin:0;width:100vw;height:100vh;border:0;background:#fff'
+OPAQUE = COVER.replace(';pointer-events:none', '')
 LOGIN_FRAME = ('<!doctype html><meta charset="utf-8"><h1>Outer page</h1>'
                '<iframe id="login-frame" src="https://auth.example.com/login" style="width:600px;height:300px;border:0;{}">'
                '</iframe><iframe id="decoy" src="https://auth.example.com/decoy" style="width:200px;height:100px;border:0">'
@@ -145,24 +146,17 @@ PAGES = {
     # An authenticator setup key printed in groups, and prose that has only Base32 letters.
     '/totp-grouped': f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{GROUPED_KEY}</code>',
     '/totp-prose': f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">you will not see this again</code>',
-    # A click-through cover: elementFromPoint ignores it, CDP's hit test does not.
-    # An opaque cover that takes pointer events: the DOM hit test refuses it, with enhanced security off too.
+    # An opaque cover that takes pointer events: the DOM hit test refuses it on both routes.
     '/secret-opaque-cover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                             f'<div style="{COVER.replace(";pointer-events:none", "")}"></div>'),
+                             f'<div style="{OPAQUE}"></div>'),
+    # A click-through cover: elementFromPoint ignores it, so a read pin (on both routes) and an
+    # extension card pin pass it. Only the CDP route's native hit test refuses it for a field.
     '/secret-covered': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
                         f'<div style="{COVER}"></div>'),
-    '/secret-covered-important': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}'
-                                  f'<code id="secret" tabindex="0">{SECRET}</code>'
-                                  f'<div style="{COVER} !important"></div>'),
-    # The same cover inside a closed shadow root: the user style sheet does not reach it.
-    '/secret-shadow-cover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                             '<div id="host"></div><script>host.attachShadow({mode: "closed"}).innerHTML = '
-                             f'`<div style="{COVER}"></div>`;</script>'),
-    '/secret-shadow-important': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                                 '<div id="host"></div><script>host.attachShadow({mode: "closed"}).innerHTML = '
-                                 f'`<div style="{COVER} !important"></div>`;</script>'),
     '/card-covered': ('<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number" '
                       f'style="width:200px;height:30px"></form><div style="{COVER}"></div>' + DIGEST),
+    '/card-opaque': ('<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number" '
+                     f'style="width:200px;height:30px"></form><div style="{OPAQUE}"></div>' + DIGEST),
     # A floating label above, not over, the field centre: benign, both routes fill it.
     '/card-label': ('<!doctype html><meta charset="utf-8"><form><div style="position:relative">'
                     '<input id="number" autocomplete="cc-number" style="width:220px;height:44px">'
@@ -178,118 +172,23 @@ PAGES = {
     '/framed-visible': LOGIN_FRAME.format(''),
     '/framed-hidden': LOGIN_FRAME.format('opacity:0'),
     '/decoy': '<!doctype html><meta charset="utf-8"><p>decoy</p>',
-    # Covers that elementFromPoint skips even with pointer-events on: the inert attribute, CSS
-    # interactivity, and a pseudo-element in a closed shadow root with a more specific !important rule.
-    '/secret-inert': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                      f'<div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'),
-    '/secret-interactivity': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                              f'<div style="{COVER.replace("pointer-events:none", "interactivity:inert !important")}"></div>'),
-    '/secret-shadow-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                              '<div id="host"></div><script>host.attachShadow({mode: "closed"}).innerHTML = '
-                              '`<style>#c::before{content:"";position:fixed;left:0;top:0;width:900px;height:300px;'
-                              'background:#fff;pointer-events:none !important}</style><div id="c"></div>`;</script>'),
-    '/card-inert': ('<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number" '
-                    f'style="width:200px;height:30px"></form><div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'
-                    + DIGEST),
-    # Inert covers: one styled only while inert, one in the top layer above a modal dialog (inert
-    # because the dialog is modal), and the same dialog without a cover, which reads.
-    '/secret-inert-styled': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>.c{{display:none}}'
-                             f'.c[inert]{{display:block;{COVER.replace(";pointer-events:none", "")}}}</style>'
-                             f'<code id="secret" tabindex="0">{SECRET}</code><div class="c" inert></div>'),
-    '/secret-modal': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<dialog id="d"><code id="secret" tabindex="0">'
-                      f'{SECRET}</code></dialog><script>d.showModal()</script>'),
-    '/secret-modal-cover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<dialog id="d"><code id="secret" tabindex="0">'
-                            f'{SECRET}</code></dialog><div id="p" popover style="position:fixed;inset:0;margin:0;width:100vw;'
-                            'height:100vh;border:0;background:#fff"></div><script>d.showModal(); p.showPopover()</script>'),
-    # Covers that paint outside the inert element's own box, and a popover's opaque ::backdrop.
-    # Rows of block glyphs that overlap and white text shadows that close any gap, whatever the font's
-    # block glyph looks like. One 600px glyph painted nothing over the secret in Menlo on macOS 15.
-    '/secret-inert-text': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                           '<div inert style="position:fixed;left:0;top:0;width:0;height:0;font:40px/20px monospace;'
-                           'letter-spacing:-8px;white-space:pre;color:#fff;text-shadow:0 8px #fff,0 -8px #fff,8px 0 #fff,'
-                           '-8px 0 #fff">' + ('\u2588' * 40 + '\n') * 16 + '</div>'),
-    '/secret-inert-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#c{{position:fixed;left:0;top:0;'
-                             'width:0;height:0}#c::before{content:"";display:block;width:900px;height:300px;'
-                             f'background:#fff}}</style><code id="secret" tabindex="0">{SECRET}</code><div id="c" inert></div>'),
-    '/secret-inert-slot': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                           f'<div id="host"><div style="{COVER.replace(";pointer-events:none", "")}"></div></div>'
-                           '<script>host.attachShadow({mode: "closed"}).innerHTML = '
-                           "'<div inert style=\"display:contents\"><slot></slot></div>'</script>"),
-    '/secret-popover-backdrop': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#p::backdrop{{background:#fff}}'
-                                 f'</style><code id="secret" tabindex="0">{SECRET}</code><div id="p" popover="manual" '
-                                 'style="position:fixed;width:0;height:0;border:0;padding:0"></div>'
-                                 '<script>p.showPopover()</script>'),
-    # Covers that no selector list names. A popover in its exit transition: painted in the top
-    # layer, no longer :popover-open.
-    '/secret-popover-exit': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#p{{{FULL};transition:overlay 60s '
-                             f'allow-discrete,display 60s allow-discrete}}</style><code id="secret" tabindex="0">{SECRET}</code>'
-                             '<div id="p" popover="manual"></div><script>p.showPopover(); requestAnimationFrame(() => '
-                             'requestAnimationFrame(() => { p.hidePopover(); window.ready = true; }));</script>'),
-    # A popover that holds the secret's modal dialog and opens after it: it paints over the dialog and is inert.
-    '/secret-popover-holds-modal': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<div id="p" popover="manual" '
-                                    f'style="{FULL}"><dialog id="d"><code id="secret" tabindex="0">{SECRET}</code></dialog></div>'
-                                    '<script>d.showModal(); p.showPopover();</script>'),
-    '/secret-details-content': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>details::details-content{{display:block;'
-                                f'{COVER}}}</style><code id="secret" tabindex="0">{SECRET}</code>'
-                                '<details open><summary>More</summary><p>text</p></details>'),
-    '/secret-scroll-button': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#s{{overflow:auto;width:60px;height:60px}}'
-                              f'#s::scroll-button(down){{content:"";border:0;{COVER}}}</style>'
-                              f'<code id="secret" tabindex="0">{SECRET}</code><div id="s"><div style="height:500px"></div></div>'),
-    '/secret-scroll-marker-group': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#s{{overflow:auto;width:60px;'
-                                    f'height:60px;scroll-marker-group:after}}#s::scroll-marker-group{{{COVER}}}</style>'
-                                    f'<code id="secret" tabindex="0">{SECRET}</code><div id="s"><div style="height:500px"></div></div>'),
-    # A view transition that never ends, with a white click-through root and no snapshot images.
+    # A view transition that never ends, with a white click-through root and no snapshot images:
+    # the read pin's own DOM checks refuse it.
     '/secret-view-transition': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>@keyframes hold{{from{{opacity:1}}'
                                 'to{opacity:1}}::view-transition{background:#fff;pointer-events:none}::view-transition-group(root)'
                                 '{animation:hold 60s;pointer-events:none}::view-transition-image-pair(root){display:none}'
                                 f'</style><code id="secret" tabindex="0">{SECRET}</code><script>secret.focus(); '
                                 'document.startViewTransition(() => {}).ready.then(() => { window.ready = true; });</script>'),
-    # A user-agent pseudo-element (the bar of a meter) as the cover.
-    '/secret-meter-bar': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>meter{{appearance:none}}'
-                          f'meter::-webkit-meter-bar{{{COVER}}}</style><code id="secret" tabindex="0">{SECRET}</code>'
-                          '<meter value="0.5"></meter>'),
-    # A cover that lets most of the secret show through: the pixels are not the secret's own.
-    '/secret-veil': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
-                     f'<div style="{COVER.replace("#fff", "rgba(255,255,255,.6)")}"></div>'),
-    # The secret hidden under its own ::after. A hit test (CDP's too) returns the element itself, and the
-    # occlusion test does not count an element's own parts; only the pixel challenge sees it.
-    '/secret-own-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret{{position:relative}}'
-                           '#secret::after{content:"";position:absolute;inset:0;background:#fff}</style>'
-                           f'<code id="secret" tabindex="0">{SECRET}</code>'),
-    # Paint that a hit test does not see as a cover: the secret element's own ::after painted in
-    # currentColor (it would take the challenge colour), and its own outline drawn over its text.
-    '/secret-own-pseudo-currentcolor': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret{{position:relative}}'
-                                        '#secret::after{content:"";position:absolute;inset:0;background:currentColor}</style>'
-                                        f'<code id="secret" tabindex="0">{SECRET}</code>'),
-    '/secret-own-outline': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret{{outline:40px solid '
-                            f'currentColor;outline-offset:-40px}}</style><code id="secret" tabindex="0">{SECRET}</code>'),
-    # The secret's own scroll markers in currentColor, over its text.
-    '/secret-own-scroll-markers': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret{{overflow:auto;'
-                                   'scroll-marker-group:after}#secret::scroll-marker-group{position:fixed;left:0;top:0;'
-                                   f'width:900px;height:300px;background:currentColor}}</style>'
-                                   f'<code id="secret" tabindex="0">{SECRET}</code>'),
-    # Generated content that draws nothing: a hidden ::after and a list item without a marker. Both read.
-    '/secret-hidden-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret::after{{content:"x";'
-                              f'display:none}}</style><code id="secret" tabindex="0">{SECRET}</code>'),
-    '/secret-list-item': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<ul style="list-style:none;padding:0;margin:0">'
-                          f'<li id="secret" tabindex="0" style="font:16px monospace">{SECRET}</li></ul>'),
-    '/secret-list-item-no-marker': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret::marker{{content:none}}'
-                                    '</style><ul style="padding:0;margin:0"><li id="secret" tabindex="0" '
-                                    f'style="font:16px monospace">{SECRET}</li></ul>'),
-    '/secret-hidden-scroll-markers': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#secret{{overflow:auto;'
-                                      'scroll-marker-group:after}#secret::scroll-marker-group{display:none}</style>'
-                                      f'<code id="secret" tabindex="0">{SECRET}</code>'),
+    # A modal dialog that holds the secret; the page behind it is inert. It reads.
+    '/secret-modal': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<dialog id="d"><code id="secret" tabindex="0">'
+                      f'{SECRET}</code></dialog><script>d.showModal()</script>'),
     # A long token that wraps over many lines in a narrow box: visible, so it reads.
     '/secret-wrapped': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0" '
                         'style="width:190px;overflow-wrap:anywhere">' + 'Synth' + 'abcdefghij' * 40 + '</code>'),
-    # An ancestor's negative-offset outline over the field, and over the whole Stripe frame.
-    '/card-outline': ('<!doctype html><meta charset="utf-8"><div style="width:240px;height:60px;outline:60px solid #fff;'
-                      'outline-offset:-60px"><form><input id="number" autocomplete="cc-number" '
-                      'style="width:200px;height:30px"></form></div>' + DIGEST),
-    # Benign pages that the selector rules refused: a cookie popover elsewhere on the page (its
-    # transparent ::backdrop spans the viewport), an inert background behind a dialog that holds the
-    # secret or the field, a copy button over a corner of the secret's box, and a transparent
-    # click-through layer over the field (it hides nothing).
+    # Ordinary pages that must keep working: a cookie popover elsewhere on the page (its transparent
+    # ::backdrop spans the viewport), an inert background behind a dialog that holds the secret or
+    # the field, a copy button over a corner of the secret's box, and a transparent click-through
+    # layer over the field (it hides nothing).
     '/secret-cookie-popover': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
                                '<div id="p" popover="manual" style="position:fixed;inset:auto 0 0 0;margin:0;width:auto;'
                                'height:80px;border:0;background:#eee">We use cookies.</div><script>p.showPopover();</script>'),
@@ -316,29 +215,21 @@ PAGES = {
 <div id="chip" style="position:absolute;width:40px;height:20px;background:#ccc;pointer-events:none"></div>
 <script>const box = stripe.getBoundingClientRect(); chip.style.left = (box.right - 50) + 'px';
 chip.style.top = (box.bottom + scrollY - 30) + 'px';</script>''',
-    # A card field in a same-origin child frame, with covers in the top page that only the
-    # top page's own checks can see: a click-through cover in a closed shadow root, and an inert one.
+    # A card field in a same-origin child frame, and the same frame under an opaque cover in the top
+    # page: the hit test through every parent document refuses it.
     '/card-field': ('<!doctype html><meta charset="utf-8"><form><input id="number" autocomplete="cc-number" '
                     'style="width:200px;height:30px"></form>' + DIGEST),
     '/card-frame': ('<!doctype html><meta charset="utf-8"><iframe id="pay" src="/card-field" '
                     'style="width:400px;height:200px;border:0"></iframe>'),
-    '/card-frame-shadow': ('<!doctype html><meta charset="utf-8"><iframe id="pay" src="/card-field" '
-                           'style="width:400px;height:200px;border:0"></iframe><div id="host"></div>'
-                           '<script>host.attachShadow({mode: "closed"}).innerHTML = '
-                           f'`<div style="{COVER}"></div>`;</script>'),
-    '/card-frame-inert': ('<!doctype html><meta charset="utf-8"><iframe id="pay" src="/card-field" '
-                          'style="width:400px;height:200px;border:0"></iframe>'
-                          f'<div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'),
-    # The Stripe frame with an inert cover in the merchant page over only the number input. (At 20px
-    # high it ended above the input's centre, the one point that CDP tests; it now covers that point.)
-    '/checkout-inert': f'''<!doctype html><meta charset="utf-8"><h1>Merchant</h1>
+    '/card-frame-opaque': ('<!doctype html><meta charset="utf-8"><iframe id="pay" src="/card-field" '
+                           'style="width:400px;height:200px;border:0"></iframe>'
+                           f'<div style="{OPAQUE}"></div>'),
+    # The Stripe frame with an opaque cover in the merchant page over the number input's centre.
+    '/checkout-opaque': f'''<!doctype html><meta charset="utf-8"><h1>Merchant</h1>
 <iframe id="stripe" src="{STRIPE}" style="width:400px;height:200px;border:0"></iframe>
-<div inert id="cover" style="position:absolute;width:150px;height:30px;background:#fff"></div>
+<div id="cover" style="position:absolute;width:150px;height:30px;background:#fff"></div>
 <script>const box = stripe.getBoundingClientRect(); cover.style.left = (box.left + 2) + 'px';
 cover.style.top = (box.top + scrollY + 2) + 'px';</script>''',
-    '/checkout-outline': f'''<!doctype html><meta charset="utf-8"><h1>Merchant</h1>
-<div style="width:400px;height:200px;outline:200px solid #f00;outline-offset:-200px">
-<iframe id="stripe" src="{STRIPE}" style="width:400px;height:200px;border:0"></iframe></div>''',
     # A hidden middle frame in a closed shadow root (window.frames leaves it out) and a visible
     # about:blank decoy whose owner probe the page reads and forwards to the hidden frame.
     '/framed-shadow-decoy': '''<!doctype html><meta charset="utf-8"><h1>Outer page</h1>
@@ -520,20 +411,6 @@ class Harness:
         raise AssertionError('processor frame target missing')
 
 
-def grant_screenshots(extension):
-    """The access that the options page asks for when the user turns enhanced security on.
-
-    A headless browser cannot click its permission prompt, so a test that needs the
-    access (the `enhanced` fixture or the screenshot_access marker) gets a build that
-    lists <all_urls> as granted at install. Every other test runs the shipped manifest.
-    """
-    path = Path(extension) / 'manifest.json'
-    manifest = json.loads(path.read_text(encoding='utf-8'))
-    assert manifest['optional_host_permissions'] == ['<all_urls>'] and manifest['host_permissions'] == ['https://*/*']
-    manifest['host_permissions'] = ['<all_urls>']
-    path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
-
-
 @pytest.fixture
 def harness(private_dir, certificates, monkeypatch, request):
     if sys.platform != 'win32':
@@ -554,8 +431,6 @@ def harness(private_dir, certificates, monkeypatch, request):
         unlock_port = probe.getsockname()[1]
     unlock_origin = f'https://localhost:{unlock_port}'
     extension = extension_host.build(Path(private_dir) / 'extension', host_name=host_name, unlock_origin=unlock_origin)
-    if 'enhanced' in request.fixturenames or request.node.get_closest_marker('screenshot_access') is not None:
-        grant_screenshots(extension)
     launcher = Path(private_dir) / ('host.cmd' if sys.platform == 'win32' else 'host.sh')
     launcher.write_text(extension_host._launcher_text(kind, sys.executable, str(pipe)), encoding='utf-8', newline='')
     native_hosts = None
@@ -624,15 +499,10 @@ def harness(private_dir, certificates, monkeypatch, request):
 SETTINGS = "chrome.storage.local.get('settings').then(found => found.settings ?? null)"
 
 
-def set_enhanced(harness, on):
-    harness.worker_call(f"chrome.storage.local.set({{settings: {{enhanced_security: {json.dumps(on)}}}}})")
-
-
-@pytest.fixture
-def enhanced(harness):
-    """Enhanced security on, as the options page leaves it after the browser granted the screenshots."""
-    set_enhanced(harness, True)
-    return harness
+def store_enhanced_security(harness):
+    """What fill extension 0.5.0 to 0.15.x stored when the user turned Enhanced security on; 0.16.0 ignores it."""
+    harness.worker_call("chrome.storage.local.set({settings: {enhanced_security: true}})")
+    assert harness.worker_call(SETTINGS) == dict(enhanced_security=True)
 
 
 def test_the_service_worker_binds_the_first_broker_key_from_the_https_identity_page(harness):
@@ -755,6 +625,57 @@ def test_agent_route_refuses_wrong_origin_wrong_frame_and_hidden_fields(harness)
                                 frame_id=listing['main_frame_id'], top_url=url, selector='#password', mode='password',
                                 route='extension')) == failure()
     assert lab.digest('password') == EMPTY
+
+
+# The classic hidden-field autofill harvest: a page asks for one value and hides other fields, or the
+# secret, from the user. Each way of hiding, applied to the field (or the secret) after it took the focus.
+HIDE = {
+    'display': "el.style.display = 'none'",
+    'visibility': "el.style.visibility = 'hidden'",
+    'opacity': "el.style.opacity = '0'",
+    'zero-size': "el.style.cssText += ';width:0;height:0;min-width:0;min-height:0;padding:0;border:0'",
+    'off-screen': "el.style.cssText += ';position:absolute;left:-10000px'",
+    'below-the-viewport': "el.style.cssText += ';position:absolute;top:5000px'",
+    'inert': "el.parentElement.inert = true",
+    'clip-path': "el.style.clipPath = 'inset(50%)'",
+}
+PAGES['/hide'] = (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<form>'
+                  '<div><input id="number" autocomplete="cc-number" style="width:200px;height:30px"></div>'
+                  '<div><input id="tel" type="tel" autocomplete="tel"></div>'
+                  '<div><input id="otp" autocomplete="one-time-code" maxlength="6"></div></form>'
+                  f'<div><code id="secret" tabindex="0">{SECRET}</code></div>' + DIGEST)
+
+
+def test_every_extension_pin_refuses_a_hidden_field_or_secret(harness, private_dir):
+    """Card, address, code and read pins on the extension route: a hidden, transparent, zero-size,
+    off-screen, inert or clipped target never pins, so no value reaches it and no secret is read."""
+    lab, broker = harness.lab, harness.broker
+    sms_source(harness, private_dir)()  # Code pins need a configured SMS inbox.
+
+    def pin(kind, url):
+        listing = harness.frames(url)
+        where = dict(page_id=listing['page_id'], frame_id=listing['main_frame_id'], top_url=url, route='extension')
+        return broker.dispatch({
+            'card': dict(action='pin-card-target', card_protocol=1, selector='#number', field='cc-number'),
+            'identity': dict(action='pin-identity-target', identity_protocol=1, selector='#tel', field='tel'),
+            'code': dict(action='pin-code-target', sms_protocol=1, frame_url=url, selector='#otp',
+                         field='one-time-code'),
+            'read': dict(action='pin-password-target', password_protocol=1, selector='#secret', mode='read',
+                         capture_protocol=1),
+        }[kind] | where)
+
+    targets = dict(card='number', identity='tel', code='otp', read='secret')
+    for kind, field in targets.items():
+        url = lab.navigate('/hide')
+        harness.focus(field)
+        assert pin(kind, url)['ok'], kind  # The same target, shown, pins.
+        for name, hide in HIDE.items():
+            url = lab.navigate('/hide')
+            harness.focus(field)
+            lab.evaluate(f"(el => {{ {hide}; }})(document.getElementById({json.dumps(field)}))")
+            refused = pin(kind, url)
+            assert refused['ok'] is False, (kind, name, refused)
+    assert all(lab.digest(field) == EMPTY for field in ('number', 'tel', 'otp'))
 
 
 def test_cards_go_only_to_the_supported_processor_frame_below_the_merchant(harness):
@@ -952,7 +873,7 @@ def test_pairing_page_form_submit_pairs_the_extension_in_a_real_browser(harness,
     assert broker.extension.approved == [channel.digest]
 
 
-# ----- secret capture, frame owners and cover checks (0.32.0) ---------------------------
+# ----- secret capture, frame owners and the DOM visibility checks (0.32.0) --------------
 def read_pin(harness, url, **extra):
     listing = harness.frames(url)
     request = dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
@@ -1017,17 +938,6 @@ def test_secret_capture_refuses_unfocused_selected_and_changed_secrets(harness):
     assert read_value(harness, pin) is None
 
 
-COVERED_SECRETS = ['/secret-covered', '/secret-covered-important', '/secret-shadow-cover', '/secret-shadow-important',
-                   '/secret-inert', '/secret-interactivity', '/secret-shadow-pseudo', '/secret-inert-styled',
-                   '/secret-modal-cover', '/secret-inert-text', '/secret-inert-pseudo',
-                   '/secret-inert-slot',
-                   '/secret-popover-backdrop', '/secret-popover-exit', '/secret-popover-holds-modal',
-                   '/secret-details-content', '/secret-scroll-button', '/secret-scroll-marker-group',
-                   '/secret-view-transition', '/secret-meter-bar', '/secret-veil', '/secret-own-pseudo',
-                   '/secret-own-pseudo-currentcolor', '/secret-own-outline', '/secret-own-scroll-markers']
-CHALLENGE_GONE = "getComputedStyle(document.getElementById('secret')).boxShadow === 'none'"
-
-
 def open_page(harness, page):
     lab = harness.lab
     url = lab.navigate(page)
@@ -1036,54 +946,51 @@ def open_page(harness, page):
     return url
 
 
-@pytest.mark.usefixtures('enhanced')
-@pytest.mark.parametrize('page', COVERED_SECRETS)
-def test_secret_capture_refuses_a_cover(harness, page):
-    lab = harness.lab
+@pytest.mark.parametrize('page', ['/secret-opaque-cover', '/secret-view-transition'])
+def test_secret_capture_refuses_an_opaque_cover_and_a_view_transition(harness, page):
+    """The read pin's DOM checks: a cover that takes pointer events fails the hit test, and a view
+    transition fails the pin's own checks. Both routes run these checks."""
     url = open_page(harness, page)
     harness.focus('secret')
     assert read_pin(harness, url) == failure()
-    # The challenge colour ends with the check, and the page's DOM got no marker.
-    assert lab.evaluate(CHALLENGE_GONE)
-    assert lab.evaluate("[...document.getElementById('secret').attributes].map(a => a.name).sort().join() === 'id,tabindex'")
 
 
-@pytest.mark.usefixtures('enhanced')
 @pytest.mark.parametrize('page', ['/secret-modal', '/secret-cookie-popover', '/secret-inert-background',
                                   '/secret-copy-button'])
 def test_a_secret_on_an_ordinary_page_reads(harness, page):
-    lab = harness.lab
     url = open_page(harness, page)
     harness.focus('secret')
     pin = read_pin(harness, url)
     assert pin['ok'], pin
     assert read_value(harness, pin) == sha(SECRET)
-    assert lab.evaluate(CHALLENGE_GONE)
 
 
-@pytest.mark.usefixtures('enhanced')
-def test_a_cover_added_after_the_pin_refuses_the_read(harness):
+def test_an_opaque_cover_added_after_the_pin_refuses_the_read(harness):
     lab = harness.lab
-    for cover in (f'<div style="{COVER}"></div>', f'<div inert style="{COVER.replace(";pointer-events:none", "")}"></div>'):
-        url = lab.navigate('/secret-cookie-popover')
-        harness.focus('secret')
-        pin = read_pin(harness, url)
-        assert pin['ok'], pin
-        lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', {json.dumps(cover)})")
-        assert read_value(harness, pin) is None
+    url = lab.navigate('/secret-cookie-popover')
+    harness.focus('secret')
+    pin = read_pin(harness, url)
+    assert pin['ok'], pin
+    cover = f'<div style="{OPAQUE}"></div>'
+    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', {json.dumps(cover)})")
+    assert read_value(harness, pin) is None
 
 
-def test_with_enhanced_security_off_no_screenshot_is_taken_and_the_dom_hit_test_still_runs(harness):
-    """The default. Fills and reads work as in fill extension 0.4.0: the DOM hit test refuses an
-    ordinary cover, and a click-through cover passes it, as it passes the CDP route's read pin."""
+@pytest.mark.parametrize('stored', [False, True], ids=['no-setting', 'stored-enhanced-security'])
+def test_only_the_dom_checks_run_also_with_a_stored_enhanced_security_setting(harness, stored):
+    """Fill extension 0.16.0 has no pixel check and ignores the setting that 0.5.0 to 0.15.x stored.
+    The DOM hit test refuses a cover that takes pointer events. A click-through cover passes it, as it
+    passes the CDP route's read pin; only the CDP route's native hit test refuses one over a field."""
     lab, broker = harness.lab, harness.broker
-    assert harness.worker_call(SETTINGS) is None
+    if stored:
+        store_enhanced_security(harness)
+    else:
+        assert harness.worker_call(SETTINGS) is None
     url = lab.navigate('/secret-opaque-cover')
     harness.focus('secret')
     assert read_pin(harness, url) == failure()
     url = lab.navigate('/secret-covered')
     harness.focus('secret')
-    # With enhanced security on, this click-through cover refuses (test_secret_capture_refuses_a_cover).
     pin = read_pin(harness, url)
     assert pin['ok'], pin
     assert read_value(harness, pin) == sha(SECRET)
@@ -1093,146 +1000,7 @@ def test_with_enhanced_security_off_no_screenshot_is_taken_and_the_dom_hit_test_
     assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
                                 field='cc-number'))['ok']
     assert lab.digest('number') == sha(CARD['number'])
-
-
-def test_enhanced_security_without_the_screenshot_access_refuses_every_checked_pin(harness):
-    """On, but the browser holds no <all_urls> (not granted, or removed later): nothing is checked, so nothing fills."""
-    lab = harness.lab
-    set_enhanced(harness, True)
-    url = lab.navigate('/secret')
-    harness.focus('secret')
-    assert read_pin(harness, url) == failure()
-    assert card_pin(harness, lab.navigate('/card-label')) == card_failure()
-    # Logins keep their own checks only, as before.
-    url = lab.navigate('/login')
-    listing = harness.frames(url)
-    harness.focus('password')
-    assert harness.broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
-                                        frame_id=listing['main_frame_id'], top_url=url, selector='#password',
-                                        mode='password', route='extension'))['ok']
-    set_enhanced(harness, False)
-    url = lab.navigate('/secret')
-    harness.focus('secret')
-    assert read_pin(harness, url)['ok']
-
-
-def extension_page(harness, path):
-    """A session in the extension page at `path`, opened by the browser or by the test."""
-    observer = harness.lab.observer
-    url = route.EXTENSION_ORIGIN.rstrip('/') + '/' + path
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        found = [t for t in observer.call('Target.getTargets')['targetInfos'] if t['type'] == 'page' and t['url'] == url]
-        if found:
-            session = observer.call('Target.attachToTarget', dict(targetId=found[0]['targetId'], flatten=True))['sessionId']
-            # The new tab's first document is about:blank: wait for the extension page itself.
-            if observer.evaluate(f"location.href === {json.dumps(url)} && document.readyState === 'complete'", session):
-                return session
-        time.sleep(.05)
-    raise AssertionError(path + ' did not open')
-
-
-def click(harness, session, selector):
-    """A trusted mouse click at the centre of an element, as a user's click."""
-    observer = harness.lab.observer
-    observer.call('Page.bringToFront', session=session)
-    x, y = observer.evaluate(f"(r => [r.x + r.width / 2, r.y + r.height / 2])"
-                             f"(document.querySelector({json.dumps(selector)}).getBoundingClientRect())", session)
-    for kind in ('mousePressed', 'mouseReleased'):
-        observer.call('Input.dispatchMouseEvent', dict(type=kind, x=x, y=y, button='left', clickCount=1), session=session)
-
-
-@pytest.mark.screenshot_access
-def test_the_cog_opens_the_settings_and_the_switch_turns_enhanced_security_on_and_off(harness):
-    lab, observer = harness.lab, harness.lab.observer
-    observer.call('Target.createTarget', dict(url=route.EXTENSION_ORIGIN.rstrip('/') + '/popup.html'))
-    click(harness, extension_page(harness, 'popup.html'), '#settings')
-    options = extension_page(harness, 'options.html')
-    state = "(() => { const t = document.getElementById('enhanced'), s = document.getElementById('enhanced-status');" \
-            " return {disabled: t.disabled, checked: t.checked, status: s.hidden ? '' : s.textContent}; })()"
-    deadline = time.monotonic() + 5
-    while observer.evaluate(state, options)['disabled']:
-        assert time.monotonic() < deadline
-        time.sleep(.05)
-    # Off by default. This test build already holds the access, so the page says that it stays.
-    off = observer.evaluate(state, options)
-    assert off['checked'] is False and off['status'].startswith('Off: akdbx takes no screenshots'), off
-    assert 'Enhanced security' in observer.evaluate("document.querySelector('label[for=enhanced]').textContent", options)
-    click(harness, options, '#enhanced')
-    deadline = time.monotonic() + 5
-    while harness.worker_call(SETTINGS) != dict(enhanced_security=True):
-        assert time.monotonic() < deadline, harness.worker_call(SETTINGS)
-        time.sleep(.05)
-    # The page saves the setting first, then shows the saved state and unlocks the switch.
-    while (shown := observer.evaluate(state, options)) != dict(disabled=False, checked=True, status=''):
-        assert time.monotonic() < deadline, shown
-        time.sleep(.05)
-    # The service worker reads the setting: a click-through cover now refuses.
-    observer.call('Page.bringToFront', session=lab.session)
-    url = lab.navigate('/secret-covered')
-    harness.focus('secret')
-    assert read_pin(harness, url) == failure()
-    click(harness, options, '#enhanced')
-    deadline = time.monotonic() + 5
-    while harness.worker_call(SETTINGS) != dict(enhanced_security=False):
-        assert time.monotonic() < deadline
-        time.sleep(.05)
-    found = observer.evaluate(state, options)
-    assert found['checked'] is False and found['status'].startswith('Off: akdbx takes no screenshots'), found
-
-
-ORACLES = """(async () => {
-  const [tab] = await chrome.tabs.query({url: URL_});
-  const frames = await chrome.webNavigation.getAllFrames({tabId: tab.id});
-  const documentId = frames.find(f => f.frameId === 0).documentId;
-  const chain = await chainFor(tab.id, documentId);
-  await inject(tab.id, documentId);
-  const pinId = await run(tab.id, documentId, (kind, spec, url) => globalThis.__akdbxContent.pin(kind, spec, url, url),
-    [KIND, SPEC, URL_]);
-  if (typeof pinId !== 'string') return null;
-  try {
-    let start = performance.now();
-    const occlusion = await run(tab.id, documentId, id => globalThis.__akdbxContent.clear(id), [pinId]);
-    const occlusionMs = Math.round(performance.now() - start);
-    await new Promise(resolve => setTimeout(resolve, 600));  // The screenshot quota of the test before.
-    start = performance.now();
-    const pixels = await challenge(tab.id, chain, pinId, null);
-    return {occlusion, pixels, occlusionMs, pixelsMs: Math.round(performance.now() - start)};
-  } finally {
-    await run(tab.id, documentId, id => globalThis.__akdbxContent.release(id), [pinId]);
-  }
-})()"""
-
-
-def oracles(harness, page):
-    """Each of the two cover checks alone, on a content-script pin that skips the worker's own decision."""
-    url = open_page(harness, page)
-    card = page.startswith('/card')
-    harness.focus('number' if card else 'secret')
-    spec = dict(selector='#number', field='cc-number') if card else dict(selector='#secret', frame_origin=None)
-    return harness.worker_call(ORACLES.replace('URL_', json.dumps(url)).replace('KIND', json.dumps('card' if card else 'read'))
-                               .replace('SPEC', json.dumps(spec)))
-
-
-@pytest.mark.screenshot_access
-def test_each_cover_check_alone_refuses_every_cover_and_one_of_them_passes_every_ordinary_page(harness):
-    """The occlusion test and the pixel challenge are independent: every cover fails both. An ordinary
-    page passes the occlusion test, or, when something harmless overlaps the box, the pixel challenge."""
-    report = {}
-    for page in [*COVERED_SECRETS, '/card-covered', '/card-inert']:
-        found = report[page] = oracles(harness, page)
-        # During a view transition the pin's own DOM checks already refuse: no pin to test.
-        # The secret's own ::after is no occluder for a hit test: only the pixel challenge refuses it.
-        assert found is None and page == '/secret-view-transition' or (
-            found and found['occlusion'] is (page in ('/secret-own-pseudo', '/secret-own-pseudo-currentcolor',
-                                                      '/secret-own-outline', '/secret-own-scroll-markers'))
-            and found['pixels'] is False), (page, found)
-    for page, occlusion in {'/secret': True, '/secret-modal': True, '/secret-inert-background': True,
-                            '/card-inert-background': True, '/secret-cookie-popover': False, '/secret-copy-button': False,
-                            '/card-label': False, '/card-cookie-popover': False, '/card-clear-layer': False}.items():
-        found = report[page] = oracles(harness, page)
-        assert found and found['occlusion'] is occlusion and found['pixels'] is True, (page, found)
-    print(json.dumps(report, indent=1))
+    assert card_pin(harness, lab.navigate('/card-opaque')) == card_failure()
 
 
 def card_pin(harness, url):
@@ -1242,7 +1010,6 @@ def card_pin(harness, url):
                                         field='cc-number', route='extension'))
 
 
-@pytest.mark.usefixtures('enhanced')
 @pytest.mark.parametrize('page', ['/card-label', '/card-cookie-popover', '/card-inert-background', '/card-clear-layer'])
 def test_a_card_field_on_an_ordinary_page_fills(harness, page):
     lab, broker = harness.lab, harness.broker
@@ -1253,17 +1020,15 @@ def test_a_card_field_on_an_ordinary_page_fills(harness, page):
                                    field='cc-number'))
     assert receipt == dict(ok=True, filled='cc-number', card_delivery=route.DELIVERY)
     assert lab.digest('number') == sha(CARD['number'])
-    assert lab.evaluate("getComputedStyle(document.getElementById('number')).boxShadow === 'none'")
 
 
-@pytest.mark.usefixtures('enhanced')
-def test_card_pins_refuse_a_click_through_cover_and_keep_a_floating_label(harness):
+def test_card_pins_refuse_an_opaque_cover_at_the_pin_and_at_the_fill(harness):
     lab, broker = harness.lab, harness.broker
-    assert card_pin(harness, lab.navigate('/card-covered')) == card_failure()
-    assert card_pin(harness, lab.navigate('/card-inert')) == card_failure()
+    assert card_pin(harness, lab.navigate('/card-opaque')) == card_failure()
     # A cover added after the pin refuses the fill.
     target = card_pin(harness, lab.navigate('/card-label'))
-    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div style=\"{COVER}\"></div>')")
+    assert target['ok'], target
+    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div style=\"{OPAQUE}\"></div>')")
     handle = broker.dispatch(dict(action='search-cards', card_protocol=1))['entries'][0]['handle']
     assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
                                 field='cc-number')) == card_failure()
@@ -1544,8 +1309,7 @@ def framed_card_pin(harness, page):
                                      route='extension'))
 
 
-@pytest.mark.usefixtures('enhanced')
-def test_a_card_in_a_same_origin_child_frame_needs_every_parent_clear(harness):
+def test_a_card_in_a_same_origin_child_frame_fills_and_a_cover_in_the_parent_refuses(harness):
     lab, broker = harness.lab, harness.broker
     url, target = framed_card_pin(harness, '/card-frame')
     assert target['ok'], target
@@ -1553,8 +1317,7 @@ def test_a_card_in_a_same_origin_child_frame_needs_every_parent_clear(harness):
     assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
                                 field='cc-number'))['ok']
     assert lab.evaluate("document.getElementById('pay').contentWindow.digest('number')", await_promise=True) == sha(CARD['number'])
-    for page in ('/card-frame-shadow', '/card-frame-inert'):
-        assert framed_card_pin(harness, page)[1] == card_failure(), page
+    assert framed_card_pin(harness, '/card-frame-opaque')[1] == card_failure()
 
 
 def processor_pin(harness, page):
@@ -1570,33 +1333,11 @@ def processor_pin(harness, page):
                                          field='cc-number', route='extension', processor='stripe', processor_protocol=1))
 
 
-@pytest.mark.usefixtures('enhanced')
-def test_a_processor_field_refuses_an_inert_cover_in_the_merchant_page(harness):
-    assert processor_pin(harness, '/checkout-inert')[1] == card_failure()
+def test_a_processor_field_refuses_an_opaque_cover_in_the_merchant_page(harness):
+    """The merchant-side owner guard hit-tests the field's point in the merchant page."""
+    assert processor_pin(harness, '/checkout-opaque')[1] == card_failure()
 
 
-@pytest.mark.usefixtures('enhanced')
-def test_an_ancestor_outline_over_a_field_or_a_processor_frame_refuses(harness):
-    """The occlusion test does not count an ancestor's own paint; the pixel challenge sees it."""
-    lab = harness.lab
-    assert card_pin(harness, lab.navigate('/card-outline')) == card_failure()
-    assert lab.digest('number') == EMPTY
-    assert processor_pin(harness, '/checkout-outline')[1] == card_failure()
-
-
-@pytest.mark.usefixtures('enhanced')
-@pytest.mark.parametrize('page', ['/secret-hidden-pseudo', '/secret-list-item', '/secret-list-item-no-marker',
-                                  '/secret-hidden-scroll-markers'])
-def test_generated_content_that_draws_nothing_does_not_refuse(harness, page):
-    lab = harness.lab
-    url = lab.navigate(page)
-    harness.focus('secret')
-    pin = read_pin(harness, url)
-    assert pin['ok'], pin
-    assert read_value(harness, pin) == sha(SECRET)
-
-
-@pytest.mark.usefixtures('enhanced')
 def test_a_long_token_wrapped_over_many_lines_reads(harness):
     lab = harness.lab
     url = lab.navigate('/secret-wrapped')
@@ -1606,9 +1347,8 @@ def test_a_long_token_wrapped_over_many_lines_reads(harness):
     assert read_value(harness, pin) == sha('Synth' + 'abcdefghij' * 40)
 
 
-@pytest.mark.usefixtures('enhanced')
 def test_a_processor_field_fills_when_a_merchant_element_overlaps_another_part_of_the_frame(harness):
-    """The browser reports the whole frame as possibly covered; the pixel challenge shows the field itself."""
+    """A merchant element over a corner of the processor frame, away from the field, does not refuse."""
     lab, broker = harness.lab, harness.broker
     session, target = processor_pin(harness, '/checkout-corner')
     assert target['ok'], target
@@ -1620,7 +1360,7 @@ def test_a_processor_field_fills_when_a_merchant_element_overlaps_another_part_o
     # A cover in the merchant page after the pin refuses the fill.
     session, target = processor_pin(harness, '/checkout-corner')
     assert target['ok'], target
-    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div style=\"{COVER}\"></div>')")
+    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div style=\"{OPAQUE}\"></div>')")
     assert broker.dispatch(dict(action='fill-card', card_protocol=1, handle=handle, target=target['target'],
                                 field='cc-number')) == card_failure()
     assert lab.observer.evaluate("digest('payment-numberInput')", session, await_promise=True) == EMPTY
@@ -2073,15 +1813,14 @@ def test_an_sms_code_is_refused_after_the_node_changes_the_page_navigates_or_the
     assert lab.digest('otp') == sha(SMS_CODE) and sms_inbox(broker) == []
 
 
-@pytest.mark.usefixtures('enhanced')
-def test_a_cover_added_after_an_sms_code_pin_refuses_the_fill(harness, private_dir):
+def test_an_opaque_cover_added_after_an_sms_code_pin_refuses_the_fill(harness, private_dir):
     lab, broker = harness.lab, harness.broker
     message = sms_source(harness, private_dir)()
     url = lab.navigate('/sms')
     harness.focus('otp')
     pin = code_pin(harness, url)
     assert pin['ok'], pin
-    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div id=\"cover\" style=\"{COVER}\"></div>')")
+    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div id=\"cover\" style=\"{OPAQUE}\"></div>')")
     assert fill_code(broker, message, pin) == CODE_REFUSED
     assert lab.digest('otp') == EMPTY and sms_inbox(broker) == [message]
     lab.evaluate("document.getElementById('cover').remove()")
@@ -2299,15 +2038,14 @@ def test_a_field_too_short_for_the_listed_code_refuses_while_the_popup_is_open(h
     assert sms_inbox(broker) == [message] and lab.digest('otp') == EMPTY and not broker.extension.restores
 
 
-@pytest.mark.usefixtures('enhanced')
-def test_with_enhanced_security_a_covered_field_gets_no_popup_text(harness, private_dir):
-    """The agent code pin's cover check runs on the popup's pin too, before the broker spends the text."""
+def test_a_covered_field_gets_no_popup_text(harness, private_dir):
+    """The agent code pin's hit test runs on the popup's pin too, before the broker spends the text."""
     lab, broker = harness.lab, harness.broker
     message = sms_source(harness, private_dir)()
     lab.navigate('/sms')
     session = popup_text_session(harness)
-    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div id=\"cover\" style=\"{COVER}\"></div>')")
-    assert popup_fill(harness, session) == {'ok': False, 'error': 'field covered or changed; nothing filled'}
+    lab.evaluate(f"document.body.insertAdjacentHTML('beforeend', '<div id=\"cover\" style=\"{OPAQUE}\"></div>')")
+    assert popup_fill(harness, session) == {'ok': False, 'error': 'field changed or hidden; nothing filled'}
     assert sms_inbox(broker) == [message] and lab.digest('otp') == EMPTY
     lab.evaluate("document.getElementById('cover').remove()")
     session = popup_text_session(harness)

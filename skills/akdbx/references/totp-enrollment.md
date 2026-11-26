@@ -89,7 +89,8 @@ refuses with `target unavailable`.
   that is not an `otpauth://totp/` URI (a bare key, HOTP, a link), and an
   element whose pixels (an `<svg>`: shapes, transforms or paint) changed after
   the pin. The element must show whole and uncovered: a 5 x 5 grid of points
-  over it must hit-test to it, at least 21 CSS pixels a side, with `object-fit`
+  over it must hit-test to it (`elementFromPoint`, on both routes, so a
+  click-through cover is not seen), at least 21 CSS pixels a side, with `object-fit`
   fill (or contain at the default position).
 - An inline `<svg>` is drawn from its own plain shapes (rect, also with
   rounded corners given as lengths, circle, ellipse, line, polyline, polygon,

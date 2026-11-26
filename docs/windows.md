@@ -84,13 +84,11 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
   agent-desktop slot window pins require a Linux desktop.
 - The extension route (0.32.0+, fill extension 0.4.0) holds child-frame
   `<iframe>` owners and captures secrets in the top document, as the CDP route
-  does. It has no browser-native hit test: by default only the CDP route
-  refuses a card or address field under a click-through cover. From 0.34.0
-  (fill extension 0.5.0) the experimental Enhanced security setting (the cog in
-  the extension popup, off by default) also refuses a card, address or secret
-  target under an ordinary cover, with the browser's occlusion test and a pixel
-  check of the active tab (a page built to defeat the check can still pass it;
-  see the limit in [the extension reference](../skills/akdbx/references/extension.md)). Pairing is held in memory only: a
+  does. It has no browser-native hit test: only the CDP route refuses a card,
+  address or code field under a click-through cover. The experimental Enhanced
+  security pixel check of fill extension 0.5.0 to 0.15.x is removed after
+  0.52.0 ([visibility checks](../README.md#visibility-checks-what-they-stop)).
+  Pairing is held in memory only: a
   browser or broker restart needs a new pairing with the master password.
 
 ## Native desktop field pins

@@ -563,7 +563,7 @@ uses one of two routes, and says which:
    If that key gives no response or the wrong one, the page offers the key on
    your computer instead.
 2. **The browsing computer.** Otherwise the page asks the akdbx browser
-   extension (0.16.0+) on the computer where you opened it. The extension's
+   extension (0.17.0+) on the computer where you opened it. The extension's
    native host asks the key there, and the page sends the response to the
    broker inside the same HTTPS request as the password. The native host
    needs no broker on that computer. The extension answers at once for its

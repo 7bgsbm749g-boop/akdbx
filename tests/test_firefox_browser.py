@@ -296,7 +296,7 @@ def firefox_lab(private_dir, certificates, request):
     mode = getattr(request, 'param', None)
     vault_path = private_dir / 'synthetic.kdbx'
     try:
-        if mode in ('writable', 'qr', 'qr-enhanced'):
+        if mode in ('writable', 'qr', 'qr-all-urls'):
             data = request.getfixturevalue('template').read_bytes()
             if os.name == 'nt':
                 from akdbx.windows_security import write_new
@@ -333,6 +333,13 @@ def firefox_lab(private_dir, certificates, request):
         name = 'org.akdbx.firefox_test_' + unique
         folder = extension_host.build(private_dir / 'extension', browser='firefox', host_name=name,
                                       unlock_origin=origin)
+        if mode == 'qr-all-urls':
+            # Fill extension 0.5.0 to 0.15.x could ask for <all_urls>, and Firefox keeps that grant
+            # through an update that no longer lists it: the QR tests run with that access too.
+            built = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
+            assert built['host_permissions'] == ['https://*/*'] and 'optional_host_permissions' not in built
+            built['host_permissions'] = ['https://*/*', '<all_urls>']
+            (folder / 'manifest.json').write_text(json.dumps(built, indent=2), encoding='utf-8')
         launcher = private_dir / ('host.cmd' if os.name == 'nt' else 'host.sh')
         launcher.write_text(extension_host._launcher_text('firefox', sys.executable, str(endpoint),
                             None if os.name == 'nt' else extension_host.package_root()), newline='')
@@ -368,7 +375,7 @@ def firefox_lab(private_dir, certificates, request):
         env = dict(os.environ)
         if os.environ.get('AKDBX_FIREFOX_NO_SANDBOX') == '1':
             env['MOZ_DISABLE_CONTENT_SANDBOX'] = '1'
-        service_args = ['--allow-system-access'] if mode in ('popup', 'settings', 'qr-enhanced') else []
+        service_args = ['--allow-system-access'] if mode in ('popup', 'qr-all-urls') else []
         if service_args:
             env["MOZ_REMOTE_ALLOW_SYSTEM_ACCESS"] = "1"
         service = Service(service_args=service_args, executable_path=DRIVER, log_output=str(private_dir / 'geckodriver.log'),
@@ -395,7 +402,7 @@ def firefox_lab(private_dir, certificates, request):
         assert broker.extension.approve(token)
         driver.get(url)
         yield SimpleNamespace(driver=driver, broker=broker, url=url, vault=vault_path,
-                              settings=f'moz-extension://{extension_uuid}/options.html')
+                              popup=f'moz-extension://{extension_uuid}/popup.html')
     finally:
         try:
             if driver:
@@ -634,7 +641,7 @@ def click_popup_entry(lab, text=None):
         widget.find_element('css selector', '.unified-extensions-item-action-button').click()
         # The toolbar panel is a XUL browser. WebDriver's switch_to.frame only
         # accepts HTML frames. Use Firefox's own WebDriver click in the panel.
-        popup_url = lab.settings.replace('options.html', 'popup.html')
+        popup_url = lab.popup
         popup = WebDriverWait(driver, 8).until(lambda d: d.execute_script("""
             return [...document.querySelectorAll('browser.webextension-popup-browser')]
                 .find(b => b.getBoundingClientRect().width > 0 &&
@@ -707,38 +714,6 @@ def test_firefox_popup_fills_a_texted_code_once(firefox_lab, private_dir):
     assert broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages'] == []
     assert driver.execute_script('return window.keyEvents') == 0
     assert driver.execute_script('return document.activeElement.id') == 'otp'
-
-
-@pytest.mark.parametrize('firefox_lab', ['settings'], indirect=True)
-def test_firefox_enhanced_card_cover(firefox_lab):
-    from selenium.webdriver.support.ui import WebDriverWait
-
-    lab = firefox_lab
-    lab.driver.get(lab.settings)
-    toggle = lab.driver.find_element('id', 'enhanced')
-    wait = WebDriverWait(lab.driver, 5)
-    wait.until(lambda _: toggle.is_enabled())
-    toggle.click()
-    wait.until(lambda _: toggle.is_enabled() and toggle.is_selected())
-    target, _ = navigate(lab, 'fields')
-    # Native widget paint can hide the challenge colour even on an uncovered input.
-    lab.driver.execute_script("number.style.appearance = 'none'")
-    request = dict(action='pin-card-target', card_protocol=1, field='cc-number', selector='#number', **target)
-    lab.broker.vault.entries.append(CardEntry(title='Test card', uuid='test-card'))
-
-    pin = lab.broker.dispatch(request)
-    assert pin['ok'], pin
-    assert fill_card(lab, pin) == dict(ok=True, filled='cc-number', card_delivery=DELIVERY)
-    assert field_digest(lab.driver, 'number') == hashlib.sha256(CARD['number'].encode()).hexdigest()
-    lab.driver.execute_script("number.value = ''")
-    pin = lab.broker.dispatch(request)
-    assert pin['ok'], pin
-    lab.driver.execute_script("""const cover = document.createElement('div');
-        cover.style.cssText = 'position:fixed;inset:0;background:white;pointer-events:none';
-        document.body.append(cover)""")
-    assert not lab.broker.dispatch(request)['ok']
-    assert not fill_card(lab, pin)['ok']
-    assert field_digest(lab.driver, 'number') == hashlib.sha256(b'').hexdigest()
 
 
 def test_firefox_card_in_clipped_drawer(firefox_lab):
@@ -919,17 +894,12 @@ def qr_fill_pending(lab, target):
     raise AssertionError('authenticator code stayed near expiry')
 
 
-def enhanced_security(lab):
-    """Turn on Enhanced security in the options page: Firefox grants the add-on <all_urls> host access."""
+def all_urls_granted(lab):
+    """Whether Firefox grants the add-on <all_urls> host access, asked in one of its own pages."""
     from selenium.webdriver.support.ui import WebDriverWait
-    lab.driver.get(lab.settings)
-    toggle = lab.driver.find_element('id', 'enhanced')
-    wait = WebDriverWait(lab.driver, 5)
-    wait.until(lambda _: toggle.is_enabled())
-    toggle.click()
-    wait.until(lambda _: toggle.is_enabled() and toggle.is_selected())
-    assert lab.driver.execute_async_script(
-        "browser.permissions.contains({origins: ['<all_urls>']}).then(arguments[0])") is True
+    lab.driver.get(lab.popup)
+    WebDriverWait(lab.driver, 5).until(lambda d: d.execute_script("return typeof browser === 'object'"))
+    return lab.driver.execute_async_script("browser.permissions.contains({origins: ['<all_urls>']}).then(arguments[0])")
 
 
 def qr_capture_and_commit(lab, page):
@@ -1002,15 +972,15 @@ def test_firefox_qr_pin_refuses_other_origins_and_two_codes(firefox_lab):
     qr_tainted_after_pin(firefox_lab)
 
 
-@pytest.mark.parametrize('firefox_lab', ['qr-enhanced'], indirect=True)
+@pytest.mark.parametrize('firefox_lab', ['qr-all-urls'], indirect=True)
 def test_firefox_qr_with_all_urls_host_access_still_reads_only_the_pages_own_pixels(firefox_lab, caplog, capsys):
-    """Enhanced security grants <all_urls>: the content script could then read a tainted canvas's pixels."""
+    """With <all_urls> (which fill extension 0.5.0 to 0.15.x could ask for) the content script could
+    read a tainted canvas's pixels; the pin decodes only an origin-clean canvas."""
     import logging
     caplog.set_level(logging.DEBUG)
     lab = firefox_lab
-    enhanced_security(lab)
+    assert all_urls_granted(lab) is True
     qr_refusals(lab)
-    # Every pin and read now also takes the pixel challenge.
     receipts = qr_capture_and_commit(lab, 'qr-img')
     for page in ('qr-canvas', 'qr-svg'):
         pinned = qr_pin(lab, qr_open(lab, page))
@@ -1019,16 +989,9 @@ def test_firefox_qr_with_all_urls_host_access_still_reads_only_the_pages_own_pix
         assert captured == dict(ok=True, state='pending', totp_configured=True, metadata=qr_values(lab),
                                 capture_delivery=CAPTURE_DELIVERY), (page, captured)
         receipts += [pinned, captured]
-        assert lab.driver.execute_script("return getComputedStyle(document.getElementById('qr')).boxShadow") == 'none'
-    # A click-through cover passes the DOM hit test; the screenshot still shows it.
-    target = qr_open(lab, 'qr-img')
-    lab.driver.execute_script("document.body.insertAdjacentHTML('beforeend', '<div style=\"position:absolute;left:40px;"
-                              "top:80px;width:60px;height:60px;background:#fff;pointer-events:none\"></div>')")
-    refused = qr_pin(lab, target)
-    assert refused == pin_refused(), refused
     qr_tainted_after_pin(lab)
     out = capsys.readouterr()
-    assert qr_clean(*receipts, refused, out.out, out.err, caplog.text)
+    assert qr_clean(*receipts, out.out, out.err, caplog.text)
 
 
 @pytest.mark.parametrize('firefox_lab', ['qr'], indirect=True)
