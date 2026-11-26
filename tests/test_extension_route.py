@@ -1761,8 +1761,9 @@ def test_a_qr_read_pin_is_sealed_as_qr_and_is_for_capture_totp_only(capture_brok
     assert extension.calls.count('read') == 1 and 'JBSWY3DP' not in json.dumps(receipt)
 
 
-@pytest.mark.parametrize('browser, version', [('helium', '0.13.0'), ('firefox', BUILT)])
-def test_an_older_or_firefox_extension_gets_no_qr_read_pin_but_keeps_text_reads(capture_broker, browser, version):
+@pytest.mark.parametrize('browser, version', [('helium', '0.13.0'), ('firefox', '0.14.1')])
+def test_an_older_extension_gets_no_qr_read_pin_but_keeps_text_reads(capture_broker, browser, version):
+    # Firefox needs 0.14.2: older builds may decode a tainted canvas that a content script with <all_urls> can read.
     broker = capture_broker
     extension = FakeExtension({4: [Document('TOP', SECRET_SITE)]})
     channel = FakeChannel(broker.extension, extension, browser=browser, version=version)
@@ -1771,6 +1772,20 @@ def test_an_older_or_firefox_extension_gets_no_qr_read_pin_but_keeps_text_reads(
     assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE, read_kind='qr') == failure()
     assert 'pin' not in extension.calls
     assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE)['ok']
+
+
+@pytest.mark.parametrize('browser, version', [('chrome', '0.14.0'), ('firefox', BUILT)])
+def test_a_qr_read_pin_reaches_a_chromium_or_firefox_extension_from_its_minimum_version(capture_broker, browser, version):
+    broker = capture_broker
+    extension = FakeExtension({4: [Document('TOP', SECRET_SITE)]})
+    channel = FakeChannel(broker.extension, extension, browser=browser, version=version)
+    broker.extension.channels[channel.id] = channel
+    broker.extension.approved.append(channel.digest)
+    pinned = read_pin(broker, channel, 4, 'TOP', SECRET_SITE, read_kind='qr')
+    assert pinned['ok'], pinned
+    assert [p['spec'] for p in extension.pins.values()] == [dict(selector='#secret', frame_origin=None, read_kind='qr')]
+    status = broker.dispatch(dict(action='ping'))
+    assert status['extension_qr_capture_firefox_min_version'] == '0.14.2'
 
 
 def test_cli_reads_through_the_extension_with_route_or_default(monkeypatch, capsys, capture_broker):

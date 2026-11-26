@@ -38,7 +38,7 @@ CI jobs (all in `.github/workflows/`):
 | `linux` | `tests.yml` | Unit and contract suites on Ubuntu, including Android with a simulated device |
 | `linux-native-fields` | `tests.yml` | Real GTK and Qt apps on X11, XWayland and native Wayland (Weston) |
 | `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, cover checks |
-| `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension |
+| `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension: fills, TOTP, secret reads, QR capture (also with `<all_urls>`), SMS codes |
 | `windows` | `tests.yml` | Named pipe, real Win32, WinForms and WPF apps, Chrome and Edge CDP, the extension in Edge, QR capture |
 | `macos-broker` | `tests.yml` | macOS 15: AppKit fields, Darwin IPC and TLS, Chrome CDP with a foreign-user listener, guided setup and LaunchAgent, Android attach host checks with a simulated device |
 | `card-safety` | `card-safety.yml` | Real Chrome CDP: cards, processor frames, identities, SMS codes, agent desktop slots |
@@ -163,7 +163,7 @@ runs as a temporary add-on; see [Firefox setup](firefox.md).
 | Secret read, top document | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
 | Secret read, child frame | ⛔ (O) | ⛔ (O) | ⛔ (O) |
 | `capture-totp`, text key | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
-| `capture-totp`, QR code | ✗ (V) | ✗ (V) | ✗ (V) |
+| `capture-totp`, QR code (top document) | ✅ after 0.51.0 (ext 0.14.2) · `firefox-extension-browser` (V) | ✅ after 0.51.0 · `firefox-extension-browser` (V) | ✅ after 0.51.0 · `firefox-extension-browser` (V) |
 | SMS code | ✅ 0.50.1 (ext 0.13.0) · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` |
 | Popup human click | ✅ login 0.47.0; address and texted (SMS) code after 0.51.0 (ext 0.15.0) · `firefox-extension-browser`; TOTP, card: no Firefox test (R) | ✅ login, address, texted code · `firefox-extension-browser` | ✅ login, address, texted code · `firefox-extension-browser` |
 | Agent desktop slots | — (U) | — (U) | — (U) |
@@ -290,9 +290,18 @@ broker takes attached devices only (after 0.50.1).
   fills a device from a Windows broker.
 - **U** The extension runs in the user's own browser. `--browser-slot` applies
   only to the CDP route, and the broker refuses it with `--route extension`.
-- **V** Not built: Firefox content scripts can read some cross-origin pixels,
-  and this path has no real-Firefox proof yet. The broker refuses a QR read
-  pin from Firefox with `target unavailable`. Text keys capture as usual.
+- **V** A Firefox content script with `<all_urls>` host access (Enhanced
+  security grants it) reads another origin's pixels from a tainted canvas,
+  also for an `<img>` whose URL on the page's origin redirects to another
+  origin. Fill extension 0.14.2 decodes only a canvas that passes
+  `convertToBlob`'s origin-clean check, which that access does not skip
+  (`extension_qr_capture_firefox_min_version`). The broker refuses a QR read
+  pin from an older Firefox build with `target unavailable`. Real Firefox
+  tests capture a same-origin `<img>`, `<canvas>` and inline `<svg>` through
+  `commit-totp`. They also show that the pin refuses another origin's image
+  (with or without CORS), the redirect and a tainted canvas, with and without
+  `<all_urls>`. Two codes or a changed element refuse, and so does a code that
+  is not TOTP.
 - **W** Safari needs a containing Apple app, a Safari native-messaging adapter
   and Apple signing. A permanently installed (signed) Firefox add-on also
   needs the owner's Mozilla AMO credentials; until then Firefox uses a

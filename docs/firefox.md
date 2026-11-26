@@ -98,11 +98,22 @@ From fill extension 0.11.1, a card or address field inside a clipped drawer
 can pass the inset check in Firefox. The extension checks open and closed shadow
 roots when it walks the field’s ancestors.
 
-The fill extension's QR read pins for `capture-totp --qr` are Chromium-only: a
-Firefox extension refuses `pin-password-target --mode read --qr` with `target
-unavailable` (no real-Firefox proof of that path yet). Text setup keys still
-capture in Firefox, and this does not change the Firefox fill extension's
-shown-once secret read pins.
+From fill extension 0.14.2 (after akdbx 0.51.0), QR read pins for
+`capture-totp --qr` work in Firefox too
+(`extension_qr_capture_firefox_min_version`). The content script decodes the
+pinned `<img>`, `<canvas>` or inline `<svg>` with the same checks as in
+Chromium. Only the top document is read, the image URL must be on the page's
+origin (or a `data:` URL), and the page must show exactly one code with an
+`otpauth://totp/` URI. If the element changes after the pin, the capture
+refuses. The key is saved as pending until `commit-totp`. One Firefox
+difference needs an extra check. A content script with `<all_urls>` host
+access (Enhanced security asks for it) can read another origin's pixels from
+a tainted canvas. This includes an `<img>` whose URL on the page's origin
+redirects to another origin. So the extension decodes only a canvas that
+passes `convertToBlob`'s origin-clean check, which that access does not skip.
+An older Firefox build refuses `pin-password-target --mode read --qr` with
+`target unavailable`; text setup keys and shown-once secret reads are not
+affected.
 
 ## Enhanced security
 
