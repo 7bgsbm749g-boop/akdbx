@@ -139,7 +139,7 @@ authenticator setup key printed in space-separated Base32 groups, for
 From 0.44.0, native apps can use **native field pins** for passwords, combined logins,
 generated passwords, usernames, TOTP codes, cards, addresses and read-only
 secret capture. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
-uses exact Unicode Win32 Edit controls. The post-0.47 Windows backend also
+uses exact Unicode Win32 Edit controls. The post-0.48 Windows backend also
 supports WinForms TextBox and retained WPF TextBox and PasswordBox controls. Native apps have no browser origin:
 the service URL is a caller assertion and is matched to login/capture origins,
 not claimed as OS URL verification. See [Native desktop fields](skills/akdbx/references/native-fields.md)

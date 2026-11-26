@@ -14,15 +14,18 @@ Supported controls:
   this is not certification of every toolkit or compositor.
 - Windows 10/11: visible, enabled Win32 Edit controls, WinForms TextBox controls
   and WPF TextBox and PasswordBox controls in the active native window.
-  Check `native_field_windows_uia: true` for the post-0.47 Windows backend.
+  Check `native_field_windows_uia: true` for the post-0.48 Windows backend.
   The broker requires its own user and session, the Default input desktop
   and a target at or below its integrity level. Browser controls are refused.
 - macOS native controls are not implemented. Its extension route is unchanged.
 
 This is directed **control** delivery: Linux uses the retained AT-SPI editable
 text object, and Windows uses `WM_SETTEXT` to the exact Edit HWND or UI Automation
-ValuePattern on a retained WPF element. WPF also needs TextPattern to check the
-length without reading back the filled value. It supports single-line values
+ValuePattern on a retained WPF element. For a WPF PasswordBox, TextPattern
+checks the UTF-16 length without reading back the password. For an unmasked
+WPF TextBox, the broker reads the Value back and compares it exactly with the
+written text; it never returns the value. UI Automation string conditions are
+not used, because they accept canonically equivalent text. WPF supports single-line values
 because UI Automation does not expose the TextBox AcceptsReturn setting.
 Qt, WinUI, UWP, Java, Flutter, RichEdit and VCL controls are outside the
 verified set. The broker refuses other UI Automation providers. There are

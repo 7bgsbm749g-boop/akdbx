@@ -1,6 +1,5 @@
 """Retained WPF UI Automation elements. Only the dedicated MTA uses COM pointers."""
 from concurrent.futures import ThreadPoolExecutor
-import ctypes
 from functools import wraps
 from pathlib import Path
 import threading
@@ -10,7 +9,6 @@ import time
 # importing thread as an STA by default.
 import comtypes
 import comtypes.client
-from comtypes.automation import VARIANT
 import win32api
 import win32gui
 
@@ -36,17 +34,6 @@ def in_apartment(method):
             return method(*args)
         return _worker.submit(method, *args).result()
     return call
-
-
-def value_condition_string(value):
-    # comtypes' str -> VARIANT conversion uses len(str) as a UTF-16 count.
-    # Let Windows copy the full native BSTR into an owning VT_BSTR instead.
-    source = VARIANT(ctypes.byref(comtypes.BSTR(value)))
-    result = VARIANT()
-    copy = ctypes.OleDLL('oleaut32').VariantCopyInd
-    copy.argtypes = (ctypes.POINTER(VARIANT), ctypes.POINTER(VARIANT))
-    copy(ctypes.byref(result), ctypes.byref(source))
-    return result
 
 
 class WpfSession(WindowsFields):
@@ -160,11 +147,10 @@ class WpfSession(WindowsFields):
         before_write()
         pattern.SetValue(value)
         if not masked:
-            # Apply an exact Value condition only to this retained element. UIA
-            # returns an element or no match, never the field contents.
-            condition = self.uia.CreatePropertyCondition(self.types.UIA_ValueValuePropertyId, value_condition_string(value))
-            match = element.FindFirst(self.types.TreeScope_Element, condition)
-            if not match or not self.uia.CompareElements(match, element):
+            # UIA string conditions and FindText compare linguistically: they
+            # match canonically equivalent text and skip ignorable characters.
+            # Compare the unmasked value ordinally here and never return it.
+            if (pattern.CurrentValue or '') != value:
                 raise TargetError()
             return
         # A WPF PasswordBox presents one mask character per UTF-16 unit.

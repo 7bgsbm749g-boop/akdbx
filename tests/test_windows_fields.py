@@ -206,14 +206,20 @@ def test_managed_control_login_read_and_focus_change(managed_exe, toolkit):
             password = next(f['control'] for f in window['controls'] if f['password'])
             command('password')
             target = pin(window, 'login', password, username_control=user)
+            # The app replaces the decomposed username with its precomposed
+            # form. UI Automation string conditions call the two values equal.
             try:
-                with pytest.raises(DeliveryError) as error:
-                    manager.deliver_password(target, 'login', '\u0628A\u030A', 'must-not-arrive',
-                                             {https_origin(SITE)}, lambda: True, time.monotonic() + 4)
-                assert error.value.started
-                command('verify-normalized', 'match')
+                manager.deliver_password(target, 'login', '\u0628A\u030A', 'must-not-arrive',
+                                         {https_origin(SITE)}, lambda: True, time.monotonic() + 4)
+            except DeliveryError as exc:
+                error = exc
+            else:
+                error = None
             finally:
                 target.close()
+            # First prove that the app changed the username and kept the old password.
+            command('verify-normalized', 'match')
+            assert error is not None and error.started
     finally:
         manager.close()
         app.stdin.close()
@@ -267,10 +273,3 @@ def test_changed_desktop_or_browser_host_refuses_before_write(lab, monkeypatch, 
             win32gui.DestroyWindow(browser)
         if atom:
             win32gui.UnregisterClass(atom, cls.hInstance)
-
-def test_uia_value_condition_preserves_utf16():
-    from comtypes.automation import VT_BSTR
-    from akdbx.windows_uia import value_condition_string
-    value = 'invented-\U0001F600'
-    condition = value_condition_string(value)
-    assert condition.vt == VT_BSTR and condition.value == value
