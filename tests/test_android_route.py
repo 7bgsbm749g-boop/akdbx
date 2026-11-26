@@ -1198,13 +1198,14 @@ def test_capture_totp_qr_refuses_and_consumes_an_android_read_pin_without_readin
     cdp = FakeCDP('https://example.com/setup')
     broker, _ = chrome_broker(device_file, cdp)
     target = pin(broker, mode='read', field='#secret')['target']
+    cdp.closed = False
     entry = next(e for e in broker.vault.entries if e.username == 'synthetic-user')
     result = broker.dispatch(dict(action='capture-totp', totp_capture_protocol=1, target=target, read_kind='qr',
                                   handle=handle(broker, 'synthetic-user'), metadata=metadata(entry),
                                   start_deadline=broker.clock() + 4))
     assert result == dict(ok=False, error=QR_REFUSED)
     assert not any('this.capture(' in p.get('functionDeclaration', '') for _, p in cdp.calls if p)
-    assert broker.android.take(target) is None
+    assert cdp.closed and broker.android.take(target) is None
 
 
 def test_chrome_read_refuses_covered_text_when_the_center_is_exposed(device_file):
