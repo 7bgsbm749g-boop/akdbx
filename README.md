@@ -142,7 +142,7 @@ From 0.44.0, native apps can use **native field pins** for passwords, combined l
 generated passwords, usernames, TOTP codes, cards, addresses and read-only
 secret capture. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
 uses exact Unicode Win32 Edit controls. From 0.50.0, the Windows backend also
-supports WinForms TextBox and retained WPF TextBox and PasswordBox controls. On macOS (after 0.49.0), native fields
+supports WinForms TextBox and retained WPF TextBox and PasswordBox controls. On macOS (0.50.0+), native fields
 use Accessibility with permission granted to the broker. Stock AppKit password
 fields omit the character count required to verify delivery. Password and
 combined login modes are unavailable on macOS. Native apps have no browser origin:
@@ -160,7 +160,7 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
   checks, private HTTPS unlock and encrypted vault writes. The native host supports Chrome, Edge, Helium
   and Firefox 153+ (0.47.0+); Chromium and Brave are supported from 0.49.0. From 0.49.0, guided setup
   installs a login LaunchAgent, the broker locks on macOS screen-lock notifications, and the QR importer
-  also registers for Chromium and Brave. After 0.49.0, Chromium CDP also supports private profiles and profile slots,
+  also registers for Chromium and Brave. From 0.50.0, Chromium CDP also supports private profiles and profile slots,
   and native field pins use Accessibility. Numeric window delivery is unavailable. Safari's Apple
   wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).

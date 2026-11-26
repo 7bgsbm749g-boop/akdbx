@@ -1,6 +1,6 @@
 # Phone verification texts (SMS) (0.40.0)
 
-For SMS code operations on Android, see [Android pins and commands](android.md#additional-android-operations-after-0470).
+For SMS code operations on Android, see [Android pins and commands](android.md#additional-android-operations-0500).
 
 akdbx can receive the verification texts that sites send to a phone number and
 fill the code straight into the challenge field. You see only a masked preview
