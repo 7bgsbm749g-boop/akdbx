@@ -11,7 +11,8 @@ from .browser_card import TTL, failure
 from .browser_code import DELIVERY, FIELDS
 from .target import failure as x11_failure
 from .sms import KINDS, MAX_WAIT, MESSAGE_ID, NAME, PROTOCOL, RESULTS, ROUTE_SETUP, TOKEN
-from .target import DELIVERY as X11_DELIVERY
+from .target import DELIVERY as WINDOW_DELIVERY
+from .native_fields import DELIVERY as NATIVE_DELIVERY
 
 COMMANDS = {'sms-add-source', 'sms-remove-source', 'sms-sources', 'sms-wait', 'pin-code-target', 'fill-sms-code',
             'subscribe-sms', 'sms-subscription-status', 'unsubscribe-sms', 'sms-test-page'}
@@ -70,7 +71,7 @@ def add_parsers(commands):
     p = commands.add_parser('fill-sms-code', help='fill the code of one received text; returns no code')
     p.add_argument('message', help='message id from sms-wait')
     p.add_argument('--target', required=True,
-                   help='fresh pin-code-target token, or a pin-target token for window-directed delivery')
+                   help='fresh pin-code-target, native code control, or window pin-target token')
     page_url.add(p, 'target-url', required=False,
                  help='independently verified HTTPS challenge URL; required with a pin-target token')
     p = commands.add_parser('subscribe-sms', help='register a one-shot HTTPS webhook for the next verification text '
@@ -181,7 +182,8 @@ def valid_receipt(args, response):
                 and response['expires_in'] == TTL and response['code_delivery'] == DELIVERY)
     if args.command == 'fill-sms-code':
         return response in (dict(ok=True, filled='one-time-code', code_delivery=DELIVERY),
-                            dict(ok=True, filled='one-time-code', target_delivery=X11_DELIVERY))
+                            dict(ok=True, filled='one-time-code', code_delivery=NATIVE_DELIVERY),
+                            dict(ok=True, filled='one-time-code', target_delivery=WINDOW_DELIVERY))
     return False
 
 
@@ -244,6 +246,9 @@ def run(args, request):
         elif args.command in {'sms-subscription-status', 'unsubscribe-sms'}:
             payload['subscription_id'] = args.subscription_id
         elif args.command == 'fill-sms-code':
+            if caps.get('sms_fill_routes') == []:
+                print(json.dumps(dict(ok=False, error='broker has no SMS fill route; request not sent')))
+                return 1
             if not MESSAGE_ID.fullmatch(args.message):
                 print(json.dumps(dict(ok=False, error='message id must be 32 lowercase hex characters; request not sent')))
                 return 1

@@ -18,6 +18,7 @@ function versionText(manifest) {
 }
 
 function label(kind, entry) {
+  if (kind === "totp") return [entry.title, entry.username + " (authenticator code)"];
   if (kind === "card") return [entry.title, `${entry.brand} •••• ${entry.last_four}`];
   if (kind === "login") return [entry.title, entry.username + (entry.passwordless ? " (no password)" : "")];
   return [entry.title, "address and contact details"];
@@ -90,7 +91,7 @@ async function main() {
   if (!tab) return;
   const found = await send({op: "probe", tab_id: tab.id});
   if (!found || !found.ok) {
-    status.textContent = (found && found.error) || "Click into a login, card or address field first.";
+    status.textContent = (found && found.error) || "Click into a login, authenticator code, card or address field first.";
     return;
   }
   if (!found.entries.length) {
@@ -110,6 +111,14 @@ async function main() {
     button.addEventListener("click", async event => {
       if (!userGesture(event, navigator.userActivation)) return;
       for (const other of list.querySelectorAll("button")) other.disabled = true;
+      if (found.kind === "totp") {
+        // Stay open to show broker refusals. Return focus only after the
+        // worker has verified the answer for this clicked selection.
+        akdbxBrowser.runtime.onMessage.addListener((msg, sender) => {
+          if (sender.id === akdbxBrowser.runtime.id && !sender.tab &&
+              msg.op === "return-focus" && msg.session === found.session) window.close();
+        });
+      }
       const result = await send({op: "fill", session: found.session, index: entry.index});
       status.textContent = result && result.ok ? "Filled." : (result && result.error) || "Nothing filled.";
       if (result && result.ok) setTimeout(() => window.close(), 400);

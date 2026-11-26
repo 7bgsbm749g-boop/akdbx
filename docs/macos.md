@@ -141,8 +141,8 @@ refuses delivery. See [browser pins](../skills/akdbx/references/target-fill.md).
   no sleep-delay inhibitor. CI tests delivery of the lock notification in that
   session; a physical sleep/wake cycle and a live tailnet are outside this test.
 - Safari needs a signed Apple browser wrapper. The separate QR capture
-  extension uses Chromium native messaging. SMS ingest is available, but
-  this version's SMS fill requires a CDP or native window target.
+  extension uses Chromium native messaging. SMS ingest is available. SMS fill
+  uses a CDP code pin; `sms_fill_routes` lists `cdp` once a browser profile is configured.
 - The managed Android emulator requires a Linux host with KVM. The Linux
   privileged secret-sink helper requires Linux peer credentials and systemd.
 - iOS and iPadOS cannot run this Python broker. This is macOS support only.

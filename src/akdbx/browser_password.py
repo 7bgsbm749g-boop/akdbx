@@ -168,6 +168,32 @@ class CDP:
         raise TargetError()
 
 
+TOTP_FIELD = r'''(function(e, digits = null) {
+  const attribute = Element.prototype.getAttribute;
+  if (!(e instanceof HTMLInputElement) || !['text','tel','number','password'].includes(e.type)) return false;
+  const ac = (attribute.call(e, 'autocomplete') || '').trim().toLowerCase();
+  const tokens = ac.split(/[\t\n\f\r ]+/).filter(Boolean);
+  if (tokens[0]?.startsWith('section-')) tokens.shift();
+  if (tokens.length && !(tokens.length === 1 && ['one-time-code','on','off'].includes(tokens[0]))) return false;
+  const hints = ['id','name','aria-label'].map(k => attribute.call(e, k) || '');
+  if (hints.some(h => /(?:credit.?card|card[-_ ]?(?:number|holder|expir|security|verification|cvc|cvv)|cc[-_ ]?(?:name|number|csc|cvc|cvv|exp)|(?:^|[^a-z0-9])(?:cvc|cvv|csc)2?(?:$|[^a-z0-9]))/i.test(h) ||
+      /password/i.test(h) && !/(?:one[-_ ]?time|totp|otp)/i.test(h))) return false;
+  // Only a decimal whole-code format. Unsupported constraints fail closed.
+  if (['min','max','step'].some(k => e.hasAttribute(k)) ||
+      !['','numeric','decimal','tel'].includes(e.inputMode)) return false;
+  if (digits === null) return true;
+  if (![6,8].includes(digits)) return false;
+  const pattern = attribute.call(e, 'pattern');
+  if ((e.maxLength >= 0 && e.maxLength < digits) || e.minLength > digits) return false;
+  if (pattern !== null) {
+    // Do not evaluate arbitrary page patterns against a secret or support split codes.
+    const match = /^(?:\\d|\[0-9\])(?:\+|\{(6|8)(?:,(6|8))?\})$/.exec(pattern);
+    if (!match || match[1] && (digits < +match[1] || digits > +(match[2] || match[1]))) return false;
+  }
+  return true;
+})'''
+
+
 # Both scripts run in a fresh isolated world. Retain the actual elements, native
 # setter/getters and document, never resolve a replacement by selector on fill.
 CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, allowAutocompleteOff, frameOrigin) {
@@ -187,31 +213,10 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
   const otpAttributes = mode === 'totp' ? [...password.attributes].map(a => [a.name, a.value]) : null;
   const otpMetadata = e => otpAttributes.length === e.attributes.length &&
     otpAttributes.every(([name, value]) => attribute.call(e, name) === value);
-  const otpHints = e => {
-    const ac = (attribute.call(e, 'autocomplete') || '').trim().toLowerCase();
-    const tokens = ac.split(/[\t\n\f\r ]+/).filter(Boolean);
-    if (tokens[0]?.startsWith('section-')) tokens.shift();
-    if (tokens.length && !(tokens.length === 1 && ['one-time-code','on','off'].includes(tokens[0]))) return false;
-    const hints = ['id','name','aria-label'].map(k => attribute.call(e, k) || '');
-    if (hints.some(h => /(?:credit.?card|card[-_ ]?(?:number|holder|expir|security|verification|cvc|cvv)|cc[-_ ]?(?:name|number|csc|cvc|cvv|exp)|(?:^|[^a-z0-9])(?:cvc|cvv|csc)2?(?:$|[^a-z0-9]))/i.test(h) ||
-        /password/i.test(h) && !/(?:one[-_ ]?time|totp|otp)/i.test(h))) return false;
-    // Only a decimal whole-code format. Unsupported constraints fail closed.
-    return !['min','max','step'].some(k => e.hasAttribute(k)) &&
-      ['','numeric','decimal','tel'].includes(e.inputMode);
-  };
-  const acceptsTotp = digits => {
-    if (mode !== 'totp' || ![6,8].includes(digits)) return false;
-    const e = password, pattern = attribute.call(e, 'pattern');
-    if ((e.maxLength >= 0 && e.maxLength < digits) || e.minLength > digits) return false;
-    if (pattern !== null) {
-      // Do not evaluate arbitrary page patterns against a secret or support split codes.
-      const match = /^(?:\\d|\[0-9\])(?:\+|\{(6|8)(?:,(6|8))?\})$/.exec(pattern);
-      if (!match || match[1] && (digits < +match[1] || digits > +(match[2] || match[1]))) return false;
-    }
-    return otpMetadata(e) && otpHints(e);
-  };
+  const totpField = __TOTP_FIELD__;
+  const acceptsTotp = digits => mode === 'totp' && [6,8].includes(digits) && otpMetadata(password) && totpField(password, digits);
   const hasAutocomplete = (e, secret) => {
-    if (mode === 'totp') return otpMetadata(e) && otpHints(e);
+    if (mode === 'totp') return otpMetadata(e) && totpField(e);
     // The autocomplete IDL getter can deduplicate malformed raw token lists.
     const value = attribute.call(e, 'autocomplete') || '';
     if (value.length > 4096) return false;
@@ -262,7 +267,7 @@ CAPTURE = r'''(function(selector, usernameSelector, mode, url, passwordPurpose, 
     (!password || !username || password !== username && password.form === username.form);
   if (!check() || originalFocus !== (username || password)) { dispose(); throw 0; }
   return {password, username, setter, getter:Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').get, check, acceptsTotp, mode, url, dispose};
-})'''
+})'''.replace('__TOTP_FIELD__', TOTP_FIELD)
 # Read pins (`mode: "read"`) retain one element that shows a secret. The caller
 # must focus it. Text selection is not accepted: on X11, Chromium publishes any
 # selected text to the PRIMARY selection, outside the broker. Pin and read both require the exact

@@ -540,6 +540,7 @@ def _content_script():
     text = files('akdbx').joinpath('fill_extension', 'content.js').read_text(encoding='utf-8')
     replacements = {
         '__PASSWORD_CAPTURE__': browser_password.CAPTURE,
+        '__TOTP_FIELD__': browser_password.TOTP_FIELD,
         '__PASSWORD_FILL__': browser_password.FILL,
         '__CARD_PIN_SCRIPT__': browser_card.PIN_SCRIPT,
         '__CARD_GUARD__': card_processor.GUARD,
