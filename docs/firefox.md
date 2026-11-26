@@ -109,28 +109,34 @@ The page must show exactly one code with an
 `otpauth://totp/` URI. If the element changes after the pin, the capture
 refuses. The key is saved as pending until `commit-totp`. One Firefox
 difference needs an extra check. A content script with `<all_urls>` host
-access (Enhanced security asks for it) can read another origin's pixels from
-a tainted canvas. This includes an `<img>` whose URL on the page's origin
+access can read another origin's pixels from a tainted canvas. Fill extension
+0.5.0 to 0.15.x could ask for that access, and Firefox keeps the grant through
+an update to a build that no longer asks for it (see [Covers](#covers)). This includes an `<img>` whose URL on the page's origin
 redirects to another origin. So the extension decodes only a canvas that
 passes `convertToBlob`'s origin-clean check, which that access does not skip.
 An older Firefox build refuses `pin-password-target --mode read --qr` with
 `target unavailable`; text setup keys and shown-once secret reads are not
 affected.
 
-## Enhanced security
+## Covers
 
-With **Enhanced security** on, card, address, code and read pins require a pixel check
-at the pin and again at delivery. Firefox 161 does not expose
-`IntersectionObserverEntry.isVisible`. The extension therefore cannot repeat
-a whole-element occlusion check in the JavaScript task that writes or reads the
-field. A DOM hit test skips click-through covers. The extension checks a tab screenshot at the field centre or along the secret text,
-then rechecks the target and its position. A cover between sampled points is
-outside that proof. The ordinary DOM, frame-owner and origin checks still apply.
+In Firefox the extension runs the same DOM checks as in Chromium: hidden,
+transparent, zero-size, off-screen and inert targets refuse. Card, address and
+code fields also refuse a clip and a cover that takes pointer events at the
+field centre, and a read pin refuses a cover over its text; password pins have
+no hit test. The DOM hit test
+(`elementFromPoint`) skips a click-through cover (`pointer-events: none`,
+`inert`, a popover `::backdrop`). Firefox has no browser-native hit test for
+an extension (see WebDriver BiDi below), so no Firefox route refuses such a
+cover. See [Visibility checks](../README.md#visibility-checks-what-they-stop).
 
-Firefox can paint a native input over its CSS inset shadow. In that case the
-screenshot lacks the expected colour and akdbx refuses even an uncovered
-field. An ordinary CSS-styled input can pass. Missing screenshot permission or
-an inactive tab also prevents the pixel check from succeeding.
+Fill extension 0.5.0 to 0.15.x had an experimental Enhanced security pixel
+check with tab screenshots. Fill extension 0.16.0 (after akdbx 0.52.0) removes
+it, with its settings page and its `<all_urls>` request
+([why](../skills/akdbx/references/extension.md#removed-enhanced-security)). A
+temporary add-on that was granted `<all_urls>` keeps the grant after a reload
+with the new build, until Firefox exits (tested with Firefox 161). 0.16.0 never
+uses it, and the QR check above still refuses a tainted canvas.
 
 ## WebDriver BiDi
 
@@ -154,8 +160,8 @@ field, a wrong frame URL and a reloaded page refused), generated-password delive
 Stripe frame types. A loopback TLS fixture serves all processor pages. The suite
 also checks identity notification events, the toolbar popup's trusted click
 on a login, an address (with the identity pin's checks, 0.15.0) and a texted
-code (0.15.0); no Firefox test fills a TOTP code or a card from the popup. It
-also checks the pixel check on an uncovered and a covered field. For `capture-secret`
+code (0.15.0); no Firefox test fills a TOTP code or a card from the popup. The
+QR tests also run with `<all_urls>` host access. For `capture-secret`
 and `capture-totp`, it reopens a disposable encrypted vault to verify the
 result. CI runs this suite on Linux, macOS and Windows with Firefox 161, and on
 Linux with the minimum supported version, Firefox 153. The

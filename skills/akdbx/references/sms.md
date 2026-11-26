@@ -193,9 +193,8 @@ age. It never shows the code.
 - After the click the popup closes, so the browser gives the focus back to the
   field. Then the same checks as `pin-code-target --route extension` pin it:
   one focused, visible, enabled `text`, `tel`, `number` or `password` input on
-  the exact page, under no cover at its centre. With Enhanced security on, the
-  extension's cover check also runs. A field in a frame refuses: use an agent
-  pin for it.
+  the exact page, under no cover that takes pointer events at its centre. A
+  field in a frame refuses: use an agent pin for it.
 - Only after that pin holds does the broker take the text from the inbox. Its
   code goes sealed to the extension and only into the pinned field. A text is
   used once, by the popup or by `fill-sms-code`, whichever comes first.

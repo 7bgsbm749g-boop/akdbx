@@ -160,7 +160,9 @@ require a unique enabled option whose value matches the stored text exactly.
 An absent saved value or missing or conflicting autocomplete token refuses,
 unless you give an explicit field purpose (below).
 The broker also refuses a hidden, unfocused, covered, ambiguous, or changed
-field. It uses the retained DOM element and sends no keys, focus changes,
+field. A cover means one that takes pointer events at the field centre; only the
+CDP route also refuses a click-through cover
+([visibility checks](../../../README.md#visibility-checks-what-they-stop)). It uses the retained DOM element and sends no keys, focus changes,
 clipboard data or form submission. By default the fill sends no events.
 For a form that tracks edits, use
 `fill-identity --notify-page` to send bubbling `input` and `change` events
@@ -234,7 +236,7 @@ akdbx pin-identity-target --route extension --page-id PAGE_ID --frame-id FRAME_I
   pin `tel`, and so does a sub-token such as `tel-national`. A purpose that
   differs from `--field` refuses before the request is sent.
 - Every other guard stays: exact URL, same origin, unique selector, visible
-  and uncovered field, focus, compatible input type, 30-second single-use
+  and uncovered field (as above), focus, compatible input type, 30-second single-use
   pin, and no value in any output. A hint that changes after the pin refuses
   the fill. Never add or rewrite page attributes to make a field eligible.
 - The CDP and extension routes apply the same rules. The extension route

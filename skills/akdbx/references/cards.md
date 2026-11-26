@@ -74,8 +74,9 @@ route. For Adyen, Computop or Stripe card iframes, use the explicit processor
 routes below. In Firefox, choose `--route extension` and use the document ID
 from `list-password-frames`. The extension checks the actual processor URL.
 The native hit tests and Chrome out-of-process iframe checks described below
-apply to the CDP route. See [Firefox cover checks](../../../docs/firefox.md#enhanced-security)
-for the extension’s DOM checks and optional screenshot check.
+apply to the CDP route. The extension uses the DOM checks only: it does not see
+a click-through cover over a field ([Firefox covers](../../../docs/firefox.md#covers),
+[visibility checks](../../../README.md#visibility-checks-what-they-stop)).
 Other cross-origin frames, shadow DOM and unannotated fields must be refused.
 
 ```bash

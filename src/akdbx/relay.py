@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 import random
 import re
+import selectors
 import socket
 import ssl
 import stat
@@ -1165,6 +1166,7 @@ class RelayClient:
         ws = local = None
         try:
             ws = self._websocket(f'/api/v1/stream/{stream}', STREAM_IDLE_TIMEOUT)
+            ws.sock = _StreamTLS(ws.sock, STREAM_IDLE_TIMEOUT)
             self._track(ws)
             local = socket.create_connection(('127.0.0.1', self.local_port), timeout=CONNECT_TIMEOUT)
             local.settimeout(STREAM_IDLE_TIMEOUT)
@@ -1258,6 +1260,69 @@ class _UpgradeBudget:
         data = self._sock.recv(min(bufsize, self._left), *flags)
         self._left -= len(data)
         return data
+
+    def __getattr__(self, name):
+        return getattr(self._sock, name)
+
+
+class _StreamTLS:
+    """Serialize OpenSSL calls on the stream socket, but never hold the lock waiting for I/O."""
+
+    def __init__(self, sock, timeout):
+        self._sock = sock
+        self._timeout = timeout
+        self._lock = threading.Lock()
+        self._waiters = 0
+        self._closing = False
+        sock.setblocking(False)
+
+    def _io(self, operation, arg):
+        deadline = time.monotonic() + self._timeout
+        while True:
+            with self._lock:
+                if self._closing:
+                    raise ConnectionError('relay stream closed')
+                try:
+                    return operation(arg)
+                except ssl.SSLWantReadError:
+                    event = selectors.EVENT_READ
+                except ssl.SSLWantWriteError:
+                    event = selectors.EVENT_WRITE
+                self._waiters += 1
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('relay stream timed out')
+                with selectors.DefaultSelector() as selector:
+                    selector.register(self._sock, event)
+                    if not selector.select(remaining):
+                        raise TimeoutError('relay stream timed out')
+            finally:
+                with self._lock:
+                    self._waiters -= 1
+                    if self._closing and not self._waiters:
+                        self._sock.close()
+
+    def recv(self, size):
+        return self._io(self._sock.recv, size)
+
+    def send(self, data):
+        return self._io(self._sock.send, data)
+
+    def shutdown(self, how):
+        with self._lock:
+            self._sock.shutdown(how)
+
+    def close(self):
+        with self._lock:
+            self._closing = True
+            if self._waiters:
+                # Closing the descriptor now can remove it from epoll before
+                # it delivers the shutdown event. The last waiter closes it.
+                with suppress(OSError):
+                    self._sock.shutdown(socket.SHUT_RDWR)
+            else:
+                self._sock.close()
 
     def __getattr__(self, name):
         return getattr(self._sock, name)
