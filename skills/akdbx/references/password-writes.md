@@ -1,16 +1,16 @@
-Password and confirmation fills now require fresh DOM password pins from
-`pin-password-target`, with `chromium-password-dom-v1` receipts. X11 pins refuse
-passwords. Read [password field delivery](target-fill.md) for operator setup,
+# Create passwords and passwordless identity records
+
+Password and confirmation fills require a fresh password pin: a DOM pin from
+`pin-password-target` (`chromium-password-dom-v1` on the CDP route,
+`extension-dom-v1` on the extension route), a native field pin (not on macOS)
+or an Android pin. Window pins refuse passwords. Read [password field delivery](target-fill.md) for operator setup,
 explicit selectors, supported controls, and race checks before this workflow.
 
 For generated password operations on Android, see [Android pins and commands](android.md#additional-android-operations-0501).
 
-# Create passwords and passwordless identity records
-
 Password workflows in this guide require CLI and broker version **0.12.0 or newer**
-and the DOM delivery capabilities below. The current release is **0.20.1**; 0.17.0
-added this workflow on native Windows.
-All password fills require [DOM password protocol 1](target-fill.md).
+and the delivery capabilities below; 0.17.0 added this workflow on native
+Windows. All browser password fills require [DOM password protocol 1](target-fill.md).
 Native email-code creation requires **0.9.1** and its separate passwordless
 protocol below. Passwordless SSO creation requires CLI and broker **0.8.1 or
 newer** plus the exact capabilities below. Locate the absolute CLI path in

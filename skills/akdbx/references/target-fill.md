@@ -13,7 +13,9 @@ For contact and address fields, use [identity workflows](identities.md).
 Identity pins use the same-origin card DOM transport with focused identity
 fields and a separate pin and fill command.
 
-Saved and generated passwords require `chromium-password-dom-v1`. A browser
+Saved and generated passwords need a DOM pin (`chromium-password-dom-v1` on
+the CDP route, `extension-dom-v1` on the extension route), a native field pin
+(not on macOS) or an Android pin. A browser
 window pin cannot identify an address bar, DOM field, tab, or origin. The broker
 therefore refuses password and login fills through `pin-target`, including old
 clients. There is no password keyboard fallback.
@@ -440,7 +442,7 @@ fixed errors and receipts, never values or native exceptions. `not-started` mean
 no assignment occurred; `uncertain` means assignment may have occurred. Do not
 retry an uncertain fill automatically or read back a real password to check it.
 
-## Remaining X11 operations
+## Remaining window-pin operations
 
 From 0.49.0, Linux and Windows brokers list the numeric window operations in
 `target_fill_modes: ["username", "totp", "sms-code"]`. These correspond to

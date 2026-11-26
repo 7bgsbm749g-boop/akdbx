@@ -880,7 +880,8 @@ class Setup:
         choice['firefox_extension_dir'] = str(firefox_dir) if firefox_dir is not None else None
         cdp = None if args.no_cdp else self.selected('cdp_profile', args.cdp_profile, None)
         if self.macos and cdp:
-            raise Refusal('macOS requires the extension route; omit --cdp-profile')
+            raise Refusal('guided setup does not configure the CDP route on macOS; omit --cdp-profile, then start the '
+                          'broker with --password-browser-profile yourself (docs/macos.md, section Chromium CDP)')
         if not self.macos and 'fill' not in skip and ui.interactive:
             answer = ui.text("Private Chromium profile folder for the CDP route ('none' to skip)",
                              str(cdp) if cdp else 'none')
@@ -1715,7 +1716,8 @@ class Setup:
     def _cdp(self, profile):
         self.say('CDP route: the broker fills a Chromium profile that runs with a debugging port. Any process of '
                  'your user can control that profile, and anti-bot checks often flag it (sign-in checks fail, '
-                 'cards are declined). Prefer the extension route; keep CDP for secret capture.')
+                 'cards are declined). Prefer the extension route; keep CDP for setups without the extension and '
+                 'for secret reads in child frames.')
         if self.windows:
             browser = self.tools.get('browsers', {}).get('chrome') or 'chrome.exe'
         else:

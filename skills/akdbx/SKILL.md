@@ -31,7 +31,8 @@ session.
 | Merge two vaults | [Merge](references/merge.md), [preservation format](references/preservation-format.md) |
 | Snapshot admission (review prototype) | [Admission](references/snapshot-admission.md), [group selection](references/group-selection.md), [selection verification](references/selection-verification.md) |
 | Open the private pages from any device (no Tailscale) | [The akdbx relay](#the-akdbx-relay) |
-| macOS host | Use the paired browser extension. Check `lock_event_sources.macos` for desktop lock and `relay.connected` when using the relay. Android: attached devices only (`android_managed_emulators: false`). |
+| Which route works on this platform | [Routes by platform](#routes-by-platform), then the repository's [support matrix](https://github.com/7bgsbm749g-boop/akdbx/blob/main/docs/support-matrix.md) |
+| macOS host | [Routes by platform](#routes-by-platform). Check `native_field_accessibility_granted` for native apps, `lock_event_sources.macos` for desktop lock and `relay.connected` when using the relay. Android: attached devices only (`android_managed_emulators: false`). |
 | Windows host | [Windows operation](references/windows.md) |
 | Fill login, generated password, SMS, card or identity fields on Android, capture a shown-once value in Chrome, or wake an emulator for a mobile approval | [Android devices](references/android.md) |
 | Set akdbx up for a user (first install, or add a part later) | [First-time setup](#first-time-setup) |
@@ -40,7 +41,7 @@ session.
 
 ## Native desktop apps
 
-For authorized username, TOTP, password, combined login, generated-password, card, address or
+For authorized username, TOTP, SMS code, password, combined login, generated-password, card, address or
 read-only secret capture in a native desktop app, use native field protocol 1
 and [the native field workflow](references/native-fields.md). Verify the app and
 service independently. `list-native-fields` returns only opaque IDs and flags;
@@ -49,7 +50,8 @@ window pin for passwords, and never use native pins for browser pages. Native
 apps have no DOM; their service URL is a caller assertion, not URL attestation.
 On macOS check `native_field_accessibility_granted`. Grant access in System
 Settings if needed. Stock AppKit secure fields lack a verifiable character
-count, so use another authorized route when a password field is refused.
+count, so macOS refuses password, login and generated-password pins: use a
+browser route for those. A native read pin never feeds `capture-totp`.
 
 ## You act for the user
 
@@ -138,7 +140,7 @@ directory junction on Windows needs no elevation), so it can be invoked as
 ### First-time setup
 
 `akdbx setup` (0.27.0+) takes a user from install to a working broker, on
-Linux and Windows, with macOS support from 0.49.0. On macOS, `--start-at-login` installs a per-user LaunchAgent. Native window pins, CDP and Safari are unavailable in this version. You can run it for the user without questions:
+Linux and Windows, with macOS support from 0.49.0. On macOS, `--start-at-login` installs a per-user LaunchAgent, and setup configures only the extension route: it refuses `--cdp-profile` there (CDP on macOS, 0.50.1+, is set up by hand). macOS has no window pins and no Safari support. You can run it for the user without questions:
 
 ```bash
 akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
@@ -437,6 +439,27 @@ value. The commands are the same; add `--route extension` or `--route cdp` to
 `list-password-frames`, `pin-password-target`, `pin-card-target` and
 `pin-identity-target` when you do not want the broker's default.
 
+### Routes by platform
+
+Follow this table, and the repository's [support matrix](https://github.com/7bgsbm749g-boop/akdbx/blob/main/docs/support-matrix.md) for each
+operation. A route the running broker does not report in `status` is not
+available, whatever the table says.
+
+| Route | Linux | Windows | macOS |
+| --- | --- | --- | --- |
+| Extension (`--route extension`), first choice for pages | Chromium family and Firefox 153+ | Chromium family and Firefox 153+ | Chromium family and Firefox 153+ |
+| CDP (`--route cdp`) | Yes | Yes | 0.50.1+, only after the operator verified debugging-port isolation |
+| Native field (`pin-native-target`) | AT-SPI on X11 and Wayland | Win32 Edit, WinForms, WPF | Accessibility, 0.50.1+; no password, login or generated-password modes |
+| Window pin (`pin-target`): usernames, TOTP, SMS codes only | X11 or XWayland windows; not native Wayland | HWND | None |
+| Android (`akdbx android`) | Yes; managed emulator too | No end-to-end proof | Attached devices only (after 0.50.1); no managed emulator (`android_managed_emulators: false`) |
+
+Everywhere: passwords never go to a window pin; `capture-totp` needs a CDP,
+extension or Android Chrome read pin (a native read pin is refused); the
+extension reads only in the top document (use CDP for a child frame); QR read
+pins need CDP or a Chromium-family extension (Firefox refuses them); agent
+desktop slots apply to CDP pins and, on Linux, to window pins of a slot's
+Chrome, never to the extension route.
+
 ## Website checks during sign-in
 
 Solve human-verification checks yourself: a "Verify you are human" checkbox,
@@ -607,8 +630,9 @@ checks can still need the user. Details: [TOTP](references/totp.md) and
 
 **Texted (SMS) codes.** When a site texts a code, read it with `sms-wait`
 (masked previews only) and fill it with `fill-sms-code` into a fresh
-`pin-code-target` pin. In the paired browser (the only page route on macOS),
-check for `extension` in `sms_fill_routes` and pin with `--route extension`.
+`pin-code-target` pin. In the paired browser, check for `extension` in
+`sms_fill_routes` and pin with `--route extension`; on the CDP route
+(also on macOS from 0.50.1 with a configured profile) check for `cdp`.
 For a native application, check for `native` in
 `sms_fill_routes` and use `pin-native-target --mode code`. A window
 pin needs the independently verified challenge URL. The user's

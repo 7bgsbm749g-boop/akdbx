@@ -16,6 +16,11 @@ one wheel per version for Linux, macOS and Windows, with `SHA256SUMS` and a
 build-provenance attestation. See [Releasing akdbx](docs/releasing.md) to cut a
 release or upgrade a broker.
 
+**What works where:** the [support matrix](docs/support-matrix.md) lists every
+operation for each fill route (window pin, native field, CDP, extension,
+Android) on Linux X11, Linux Wayland, Windows and macOS, with the release that
+shipped it, the CI job that proves it, and the reason for each gap.
+
 ## Quick start: akdbx setup
 
 Install akdbx (a release wheel or `pip install -e .` in a checkout), then run
@@ -50,7 +55,8 @@ and can be skipped (`--skip STAGE`):
    `akdbx serve --no-print-unlock-link`, so the journal or task output never
    keeps the unlock link: run `akdbx status` to get it.
 6. **Fill route**: the browser extension (`akdbx extension install` and
-   `build`) and/or the CDP route.
+   `build`) and/or the CDP route (Linux and Windows; on macOS, setup refuses
+   `--cdp-profile` and CDP is set up by hand).
 7. **Optional features**: the authenticator capture host, unlock notifications
    and merge.
 8. **Agent skill**: links `~/.claude/skills/akdbx` and `~/.codex/skills/akdbx`
@@ -95,7 +101,9 @@ There is no reveal, export, clipboard or arbitrary-field command.
 
 Web fills reach the page through one of two routes. Both use the same search,
 pin, fill and receipt model. Agents choose with `--route extension|cdp`, and
-`status` reports `fill_routes` and `default_fill_route`.
+`status` reports `fill_routes` and `default_fill_route`. Native apps use native
+field pins or window pins, and Android devices use `akdbx android`; the
+[support matrix](docs/support-matrix.md) compares all five routes.
 
 | | Extension route (0.21.0+) | CDP route |
 | --- | --- | --- |
@@ -140,29 +148,33 @@ authenticator setup key printed in space-separated Base32 groups, for
 
 From 0.44.0, native apps can use **native field pins** for passwords, combined logins,
 generated passwords, usernames, TOTP codes, cards, addresses and read-only
-secret capture. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
+secret capture, and from 0.49.0 for SMS codes. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
 uses exact Unicode Win32 Edit controls. From 0.50.1, the Windows backend also
 supports WinForms TextBox and retained WPF TextBox and PasswordBox controls. On macOS (0.50.1+), native fields
 use Accessibility with permission granted to the broker. Stock AppKit password
-fields omit the character count required to verify delivery. Password and
-combined login modes are unavailable on macOS. Native apps have no browser origin:
+fields omit the character count required to verify delivery. Password, combined
+login and generated-password modes are unavailable on macOS. Native read pins
+cannot feed `capture-totp`, because the OS cannot verify the website origin. Native apps have no browser origin:
 the service URL is a caller assertion and is matched to login/capture origins,
 not claimed as OS URL verification. See [Native desktop fields](skills/akdbx/references/native-fields.md)
 for supported controls, explicit field selection and limits.
 
 Legacy numeric window pins (`pin-target`) use X11 or XWayland on Linux and HWNDs on
-Windows for usernames, TOTP and SMS codes. They never receive a password. Browser
+Windows for usernames, TOTP and SMS codes. They never receive a password. A native
+Wayland surface has no window ID, and macOS has no window pins. Browser
 pages keep using the CDP or Extension route with tab, URL and DOM verification.
 
 ## Platforms
+
+The [support matrix](docs/support-matrix.md) has the full list per route and platform.
 
 - **macOS** (0.43.0+): local browser broker, with native Unix peer
   checks, private HTTPS unlock and encrypted vault writes. The native host supports Chrome, Edge, Helium
   and Firefox 153+ (0.47.0+); Chromium and Brave are supported from 0.49.0. From 0.49.0, guided setup
   installs a login LaunchAgent, the broker locks on macOS screen-lock notifications, and the QR importer
-  also registers for Chromium and Brave. From 0.50.1, Chromium CDP also supports private profiles and profile slots,
-  and native field pins use Accessibility. Numeric window delivery is unavailable. Safari's Apple
-  wrapper is a separate delivery. See
+  also registers for Chromium and Brave. From 0.50.1, Chromium CDP also supports private profiles and profile slots
+  (guided setup does not configure it), and native field pins use Accessibility, except for passwords. Numeric
+  window delivery is unavailable. Safari needs a signed Apple app wrapper and is not built. See
   [macOS setup and limits](docs/macos.md).
 - **Linux** (X11 or Wayland desktop): the original platform. The setup notes in this
   README and the [VPS setup reference](skills/akdbx/references/vps-setup.md)
@@ -173,18 +185,20 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 - **Windows** (0.17.0+): native broker and browser fills. It uses local named pipes, Windows
   access checks, a loopback HTTPS page (from 0.22.0 also reachable from other
   tailnet devices through Tailscale Serve, from 0.26.0 from any device through
-  the akdbx relay) and directed Unicode window messages for
-  native-app username and TOTP fills. See [Windows setup and validation](docs/windows.md)
+  the akdbx relay), native field pins for Win32 Edit (0.44.0), WinForms and WPF (0.50.1) controls,
+  and directed Unicode window messages for native-app username, TOTP and SMS code fills. UWP, WinUI
+  and Qt controls are not proven. See [Windows setup and validation](docs/windows.md)
   for browser and engine requirements, limits and pending checks. The Linux
   broker-socket and Unix-socket unlock notes below do not describe the Windows
   transport. [Private HTTPS pages](docs/private-pages.md) describes the unlock
   page for both platforms.
 - **Android devices and emulators** (0.36.0+) support verified app fields and
   Chrome pages on a Linux broker, and on a macOS broker for attached devices
-  (after 0.50.1). The Android parity update adds generated
+  (after 0.50.1). Version 0.50.1 adds generated
   passwords, SMS codes, card and identity fields, and Chrome read pins for
-  shown-once secrets and authenticator enrollment.
-  [Android setup and operations](skills/akdbx/references/android.md)
+  shown-once secrets and authenticator enrollment. The managed emulator needs
+  Linux (`android_managed_emulators` in `status`). A Windows broker has no
+  end-to-end proof. [Android setup and operations](skills/akdbx/references/android.md)
 
 ## Android devices (0.36.0)
 
@@ -196,7 +210,7 @@ last operation. Apps, their sign-ins and notification settings stay on disk.
 To connect a device you already run, use `akdbx android setup --attach SERIAL`.
 This also works on macOS (after 0.50.1), where `akdbx status` reports
 `android_managed_emulators: false`: run the emulator or device yourself. See
-[macOS Android devices](docs/macos.md#android-devices-after-0490).
+[macOS Android devices](docs/macos.md#android-devices-after-0501).
 
 For a service that offers mobile sign-in confirmation, such as GitHub Mobile,
 sign in to its app once and enable its notifications. When a login you started
@@ -253,10 +267,10 @@ limits are in [Android devices](skills/akdbx/references/android.md).
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
   peer UID before sending a request.
 - The broker starts locked. The user enters the master password only on the private HTTPS unlock page, never in chat, terminal input, arguments, or environment variables. The page is HTTPS on `127.0.0.1` with the broker's own certificate, or (Linux or macOS) a Unix socket behind Tailscale Serve; it never binds the LAN or tailnet and never serves plain HTTP over TCP. Through the optional akdbx relay, TLS still ends in the broker: the relay forwards only encrypted bytes, and the broker trusts no name, certificate or header from it without checking.
-- After unlock, browser password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. Native field pins use retained masked native controls. Neither path sends password keys or Tab. Unsupported targets refuse delivery without terminal approval.
+- After unlock, browser password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. Native field pins use retained masked native controls (not on macOS). Neither path sends password keys or Tab. Unsupported targets refuse delivery without terminal approval.
 - Errors are deliberately generic after the typing boundary.
 
-This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Browser password fills require a short-lived DOM target pin; see [the target contract](skills/akdbx/references/target-fill.md). The broker verifies the exact HTTPS page, main frame and retained editable password input. X11 window pins refuse password/login delivery. Application acceptance remains a caller check; malicious pages and compromised local processes are outside this boundary. Python cannot guarantee memory zeroization.
+This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Browser password fills require a short-lived DOM target pin; see [the target contract](skills/akdbx/references/target-fill.md). The broker verifies the exact HTTPS page, main frame and retained editable password input. Window pins (X11, XWayland or HWND) refuse password/login delivery. Application acceptance remains a caller check; malicious pages and compromised local processes are outside this boundary. Python cannot guarantee memory zeroization.
 
 ## Browser extension route (0.21.0)
 
@@ -331,9 +345,11 @@ origin's HTTPS page. There is no trust on first use: only a local
 `akdbx extension build` sets the first origin. See
 [Browser extension trust](docs/private-pages.md#browser-extension-trust).
 
-## CDP route: install and run (Linux)
+## CDP route: install and run
 
-CDP works on Linux with X11 or Wayland. Only numeric window pins need an X11 or XWayland target, X-Resource 1.2 local PID support and EWMH active-window metadata. Set `AKDBX_UNLOCK_ORIGIN` in your private local environment to the private page's HTTPS origin before starting the broker or using the CLI, and create its certificate as [Private HTTPS pages](docs/private-pages.md) describes. `https://localhost:9443` is the default:
+CDP works on Linux with X11 or Wayland, on Windows (0.17.0+) and on macOS (0.50.1+). The examples below are for Linux; see
+[Windows setup](docs/windows.md#configure-the-browser-for-password-and-card-fills) and
+[macOS Chromium CDP](docs/macos.md#chromium-cdp). On Linux only numeric window pins need an X11 or XWayland target, X-Resource 1.2 local PID support and EWMH active-window metadata. Set `AKDBX_UNLOCK_ORIGIN` in your private local environment to the private page's HTTPS origin before starting the broker or using the CLI, and create its certificate as [Private HTTPS pages](docs/private-pages.md) describes. `https://localhost:9443` is the default:
 
 ```bash
 python3 -m venv .venv
@@ -569,7 +585,8 @@ longer, and report `expires_in` and `expires_at` (UTC); the page shows the
 expiry time. `search-identities LABEL` returns
 only labels, group paths and single-use handles. Login search excludes these
 records. `pin-identity-target` and `fill-identity` deliver one field to a
-verified and focused Chromium DOM element. The default fill is silent. For a
+verified and focused DOM element (CDP, or the extension in a Chromium browser
+or Firefox), a native field pin or an Android pin. The default fill is silent. For a
 form that tracks edits, add `--notify-page` to `fill-identity` to send bubbling
 `input` and `change` events. A page handler can submit the form in response.
 From 0.35.1, `pin-identity-target --field-purpose FIELD` (with
@@ -631,7 +648,7 @@ or `Page expired`, `Vault changed`, `Cancelled` or `Not confirmed`. A saved
 single-use handle. Ordinary login search excludes card entries; password
 operations refuse card records. Expired cards cannot be filled.
 
-Card delivery uses a retained DOM element in a private isolated JavaScript world
+On the CDP route, card delivery uses a retained DOM element in a private isolated JavaScript world
 through Chrome DevTools Protocol. It never sends keyboard events, Tab or submit,
 and cannot direct input into the browser address bar through keyboard focus.
 The broker checks the exact HTTPS page/frame URLs, unique selector, matching
@@ -642,6 +659,8 @@ pointer-transparent covers before and after dispatch and require the exact
 retained input/iframe owner at the point. A focus change cannot select a different destination. Replacement,
 navigation, expiry or unsupported markup refuses the fill. An interrupted
 delivery is reported as uncertain and must not be retried automatically.
+The extension, native field and Android routes have their own checks; see the
+[support matrix](docs/support-matrix.md).
 
 Configure the broker with `serve DB --card-browser-profile /absolute/USER_DATA_DIR`
 or `AKDBX_CARD_BROWSER_PROFILE`. This must be the existing, owned, mode-0700
@@ -654,7 +673,8 @@ remain available.
 
 Before sending any WebSocket bytes, the broker verifies that its UID owns the
 server side of the connected loopback TCP socket using Linux's bounded
-/proc/self/net/tcp table. It keeps that exact socket and refuses redirects.
+/proc/self/net/tcp table (macOS: the kernel TCP record; Windows: the owner
+process's user, session and integrity level). It keeps that exact socket and refuses redirects.
 Missing or ambiguous ownership data refuses the connection, including stale
 port files that point to another user's listener.
 
@@ -713,8 +733,8 @@ selects the input set: only the `cardnumber`, `exp-date` (MM/YY) and `cvc`
 inputs with no id and the matching autocomplete token; decoy inputs refuse.
 The Card Element fills only through `pin-card-target --processor stripe`; the
 extension popup refuses that frame.
-Other cross-origin frames, shadow DOM, unrecognised fields and native
-applications remain unsupported. Merchant verification uses part of the pin's
+Other cross-origin frames, shadow DOM and unrecognised fields remain
+unsupported. Native applications use native field pins (0.44.0+). Merchant verification uses part of the pin's
 lifetime, while the four-second fill deadline starts with the fill request.
 An already expired pin is not issued. See the skill's card guide for the exact
 processor pin command and independent merchant verification requirements.
@@ -873,14 +893,14 @@ returns it to the inbox. `pin-code-target` pins one focused, visible, enabled
 `text`, `tel`, `number` or `password` input on an exact HTTPS page (the
 card transport's same-origin, hit-tested DOM guards). It uses the CDP route
 or, with `--route extension` (fill extension 0.13.0+, `extension_code_protocol: 1`),
-the paired browser extension, which applies the same checks and is the page
-route on macOS. For six
+the paired browser extension, which applies the same checks on Linux,
+Windows and macOS. For six
 one-digit boxes, `fill-sms-code` also takes a `pin-target` token (on Linux, an X11 or XWayland window; on Windows, an HWND) with
 `--target-url`, or `--target-url-file` for a challenge URL that holds a token.
 For a native app, use `pin-native-target --mode code` and the same
 `fill-sms-code` command. Status lists supported SMS destinations in
-`sms_fill_routes`. An empty list means the broker can receive texts but has
-no supported desktop fill route. An Android `--mode sms` pin is a separate
+`sms_fill_routes`. Only a 0.49.x macOS broker reports an empty list: it can
+receive texts but has no supported desktop fill route. An Android `--mode sms` pin is a separate
 destination: check `android_fill_modes` and `android_devices_configured`.
 The iPhone filter forwards only texts with the word `code`; a second automation
 with `OTP` covers sites that say only that. See
@@ -1020,7 +1040,7 @@ akdbx capture-totp --qr --target TARGET --handle HANDLE --title T --username U -
 
 The browser decodes the `<img>`, `<canvas>` or inline `<svg>` itself with the
 bundled jsQR (the CDP pin's isolated world, or the fill extension 0.14.0+
-content script in Helium, Chrome or Edge; Firefox refuses QR pins for now). The
+content script in a Chromium-family browser; Firefox refuses QR pins for now). The
 key goes only to the vault; pixels and the decoded value never reach the agent,
 a receipt or a log. An image from another origin, no code or two codes, a code
 that is not an `otpauth://totp/` URI, and a change after the pin refuse with

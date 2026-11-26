@@ -12,10 +12,12 @@ On brokers that report `sms_fill_routes`, `cdp` requires a configured browser
 profile, `extension` requires a paired akdbx fill extension 0.13.0 or newer
 (`extension_code_protocol: 1`; see `extension_paired` and
 `extension_browsers`), `native` requires platform support for native controls,
-and `window` requires a supported window backend. Every desktop broker that
-reports `extension_code_protocol: 1` lists `extension`; on macOS it is the only
-page route (`["extension"]`). An empty list means that the inbox works
-but this broker has no desktop SMS fill route. Android `--mode sms` pins are not
+and `window` requires a supported window backend (Linux X11 or XWayland, or
+Windows). Every desktop broker that reports `extension_code_protocol: 1` lists
+`extension`. A 0.50.1 macOS broker reports `["extension", "native"]`, and
+`cdp` first when a browser profile is configured; it never lists `window`.
+Only a 0.49.x macOS broker reports an empty list: its inbox works, but it has
+no desktop SMS fill route. Android `--mode sms` pins are not
 in this list: check `android_fill_modes` and `android_devices_configured`. The
 local target still needs to pass its pin checks.
 `sms_sources_configured` tells you how many phone numbers forward texts.

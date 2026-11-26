@@ -139,11 +139,14 @@ broker. It exercises main and child documents, a two-field child login, TOTP,
 SMS codes in the main and a same-origin child document (with replay, a hidden
 field, a wrong frame URL and a reloaded page refused), generated-password delivery, merchant card fields, and Adyen, Computop and both
 Stripe frame types. A loopback TLS fixture serves all processor pages. The suite
-also checks identity notification events, the toolbar popup's trusted click,
-and the pixel check on an uncovered and a covered field. For `capture-secret`
+also checks identity notification events, the toolbar popup's trusted click
+on a login (no Firefox test fills a TOTP code, card or address from the
+popup), and the pixel check on an uncovered and a covered field. For `capture-secret`
 and `capture-totp`, it reopens a disposable encrypted vault to verify the
 result. CI runs this suite on Linux, macOS and Windows with Firefox 161, and on
-Linux with the minimum supported version, Firefox 153.
+Linux with the minimum supported version, Firefox 153. The
+[support matrix](support-matrix.md#extension-route-firefox) lists each Firefox
+operation and its CI job.
 
 The Firefox integration follows Mozilla's
 [native-messaging contract](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging)
