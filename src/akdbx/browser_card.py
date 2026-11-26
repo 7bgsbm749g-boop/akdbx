@@ -311,9 +311,22 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
       !o.closest('[hidden],[inert]') && !(o.disabled === true));
     return options.length ? options : null;
   }
-  // An option's value attributes and its visible text.
+  // An option's visible text and its value attributes.
   const names = o => [text(o), o.getAttribute('data-value'), o.getAttribute('value')]
     .filter(v => v !== null).map(v => v.trim()).filter(v => v !== '');
+  const MONTHS = ['january','february','march','april','may','june','july','august','september','october',
+                  'november','december'];
+  // The visible text names the saved value. A value attribute counts only when
+  // the text is that month's English name: a list that shows names may count
+  // its values from 0, so a value alone could name another month.
+  function matching(o, forms) {
+    const shown = text(o);
+    if (forms.includes(shown)) return true;
+    const name = field === 'cc-exp-month' ? MONTHS[Number(forms[0]) - 1] : null;
+    const label = shown.toLowerCase().replace(/\.$/, '');
+    return name !== null && (label === name || label === name.slice(0, 3)) &&
+      names(o).slice(1).some(v => forms.includes(v));
+  }
   // Open the dropdown, choose the one option that names the saved month or
   // year, and confirm the choice. No keys are sent; the value is never typed.
   async function choose(value, maxAgeMs) {
@@ -340,7 +353,7 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
       options = ariaOptions();
     }
     if (options === null) return refuse();
-    const matches = options.filter(o => names(o).some(n => forms.includes(n)));
+    const matches = options.filter(o => matching(o, forms));
     if (matches.length !== 1) return refuse();
     const option = matches[0], chosen = names(option);
     if (option.closest('a[href],label,summary,input,select,textarea,button:not([type="button" i])') ||

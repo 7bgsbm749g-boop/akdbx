@@ -31,6 +31,12 @@ HINTLESS = """<!doctype html><title>Synthetic hint-less card form</title>
   data-options="08 09 10" data-disabled="09"><span>Month</span></button>
 <button type=button id=never-opens aria-haspopup=listbox aria-expanded=false aria-controls=missing-list
   data-options="09" data-inert=1><span>Month</span></button>
+<button type=button id=zero-based-names aria-haspopup=listbox aria-expanded=false aria-controls=zero-list
+  data-options="January February March April May June July August September October November December"
+  data-values="0 1 2 3 4 5 6 7 8 9 10 11"><span>Month</span></button>
+<button type=button id=one-based-names aria-haspopup=listbox aria-expanded=false aria-controls=one-list
+  data-options="January February March April May June July August September October November December"
+  data-values="1 2 3 4 5 6 7 8 9 10 11 12"><span>Month</span></button>
 <button type=button id=plain-button data-options="01 02 03 04 05 06 07 08 09 10 11 12"><span>Month</span></button>
 <button id=submit-dropdown aria-haspopup=listbox aria-expanded=false aria-controls=submit-list
   data-options="01 02 03 04 05 06 07 08 09 10 11 12"><span>Month</span></button>
@@ -58,8 +64,10 @@ for (const button of document.querySelectorAll('[data-options]')) {
       if (button.dataset.inert) return;
       const list = document.createElement('div');
       list.id = id; list.setAttribute('role', 'listbox');
-      for (const label of button.dataset.options.split(' ')) {
+      const values = (button.dataset.values || '').split(' ');
+      for (const [index, label] of button.dataset.options.split(' ').entries()) {
         const option = document.createElement('div');
+        if (button.dataset.values) option.dataset.value = values[index];
         option.setAttribute('role', 'option'); option.setAttribute('aria-selected', 'false');
         if (button.dataset.disabled === label) option.setAttribute('aria-disabled', 'true');
         option.textContent = label;

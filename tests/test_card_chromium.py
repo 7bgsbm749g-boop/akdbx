@@ -881,7 +881,9 @@ def dropdown_state(chrome, selector):
     ('cc-exp-year', '#pidlInput_expiryYear', 'YYYY', '2031'),
     ('cc-exp-year', '#pidlInput_expiryYear', 'YY', '2031'),
     ('cc-exp-year', '#short-year', 'YYYY', '31'),
-    ('cc-exp-month', '#combo-month', None, '9')])
+    ('cc-exp-month', '#combo-month', None, '9'),
+    # A value attribute counts when the text is that month's name.
+    ('cc-exp-month', '#one-based-names', None, 'September')])
 def test_an_aria_expiry_dropdown_chooses_the_one_matching_option(chrome, field, selector, formatting, shown):
     page = hintless(chrome)
     # Without the purpose, a dropdown button is not a card field.
@@ -895,7 +897,9 @@ def test_an_aria_expiry_dropdown_chooses_the_one_matching_option(chrome, field, 
     assert chrome.broker.typer.events == []
 
 
-@pytest.mark.parametrize('selector', ['#ambiguous', '#no-match', '#disabled-match', '#never-opens'])
+# '#zero-based-names': names counted from 0, so data-value 9 is October: never chosen.
+@pytest.mark.parametrize('selector', ['#ambiguous', '#no-match', '#disabled-match', '#never-opens',
+                                      '#zero-based-names'])
 def test_an_aria_dropdown_with_no_single_match_refuses_and_keeps_the_selection(chrome, selector):
     page = hintless(chrome)
     target = hintless_pin(chrome, page, selector, 'cc-exp-month', field_purpose='cc-exp-month')

@@ -150,9 +150,12 @@ akdbx fill-card SEARCH_HANDLE --target CARD_TARGET --field cc-exp-year --format 
 The broker itself opens the dropdown with a DOM click, waits up to about
 0.6 seconds for the list (an element with `role="listbox"` and the named id,
 in the same document), and chooses the one enabled `role="option"` whose
-visible text, `data-value` or `value` names the saved month (`MM` or `M`, for
-example `09` or `9`) or year (`YYYY` or `YY`, for example `2031` or `31`). The
-year matches both forms whichever `--format` you give. It then confirms that
+visible text names the saved month (`MM` or `M`, for example `09` or `9`) or
+year (`YYYY` or `YY`, for example `2031` or `31`). The year matches both forms
+whichever `--format` you give. An option's `data-value` or `value` counts only
+for a month, and only when its visible text is that month's English name or
+three-letter abbreviation (`September` or `Sep` with `data-value="9"`): a list
+that counts its values from 0 then refuses instead of choosing another month. It then confirms that
 the button (or the label inside it) shows the choice, or that the option has
 `aria-selected="true"`. No key is sent and no value is typed; the receipt is
 the usual `ok` and field only.
@@ -165,8 +168,8 @@ the usual `ok` and field only.
 - A choice the page does not show within about 0.6 seconds is `uncertain`: do
   not retry automatically. Inspect the non-secret state of the dropdown
   (its visible text) instead.
-- Month names (`September`) do not match. Report such a form as missing
-  support.
+- Month names alone (`September` with no value attribute, or in another
+  language) do not match. Report such a form as missing support.
 - The page's own handlers see the click, as they would for the user.
 
 The CDP route supports both forms. The extension route applies the same DOM
