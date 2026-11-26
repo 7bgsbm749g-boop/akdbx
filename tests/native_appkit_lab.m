@@ -2,6 +2,31 @@
 #import <AppKit/AppKit.h>
 #import <WebKit/WebKit.h>
 
+// An app that caps a field's length while it is edited.
+@interface Truncate : NSObject <NSTextFieldDelegate>
+@end
+@implementation Truncate
+- (void)controlTextDidChange:(NSNotification *)note {
+    NSText *editor = [note.object currentEditor];
+    if (editor.string.length > 8) editor.string = [editor.string substringToIndex:8];
+}
+@end
+
+// A formatter that rejects an edit longer than 8 UTF-16 units.
+@interface Reject : NSFormatter
+@end
+@implementation Reject
+- (NSString *)stringForObjectValue:(id)value { return [value isKindOfClass:NSString.class] ? value : @""; }
+- (BOOL)getObjectValue:(id *)value forString:(NSString *)string errorDescription:(NSString **)error {
+    *value = string;
+    return YES;
+}
+- (BOOL)isPartialStringValid:(NSString *)partial newEditingString:(NSString **)replacement
+            errorDescription:(NSString **)error {
+    return partial.length <= 8;
+}
+@end
+
 int main(int argc, const char **argv) {
     @autoreleasepool {
         NSString *directory = @(argv[1]);
@@ -31,6 +56,7 @@ int main(int argc, const char **argv) {
         [window makeKeyAndOrderFront:nil];
         [app activateIgnoringOtherApps:YES];
         [window makeFirstResponder:plain];
+        Truncate *limiter = [Truncate new];
         NSString *command = [directory stringByAppendingPathComponent:@"command"];
         NSString *result = [directory stringByAppendingPathComponent:@"result"];
         [NSTimer scheduledTimerWithTimeInterval:0.02 repeats:YES block:^(NSTimer *timer) {
@@ -38,6 +64,10 @@ int main(int argc, const char **argv) {
             if (!cmd) return;
             [[NSFileManager defaultManager] removeItemAtPath:command error:NULL];
             if ([cmd hasPrefix:@"focus"]) [window makeFirstResponder:fields[[[cmd substringFromIndex:5] integerValue]]];
+            if ([cmd isEqual:@"truncate"]) stock.delegate = limiter;
+            if ([cmd isEqual:@"reject"]) stock.formatter = [Reject new];
+            if ([cmd isEqual:@"no-bullets"]) ((NSSecureTextFieldCell *)stock.cell).echosBullets = NO;
+            if ([cmd isEqual:@"prefill"]) stock.stringValue = @"prefilled";
             if ([cmd isEqual:@"partly-offscreen"]) {
                 // The read-only view falls below the display. The focused
                 // upper text field stays on screen.

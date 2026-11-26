@@ -11,6 +11,7 @@ import pytest
 from akdbx.native_fields import NativeFields
 from akdbx.target import TargetError, DeliveryError
 from akdbx.totp import https_origin
+from test_writes import deployed, template  # noqa: F401
 
 pytestmark = pytest.mark.skipif(sys.platform != 'darwin' or os.environ.get('AKDBX_TEST_APPKIT') != '1',
                                 reason='requires an isolated macOS desktop with Accessibility permission')
@@ -116,22 +117,184 @@ def test_sms_code_keeps_leading_zero(lab):
         target.close()
 
 
-def test_secure_field_modes_are_refused_before_writing(lab):
+def secure(lab):
+    manager, pid, command = lab
+    command('focus1')
+    window = listing(manager, pid)
+    assert window['controls'][focused(window)]['password']
+    return window, focused(window)
+
+
+def deliver(manager, target, mode, username, password):
+    manager.deliver_password(target, mode, username, password, {https_origin(ORIGIN)}, lambda: True,
+                             time.monotonic() + 4)
+
+
+# AppKit masks each UTF-16 unit: an astral emoji counts twice, a combining
+# accent once. Passwords never contain control characters (native text rule).
+@pytest.mark.parametrize('value', ['invented-password', 'invented-pássword-✓🐈', 'e\u0301漢字かな', '•x•', 'p' * 512])
+def test_secure_field_password_is_verified_by_its_masked_length(lab, value):
+    manager, pid, command = lab
+    window, control = secure(lab)
+    target = pin(manager, window, control, 'password')
+    try:
+        deliver(manager, target, 'password', '', value)
+    finally:
+        target.close()
+    assert command('inspect') == ['', value]
+    assert set(manager.capabilities()['native_field_modes']) == {
+        'username', 'password', 'login', 'totp', 'code', 'identity', 'card', 'read'}
+
+
+def test_secure_field_without_bullets_is_verified_too(lab):
+    manager, pid, command = lab
+    command('no-bullets')
+    window, control = secure(lab)
+    target = pin(manager, window, control, 'password')
+    try:
+        deliver(manager, target, 'password', '', 'invented-pássword-✓🐈')
+    finally:
+        target.close()
+    assert command('inspect') == ['', 'invented-pássword-✓🐈']
+
+
+@pytest.mark.parametrize('prefilled', [True, False])
+def test_secure_field_that_shows_text_is_never_trusted(monkeypatch, lab, prefilled):
+    from akdbx.macos_fields import AX
+    manager, pid, command = lab
+    if prefilled:
+        command('prefill')
+    window, control = secure(lab)
+    target = pin(manager, window, control, 'password')
+    original = AX.AXUIElementCopyAttributeValue
+
+    def leaky(node, name, output):
+        # An app whose secure field gives text, not mask characters.
+        error, value = original(node, name, output)
+        if name == 'AXValue' and isinstance(value, str):
+            value = value.translate({0xf79a: 'x', 0x200b: 'x'})
+        return error, value
+
+    monkeypatch.setattr(AX, 'AXUIElementCopyAttributeValue', leaky)
+    try:
+        with pytest.raises(DeliveryError) as failure:
+            deliver(manager, target, 'password', '', 'invented-password')
+        # A filled field is refused before the write; an empty one gives no proof after it.
+        assert failure.value.started is not prefilled
+    finally:
+        monkeypatch.undo()
+        target.close()
+    assert command('inspect') == ['', 'prefilled' if prefilled else 'invented-password']
+
+
+def test_secure_login_fills_both_controls(lab):
     manager, pid, command = lab
     window = listing(manager, pid)
+    username = focused(window)
+    password = next(f['control'] for f in window['controls'] if f['password'])
     command('focus1')
-    secure = listing(manager, pid)
-    password = focused(secure)
-    assert secure['controls'][password]['password']
-    with pytest.raises(TargetError):
-        pin(manager, window, password, 'login', username_control=focused(window))
-    with pytest.raises(TargetError):
-        pin(manager, secure, password, 'password')
-    secure = listing(manager, pid)
-    with pytest.raises(TargetError):
-        pin(manager, secure, focused(secure), 'card', field='cc-number')
+    target = pin(manager, window, password, 'login', username_control=username)
+    try:
+        deliver(manager, target, 'login', 'invented-user', 'invented-pássword-✓🐈')
+    finally:
+        target.close()
+    assert command('inspect') == ['invented-user', 'invented-pássword-✓🐈']
+
+
+@pytest.mark.parametrize('mode', ['password', 'login'])
+def test_secure_fill_is_refused_when_focus_moves(lab, mode):
+    manager, pid, command = lab
+    if mode == 'login':
+        window = listing(manager, pid)
+        extra = dict(username_control=focused(window))
+        control = next(f['control'] for f in window['controls'] if f['password'])
+        command('focus1')
+    else:
+        (window, control), extra = secure(lab), {}
+    target = pin(manager, window, control, mode, **extra)
+    try:
+        command('focus0')
+        with pytest.raises(DeliveryError) as failure:
+            deliver(manager, target, mode, 'invented-user', 'must-not-arrive')
+        assert not failure.value.started
+    finally:
+        target.close()
     assert command('inspect') == ['', '']
-    assert set(manager.capabilities()['native_field_modes']) == {'username', 'totp', 'code', 'identity', 'card', 'read'}
+
+
+@pytest.mark.parametrize('app', ['truncate', 'reject'])
+def test_secure_field_that_keeps_less_than_the_password_is_uncertain(lab, app):
+    manager, pid, command = lab
+    command(app)
+    window, control = secure(lab)
+    target = pin(manager, window, control, 'password')
+    try:
+        with pytest.raises(DeliveryError) as failure:
+            deliver(manager, target, 'password', '', 'invented-long-password')
+        # The field took the write but holds another length: never success.
+        assert failure.value.started
+    finally:
+        target.close()
+    assert command('inspect') == ['', 'invented' if app == 'truncate' else '']
+
+
+@pytest.mark.parametrize('value', ['x' * 65537, '🐈' * 32769])
+def test_password_over_the_text_limit_is_refused_before_writing(lab, value):
+    manager, pid, command = lab
+    window, control = secure(lab)
+    target = pin(manager, window, control, 'password')
+    try:
+        with pytest.raises(DeliveryError) as failure:
+            deliver(manager, target, 'password', '', value)
+        assert not failure.value.started
+    finally:
+        target.close()
+    assert command('inspect') == ['', '']
+
+
+def test_masked_card_field_and_unmasked_modes(lab):
+    manager, pid, command = lab
+    window, control = secure(lab)
+    target = pin(manager, window, control, 'card', field='cc-csc')
+    try:
+        assert manager.fill(target, '123', 'cc-csc', lambda: True)['ok']
+    finally:
+        target.close()
+    assert command('inspect') == ['', '123']
+    for mode in ('username', 'totp', 'code'):
+        window, control = secure(lab)
+        with pytest.raises(TargetError):
+            pin(manager, window, control, mode)
+    command('focus0')
+    plain = listing(manager, pid)
+    with pytest.raises(TargetError):
+        pin(manager, plain, focused(plain), 'password')
+    assert command('inspect') == ['', '123']
+
+
+def test_generated_password_fills_a_secure_field_and_is_saved(lab, deployed):  # noqa: F811
+    from pykeepass import PyKeePass
+    from test_writes import MASTER
+    from akdbx.writes import metadata
+    manager, pid, command = lab
+    broker, _, path, _ = deployed
+    broker.native = manager
+    entry = next(e for e in broker.vault.entries if e.title == 'Synthetic site')
+    prepared = broker.dispatch(dict(action='generate-password', handle=broker._new_handle(entry),
+                                    metadata=metadata(entry)))
+    assert prepared['ok']
+    for mode in ('password', 'confirmation'):
+        window, control = secure(lab)
+        target = broker.dispatch(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                                      control=control, mode='password', service_url=ORIGIN))['target']
+        response = broker.dispatch(dict(action='fill-generated', handle=prepared['fill_handles'][mode],
+                                        target_url=ORIGIN, target=target, target_protocol=1))
+        assert response == dict(ok=True, filled='password', target_delivery='native-field-v1')
+    assert broker.dispatch(dict(action='commit-password', write_handle=prepared['write_handle'],
+                                site_accepted=True))['ok']
+    generated = command('inspect')[1]
+    assert len(generated) == 24 and generated not in json.dumps(response)
+    assert PyKeePass(path, password=MASTER).find_entries(title='Synthetic site', first=True).password == generated
 
 
 def test_replaced_field_and_editable_read_refused(lab):

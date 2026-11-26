@@ -24,9 +24,10 @@ Supported controls:
   and a target at or below its integrity level. Browser controls are refused.
 - macOS (0.50.1+) uses Accessibility in the frontmost native window. Check
   `native_field_accessibility_granted: true`. Each control must be visible at
-  its center and support a character count. Username, TOTP, SMS code, card and
-  identity fills require an unmasked writable field. Password and combined login modes
-  are unavailable because stock AppKit secure fields omit the count. Read pins require selectable,
+  its center. An unmasked field must support a character count. Username, TOTP,
+  SMS code and identity fills require an unmasked writable field. Password and
+  combined login modes (after 0.51.0) require a stock secure field
+  (`AXSecureTextField`); card fills accept either. Read pins require selectable,
   read-only, unmasked text with a bounded accessible range. Browser windows
   and embedded web areas are refused. A window that contains a WebKit view
   (`WKWebView`) is refused from the moment the view is added. This is also true
@@ -36,7 +37,10 @@ Supported controls:
 This is directed **control** delivery: Linux uses the retained AT-SPI editable
 text object, and Windows uses `WM_SETTEXT` to the exact Edit HWND or UI Automation
 ValuePattern on a retained WPF element. For a WPF PasswordBox, TextPattern
-checks the UTF-16 length without reading back the password. For an unmasked
+checks the UTF-16 length without reading back the password. macOS sets
+`AXValue` on the retained Accessibility element and checks `AXNumberOfCharacters`.
+A secure field has no count: the broker checks that its `AXValue` is wholly
+mask characters, one for each UTF-16 unit, and compares that length. For an unmasked
 WPF TextBox, the broker reads the Value back and compares it exactly with the
 written text; it never returns the value. UI Automation string conditions are
 not used, because they accept canonically equivalent text. WPF supports single-line values
