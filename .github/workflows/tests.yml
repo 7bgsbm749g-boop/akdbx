@@ -106,7 +106,7 @@ jobs:
       - name: Retained AppKit fields on the runner desktop
         env:
           AKDBX_TEST_APPKIT: '1'
-        run: python -m pytest -q -rs tests/test_macos_fields.py
+        run: python -m pytest -q -rs tests/test_macos_fields.py --basetemp="$RUNNER_TEMP/a"
       - name: Install and remove per-user browser hosts
         run: python -m pytest -q tests/test_extension_host_install.py
       - name: Darwin IPC, TLS, encrypted persistence, and extension contract

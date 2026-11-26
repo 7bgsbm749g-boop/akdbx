@@ -12,6 +12,9 @@ from .target import TargetError
 
 SYSTEM = AX.AXUIElementCreateSystemWide()
 TEXT = {'AXTextField', 'AXTextArea'}
+# AppKit's secure text field shows U+F79A for each UTF-16 unit, or U+200B
+# when it echoes no bullets. Native text refuses both in a password.
+MASKS = {'\uf79a', '\u200b'}
 WEB = {'AXWebArea', 'AXHTMLContent'}
 # WKWebView adds this WebKit parameterized attribute to its host group. The
 # host reports no children while its web process attaches or is suspended.
@@ -132,6 +135,16 @@ def count(node):
     return size
 
 
+def masked_count(node):
+    # A stock NSSecureTextField has no character count or text range. Its
+    # AXValue is one mask character per UTF-16 unit, never the text. Accept
+    # only a wholly masked value, so the broker never reads a password back.
+    value = attr(node, 'AXValue')
+    if not isinstance(value, str) or len(value) > MAX_TEXT or not set(value) <= MASKS:
+        raise TargetError()
+    return len(value)
+
+
 class MacFields:
     def __init__(self, pid):
         self.pid = pid
@@ -231,21 +244,23 @@ class MacFields:
         remaining = set(indices)
         for node, _ in self.walk():
             remaining.difference_update([i for i in remaining if CFEqual(node, self.controls[i])])
-        if (remaining or any(fact[0] for fact in facts)
-                or tuple(self.describe(i) for i in indices) != facts or self.focus(indices) != focus):
+        if (remaining or tuple(self.describe(i) for i in indices) != facts
+                or self.focus(indices) != focus):
             raise TargetError()
 
     def prepare(self, index, value):
-        if self.describe(index)[:2] != (False, False) or len(value.encode('utf-16-le')) // 2 > MAX_TEXT:
+        masked, readonly = self.describe(index)[:2]
+        if readonly or len(value.encode('utf-16-le')) // 2 > MAX_TEXT:
             raise TargetError()
-        count(self.controls[index])
+        (masked_count if masked else count)(self.controls[index])
 
     def write(self, index, value, before_write):
         node = self.controls[index]
+        length = masked_count if self.describe(index)[0] else count
         before_write()
         if AX.AXUIElementSetAttributeValue(node, 'AXValue', value) != AX.kAXErrorSuccess:
             raise TargetError()
-        if count(node) != len(value.encode('utf-16-le')) // 2:
+        if length(node) != len(value.encode('utf-16-le')) // 2:
             raise TargetError()
 
     def read(self, index):

@@ -25,7 +25,7 @@ the routes and modes that this broker offers now (`fill_routes`,
 | — | The operation does not exist on this route. |
 
 `<0.16` means the feature shipped before the first release tag (`v0.16.0`).
-`after 0.50.1` means merged on `main` for the next release after 0.50.1.
+`after 0.50.1` and `after 0.51.0` mean merged on `main` for the next release after that version.
 `v0.50.0` was tagged but never published (its release checks failed), so the
 features of PRs #81–#96 first ship in 0.50.1, together with key-file and
 hardware-key unlock (#98).
@@ -50,7 +50,7 @@ CI jobs (all in `.github/workflows/`):
 | Route | Linux X11 | Linux Wayland | Windows 10/11 | macOS |
 | --- | --- | --- | --- | --- |
 | [Window pin](#window-pin-pin-target) (`pin-target`) | ✅ 0.9.0: usernames, TOTP, SMS codes | ✅ XWayland windows only (0.49.0); ◼ native Wayland surfaces (D) | ✅ 0.17.0, HWND: usernames, TOTP, SMS codes | ◼ unavailable (E) |
-| [Native field](#native-field-pin-native-target) (`pin-native-target`) | ✅ 0.44.0, AT-SPI | ✅ 0.44.0, AT-SPI | ✅ 0.44.0 Win32 Edit; 0.50.1 WinForms, WPF | ✅ 0.50.1, Accessibility; ◼ no passwords (F) |
+| [Native field](#native-field-pin-native-target) (`pin-native-target`) | ✅ 0.44.0, AT-SPI | ✅ 0.44.0, AT-SPI | ✅ 0.44.0 Win32 Edit; 0.50.1 WinForms, WPF | ✅ 0.50.1, Accessibility; passwords after 0.51.0 (F) |
 | [CDP](#cdp-route) (`--route cdp`) | ✅ <0.16 | ✅ <0.16 | ✅ 0.17.0 | ✅ 0.50.1 |
 | [Extension, Chromium family](#extension-route-chromium-family) | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.43.0, no real-browser CI (P) |
 | [Extension, Firefox 153+](#extension-route-firefox) | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 |
@@ -88,8 +88,8 @@ assertion. Check `native_field_modes` in `status`.
 | Operation | Linux X11 | Linux Wayland | Windows | macOS |
 | --- | --- | --- | --- | --- |
 | Username | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms and WPF · `windows` (J) | ✅ 0.50.1 · `macos-broker` |
-| Password, login | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms TextBox and WPF PasswordBox · `windows` (J) | ◼ (F) |
-| Generated password | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · no CI | ◼ (F) |
+| Password, login | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms TextBox and WPF PasswordBox · `windows` (J) | ✅ after 0.51.0 · `macos-broker` (F) |
+| Generated password | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · no CI | ✅ after 0.51.0 · `macos-broker` (F) |
 | TOTP | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
 | Card | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
 | Identity | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
@@ -220,9 +220,14 @@ broker takes attached devices only (after 0.50.1).
 - **E** Inherent: `CGEventPostToPid` directs input to a process, not a field,
   and Secure Event Input blocks synthesized keys. `status` reports
   `target_fill_delivery: "unavailable"` and empty `target_fill_modes`.
-- **F** Inherent: a stock AppKit secure field (`NSSecureTextField`) reports no
-  character count, so the broker cannot verify delivery. Password, login and
-  generated-password pins are refused. Use a browser route for passwords.
+- **F** A stock AppKit secure field (`NSSecureTextField`) has no character
+  count, visible range or text for a range. Its Accessibility value has one
+  mask character (U+F79A, or U+200B when the field shows no bullets) for each
+  UTF-16 unit. The broker accepts only a wholly masked value and compares its
+  length with the written text, so it never reads the password back. A field
+  that cuts or rejects the text gives an uncertain result. On a real macOS 26
+  runner, the masked length matched in every random write (300 of 300), with
+  Secure Event Input on. From 0.50.1 to 0.51.0 the broker refused these pins.
 - **G** `windows` sends a window-pin SMS code to a real Win32 Edit control over
   the same `win32-char-v1` transport. Usernames and TOTP have contract tests
   with simulated windows only; a real-app check is the manual

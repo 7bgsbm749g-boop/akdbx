@@ -201,9 +201,15 @@ emulator, start it yourself (for example from Android Studio) and attach it.
   Check `native_field_accessibility_granted: true` in `akdbx status`. The broker
   checks permission without prompting. It can operate only on fields that
   pass the [native field checks](../skills/akdbx/references/native-fields.md).
-  Password, login and generated-password pins are refused: a stock AppKit
-  secure field (`NSSecureTextField`) reports no character count, so the broker
-  cannot verify delivery. Use the extension or CDP route for passwords.
+- After 0.51.0, password, combined login and generated-password pins fill a
+  stock AppKit secure field (`NSSecureTextField`). This field reports no
+  character count. Its Accessibility value has one mask character for each
+  UTF-16 unit of the text, so the broker compares that length with the written
+  password. It never reads the password back. If the field holds a different
+  length after the write (for example, the app cuts the text at a maximum
+  length), the result is uncertain, never success. A secure field whose value
+  is not wholly mask characters is refused. Status lists `password` and
+  `login` in `native_field_modes`.
 - Numeric window pins remain unavailable. `CGEventPostToPid` directs input to a
   process and cannot bind a keyboard event to a field. Secure Event Input also
   restricts synthesized keyboard input. Status reports

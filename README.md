@@ -151,9 +151,10 @@ generated passwords, usernames, TOTP codes, cards, addresses and read-only
 secret capture, and from 0.49.0 for SMS codes. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
 uses exact Unicode Win32 Edit controls. From 0.50.1, the Windows backend also
 supports WinForms TextBox and retained WPF TextBox and PasswordBox controls. On macOS (0.50.1+), native fields
-use Accessibility with permission granted to the broker. Stock AppKit password
-fields omit the character count required to verify delivery. Password, combined
-login and generated-password modes are unavailable on macOS. Native read pins
+use Accessibility with permission granted to the broker. After 0.51.0, password,
+combined login and generated-password modes also work on macOS: a stock AppKit
+secure field has no character count, so the broker checks the length of its
+masked value. Native read pins
 cannot feed `capture-totp`, because the OS cannot verify the website origin. Native apps have no browser origin:
 the service URL is a caller assertion and is matched to login/capture origins,
 not claimed as OS URL verification. See [Native desktop fields](skills/akdbx/references/native-fields.md)
@@ -267,7 +268,7 @@ limits are in [Android devices](skills/akdbx/references/android.md).
   symlinked or incorrectly owned runtime paths and verifies the server's Unix
   peer UID before sending a request.
 - The broker starts locked. The user enters the master password only on the private HTTPS unlock page, never in chat, terminal input, arguments, or environment variables. The page is HTTPS on `127.0.0.1` with the broker's own certificate, or (Linux or macOS) a Unix socket behind Tailscale Serve; it never binds the LAN or tailnet and never serves plain HTTP over TCP. Through the optional akdbx relay, TLS still ends in the broker: the relay forwards only encrypted bytes, and the broker trusts no name, certificate or header from it without checking.
-- After unlock, browser password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. Native field pins use retained masked native controls (not on macOS). Neither path sends password keys or Tab. Unsupported targets refuse delivery without terminal approval.
+- After unlock, browser password fills go to a retained DOM password input, through the extension route or an explicitly configured Chromium CDP connection. Native field pins use retained masked native controls (on macOS after 0.51.0). Neither path sends password keys or Tab. Unsupported targets refuse delivery without terminal approval.
 - Errors are deliberately generic after the typing boundary.
 
 This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Browser password fills require a short-lived DOM target pin; see [the target contract](skills/akdbx/references/target-fill.md). The broker verifies the exact HTTPS page, main frame and retained editable password input. Window pins (X11, XWayland or HWND) refuse password/login delivery. Application acceptance remains a caller check; malicious pages and compromised local processes are outside this boundary. Python cannot guarantee memory zeroization.
