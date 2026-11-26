@@ -430,7 +430,9 @@
   // The points of a read pin, inside the element's padding box and clear of a focus
   // ring (the challenge colour paints neither the border nor an outline): for a
   // text input its start, centre and end, as the hit tests; for other text a point
-  // every few pixels along each line, so a narrow cover over the text also refuses.
+  // every few pixels along three rows of each line (near its top, at its centre
+  // and near its bottom), so a narrow cover over the text, or covers that hide all
+  // of each line but a band through its middle, also refuse.
   function textPoints(el) {
     const box = el.getBoundingClientRect(), style = getComputedStyle(el), edge = 4;
     const inner = {left: box.left + parseFloat(style.borderLeftWidth) + edge, right: box.right - parseFloat(style.borderRightWidth) - edge,
@@ -443,15 +445,19 @@
       range.selectNodeContents(el);
       rects = Array.from(range.getClientRects());
     }
-    if (!rects.length || rects.length * 3 > MAX_POINTS) return null;
+    const rows = input ? [0.5] : [0, 0.5, 1];
+    if (!rects.length || rects.length * rows.length * 3 > MAX_POINTS) return null;
     const clamp = (value, low, high) => Math.min(Math.max(value, low), high);
-    const each = Math.floor(MAX_POINTS / rects.length);
+    const each = Math.floor(MAX_POINTS / (rects.length * rows.length));
     const points = [];
     for (const rect of rects) {
-      const y = clamp(rect.top + rect.height / 2, inner.top, inner.bottom);
       const from = clamp(rect.left + edge, inner.left, inner.right), to = clamp(rect.right - edge, inner.left, inner.right);
       const count = input ? 3 : clamp(Math.ceil((to - from) / 6) + 1, 3, each);
-      for (let i = 0; i < count; ++i) points.push([from + (to - from) * i / (count - 1), y]);
+      for (const row of rows) {
+        // Clear of the line's edges by the same margin, and inside the padding box.
+        const y = clamp(rect.top + edge + (rect.height - 2 * edge) * row, inner.top, inner.bottom);
+        for (let i = 0; i < count; ++i) points.push([from + (to - from) * i / (count - 1), y]);
+      }
     }
     return points;
   }

@@ -204,6 +204,15 @@ PAGES = {
     '/secret-inert-text': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
                            '<div inert style="position:fixed;left:0;top:0;width:0;height:0;font:600px/1 monospace;'
                            'color:#fff">\u2588\u2588</div>'),
+    # Two bands hide the top and the bottom of every glyph; only a 5px band through the middle of the
+    # line shows. A font that sets the inert-text glyph lower or higher (Chrome on macOS) leaves such a band.
+    '/secret-center-band': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<code id="secret" tabindex="0">{SECRET}</code>'
+                            '<div id="a" style="position:fixed;left:0;width:900px;background:#fff;pointer-events:none"></div>'
+                            '<div id="b" style="position:fixed;left:0;width:900px;background:#fff;pointer-events:none"></div>'
+                            '<script>const r = document.createRange(); r.selectNodeContents(secret);'
+                            'const t = r.getClientRects()[0], mid = t.top + t.height / 2;'
+                            'a.style.top = (t.top - 2) + "px"; a.style.height = (mid - 2.5 - t.top + 2) + "px";'
+                            'b.style.top = (mid + 2.5) + "px"; b.style.height = (t.bottom + 2 - mid - 2.5) + "px";</script>'),
     '/secret-inert-pseudo': (f'<!doctype html><meta charset="utf-8">{SECRET_STYLE}<style>#c{{position:fixed;left:0;top:0;'
                              'width:0;height:0}#c::before{content:"";display:block;width:900px;height:300px;'
                              f'background:#fff}}</style><code id="secret" tabindex="0">{SECRET}</code><div id="c" inert></div>'),
@@ -664,12 +673,13 @@ def test_agent_route_fills_the_pinned_password_through_the_extension(harness):
     print(json.dumps(dict(browser=lab.version, kind=harness.kind, route='extension', exact_values=True)))
 
 
-def test_a_generated_password_fills_both_new_password_fields_once_and_saves(harness, private_dir):
+def test_a_generated_password_fills_both_new_password_fields_once_and_saves(harness, tmp_path):
     """Generation, both DOM fills and the encrypted save through the extension route; synthetic vault only."""
     from pykeepass import PyKeePass, create_database
     from akdbx.broker import open_vault_with_password
     lab, broker = harness.lab, harness.broker
-    path, master = Path(private_dir) / 'generated.kdbx', 'synthetic-generated-master'
+    # In tmp_path, as the QR capture vaults: on Windows the broker refuses a file that inherits private_dir's DACL.
+    path, master = tmp_path / 'generated.kdbx', 'synthetic-generated-master'
     vault = create_database(str(path), password=master)
     params = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
     params['I'].value, params['M'].value = 1, 1024 * 1024  # A cheap KDF for a synthetic vault.
@@ -999,7 +1009,8 @@ def test_secret_capture_refuses_unfocused_selected_and_changed_secrets(harness):
 
 COVERED_SECRETS = ['/secret-covered', '/secret-covered-important', '/secret-shadow-cover', '/secret-shadow-important',
                    '/secret-inert', '/secret-interactivity', '/secret-shadow-pseudo', '/secret-inert-styled',
-                   '/secret-modal-cover', '/secret-inert-text', '/secret-inert-pseudo', '/secret-inert-slot',
+                   '/secret-modal-cover', '/secret-inert-text', '/secret-center-band', '/secret-inert-pseudo',
+                   '/secret-inert-slot',
                    '/secret-popover-backdrop', '/secret-popover-exit', '/secret-popover-holds-modal',
                    '/secret-details-content', '/secret-scroll-button', '/secret-scroll-marker-group',
                    '/secret-view-transition', '/secret-meter-bar', '/secret-veil', '/secret-own-pseudo',
