@@ -1,9 +1,12 @@
-"""Retained WPF UI Automation elements. Only the dedicated MTA uses COM pointers."""
+"""Retained WPF UI Automation elements. Only the dedicated MTA uses COM pointers.
+
+Every failure leaves this module as a bare TargetError. A COMError can carry
+text from the target app's provider, so it is never kept, chained or returned.
+"""
 from concurrent.futures import ThreadPoolExecutor
 from functools import wraps
 from pathlib import Path
 import threading
-import time
 
 # Import on the caller before starting the MTA. comtypes initializes its first
 # importing thread as an STA by default.
@@ -17,6 +20,15 @@ from .target import TargetError
 from .windows_fields import WindowsFields
 
 _thread = threading.local()
+# WPF builds its UI Automation provider when the first request arrives, so a
+# starting or busy app can answer that request slowly. Only the first
+# connection waits up to the Windows default; later requests keep the short
+# limit, so a hung app fails as fast as before.
+FIRST_CONNECTION_MS = 2000
+REQUEST_MS = 500
+# The first connection and the walk share one bound, inside the 5 s CLI budget
+# of list-native-fields.
+COLLECT_SECONDS = 4
 
 
 def _initialize():
@@ -30,9 +42,18 @@ _worker = ThreadPoolExecutor(max_workers=1, initializer=_initialize, thread_name
 def in_apartment(method):
     @wraps(method)
     def call(*args):
-        if getattr(_thread, 'active', False):
-            return method(*args)
-        return _worker.submit(method, *args).result()
+        try:
+            if getattr(_thread, 'active', False):
+                return method(*args)
+            return _worker.submit(method, *args).result()
+        except TargetError as exc:
+            exc.__cause__ = exc.__context__ = None
+            raise
+        except Exception:
+            pass
+        # Raised outside the handler, so no COM error or text is chained.
+        # On the write path, the caller reports whether the write started.
+        raise TargetError()
     return call
 
 
@@ -45,22 +66,23 @@ class WpfSession(WindowsFields):
         self.types = comtypes.client.GetModule(str(Path(win32api.GetSystemDirectory()) / 'UIAutomationCore.dll'))
         self.uia = comtypes.client.CreateObject(self.types.CUIAutomation8, interface=self.types.IUIAutomation2)
         self.uia.AutoSetFocus = False
-        self.uia.ConnectionTimeout = 500
-        self.uia.TransactionTimeout = 500
+        self.uia.TransactionTimeout = REQUEST_MS
+        self.uia.ConnectionTimeout = FIRST_CONNECTION_MS
+        deadline = self.clock() + COLLECT_SECONDS
         self.root = self.uia.ElementFromHandle(window)
+        self.uia.ConnectionTimeout = REQUEST_MS
         self.walker = self.uia.RawViewWalker
         self.controls = []
         self.ids = []
-        self._collect()
+        self._collect(deadline)
 
-    def _collect(self):
+    def _collect(self, deadline):
         remaining = 512
-        deadline = time.monotonic() + 4
 
         def walk(node, depth):
             nonlocal remaining
             remaining -= 1
-            if remaining < 0 or depth > 48 or time.monotonic() >= deadline:
+            if remaining < 0 or depth > 48 or self.clock() >= deadline:
                 raise TargetError()
             # Never descend into a hosted web document or another framework.
             if (node.CurrentProcessId != self.pid or node.CurrentFrameworkId != 'WPF'

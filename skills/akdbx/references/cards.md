@@ -1,6 +1,6 @@
 # Card storage and field-bound delivery (0.14.2)
 
-For card field operations on Android, see [Android pins and commands](android.md#additional-android-operations-0500).
+For card field operations on Android, see [Android pins and commands](android.md#additional-android-operations-0501).
 
 Before using CDP, verify [client isolation](target-fill.md#operator-configuration).
 
