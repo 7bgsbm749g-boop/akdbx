@@ -460,7 +460,14 @@ the desktop's `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and either `XDG_CURRENT_DESKT
 supplies `XDG_RUNTIME_DIR`. If standalone Hyprland does not start this target, run this command from the compositor’s login hook after configuring the session environment:
 
 ```sh
-systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XAUTHORITY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE && systemctl --user start akdbx.service
+for name in WAYLAND_DISPLAY DISPLAY XAUTHORITY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE; do
+    if [ -n "$(printenv "$name")" ]; then
+        systemctl --user import-environment "$name" || exit 1
+    else
+        systemctl --user unset-environment "$name" || exit 1
+    fi
+done
+systemctl --user start akdbx.service
 ```
 
 For a standalone session that keeps its systemd user manager after logout, run

@@ -1341,7 +1341,11 @@ class Setup:
             if graphical:
                 names = ('DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY', 'XDG_CURRENT_DESKTOP',
                          'HYPRLAND_INSTANCE_SIGNATURE', 'XDG_SESSION_TYPE')
-                commands.append([systemctl, '--user', 'import-environment', *(n for n in names if self.env.get(n))])
+                present = [name for name in names if self.env.get(name)]
+                absent = [name for name in names if name not in present]
+                if absent:
+                    commands.append([systemctl, '--user', 'unset-environment', *absent])
+                commands.append([systemctl, '--user', 'import-environment', *present])
             commands.append([systemctl, '--user', 'start', SERVICE_NAME])
             def start():
                 for command in commands:

@@ -330,6 +330,7 @@ def test_a_non_interactive_run_sets_up_every_selected_stage(home, vault, pair, c
     commands = [argv[1:] for argv in runner.commands() if argv[0].endswith('systemctl')]
     assert commands == [['--user', 'daemon-reload'], ['--user', 'is-enabled', 'akdbx.service'],
                         ['--user', 'enable', 'akdbx.service'],
+                        ['--user', 'unset-environment', 'XAUTHORITY'],
                         ['--user', 'import-environment', 'DISPLAY', 'WAYLAND_DISPLAY',
                          'XDG_CURRENT_DESKTOP', 'HYPRLAND_INSTANCE_SIGNATURE', 'XDG_SESSION_TYPE'],
                         ['--user', 'start', 'akdbx.service']]
