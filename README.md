@@ -19,7 +19,7 @@ release or upgrade a broker.
 ## Quick start: akdbx setup
 
 Install akdbx (a release wheel or `pip install -e .` in a checkout), then run
-one guided command (0.27.0+; also available on macOS after 0.48.0):
+one guided command (0.27.0+; also available on macOS from 0.49.0):
 
 ```sh
 akdbx setup
@@ -99,11 +99,11 @@ pin, fill and receipt model. Agents choose with `--route extension|cdp`, and
 
 | | Extension route (0.21.0+) | CDP route |
 | --- | --- | --- |
-| Browser | The user's everyday Helium, Chrome, Edge or Firefox 153+, with the akdbx extension | A Chromium profile started with `--remote-debugging-port` |
+| Browser | The user's everyday Helium, Chrome, Edge, Chromium, Brave or Firefox 153+, with the akdbx extension | A Chromium profile started with `--remote-debugging-port` |
 | Connection | Native-messaging host; values sealed to the extension (AES-256-GCM) | Chrome DevTools Protocol over loopback |
 | Setup | Install the host, load the extension, pair once per browser session | Configure the profile at broker start |
 | Sites see | The user's normal browser | A browser with a debugging port, which anti-bot checks often flag |
-| Also | The user can click the extension to fill a login, card or address; secret capture from 0.32.0 | Secret capture; works without an extension |
+| Also | The user can click the extension to fill a login, authenticator code, card or address; secret capture from 0.32.0 | Secret capture; works without an extension |
 
 **Prefer the extension route.** A debugging port gives every process of the same
 OS user full control of that browser profile, and anti-bot and anti-fraud checks
@@ -141,7 +141,7 @@ authenticator setup key printed in space-separated Base32 groups, for
 From 0.44.0, native apps can use **native field pins** for passwords, combined logins,
 generated passwords, usernames, TOTP codes, cards, addresses and read-only
 secret capture. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
-uses exact Unicode Win32 Edit controls. On macOS (after 0.48.0), native fields
+uses exact Unicode Win32 Edit controls. On macOS (after 0.49.0), native fields
 use Accessibility with permission granted to the broker. Stock AppKit password
 fields omit the character count required to verify delivery. Password and
 combined login modes are unavailable on macOS. Native apps have no browser origin:
@@ -155,10 +155,13 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 
 ## Platforms
 
-- **macOS** (0.43.0+): local broker with browser-extension delivery, native Unix peer
-  checks, private HTTPS unlock and encrypted vault writes. Chrome, Edge and Firefox (0.47.0+)
-  native-host locations are supported. After 0.48.0, native field pins use Accessibility, guided setup installs a login LaunchAgent and the broker
-  locks on macOS screen-lock notifications. Numeric window delivery and CDP are unavailable. Safari's Apple wrapper is a separate delivery. See
+- **macOS** (0.43.0+): local broker with browser-extension delivery, with native Unix peer
+  checks, private HTTPS unlock and encrypted vault writes. The native host supports Chrome, Edge, Helium
+  and Firefox 153+ (0.47.0+); Chromium and Brave are supported from 0.49.0. From 0.49.0, guided setup
+  installs a login LaunchAgent, the broker locks on macOS screen-lock notifications, and the QR importer
+  also registers for Chromium and Brave. After 0.49.0, native field pins use Accessibility.
+  Numeric window delivery and CDP are unavailable. Safari's Apple
+  wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).
 - **Linux** (X11 or Wayland desktop): the original platform. The setup notes in this
   README and the [VPS setup reference](skills/akdbx/references/vps-setup.md)
@@ -252,14 +255,14 @@ This prevents accidental disclosure into chat, command output, logs, process arg
 ## Browser extension route (0.21.0)
 
 The broker can also fill through the akdbx browser extension in the user's
-everyday Helium, Chrome, Edge or Firefox (0.47.0+), reached through a native-messaging host. The
+everyday Helium, Chrome, Edge, Chromium, Brave or Firefox (0.47.0+), reached through a native-messaging host. The
 browser then needs no remote-debugging port, which would give every process
 of the same user full control of that profile. Agents add `--route extension`
 to `list-password-frames`, `pin-password-target`, `pin-card-target` and
 `pin-identity-target`; the list, single-use pin, fresh handle and receipt model
 of the CDP route is unchanged, with `extension-dom-v1` receipts. The user can
 also click the extension (toolbar button, context menu or Alt+Shift+K) and
-pick a saved login, card or address for the focused field; the popup shows
+pick a saved login, authenticator, card or address for the focused field; the popup shows
 metadata only. `status` advertises `extension_protocol: 1`, `fill_routes`,
 `default_fill_route` (`serve --default-fill-route`), `extension_connected`,
 `extension_paired`, and `extension_version_expected`. Each `extension_browsers`
@@ -275,7 +278,7 @@ card in `chrome://extensions`. An extension built by akdbx 0.21.2 or earlier
 reports no version; it still works and shows as outdated.
 
 ```bash
-akdbx extension install --browser helium   # or chrome, edge; Windows and Linux; --python PATH (0.31.1+)
+akdbx extension install --browser helium   # chrome, edge, helium, chromium, brave or firefox on all three desktops
 akdbx extension refresh                    # 0.31.1+: after an update moves akdbx to another folder
 akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" extension build --output /path/to/akdbx-extension   # then Load unpacked
 ```
@@ -292,9 +295,9 @@ is sealed with AES-256-GCM to the extension, so the native host relays only
 ciphertext. This adds `cryptography` as a runtime dependency. Origin
 and frame identity come from the browser, never from page content; cards go
 only to merchant frames or to the supported processor frames below them. On
-Linux the host manifest goes in `~/.config/net.imput.helium`,
-`~/.config/google-chrome` or `~/.config/microsoft-edge` under
-`NativeMessagingHosts`. From 0.31.1 the Linux and macOS launcher names the folder
+Linux, Chromium-family hosts use the browser’s `NativeMessagingHosts` folder.
+Run `akdbx extension info` to see each location. From 0.49.0,
+`extension_host_browsers` in `status` lists the supported installer names. From 0.31.1 the Linux and macOS launcher names the folder
 of the akdbx that installed it, so the host runs that akdbx even when the
 interpreter has another one; see [host launcher](skills/akdbx/references/extension.md#host-launcher-0311).
 See [the extension route](skills/akdbx/references/extension.md)
@@ -859,6 +862,10 @@ returns it to the inbox. `pin-code-target` pins one focused, visible, enabled
 card transport's same-origin, hit-tested DOM guards, CDP route). For six
 one-digit boxes, `fill-sms-code` also takes a `pin-target` token (on Linux, an X11 or XWayland window; on Windows, an HWND) with
 `--target-url`, or `--target-url-file` for a challenge URL that holds a token.
+For a native app, use `pin-native-target --mode code` and the same
+`fill-sms-code` command. Status lists supported SMS destinations in
+`sms_fill_routes`. An empty list means the broker can receive texts but has
+no supported fill route.
 The iPhone filter forwards only texts with the word `code`; a second automation
 with `OTP` covers sites that say only that. See
 [the SMS workflow](skills/akdbx/references/sms.md).
@@ -930,8 +937,10 @@ akdbx fill-totp FRESH_SEARCH_HANDLE --target-url 'https://example.com/challenge'
 
 Use `--route cdp` for the configured CDP browser on Linux/Windows. The paired
 extension route works on Linux/Windows/macOS, including the native macOS broker,
-and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. TOTP uses
-the extension's agent route; the manual popup keeps its existing workflows.
+and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. For a
+human-click fill, focus a top-page input marked `autocomplete="one-time-code"`
+and choose the account in the popup. This needs extension 0.12.0+ and
+`extension_popup_totp_protocol: 1`.
 Only a single focused visible editable `text`, `tel`, `number` or `password`
 input is supported, with stable metadata and no conflicting password/card hints.
 Split-digit inputs and unsupported format constraints refuse. Six/eight digit

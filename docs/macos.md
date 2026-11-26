@@ -3,9 +3,14 @@
 The macOS broker runs locally as your normal user with Python 3.11 or newer.
 It uses the shared encrypted KeePass vault, metadata search, private HTTPS
 pages, password writes, paired extension protocol and non-secret receipts.
-The native host supports Chrome and Edge on macOS. Safari packaging and its
-Apple native-messaging adapter are a separate change; this release alone does
-not install or enable a Safari extension.
+The native host supports Chrome, Edge, Helium and Firefox 153+. From 0.49.0,
+use `--browser chromium` for Chromium or `--browser brave` for Brave. Brave
+reads Chrome’s host folder, so both use one launcher and registration.
+
+Safari requires a containing app, a Safari native-messaging adapter and
+signatures for the app and extension. Direct macOS distribution also requires
+Developer ID signing and notarization. See Apple’s [packaging guide](https://developer.apple.com/documentation/safariservices/packaging-a-web-extension-for-safari)
+and [distribution guide](https://developer.apple.com/documentation/safariservices/distributing-your-safari-web-extension).
 
 ## Install and run
 
@@ -66,11 +71,14 @@ build. See [Firefox setup](firefox.md); its macOS host manifest goes under
 
 For user-started authenticator QR import, use the separate 1.1.0+ importer.
 The default capture socket is `~/Library/Application Support/akdbx/run/u`.
+From 0.49.0 the importer also accepts `--browser chromium|brave` and uses the
+fill extension host's folders. Brave reads Chrome's folder, so Chrome's importer
+registration already serves Brave.
 See [private import](../skills/akdbx/references/private-import.md) for browser builds and registration.
 
 ## Guided setup and login
 
-After 0.48.0, run `akdbx setup` in your macOS login session. For example:
+From 0.49.0, run `akdbx setup` in your macOS login session. For example:
 
 ```sh
 akdbx setup --yes --vault /absolute/path/to/vault.kdbx \
@@ -100,18 +108,20 @@ sleep and wake in the GUI login session. Losing a listening helper locks the vau
 - One-shot unlock webhooks use `unlock_notifications_protocol: 1`. SMS ingest
   uses `sms_protocol: 1`; the phone or SMS provider needs access to the
   configured HTTPS origin. See [SMS sources](../skills/akdbx/references/sms.md).
-- For a Chromium QR capture host, select `--capture-host --capture-browser chrome`
-  and supply `--capture-extension-id ID` after loading the capture extension.
-  Setup runs the importer's `install-host` with the default capture socket and
-  the browser's `NativeMessagingHosts` folder. For Firefox, run `install-host
-  --browser firefox` yourself. The host requires `totp_import_protocol: 1`. A
+- For a Chromium QR capture host, select `--capture-host --capture-browser
+  chrome|edge|helium|chromium|brave` and supply `--capture-extension-id ID` after
+  loading the capture extension. Setup runs the importer's `install-host
+  --browser BROWSER` with the default capture socket. The importer uses that
+  browser's `NativeMessagingHosts` folder and creates it when it is missing;
+  Brave uses Chrome's folder. For Firefox, run `install-host --browser firefox`
+  yourself. The host requires `totp_import_protocol: 1`. A
   capture still needs confirmation on the private page before a save.
 
 ## Limits
 
 - For browser fills, the broker supports the extension route only. CDP profile options are
   refused before startup; this release does not claim macOS CDP peer verification.
-- Native field protocol 1 (after 0.48.0) supports retained Accessibility text
+- Native field protocol 1 (after 0.49.0) supports retained Accessibility text
   controls in the frontmost native app. In System Settings → Privacy & Security →
   Accessibility, grant access to the process macOS identifies for the broker.
   Check `native_field_accessibility_granted: true` in `akdbx status`. The broker
@@ -126,8 +136,9 @@ sleep and wake in the GUI login session. Losing a listening helper locks the vau
 - Screen lock and the LaunchAgent need the user's GUI login session. There is
   no sleep-delay inhibitor. CI tests delivery of the lock notification in that
   session; a physical sleep/wake cycle and a live tailnet are outside this test.
-- Safari needs a signed Apple browser wrapper. The separate QR capture
-  extension uses Chromium native messaging. SMS ingest is available, but
+- Safari needs a signed Apple browser wrapper. The fill extension and the
+  separate QR capture extension use Chromium or Firefox native messaging, so
+  neither runs in Safari. SMS ingest is available, but
   this version's SMS fill requires a CDP or native window target.
 - The managed Android emulator requires a Linux host with KVM. The Linux
   privileged secret-sink helper requires Linux peer credentials and systemd.
@@ -139,7 +150,9 @@ The `Native macOS broker` CI job uses a real Darwin runner for Unix peer
 credentials, private socket RPC, encrypted save/reopen, checked TLS loading
 and unlock, the extension protocol tests, and native field tests against a
 separate AppKit application. The native field tests require the runner’s existing
-Accessibility grant and fail if it is missing. It installs the same wheel in
-the release workflow. Linux simulations are not evidence of native macOS
+Accessibility grant and fail if it is missing. It also installs and removes the
+native host for each supported browser, and runs guided setup with the
+LaunchAgent, the capture host and lock notifications in the runner's GUI
+session. It installs the same wheel in the release workflow. Linux simulations are not evidence of native macOS
 behavior. Safari application signing, installation and live browser behavior
 belong to the separate Safari extension delivery.

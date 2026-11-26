@@ -22,9 +22,9 @@ The extension is the user's browser, not a disguise. Do not use it to
 impersonate anyone, to get past a block a site applied to this user or account
 on purpose, or with someone else's account or card.
 
-Supported browsers: Helium, Google Chrome and Microsoft Edge on Windows and
-Linux; Chrome and Edge on macOS; and Firefox 153+ on all three platforms
-(0.47.0+). Chromium uses the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg`;
+Windows, Linux and macOS support Helium, Google Chrome, Microsoft Edge and
+Firefox 153+ (0.47.0+). From 0.49.0, the installer also accepts Chromium and
+Brave. See `extension_host_browsers` in broker status. The Chromium family uses the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg`;
 Firefox uses `akdbx@akdbx.org`. Both use host name `org.akdbx.extension`.
 See [Firefox setup and installation limits](../../../docs/firefox.md).
 
@@ -287,7 +287,7 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   cannot cross modes. The exact challenge URL and authorized entry origin
   must match the field document before OTP access. Deadlines and format checks
   run in the renderer too; no keyboard fallback. This is the CLI/agent route,
-  supported on Linux/Windows/macOS; manual popup behavior is unchanged.
+  supported on Linux/Windows/macOS.
   See [TOTP](totp.md), including child frames and pending enrollment.
 - `fill-generated` and `commit-password` work unchanged with a password-mode extension pin.
 - Cards: `pin-card-target --route extension` takes the same options. `--frame-url`
@@ -348,6 +348,12 @@ address label). The fill happens only after a trusted click in the popup.
 Logins fill the focused field and its partner field in the same form; cards
 and addresses fill the recognised visible fields of the same form. Hidden,
 disabled and detached fields never receive a value.
+
+In fill extension 0.12.0 or later, the popup can fill a saved authenticator
+code on the top HTTPS page. Require `extension_popup_totp_protocol: 1`. Focus
+an input marked `autocomplete="one-time-code"` and select the matching account.
+The popup closes to return focus to the field before delivery. Framed
+challenges use a TOTP pin with retained frame owners.
 
 Stripe's classic Card Element frame (`elements-inner-card-<hash>.html`) is
 pin-route only. Its inputs have no ID, so the popup does not offer or fill a
@@ -469,7 +475,7 @@ See [docs/windows.md](../../../docs/windows.md#browser-extension-route) and the
 README for install commands. In short:
 
 ```bash
-akdbx extension install --browser helium   # or chrome, edge
+akdbx extension install --browser helium   # all three desktops: chrome, edge, helium, chromium, brave or firefox
 akdbx extension build --output /path/to/akdbx-extension
 ```
 
@@ -507,7 +513,16 @@ akdbx.extension_host`, so the interpreter must have this akdbx installed.
   `stale` (another akdbx folder, an older `-m` launcher on Linux, or a missing
   interpreter: run `refresh`), `foreign` (not written by akdbx) or `missing`.
 
-**Agent desktop slots.** Each slot's Chrome uses its own user-data folder
+**Windows custom manifest location.** Use `extension install --browser NAME
+--manifest-dir DIR` to put the manifest in a chosen directory. The browser
+looks up the absolute path in HKCU for all its profiles. Use the same directory
+with `uninstall` before moving the registration. Chromium and Helium share a
+registration on Windows. Brave uses Chrome’s registration on Windows and macOS.
+Install, refresh and uninstall affect the shared host. The `registration_browser`
+in the install result identifies the launcher and its label in broker status.
+A Chromium-branded browser can prefer an existing Chromium key over Chrome’s key.
+
+**Linux and macOS Chromium profiles.** Each slot's Chrome uses its own user-data folder
 `<browser_profile_root>/<slot>`, and Chrome reads native-messaging manifests
 from that folder. Install the host once per slot whose Chrome loads the
 extension:

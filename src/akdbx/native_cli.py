@@ -65,6 +65,9 @@ def run(args, request):
         if args.command == 'list-native-fields':
             payload['pid'] = args.pid
         else:
+            if args.mode == 'code' and 'code' not in caps.get('native_field_modes', []):
+                print(json.dumps(dict(ok=False, error='broker lacks native SMS code mode; request not sent')))
+                return 1
             if ((args.username_control is not None) != (args.mode == 'login')
                     or (args.field is not None) != (args.mode in {'card', 'identity'})):
                 raise ValueError()
