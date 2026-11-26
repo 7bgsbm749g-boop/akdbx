@@ -6,7 +6,7 @@ Password and confirmation fills require a fresh password pin: a DOM pin from
 or an Android pin. Window pins refuse passwords. Read [password field delivery](target-fill.md) for operator setup,
 explicit selectors, supported controls, and race checks before this workflow.
 
-For generated password operations on Android, see [Android pins and commands](android.md#additional-android-operations-0500).
+For generated password operations on Android, see [Android pins and commands](android.md#additional-android-operations-0501).
 
 Password workflows in this guide require CLI and broker version **0.12.0 or newer**
 and the delivery capabilities below; 0.17.0 added this workflow on native

@@ -1,6 +1,6 @@
 # Phone verification texts (SMS) (0.40.0)
 
-For SMS code operations on Android, see [Android pins and commands](android.md#additional-android-operations-0500).
+For SMS code operations on Android, see [Android pins and commands](android.md#additional-android-operations-0501).
 
 akdbx can receive the verification texts that sites send to a phone number and
 fill the code straight into the challenge field. You see only a masked preview
@@ -14,7 +14,7 @@ profile, `extension` requires a paired akdbx fill extension 0.13.0 or newer
 `extension_browsers`), `native` requires platform support for native controls,
 and `window` requires a supported window backend (Linux X11 or XWayland, or
 Windows). Every desktop broker that reports `extension_code_protocol: 1` lists
-`extension`. A 0.50.0 macOS broker reports `["extension", "native"]`, and
+`extension`. A 0.50.1 macOS broker reports `["extension", "native"]`, and
 `cdp` first when a browser profile is configured; it never lists `window`.
 Only a 0.49.x macOS broker reports an empty list: its inbox works, but it has
 no desktop SMS fill route. Android `--mode sms` pins are not

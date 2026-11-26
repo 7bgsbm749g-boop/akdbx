@@ -48,7 +48,7 @@ def test_launchagent_refuses_unowned_content_and_link(tmp_path):
 
 
 def test_guided_setup_cdp_refusal_names_the_manual_route(tmp_path, monkeypatch, capsys):
-    # CDP works on macOS from 0.50.0; only guided setup does not configure it.
+    # CDP works on macOS from 0.50.1; only guided setup does not configure it.
     home = tmp_path / 'home'
     (home / 'Library').mkdir(parents=True)
     monkeypatch.setenv('HOME', str(home))

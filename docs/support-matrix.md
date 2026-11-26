@@ -1,7 +1,7 @@
-# Support matrix (0.50.0)
+# Support matrix (0.50.1)
 
 This page is the one list of what each fill route does on each platform. It
-comes from the code at 0.50.0: the `status` capability fields, the broker's
+comes from the code for 0.50.1: the `status` capability fields, the broker's
 refusals and platform checks, and the CI jobs that prove each cell. Where
 another page disagrees with this one, this page is correct; please report the
 other page. A change that adds, removes or proves a cell updates this page in
@@ -25,6 +25,9 @@ the routes and modes that this broker offers now (`fill_routes`,
 | — | The operation does not exist on this route. |
 
 `<0.16` means the feature shipped before the first release tag (`v0.16.0`).
+`v0.50.0` was tagged but never published (its release checks failed), so the
+features of PRs #81–#96 first ship in 0.50.1, together with key-file and
+hardware-key unlock (#98).
 Letters such as (A) point to the [notes](#notes). `ext 0.x.y` is the fill extension version that the operation needs.
 
 CI jobs (all in `.github/workflows/`):
@@ -46,11 +49,11 @@ CI jobs (all in `.github/workflows/`):
 | Route | Linux X11 | Linux Wayland | Windows 10/11 | macOS |
 | --- | --- | --- | --- | --- |
 | [Window pin](#window-pin-pin-target) (`pin-target`) | ✅ 0.9.0: usernames, TOTP, SMS codes | ✅ XWayland windows only (0.49.0); ◼ native Wayland surfaces (D) | ✅ 0.17.0, HWND: usernames, TOTP, SMS codes | ◼ unavailable (E) |
-| [Native field](#native-field-pin-native-target) (`pin-native-target`) | ✅ 0.44.0, AT-SPI | ✅ 0.44.0, AT-SPI | ✅ 0.44.0 Win32 Edit; 0.50.0 WinForms, WPF | ✅ 0.50.0, Accessibility; ◼ no passwords (F) |
-| [CDP](#cdp-route) (`--route cdp`) | ✅ <0.16 | ✅ <0.16 | ✅ 0.17.0 | ✅ 0.50.0 |
+| [Native field](#native-field-pin-native-target) (`pin-native-target`) | ✅ 0.44.0, AT-SPI | ✅ 0.44.0, AT-SPI | ✅ 0.44.0 Win32 Edit; 0.50.1 WinForms, WPF | ✅ 0.50.1, Accessibility; ◼ no passwords (F) |
+| [CDP](#cdp-route) (`--route cdp`) | ✅ <0.16 | ✅ <0.16 | ✅ 0.17.0 | ✅ 0.50.1 |
 | [Extension, Chromium family](#extension-route-chromium-family) | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.21.0 | ✅ 0.43.0, no real-browser CI (P) |
 | [Extension, Firefox 153+](#extension-route-firefox) | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 | ✅ 0.47.0 |
-| [Android](#android-route-akdbx-android) (`akdbx android`) | ✅ 0.36.0 | ✅ 0.36.0 | ✅ 0.50.0 · no CI (T) | ✗ in [PR #97](https://github.com/7bgsbm749g-boop/akdbx/pull/97), not released |
+| [Android](#android-route-akdbx-android) (`akdbx android`) | ✅ 0.36.0 | ✅ 0.36.0 | ✅ 0.50.1 · no CI (T) | ✗ in [PR #97](https://github.com/7bgsbm749g-boop/akdbx/pull/97), not released |
 | Safari | — | — | — | ✗ not built (W) |
 
 The CDP and extension routes talk to the browser, not to the display server,
@@ -83,17 +86,17 @@ assertion. Check `native_field_modes` in `status`.
 
 | Operation | Linux X11 | Linux Wayland | Windows | macOS |
 | --- | --- | --- | --- | --- |
-| Username | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.0 WinForms and WPF · `windows` (J) | ✅ 0.50.0 · `macos-broker` |
-| Password, login | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.0 WinForms TextBox and WPF PasswordBox · `windows` (J) | ◼ (F) |
+| Username | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms and WPF · `windows` (J) | ✅ 0.50.1 · `macos-broker` |
+| Password, login | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms TextBox and WPF PasswordBox · `windows` (J) | ◼ (F) |
 | Generated password | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · no CI | ◼ (F) |
-| TOTP | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.0 · `macos-broker` |
-| Card | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.0 · `macos-broker` |
-| Identity | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.0 · `macos-broker` |
+| TOTP | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`linux-native-fields`) | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
+| Card | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
+| Identity | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 · contract test (`windows`) | ✅ 0.50.1 · `macos-broker` |
 | Card processor iframes, child-frame login, popup, slots | — | — | — | — |
 | notify-page | ⛔ (K) | ⛔ (K) | ⛔ (K) | ⛔ (K) |
-| Secret read (`capture-secret`) | ✅ 0.44.0 · `linux-native-fields` (GTK, Qt) | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.0 WinForms and WPF · `windows` | ✅ 0.50.0 · `macos-broker` |
+| Secret read (`capture-secret`) | ✅ 0.44.0 · `linux-native-fields` (GTK, Qt) | ✅ 0.44.0 · `linux-native-fields` | ✅ 0.44.0 Edit, 0.50.1 WinForms and WPF · `windows` | ✅ 0.50.1 · `macos-broker` |
 | `capture-totp` (text or QR) | ⛔ (L) | ⛔ (L) | ⛔ (L) | ⛔ (L) |
-| SMS code | ✅ 0.49.0 · `linux-native-fields` | ✅ 0.49.0 · `linux-native-fields` | ✅ 0.49.0 Win32 Edit · `windows`; WinForms and WPF: no test (M) | ✅ 0.50.0 · `macos-broker` |
+| SMS code | ✅ 0.49.0 · `linux-native-fields` | ✅ 0.49.0 · `linux-native-fields` | ✅ 0.49.0 Win32 Edit · `windows`; WinForms and WPF: no test (M) | ✅ 0.50.1 · `macos-broker` |
 
 ## CDP route
 
@@ -103,20 +106,20 @@ connection before the WebSocket handshake.
 
 | Operation | Linux (X11 or Wayland) | Windows | macOS |
 | --- | --- | --- | --- |
-| Username, password, login | ✅ <0.16 · `synthetic-password-fields` | ✅ 0.17.0 · `windows` | ✅ 0.50.0 · `macos-broker` |
-| Generated password | ✅ <0.16 · `synthetic-password-fields` | ✅ 0.17.0 · `windows` | ✅ 0.50.0 · `macos-broker` |
-| TOTP | ✅ 0.45.0 · `synthetic-password-fields` | ✅ 0.45.0 · `windows` | ✅ 0.50.0 · `macos-broker` |
-| Card | ✅ 0.14.0 · `card-safety` | ✅ 0.17.0 · `windows` | ✅ 0.50.0 · no CI for merchant-page fields (N) |
-| Card processor iframes | ✅ Adyen 0.14.0, Computop 0.14.2, Stripe 0.18.1, Stripe Card Element 0.24.0 · `card-safety` | ✅ 0.17.0 Adyen and Computop, 0.18.1 Stripe · `windows` (Edge) | ✅ 0.50.0 Stripe Card Element · `macos-broker`; Adyen and Computop: no CI |
-| Identity | ✅ 0.18.2 · `card-safety` | ✅ 0.18.2 · `windows` | ✅ 0.50.0 · `macos-broker` |
-| Child-frame login | ✅ 0.16.0 · `synthetic-password-fields` | ✅ 0.17.0 · `windows` | ✅ 0.50.0 · `macos-broker` |
-| notify-page (identity) | ✅ 0.41.0 · `card-safety` | ✅ 0.41.0 · `windows` | ✅ 0.50.0 · `macos-broker` |
-| Secret read (`capture-secret`), also in child frames | ✅ 0.20.0 · `synthetic-password-fields` | ✅ 0.20.0 · `windows` | ✅ 0.50.0 · `macos-broker` |
-| `capture-totp`, text key | ✅ 0.35.0 · `synthetic-password-fields` | ✅ 0.35.0 · `windows` | ✅ 0.50.0 · `macos-broker` |
-| `capture-totp`, QR code | ✅ 0.50.0 · `synthetic-password-fields` | ✅ 0.50.0 · `windows` | ✅ 0.50.0 · no CI |
-| SMS code | ✅ 0.40.0 · `card-safety` | ✅ 0.40.0 · `windows` (Edge) | ✅ 0.50.0 · `macos-broker` |
+| Username, password, login | ✅ <0.16 · `synthetic-password-fields` | ✅ 0.17.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
+| Generated password | ✅ <0.16 · `synthetic-password-fields` | ✅ 0.17.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
+| TOTP | ✅ 0.45.0 · `synthetic-password-fields` | ✅ 0.45.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
+| Card | ✅ 0.14.0 · `card-safety` | ✅ 0.17.0 · `windows` | ✅ 0.50.1 · no CI for merchant-page fields (N) |
+| Card processor iframes | ✅ Adyen 0.14.0, Computop 0.14.2, Stripe 0.18.1, Stripe Card Element 0.24.0 · `card-safety` | ✅ 0.17.0 Adyen and Computop, 0.18.1 Stripe · `windows` (Edge) | ✅ 0.50.1 Stripe Card Element · `macos-broker`; Adyen and Computop: no CI |
+| Identity | ✅ 0.18.2 · `card-safety` | ✅ 0.18.2 · `windows` | ✅ 0.50.1 · `macos-broker` |
+| Child-frame login | ✅ 0.16.0 · `synthetic-password-fields` | ✅ 0.17.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
+| notify-page (identity) | ✅ 0.41.0 · `card-safety` | ✅ 0.41.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
+| Secret read (`capture-secret`), also in child frames | ✅ 0.20.0 · `synthetic-password-fields` | ✅ 0.20.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
+| `capture-totp`, text key | ✅ 0.35.0 · `synthetic-password-fields` | ✅ 0.35.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
+| `capture-totp`, QR code | ✅ 0.50.1 · `synthetic-password-fields` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · no CI |
+| SMS code | ✅ 0.40.0 · `card-safety` | ✅ 0.40.0 · `windows` (Edge) | ✅ 0.50.1 · `macos-broker` |
 | Popup human click | — | — | — |
-| Agent desktop slots (`--browser-slot`) | ✅ 0.30.0 · `card-safety` | ✅ 0.30.0 · no CI | ✅ 0.50.0 · `macos-broker` |
+| Agent desktop slots (`--browser-slot`) | ✅ 0.30.0 · `card-safety` | ✅ 0.30.0 · no CI | ✅ 0.50.1 · `macos-broker` |
 
 ## Extension route, Chromium family
 
@@ -137,8 +140,8 @@ install from 0.49.0.
 | Secret read, top document | ✅ 0.32.0 (ext 0.4.0) · `linux-extension-browser` | ✅ 0.32.0 · `windows` | ✅ 0.43.0 · no CI (P) |
 | Secret read, child frame | ⛔ (O) | ⛔ (O) | ⛔ (O) |
 | `capture-totp`, text key (top document) | ✅ 0.35.0 (ext 0.6.0 for grouped keys) · `linux-extension-browser` | ✅ 0.35.0 · `windows` | ✅ 0.43.0 · no CI (P) |
-| `capture-totp`, QR code (top document) | ✅ 0.50.0 (ext 0.14.0) · `linux-extension-browser` | ✅ 0.50.0 · `windows` | ✅ 0.50.0 · no CI (P) |
-| SMS code | ✅ 0.50.0 (ext 0.13.0) · `linux-extension-browser` | ✅ 0.50.0 · `windows` | ✅ 0.50.0 · no CI (P) |
+| `capture-totp`, QR code (top document) | ✅ 0.50.1 (ext 0.14.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · no CI (P) |
+| SMS code | ✅ 0.50.1 (ext 0.13.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · no CI (P) |
 | Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ 0.43.0 · no CI (P) |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
@@ -160,7 +163,7 @@ runs as a temporary add-on; see [Firefox setup](firefox.md).
 | Secret read, child frame | ⛔ (O) | ⛔ (O) | ⛔ (O) |
 | `capture-totp`, text key | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
 | `capture-totp`, QR code | ✗ (V) | ✗ (V) | ✗ (V) |
-| SMS code | ✅ 0.50.0 (ext 0.13.0) · `firefox-extension-browser` | ✅ 0.50.0 · `firefox-extension-browser` | ✅ 0.50.0 · `firefox-extension-browser` |
+| SMS code | ✅ 0.50.1 (ext 0.13.0) · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` |
 | Popup human click | ✅ login 0.47.0 · `firefox-extension-browser`; TOTP, card, address: no Firefox test | ✅ login · `firefox-extension-browser` | ✅ login · `firefox-extension-browser` |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
@@ -173,15 +176,15 @@ socket; app fields use the akdbx accessibility helper. Check
 
 | Operation | Linux host (X11 or Wayland) | Windows host | macOS host |
 | --- | --- | --- | --- |
-| Username, password, login | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.0 · no CI (T) | ✗ [PR #97](https://github.com/7bgsbm749g-boop/akdbx/pull/97), not released |
-| Generated password | ✅ 0.50.0 · contract test (`linux`) (X) (Y) | ✅ 0.50.0 · no CI (T) | ✗ PR #97 |
-| TOTP | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.0 · no CI (T) | ✗ PR #97 |
-| Card, identity | ✅ 0.50.0 · contract test (`linux`) (X) | ✅ 0.50.0 · no CI (T) | ✗ PR #97 |
+| Username, password, login | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✗ [PR #97](https://github.com/7bgsbm749g-boop/akdbx/pull/97), not released |
+| Generated password | ✅ 0.50.1 · contract test (`linux`) (X) (Y) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
+| TOTP | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
+| Card, identity | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
 | Card processor iframes, child-frame login | ✗ (Z) | ✗ (Z) | ✗ (Z) |
-| notify-page (identity) | ✅ 0.50.0 Chrome pages; ⛔ app fields (K) | ✅ 0.50.0 · no CI (T) | ✗ PR #97 |
-| Secret read, `capture-totp` text key | ✅ 0.50.0 Chrome pages · contract test (`linux`) (X) | ✅ 0.50.0 · no CI (T) | ✗ PR #97 |
+| notify-page (identity) | ✅ 0.50.1 Chrome pages; ⛔ app fields (K) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
+| Secret read, `capture-totp` text key | ✅ 0.50.1 Chrome pages · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
 | `capture-totp`, QR code | ✗ not built | ✗ not built | ✗ not built |
-| SMS code | ✅ 0.50.0 · contract test (`linux`) (X) | ✅ 0.50.0 · no CI (T) | ✗ PR #97 |
+| SMS code | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✗ PR #97 |
 | Fields in an app's own web view | ◼ (AB) | ◼ (AB) | ◼ (AB) |
 | Managed on-demand emulator (`android setup --create`) | ✅ 0.37.0 (x86-64, KVM, systemd 254+) | ✗ Linux only (AA) | ✗ Linux only (AA) |
 | Popup human click, agent desktop slots | — | — | — |
@@ -194,6 +197,7 @@ socket; app fields use the akdbx accessibility helper. Check
 | Start at login | systemd user unit | logon task | LaunchAgent, 0.49.0 |
 | Desktop lock locks the vault | logind; Hyprland | session lock and suspend | screen lock and sleep, 0.49.0 |
 | Loopback HTTPS private page | ✅ 0.23.0 | ✅ 0.17.0 | ✅ 0.43.0 |
+| Unlock with a key file chosen on the page, or a YubiKey challenge-response (AD) | ✅ 0.50.1 · `linux` | ✅ 0.50.1 · `windows` (vault store only) | ✅ 0.50.1 · no CI |
 | Tailscale Serve to a Unix socket | ✅ | ◼ Tailscale Serve cannot proxy to a Unix socket on Windows | ✅ 0.43.0 |
 | akdbx relay | ✅ 0.26.0 | ✅ 0.26.0 | ✅ 0.43.0 · `macos-broker` |
 | Secret sinks (`deliver-secret`) | ✅ 0.20.0 files; root helper for other accounts | ✅ 0.48.0 private named pipe | ✅ same-user files · no CI; ◼ no root helper (needs systemd and Linux peer credentials) |
@@ -260,7 +264,7 @@ socket; app fields use the akdbx accessibility helper. Check
   browser. If a popup TOTP fill reports `field changed or hidden; nothing
   filled`, focus the field and choose the account again.
 - **T** `akdbx android setup` refuses on Windows, so the operator writes the
-  device file by hand (private DACL and trusted folders required; 0.50.0 added
+  device file by hand (private DACL and trusted folders required; 0.50.1 added
   that check). A real Windows host refused an unsafe device file, but no test
   fills a device from a Windows broker.
 - **U** The extension runs in the user's own browser. `--browser-slot` applies
@@ -288,3 +292,12 @@ socket; app fields use the akdbx accessibility helper. Check
 - **AC** `akdbx setup --cdp-profile` refuses on macOS. To use CDP there, start
   the broker yourself with `--password-browser-profile` as
   [macOS Chromium CDP](macos.md#chromium-cdp) describes.
+- **AD** The unlock page and, while the vault is locked, the extension pairing
+  page take a key file or a hardware key response on every access route
+  (loopback, Tailscale, relay). The master password is still required. The
+  key file field is hidden when the broker runs with `--keyfile`. The
+  hardware key is KeePassXC's YubiKey HMAC-SHA1 challenge-response for a
+  KDBX 4 vault with an Argon2 KDF; the page shows a `ykman otp calculate`
+  command, and the user enters its response. The `linux` job tests the whole
+  page flow; the `windows` job tests only the Windows vault store with both
+  keys. See [Key file and hardware key](private-pages.md#key-file-and-hardware-key).

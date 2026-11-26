@@ -1,6 +1,6 @@
 # Save and fill identity details (0.18.2)
 
-For identity field operations on Android, see [Android pins and commands](android.md#additional-android-operations-0500).
+For identity field operations on Android, see [Android pins and commands](android.md#additional-android-operations-0501).
 
 Require `identity_protocol: 1` from `akdbx status`. On the CDP route,
 delivery also requires `identity_delivery: "cdp-identity-element-v1"` and

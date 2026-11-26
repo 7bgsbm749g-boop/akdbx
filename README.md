@@ -149,8 +149,8 @@ authenticator setup key printed in space-separated Base32 groups, for
 From 0.44.0, native apps can use **native field pins** for passwords, combined logins,
 generated passwords, usernames, TOTP codes, cards, addresses and read-only
 secret capture, and from 0.49.0 for SMS codes. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
-uses exact Unicode Win32 Edit controls. From 0.50.0, the Windows backend also
-supports WinForms TextBox and retained WPF TextBox and PasswordBox controls. On macOS (0.50.0+), native fields
+uses exact Unicode Win32 Edit controls. From 0.50.1, the Windows backend also
+supports WinForms TextBox and retained WPF TextBox and PasswordBox controls. On macOS (0.50.1+), native fields
 use Accessibility with permission granted to the broker. Stock AppKit password
 fields omit the character count required to verify delivery. Password, combined
 login and generated-password modes are unavailable on macOS. Native read pins
@@ -172,7 +172,7 @@ The [support matrix](docs/support-matrix.md) has the full list per route and pla
   checks, private HTTPS unlock and encrypted vault writes. The native host supports Chrome, Edge, Helium
   and Firefox 153+ (0.47.0+); Chromium and Brave are supported from 0.49.0. From 0.49.0, guided setup
   installs a login LaunchAgent, the broker locks on macOS screen-lock notifications, and the QR importer
-  also registers for Chromium and Brave. From 0.50.0, Chromium CDP also supports private profiles and profile slots
+  also registers for Chromium and Brave. From 0.50.1, Chromium CDP also supports private profiles and profile slots
   (guided setup does not configure it), and native field pins use Accessibility, except for passwords. Numeric
   window delivery is unavailable. Safari needs a signed Apple app wrapper and is not built. See
   [macOS setup and limits](docs/macos.md).
@@ -185,7 +185,7 @@ The [support matrix](docs/support-matrix.md) has the full list per route and pla
 - **Windows** (0.17.0+): native broker and browser fills. It uses local named pipes, Windows
   access checks, a loopback HTTPS page (from 0.22.0 also reachable from other
   tailnet devices through Tailscale Serve, from 0.26.0 from any device through
-  the akdbx relay), native field pins for Win32 Edit (0.44.0), WinForms and WPF (0.50.0) controls,
+  the akdbx relay), native field pins for Win32 Edit (0.44.0), WinForms and WPF (0.50.1) controls,
   and directed Unicode window messages for native-app username, TOTP and SMS code fills. UWP, WinUI
   and Qt controls are not proven. See [Windows setup and validation](docs/windows.md)
   for browser and engine requirements, limits and pending checks. The Linux
@@ -193,7 +193,7 @@ The [support matrix](docs/support-matrix.md) has the full list per route and pla
   transport. [Private HTTPS pages](docs/private-pages.md) describes the unlock
   page for both platforms.
 - **Android devices and emulators** (0.36.0+) support verified app fields and
-  Chrome pages on a Linux broker. Version 0.50.0 adds generated
+  Chrome pages on a Linux broker. Version 0.50.1 adds generated
   passwords, SMS codes, card and identity fields, and Chrome read pins for
   shown-once secrets and authenticator enrollment. The managed emulator needs
   Linux. A Windows broker has no end-to-end proof, and a macOS broker is not
@@ -342,7 +342,7 @@ origin's HTTPS page. There is no trust on first use: only a local
 
 ## CDP route: install and run
 
-CDP works on Linux with X11 or Wayland, on Windows (0.17.0+) and on macOS (0.50.0+). The examples below are for Linux; see
+CDP works on Linux with X11 or Wayland, on Windows (0.17.0+) and on macOS (0.50.1+). The examples below are for Linux; see
 [Windows setup](docs/windows.md#configure-the-browser-for-password-and-card-fills) and
 [macOS Chromium CDP](docs/macos.md#chromium-cdp). On Linux only numeric window pins need an X11 or XWayland target, X-Resource 1.2 local PID support and EWMH active-window metadata. Set `AKDBX_UNLOCK_ORIGIN` in your private local environment to the private page's HTTPS origin before starting the broker or using the CLI, and create its certificate as [Private HTTPS pages](docs/private-pages.md) describes. `https://localhost:9443` is the default:
 

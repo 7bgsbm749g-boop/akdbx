@@ -42,7 +42,7 @@ Require these values in `status` before you use the route:
 
 `default_fill_route` is `"cdp"` unless the operator started the broker with
 `serve --default-fill-route extension` (or `AKDBX_DEFAULT_FILL_ROUTE`).
-On macOS it defaults to `"extension"`, with CDP available for configured Chromium profiles from 0.50.0.
+On macOS it defaults to `"extension"`, with CDP available for configured Chromium profiles from 0.50.1.
 `extension_browsers` lists attached browsers and whether each is paired.
 Each item also has the extension version that browser loaded and how it
 compares with this broker (see [Extension version](#extension-version)).
@@ -310,7 +310,7 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   the field must have the top page's exact origin. The code goes sealed to the
   pinned element, once; it never reaches the agent or the keyboard. Receipts
   carry `code_delivery: "extension-dom-v1"`. The CDP code pin is the other
-  page route (on macOS from 0.50.0, with a configured profile). See [SMS](sms.md).
+  page route (on macOS from 0.50.1, with a configured profile). See [SMS](sms.md).
 - Identities: `pin-identity-target --route extension`, same rules as the CDP
   route; only frames of the top origin.
 - Secret capture (0.32.0+, fill extension 0.4.0): `pin-password-target --mode read

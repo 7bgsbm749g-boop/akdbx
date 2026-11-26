@@ -4,7 +4,7 @@ Native field protocol 1 adds password, combined login, generated-password,
 username, TOTP, card and address fills, and read-only secret capture outside a
 browser (0.44.0 on Linux and Windows Edit controls), and SMS code fills from
 0.49.0. Windows WinForms and WPF controls and the macOS backend arrive in
-0.50.0. The [support matrix](../../../docs/support-matrix.md#native-field-pin-native-target)
+0.50.1. The [support matrix](../../../docs/support-matrix.md#native-field-pin-native-target)
 lists each mode per platform and the CI job that proves it. Check `native_field_supported: true`, integer `native_field_protocol: 1`
 and `native_field_delivery: "native-field-v1"` in `status`.
 
@@ -17,10 +17,10 @@ Supported controls:
   this is not certification of every toolkit or compositor.
 - Windows 10/11: visible, enabled Win32 Edit controls, WinForms TextBox controls
   and WPF TextBox and PasswordBox controls in the active native window.
-  Check `native_field_windows_uia: true` for the Windows backend (0.50.0+).
+  Check `native_field_windows_uia: true` for the Windows backend (0.50.1+).
   The broker requires its own user and session, the Default input desktop
   and a target at or below its integrity level. Browser controls are refused.
-- macOS (0.50.0+) uses Accessibility in the frontmost native window. Check
+- macOS (0.50.1+) uses Accessibility in the frontmost native window. Check
   `native_field_accessibility_granted: true`. Each control must be visible at
   its center and support a character count. Username, TOTP, SMS code, card and
   identity fills require an unmasked writable field. Password and combined login modes

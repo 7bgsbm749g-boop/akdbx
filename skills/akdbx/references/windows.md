@@ -90,7 +90,7 @@ field, another for the confirmation field (none for a write staged with
 ## Native application field pins
 
 Use [native desktop fields](native-fields.md) for an exact Win32 Edit, WinForms
-TextBox, or WPF TextBox or PasswordBox. The 0.50.0 backend reports
+TextBox, or WPF TextBox or PasswordBox. The 0.50.1 backend reports
 `native_field_windows_uia: true`. Discover the focused field, then use the
 single-use pin for the requested fill or read-only capture.
 

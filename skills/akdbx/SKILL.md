@@ -114,7 +114,7 @@ directory junction on Windows needs no elevation), so it can be invoked as
 ### First-time setup
 
 `akdbx setup` (0.27.0+) takes a user from install to a working broker, on
-Linux and Windows, with macOS support from 0.49.0. On macOS, `--start-at-login` installs a per-user LaunchAgent, and setup configures only the extension route: it refuses `--cdp-profile` there (CDP on macOS, 0.50.0+, is set up by hand). macOS has no window pins and no Safari support. You can run it for the user without questions:
+Linux and Windows, with macOS support from 0.49.0. On macOS, `--start-at-login` installs a per-user LaunchAgent, and setup configures only the extension route: it refuses `--cdp-profile` there (CDP on macOS, 0.50.1+, is set up by hand). macOS has no window pins and no Safari support. You can run it for the user without questions:
 
 ```bash
 akdbx setup --yes --json --vault /absolute/path/to/the-users-vault.kdbx \
@@ -314,7 +314,7 @@ Sites see ordinary use by the user, which is what it is.
 
 **CDP route (`--route cdp`): the original route.** The broker drives a Chromium
 profile that was started with `--remote-debugging-port` and fills over the
-Chrome DevTools Protocol. On macOS from 0.50.0, check that `fill_routes`
+Chrome DevTools Protocol. On macOS from 0.50.1, check that `fill_routes`
 includes `cdp` and that the browser profile is configured. It works without any browser extension. Secret
 capture (`--mode read`, `capture-secret`) works on both routes from 0.32.0. It
 has two costs:
@@ -421,8 +421,8 @@ available, whatever the table says.
 | Route | Linux | Windows | macOS |
 | --- | --- | --- | --- |
 | Extension (`--route extension`), first choice for pages | Chromium family and Firefox 153+ | Chromium family and Firefox 153+ | Chromium family and Firefox 153+ |
-| CDP (`--route cdp`) | Yes | Yes | 0.50.0+, only after the operator verified debugging-port isolation |
-| Native field (`pin-native-target`) | AT-SPI on X11 and Wayland | Win32 Edit, WinForms, WPF | Accessibility, 0.50.0+; no password, login or generated-password modes |
+| CDP (`--route cdp`) | Yes | Yes | 0.50.1+, only after the operator verified debugging-port isolation |
+| Native field (`pin-native-target`) | AT-SPI on X11 and Wayland | Win32 Edit, WinForms, WPF | Accessibility, 0.50.1+; no password, login or generated-password modes |
 | Window pin (`pin-target`): usernames, TOTP, SMS codes only | X11 or XWayland windows; not native Wayland | HWND | None |
 | Android (`akdbx android`) | Yes; managed emulator too | No end-to-end proof | Not supported yet |
 
@@ -602,7 +602,7 @@ checks can still need the user. Details: [TOTP](references/totp.md) and
 (masked previews only) and fill it with `fill-sms-code` into a fresh
 `pin-code-target` pin. In the paired browser, check for `extension` in
 `sms_fill_routes` and pin with `--route extension`; on the CDP route
-(also on macOS from 0.50.0 with a configured profile) check for `cdp`.
+(also on macOS from 0.50.1 with a configured profile) check for `cdp`.
 For a native application, check for `native` in
 `sms_fill_routes` and use `pin-native-target --mode code`. A window
 pin needs the independently verified challenge URL. The user's

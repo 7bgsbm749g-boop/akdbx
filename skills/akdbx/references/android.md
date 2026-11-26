@@ -1,10 +1,10 @@
 # Android devices (0.36.0+)
 
 `akdbx android` fills a login, username, password or authenticator code
-(0.36.0), and from 0.50.0 a generated password, SMS code, card or identity
+(0.36.0), and from 0.50.1 a generated password, SMS code, card or identity
 field, into one verified field of the focused app on an Android device or
-emulator that the operator configured. From 0.50.0 it also reads shown-once
-values in Chrome ([additional operations](#additional-android-operations-0500)).
+emulator that the operator configured. From 0.50.1 it also reads shown-once
+values in Chrome ([additional operations](#additional-android-operations-0501)).
 It covers Google account sign-in (for example Google
 Play), pages in Chrome and Chrome Custom Tabs (for example GitHub Mobile's
 sign-in, which opens github.com in a Custom Tab), and native app fields whose
@@ -164,7 +164,9 @@ Android SDK level and `speak_password`.
    Then submit with a tap or Enter and check the result on screen. Do not
    retry a fill whose `delivery` is `uncertain`; inspect first.
 
-## Additional Android operations (0.50.0+)
+<a id="additional-android-operations-0500"></a>
+
+## Additional Android operations (0.50.1+)
 
 Use a fresh `akdbx android pin --device NAME --field FIELD` for each command.
 Check `android_fill_modes` for the required mode. For a native app also supply
