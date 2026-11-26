@@ -70,14 +70,49 @@ its manifest as a temporary add-on. Register `org.akdbx.private_import` with
 `private-import@akdbx.org`. The user confirms the account on the private page
 before saving. See [private import](../skills/akdbx/references/private-import.md).
 
+From fill extension 0.11.1, a card or address field inside a clipped drawer
+can pass the inset check in Firefox. The extension checks open and closed shadow
+roots when it walks the field’s ancestors.
+
+## Enhanced security
+
+With **Enhanced security** on, card, address and read pins require a pixel check
+at the pin and again at delivery. Firefox 161 does not expose
+`IntersectionObserverEntry.isVisible`. The extension therefore cannot repeat
+a whole-element occlusion check in the JavaScript task that writes or reads the
+field. A DOM hit test skips click-through covers. The extension checks a tab screenshot at the field centre or along the secret text,
+then rechecks the target and its position. A cover between sampled points is
+outside that proof. The ordinary DOM, frame-owner and origin checks still apply.
+
+Firefox can paint a native input over its CSS inset shadow. In that case the
+screenshot lacks the expected colour and akdbx refuses even an uncovered
+field. An ordinary CSS-styled input can pass. Missing screenshot permission or
+an inactive tab also prevents the pixel check from succeeding.
+
+## WebDriver BiDi
+
+Firefox can expose browsing contexts and navigation events over WebDriver BiDi.
+A controller could locate an element, keep its node reference, and run DOM checks
+in a sandboxed realm. This would require a debugging session for the profile.
+BiDi has no command equivalent to the CDP card check that hit-tests a screen
+point while ignoring pointer-event exclusions and returns a backend node ID.
+A BiDi node reference identifies an element but cannot prove what is painted
+over it. akdbx therefore uses the paired extension for Firefox. See the
+[WebDriver BiDi specification](https://www.w3.org/TR/webdriver-bidi/) and
+[CDP’s DOM domain](https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-getNodeForLocation).
+
 ## Validation
 
 `tests/test_firefox_browser.py` loads the actual built add-on into a fresh
 Firefox profile and connects through a unique native host to a synthetic
-broker. It checks real document IDs, main-frame and child-frame password and
-TOTP fills, no keyboard delivery, hidden-field refusal, and refusal of a target
-after navigation. CI runs it on Linux, Windows and macOS. Field checks read
-only SHA-256 digests; the test never reads a password value back from the page.
+broker. It exercises main and child documents, a two-field child login, TOTP,
+generated-password delivery, merchant card fields, and Adyen, Computop and both
+Stripe frame types. A loopback TLS fixture serves all processor pages. The suite
+also checks identity notification events, the toolbar popup's trusted click,
+and the pixel check on an uncovered and a covered field. For `capture-secret`
+and `capture-totp`, it reopens a disposable encrypted vault to verify the
+result. CI runs this suite on Linux, macOS and Windows with Firefox 161, and on
+Linux with the minimum supported version, Firefox 153.
 
 The Firefox integration follows Mozilla's
 [native-messaging contract](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging)
