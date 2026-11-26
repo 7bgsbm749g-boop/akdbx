@@ -380,10 +380,12 @@ So:
 
 - If the extension is paired, use it for logins, cards and identities.
 - Both routes refuse a field the user cannot see: hidden, transparent, zero
-  size, off-screen, inert, clipped, or under a cover that takes pointer events.
-  Only the CDP route also refuses a click-through cover over a card, address or
-  code field. No route keeps a value from the page at the pinned origin, so
-  check the site and the field yourself before a fill
+  size, off-screen or inert. Card, address and code pins also refuse a clipped
+  field or one under a cover that takes pointer events, and only the CDP route
+  also refuses a click-through cover over them. Password pins have no hit test:
+  a cover over a password field does not stop its fill. No route keeps a value
+  from the page at the pinned origin, so check the site and the field yourself
+  before a fill
   ([visibility checks](https://github.com/7bgsbm749g-boop/akdbx/blob/main/README.md#visibility-checks-what-they-stop)).
 - If a site blocks or declines on the CDP route and the block looks like a false
   positive (the user's own account and data, a check that fails for no stated

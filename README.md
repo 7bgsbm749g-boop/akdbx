@@ -285,15 +285,18 @@ field that the agent chose, and that field must be one the user can see.
 
 | Check | Route | What it stops | Can a page that targets it get past it? |
 | --- | --- | --- | --- |
-| DOM checks: `display: none`, `visibility`, `opacity: 0`, zero size, off-screen, `inert`, the style guard (filter, mask, clip, blend; only an ancestor `clip-path: inset()` that holds the whole field), the `elementFromPoint` hit test (the field centre through each parent frame, points along a secret's text, a grid over a QR code), the focused-field rule (address, code and read pins, popup fills), visible frame owners | CDP and extension | Hidden, transparent, zero-size, off-screen, inert and clipped fields; an opaque cover that takes pointer events; a hidden login frame | Yes: a cover with a hole at the tested points. On the extension route, also a click-through cover. |
+| DOM checks. Every pin: `display: none`, `visibility`, `opacity: 0`, zero size, off-screen, `inert`; focus (every pin except card pins); visible owners of child frames. Card, address and code pins: the style guard (filter, mask, clip, blend; only an ancestor `clip-path: inset()` that holds the whole field) and the `elementFromPoint` hit test at the field centre, through each parent frame. Read pins: an opaque text colour and the hit test at points along the secret's text (a 5 x 5 grid over a QR code). | CDP and extension | Hidden, transparent, zero-size, off-screen and inert targets; for card, address and code fields also clipped fields and an opaque cover that takes pointer events; a hidden login frame | Yes: a cover with a hole at the tested points. On the extension route, also a click-through cover. |
 | CDP native hit test (`DOM.getNodeForLocation`, which ignores `pointer-events: none`) for card, address and code fields, at the pin and before and after the write | CDP | A click-through cover at the field centre: `pointer-events: none`, `inert`, a popover `::backdrop` | Yes: a cover with a hole at the tested point. |
 | `IntersectionObserver` v2 occlusion test (removed after 0.52.0) | Extension, Chromium, with Enhanced security | Any box over the element | It refused ordinary pages (5 of 9 test pages: a floating label, a copy button, a cookie banner elsewhere), Firefox has no such test, and it ran only beside the pixel check. |
 | Pixel check with tab screenshots (removed after 0.52.0) | Extension, with Enhanced security (opt-in) | A cover over the sampled points | Yes: a page can read the check's colour from its own style and remove its cover while the check runs, or cover the text between the sampled points. It needed the `<all_urls>` permission. |
 
-Password pins have the DOM checks and the focus rule but no hit test, on both
-routes. Read pins (`capture-secret`, `capture-totp`) have the first row's checks
-on both routes. A cover over a secret does not change the text that akdbx
-saves: the page shows that text itself. Native field and Android pins have
+Password pins have no style guard and no hit test, on both routes: a cover
+over a visible, focused password field does not stop its fill. Read pins
+(`capture-secret`, `capture-totp`) have no style guard. A cover over a secret
+does not change the text that akdbx saves: the page shows that text itself.
+The toolbar popup's login, card and TOTP fills check that the focused field and
+its form partners are visible (no style guard, no hit test); its address and
+texted-code fills use the agent pin checks. Native field and Android pins have
 their own checks ([support matrix](docs/support-matrix.md)).
 
 ## Browser extension route (0.21.0)

@@ -120,7 +120,7 @@ connection before the WebSocket handshake.
 | `capture-totp`, text key | ✅ 0.35.0 · `synthetic-password-fields` | ✅ 0.35.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | `capture-totp`, QR code | ✅ 0.50.1 · `synthetic-password-fields` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · no CI |
 | SMS code | ✅ 0.40.0 · `card-safety` | ✅ 0.40.0 · `windows` (Edge) | ✅ 0.50.1 · `macos-broker` |
-| Refuses a click-through cover over a card, address or code field (AG) | ✅ 0.16.0 · `card-safety` | ✅ 0.17.0 · no CI | ✅ 0.50.1 · no CI |
+| Refuses a click-through cover over a card, address or code field (AG) | ✅ card 0.16.0, address 0.18.2, code 0.40.0 · `card-safety` | ✅ card 0.17.0, address 0.18.2, code 0.40.0 · no CI | ✅ 0.50.1 · no CI |
 | Popup human click | — | — | — |
 | Agent desktop slots (`--browser-slot`) | ✅ 0.30.0 · `card-safety` | ✅ 0.30.0 · no CI | ✅ 0.50.1 · `macos-broker` |
 
@@ -372,8 +372,10 @@ broker takes attached devices only (after 0.50.1).
   editable field, prose. The broker refuses a read pin on an app field, so
   reads work on Chrome pages only.
 - **AG** The CDP and extension routes refuse a hidden, transparent,
-  zero-size, off-screen, inert or clipped field and a cover that takes pointer
-  events (`linux-extension-browser`, `card-safety`). A
+  zero-size, off-screen or inert target (`linux-extension-browser`,
+  `card-safety`). Card, address and code pins also refuse a clipped field and a
+  cover that takes pointer events at the field centre, and a read pin a cover
+  over its text; password pins have no hit test. A
   click-through cover (`pointer-events: none`, `inert`, a popover
   `::backdrop`) is not seen by the DOM hit test. The CDP route's native hit
   test (`DOM.getNodeForLocation`) refuses one at the field centre for card,

@@ -121,8 +121,10 @@ affected.
 ## Covers
 
 In Firefox the extension runs the same DOM checks as in Chromium: hidden,
-transparent, zero-size, off-screen, inert and clipped fields refuse, and so does
-a cover that takes pointer events at the field centre. The DOM hit test
+transparent, zero-size, off-screen and inert targets refuse. Card, address and
+code fields also refuse a clip and a cover that takes pointer events at the
+field centre, and a read pin refuses a cover over its text; password pins have
+no hit test. The DOM hit test
 (`elementFromPoint`) skips a click-through cover (`pointer-events: none`,
 `inert`, a popover `::backdrop`). Firefox has no browser-native hit test for
 an extension (see WebDriver BiDi below), so no Firefox route refuses such a
