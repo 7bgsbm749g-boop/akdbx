@@ -95,10 +95,15 @@ STRIPE_CARD_ELEMENT_FRAME = (
 
 @pytest.fixture
 def chrome(tmp_path, request):
-    binary = card_browser_binary()
-    # Check dependencies before the optional shared Xvfb fixture can skip, so
-    # missing Xvfb is a hard failure when card CI requires browser coverage.
-    isolated_x11 = request.getfixturevalue('isolated_x11')
+    windows = os.name == 'nt'
+    if windows:
+        from windows_chromium_lab import browser_binary
+        binary = browser_binary()
+        assert binary is not None, 'Windows CDP tests require an installed browser'
+        desktop = None
+    else:
+        binary = card_browser_binary()
+        desktop = request.getfixturevalue('isolated_x11')
     cert, key = tmp_path / 'cert.pem', tmp_path / 'key.pem'
     subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
                     '-subj', '/CN=127.0.0.1', '-keyout', str(key), '-out', str(cert)],
@@ -197,9 +202,14 @@ def chrome(tmp_path, request):
     worker.start()
     url = 'https://127.0.0.1:' + str(server.server_port) + '/payment'
     profile = tmp_path / 'profile'
-    profile.mkdir(mode=0o700)
+    if windows:
+        from akdbx.windows_security import ensure_private_directory
+        ensure_private_directory(profile)
+    else:
+        profile.mkdir(mode=0o700)
     log = (tmp_path / 'chrome.log').open('wb')
     environment = {**os.environ, 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/nonexistent/akdbx-card-test', 'NO_AT_BRIDGE': '1'}
+    launch = {} if windows else dict(start_new_session=True, umask=0o077)
     process = subprocess.Popen([binary, '--user-data-dir=' + str(profile), '--no-first-run',
         '--no-default-browser-check', '--disable-background-networking', '--disable-component-update',
         '--disable-sync', '--disable-extensions', '--disable-gpu', '--disable-dev-shm-usage',
@@ -208,8 +218,8 @@ def chrome(tmp_path, request):
         '--host-resolver-rules=MAP checkoutshopper-live.adyen.com 127.0.0.1:' + str(server.server_port) +
         ',MAP www.computop-paygate.com 127.0.0.1:' + str(server.server_port) +
         ',MAP js.stripe.com 127.0.0.1:' + str(server.server_port),
-        '--ignore-certificate-errors', '--window-size=1000,1000', '--ozone-platform=x11', url],
-        env=environment, stdout=subprocess.DEVNULL, stderr=log, start_new_session=True, umask=0o077)
+        '--ignore-certificate-errors', '--window-size=1000,1000', '--headless=new' if windows else '--ozone-platform=x11', url],
+        env=environment, stdout=subprocess.DEVNULL, stderr=log, **launch)
     cdp = None
     try:
         # Cold CI Chrome preparation gets a separate bounded budget. Production
@@ -229,7 +239,7 @@ def chrome(tmp_path, request):
         frame = cdp.call('Page.getFrameTree', session=session)['frameTree']['frame']['id']
         broker = Broker(Vault([CardEntry()]), RecordingTyper(), card_browser_profile=profile)
         yield SimpleNamespace(broker=broker, cdp=cdp, session=session, page=page, frame=frame,
-            url=url, profile=profile, process=process, lab=isolated_x11, requests=requests)
+            url=url, profile=profile, process=process, lab=desktop, requests=requests)
     finally:
         if 'broker' in locals():
             broker.card_targets.close()
@@ -242,17 +252,21 @@ def chrome(tmp_path, request):
         try:
             process.wait(timeout=8)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    # This group was created by this fixture with its own
-                    # browser profile and start_new_session=True.
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=5)
-            except ProcessLookupError:
+            if windows:
+                process.kill()
                 process.wait(timeout=5)
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        # This group was created by this fixture with its own
+                        # browser profile and start_new_session=True.
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait(timeout=5)
+                except ProcessLookupError:
+                    process.wait(timeout=5)
         log.close()
         server.shutdown()
         server.server_close()
@@ -261,7 +275,7 @@ def chrome(tmp_path, request):
         # CI evidence, not hundreds of stopped-browser caches across the suite.
         # Never remove a profile while its exact owned process is still alive.
         if process.poll() is not None:
-            shutil.rmtree(profile)
+            shutil.rmtree(profile, ignore_errors=windows)
 
 
 def evaluate(chrome, expression):

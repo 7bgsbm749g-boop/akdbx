@@ -112,6 +112,7 @@ def verify_peer(connection):
         pid = server_pid(remote[1], local[1])
         handle, _ = security.verify_process(pid)
         try:
+            security.require_same_integrity(handle)
             if server_pid(remote[1], local[1]) != pid:
                 raise BrowserEndpointError()
         finally:

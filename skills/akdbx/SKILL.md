@@ -97,8 +97,8 @@ workflow owns.
 
 On Windows, read [Windows operation](references/windows.md) first: the
 transport is a named pipe, and native-window pins use HWNDs instead of X11
-windows. The private HTTPS page works the same way on both platforms. Every workflow here works
-on Windows from 0.17.0.
+windows. The private HTTPS page works the same way on both platforms. The managed Android emulator, Hyprland lock,
+Tailscale Serve Unix socket and Linux agent-desktop slot window pins are Linux-specific.
 
 The maintained source of this skill is the repository's `skills/akdbx`
 directory. A local install links the agent's skills directory to it (a
