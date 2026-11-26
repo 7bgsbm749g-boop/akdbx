@@ -1637,11 +1637,12 @@ def test_a_rebuild_with_other_contents_runs_the_new_worker_after_a_browser_resta
     stamped = rebuild(monkeypatch, folder, unlock_origin=origin)
     assert stamped != first and json.loads((folder / 'manifest.json').read_text())['version'] == stamped
     with chromium_lab(private_dir, *certificates, restart=True, **run) as lab:
-        # Chromium registers the new worker at startup. Edge on Windows can first start the registered old
-        # worker, which then finds the newer build on disk and reloads into it.
+        # Chromium registers the new worker at startup. Chromium or Edge can first start the worker it
+        # registered on the previous launch, which then finds the newer build on disk and reloads into it.
+        # That earlier worker ran either the old files or the rebuilt ones (see the restart above).
         deadline = time.monotonic() + 30
         while (runs := worker_value(lab, RUNS)) != [stamped, True, 'function']:
-            assert runs == [first, False, 'function'] and time.monotonic() < deadline, runs
+            assert runs in ([first, False, 'function'], [first, True, 'function']) and time.monotonic() < deadline, runs
             time.sleep(.2)
 
 
