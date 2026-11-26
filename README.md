@@ -995,6 +995,22 @@ or space-separated groups) or `otpauth://totp/` URI. Search shows
 `totp_pending: true` while a key is pending. Require `totp_capture_protocol: 1`.
 Details: [automatic authenticator enrollment](skills/akdbx/references/totp-enrollment.md).
 
+When the enrollment page shows only a QR code and no text key, pin the QR
+element and pass `--qr` to both commands (`totp_qr_capture_protocol: 1`):
+
+```bash
+akdbx pin-password-target --mode read --qr --page-id PAGE --frame-id FRAME --top-url URL --selector '#qr' [--route extension]
+akdbx capture-totp --qr --target TARGET --handle HANDLE --title T --username U --url URL --group G
+```
+
+The browser decodes the `<img>`, `<canvas>` or inline `<svg>` itself with the
+bundled jsQR (the CDP pin's isolated world, or the fill extension 0.14.0+
+content script in Helium, Chrome or Edge; Firefox refuses QR pins for now). The
+key goes only to the vault; pixels and the decoded value never reach the agent,
+a receipt or a log. An image from another origin, no code or two codes, a code
+that is not an `otpauth://totp/` URI, and a change after the pin refuse with
+nothing saved. `capture-secret` never takes a QR pin.
+
 ## Encrypted vault merge (0.8.0)
 
 ```bash

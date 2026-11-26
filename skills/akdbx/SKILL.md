@@ -531,7 +531,10 @@ imports it once through `setup-totp`'s private page. When the task authorizes
 adding an authenticator app to the account, enroll it yourself with
 `capture-totp` (0.35.0+): the broker reads the setup key from the site's
 enrollment page through a CDP or extension read pin. A native read pin cannot
-verify the enrollment site's origin. See [automatic enrollment](references/totp-enrollment.md).
+verify the enrollment site's origin. When the page shows no text key, pin the
+QR code and pass `--qr` to the read pin and to `capture-totp`
+(`totp_qr_capture_protocol: 1`): the browser decodes it, and you never see it.
+See [automatic enrollment](references/totp-enrollment.md).
 Never reset or replace a site's 2FA just to finish a login. Push approvals, passkeys and device
 checks can still need the user. Details: [TOTP](references/totp.md) and
 [private key import](references/private-import.md).

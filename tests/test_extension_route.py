@@ -1721,6 +1721,58 @@ def test_an_older_extension_gets_no_read_or_child_frame_login_pins_but_keeps_the
     assert card['ok'], card
 
 
+QR_URI = 'otpauth://totp/Synthetic:synthetic-key?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP&issuer=Synthetic'
+
+
+def test_a_qr_read_pin_is_sealed_as_qr_and_is_for_capture_totp_only(capture_broker):
+    broker = capture_broker
+    broker.vault.add_entry(broker.vault.find_groups(name='Web', first=True), 'Synthetic QR', 'synthetic-key',
+                           'synthetic-qr-password', url=SECRET_SITE)
+    channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
+    extension.secret = QR_URI  # What the extension decoded from the pinned picture.
+    status = broker.dispatch(dict(action='ping'))
+    assert status['totp_qr_capture_protocol'] == 1 and status['extension_qr_capture_min_version'] == '0.14.0'
+    # read_kind is "qr" only, on a read pin only: refused before the browser sees it.
+    for extra in (dict(read_kind='text'), dict(read_kind='QR'), dict(read_kind=True)):
+        assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE, **extra) == failure()
+    assert pin_password(broker, channel, 4, 'TOP', SECRET_SITE, mode='totp', selector='#otp', read_kind='qr') == failure()
+    assert 'pin' not in extension.calls
+    # The extension gets the kind in the spec; a text pin's spec is unchanged for older extensions.
+    text = read_pin(broker, channel, 4, 'TOP', SECRET_SITE)
+    qr = read_pin(broker, channel, 4, 'TOP', SECRET_SITE, read_kind='qr')
+    assert text['ok'] and qr['ok']
+    assert [p['spec'] for p in extension.pins.values()] == [
+        dict(selector='#secret', frame_origin=None), dict(selector='#secret', frame_origin=None, read_kind='qr')]
+    # capture-secret never takes a QR pin, and the pin is used up without a read.
+    assert capture(broker, qr['target'])['ok'] is False and 'read' not in extension.calls
+    assert broker.extension.take(qr['target'], 'read') is None
+    # capture-totp --qr reads it and saves the pending key; without --qr it refuses.
+    handle = search(broker, 'Synthetic QR')
+    metadata = dict(title='Synthetic QR', username='synthetic-key', url=SECRET_SITE, group='Web')
+    request = dict(action='capture-totp', totp_capture_protocol=1, handle=handle, metadata=metadata,
+                   start_deadline=broker.clock() + 4)
+    assert broker.dispatch(dict(request, target=text['target'], read_kind='qr'))['ok'] is False
+    qr = read_pin(broker, channel, 4, 'TOP', SECRET_SITE, read_kind='qr')
+    assert broker.dispatch(dict(request, target=qr['target']))['ok'] is False
+    qr = read_pin(broker, channel, 4, 'TOP', SECRET_SITE, read_kind='qr')
+    receipt = broker.dispatch(dict(request, target=qr['target'], read_kind='qr'))
+    assert receipt == dict(ok=True, state='pending', totp_configured=False, metadata=metadata,
+                           capture_delivery=route.CAPTURE_DELIVERY), receipt
+    assert extension.calls.count('read') == 1 and 'JBSWY3DP' not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize('browser, version', [('helium', '0.13.0'), ('firefox', BUILT)])
+def test_an_older_or_firefox_extension_gets_no_qr_read_pin_but_keeps_text_reads(capture_broker, browser, version):
+    broker = capture_broker
+    extension = FakeExtension({4: [Document('TOP', SECRET_SITE)]})
+    channel = FakeChannel(broker.extension, extension, browser=browser, version=version)
+    broker.extension.channels[channel.id] = channel
+    broker.extension.approved.append(channel.digest)
+    assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE, read_kind='qr') == failure()
+    assert 'pin' not in extension.calls
+    assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE)['ok']
+
+
 def test_cli_reads_through_the_extension_with_route_or_default(monkeypatch, capsys, capture_broker):
     broker = capture_broker
     channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE)]})

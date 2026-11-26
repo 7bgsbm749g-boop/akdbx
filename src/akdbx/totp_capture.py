@@ -8,6 +8,14 @@ setup, and saves it as the entry's *pending* authenticator: a protected custom
 field beside the entry's `otp`. The entry's existing authenticator is never
 changed by a capture, so a failed or repeated enrollment cannot destroy it.
 
+A QR read pin (`pin-password-target --mode read --qr`, `capture-totp --qr`)
+decodes the setup QR code that the page shows in an `<img>`, `<canvas>` or
+inline `<svg>` instead, in the browser itself (the vendored jsQR in the pin's
+isolated world or the extension's content script). It must hold exactly one
+code with an `otpauth://totp/` URI; the image must come from the page's own
+origin. No pixel leaves the browser, and the decoded value goes only to the
+broker, which saves it as for a text key.
+
 `fill-totp --pending` fills the code of the pending key, for the site's
 "enter the code from your app" check. `commit-totp` then moves the pending key
 into the standard `otp` field after the caller has seen the site accept it
@@ -23,14 +31,22 @@ from .versions import active_entries
 from .writes import WriteError, _entry_changed_at, _entry_write_clock, allowed_origins, metadata, validate_metadata
 
 PROTOCOL = 1
+# capture-totp --qr: the read pin decodes a QR code (read_kind "qr"); it must hold an otpauth://totp/ URI.
+QR_PROTOCOL = 1
 PENDING_FIELD = 'akdbx.pending-otp'
 REFUSED = ('authenticator capture refused: target missing, expired, changed, hidden, not a supported TOTP setup key '
            'or URI, or not on the entry origin; nothing saved')
+# A QR pin also refuses for a cross-origin or tainted image, no code, two codes or a non-TOTP code. The
+# message names them all at once: it never tells which check failed.
+QR_REFUSED = ('authenticator QR capture refused: target missing, expired, changed, hidden, cross-origin, not exactly '
+              'one QR code, not an otpauth TOTP URI, or not on the entry origin; nothing saved')
 INVALID = 'invalid authenticator capture request; nothing saved'
+# The CLI's refusal before it sends a QR request to a broker without QR capture.
+OLD_BROKER = 'broker lacks authenticator QR capture protocol 1 (totp_qr_capture_protocol); update the broker'
 
 
 def capabilities():
-    return dict(totp_capture_protocol=PROTOCOL)
+    return dict(totp_capture_protocol=PROTOCOL, totp_qr_capture_protocol=QR_PROTOCOL)
 
 
 def pending(entry):
@@ -139,17 +155,23 @@ class TotpCaptures:
                 if pin is None:
                     pin = broker.passwords.consume(token)
             except Exception:
-                return dict(ok=False, error=REFUSED)
+                return dict(ok=False, error=QR_REFUSED if request.get('read_kind') == 'qr' else REFUSED)
             from .secrets_capture import CAPTURE_DELIVERY as CDP_DELIVERY
             from .extension_route import ExtensionPin, CAPTURE_DELIVERY as EXTENSION_DELIVERY
             from .android_route import AndroidPin, READ_DELIVERY as ANDROID_READ_DELIVERY
             android = isinstance(pin, AndroidPin)
             extension = isinstance(pin, ExtensionPin)
+            qr = request.get('read_kind') == 'qr'
+            refused = QR_REFUSED if qr else REFUSED
             if pin.mode != 'read':
-                return dict(ok=False, error=REFUSED)
-            if (set(request) != {'action', 'totp_capture_protocol', 'target', 'handle', 'metadata', 'start_deadline'}
+                return dict(ok=False, error=refused)
+            if (set(request) - {'read_kind'} != {'action', 'totp_capture_protocol', 'target', 'handle', 'metadata', 'start_deadline'}
+                    or 'read_kind' in request and not qr
                     or type(request.get('totp_capture_protocol')) is not int or request['totp_capture_protocol'] != PROTOCOL):
                 return dict(ok=False, error=INVALID)
+            # A QR pin only with --qr, and --qr only with a QR pin: the pin and the request agree on what was read.
+            if getattr(pin, 'read_kind', 'text') != ('qr' if qr else 'text'):
+                return dict(ok=False, error=refused)
             deadline = request.get('start_deadline')
             if type(deadline) not in {int, float} or not broker.clock() < deadline <= broker.clock() + 4:
                 return dict(ok=False, error='authenticator capture not started: request expired; nothing saved')
@@ -161,11 +183,13 @@ class TotpCaptures:
             started = lambda: ready() and broker.clock() < deadline
             try:
                 value = (broker.android if android else broker.extension if extension else broker.passwords).read(pin, origins, started, deadline)
+                if qr and not (isinstance(value, str) and value.startswith('otpauth:')):
+                    raise TotpError('a QR code must hold an otpauth URI')  # Not a bare key or other text.
                 uri = parse_setup(value, label=values['username']).uri()
                 if parse_setup(uri).uri() != uri:
                     raise TotpError('unsupported label')  # The save check reads it back the same way.
             except Exception:
-                return dict(ok=False, error=REFUSED)
+                return dict(ok=False, error=refused)
             finally:
                 value = None
             had_otp = totp_configured(entry)

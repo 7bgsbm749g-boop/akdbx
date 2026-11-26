@@ -410,6 +410,11 @@ async function inject(tabId, documentId) {
   await akdbxBrowser.scripting.executeScript({target: {tabId, documentIds: [documentId]}, files: ["content.js"]});
 }
 
+// The vendored QR decoder, only into the isolated world of a document that gets a QR read pin.
+async function injectDecoder(tabId, documentId) {
+  await akdbxBrowser.scripting.executeScript({target: {tabId, documentIds: [documentId]}, files: ["jsQR.js"]});
+}
+
 async function run(tabId, documentId, func, args = []) {
   const [result] = await akdbxBrowser.scripting.executeScript({target: {tabId, documentIds: [documentId]}, func, args});
   return result ? result.result : undefined;
@@ -548,14 +553,20 @@ function randomColour() {
 }
 
 // Paint the whole padding box and the text in one colour, at once, whatever the page says.
-function challengeCSS(path, colour, outlineColour) {
+// A QR pin's image paints above its own box shadow: the rule moves an <img> or
+// <canvas> picture out of its clipped box and hides an <svg>'s shapes, so only
+// the challenge colour can show at the points.
+function challengeCSS(path, colour, outlineColour, qr) {
   const paint = `color:${colour}!important;-webkit-text-fill-color:${colour}!important;-webkit-text-stroke-color:${colour}!important;` +
     `text-decoration-color:${colour}!important;text-shadow:none!important;`;
+  const hide = qr ? "object-position:-100000px -100000px!important;overflow:clip!important;" +
+    "overflow-clip-margin:content-box!important;" : "";
   // An outline paints over the content: give it another colour, so one over a checked point refuses.
-  return `${path}{box-shadow:inset 0 0 0 9999px ${colour}!important;caret-color:${colour}!important;` + paint +
+  return `${path}{box-shadow:inset 0 0 0 9999px ${colour}!important;caret-color:${colour}!important;` + paint + hide +
     `outline-color:${outlineColour}!important;` +
     `transition:none!important;forced-color-adjust:none!important}` +
-    `${path}::placeholder{${paint}opacity:1!important}${path}::selection{${paint}background-color:${colour}!important}`;
+    `${path}::placeholder{${paint}opacity:1!important}${path}::selection{${paint}background-color:${colour}!important}` +
+    (qr ? `${path} *{visibility:hidden!important}` : "");
 }
 
 async function challenge(tabId, chain, pinId, guardId) {
@@ -585,7 +596,8 @@ async function challenge(tabId, chain, pinId, guardId) {
   const rgb = randomColour();
   const colour = `rgb(${rgb.join(", ")})`;
   // The outline colour is 128 levels away from the challenge colour in every channel.
-  const css = challengeCSS(spec.path, colour, `rgb(${rgb.map(c => (c + 128) % 256).join(", ")})`);
+  if (spec.qr !== undefined && typeof spec.qr !== "boolean") return false;
+  const css = challengeCSS(spec.path, colour, `rgb(${rgb.map(c => (c + 128) % 256).join(", ")})`, spec.qr === true);
   const target = {tabId, documentIds: [documentId]};
   try {
     await bounded(akdbxBrowser.scripting.insertCSS({target, css, origin: "USER"}), STEP_MS);
@@ -721,6 +733,8 @@ async function pin(message) {
   }
   // The extension reads secrets only in the top document.
   if (message.kind === "read" && chain.length !== 1) return {ok: false};
+  const qr = message.kind === "read" && spec.read_kind === "qr";
+  if (message.kind === "read" && spec.read_kind !== undefined && !qr) return {ok: false};
   // Password pins in a child frame need the frame owners, as on the CDP route.
   let owners = [];
   if (message.kind === "password" && chain.length > 1) {
@@ -740,6 +754,7 @@ async function pin(message) {
   let pinId = null;
   try {
     await inject(message.tab_id, message.document_id);
+    if (qr) await injectDecoder(message.tab_id, message.document_id);
     pinId = await run(message.tab_id, message.document_id,
       (kind, value, url, top) => globalThis.__akdbxContent.pin(kind, value, url, top),
       [message.kind, spec, frameURL, message.top_url]);
