@@ -58,12 +58,11 @@ def build(directory):
 
 def timing(exe, launches):
     """Time a fresh WPF app's first UI Automation answers with 20 s limits."""
-    import comtypes
+    sys.coinit_flags = 0  # COINIT_MULTITHREADED, read by comtypes on import.
     import comtypes.client
     import win32api
     import win32gui
     import win32process
-    comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
     types = comtypes.client.GetModule(str(Path(win32api.GetSystemDirectory()) / 'UIAutomationCore.dll'))
     results = []
     for _ in range(launches):
@@ -138,6 +137,7 @@ def main():
     assert ('FIRST_CONNECTION_MS = 2000' in module.read_text()) == (variant == 'fixed')
     report = dict(variant=variant, cpus=os.cpu_count(), idle=[], load=[], timing_idle=[], timing_load=[])
     scratch = Path(os.environ.get('RUNNER_TEMP') or tempfile.gettempdir()) / 'wpf-stress'
+    scratch.mkdir(parents=True, exist_ok=True)
     # Cold first: a fresh runner's first WPF launch is where CI failed.
     for n in range(runs):
         report['idle'].append(pytest(None, scratch / f'idle{n}'))
