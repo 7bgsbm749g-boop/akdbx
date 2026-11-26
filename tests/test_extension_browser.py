@@ -664,6 +664,47 @@ def test_agent_route_fills_the_pinned_password_through_the_extension(harness):
     print(json.dumps(dict(browser=lab.version, kind=harness.kind, route='extension', exact_values=True)))
 
 
+def test_a_generated_password_fills_both_new_password_fields_once_and_saves(harness, private_dir):
+    """Generation, both DOM fills and the encrypted save through the extension route; synthetic vault only."""
+    from pykeepass import PyKeePass, create_database
+    from akdbx.broker import open_vault_with_password
+    lab, broker = harness.lab, harness.broker
+    path, master = Path(private_dir) / 'generated.kdbx', 'synthetic-generated-master'
+    vault = create_database(str(path), password=master)
+    params = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
+    params['I'].value, params['M'].value = 1, 1024 * 1024  # A cheap KDF for a synthetic vault.
+    vault.add_group(vault.root_group, 'Web')
+    vault.save()
+    broker.vault = open_vault_with_password(path, master)  # A real encrypted vault in place of the fake one.
+    url = lab.evaluate('location.href')
+    listing = harness.frames(url)
+    metadata = dict(title='Synthetic generated', username='new-user', url=url, group='Web')
+    staged = broker.dispatch(dict(action='generate-entry', metadata=metadata))
+    assert staged['ok'] and set(staged['fill_handles']) == {'password', 'confirmation'}, staged
+    for name, field in (('password', 'new-password'), ('confirmation', 'confirmation')):
+        harness.focus(field)
+        pin = broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                                   frame_id=listing['main_frame_id'], top_url=url, selector='#' + field,
+                                   mode='password', route='extension'))
+        assert pin['ok'] and pin['target_delivery'] == route.DELIVERY, pin
+        receipt = broker.dispatch(dict(action='fill-generated', handle=staged['fill_handles'][name],
+                                       target_url=url, target=pin['target'], target_protocol=1))
+        assert receipt == dict(ok=True, filled='password', target_delivery=route.DELIVERY)
+    # One use per handle: a spent handle fills nothing, even through a fresh pin.
+    pin = broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                               frame_id=listing['main_frame_id'], top_url=url, selector='#confirmation',
+                               mode='password', route='extension'))
+    assert not broker.dispatch(dict(action='fill-generated', handle=staged['fill_handles']['password'],
+                                    target_url=url, target=pin['target'], target_protocol=1))['ok']
+    assert broker.dispatch(dict(action='commit-password', write_handle=staged['write_handle'],
+                                site_accepted=True))['ok']
+    saved = PyKeePass(str(path), password=master).find_entries(title=metadata['title'], first=True)
+    assert saved.username == 'new-user' and saved.password
+    assert lab.digest('new-password') == lab.digest('confirmation') == sha(saved.password)
+    assert lab.digest('password') == lab.digest('username') == EMPTY
+    assert not any(e['trusted'] for e in lab.evaluate('syntheticEvents'))
+
+
 def test_agent_route_refuses_wrong_origin_wrong_frame_and_hidden_fields(harness):
     lab, broker = harness.lab, harness.broker
     # Wrong origin: a credential of another site never fills this page.
