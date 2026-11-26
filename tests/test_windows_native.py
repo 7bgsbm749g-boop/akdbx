@@ -895,6 +895,49 @@ def test_native_host_capture_through_the_capture_pipe(synthetic_vault, native_ht
         pass
 
 
+def test_import_host_shares_the_fill_host_registrations(private_dir, monkeypatch):
+    import winreg
+    from akdbx import browser_import, extension_host
+    test_key = r'Software\akdbx-test-' + uuid.uuid4().hex
+    monkeypatch.setitem(extension_host.WINDOWS_KEYS, 'chrome', test_key + r'\Chrome')
+    monkeypatch.setitem(extension_host.WINDOWS_KEYS, 'helium', test_key + r'\Chromium')
+    monkeypatch.setenv('LOCALAPPDATA', str(private_dir))
+    pipe = rpc.PREFIX + 'akdbx-synthetic-capture'
+    def args(browser):
+        return SimpleNamespace(extension_id='a' * 32, origin='https://node.tailnet.ts.net:9443',
+                               browser=browser, socket=pipe)
+    try:
+        # Brave reads Chrome's key and Chromium reads Helium's, as for the fill extension host.
+        for browser, shared in (('brave', 'chrome'), ('chromium', 'helium')):
+            where = browser_import.install_host_windows(args(browser))
+            assert where == browser_import.windows_paths(shared)
+            assert where['manifest'].name == f'{browser_import.HOST_NAME}.{shared}.json'
+            fill = extension_host.paths(browser)['registry']
+            assert fill.rsplit('\\', 1)[0] == 'HKEY_CURRENT_USER\\' + where['key'].rsplit('\\', 1)[0]
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, where['key']) as handle:
+                assert winreg.QueryValueEx(handle, '') == (str(where['manifest']), winreg.REG_SZ)
+            spec = json.loads(where['manifest'].read_bytes())
+            assert spec['name'] == browser_import.HOST_NAME != extension_host.HOST_NAME
+            assert spec['allowed_origins'] == ['chrome-extension://' + 'a' * 32 + '/']
+            with pytest.raises(ValueError):  # the shared registration already serves this browser
+                browser_import.install_host_windows(args(shared))
+        browser_import.uninstall_host_windows(SimpleNamespace(browser='brave'))
+        with pytest.raises(OSError):
+            winreg.OpenKey(winreg.HKEY_CURRENT_USER, browser_import.windows_paths('chrome')['key'])
+        assert browser_import.config_path().exists()  # Chromium still uses it.
+        browser_import.uninstall_host_windows(SimpleNamespace(browser='helium'))
+        assert not browser_import.windows_paths('chromium')['manifest'].exists()
+        assert not browser_import.config_path().exists()
+    finally:
+        for browser in ('chrome', 'helium'):
+            browser_import.uninstall_host_windows(SimpleNamespace(browser=browser))
+        for name in (r'\Chrome', r'\Chromium', ''):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, test_key + name)
+            except OSError:
+                pass
+
+
 def test_native_host_install_registers_one_browser_and_uninstalls(private_dir, monkeypatch):
     import winreg
     from akdbx import browser_import, extension_host

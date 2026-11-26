@@ -13,6 +13,8 @@ own folders and register the manifest for one browser:
 Windows uses a per-user registry key pointing to an absolute manifest path.
 Linux and macOS use per-user manifest folders. Chrome, Chromium, Brave,
 Edge, Helium and Firefox are supported. Some browsers share a registration.
+The separate authenticator importer (``browser_import``) registers its own
+host name through the same browser and OS table below.
 """
 from __future__ import annotations
 
@@ -44,6 +46,8 @@ EXTENSION_KEY = ('MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxc7bzfI9oXFOvC2UNI
                  'AOlAyV2inpkrCPI2LMaJuhex3+cep32fMlPDdVyMf/Q/bp0jND91nrxT1C3ZHiM52GrKBDWnjR+E8gQ1q/nQM+7g22VY53oPfae'
                  'hsdiTXfZxHcsz4SUkdA4efd/CZX2XXofRB1mYxKjmtm2RUG5uBFp5OHmjoj3mhLEwR8pOxyN99gxkRcsaOTCQ45HQXzjXJs124yA'
                  'GzXx8B9Fuebbl4bXS9E7pNc0rmz5Mriq5BciZcI/UamdIVqyTSGHSPwa+PZAC2OUd1Iv7qG7YEpnqxBbBi8GQtQIDAQAB')
+# One browser/OS registration table for both akdbx native hosts: the fill
+# extension (HOST_NAME) and the authenticator importer (browser_import.HOST_NAME).
 WINDOWS_KEYS = {
     'chrome': r'Software\Google\Chrome\NativeMessagingHosts',
     'edge': r'Software\Microsoft\Edge\NativeMessagingHosts',
@@ -54,6 +58,9 @@ WINDOWS_KEYS = {
 }
 LINUX_DIRS = {'chrome': 'google-chrome', 'edge': 'microsoft-edge', 'helium': 'net.imput.helium',
               'chromium': 'chromium', 'brave': 'BraveSoftware/Brave-Browser'}
+# Under ~/Library/Application Support. Brave reads Chrome's folder.
+MACOS_DIRS = {'chrome': 'Google/Chrome', 'edge': 'Microsoft Edge', 'helium': 'net.imput.helium',
+              'chromium': 'Chromium', 'brave': 'Google/Chrome', 'firefox': 'Mozilla'}
 
 
 class FrameError(Exception):
@@ -245,7 +252,7 @@ def data_home():
 
 
 def registration_browser(browser):
-    # Reuse the existing launcher wherever two browsers read the same registration.
+    # Both hosts reuse one registration wherever two browsers read the same key or folder.
     if os.name == 'nt' and browser == 'chromium':
         return 'helium'
     if (sys.platform == 'darwin' or os.name == 'nt') and browser == 'brave':
@@ -254,10 +261,9 @@ def registration_browser(browser):
 
 
 def linux_manifest_dir(browser):
+    """This user's native host manifest folder on Linux or macOS, for either akdbx host."""
     if sys.platform == 'darwin':
-        names = {'chrome': 'Google/Chrome', 'edge': 'Microsoft Edge', 'helium': 'net.imput.helium',
-                 'chromium': 'Chromium', 'brave': 'Google/Chrome', 'firefox': 'Mozilla'}
-        return Path.home() / 'Library' / 'Application Support' / names[browser] / 'NativeMessagingHosts'
+        return Path.home() / 'Library' / 'Application Support' / MACOS_DIRS[browser] / 'NativeMessagingHosts'
     if browser == 'firefox':
         return Path.home() / '.mozilla' / 'native-messaging-hosts'
     if browser in ('chrome', 'helium', 'chromium'):

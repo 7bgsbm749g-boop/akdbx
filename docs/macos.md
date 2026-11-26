@@ -3,7 +3,7 @@
 The macOS broker runs locally as your normal user with Python 3.11 or newer.
 It uses the shared encrypted KeePass vault, metadata search, private HTTPS
 pages, password writes, paired extension protocol and non-secret receipts.
-The native host supports Chrome, Edge, Helium and Firefox 153+. After 0.47.0,
+The native host supports Chrome, Edge, Helium and Firefox 153+. After 0.48.0,
 use `--browser chromium` for Chromium or `--browser brave` for Brave. Brave
 reads Chrome’s host folder, so both use one launcher and registration.
 
@@ -70,6 +70,9 @@ build. See [Firefox setup](firefox.md); its macOS host manifest goes under
 
 For user-started authenticator QR import, use the separate 1.1.0+ importer.
 The default capture-only socket is `~/Library/Application Support/akdbx/run/u`.
+After 0.48.0 the importer also accepts `--browser chromium|brave` and uses the
+fill extension host's folders. Brave reads Chrome's folder, so Chrome's importer
+registration already serves Brave.
 See [private import](../skills/akdbx/references/private-import.md) for browser builds and registration.
 
 ## Limits

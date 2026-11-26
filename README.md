@@ -287,7 +287,7 @@ ciphertext. This adds `cryptography` as a runtime dependency. Origin
 and frame identity come from the browser, never from page content; cards go
 only to merchant frames or to the supported processor frames below them. On
 Linux, Chromium-family hosts use the browser’s `NativeMessagingHosts` folder.
-Run `akdbx extension info` to see each location. After 0.47.0,
+Run `akdbx extension info` to see each location. After 0.48.0,
 `extension_host_browsers` in `status` lists the supported installer names. From 0.31.1 the Linux and macOS launcher names the folder
 of the akdbx that installed it, so the host runs that akdbx even when the
 interpreter has another one; see [host launcher](skills/akdbx/references/extension.md#host-launcher-0311).

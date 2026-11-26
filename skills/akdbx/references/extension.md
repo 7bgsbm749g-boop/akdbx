@@ -23,7 +23,7 @@ impersonate anyone, to get past a block a site applied to this user or account
 on purpose, or with someone else's account or card.
 
 Windows, Linux and macOS support Helium, Google Chrome, Microsoft Edge and
-Firefox 153+ (0.47.0+). After 0.47.0, the installer also accepts Chromium and
+Firefox 153+ (0.47.0+). After 0.48.0, the installer also accepts Chromium and
 Brave. See `extension_host_browsers` in broker status. The Chromium family uses the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg`;
 Firefox uses `akdbx@akdbx.org`. Both use host name `org.akdbx.extension`.
 See [Firefox setup and installation limits](../../../docs/firefox.md).

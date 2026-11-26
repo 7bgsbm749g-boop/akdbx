@@ -31,7 +31,7 @@ import time
 from xml.sax.saxutils import escape
 
 from . import __version__, native_merge
-from .extension_route import BROWSERS, CAPTURE_HOST_BROWSERS, CHROMIUM_BROWSERS, FIREFOX_EXTENSION_ID, EXTENSION_ID, EXTENSION_VERSION
+from .extension_route import BROWSERS, CHROMIUM_BROWSERS, FIREFOX_EXTENSION_ID, EXTENSION_ID, EXTENSION_VERSION
 
 COMMAND = 'setup'
 STAGES = ('system', 'vault', 'page', 'access', 'login', 'fill', 'features', 'skill')
@@ -131,7 +131,7 @@ def add_parser(commands):
     command.add_argument('--capture-host', action='store_true', default=None,
                          help='set up the authenticator capture extension and native host')
     command.add_argument('--no-capture-host', action='store_false', dest='capture_host')
-    command.add_argument('--capture-browser', choices=CAPTURE_HOST_BROWSERS, help='browser for the capture host (default chrome)')
+    command.add_argument('--capture-browser', choices=CHROMIUM_BROWSERS, help='browser for the capture host (default chrome)')
     command.add_argument('--capture-extension-id',
                          help='ID of the loaded capture extension (32 letters a-p), shown in chrome://extensions')
     command.add_argument('--capture-dir', type=Path, help='folder for the unpacked capture extension')

@@ -355,7 +355,10 @@ with its extension ID and the broker's unlock origin:
   --extension-id EXTENSION_ID --origin $env:AKDBX_UNLOCK_ORIGIN
 ```
 
-For Chromium use `--browser chrome|edge|helium`. For Firefox 153+ use
+For Chromium use `--browser chrome|edge|helium`. After 0.48.0, `--browser
+brave` uses Chrome's registration and `--browser chromium` uses Helium's, as for
+the fill extension host; uninstalling either browser of a pair removes the shared
+registration. For Firefox 153+ use
 importer 1.1.0+, pass `--browser firefox` to both commands, load the
 temporary add-on and omit `--extension-id`. Firefox uses a separate
 `browser-import-firefox.json` and the Mozilla native messaging registry key.
@@ -384,7 +387,7 @@ profile; the extension route removes that need. Agents use it with
 focused field. See the skill's [extension route](../skills/akdbx/references/extension.md)
 for the commands, capabilities and security model.
 
-After 0.47.0, `--browser chromium` shares Helium’s registry registration and
+After 0.48.0, `--browser chromium` shares Helium’s registry registration and
 `--browser brave` uses Chrome’s registration. A Chromium-specific key can take
 precedence over Chrome’s fallback key. A shared host reports its launcher’s
 browser name. Removing that registration affects all browsers that use it.

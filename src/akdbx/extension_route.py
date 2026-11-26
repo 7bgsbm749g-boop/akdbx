@@ -100,8 +100,7 @@ TOTP_VERSION = (0, 10, 0)
 # Identity pins with an explicit field purpose (pin-identity-target --field-purpose).
 FIELD_PURPOSE_VERSION = (0, 7, 0)
 ROUTES = ('cdp', 'extension')
-CAPTURE_HOST_BROWSERS = ('helium', 'chrome', 'edge')
-CHROMIUM_BROWSERS = (*CAPTURE_HOST_BROWSERS, 'chromium', 'brave')
+CHROMIUM_BROWSERS = ('helium', 'chrome', 'edge', 'chromium', 'brave')
 BROWSERS = (*CHROMIUM_BROWSERS, 'firefox')
 FIREFOX_EXTENSION_ID = 'akdbx@akdbx.org'
 TTL = 30

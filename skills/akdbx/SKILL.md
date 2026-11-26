@@ -295,7 +295,7 @@ Web fills can reach the page in two ways. Check `fill_routes`,
 **Extension route (`--route extension`, 0.21.0+): prefer it when it is paired.**
 The akdbx extension runs in the user's everyday browser (Helium, Chrome, Edge, Chromium, Brave or
 Firefox 153+) and receives sealed values from the broker through a native-messaging
-host. After 0.47.0, check `extension_host_browsers` for the installer names. That browser has no remote-debugging port, it is the user's real browser
+host. After 0.48.0, check `extension_host_browsers` for the installer names. That browser has no remote-debugging port, it is the user's real browser
 with its normal history and sessions, and nothing outside it drives the page.
 Sites see ordinary use by the user, which is what it is.
 
