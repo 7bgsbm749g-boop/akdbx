@@ -138,8 +138,10 @@ sleep and wake in the GUI login session. Losing a listening helper locks the vau
   session; a physical sleep/wake cycle and a live tailnet are outside this test.
 - Safari needs a signed Apple browser wrapper. The fill extension and the
   separate QR capture extension use Chromium or Firefox native messaging, so
-  neither runs in Safari. SMS ingest is available, but
-  this version's SMS fill requires a CDP or native window target.
+  neither runs in Safari.
+- SMS ingest is available. From the version after 0.49.0, SMS codes fill native
+  app fields with `pin-native-target --mode code`, and status reports
+  `sms_fill_routes: ["native"]`. Browser pages on macOS have no SMS fill route.
 - The managed Android emulator requires a Linux host with KVM. The Linux
   privileged secret-sink helper requires Linux peer credentials and systemd.
 - iOS and iPadOS cannot run this Python broker. This is macOS support only.

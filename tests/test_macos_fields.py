@@ -102,6 +102,20 @@ def test_appkit_modes(lab, mode):
         target.close()
 
 
+def test_sms_code_keeps_leading_zero(lab):
+    manager, pid, command = lab
+    window = listing(manager, pid)
+    receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                               control=focused(window), mode='code', service_url=ORIGIN))
+    target = manager.take(receipt['target'], 'code')
+    try:
+        assert manager.fill(target, '012345', 'one-time-code', lambda: True) == dict(
+            ok=True, filled='one-time-code', code_delivery='native-field-v1')
+        assert command('inspect')[0] == '012345'
+    finally:
+        target.close()
+
+
 def test_secure_field_modes_are_refused_before_writing(lab):
     manager, pid, command = lab
     window = listing(manager, pid)
@@ -117,7 +131,7 @@ def test_secure_field_modes_are_refused_before_writing(lab):
     with pytest.raises(TargetError):
         pin(manager, secure, focused(secure), 'card', field='cc-number')
     assert command('inspect') == ['', '']
-    assert set(manager.capabilities()['native_field_modes']) == {'username', 'totp', 'identity', 'card', 'read'}
+    assert set(manager.capabilities()['native_field_modes']) == {'username', 'totp', 'code', 'identity', 'card', 'read'}
 
 
 def test_replaced_field_and_editable_read_refused(lab):

@@ -19,8 +19,8 @@ Supported controls:
   and a target at or below its integrity level. Browser controls are refused.
 - macOS (after 0.49.0) uses Accessibility in the frontmost native window. Check
   `native_field_accessibility_granted: true`. Each control must be visible at
-  its center and support a character count. Username, TOTP, card and identity
-  fills require an unmasked writable field. Password and combined login modes
+  its center and support a character count. Username, TOTP, SMS code, card and
+  identity fills require an unmasked writable field. Password and combined login modes
   are unavailable because stock AppKit secure fields omit the count. Read pins require selectable,
   read-only, unmasked text with a bounded accessible range. Browser windows
   and embedded web areas are refused. A window that contains a WebKit view

@@ -153,7 +153,7 @@ def test_documented_first_launch_uses_extension_route(tmp_path, monkeypatch, pri
     assert cli.main([*options, '--unlock-origin', 'https://localhost:9443', 'serve', str(database),
                      '--tls-cert', str(cert), '--tls-key', str(key)]) == 0
     assert seen[0]['fill_routes'] == ['extension'] and seen[0]['default_fill_route'] == 'extension'
-    assert seen[0]['sms_protocol'] == 1 and seen[0]['sms_fill_routes'] == []
+    assert seen[0]['sms_protocol'] == 1 and seen[0]['sms_fill_routes'] == ['native']
 
 
 @native

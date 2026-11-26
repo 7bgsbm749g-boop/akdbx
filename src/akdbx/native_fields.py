@@ -33,7 +33,7 @@ class AccessibilityRequired(TargetError):
 
 def available_modes():
     if sys.platform == 'darwin':
-        return ('username', 'totp', 'card', 'identity', 'read')
+        return ('username', 'totp', 'code', 'card', 'identity', 'read')
     return MODES if supported() else ()
 
 
