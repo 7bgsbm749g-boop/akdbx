@@ -18,6 +18,7 @@ the routes and modes that this broker offers now (`fill_routes`,
 | --- | --- |
 | ✅ `0.x.0` · `job` | Supported from release `0.x.0`. `job` is the CI job that runs a real browser or app test of this operation on this platform. |
 | ✅ `0.x.0` · contract test (`job`) | Supported, but `job` tests it only with a simulated control, window or device, not a real app. |
+| ✅ `0.x.0` · real emulator test | Supported. `tests/test_android_emulator.py` proves it on a real Android emulator through the real broker and CLI. That test needs KVM, so it runs by hand on a Linux host, not in CI (note X). |
 | ✅ `0.x.0` · no CI | Supported by the same code as the other platforms, but no CI job tests it on this platform. Treat it as unproven there. |
 | ⛔ by design | The broker refuses it on purpose. The note gives the reason. |
 | ◼ inherent | The platform or route cannot do it safely. The note gives the reason. |
@@ -178,15 +179,15 @@ broker takes attached devices only (after 0.50.1).
 
 | Operation | Linux host (X11 or Wayland) | Windows host | macOS host |
 | --- | --- | --- | --- |
-| Username, password, login | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
-| Generated password | ✅ 0.50.1 · contract test (`linux`) (X) (Y) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · no CI (AE) |
-| TOTP | ✅ 0.36.0 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
-| Card, identity | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
+| Username, password, login | ✅ 0.36.0 · contract test (`linux`); Chrome pages: real emulator test (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
+| Generated password | ✅ 0.50.1 · contract test (`linux`); Chrome pages: real emulator test, also right after a cold boot (X) (Y) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · no CI (AE) |
+| TOTP | ✅ 0.36.0 · contract test (`linux`); Chrome pages: real emulator test (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
+| Card, identity | ✅ 0.50.1 · contract test (`linux`); Chrome pages: real emulator test (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
 | Card processor iframes, child-frame login | ✗ (Z) | ✗ (Z) | ✗ (Z) |
-| notify-page (identity) | ✅ 0.50.1 Chrome pages · no CI; ⛔ app fields (K) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 Chrome pages · no CI (AE) |
-| Secret read, `capture-totp` text key | ✅ 0.50.1 Chrome pages · no CI (AF) | ✅ 0.50.1 Chrome pages · no CI (T) | ✅ after 0.50.1 Chrome pages · no CI (AE) (AF) |
+| notify-page (identity) | ✅ 0.50.1 Chrome pages · real emulator test (X); ⛔ app fields (K) | ✅ 0.50.1 · no CI (T); ⛔ app fields (K) | ✅ after 0.50.1 Chrome pages · no CI (AE); ⛔ app fields (K) |
+| Secret read, `capture-totp` text key | ✅ 0.50.1 Chrome pages · real emulator test (X) (AF) | ✅ 0.50.1 Chrome pages · no CI (T) | ✅ after 0.50.1 Chrome pages · no CI (AE) (AF) |
 | `capture-totp`, QR code | ✗ not built | ✗ not built | ✗ not built |
-| SMS code | ✅ 0.50.1 · contract test (`linux`) (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
+| SMS code | ✅ 0.50.1 · contract test (`linux`); Chrome pages: real emulator test (X) | ✅ 0.50.1 · no CI (T) | ✅ after 0.50.1 · contract test (`macos-broker`) (AE) |
 | Fields in an app's own web view | ◼ (AB) | ◼ (AB) | ◼ (AB) |
 | Managed on-demand emulator (`android setup --create`) | ✅ 0.37.0 (x86-64, KVM, systemd 254+) | ✗ Linux only (AA) | ✗ Linux only (AA) |
 | Popup human click, agent desktop slots | — | — | — |
@@ -246,8 +247,10 @@ broker takes attached devices only (after 0.50.1).
   PasswordBox use UI Automation (`native_field_windows_uia: true`). UWP, WinUI
   and Qt on Windows are not proven, and the broker refuses other UI
   Automation providers.
-- **K** Refused: a native control has no page to notify; `--notify-page`
-  refuses before delivery.
+- **K** Refused: a native control or an Android app field has no page to
+  notify; `--notify-page` refuses before delivery. After 0.51.0 the refusal
+  names the option (`--notify-page needs a web page, and an app field has
+  none`); before, it was the generic `target unavailable` refusal.
 - **L** Refused by design: the caller asserts the service URL, and the OS
   cannot verify that a website at that origin showed the setup key. The
   broker consumes the pin and saves nothing.
@@ -306,13 +309,22 @@ broker takes attached devices only (after 0.50.1).
   and Apple signing. A permanently installed (signed) Firefox add-on also
   needs the owner's Mozilla AMO credentials; until then Firefox uses a
   temporary add-on.
-- **X** CI checks the Android route with a simulated device. A stock Android
-  15 emulator on Linux ran the real fills before release; that run is not in
-  CI.
-- **Y** Known bug, not fixed yet: on a managed emulator that has just started
-  from a cold boot, `fill-generated` was seen twice to end with `connection
-  lost`. Treat that as an uncertain fill: check the field's result first, and
-  do not retry automatically.
+- **X** CI checks the Android route with a simulated device. After 0.51.0,
+  `tests/test_android_emulator.py` also proves every Chrome-page operation
+  on a real Android 15 Google Play emulator (Chrome 124) through the real
+  broker, CLI and helper: login, generated password through commit, TOTP,
+  card, identity with and without `--notify-page`, SMS code, `capture-secret`
+  through save, text-key `capture-totp` through `commit-totp`, and their
+  refusals. It needs KVM, so it runs by hand on a Linux host and is not in
+  CI. App fields have no real-device test.
+- **Y** Fixed after 0.51.0. Right after a cold boot, the helper's typed check
+  takes 5 to 10 seconds (about 1 second warm), and `fill-generated` waited
+  only 5 seconds for the broker's answer. Each fill then ended with
+  `autofill outcome uncertain: connection lost after request` (6 of 6 cold
+  boots before the fix), and the broker stopped before the value because
+  its caller had left. With Android devices configured, the fill commands
+  now wait up to 60 seconds, as `android fill` does; 10 of 10 cold boots
+  filled and saved.
 - **Z** Not built: Android fields in frames are refused.
 - **AA** Not built: the managed emulator uses systemd user units and KVM.
   On macOS and Windows, setup and `android wake` refuse it, and `status`
@@ -339,8 +351,11 @@ broker takes attached devices only (after 0.50.1).
   receives zero bytes. Inherent: no device or emulator runs in that CI,
   because GitHub's arm64 macOS runners have no nested virtualization. A macOS
   broker with a real device or emulator was not tested.
-- **AF** The `linux` and `macos-broker` jobs test only the Android read pin
-  and its refusals (an unverified DevTools peer, a QR capture, covered text)
-  with a simulated device; no test completes a secret read or a text-key
-  `capture-totp` through an Android pin. The broker refuses a read pin on an
-  app field, so reads work on Chrome pages only.
+- **AF** The `linux` and `macos-broker` jobs test the Android read pin and
+  its refusals (an unverified DevTools peer, a QR capture, covered text)
+  with a simulated device. After 0.51.0 the real emulator test (X) completes
+  `capture-secret` from pin through save and a text-key `capture-totp`
+  through the pending code and `commit-totp`, with the CDP route's refusals:
+  another site, a used pin, a changed value or key, covered text, an
+  editable field, prose. The broker refuses a read pin on an app field, so
+  reads work on Chrome pages only.

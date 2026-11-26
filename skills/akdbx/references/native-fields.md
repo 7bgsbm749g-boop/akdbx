@@ -119,7 +119,10 @@ field), then use `fill-card --target NATIVE_TARGET --field cc-number`. For an
 address, pin `--mode identity --field address-line1`, then use `fill-identity`
 with the same field. The existing expiry/year and telephone formats still
 apply. Multiline street addresses require a multiline native control.
-`--notify-page` is unavailable for native controls.
+`--notify-page` is unavailable for native controls: the broker refuses it
+before any value (after 0.51.0 the error says `--notify-page needs a web
+page, and an app field has none`). The pin is used up; pin again and fill
+without the option.
 
 For a texted verification code, require `code` in `native_field_modes`. Pin
 the focused unmasked input with `--mode code` and the app's verified service
