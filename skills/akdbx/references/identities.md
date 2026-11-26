@@ -289,3 +289,17 @@ fresh references for a deliberate retry.
 browser extension. Only frames of the top origin are accepted, and receipts
 carry `identity_delivery: "extension-dom-v1"`. Read
 [the extension route](extension.md).
+
+## Toolbar popup (fill extension 0.15.0)
+
+The user can fill an address with a click: focus an address field, open the
+akdbx popup and choose the identity. From fill extension 0.15.0, the popup
+applies the identity pin's own checks to the focused field and to each
+partner field of the same form, section and address part (`shipping` or
+`billing`): the autocomplete grammar and field table above, the input types,
+the select rules, the style guard, the hit test, exact page URLs and only
+frames of the top origin. It sends the `input` and `change` events of
+`--notify-page`. It has no `--field-purpose` and no `--format`: a field
+without a matching token stays empty, and a phone number fills as saved.
+A field outside the visible part of the page stays empty. Details:
+[user-click workflow](extension.md#user-click-workflow).

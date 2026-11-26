@@ -169,6 +169,40 @@ puts the text back, so pin again and retry. After an uncertain fill, do not
 retry automatically; check the page. Texts expire after 10 minutes. If the
 site rejects the code, request one new text; stop after two rejected fresh codes.
 
+## Fill from the toolbar popup (fill extension 0.15.0)
+
+The user can also fill a texted code with a click. Require
+`extension_popup_sms_protocol: 1` and a paired fill extension at
+`extension_popup_sms_min_version` or newer. The user clicks into a top-page
+input marked `autocomplete="one-time-code"` and opens akdbx (toolbar button,
+**Fill with akdbx…** or Alt+Shift+K). Below the saved authenticator codes for
+that site, the popup lists up to eight unexpired texts from the inbox, newest
+first: "Text from" the sender, the masked preview, the code length and the
+age. It never shows the code.
+
+- akdbx cannot tell which site sent a text: a text names no origin that akdbx
+  can verify. The popup says so and lists every unexpired text. The user
+  picks the one that this site sent, as when reading the text on the phone.
+- A field that cannot take a code of the listed length (its `maxlength` or
+  `minlength`, or an input type other than `text`, `tel`, `number` or
+  `password`) refuses while the popup is still open, and the text stays.
+- After the click the popup closes, so the browser gives the focus back to the
+  field. Then the same checks as `pin-code-target --route extension` pin it:
+  one focused, visible, enabled `text`, `tel`, `number` or `password` input on
+  the exact page, under no cover at its centre. With Enhanced security on, the
+  extension's cover check also runs. A field in a frame refuses: use an agent
+  pin for it.
+- Only after that pin holds does the broker take the text from the inbox. Its
+  code goes sealed to the extension and only into the pinned field. A text is
+  used once, by the popup or by `fill-sms-code`, whichever comes first.
+- When nothing reached the field (the field changed, was covered or hid before
+  the fill), the extension puts the text back with a token that was sealed in
+  the same release; a relaying host cannot. After an uncertain fill the text
+  stays used.
+
+The choice lasts 30 seconds from opening the popup. A field that changes
+before the click needs a new popup.
+
 ## Rules
 
 - Never print, log, screenshot or save a code, webhook URL or setup link.

@@ -385,6 +385,50 @@ Logins fill the focused field and its partner field in the same form; cards
 and addresses fill the recognised visible fields of the same form. Hidden,
 disabled and detached fields never receive a value.
 
+Addresses (fill extension 0.15.0 or later) use the agent identity pin's own
+checks on every field the popup fills: the build copies the identity pin
+script into the extension, and only its focus check is left out, because the
+popup holds the window focus and fills the focused field's partners too. The
+focused field itself must stay the page's active element. So, as for
+`pin-identity-target`:
+
+- A field needs its autocomplete token in the identity grammar: an optional
+  `section-*`, then `shipping` or `billing`, then for `tel` and `email` one of
+  `home`, `work`, `mobile`, `fax` or `pager`, then the field
+  ([field table](identities.md#fill)). Other token lists refuse. The popup has
+  no `--field-purpose`: a field without a matching token stays empty.
+- Input types: `text` for every field, `email` only for `email`, `tel` only
+  for `tel`; a `<select>` only for `country`, `country-name` and
+  `address-level1`; a `<textarea>` only for `street-address`.
+- Partners come from the focused field's own form, section and address part:
+  a `billing` field never gets a value when you focus a `shipping` field.
+- Each field must pass the pin's style guard (no filter, mask, clip or blend
+  on it or an ancestor, apart from an accepted `clip-path: inset()`), be
+  enabled and editable, and pass the hit test at its centre, through every
+  frame up to the top. A field outside the visible part of the page, or under
+  a cover, stays empty: scroll to it, focus it and open akdbx again.
+- Only documents whose frames up to the top all have the top page's origin.
+  The popup keeps each field's element from when it opened. Just before it
+  writes a field, it pins that element again with all these checks, and the
+  element's type, autocomplete value, ID, name and form must be the same as
+  when the popup opened. A field that fails before the first write refuses
+  the whole fill; a field that the page changes while the popup fills the
+  others makes the result "fill incomplete".
+- Values: the saved value as saved. `street-address` gets the address lines
+  joined with line breaks, and a single-line input refuses a multi-line
+  address. A select needs exactly one enabled option with the saved value; a
+  country select also takes the one option whose shown name is the saved
+  name. A phone number fills as saved: for a separate country picker, use
+  the agent route with `fill-identity --format` and `--calling-code`.
+- Events: the popup sends bubbling `input` and `change` events on each field,
+  as `fill-identity --notify-page` does, and checks after them that each
+  field kept its value; a page that changes one gets "fill incomplete".
+
+Before 0.15.0 the popup took the last autocomplete token only, any text,
+email or telephone input for any address field, and had no style guard or
+hit test: it could fill a field outside the viewport or under a hidden
+ancestor, or mix two address parts. Rebuild and reload an older extension.
+
 In fill extension 0.12.0 or later, the popup can fill a saved authenticator
 code on the top HTTPS page. Require `extension_popup_totp_protocol: 1`. Focus
 an input marked `autocomplete="one-time-code"` and select the matching account.
@@ -393,6 +437,20 @@ challenges use a TOTP pin with retained frame owners. Before fill extension
 0.14.1, a chosen code was sometimes refused ("field changed or hidden; nothing
 filled") when the code reached the page before the browser gave focus back to
 the field. Rebuild and reload an older extension.
+
+For the same focused one-time-code field, fill extension 0.15.0 or later also
+lists the texts in the broker's SMS inbox (`extension_popup_sms_protocol: 1`,
+`extension_popup_sms_min_version`): the sender, the masked preview, the code
+length and the age, never the code. akdbx cannot tell which site sent a text,
+so the popup lists every unexpired text, and the user picks the one this site
+sent. When the user clicks one, the popup closes and gives the focus back to
+the page. Then the agent code pin's checks (`pin-code-target`) pin the field:
+one focused, visible, enabled `text`, `tel`, `number` or `password` input that
+passes the hit test, in the top document only. With Enhanced security, the
+cover check runs on that pin. Only then does the broker spend the text, once,
+and seal its code to that pin; if nothing reached the field, the extension
+puts the text back with a token sealed inside that release. See
+[SMS](sms.md#fill-from-the-toolbar-popup-fill-extension-0150).
 
 Stripe's classic Card Element frame (`elements-inner-card-<hash>.html`) is
 pin-route only. Its inputs have no ID, so the popup does not offer or fill a
@@ -457,7 +515,8 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   an ordinary page keep refusing on the extension route, the user can turn the
   setting off or the agent can use the CDP route. With the setting on, a card,
   address, code (fill extension 0.13.0+) or read pin needs proof that nothing is
-  painted over the field or the secret. `elementFromPoint` cannot give it (it
+  painted over the field or the secret. The popup runs this check for a texted
+  code (0.15.0+), not for the logins, cards and addresses that it fills. `elementFromPoint` cannot give it (it
   skips click-through and inert covers), and no list of selectors names every
   cover. The extension asks the browser instead, in two steps, at the pin and
   again at the fill or read:
