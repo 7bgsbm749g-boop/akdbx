@@ -30,6 +30,9 @@
   // The CDP route's code pin (browser_code): one focused, visible, enabled plain input.
   const CODE_PIN = __CODE_PIN_SCRIPT__;
   const CODE_FIELDS = ["one-time-code", "webhook-url"];
+  // The popup's address fields: the identity pin script without its own focus check
+  // (browser_identity.POPUP_PIN_SCRIPT). The popup checks the focused field itself.
+  const POPUP_IDENTITY_PIN = __POPUP_IDENTITY_PIN__;
   const GUARD = __CARD_GUARD__;
   const STRIPE_ELEMENTS = __STRIPE_ELEMENTS__;
   const count = () => __PASSWORD_COUNT__;
@@ -648,12 +651,50 @@
     if (input && type === "password") return {kind: "login", role: "password"};
     if (processor) return null;
     if (input && ["text", "email"].includes(type) && last === "username") return {kind: "login", role: "username"};
-    if (IDENTITY_TOKENS.includes(last) && (input && ["text", "email", "tel"].includes(type) ||
-        type === "select" && ["country", "country-name", "address-level1"].includes(last) ||
-        type === "textarea" && last === "street-address")) {
-      return {kind: "identity", role: last};
+    return identityRole(el);
+  }
+
+  // The identity pin's own field rules (browser_card PIN_SCRIPT): the autocomplete
+  // grammar (an optional section-*, then shipping or billing, then home, work,
+  // mobile, fax or pager for tel and email, then the field) and the element type
+  // each field takes. The scope is the section and the address part, so the popup
+  // fills only the focused field's own address, never a billing and a shipping mix.
+  function identityRole(el) {
+    const list = (el.getAttribute("autocomplete") || "").replace(/[A-Z]/g, c => c.toLowerCase())
+      .match(/[^\t\n\f\r ]+/g) || [];
+    const field = list[list.length - 1];
+    if (!IDENTITY_TOKENS.includes(field)) return null;
+    const prefix = list.slice(0, -1);
+    const section = prefix[0]?.startsWith("section-") ? prefix.shift() : "";
+    const part = ["shipping", "billing"].includes(prefix[0]) ? prefix.shift() : "";
+    if (["tel", "email"].includes(field) && ["home", "work", "mobile", "fax", "pager"].includes(prefix[0])) prefix.shift();
+    if (prefix.length) return null;
+    const fits = el instanceof HTMLInputElement
+      ? el.type === "text" || el.type === "email" && field === "email" || el.type === "tel" && field === "tel"
+      : el instanceof HTMLSelectElement ? !el.multiple && ["country", "country-name", "address-level1"].includes(field)
+        : el instanceof HTMLTextAreaElement && field === "street-address";
+    return fits ? {kind: "identity", role: field, scope: section + " " + part} : null;
+  }
+
+  // A selector that names exactly this element now: its ID when that is unique, else its path.
+  function selectorFor(el) {
+    if (el.id) {
+      const byId = "#" + CSS.escape(el.id);
+      const found = document.querySelectorAll(byId);
+      if (found.length === 1 && found[0] === el) return byId;
     }
-    return null;
+    return pathTo(el);
+  }
+
+  // The popup's address field, pinned with the agent identity pin's checks, or null.
+  function identityPin(el, fieldRole, top) {
+    try {
+      const selector = selectorFor(el);
+      return selector ? POPUP_IDENTITY_PIN(selector, fieldRole, location.href, top, false, true, false, false,
+        shadowRootOf) : null;
+    } catch {
+      return null;
+    }
   }
 
   function isLoginPassword(el, processor) {
@@ -691,10 +732,26 @@
     } else {
       for (const el of inputs) {
         const other = el === focus.el ? null : role(el, processor);
-        if (other && other.kind === first.kind && !fields.some(item => item.role === other.role)) {
+        if (other && other.kind === first.kind && (first.kind !== "identity" || other.scope === first.scope) &&
+            !fields.some(item => item.role === other.role)) {
           fields.push({el, role: other.role});
         }
       }
+    }
+    if (first.kind === "identity") {
+      // Every address field passes the agent identity pin's checks now and again just
+      // before its value is written: exact URLs, only frames of the top origin, style
+      // guard, hit tests through each frame. A partner that fails them stays empty; the
+      // focused field must pass.
+      let top;
+      try {
+        top = window.top.location.href;
+      } catch {
+        return null;
+      }
+      const held = fields.map(item => identityPin(item.el, item.role, top));
+      if (!held[0]) return null;
+      fields.splice(0, fields.length, ...fields.filter((item, i) => held[i]));
     }
     const formats = {};
     for (const item of fields) {
@@ -712,7 +769,7 @@
       item.form = item.el.form;
     }
     const id = randomId();
-    const probe = {fields, focused: focus.el, created: performance.now(), url: location.href};
+    const probe = {kind: first.kind, fields, focused: focus.el, created: performance.now(), url: location.href};
     if (first.kind === "totp") {
       // The toolbar popup owns window focus while the user chooses. Remember
       // any field change during that interval, including a change undone.
@@ -783,28 +840,46 @@
       actual.replace(/\s/g, "") === expected.replace(/\s/g, "");
   }
 
-  function liveOtp(id, digits = null) {
+  // A one-time-code probe that still holds its field: same focus, form, page and top document.
+  function liveProbe(id) {
     const item = probes.get(id);
     return Boolean(item && item.dispose && performance.now() - item.created < PIN_MS &&
-      totpField(item.focused, digits) && document.activeElement === item.focused && shown(item.focused) && item.focused.form === item.fields[0].form &&
+      document.activeElement === item.focused && shown(item.focused) && item.focused.form === item.fields[0].form &&
       window === window.top && self.origin === location.origin && location.href === item.url);
   }
 
+  function liveOtp(id, digits = null) {
+    return liveProbe(id) && totpField(probes.get(id).focused, digits);
+  }
+
+  // Before the popup closes for a texted code: the probed field can take a code of this
+  // length (its type and length limits, as the code pin's fill checks them later).
+  function liveCode(id, length) {
+    const el = probes.get(id)?.focused;
+    return liveProbe(id) && Number.isInteger(length) && length >= 4 && length <= 8 &&
+      ["text", "tel", "number", "password"].includes(el.type) && !(el.maxLength >= 0 && el.maxLength < length) &&
+      !(el.minLength > length);
+  }
+
+  const now = () => performance.timeOrigin + performance.now();
+
+  // Closing the action popup restores focus to the page. Do not activate a
+  // tab or focus any field. A document that stays unfocused cannot fill.
+  async function focusBack(deadline) {
+    if (document.hasFocus() || now() >= deadline) return;
+    await new Promise(resolve => {
+      const done = () => { clearTimeout(timer); window.removeEventListener("focus", done); resolve(); };
+      const timer = setTimeout(done, Math.max(0, deadline - now()));
+      window.addEventListener("focus", done);
+    });
+    // Chromium fires the window's focus event before the field it gives the
+    // focus back to matches :focus again. Check in a later task, after the
+    // browser has finished that restore; every check after it still applies.
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+
   async function popupTotp(id, values, deadline) {
-    // Closing the action popup restores focus to the page. Do not activate a
-    // tab or focus any field. A document that stays unfocused cannot fill.
-    const now = () => performance.timeOrigin + performance.now();
-    if (!document.hasFocus() && now() < deadline) {
-      await new Promise(resolve => {
-        const done = () => { clearTimeout(timer); window.removeEventListener("focus", done); resolve(); };
-        const timer = setTimeout(done, Math.max(0, deadline - now()));
-        window.addEventListener("focus", done);
-      });
-      // Chromium fires the window's focus event before the field it gives the
-      // focus back to matches :focus again. Check in a later task, after the
-      // browser has finished that restore; every check below still applies.
-      await new Promise(resolve => setTimeout(resolve, 0));
-    }
+    await focusBack(deadline);
     if (!liveOtp(id) || now() >= deadline || !document.hasFocus()) return "refused";
     const item = probes.get(id);
     probes.delete(id);
@@ -821,11 +896,98 @@
     }
   }
 
+  // A texted code chosen in the popup (fill extension 0.15.0). After the closing popup
+  // gave the focus back, the agent code pin's script (CODE_PIN) pins the probed field,
+  // and the pin is kept like an agent pin: the service worker runs the cover check and
+  // fill() on it. Null when the field changed: then the broker never spends the text.
+  async function popupCodePin(id, deadline) {
+    await focusBack(deadline);
+    if (!liveProbe(id) || now() >= deadline || !document.hasFocus()) return null;
+    const item = probes.get(id);
+    probes.delete(id);
+    item.dispose();
+    for (const [old, pinned] of pins) {
+      if (performance.now() - pinned.created >= PIN_MS) release(old);
+    }
+    if (pins.size >= MAX_PINS) return null;
+    let state = null;
+    try {
+      state = CODE_PIN(":focus", "one-time-code", item.url, location.href, false, false, false, false, true, shadowRootOf);
+    } catch {
+      state = null;
+    }
+    if (!state || state.node() !== item.focused) return null;
+    const pinId = randomId();
+    pins.set(pinId, {kind: "code", mode: "one-time-code", state, el: null, qr: false, processor: false,
+      created: performance.now()});
+    return pinId;
+  }
+
+  // A country select whose option values are codes: the one option that shows the saved name.
+  function optionValue(el, fieldRole, value) {
+    if (!(el instanceof HTMLSelectElement) || !fieldRole.startsWith("country")) return value;
+    const usable = Array.from(el.options).filter(o => !o.disabled && !o.parentElement.disabled);
+    if (usable.some(o => o.value === value)) return value;
+    const named = usable.filter(o => o.textContent.trim().toLowerCase() === value.toLowerCase());
+    return named.length === 1 ? named[0].value : value;
+  }
+
+  // The identity pin's own value checks, before any field is written.
+  function fits(el, value) {
+    if (el instanceof HTMLSelectElement) {
+      return Array.from(el.options).filter(o => !o.disabled && !o.parentElement.disabled && o.value === value).length === 1;
+    }
+    return !(el instanceof HTMLInputElement && value.includes("\n")) && !(el.maxLength >= 0 && value.length > el.maxLength);
+  }
+
+  // The popup's address fill: the agent identity pin's fill on each field, with the
+  // input and change events of fill-identity --notify-page. Each field is pinned again
+  // just before its write, as an agent pins a field just before its fill: the retained
+  // element, unchanged since the popup opened (tag, type, autocomplete, id, name, form),
+  // must pass every pin check at that moment. So a page that adds a node next to a
+  // field while it handles an earlier field's events does not stop the fill. Every
+  // field is also checked before the first write; a page handler that changes a field
+  // after its events makes the result uncertain, never filled.
+  function identityFill(item, values) {
+    let top;
+    try {
+      top = window.top.location.href;
+    } catch {
+      return "refused";
+    }
+    const fresh = field => {
+      if (!field.el.isConnected || identity(field.el) !== field.identity || field.el.form !== field.form) return null;
+      const state = identityPin(field.el, field.role, top);
+      return state && state.node() === field.el ? state : null;
+    };
+    const planned = [];
+    for (const field of item.fields.filter(field => typeof values[field.role] === "string")) {
+      const value = optionValue(field.el, field.role, values[field.role]);
+      const state = fresh(field);
+      if (!state || !fits(field.el, value)) return "refused";
+      planned.push({field, value, state});
+    }
+    if (!planned.length) return "refused";
+    for (let i = 0; i < planned.length; ++i) {
+      const {field, value} = planned[i];
+      let state;
+      try {
+        const pinned = i === 0 ? planned[0].state : fresh(field);
+        state = pinned ? pinned.fill(value, PIN_MS, true) : "refused";
+      } catch {
+        state = "uncertain";
+      }
+      if (state !== "filled") return i === 0 && state === "refused" ? "refused" : "uncertain";
+    }
+    return planned.every(({field, value}) => field.el.isConnected && accepted(field, value, value)) ? "filled" : "uncertain";
+  }
+
   function probeFill(id, values) {
     const item = probes.get(id);
     probes.delete(id);
     if (!item || item.dispose || performance.now() - item.created >= PROBE_MS || document.activeElement !== item.focused ||
         !shown(item.focused) || typeof values !== "object" || values === null) return "refused";
+    if (item.kind === "identity") return identityFill(item, values);
     const targets = item.fields.filter(field => typeof values[field.role] === "string");
     // A field that became hidden, disabled, detached or different never
     // receives a value. Every check and assignment runs before any page event.
@@ -850,7 +1012,8 @@
       const item = pins.get(id);
       return Boolean(item && item.kind === "password" && item.mode === "totp" && item.state.check() && item.state.acceptsTotp(digits));
     },
-    pin, geometry, release, fill, read, guard, guardCheck, guardPoint, count, probe, probeFill, liveOtp, popupTotp,
+    pin, geometry, release, fill, read, guard, guardCheck, guardPoint, count, probe, probeFill, liveOtp, liveCode,
+    popupTotp, popupCodePin,
     clear, challengeSpec, challengeHeld, painted,
     releaseGuard: id => guards.delete(id),
     ownerListen, ownerHeard, ownerDone, ownerProbe, ownerGuard, ownerCheck, ownerRelease,

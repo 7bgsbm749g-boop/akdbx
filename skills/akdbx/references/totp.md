@@ -32,7 +32,9 @@ For a human-click fill, extension 0.12.0+ and a broker reporting
 `extension_popup_totp_protocol: 1` support a focused top-page input marked
 `autocomplete="one-time-code"`. Open the toolbar popup and choose the saved
 account. The broker uses its active TOTP configuration. Use an explicit TOTP
-pin for a frame or pending enrollment.
+pin for a frame or pending enrollment. From fill extension 0.15.0 the same
+popup also lists texted codes from the SMS inbox
+([SMS](sms.md#fill-from-the-toolbar-popup-fill-extension-0150)).
 
 Search the exact service and account. An entry with `totp_configured: true`
 has an OTP field, which can still be malformed or unsupported. Select the

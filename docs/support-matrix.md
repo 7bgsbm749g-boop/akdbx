@@ -145,7 +145,7 @@ install from 0.49.0.
 | `capture-totp`, text key (top document) | ✅ 0.35.0 (ext 0.6.0 for grouped keys) · `linux-extension-browser` | ✅ 0.35.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
 | `capture-totp`, QR code (top document) | ✅ 0.50.1 (ext 0.14.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` |
 | SMS code | ✅ 0.50.1 (ext 0.13.0) · `linux-extension-browser` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` |
-| Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ login and card 0.43.0, TOTP 0.49.0 · `macos-extension-browser` (S) |
+| Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0); address with the identity pin's checks and texted (SMS) code after 0.51.0 (ext 0.15.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ login and card 0.43.0, TOTP 0.49.0; address and texted code after 0.51.0 · `macos-extension-browser` (R) (S) |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
 ## Extension route, Firefox
@@ -167,7 +167,7 @@ runs as a temporary add-on; see [Firefox setup](firefox.md).
 | `capture-totp`, text key | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
 | `capture-totp`, QR code (top document) | ✅ after 0.51.0 (ext 0.14.2) · `firefox-extension-browser` (V) | ✅ after 0.51.0 · `firefox-extension-browser` (V) | ✅ after 0.51.0 · `firefox-extension-browser` (V) |
 | SMS code | ✅ 0.50.1 (ext 0.13.0) · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` | ✅ 0.50.1 · `firefox-extension-browser` |
-| Popup human click | ✅ login 0.47.0 · `firefox-extension-browser`; TOTP, card, address: no Firefox test | ✅ login · `firefox-extension-browser` | ✅ login · `firefox-extension-browser` |
+| Popup human click | ✅ login 0.47.0; address and texted (SMS) code after 0.51.0 (ext 0.15.0) · `firefox-extension-browser`; TOTP, card: no Firefox test (R) | ✅ login, address, texted code · `firefox-extension-browser` | ✅ login, address, texted code · `firefox-extension-browser` |
 | Agent desktop slots | — (U) | — (U) | — (U) |
 
 ## Android route (`akdbx android`)
@@ -279,7 +279,18 @@ job, for the reason given. Only `test_relay_integration.py` runs in no job.
   confirmation fields through the extension, checks that a spent handle
   fills nothing, and saves the encrypted vault. Before this test, only
   Firefox ran a real-browser generated-password fill.
-- **R** No real-browser test fills an address from the popup on any platform.
+- **R** From fill extension 0.15.0 the popup fills an address with the agent
+  identity pin's checks on each field (autocomplete grammar, input types,
+  style guard, hit test through same-origin frames, one section and address
+  part) and the events of `--notify-page`; it has no `--field-purpose` and no
+  phone `--format`. It also lists the SMS inbox's texts for a focused
+  top-page one-time-code field and fills the chosen code with the agent code
+  pin's checks, once. akdbx cannot tell which site sent a text, so the user
+  picks it by its sender and masked preview. Enhanced security's cover check
+  runs for the popup's texted code, not for its login, card or address fills.
+  Real-browser tests: Chrome for Testing and headless Edge
+  (`test_extension_browser.py`), Firefox 153 and 161 on Linux, Windows and
+  macOS (`test_firefox_browser.py`).
 - **S** Fill extension 0.14.1 fixed a race in which a popup TOTP code reached
   the page before the closing popup gave the focus back to the field. The
   Linux job forces that order and proves the fix. The Windows job runs

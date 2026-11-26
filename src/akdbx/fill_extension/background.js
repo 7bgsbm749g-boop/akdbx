@@ -993,8 +993,10 @@ async function popupProbe(message) {
   }
   const id = randomText(16);
   while (sessions.size >= MAX_SESSIONS) sessions.delete(sessions.keys().next().value);
+  // A one-time-code field also lists the inbox's texts (fill extension 0.15.0): each entry keeps its own kind.
+  const kinds = entries.map(e => best.result.kind === "totp" && e.kind === "sms" ? "sms" : best.result.kind);
   sessions.set(id, {tabId: tab.id, documentId: best.documentId, topUrl: tab.url, chain, probe: best.result.id,
-    kind: best.result.kind,
+    kind: best.result.kind, kinds, lengths: entries.map(e => e.code_length),
     roles: best.result.roles, formats: best.result.formats, handles: entries.map(e => e.handle),
     created: Date.now()});
   return {ok: true, session: id, kind: best.result.kind, origin: new URL(chain[chain.length - 1].url).origin,
@@ -1012,6 +1014,7 @@ async function popupFill(message) {
   if (!tab || tab.url !== session.topUrl || !chain || !sameChain(chain, session.chain)) {
     return {ok: false, error: "page changed; nothing filled"};
   }
+  if (session.kinds[message.index] === "sms") return popupText(session, message, deadline);
   const liveOtp = (digits = null) => run(session.tabId, session.documentId, (id, size) => globalThis.__akdbxContent.liveOtp(id, size),
     [session.probe, digits]).catch(() => false);
   const expired = {ok: false, error: "code field changed or expired; open akdbx again"};
@@ -1058,6 +1061,74 @@ async function popupFill(message) {
   }
 }
 
+// A texted code chosen in the popup (fill extension 0.15.0). The popup closes first,
+// so the page gets the focus back; then the agent code pin's checks pin the field
+// (content.js popupCodePin), and with enhanced security the cover check runs on that
+// pin. Only then does the broker spend the text, once. When nothing reached the
+// field, the token sealed in that release puts the text back in the inbox.
+const TEXT_FILL_MS = 10000;
+
+async function popupText(session, message, deadline) {
+  const {tabId, documentId, chain} = session;
+  const handle = session.handles[message.index];
+  // While the popup is still open to show it: the field can take a code of the length the broker listed.
+  const length = session.lengths[message.index];
+  const live = await run(tabId, documentId, (id, size) => globalThis.__akdbxContent.liveCode(id, size),
+    [session.probe, length]).catch(() => false);
+  if (live !== true) {
+    return {ok: false, error: `code field changed or cannot take a ${Number(length) || ""}-digit code; check the field`};
+  }
+  await akdbxBrowser.runtime.sendMessage({op: "return-focus", session: message.session}).catch(() => {});
+  let pinId = null;
+  try {
+    pinId = await run(tabId, documentId, (id, end) => globalThis.__akdbxContent.popupCodePin(id, end),
+      [session.probe, deadline]);
+  } catch {
+    pinId = null;
+  }
+  if (typeof pinId !== "string") return {ok: false, error: "field changed or hidden; nothing filled"};
+  let values = {}, restore = null;
+  try {
+    const cover = await enhancedSecurity() ? await seen(tabId, chain, pinId, null) : "off";
+    if (!cover) return {ok: false, error: "field covered or changed; nothing filled"};
+    const released = await brokerRequest("release", {handle, tab_id: tabId, document_id: documentId,
+      top_url: session.topUrl, chain, roles: session.roles, formats: session.formats});
+    if (!released || released.ok !== true) return {ok: false, error: (released && released.error) || "akdbx refused this fill"};
+    try {
+      const sealed = await unseal(released.sealed, "release:" + handle);
+      const facts = sealed.facts;
+      values = sealed.values;
+      restore = typeof values.restore === "string" ? values.restore : null;
+      if (facts.tab_id !== tabId || facts.document_id !== documentId || facts.kind !== "sms" ||
+          !sameChain(facts.chain, chain) || !sameChain(facts.roles, session.roles) ||
+          canonical(facts.formats) !== canonical(session.formats) || !/^[0-9]{4,8}$/.test(values.code)) throw new Error();
+      const [liveTab, liveChain] = await Promise.all([akdbxBrowser.tabs.get(tabId), chainFor(tabId, documentId)]);
+      if (!liveTab || liveTab.url !== session.topUrl || !liveChain || !sameChain(liveChain, chain)) throw new Error();
+    } catch {
+      return {ok: false, error: "akdbx answer could not be verified; nothing filled"};
+    }
+    let result;
+    try {
+      // Before this call nothing reached the field; a timeout after it is uncertain.
+      result = await bounded(run(tabId, documentId,
+        (id, kind, value, maxAge, how) => globalThis.__akdbxContent.fill(id, kind, value, maxAge, how),
+        [pinId, "code", {value: values.code}, TEXT_FILL_MS, cover]), 9000);
+    } catch {
+      result = "uncertain";
+    }
+    if (result === "filled") {
+      restore = null;
+      return {ok: true};
+    }
+    if (result !== "refused") restore = null;  // It may have reached the field: the text stays spent.
+    return {ok: false, error: result === "refused" ? "field changed or hidden; nothing filled" : "fill incomplete; check the page"};
+  } finally {
+    for (const key of Object.keys(values)) values[key] = "";
+    await run(tabId, documentId, id => globalThis.__akdbxContent.release(id), [pinId]).catch(() => {});
+    if (restore) await brokerRequest("restore", {token: restore}, 5000);
+  }
+}
+
 akdbxBrowser.runtime.onMessage.addListener((message, sender, respond) => {
   if (!fromPopup(sender) || !message || typeof message !== "object") return false;
   const handler = {state: popupState, probe: popupProbe, fill: popupFill, "reset-trust": popupReset}[message.op];
@@ -1071,5 +1142,5 @@ if (typeof module !== "undefined") {
   module.exports = {fromPopup, chainFor, sameChain, onHost, localCode, unseal, agreeKey, pairingKeys, fill, pin, release, read,
     sealCapture, holdOwners, channelTrusted, setCaptureKey: key => { captureKey = Promise.resolve(key); },
     setChannel: value => { channel = {sealKey, captureKey, ...value}; }, channel: () => channel,
-    popupState, popupReset, trustIdle: () => trustQueue, setSealKey: key => { sealKey = Promise.resolve(key); }, state: () => state};
+    popupState, popupReset, popupText, trustIdle: () => trustQueue, setSealKey: key => { sealKey = Promise.resolve(key); }, state: () => state};
 }
