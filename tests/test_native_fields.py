@@ -565,6 +565,15 @@ class FakeUia:
             return self.CurrentClassName == 'PasswordBox'
 
         def GetCurrentPattern(self, pattern):
+            if self.app.fail == 'pattern':
+                # A refusal raised while a COM error is handled carries it as context.
+                try:
+                    self.app.fail = 'chained'
+                    self.app.hit('chained')
+                except COMError:
+                    raise TargetError()
+                finally:
+                    self.app.fail = 'pattern'
             return self
 
         def QueryInterface(self, interface):
@@ -650,7 +659,7 @@ def wpf_discover(manager):
     return manager.discover(dict(action='list-native-fields', native_protocol=1, pid=123))['windows'][0]
 
 
-@pytest.mark.parametrize('site', ['connect', 'walk', 'focus', 'describe'])
+@pytest.mark.parametrize('site', ['connect', 'walk', 'focus', 'describe', 'pattern'])
 def test_wpf_com_failure_in_discovery_is_a_bare_target_error(wpf, site):
     module, app, manager = wpf
     app.fail = site
@@ -692,6 +701,15 @@ def test_wpf_com_failure_in_a_read_is_a_bare_target_error(wpf):
                                control=2, mode='read', service_url=SITE))
     pin = manager.take(receipt['target'])
     app.fail = 'read'
+    with pytest.raises(TargetError) as error:
+        manager.read(pin, ORIGINS, lambda: True, time.monotonic() + 4)
+    assert len(no_com_text(error.value)) == 1
+    pin.close()
+    window = wpf_discover(manager)
+    receipt = manager.pin(dict(action='pin-native-target', native_protocol=1, window=window['window'],
+                               control=2, mode='read', service_url=SITE))
+    pin = manager.take(receipt['target'])
+    app.fail = 'pattern'
     with pytest.raises(TargetError) as error:
         manager.read(pin, ORIGINS, lambda: True, time.monotonic() + 4)
     assert len(no_com_text(error.value)) == 1
