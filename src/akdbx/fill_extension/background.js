@@ -974,17 +974,18 @@ async function popupProbe(message) {
   const results = await akdbxBrowser.scripting.executeScript({target: {tabId: tab.id, allFrames: true},
     func: () => globalThis.__akdbxContent ? globalThis.__akdbxContent.probe() : null});
   const best = results.filter(r => r.result && r.documentId).sort((a, b) => b.result.t - a.result.t)[0];
-  if (!best) return {ok: false, error: "click into a login, card or address field first"};
+  if (!best) return {ok: false, error: "click into a login, authenticator code, card or address field first"};
   const chain = await chainFor(tab.id, best.documentId);
   if (!chain || chain[0].url !== tab.url) return {ok: false, error: "page changed; try again"};
   const match = await brokerRequest("match", {tab_id: tab.id, document_id: best.documentId, top_url: tab.url, chain,
-    kind: best.result.kind});
+    kind: best.result.kind, ...(best.result.kind === "totp" ? {probe_id: best.result.id} : {})});
   if (!match || match.ok !== true) return {ok: false, error: (match && match.error) || "akdbx refused this field"};
   let entries;
   try {
     const sealed = await unseal(match.sealed, "match");
     const facts = sealed.facts;
     if (facts.tab_id !== tab.id || facts.document_id !== best.documentId || facts.kind !== best.result.kind ||
+        (best.result.kind === "totp" && facts.probe_id !== best.result.id) ||
         !sameChain(facts.chain, chain) || !Array.isArray(sealed.values.entries)) throw new Error();
     entries = sealed.values.entries;
   } catch {
@@ -1001,6 +1002,7 @@ async function popupProbe(message) {
 }
 
 async function popupFill(message) {
+  const deadline = performance.timeOrigin + performance.now() + 4000;
   const session = sessions.get(message.session);
   sessions.delete(message.session);
   if (!session || Date.now() - session.created >= SESSION_MS || !Number.isInteger(message.index) ||
@@ -1010,6 +1012,10 @@ async function popupFill(message) {
   if (!tab || tab.url !== session.topUrl || !chain || !sameChain(chain, session.chain)) {
     return {ok: false, error: "page changed; nothing filled"};
   }
+  const liveOtp = (digits = null) => run(session.tabId, session.documentId, (id, size) => globalThis.__akdbxContent.liveOtp(id, size),
+    [session.probe, digits]).catch(() => false);
+  const expired = {ok: false, error: "code field changed or expired; open akdbx again"};
+  if (session.kind === "totp" && !(await liveOtp())) return expired;
   const released = await brokerRequest("release", {handle: session.handles[message.index], tab_id: session.tabId,
     document_id: session.documentId, top_url: session.topUrl, chain, roles: session.roles, formats: session.formats});
   if (!released || released.ok !== true) {
@@ -1031,8 +1037,18 @@ async function popupFill(message) {
     return {ok: false, error: "akdbx answer could not be verified; nothing filled"};
   }
   try {
-    const result = await run(session.tabId, session.documentId, (id, v) => globalThis.__akdbxContent.probeFill(id, v),
-      [session.probe, values]);
+    if (session.kind === "totp") {
+      if (!/^(?:[0-9]{6}|[0-9]{8})$/.test(values.totp) || !(await liveOtp(values.totp.length))) {
+        return {ok: false, error: "code field changed or cannot accept this code; check the field"};
+      }
+      if (performance.timeOrigin + performance.now() >= deadline) return expired;
+      await akdbxBrowser.runtime.sendMessage({op: "return-focus", session: message.session}).catch(() => {});
+    }
+    const result = session.kind === "totp"
+      ? await run(session.tabId, session.documentId, (id, v, end) => globalThis.__akdbxContent.popupTotp(id, v, end),
+          [session.probe, values, deadline])
+      : await run(session.tabId, session.documentId, (id, v) => globalThis.__akdbxContent.probeFill(id, v),
+          [session.probe, values]);
     return result === "filled" ? {ok: true} : {ok: false, error: result === "uncertain"
       ? "fill incomplete; check the page" : "field changed or hidden; nothing filled"};
   } catch {

@@ -628,8 +628,7 @@ def handler_for(state: UnlockState):
             # itself; never accept a caller-supplied proxy identity there.
             # Its configured origin is loopback or, for unlock from another
             # device, the Tailscale Serve name that proxies to the listener.
-            # Only the Linux Unix-socket backend, which Tailscale Serve alone
-            # can reach, uses Tailscale's identity header.
+            # Only the filesystem-protected Unix-socket backend uses Tailscale's identity header.
             origin = getattr(self.server, 'local_origin', None)
             if origin is not None:
                 expected = urlsplit(origin)

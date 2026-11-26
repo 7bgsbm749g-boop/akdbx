@@ -1730,7 +1730,7 @@ def test_a_qr_read_pin_is_sealed_as_qr_and_is_for_capture_totp_only(capture_brok
     channel, extension = attach(broker, {4: [Document('TOP', SECRET_SITE)]})
     extension.secret = QR_URI  # What the extension decoded from the pinned picture.
     status = broker.dispatch(dict(action='ping'))
-    assert status['totp_qr_capture_protocol'] == 1 and status['extension_qr_capture_min_version'] == '0.12.0'
+    assert status['totp_qr_capture_protocol'] == 1 and status['extension_qr_capture_min_version'] == '0.13.0'
     # read_kind is "qr" only, on a read pin only: refused before the browser sees it.
     for extra in (dict(read_kind='text'), dict(read_kind='QR'), dict(read_kind=True)):
         assert read_pin(broker, channel, 4, 'TOP', SECRET_SITE, **extra) == failure()
@@ -1760,7 +1760,7 @@ def test_a_qr_read_pin_is_sealed_as_qr_and_is_for_capture_totp_only(capture_brok
     assert extension.calls.count('read') == 1 and 'JBSWY3DP' not in json.dumps(receipt)
 
 
-@pytest.mark.parametrize('browser, version', [('helium', '0.11.0'), ('firefox', BUILT)])
+@pytest.mark.parametrize('browser, version', [('helium', '0.12.0'), ('firefox', BUILT)])
 def test_an_older_or_firefox_extension_gets_no_qr_read_pin_but_keeps_text_reads(capture_broker, browser, version):
     broker = capture_broker
     extension = FakeExtension({4: [Document('TOP', SECRET_SITE)]})

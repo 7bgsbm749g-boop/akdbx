@@ -70,6 +70,8 @@ other texts at once; `sms-sources` shows the last result per source
 The event never has the code, the text or the sender. A lost HTTP response can
 repeat the event with the same `event_id`: handle it once. Always check
 `sms-wait` before you fill: texts expire after ten minutes and fill once.
+After notification, choose a supported destination from `sms_fill_routes`.
+Native apps use a fresh `pin-native-target --mode code` pin.
 
 ## Restarts
 

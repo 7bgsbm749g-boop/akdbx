@@ -12,8 +12,8 @@ navigation makes an old target unusable.
 
 ## Install for local use
 
-Start and configure the broker as usual. For macOS, use
-[the manual broker setup](macos.md). Install the host and build a separate
+Start and configure the broker as usual. For macOS, see
+[macOS setup](macos.md). Install the host and build a separate
 Firefox extension folder:
 
 ```sh

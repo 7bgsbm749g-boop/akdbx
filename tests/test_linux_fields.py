@@ -272,6 +272,23 @@ def test_native_vault_workflows_keep_values_out_of_receipts_and_reopen(lab, depl
         return broker.dispatch(dict(action='pin-native-target', native_protocol=1, window=window['window'],
                                      control=control, mode=mode, service_url='https://example.test/', **fields))['target']
 
+    from akdbx.sms import SmsInbox
+    broker.sms = SmsInbox(directory / 'sms.json')
+    source = broker.sms.add_source('phone', 'shortcut')
+    broker.sms.receive(source, 'Example', 'Your verification code is 012345')
+    [message] = broker.dispatch(dict(action='sms-wait', sms_protocol=1))['messages']
+    def fill_code(target, **extra):
+        return broker.dispatch(dict(action='fill-sms-code', sms_protocol=1, message=message['id'],
+                                    target=target, target_protocol=1, **extra))
+
+    wrong_site = pin('code', 0)
+    assert not fill_code(wrong_site, target_url='https://other.test/')['ok']
+    assert not fill_code(wrong_site)['ok'] and command(directory)[0] == ''
+    response = fill_code(pin('code', 0))
+    assert response == dict(ok=True, filled='one-time-code', code_delivery='native-field-v1')
+    assert command(directory)[0] == '012345'
+    assert not fill_code(pin('code', 0))['ok']
+
     card = save_card(deployed)
     response = broker.dispatch(dict(action='fill-card', card_protocol=1, handle=card['handle'],
                                     target=pin('card', 0, field='cc-number'), field='cc-number'))

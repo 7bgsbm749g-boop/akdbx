@@ -33,7 +33,7 @@ owners. For a supported same-site child frame, use the CDP read route.
 
 For a setup QR code (`--qr`), `status` must also show integer
 `totp_qr_capture_protocol: 1`. On the extension route the QR read needs fill
-extension 0.12.0 or newer (`extension_qr_capture_min_version`) in a Chromium
+extension 0.13.0 or newer (`extension_qr_capture_min_version`) in a Chromium
 browser (Helium, Chrome or Edge); a Firefox extension refuses QR read pins
 (`target unavailable`), because this path has no real-Firefox proof yet. Text
 key reads work there as before. A QR in a same-site child frame uses the CDP

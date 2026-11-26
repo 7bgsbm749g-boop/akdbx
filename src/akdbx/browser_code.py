@@ -5,6 +5,9 @@ a derived pin script: one focused, visible, enabled plain input; any
 autocomplete value. The shared card script, which the browser extension also
 embeds, stays unchanged.
 """
+import sys
+
+from . import native_fields
 from .browser_card import BrowserCards, PIN_SCRIPT
 
 DELIVERY = 'cdp-code-element-v1'
@@ -44,4 +47,10 @@ class BrowserCodes(BrowserCards):
     pin_extra = (False, False, False, False, True)
 
     def capabilities(self):
-        return dict(code_protocol=1, code_browser_configured=self.configured, **self._receipt())
+        cdp = self.configured and sys.platform != 'darwin'
+        routes = ['cdp'] if cdp else []
+        if native_fields.supported():
+            routes.append('native')
+        if sys.platform.startswith('linux') or sys.platform == 'win32':
+            routes.append('window')
+        return dict(code_protocol=1, code_browser_configured=cdp, sms_fill_routes=routes, **self._receipt())
