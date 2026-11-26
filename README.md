@@ -150,9 +150,9 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 
 ## Platforms
 
-- **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
+- **macOS** (0.43.0+): local browser broker, with native Unix peer
   checks, private HTTPS unlock and encrypted vault writes. Chrome, Edge and Firefox (0.47.0+)
-  native-host locations are supported. Native window delivery, CDP and guided
+  native-host locations are supported. After 0.47.0, Chromium CDP also supports private profiles and profile slots. Native window delivery and guided
   setup are unavailable. Safari's Apple wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).
 - **Linux** (X11 desktop): the original platform. The setup notes in this
@@ -339,7 +339,7 @@ Keep the broker process running. Open its private unlock page (on this computer 
 .venv/bin/akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
 ```
 
-Before starting the broker, choose the private Chrome user data directory shown above (or set `AKDBX_PASSWORD_BROWSER_PROFILE`). Configure that browser's startup with `--user-data-dir=/absolute/path/to/chrome-user-data --remote-debugging-port=0` so Chrome writes its selected port and browser endpoint to `DevToolsActivePort`. [Chrome 136 and later require a non-default user data directory](https://developer.chrome.com/blog/remote-debugging-port); explicitly naming Chrome's default directory with `--user-data-dir` does not enable remote debugging there. This concerns the user-data root, not a profile name such as `Default`. A fixed debugging port does not provide `DevToolsActivePort` for this transport. The broker does not start or change Chrome. The profile must be owned, mode 0700, without symlink components; launch Chrome with `umask 077` so `DevToolsActivePort` is not writable by other users. On Linux, the broker also verifies the kernel UID of the connected TCP peer before the WebSocket handshake. An unavailable or ambiguous ownership check refuses; redirects and reconnection are forbidden. No profile means password fills refuse. Treat CDP as a privileged local interface.
+Before starting the broker, choose the private Chrome user data directory shown above (or set `AKDBX_PASSWORD_BROWSER_PROFILE`). Configure that browser's startup with `--user-data-dir=/absolute/path/to/chrome-user-data --remote-debugging-port=0` so Chrome writes its selected port and browser endpoint to `DevToolsActivePort`. [Chrome 136 and later require a non-default user data directory](https://developer.chrome.com/blog/remote-debugging-port); explicitly naming Chrome's default directory with `--user-data-dir` does not enable remote debugging there. This concerns the user-data root, not a profile name such as `Default`. A fixed debugging port does not provide `DevToolsActivePort` for this transport. The broker does not start or change Chrome. The profile must be owned, mode 0700, without symlink components; launch Chrome with `umask 077` so `DevToolsActivePort` is not writable by other users. On Linux and macOS the kernel must identify the broker UID on the reciprocal established connection. macOS also refuses extended allow ACLs on profile paths and the port file. On Windows the owner PID must belong to the same user and desktop session. These checks precede the WebSocket handshake. An unavailable or ambiguous ownership check refuses; redirects and reconnection are forbidden. No profile means password fills refuse. Treat CDP as a privileged local interface.
 
 ### Several agent desktops: one Chrome per slot
 
@@ -905,7 +905,7 @@ akdbx fill-totp FRESH_SEARCH_HANDLE --target-url 'https://example.com/challenge'
   --target FRESH_TARGET_PIN
 ```
 
-Use `--route cdp` for the configured CDP browser on Linux/Windows. The paired
+Use `--route cdp` for the configured CDP browser on Linux, Windows or macOS. The paired
 extension route works on Linux/Windows/macOS, including the native macOS broker,
 and requires fill extension 0.10.0+ and `extension_totp_protocol: 1`. TOTP uses
 the extension's agent route; the manual popup keeps its existing workflows.

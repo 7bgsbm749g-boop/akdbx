@@ -32,8 +32,10 @@ or changes a browser, discovers profiles, or accepts an endpoint in an RPC.
 The profile must be owned by the broker UID, mode 0700, with no symlink components.
 Its bounded regular `DevToolsActivePort` must be owned by that UID and not writable
 by group/others (launch Chrome with `umask 077`). The broker connects only to the
-loopback browser websocket described by that file. Before its handshake, Linux
-kernel metadata must identify the broker UID on the actual connected peer;
+loopback browser websocket described by that file. Before its handshake, Linux and macOS kernel metadata must identify the broker
+UID on the reciprocal established connection. macOS refuses extended allow
+ACLs on profile paths and the port file. Windows verifies private DACLs and
+requires the connected peer to share the broker user and desktop session;
 unverifiable ownership and redirects refuse. Protect this privileged CDP
 interface and profile from other local users. Configuration is not proof of
 protection against malicious processes running as the broker user.

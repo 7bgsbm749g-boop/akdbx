@@ -1,8 +1,4 @@
-"""macOS primitives for a local, browser-extension-only broker.
-
-No window input, browser debugging, remote broker transport, or system changes.
-The same private Unix socket and encrypted vault persistence contract applies.
-"""
+"""macOS ACL, private Unix socket and window-delivery policy."""
 from __future__ import annotations
 
 import ctypes

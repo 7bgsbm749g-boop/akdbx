@@ -64,7 +64,7 @@ def test_real_connected_peer_uid_before_accept():
 def test_peer_in_large_kernel_table_is_verified_without_row_order_assumption(monkeypatch, position):
     import io
     from types import SimpleNamespace
-    import akdbx.browser_password as transport
+    import akdbx.cdp_peer as transport
     loopback = f'{int.from_bytes(socket.inet_aton("127.0.0.1"), sys.byteorder):08X}'
     match = f'0: {loopback}:3039 {loopback}:D431 01 0:0 0:0 0 {os.getuid()} 0 1\n'.encode()
     unrelated = f'1: {loopback}:1234 {loopback}:5678 01 0:0 0:0 0 {os.getuid()} 0 2\n'.encode() * 25000
@@ -92,7 +92,7 @@ def test_peer_in_large_kernel_table_is_verified_without_row_order_assumption(mon
 def test_connected_peer_refuses_untrusted_kernel_rows(monkeypatch, case):
     import io
     from types import SimpleNamespace
-    import akdbx.browser_password as transport
+    import akdbx.cdp_peer as transport
     loopback = f'{int.from_bytes(socket.inet_aton("127.0.0.1"), sys.byteorder):08X}'
     server, client = f'{loopback}:3039', f'{loopback}:D431'
     row = f'0: {server} {client} 01 0:0 0:0 0 {os.getuid()} 0 1\n'

@@ -31,7 +31,7 @@ the text's exact position and visibility through padded or transformed iframe
 owners. For a supported same-site child frame, use the CDP read route.
 
 The pending code fill uses the same TOTP pins as a saved code: retained DOM
-pins on CDP (Linux/Windows), the paired extension (Linux/Windows/macOS), native
+pins on CDP (Linux/Windows/macOS), the paired extension (Linux/Windows/macOS), native
 field pins (Linux X11/Wayland and supported Windows controls), or Current Window
 pins on Linux X11/Windows. Browser pins require integer
 `browser_totp_protocol: 1`; extension pins also require integer

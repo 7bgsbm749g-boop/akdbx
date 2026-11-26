@@ -67,10 +67,24 @@ For user-started authenticator QR import, use the separate 1.1.0+ importer.
 The default capture-only socket is `~/Library/Application Support/akdbx/run/u`.
 See [private import](../skills/akdbx/references/private-import.md) for browser builds and registration.
 
+## Chromium CDP (after 0.47.0)
+
+The extension remains the default. For CDP, start Chromium with a dedicated
+mode-0700 user-data directory and `--remote-debugging-port=0` under `umask 077`.
+Give the broker that physical path with `--password-browser-profile` for
+credentials and read pins and `--card-browser-profile` for cards. Identities
+and SMS codes use the password profile when set, otherwise the card profile. Use `--browser-profile-root` to select a named slot at pin time.
+Select `--route cdp` or configure `serve --default-fill-route cdp`. Check
+`fill_routes` and the relevant `*_browser_configured` fields in `status`.
+
+Before sending a WebSocket handshake, the broker checks the exact reciprocal
+established IPv4 loopback connection in Darwin's kernel TCP table. The socket
+owner must match the broker UID. The broker checks the profile ancestry,
+directory and port file for extended allow ACLs. An unverifiable peer or path
+refuses delivery. See [browser pins](../skills/akdbx/references/target-fill.md).
+
 ## Limits
 
-- The broker supports the extension route only. CDP profile options are
-  refused before startup; this release does not claim macOS CDP peer verification.
 - Native application/window fills are unavailable. Status reports
   `target_fill_delivery: "unavailable"` and an empty `target_fill_modes` list;
   there is no keyboard or clipboard fallback.
@@ -85,7 +99,7 @@ See [private import](../skills/akdbx/references/private-import.md) for browser b
 
 The `Native macOS broker` CI job uses a real Darwin runner for Unix peer
 credentials, private socket RPC, encrypted save/reopen, checked TLS loading
-and unlock, and the extension protocol tests. It installs the same wheel in
+and unlock, extension protocol tests, and peer checks and DOM fills in Chrome. It installs the same wheel in
 the release workflow. Linux simulations are not evidence of native macOS
 behavior. Safari application signing, installation and live browser behavior
 belong to the separate Safari extension delivery.

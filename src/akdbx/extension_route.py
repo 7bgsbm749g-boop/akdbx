@@ -561,7 +561,7 @@ class ExtensionHub:
         state = dict(extension_protocol=PROTOCOL, extension_delivery=DELIVERY, extension_id=EXTENSION_ID,
                      extension_totp_protocol=1, extension_totp_min_version='0.10.0',
                      extension_capture_protocol=CAPTURE_PROTOCOL, extension_capture_delivery=CAPTURE_DELIVERY,
-                     fill_routes=['extension'] if sys.platform == 'darwin' else list(ROUTES),
+                     fill_routes=list(ROUTES),
                      default_fill_route=self.default_route,
                      extension_connected=bool(channels),
                      extension_paired=any(c.digest in approved for c in channels),

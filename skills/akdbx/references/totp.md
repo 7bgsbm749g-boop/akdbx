@@ -36,7 +36,7 @@ without gaining password fill or password generation privileges.
 
 Verify the exact challenge page and account, then focus one visible editable
 whole-code input. For Chromium browser delivery, require integer
-`browser_totp_protocol: 1`. Use CDP on Linux/Windows or the paired extension on
+`browser_totp_protocol: 1`. Use CDP on Linux/Windows/macOS or the paired extension on
 Linux/Windows/macOS (including the native macOS broker). Extension TOTP requires
 integer `extension_totp_protocol: 1` and fill extension **0.10.0** or newer; an
 older loaded extension is refused before pinning. These are agent/CLI routes;

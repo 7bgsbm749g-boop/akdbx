@@ -168,6 +168,8 @@ def test_connected_endpoint_refuses_missing_or_untrusted_kernel_proof(monkeypatc
         if case == 'unavailable':
             raise PermissionError()
         return io.BytesIO(data)
+    if case == 'oversized-table':
+        monkeypatch.setattr('akdbx.cdp_peer.MAX_TCP_TABLE_BYTES', len(data) - 1)
     monkeypatch.setattr('builtins.open', table)
     with pytest.raises((CardTargetError, OSError, ValueError)):
         verify_peer(Connected())

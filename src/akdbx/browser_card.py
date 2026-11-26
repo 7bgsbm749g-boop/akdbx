@@ -16,6 +16,7 @@ from .cards import FILL_FIELDS
 from . import card_processor
 from . import card_hit_test
 from .runtime import open_private_runtime_directory
+from . import cdp_peer
 from . import browser_slots
 
 DELIVERY = 'cdp-card-element-v1'
@@ -60,6 +61,9 @@ def browser_endpoint(profile):
             if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                     or info.st_mode & 0o022 or info.st_size > 256 or info.st_nlink != 1):
                 raise CardTargetError()
+            if sys.platform == 'darwin':
+                from .macos import require_private_acl
+                require_private_acl(fd)
             parts = source.read(257).splitlines()
         if (len(parts) != 2 or not re.fullmatch(r'[0-9]{1,5}', parts[0])
                 or not 1 <= int(parts[0]) <= 65535
@@ -71,44 +75,10 @@ def browser_endpoint(profile):
 
 
 def verify_peer(connection):
-    """Prove our UID owns the server side of this connected Linux TCP socket.
-
-    A pre-connect listener check races port reuse. Match the reciprocal
-    ESTABLISHED tuple instead, before sending any WebSocket bytes, and keep
-    this exact connection. Missing, ambiguous or oversized kernel data refuses.
-    Windows proves the same fact with the kernel's TCP owner table and the
-    owning process's user and desktop session.
-    """
-    if os.name == 'nt':
-        from . import windows_browser
-        try:
-            return windows_browser.verify_peer(connection)
-        except Exception:
-            raise CardTargetError() from None
-    local, remote = connection.getsockname(), connection.getpeername()
-    if (connection.family != socket.AF_INET or local[0] != '127.0.0.1'
-            or remote[0] != '127.0.0.1'):
-        raise CardTargetError()
-    def address(value):
-        return f'{int.from_bytes(socket.inet_aton(value[0]), sys.byteorder):08X}:{value[1]:04X}'.encode('ascii')
-    server, client = address(remote), address(local)
-    owners = []
-    with open('/proc/self/net/tcp', 'rb') as table:
-        for _ in range(16384):
-            line = table.readline(1025)
-            if not line:
-                break
-            if len(line) > 1024:
-                raise CardTargetError()
-            fields = line.split()
-            if len(fields) >= 4 and fields[1:4] == [server, client, b'01']:
-                if len(fields) < 8:
-                    raise CardTargetError()
-                owners.append(int(fields[7]))
-        else:
-            raise CardTargetError()
-    if owners != [os.getuid()]:
-        raise CardTargetError()
+    try:
+        cdp_peer.verify_peer(connection)
+    except Exception:
+        raise CardTargetError() from None
 
 
 class CDP:
