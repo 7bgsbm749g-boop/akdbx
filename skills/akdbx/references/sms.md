@@ -117,8 +117,8 @@ KIND --replace` issues a new URL (the old one stops working at once);
 
    The DOM pin accepts one focused, visible, enabled `text`, `tel`, `number`
    or `password` input on an exact HTTPS page. For six one-digit boxes, use
-   X11 keyboard delivery instead: `pin-target --pid ... --window ...`, then
-   `fill-sms-code MESSAGE_ID --target X11_PIN --target-url-file URL_FILE`
+   a window pin (on Linux this requires X11 or XWayland; on Windows use an HWND): `pin-target --pid ... --window ...`, then
+   `fill-sms-code MESSAGE_ID --target WINDOW_PIN --target-url-file URL_FILE`
    (a mode-0600 file with the verified challenge URL; use `--target-url URL`
    only for a URL that holds no token).
 4. Check the site's result (signed-in page, next step), not the field.
