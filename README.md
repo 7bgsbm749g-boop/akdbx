@@ -152,7 +152,7 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 
 - **macOS** (0.43.0+): local browser broker, with native Unix peer
   checks, private HTTPS unlock and encrypted vault writes. Chrome, Edge and Firefox (0.47.0+)
-  native-host locations are supported. After 0.47.0, Chromium CDP also supports private profiles and profile slots. Native window delivery and guided
+  native-host locations are supported. After 0.48.0, Chromium CDP also supports private profiles and profile slots. Native window delivery and guided
   setup are unavailable. Safari's Apple wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).
 - **Linux** (X11 desktop): the original platform. The setup notes in this
@@ -1184,8 +1184,10 @@ changes are authorized.
 
 Card browser tests skip locally if Chrome/Chromium, Xvfb or openssl is missing.
 The foreign-UID listener test requires an explicit opt-in and passwordless
-`sudo -n -u nobody`. To require both native checks locally, install those
-dependencies and run:
+`sudo -n -u nobody` (`_www` on macOS). It runs the listener from `/` with an
+empty environment, using the first Python that account can execute, and fails
+with each candidate's error when none can. To require both native checks
+locally, install those dependencies and run:
 
 ```bash
 AKDBX_REQUIRE_CARD_CHROMIUM=1 AKDBX_TEST_FOREIGN_UID=1 \

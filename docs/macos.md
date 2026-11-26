@@ -69,7 +69,7 @@ See [private import](../skills/akdbx/references/private-import.md) for browser b
 
 ## Chromium CDP
 
-Versions after 0.47.0 support CDP on macOS. The extension remains the default. Before enabling CDP, verify that only trusted
+Versions after 0.48.0 support CDP on macOS. The extension remains the default. Before enabling CDP, verify that only trusted
 clients can reach the browser’s loopback TCP listener. For example, run Chrome
 and the broker inside a dedicated VM that only you can access, with no port
 forwarding. On a shared Mac, keep using the extension unless you have verified

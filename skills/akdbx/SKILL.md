@@ -305,7 +305,7 @@ Sites see ordinary use by the user, which is what it is.
 
 **CDP route (`--route cdp`): the original route.** The broker drives a Chromium
 profile that was started with `--remote-debugging-port` and fills over the
-Chrome DevTools Protocol. On macOS after 0.47.0, check that `fill_routes`
+Chrome DevTools Protocol. On macOS after 0.48.0, check that `fill_routes`
 includes `cdp` and that the browser profile is configured. It works without any browser extension. Secret
 capture (`--mode read`, `capture-secret`) works on both routes from 0.32.0. It
 has two costs:
