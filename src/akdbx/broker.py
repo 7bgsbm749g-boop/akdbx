@@ -151,11 +151,12 @@ class Broker:
         self.cards = CardManager(self)
         # The extension route sits next to CDP; the operator picks the default.
         self.extension = ExtensionHub(self, default_route=default_fill_route)
+        self.android = AndroidTargets(android_devices_path, clock=clock)
         self.card_targets = RoutedTargets(BrowserCards(card_browser_profile, clock=clock, slots=self.browser_slots),
-                                          self.extension, 'card', native=self.native)
+                                          self.extension, 'card', native=self.native, android=self.android)
         self.identity_targets = RoutedTargets(
             BrowserIdentities(password_browser_profile or card_browser_profile, clock=clock, slots=self.browser_slots),
-            self.extension, 'identity', native=self.native)
+            self.extension, 'identity', native=self.native, android=self.android)
         self.identities = IdentityManager(self)
         # Phone verification texts: durable sources, codes in memory only.
         self.sms = sms_module.SmsInbox(sms_sources_path, clock=clock, wall_clock=wall_clock)
@@ -164,7 +165,6 @@ class Broker:
         self.merges = create_merge_manager(self)
         self.secrets = SecretCaptures(self, secret_sinks_path)
         self.totp_captures = TotpCaptures(self)
-        self.android = AndroidTargets(android_devices_path, clock=clock)
         self.unlock_url: str | None = None
         # The private page's UnlockState, when this broker serves one.
         self.unlock_link = None
@@ -816,25 +816,16 @@ class Broker:
                         if 'target_url' in request:
                             raise DeliveryError(False)
                         self.android.check_entry(target, allowed_origins(entry))
-                    if mode == 'totp' and isinstance(target, AndroidPin):
-                        configuration = read_configuration(entry)
-                        now = self.wall_clock()
-                        password = code_at(configuration, now)
-                        valid_from = int(now // configuration.period) * configuration.period
-                        valid_until = valid_from + configuration.period
-                        if valid_until - now < MIN_VALIDITY:
-                            return {'ok': False, 'error': 'autofill not started: TOTP code near expiry; wait and use fresh handles',
-                                    'retry_after': math.ceil(valid_until - now)}
-                        code_valid = lambda: valid_from <= self.wall_clock() < valid_until - 2
-                    elif mode == 'totp':
-                        # Main URL or an exact KP2A_URL* origin; nothing broader.
-                        target_origin = https_origin(request.get('target_url'))
-                        if target_origin not in additional_origins(entry) and target_origin != https_origin(entry.url):
-                            return {'ok': False, 'error': 'autofill not started: TOTP target site mismatch'}
-                        if isinstance(target, (PasswordPin, ExtensionPin)):
-                            pinned_url = target.frame_url if isinstance(target, ExtensionPin) else target.url
-                            if request['target_url'] != pinned_url or https_origin(pinned_url) != target_origin:
-                                raise DeliveryError(False)
+                    if mode == 'totp':
+                        if not isinstance(target, AndroidPin):
+                            # Main URL or an exact KP2A_URL* origin; nothing broader.
+                            target_origin = https_origin(request.get('target_url'))
+                            if target_origin not in additional_origins(entry) and target_origin != https_origin(entry.url):
+                                return {'ok': False, 'error': 'autofill not started: TOTP target site mismatch'}
+                            if isinstance(target, (PasswordPin, ExtensionPin)):
+                                pinned_url = target.frame_url if isinstance(target, ExtensionPin) else target.url
+                                if request['target_url'] != pinned_url or https_origin(pinned_url) != target_origin:
+                                    raise DeliveryError(False)
                         # --pending: the key a capture-totp saved for this enrollment.
                         configuration = read_pending(entry) if request.get('pending') is True else read_configuration(entry)
                         now = self.wall_clock()

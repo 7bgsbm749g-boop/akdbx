@@ -141,7 +141,8 @@ authenticator setup key printed in space-separated Base32 groups, for
 From 0.44.0, native apps can use **native field pins** for passwords, combined logins,
 generated passwords, usernames, TOTP codes, cards, addresses and read-only
 secret capture. Linux uses retained AT-SPI controls on X11 or Wayland; Windows
-uses exact Unicode Win32 Edit controls. On macOS (after 0.49.0), native fields
+uses exact Unicode Win32 Edit controls. From 0.50.0, the Windows backend also
+supports WinForms TextBox and retained WPF TextBox and PasswordBox controls. On macOS (after 0.49.0), native fields
 use Accessibility with permission granted to the broker. Stock AppKit password
 fields omit the character count required to verify delivery. Password and
 combined login modes are unavailable on macOS. Native apps have no browser origin:
@@ -178,11 +179,11 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
   broker-socket and Unix-socket unlock notes below do not describe the Windows
   transport. [Private HTTPS pages](docs/private-pages.md) describes the unlock
   page for both platforms.
-- **Android devices and emulators** (0.36.0+): a broker on Linux fills a
-  login, password, username or authenticator code into one verified field on
-  a registered Android device. Version 0.37.0 adds optional setup and on-demand
-  Google Play emulators. See
-  [Android devices](#android-devices-0360).
+- **Android devices and emulators** (0.36.0+) support verified app fields and
+  Chrome pages on a Linux broker. The Android parity update adds generated
+  passwords, SMS codes, card and identity fields, and Chrome read pins for
+  shown-once secrets and authenticator enrollment.
+  [Android setup and operations](skills/akdbx/references/android.md)
 
 ## Android devices (0.36.0)
 
@@ -206,7 +207,7 @@ device through adb. For a managed emulator the broker uses a Unix socket in
 its private runtime directory. For an attached device it checks ownership of
 the operator's loopback adb connection. It binds each pin to
 the device (adb serial and boot), the focused app (package, signing
-certificate, activity, task) and the field. It fills only an entry whose URL
+certificate, activity, task) and the field. For login entries it fills only an entry whose URL
 or additional URL is the verified site:
 
 - **Chrome tabs and Custom Tabs** (Google-signed Chrome): the exact origin of
@@ -865,7 +866,8 @@ one-digit boxes, `fill-sms-code` also takes a `pin-target` token (on Linux, an X
 For a native app, use `pin-native-target --mode code` and the same
 `fill-sms-code` command. Status lists supported SMS destinations in
 `sms_fill_routes`. An empty list means the broker can receive texts but has
-no supported fill route.
+no supported desktop fill route. An Android `--mode sms` pin is a separate
+destination: check `android_fill_modes` and `android_devices_configured`.
 The iPhone filter forwards only texts with the word `code`; a second automation
 with `OTP` covers sites that say only that. See
 [the SMS workflow](skills/akdbx/references/sms.md).

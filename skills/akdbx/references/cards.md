@@ -1,5 +1,7 @@
 # Card storage and field-bound delivery (0.14.2)
 
+For card field operations on Android, see [Android pins and commands](android.md#additional-android-operations-after-0470).
+
 Require CLI/broker card protocol 1: `cards_supported: true`, integer
 `card_protocol: 1`, `card_delivery: "cdp-card-element-v1"`. `card_browser_configured`
 must be true for filling. The CLI checks protocol capabilities before dispatch.

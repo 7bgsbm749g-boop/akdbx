@@ -87,9 +87,14 @@ field, another for the confirmation field (none for a write staged with
 `--single-field`), the site's acceptance, then
 `commit-password --site-accepted -- WRITE_HANDLE`.
 
-## Window pins for usernames and TOTP
+## Native application field pins
 
-For supported native controls, prefer the [native field workflow](native-fields.md).
+Use [native desktop fields](native-fields.md) for an exact Win32 Edit, WinForms
+TextBox, or WPF TextBox or PasswordBox. The after 0.49.0 backend reports
+`native_field_windows_uia: true`. Discover the focused field, then use the
+single-use pin for the requested fill or read-only capture.
+
+## Window pins for usernames and TOTP
 
 - Independently verify the application's PID and top-level HWND. Focus the
   intended field. Call `pin-target --pid VERIFIED_PID --window VERIFIED_HWND`.

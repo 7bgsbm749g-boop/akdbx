@@ -63,7 +63,9 @@ CHROME_DELIVERY = 'android-chrome-verified-dom-v1'
 NONCE_ALPHABET = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 PIN_TTL = 30.0
 MAX_PINS = 64
-MODES = ('login', 'username', 'password', 'totp')
+MODES = ('login', 'username', 'password', 'totp', 'sms', 'card', 'identity', 'read')
+CHALLENGE_MODES = {'sms', 'card', 'identity', 'read'}
+READ_DELIVERY = 'android-chrome-verified-read-v1'
 CONFIG_ENV = 'AKDBX_ANDROID_DEVICES'
 MAX_CONFIG = 64 * 1024
 MAX_DEVICES = 16
@@ -130,6 +132,7 @@ class AndroidMismatch(TargetError):
 def capabilities(configured: bool) -> dict:
     return dict(android_fill_protocol=PROTOCOL, android_fill_delivery=DELIVERY,
                 android_chrome_delivery=CHROME_DELIVERY,
+                android_generated_password=True, android_pending_totp=True, android_read_delivery=READ_DELIVERY,
                 android_fill_modes=list(MODES), android_devices_configured=configured)
 
 
@@ -176,9 +179,16 @@ class Device:
 
 
 def _read_private_file(path: Path) -> bytes:
-    """Read the operator file; on POSIX only this user (or root) may change it."""
+    """Read the bounded operator file only through a checked file handle."""
     if os.name == 'nt':
-        data = path.read_bytes()
+        import pywintypes
+        from .windows_security import read_private_optional
+        try:
+            data = read_private_optional(path, limit=MAX_CONFIG)
+        except (OSError, ValueError, pywintypes.error) as exc:
+            raise AndroidError('Android device configuration is unsafe or unavailable') from exc
+        if data is None:
+            raise FileNotFoundError(path)
     else:
         directory = path.parent
         info = os.stat(directory)
@@ -612,6 +622,94 @@ PAGE_FIELD = r"""(function(selector, url, kind) {
 })"""
 
 
+# For reads and structured fields the check must not clear a value, notify
+# a form or submit a short code. Observe the random hardware key sequence on
+# the retained focused node in Chrome's isolated world. No expected byte is
+# supplied over CDP. Remove the listener even if the client disappears.
+KEY_PROOF = r"""(function(guard, field, mode, url) {
+  if (!guard || !field || !window.navigation || field !== document.activeElement) throw 0;
+  let tainted = false;
+  const dirty = () => { tainted = true; };
+  const observer = new MutationObserver(records => {
+    if (records.some(r => [...r.removedNodes].some(n => n === field || n.contains(field)))) dirty();
+  });
+  observer.observe(document, {childList:true, subtree:true});
+  window.navigation.addEventListener('navigate', dirty);
+  document.addEventListener('visibilitychange', dirty);
+  field.addEventListener('blur', dirty);
+  const valid = () => !tainted && location.href === url && isSecureContext && document.hasFocus() &&
+    document.visibilityState === 'visible' && document.activeElement === field &&
+    (mode === 'read' ? guard.check() : guard.geometry());
+  let keys = '', timer;
+  const observe = e => {
+    if (e.isTrusted && /^[a-z0-9]$/.test(e.key)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.type === 'keydown' && e.target === field && valid() && keys.length < 17) keys += e.key;
+    }
+  };
+  const stop = () => {
+    window.removeEventListener('keydown', observe, true);
+    window.removeEventListener('keyup', observe, true);
+    clearTimeout(timer);
+  };
+  return {focused: !!valid(), node: () => field, points() {
+    if (!valid()) return [];
+    if (mode !== 'read') return [guard.geometry()];
+    // Match the read guard's visibility probes for every rendered text line.
+    let rects;
+    if (field instanceof HTMLInputElement) {
+      rects = [field.getBoundingClientRect()];
+    } else {
+      const range = document.createRange();
+      range.selectNodeContents(field);
+      rects = Array.from(range.getClientRects());
+    }
+    if (rects.length > 16) return [];
+    return rects.flatMap(r => [r.left + 1, r.left + r.width / 2, r.right - 1].map(x =>
+      ({rootX: x + scrollX, rootY: r.top + r.height / 2 + scrollY})));
+  }, prepare() {
+    if (!valid()) return false;
+    keys = '';
+    window.addEventListener('keydown', observe, true);
+    window.addEventListener('keyup', observe, true);
+    timer = setTimeout(stop, 8000);
+    return true;
+  }, proof() { stop(); return valid() ? keys : null; },
+  capture(deadline) { return mode === 'read' && performance.now() < deadline && valid() ? guard.value() : null; },
+  write(value, notify, deadline) {
+    if (performance.now() >= deadline || !valid()) return 'refused';
+    const result = guard.fill(value, 30000, notify);
+    return result === 'filled' && !valid() ? 'uncertain' : result;
+  }, dispose() {
+    stop();
+    observer.disconnect();
+    window.navigation.removeEventListener('navigate', dirty);
+    document.removeEventListener('visibilitychange', dirty);
+    field.removeEventListener('blur', dirty);
+    if (guard.dispose) guard.dispose();
+  }};
+})"""
+
+
+def _structured_page_field(mode, selector, url, purpose):
+    from .browser_card import PIN_SCRIPT
+    from .browser_code import BrowserCodes
+    from .browser_password import MAX_READ_SELECTOR, READ_CAPTURE, READ_SELECTOR
+
+    if mode == 'read':
+        if len(selector) > MAX_READ_SELECTOR or not READ_SELECTOR.fullmatch(selector):
+            raise AndroidError('unsupported read selector')
+        script, args = READ_CAPTURE, [selector, url, serialize_origin(_origin_of(url))]
+    elif mode == 'sms':
+        script, args = BrowserCodes.pin_script, [selector, 'one-time-code', url, url, *BrowserCodes.pin_extra]
+    else:
+        script, args = PIN_SCRIPT, [selector, purpose, url, url, False, mode == 'identity']
+    call = '(' + script + ')(' + ','.join(map(json.dumps, args)) + ')'
+    return (KEY_PROOF + '(' + call + ',document.querySelector(' + json.dumps(selector) + '),'
+            + json.dumps(mode) + ',' + json.dumps(url) + ')')
+
+
 QUICK_STATE = "document.visibilityState === 'visible' && document.hasFocus()"
 
 
@@ -747,6 +845,30 @@ class ChromeFields:
     page_id: str
     url: str
     objects: list
+    frame_id: str | None = None
+    backend_node: int | None = None
+
+    def check_proof_listeners(self):
+        # A window capture handler registered by the page can run before our
+        # isolated-world listener. Check the page's main world after arming
+        # our listener; any handler registered afterwards runs behind it.
+        obj = self.connection.call('Runtime.evaluate', {'expression': 'this', 'silent': True},
+                                   self.session)['result']['objectId']
+        try:
+            listeners = self.connection.call('DOMDebugger.getEventListeners', {'objectId': obj, 'depth': 1},
+                                             self.session)['listeners']
+            if any(event['useCapture'] and event['type'] in ('keydown', 'keyup') for event in listeners):
+                raise AndroidError('the page handles proof keys before the focused field')
+        finally:
+            self.connection.call('Runtime.releaseObject', {'objectId': obj}, self.session)
+
+    def check_exposed(self):
+        from . import card_hit_test
+        points = self.call(0, 'function() { return this.points(); }')
+        if (not isinstance(points, list) or not 1 <= len(points) <= 48
+                or not all(card_hit_test.hit(self.connection, self.session, point, self.backend_node, self.frame_id)
+                           for point in points)):
+            raise AndroidError('the pinned field is covered or no longer visible')
 
     def call(self, index, declaration, *args, timeout=3):
         result = self.connection.call('Runtime.callFunctionOn', {
@@ -778,8 +900,14 @@ class AndroidPin:
     source: str
     expires_at: float
     # A Chrome page pin holds its DevTools fields (ChromeFields).
+    purpose: str | None = None
     dom: object = None
     used: bool = field(default=False)
+
+    def __getitem__(self, key):
+        if key == 'field':
+            return self.purpose
+        raise KeyError(key)
 
     def close(self):
         self.used = True
@@ -1013,14 +1141,16 @@ class AndroidTargets:
         if context['address_bar'] is None:
             raise AndroidError("Chrome's address bar is not shown; scroll up so it shows, then pin again")
         kinds = {'login': ('username', 'password'), 'username': ('username',), 'password': ('password',),
-                 'totp': ('code',)}[mode]
+                 'totp': ('code',)}.get(mode, (mode,))
         connection = self._cdp(adb)
         fields = []
         try:
             page = self._chrome_page(connection, context)
             for selector, kind in zip(selectors, kinds):
                 result = connection.call('Runtime.evaluate', {
-                    'expression': PAGE_FIELD + '(' + ','.join(json.dumps(v) for v in (selector, page['url'], kind)) + ')',
+                    'expression': (_structured_page_field(mode, selector, page['url'], request.get('purpose'))
+                                   if mode in CHALLENGE_MODES else
+                                   PAGE_FIELD + '(' + ','.join(map(json.dumps, (selector, page['url'], kind))) + ')'),
                     'contextId': page['world']}, page['session'])
                 if 'exceptionDetails' in result or result['result'].get('type') != 'object' or 'objectId' not in result['result']:
                     raise AndroidError(f'page {kind} field refused: it must be unique for its selector, visible and '
@@ -1032,11 +1162,16 @@ class AndroidTargets:
                 'returnByValue': True}, page['session'])
             if focused.get('result', {}).get('value') is not True:
                 raise AndroidError('tap the field first: the pinned field must be the focused one')
+            dom = ChromeFields(connection, page['session'], page['page_id'], page['url'], fields)
+            if mode in CHALLENGE_MODES:
+                from . import card_hit_test
+                dom.frame_id = page['frame_id']
+                dom.backend_node = card_hit_test.retained_node(connection, page['session'], fields[0])
+                dom.check_exposed()
         except Exception:
             connection.close()
             raise
-        dom = ChromeFields(connection, page['session'], page['page_id'], page['url'], fields)
-        return self._store(device, context, [], mode, page['origin'], 'chrome', dom=dom)
+        return self._store(device, context, [], mode, page['origin'], 'chrome', dom=dom, purpose=request.get('purpose'))
 
     # ----- apps ----------------------------------------------------------
 
@@ -1112,12 +1247,19 @@ class AndroidTargets:
                            for f in fields]}
 
     def pin(self, request) -> dict:
-        allowed = {'action', 'device', 'mode', 'field', 'username_field', 'app_site', 'android_protocol'}
+        allowed = {'action', 'device', 'mode', 'field', 'username_field', 'app_site', 'android_protocol', 'purpose'}
         if set(request) - allowed or request.get('android_protocol') != PROTOCOL:
             raise AndroidError('invalid Android pin request')
         mode = request.get('mode')
         if mode not in MODES:
-            raise AndroidError('mode must be login, username, password or totp')
+            raise AndroidError('unsupported Android pin mode')
+        from .cards import FILL_FIELDS as CARD_FIELDS
+        from .identities import FILL_FIELDS as IDENTITY_FIELDS
+        if mode in ('card', 'identity'):
+            if request.get('purpose') not in (CARD_FIELDS if mode == 'card' else IDENTITY_FIELDS):
+                raise AndroidError('select a supported field with --purpose')
+        elif 'purpose' in request:
+            raise AndroidError('--purpose requires card or identity mode')
         if (mode == 'login') != (request.get('username_field') is not None):
             raise AndroidError('--username-field is required in login mode and only there')
         app_site = request.get('app_site')
@@ -1133,6 +1275,8 @@ class AndroidTargets:
         if (context['package'] == GMS_PACKAGE and context['activity'] == GMS_SIGN_IN_ACTIVITY
                 and context['signer_lineage'][0] == GOOGLE_SIGNER and mode != 'username'):
             raise AndroidError(GOOGLE_SECRETS_REFUSAL)
+        if mode == 'read':
+            raise AndroidError('Android read pins require a focused Chrome page field')
         ids = [request.get('username_field'), request.get('field')] if mode == 'login' else [request.get('field')]
         if not all(isinstance(i, str) and NODE_ID.fullmatch(i) for i in ids) or len(set(ids)) != len(ids):
             raise AndroidError('app fields are the field values from android inspect')
@@ -1151,7 +1295,7 @@ class AndroidTargets:
         for f in fields:
             if f['package'] != context['package'] or not f['enabled'] or not f['visible']:
                 raise AndroidError('field is not an enabled, visible field of the focused app')
-        roles = {'login': (False, True), 'username': (False,), 'password': (True,), 'totp': (None,)}[mode]
+        roles = {'login': (False, True), 'username': (False,), 'password': (True,), 'totp': (None,), 'sms': (None,), 'card': (None,), 'identity': (False,)}[mode]
         for f, wants_password in zip(fields, roles):
             if wants_password is not None and f['password'] != wants_password:
                 raise AndroidError('password value needs a password field' if wants_password
@@ -1163,7 +1307,7 @@ class AndroidTargets:
             # The sign-in web view shows no page URL: a work account can move
             # it to another site. Only the one-run sign-in may fill secrets.
             raise AndroidError(GOOGLE_SECRETS_REFUSAL)
-        return self._store(device, context, fields, mode, origin, source)
+        return self._store(device, context, fields, mode, origin, source, purpose=request.get('purpose'))
 
     def google_sign_in(self, request, values: dict, ready: Callable[[], bool], code=None) -> dict:
         """Fill the email, then the password (and a code) on the pages Google's flow shows next.
@@ -1209,10 +1353,10 @@ class AndroidTargets:
             receipt['stopped_at'] = stopped
         return receipt
 
-    def _store(self, device, context, fields, mode, origin, source, *, dom=None) -> dict:
+    def _store(self, device, context, fields, mode, origin, source, *, dom=None, purpose=None) -> dict:
         token = secrets.token_hex(32)
         pin = AndroidPin(token=token, device=device, boot_id=context['boot_id'], context=context, fields=fields,
-                         mode=mode, origin=origin, source=source, expires_at=self.clock() + PIN_TTL, dom=dom)
+                         mode=mode, origin=origin, source=source, expires_at=self.clock() + PIN_TTL, dom=dom, purpose=purpose)
         evicted = []
         with self._lock:
             now = self.clock()
@@ -1294,6 +1438,73 @@ class AndroidTargets:
                 or not all(isinstance(r, dict) and r.get('accepted') is True and r.get('confirmed') is True
                            for r in results)):
             raise DeliveryError(answer.get('delivered') is not False)
+
+    def _verified_field(self, pin, ready, deadline):
+        if pin.used or not ready() or self.clock() >= pin.expires_at:
+            raise TargetError()
+        pin.used = True
+        adb = self.adb_factory(pin.device)
+        dom = pin.dom
+        dom.check_exposed()
+        if dom.call(0, 'function() { return this.prepare(); }') is not True or not ready():
+            raise TargetError()
+        dom.check_proof_listeners()
+        if not ready():
+            raise TargetError()
+        check = ''.join(secrets.choice('abcdefghijkmnpqrstuvwxyz23456789') for _ in range(16))
+        answer = adb.helper({'op': 'type', 'boot_id': pin.boot_id, 'task_id': pin.context['task_id'],
+                             'address_bar': pin.context['address_bar'], 'value': check}, install=False)
+        if answer.get('ok') is not True or answer.get('complete') is not True:
+            raise TargetError()
+        shown = dom.call(0, 'function() { return this.proof(); }')
+        if (not isinstance(shown, str) or not secrets.compare_digest(shown.encode(), check.encode())
+                or self.clock() >= pin.expires_at):
+            raise TargetError()
+        dom.check_exposed()
+        sample = dom.call(0, 'function() { return performance.now(); }')
+        remaining = min(pin.expires_at, deadline) - self.clock()
+        if type(sample) not in (int, float) or remaining <= 0 or not ready():
+            raise TargetError()
+        return dom, sample + remaining * 1000
+
+    def read(self, pin, origins, ready, deadline):
+        if pin.mode != 'read' or pin.origin not in origins or pin.dom is None:
+            raise TargetError()
+        dom, cutoff = self._verified_field(pin, ready, deadline)
+        value = dom.call(0, 'function(deadline) { return this.capture(deadline); }', cutoff)
+        if not isinstance(value, str) or not 0 < len(value) <= 4096:
+            raise TargetError()
+        return value
+
+    def fill_element(self, pin, value, field, ready, deadline, *, notify_page=False):
+        from .browser_card import failure
+        if (pin.mode not in ('card', 'identity', 'sms') or field !=
+                ('one-time-code' if pin.mode == 'sms' else pin.purpose)):
+            return failure(kind=pin.mode)
+        started = False
+        try:
+            if pin.dom is None:
+                if notify_page:
+                    raise TargetError()
+                self.deliver(pin, pin.mode, [value], ready, deadline)
+            else:
+                dom, cutoff = self._verified_field(pin, ready, deadline)
+                started = True
+                result = dom.call(0, 'function(value, notify, deadline) { return this.write(value, notify, deadline); }',
+                                  value, notify_page, cutoff)
+                if result != 'filled':
+                    raise DeliveryError(result != 'refused')
+                dom.check_exposed()
+            key = 'target_delivery' if pin.mode == 'sms' else pin.mode + '_delivery'
+            return dict(ok=True, filled=field, **{key: self.delivery(pin)})
+        except DeliveryError as exc:
+            started = exc.started
+        except Exception:
+            pass
+        if pin.mode == 'sms':
+            from .target import failure as target_failure
+            return target_failure(started)
+        return failure(started, kind=pin.mode)
 
     def _deliver_page(self, pin, values, ready, start_deadline, connected, valid):
         """Prove the DevTools peer is Chrome and the pinned field has focus, then set each value on it."""

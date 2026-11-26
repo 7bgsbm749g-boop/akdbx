@@ -12,6 +12,7 @@ from .cards import FILL_FIELDS
 from .card_notifications import RESULTS
 from . import browser_slots, card_processor, page_url
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
+from .android_route import CHROME_DELIVERY as ANDROID_CHROME_DELIVERY, DELIVERY as ANDROID_DELIVERY
 from .native_fields import DELIVERY as NATIVE_DELIVERY
 
 NOTIFICATIONS = {'subscribe-card-save', 'card-save-subscription-status', 'unsubscribe-card-save'}
@@ -85,7 +86,7 @@ def valid_receipt(command, response, args):
                 and urlsplit(response.get('private_url', '')).path == '/card')
     if command == 'fill-card':
         return (set(response) == {'ok', 'filled', 'card_delivery'}
-                and response.get('card_delivery') in {DELIVERY, EXTENSION_DELIVERY, NATIVE_DELIVERY} and response.get('filled') == args.field)
+                and response.get('card_delivery') in {DELIVERY, EXTENSION_DELIVERY, NATIVE_DELIVERY, ANDROID_DELIVERY, ANDROID_CHROME_DELIVERY} and response.get('filled') == args.field)
     if command == 'pin-card-target':
         expected = EXTENSION_DELIVERY if getattr(args, 'resolved_route', 'cdp') == 'extension' else DELIVERY
         return (set(response) == {'ok', 'target', 'expires_in', 'field', 'card_delivery'}
@@ -143,6 +144,8 @@ def run(args, request):
                            else caps.get('extension_paired') is True)
         if (os.name == 'nt' and args.command in {'pin-card-target', 'fill-card'}
                 and caps.get('card_browser_configured') is False and not extension_ready
+                and not (args.command == 'fill-card' and caps.get('android_devices_configured') is True
+                         and 'card' in caps.get('android_fill_modes', []))
                 and not (args.command == 'fill-card' and type(caps.get('native_field_protocol')) is int
                          and caps['native_field_protocol'] == 1 and caps.get('native_field_supported') is True)):
             # Windows only: refuse before dispatch what this broker cannot deliver.
