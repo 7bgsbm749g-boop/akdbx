@@ -121,7 +121,8 @@ socket, `agentic-kdbx-unlock.sock` beside a legacy `agentic-kdbx.sock`, or
 `--unlock-socket`), which on this route answers only the native
 host's capture request from the same user. It serves no page and cannot
 unlock the vault. Register the native host with that socket on both Linux
-routes; see the skill's private import reference.
+routes. On macOS register the capture socket `~/Library/Application Support/akdbx/run/u`
+for the default broker. See [private import](../skills/akdbx/references/private-import.md).
 
 ## Unlock from another device
 

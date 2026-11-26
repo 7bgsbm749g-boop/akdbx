@@ -69,6 +69,13 @@ jobs:
           with open(os.environ['GITHUB_PATH'], 'a', encoding='utf-8') as stream:
               print(folder, file=stream)
           PY
+      - name: Private QR import from the Firefox toolbar
+        if: runner.os == 'Linux'
+        env:
+          AKDBX_TEST_FIREFOX: ${{ steps.firefox.outputs.firefox-path }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb xdotool
+          python -m pytest -q tests/test_import_extension_linux.py -k firefox --basetemp="$RUNNER_TEMP/if"
       - name: Firefox host, exact documents, iframe fills and navigation refusal
         shell: bash
         env:
@@ -182,6 +189,12 @@ jobs:
           # A disposable synthetic profile only; the runner may not allow Chromium's user-namespace sandbox.
           AKDBX_TEST_BROWSER_NO_SANDBOX: '1'
         run: python -m pytest -q -rs tests/test_extension_browser.py --basetemp="${{ runner.temp }}/akdbx-tests" --junitxml="${{ runner.temp }}/extension-browser.xml"
+      - name: Private QR import from the toolbar in Chrome for Testing
+        env:
+          AKDBX_TEST_EXTENSION_BROWSER: ${{ runner.temp }}/cft/chrome-linux64/chrome
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb xdotool
+          python -m pytest -q tests/test_import_extension_linux.py -k chrome --basetemp="$RUNNER_TEMP/ic"
       - name: TOTP delivery through real extension pins
         env:
           AKDBX_REQUIRE_EXTENSION_BROWSER: '1'

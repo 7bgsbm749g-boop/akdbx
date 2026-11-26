@@ -63,6 +63,10 @@ Firefox 153+ is supported from 0.47.0 with its own native host and extension
 build. See [Firefox setup](firefox.md); its macOS host manifest goes under
 `~/Library/Application Support/Mozilla/NativeMessagingHosts`.
 
+For user-started authenticator QR import, use the separate 1.1.0+ importer.
+The default capture-only socket is `~/Library/Application Support/akdbx/run/u`.
+See [private import](../skills/akdbx/references/private-import.md) for browser builds and registration.
+
 ## Limits
 
 - The broker supports the extension route only. CDP profile options are

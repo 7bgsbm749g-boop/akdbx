@@ -1,5 +1,5 @@
 "use strict";
-// This function runs in Chrome's isolated extension world, not agent evaluation.
+// This function runs in the browser's isolated extension world, not agent evaluation.
 function captureSetup() {
   const found = new Set();
   function add(value) {
@@ -12,6 +12,11 @@ function captureSetup() {
   const elements = Array.from(document.querySelectorAll("canvas,img")).slice(0, 32);
   let remainingPixels = 12 * 1024 * 1024;
   for (const element of elements) {
+    if (element.tagName === "IMG") {
+      const src = new URL(element.currentSrc, location.href);
+      // With CORS an image can be readable even after a cross-origin redirect.
+      if (src.protocol !== "data:" && (src.origin !== location.origin || element.crossOrigin != null)) continue;
+    }
     const width = element.naturalWidth || element.width;
     const height = element.naturalHeight || element.height;
     if (!width || !height || width > 2048 || height > 2048) continue;
@@ -40,6 +45,7 @@ function captureSetup() {
 }
 
 if (typeof document !== "undefined") {
+  const api = globalThis.browser || globalThis.chrome;
   document.getElementById("capture").onclick = async () => {
     const button = document.getElementById("capture");
     const status = document.getElementById("status");
@@ -48,18 +54,18 @@ if (typeof document !== "undefined") {
     try {
       const privateUrl = new URL(destination.value);
       if (privateUrl.protocol !== "https:" || privateUrl.pathname !== "/totp" || !privateUrl.searchParams.get("token")) throw new Error();
-      const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
+      const [tab] = await api.tabs.query({active: true, currentWindow: true});
       if (!tab || !tab.id || new URL(tab.url).protocol !== "https:") throw new Error();
-      const [decoder] = await chrome.scripting.executeScript({target: {tabId: tab.id}, files: ["jsQR.js"]});
-      const [capture] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: captureSetup});
+      const [decoder] = await api.scripting.executeScript({target: {tabId: tab.id}, files: ["jsQR.js"]});
+      const [capture] = await api.scripting.executeScript({target: {tabId: tab.id}, func: captureSetup});
       if (!decoder || !capture || !capture.documentId || decoder.documentId !== capture.documentId || !capture.result || capture.result.ok !== true) throw new Error();
       // Recheck navigation: never label data from a different document as the
       // origin whose page was inspected. Full-document navigation is rejected.
-      const current = await chrome.tabs.get(tab.id);
+      const current = await api.tabs.get(tab.id);
       if (current.url !== tab.url) throw new Error();
-      const [check] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: () => true});
+      const [check] = await api.scripting.executeScript({target: {tabId: tab.id}, func: () => true});
       if (!check || check.documentId !== capture.documentId) throw new Error();
-      const receipt = await chrome.runtime.sendNativeMessage("org.akdbx.private_import", {
+      const receipt = await api.runtime.sendNativeMessage("org.akdbx.private_import", {
         private_url: privateUrl.href, source_url: tab.url, payloads: capture.result.payloads
       });
       capture.result.payloads = [];

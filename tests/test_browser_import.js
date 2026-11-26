@@ -50,6 +50,21 @@ test("capture has no screenshot fallback for a tainted canvas", () => {
   finally { delete global.document; }
 });
 
+test("capture skips a readable cross-origin image and a CORS redirect candidate", () => {
+  global.location = new URL("https://example.test/setup");
+  const images = [
+    {currentSrc: "https://other.test/qr.png"},
+    {currentSrc: "https://example.test/redirect.png", crossOrigin: "anonymous"}
+  ].map(img => ({...img, tagName: "IMG", width: 200, height: 200}));
+  let canvases = 0;
+  global.document = {querySelectorAll: selector => selector === "canvas,img" ? images : [],
+    createElement: () => { canvases++; return {}; }};
+  try {
+    assert.deepEqual(captureSetup(), {ok:false});
+    assert.equal(canvases, 0);
+  } finally { delete global.document; delete global.location; }
+});
+
 function popup({url="https://example.test/setup", changed=false, documentChanged=false, receipt={ok:true,state:"awaiting-private-confirmation"}}={}) {
   const elements = {capture:{disabled:false},status:{textContent:""},destination:{value:"https://private.example:9443/totp?token=synthetic"}};
   const calls = [];

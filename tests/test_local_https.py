@@ -317,3 +317,31 @@ def test_the_identity_page_serves_only_the_public_statement_on_the_checked_host(
         server.shutdown()
         server.server_close()
         broker.unlock_notifications.close()
+
+@pytest.mark.parametrize('browser', ['chrome', 'firefox'])
+def test_import_host_default_registration(tmp_path, browser, monkeypatch):
+    from akdbx import browser_import
+    import subprocess
+    from pathlib import Path
+    root = tmp_path.resolve()
+    monkeypatch.setenv('HOME', str(root))
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(root / '.config'))
+    tool = Path(sys.executable).with_name('akdbx-browser-import')
+    command = [str(tool), 'install-host', '--browser', browser, '--origin', 'https://localhost:9443',
+               '--socket', str(root / 'run' / 'u')]
+    if browser == 'chrome':
+        command += ['--extension-id', 'a' * 32]
+    subprocess.run(command, check=True, capture_output=True)
+    if sys.platform == 'darwin':
+        vendor = 'Google/Chrome' if browser == 'chrome' else 'Mozilla'
+        directory = root / 'Library/Application Support' / vendor / 'NativeMessagingHosts'
+    else:
+        directory = root / ('.config/google-chrome/NativeMessagingHosts' if browser == 'chrome'
+                            else '.mozilla/native-messaging-hosts')
+    spec = json.loads((directory / 'org.akdbx.private_import.json').read_bytes())
+    assert spec['path'] == str(tool)
+    if browser == 'firefox':
+        assert spec['allowed_extensions'] == [browser_import.FIREFOX_ID] and 'allowed_origins' not in spec
+    else:
+        assert spec['allowed_origins'] == ['chrome-extension://' + 'a' * 32 + '/']
+    assert browser_import.load_config(browser_import.config_path(browser))['socket'] == str(root / 'run' / 'u')

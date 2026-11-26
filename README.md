@@ -853,7 +853,7 @@ Version 0.12.0 adds [private QR/Google transfer import and Chrome native capture
 The private setup page can decode QR images on the user's device, review a
 complete Google export batch, and save one explicitly selected account to an
 existing entry. It copies the existing key without removing phone accounts or
-changing website 2FA. An optional Linux Chrome extension sends one selected
+changing website 2FA. The separate importer (1.1.0+) for Chromium and Firefox 153+ on Linux, Windows and macOS sends one selected
 site's setup QR directly to a local native host/broker; private confirmation is
 still required before any save. The agent receives only receipts, never keys,
 codes or QR images. Authy/Microsoft export restrictions are not bypassed.
