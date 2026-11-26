@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 from . import browser_slots, page_url
 from .browser_card import TTL, failure
 from .browser_code import DELIVERY, FIELDS
+from .extension_route import (DELIVERY as EXTENSION_DELIVERY, EXTENSION_VERSION_FORMAT, ROUTES,
+                              valid_extension_version, version_parts)
 from .target import failure as x11_failure
 from .sms import KINDS, MAX_WAIT, MESSAGE_ID, NAME, PROTOCOL, RESULTS, ROUTE_SETUP, TOKEN
 from .target import DELIVERY as WINDOW_DELIVERY
@@ -61,12 +63,16 @@ def add_parsers(commands):
     p.add_argument('--timeout', type=int, default=0,
                    help=f'wait up to this many seconds (0-{MAX_WAIT}) for the first matching text; default 0')
     p = commands.add_parser('pin-code-target', help='pin one focused HTTPS input for a verification code '
-                                                    '(or a webhook URL); cdp route')
+                                                    '(or a webhook URL); cdp or extension route')
     for key in ('page_id', 'frame_id', 'selector'):
         p.add_argument('--' + key.replace('_', '-'), required=True)
     page_url.add(p, 'top-url', required=True, help='exact observed top-level page URL, query and fragment included')
     page_url.add(p, 'frame-url', required=True, help='exact frame URL (the top URL for a main-frame field)')
     p.add_argument('--field', choices=FIELDS, default='one-time-code')
+    p.add_argument('--route', choices=ROUTES,
+                   help="cdp (debugging port) or extension (paired browser extension 0.13.0+; --page-id CHANNEL.TAB "
+                        "and the browser's document id from list-password-frames --route extension); "
+                        "default: the broker's")
     browser_slots.add_argument(p)
     p = commands.add_parser('fill-sms-code', help='fill the code of one received text; returns no code')
     p.add_argument('message', help='message id from sms-wait')
@@ -90,6 +96,23 @@ def add_parsers(commands):
     for name in ('sms-subscription-status', 'unsubscribe-sms'):
         p = commands.add_parser(name, help='inspect/cancel a one-shot SMS subscription')
         p.add_argument('subscription_id')
+
+
+def _extension_code_refusal(caps):
+    """Why this broker or its paired extension cannot take an extension code pin, or None."""
+    minimum = caps.get('extension_code_min_version')
+    if (type(caps.get('extension_code_protocol')) is not int or caps['extension_code_protocol'] != 1
+            or type(caps.get('extension_protocol')) is not int or caps['extension_protocol'] != 1
+            or caps.get('extension_delivery') != EXTENSION_DELIVERY
+            or not isinstance(minimum, str) or not EXTENSION_VERSION_FORMAT.fullmatch(minimum)):
+        return 'broker lacks extension code protocol 1; request not sent'
+    browsers = caps.get('extension_browsers')
+    if not isinstance(browsers, list) or not any(
+            isinstance(b, dict) and b.get('paired') is True and valid_extension_version(b.get('version'))
+            and version_parts(b['version']) >= version_parts(minimum) for b in browsers):
+        return (f'no paired akdbx fill extension {minimum} or newer is connected: rebuild the folder the browser '
+                'loads with `akdbx extension build`, reload it and pair it; request not sent')
+    return None
 
 
 def _token(value):
@@ -155,7 +178,7 @@ def valid_receipt(args, response):
         if args.target is None:
             return set(response) == base | {'private_url'} and _setup_url(response['private_url'])
         return (set(response) == base | {'filled', 'code_delivery'} and response['filled'] == 'webhook-url'
-                and response['code_delivery'] == DELIVERY)
+                and response['code_delivery'] in (DELIVERY, EXTENSION_DELIVERY))
     if args.command == 'sms-test-page':
         return (set(response) == {'ok', 'name', 'private_url'} and response['name'] == args.name
                 and _setup_url(response['private_url']))
@@ -177,11 +200,13 @@ def valid_receipt(args, response):
             and type(r['code_length']) is int and 4 <= r['code_length'] <= 8 and _iso(r['received_at'])
             and type(r['age_seconds']) is int for r in rows))
     if args.command == 'pin-code-target':
+        expected = EXTENSION_DELIVERY if getattr(args, 'resolved_route', 'cdp') == 'extension' else DELIVERY
         return (set(response) == {'ok', 'field', 'target', 'expires_in', 'code_delivery'}
                 and response['field'] == args.field and _token(response['target'])
-                and response['expires_in'] == TTL and response['code_delivery'] == DELIVERY)
+                and response['expires_in'] == TTL and response['code_delivery'] == expected)
     if args.command == 'fill-sms-code':
         return response in (dict(ok=True, filled='one-time-code', code_delivery=DELIVERY),
+                            dict(ok=True, filled='one-time-code', code_delivery=EXTENSION_DELIVERY),
                             dict(ok=True, filled='one-time-code', code_delivery=NATIVE_DELIVERY),
                             dict(ok=True, filled='one-time-code', target_delivery=WINDOW_DELIVERY))
     return False
@@ -220,11 +245,21 @@ def run(args, request):
                 payload['source'] = args.source
             payload['timeout'] = args.timeout
         elif args.command == 'pin-code-target':
-            if caps.get('locked') is False and caps.get('code_browser_configured') is not True:
-                print(json.dumps(dict(ok=False, error='broker has no browser profile for code fills; request not sent')))
+            # A broker without extension code pins takes them only over CDP and refuses a route field.
+            routed = type(caps.get('extension_code_protocol')) is int and caps['extension_code_protocol'] == 1
+            args.resolved_route = args.route or (caps.get('default_fill_route') if routed else None) or 'cdp'
+            refusal = None
+            if args.resolved_route == 'extension':
+                refusal = _extension_code_refusal(caps)
+            elif caps.get('locked') is False and caps.get('code_browser_configured') is not True:
+                refusal = 'broker has no browser profile for code fills; request not sent'
+            if refusal is not None:
+                print(json.dumps(dict(ok=False, error=refusal)))
                 return 1
             payload.update({key: getattr(args, key) for key in PIN_ARGS})
-            slot, refusal = browser_slots.request_field(args, caps, 'cdp')
+            if args.route is not None and routed:
+                payload['route'] = args.route
+            slot, refusal = browser_slots.request_field(args, caps, args.resolved_route)
             if refusal is not None:
                 print(json.dumps(dict(ok=False, error=refusal)))
                 return 1

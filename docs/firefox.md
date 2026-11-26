@@ -25,8 +25,10 @@ Use the broker's configured private-page origin. Open
 `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**, and
 select the built folder's `manifest.json`. Open the akdbx toolbar popup and
 pair it on the broker's private page. Agents then use `--route extension`.
-Logins, cards, identity fields, TOTP delivery and shown-once secret capture use
-the existing extension protocol and its field and origin restrictions.
+Logins, cards, identity fields, TOTP delivery, SMS verification codes (fill
+extension 0.13.0+, `pin-code-target --route extension`) and shown-once secret
+capture use the existing extension protocol and its field and origin
+restrictions.
 
 A temporary add-on is removed when Firefox exits. Load it again at the next
 start, then pair again. Permanent installation in standard Firefox requires a
@@ -76,7 +78,7 @@ roots when it walks the field’s ancestors.
 
 ## Enhanced security
 
-With **Enhanced security** on, card, address and read pins require a pixel check
+With **Enhanced security** on, card, address, code and read pins require a pixel check
 at the pin and again at delivery. Firefox 161 does not expose
 `IntersectionObserverEntry.isVisible`. The extension therefore cannot repeat
 a whole-element occlusion check in the JavaScript task that writes or reads the
@@ -106,7 +108,8 @@ over it. akdbx therefore uses the paired extension for Firefox. See the
 `tests/test_firefox_browser.py` loads the actual built add-on into a fresh
 Firefox profile and connects through a unique native host to a synthetic
 broker. It exercises main and child documents, a two-field child login, TOTP,
-generated-password delivery, merchant card fields, and Adyen, Computop and both
+SMS codes in the main and a same-origin child document (with replay, a hidden
+field, a wrong frame URL and a reloaded page refused), generated-password delivery, merchant card fields, and Adyen, Computop and both
 Stripe frame types. A loopback TLS fixture serves all processor pages. The suite
 also checks identity notification events, the toolbar popup's trusted click,
 and the pixel check on an uncovered and a covered field. For `capture-secret`

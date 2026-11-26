@@ -47,9 +47,9 @@ On macOS it defaults to `"extension"`, the only supported route.
 Each item also has the extension version that browser loaded and how it
 compares with this broker (see [Extension version](#extension-version)).
 While a browser is not paired, `extension_pairing` gives its code and private
-pairing link. The existing `password_fill_delivery`, `card_delivery` and
-`identity_delivery` values still describe the CDP route; receipts of this
-route carry `"extension-dom-v1"` in the same keys.
+pairing link. The existing `password_fill_delivery`, `card_delivery`,
+`identity_delivery` and `code_delivery` values still describe the CDP route;
+receipts of this route carry `"extension-dom-v1"` in the same keys.
 
 ## Extension version
 
@@ -298,6 +298,19 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   fill extension 0.2.0 or newer, the classic Card Element frame. Against a
   broker without `stripe_card_element: true`, give the exact Stripe
   `--frame-url`; without it the CLI refuses a `stripe` pin before it sends it.
+- SMS codes (fill extension 0.13.0+): `pin-code-target --route extension`, then
+  `fill-sms-code MESSAGE_ID --target PIN`. Require `extension_code_protocol: 1`
+  and a paired browser in `extension_browsers` whose version is at least
+  `extension_code_min_version`; the CLI refuses before it sends otherwise. The
+  pin takes the CDP code pin's options and its DOM checks: one focused,
+  visible, enabled `text`, `tel`, `number` or `password` input for
+  `--field one-time-code`, or a `text` or `url` input for `--field webhook-url`
+  (`sms-add-source NAME --kind KIND --target PIN`). `--frame-url` is required
+  and must be the document's exact URL; every document from the top page to
+  the field must have the top page's exact origin. The code goes sealed to the
+  pinned element, once; it never reaches the agent or the keyboard. Receipts
+  carry `code_delivery: "extension-dom-v1"`. On macOS this is the only page
+  route for SMS codes. See [SMS](sms.md).
 - Identities: `pin-identity-target --route extension`, same rules as the CDP
   route; only frames of the top origin.
 - Secret capture (0.32.0+, fill extension 0.4.0): `pin-password-target --mode read
@@ -402,8 +415,8 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   `elementFromPoint` in the isolated world, which skips click-through covers
   (`pointer-events: none`, `inert` content, a popover's `::backdrop`). For card
   and address fields the CDP route also runs `DOM.getNodeForLocation`, which
-  sees them; use the CDP route where a page may cover such a field, unless the
-  user turned on Enhanced security. Read pins use the same `elementFromPoint`
+  sees them (also for code fields); use the CDP route where a page may cover
+  such a field, unless the user turned on Enhanced security. Read pins use the same `elementFromPoint`
   check on both routes, and password pins have no hit test on either.
 - Covers (Enhanced security: experimental, off by default; 0.34.0+, fill
   extension 0.5.0). The user turns it on in the extension's settings page (the
@@ -412,12 +425,12 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
   and stores the setting only when the browser grants it. Turning it off keeps
   that access: Chrome's `permissions.remove` of `<all_urls>` also withholds the
   required `https://*/*` access. On, but without that access (not granted, or
-  removed later on the browser's extension page), every card, address and read
-  pin refuses; the settings page shows a warning. The broker does not see the
+  removed later on the browser's extension page), every card, address, code and
+  read pin refuses; the settings page shows a warning. The broker does not see the
   setting: a refused pin looks like any other refused pin, so when the pins of
   an ordinary page keep refusing on the extension route, the user can turn the
   setting off or the agent can use the CDP route. With the setting on, a card,
-  address or read pin needs proof that nothing is
+  address, code (fill extension 0.13.0+) or read pin needs proof that nothing is
   painted over the field or the secret. `elementFromPoint` cannot give it (it
   skips click-through and inert covers), and no list of selectors names every
   cover. The extension asks the browser instead, in two steps, at the pin and
@@ -436,7 +449,7 @@ type, autocomplete token, unique name, merchant iframe owner and hit test.
      "not visible". Opacity below 1, a filter or a distorting transform on the
      element's chain give the same answer. The fill or read runs in the task
      that delivers a fresh "visible" answer. The test needs a rendered tab.
-  2. The pixel challenge, for every card, address and read check. Step 1 does
+  2. The pixel challenge, for every card, address, code and read check. Step 1 does
      not count paint that the element's own ancestors draw over it (a
      negative-offset outline, also around a processor iframe), and it is
      all-or-nothing for the whole box: a floating label, an icon in the field,
@@ -648,5 +661,6 @@ guidance names them. Without such tools, use the user's everyday browser.
 | `version_status: "stale"` in `extension_browsers`, or a pin or frame list fails with `…older akdbx extension service worker…` | The browser runs an old worker beside newer files ([stale service worker](#stale-service-worker-0352)). Restart the browser, or reload akdbx in `chrome://extensions`, then pair again. |
 | `version_status: "mismatch"`, or a pin or frame list fails with `…another build than this broker's…` | The loaded folder holds another build than this broker's. Run `akdbx --unlock-origin ORIGIN extension build --output FOLDER` with the broker's akdbx, where ORIGIN is the broker's private-page origin (the origin of its unlock link; the build replaces the saved broker trust), or restart the broker if akdbx was updated in place. Then reload akdbx in `chrome://extensions` and pair again. |
 | `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Ask the user to rebuild into the same folder and reload it in `chrome://extensions`. |
+| `pin-code-target --route extension` refuses with `no paired akdbx fill extension 0.13.0 or newer is connected` | No paired browser runs fill extension 0.13.0 or newer (`extension_code_min_version`). Rebuild the folder the browser loads with `akdbx extension build`, reload it and pair it; or pair the browser first if `extension_paired` is false. |
 | Right after an update, the popup says the broker is not reachable and `status` shows `extension_connected: false` | The broker, or the Python that the host launcher runs, is older than the extension and refuses its hello: akdbx 0.21.2 or earlier for any versioned extension, akdbx 0.35.1 or earlier for an extension built by 0.35.2 or later (four-part version). Restart the broker on the new version. If the launcher points to another Python, run `akdbx extension install --browser NAME` again from the updated installation. |
 | The popup says the broker is not reachable and the broker is running; `extension info` shows `launcher_state: "stale"`, or the launcher fails with `No module named 'akdbx.extension_host'` | The launcher runs another akdbx than the CLI: an older release folder, or (before 0.31.1) the interpreter's own akdbx. Run `akdbx extension refresh` with the current CLI; with an akdbx before 0.31.1 on Linux, update first. Then reopen the popup. |

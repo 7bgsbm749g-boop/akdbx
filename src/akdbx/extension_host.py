@@ -536,13 +536,14 @@ def uninstall(browser, *, manifest_dir=None):
 
 def _content_script():
     """Fill the content script with the CDP route's own DOM checks: one source for both routes."""
-    from . import browser_card, browser_password, card_processor, password_frames
+    from . import browser_card, browser_code, browser_password, card_processor, password_frames
     text = files('akdbx').joinpath('fill_extension', 'content.js').read_text(encoding='utf-8')
     replacements = {
         '__PASSWORD_CAPTURE__': browser_password.CAPTURE,
         '__TOTP_FIELD__': browser_password.TOTP_FIELD,
         '__PASSWORD_FILL__': browser_password.FILL,
         '__CARD_PIN_SCRIPT__': browser_card.PIN_SCRIPT,
+        '__CODE_PIN_SCRIPT__': browser_code.CODE_PIN_SCRIPT,
         '__CARD_GUARD__': card_processor.GUARD,
         '__STRIPE_ELEMENTS__': card_processor.STRIPE_ELEMENTS_JSON,
         '__PASSWORD_COUNT__': password_frames.COUNT,

@@ -99,6 +99,12 @@ sleep and wake in the GUI login session. Losing a listening helper locks the vau
 - One-shot unlock webhooks use `unlock_notifications_protocol: 1`. SMS ingest
   uses `sms_protocol: 1`; the phone or SMS provider needs access to the
   configured HTTPS origin. See [SMS sources](../skills/akdbx/references/sms.md).
+- SMS codes fill web pages through the paired extension (fill extension
+  0.13.0+, `extension_code_protocol: 1`): `pin-code-target --route extension`,
+  then `fill-sms-code`. Status reports `sms_fill_routes: ["extension"]` and
+  `code_browser_configured: false`. The extension applies the CDP code pin's
+  field, focus, origin, single-use and expiry checks, and the code never
+  reaches the agent. CI proves this route on macOS in Firefox.
 - For a Chromium QR capture host, select `--capture-host --capture-browser chrome`
   and supply `--capture-extension-id ID` after loading the capture extension.
   Setup runs the importer's `install-host` with the default capture socket and
@@ -119,8 +125,9 @@ sleep and wake in the GUI login session. Losing a listening helper locks the vau
   no sleep-delay inhibitor. CI tests delivery of the lock notification in that
   session; a physical sleep/wake cycle and a live tailnet are outside this test.
 - Safari needs a signed Apple browser wrapper. The separate QR capture
-  extension uses Chromium native messaging. SMS ingest is available, but
-  this version's SMS fill requires a CDP or native window target.
+  extension uses Chromium native messaging. SMS codes fill only web pages
+  (through the paired extension); a native app or window has no SMS route
+  on macOS.
 - The managed Android emulator requires a Linux host with KVM. The Linux
   privileged secret-sink helper requires Linux peer credentials and systemd.
 - iOS and iPadOS cannot run this Python broker. This is macOS support only.

@@ -81,7 +81,7 @@ def target_capabilities():
                 android_chrome_delivery='android-chrome-verified-dom-v1',
                 android_fill_modes=['login', 'username', 'password', 'totp'], android_devices_configured=False,
                 sms_protocol=1, sms_notifications_supported=True, sms_notifications_protocol=1, sms_source_kinds=['shortcut', 'twilio', 'webhook'], sms_sources_configured=0,
-                sms_fill_routes=['native', 'window'], sms_message_ttl=600, code_protocol=1, code_browser_configured=False, code_delivery='cdp-code-element-v1', **NativeFields().capabilities())
+                sms_fill_routes=['extension', 'native', 'window'], sms_message_ttl=600, code_protocol=1, code_browser_configured=False, code_delivery='cdp-code-element-v1', **NativeFields().capabilities())
 
 
 def x11_target_request(broker):
@@ -840,6 +840,7 @@ def expected_extension_capabilities():
     return {"extension_protocol": 1, "extension_delivery": "extension-dom-v1",
             "extension_totp_protocol": 1, "extension_totp_min_version": "0.10.0",
             "extension_popup_totp_protocol": 1, "extension_popup_totp_min_version": "0.12.0",
+            "extension_code_protocol": 1, "extension_code_min_version": "0.13.0",
             "extension_capture_protocol": 1, "extension_capture_delivery": "extension-dom-read-v1",
             "extension_id": "jjoamaejjkldcjcpgncoomoaagdfimhg", "fill_routes": ["cdp", "extension"],
             "default_fill_route": "cdp", "extension_connected": False, "extension_paired": False,

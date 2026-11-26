@@ -40,7 +40,8 @@ Security model:
   same frame policies as the CDP route: logins need the exact credential
   origin in a same-site frame chain; cards go only to the merchant's own
   frames or to the supported processor frames (Adyen, Computop, Stripe) below
-  same-origin merchant frames; identities go only to frames of the top origin.
+  same-origin merchant frames; identities and verification codes go only to
+  frames of the top origin.
   The user-click popup never serves Stripe's classic Card Element frame; only
   the agent pin route fills it.
 * Values exist only in the broker, the relay, the extension's memory and the
@@ -97,6 +98,8 @@ CAPTURE_DELIVERY = 'extension-dom-read-v1'
 # The first fill extension version that reads secrets and holds child-frame owners.
 CAPTURE_VERSION = (0, 4, 0)
 TOTP_VERSION = (0, 10, 0)
+# Verification-code pins (pin-code-target --route extension) for SMS codes and webhook URLs.
+CODE_VERSION = (0, 13, 0)
 # Identity pins with an explicit field purpose (pin-identity-target --field-purpose).
 FIELD_PURPOSE_VERSION = (0, 7, 0)
 ROUTES = ('cdp', 'extension')
@@ -561,6 +564,7 @@ class ExtensionHub:
         state = dict(extension_protocol=PROTOCOL, extension_delivery=DELIVERY, extension_id=EXTENSION_ID,
                      extension_totp_protocol=1, extension_totp_min_version='0.10.0',
                      extension_popup_totp_protocol=1, extension_popup_totp_min_version='0.12.0',
+                     extension_code_protocol=1, extension_code_min_version='.'.join(map(str, CODE_VERSION)),
                      extension_capture_protocol=CAPTURE_PROTOCOL, extension_capture_delivery=CAPTURE_DELIVERY,
                      fill_routes=['extension'] if sys.platform == 'darwin' else list(ROUTES),
                      default_fill_route=self.default_route,
@@ -1243,8 +1247,15 @@ class ExtensionHub:
         return self._frame_pin('read', 'read', request, spec, None, hardened=True)
 
     def pin_element(self, kind, request):
-        """Card or identity field pin; same request shape as the CDP route plus ``route``."""
+        """Card, identity or code field pin; same request shape as the CDP route plus ``route``.
+
+        A code pin (``pin-code-target``: an SMS code or a webhook URL) needs the
+        exact frame URL, as on the CDP route, and fill extension 0.13.0 or newer.
+        It applies the CDP code pin's own DOM checks, and every document from the
+        top page to the field must have the top page's exact origin.
+        """
         from . import card_processor
+        from .browser_code import FIELDS as CODE_FIELDS
         from .cards import FILL_FIELDS as CARD_FIELDS
         from .identities import FILL_FIELDS as IDENTITY_FIELDS
         protocol = kind + '_protocol'
@@ -1253,7 +1264,7 @@ class ExtensionHub:
         processor = request.get('processor')
         if kind == 'card' and 'processor' in request:
             allowed |= {'processor', 'processor_protocol'}
-        fields = CARD_FIELDS if kind == 'card' else IDENTITY_FIELDS
+        fields = {'card': CARD_FIELDS, 'identity': IDENTITY_FIELDS, 'code': CODE_FIELDS}[kind]
         from .browser_card import CardTargetError, field_purpose
         try:
             purpose, allow_off = field_purpose(kind, request)
@@ -1263,7 +1274,8 @@ class ExtensionHub:
         if (set(request) != allowed or request.get('route') != 'extension'
                 or type(request.get(protocol)) is not int or request[protocol] != 1
                 or request.get('field') not in fields or not _text(request.get('selector'))
-                or ('frame_url' in request and not _text(request['frame_url']))):
+                or ('frame_url' in request and not _text(request['frame_url']))
+                or (kind == 'code' and 'frame_url' not in request)):
             raise ExtensionError()
         if processor is not None and (processor not in card_processor.PROCESSORS
                                       or type(request.get('processor_protocol')) is not int
@@ -1274,8 +1286,10 @@ class ExtensionHub:
         if purpose is not False:
             # Fill extension 0.7.0 and newer apply the field purpose; an older one ignores it.
             spec.update(field_purpose=purpose, allow_autocomplete_off=allow_off)
+        # An extension older than 0.13.0 has no code pin; it is never asked for one.
+        needs = CODE_VERSION if kind == 'code' else FIELD_PURPOSE_VERSION if purpose is not False else None
         channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, request.get('frame_url'), hardened=False,
-                                                            needs=FIELD_PURPOSE_VERSION if purpose is not False else None)
+                                                            needs=needs)
         try:
             if kind == 'card':
                 card_route(chain, processor)
@@ -1283,7 +1297,7 @@ class ExtensionHub:
                                                                                    request['field']):
                     raise ExtensionError()
             else:
-                identity_route(chain)
+                identity_route(chain)  # Identities and codes: only frames of the top origin.
         except ExtensionError:
             channel.notify('release', tab_id=tab_id, document_id=request['frame_id'], pin_id=pin_id, chain=chain)
             raise

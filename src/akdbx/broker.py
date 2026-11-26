@@ -159,8 +159,9 @@ class Broker:
         self.identities = IdentityManager(self)
         # Phone verification texts: durable sources, codes in memory only.
         self.sms = sms_module.SmsInbox(sms_sources_path, clock=clock, wall_clock=wall_clock)
-        self.code_targets = BrowserCodes(password_browser_profile or card_browser_profile, clock=clock,
-                                         slots=self.browser_slots)
+        # Code pins take the CDP route or a paired fill extension (0.13.0+), as cards do.
+        self.code_targets = RoutedTargets(BrowserCodes(password_browser_profile or card_browser_profile, clock=clock,
+                                                       slots=self.browser_slots), self.extension, 'code')
         self.merges = create_merge_manager(self)
         self.secrets = SecretCaptures(self, secret_sinks_path)
         self.totp_captures = TotpCaptures(self)
