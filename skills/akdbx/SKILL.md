@@ -161,7 +161,10 @@ opens only on the broker's computer. A link on a Tailscale origin opens on any
 device in the tailnet. A link on a relay origin (`https://<id>.akdbx.link`; `:8443`
 before the 0.28.0 move) opens on any device; handle it exactly like any other unlock link: give it
 only to the user, privately. This is the same on Linux, macOS and Windows; the
-repository's `docs/private-pages.md` describes the setups.
+repository's `docs/private-pages.md` describes the setups. A vault with a key
+file or a YubiKey challenge-response unlocks on the same page: the user
+chooses the key file or enters the key's response there. Never ask for a key
+file, its path or a response in chat.
 
 Then let an event resume the task instead of waiting or asking the user to say
 "unlocked". Register a one-shot unlock webhook with

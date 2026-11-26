@@ -502,7 +502,7 @@ The `lock_event_sources` field in `akdbx status` shows which listeners are ready
 events without a confirmed sleep delay.
 For a locker that reports neither event, configure its lock hook to run `akdbx lock`.
 
-Key-file databases are supported with `serve DB --keyfile KEY`. Ctrl-C stops the broker and removes its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
+Key-file databases are supported with `serve DB --keyfile KEY`, or without it by choosing the key file on the private unlock page, which keeps it in memory only. A KeePassXC YubiKey challenge-response (KDBX 4, Argon2) is entered on the same page as the response to a `ykman otp calculate` command: see [Key file and hardware key](docs/private-pages.md#key-file-and-hardware-key). Ctrl-C stops the broker and removes its socket. Explicit password writes and merges can modify the database; ordinary unlock, search and fill remain read-only.
 
 ## Unlock from the internet
 

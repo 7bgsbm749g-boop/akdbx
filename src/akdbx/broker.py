@@ -925,12 +925,15 @@ def is_wrong_credentials(exc: BaseException) -> bool:
     return isinstance(exc, CredentialsError)
 
 
-def open_vault_with_password(database: Path, password: str, keyfile: Path | None = None):
+def open_vault_with_password(database: Path, password: str, keyfile: Path | None = None, keys=None):
+    """Open the vault; ``keys`` adds the page's key file and hardware key response."""
     if os.name == 'nt':
         from .windows_store import WindowsVaultStore as VaultStore
     else:
         from .persistence import VaultStore
-    return VaultStore(database).open(password, keyfile)
+    if keys is None:
+        return VaultStore(database).open(password, keyfile)
+    return VaultStore(database).open(password, keyfile, keys)
 
 
 def _serve_connection(connection: socket.socket, broker: Broker) -> None:

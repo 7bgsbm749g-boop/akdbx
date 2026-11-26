@@ -2,7 +2,6 @@
 import copy
 from contextlib import contextmanager
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
@@ -338,15 +337,24 @@ class WindowsVaultStore:
                     except Exception:
                         self.recovery_required = True
 
-    def open(self, password, keyfile=None):
+    def open(self, password, keyfile=None, keys=None):
+        # ``keys`` (an UnlockKeys): a key file uploaded on the page and a
+        # hardware key response; they stay in memory only.
+        from .unlock_keys import check_challenge, key_material as unlock_material
         with security.trusted_directory(self.path.parent):
             encrypted, snapshot = self._read()
-            key_material = None
+            key = None
             if keyfile is not None:
                 self.keyfile_path = Path(os.path.abspath(Path(keyfile).expanduser()))
                 key, _ = security.read_private(self.keyfile_path, limit=1024 * 1024)
                 self.keyfile_digest = digest(key)
-                key_material = io.BytesIO(key)
+            if keys is not None:
+                if keys.keyfile is not None:
+                    if key is not None:
+                        raise SaveError('the broker already has a key file')
+                    key = keys.keyfile
+                check_challenge(encrypted, keys)
+            key_material = unlock_material(key, keys.response if keys is not None else None)
             vault = open_encrypted(encrypted, password, key_material)
             from .versions import archives
             self.verified_capsules = archives(vault)

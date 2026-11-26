@@ -19,6 +19,8 @@ Unix-socket route for existing deployments.
 
 Every route has the same limit on failed attempts: see
 [Failed attempts block the link](#failed-attempts-block-the-link).
+Every route also takes a key file and a hardware key on the page: see
+[Key file and hardware key](#key-file-and-hardware-key).
 
 `akdbx setup` (0.27.0+) sets up the loopback page and one access route in
 the order of [Unlock from the internet](#unlock-from-the-internet). It checks
@@ -525,6 +527,45 @@ The first trusted origin comes only from a local `akdbx extension build`, and
 only a local build (a new build ID in `config.js`) discards the stored trust:
 the native host cannot write `config.js`.
 
+## Key file and hardware key
+
+The unlock page (and the extension pairing page while the vault is locked)
+has a **Key file or hardware key** section under the master password. The
+master password is always required.
+
+- **Key file.** Choose the vault's key file. The browser sends it in the
+  same form as the password, over the page's HTTPS connection. On the relay
+  route, TLS ends at the broker, so the relay sees only encrypted bytes. The
+  broker keeps the file in memory for later saves and never writes it to
+  disk. The field is not shown when the broker was started with
+  `--keyfile`: that key file stays on the broker's computer, and an uploaded
+  one is refused. Upload limit: 1 MiB.
+- **Hardware key.** KeePassXC's YubiKey HMAC-SHA1 challenge-response, for a
+  KDBX 4 vault with an Argon2 KDF. A browser cannot reach that function of
+  the key, so the page shows the vault's challenge as a command:
+
+  ```sh
+  ykman otp calculate 2 <128 hex digits>
+  ```
+
+  Run it on any computer with the key (change `2` to `1` for slot 1), touch
+  the key, and enter the 40-character response on the page. The command
+  sends the same 64 bytes that KeePassXC sends, so both fixed and variable
+  input slots answer as they do in KeePassXC. The response is a key secret:
+  treat it like the password. The broker keeps it in memory only.
+
+A vault unlocked with a hardware key keeps its KDF seed (the challenge) when
+the broker saves it; the master seed and IVs still change on every save.
+Otherwise every save would need a new touch of the key, and the broker holds
+only the response. KeePassXC then opens the saved vault with the same key. A
+merge source must open with the same keys, so merges from a vault with
+another challenge are refused.
+
+If the vault file changed after the page opened (for example a save in
+KeePassXC made a new challenge), the page shows the new command and the
+attempt does not count. A KDBX 3 vault or an AES-KDF vault shows no hardware
+key field: KeePassXC mixes the response into those in another way.
+
 ## Failed attempts block the link
 
 Each unlock link allows three failed master-password attempts in total. Time
@@ -535,9 +576,10 @@ your agent for a new one. Failed attempts on the extension pairing page count
 toward the same three, and a block or a new link invalidates every pairing
 link made before it. Parallel requests cannot exceed the limit: the broker
 reserves each attempt before it starts the key derivation. Only a wrong
-password or key file counts: an empty or malformed form gets `400`, and a
-vault file or store error gets a "could not open the vault" page; neither
-uses an attempt.
+password, key file or hardware key response counts: an empty or malformed
+form gets `400`, a response to an old challenge gets `409` with the new
+command, and a vault file or store error gets a "could not open the vault"
+page; none of these uses an attempt.
 
 The block is saved in a private file, so a broker restart, a logout or a
 reboot keeps it. On Linux the file is in
