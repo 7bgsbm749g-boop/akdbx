@@ -323,6 +323,22 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
   ([automatic enrollment](totp-enrollment.md)). Fill extension 0.6.0 also reads
   a setup key printed in space-separated Base32 groups; 0.5.0 and older read
   only a key printed as one token.
+- A setup QR code (`pin-password-target --mode read --qr --route extension`,
+  then `capture-totp --qr`; broker `totp_qr_capture_protocol: 1`) needs fill
+  extension 0.12.0 or newer (`extension_qr_capture_min_version`) in Helium,
+  Chrome or Edge. For that pin the service worker injects the bundled jsQR
+  (`jsQR.js`, shipped with its licence) into the page's isolated world, and
+  the content script decodes the pinned `<img>`, `<canvas>` or inline `<svg>`
+  there with the CDP route's checks. An image must come from the page's own
+  origin or a `data:` URL: a content script may read some cross-origin pixels
+  that a tainted canvas would hide from the page, so the origin is checked
+  itself. The decoded value goes to the broker sealed, like a text read; no
+  pixel leaves the page. With enhanced security, the pixel challenge hides the
+  code's own pixels for a moment (the picture moves out of its clipped box, an
+  `<svg>`'s shapes are hidden), so the screenshot must show the challenge
+  colour on a grid of points over the whole code. An older extension, and
+  Firefox (no real-Firefox proof of this path yet), refuse a QR read pin with
+  `target unavailable`; text reads are unchanged.
 - Identity pins with `--field-purpose` (0.35.1) need fill extension 0.7.0 or
   newer. An older extension gets no such pin: rebuild and reload it
   (`version_status` in `extension_browsers`).

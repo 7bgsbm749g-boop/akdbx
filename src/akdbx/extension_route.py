@@ -97,6 +97,8 @@ CAPTURE_DELIVERY = 'extension-dom-read-v1'
 # The first fill extension version that reads secrets and holds child-frame owners.
 CAPTURE_VERSION = (0, 4, 0)
 TOTP_VERSION = (0, 10, 0)
+# QR read pins (capture-totp --qr): the extension decodes the pinned image itself.
+QR_VERSION = (0, 12, 0)
 # Identity pins with an explicit field purpose (pin-identity-target --field-purpose).
 FIELD_PURPOSE_VERSION = (0, 7, 0)
 ROUTES = ('cdp', 'extension')
@@ -500,6 +502,11 @@ class ExtensionPin:
     spec: dict | None = None
     closed: bool = dataclass_field(default=False)
 
+    @property
+    def read_kind(self):
+        """Read pins only: 'text', or 'qr' for a decoded QR code (capture-totp only)."""
+        return (self.spec or {}).get('read_kind', 'text')
+
     def __getitem__(self, key):
         # The identity manager reads a pin's field the way it reads a CDP pin.
         if key == 'field':
@@ -560,6 +567,7 @@ class ExtensionHub:
             approved = set(self.approved)
         state = dict(extension_protocol=PROTOCOL, extension_delivery=DELIVERY, extension_id=EXTENSION_ID,
                      extension_totp_protocol=1, extension_totp_min_version='0.10.0',
+                     extension_qr_capture_min_version='.'.join(map(str, QR_VERSION)),
                      extension_capture_protocol=CAPTURE_PROTOCOL, extension_capture_delivery=CAPTURE_DELIVERY,
                      fill_routes=['extension'] if sys.platform == 'darwin' else list(ROUTES),
                      default_fill_route=self.default_route,
@@ -1095,13 +1103,14 @@ class ExtensionHub:
                     truncated=len(records) > MAX_FRAMES)
 
     # ----- agent route: pins and delivery ---------------------------------
-    def _pin(self, kind, request, spec, frame_url=None, *, hardened=True, needs=None):
+    def _pin(self, kind, request, spec, frame_url=None, *, hardened=True, needs=None, browsers=BROWSERS):
         """Ask the browser to retain one element; return the browser facts and pin id.
 
         ``hardened``: the pin needs fill extension 0.4.0 or newer, which reads
         secrets and holds child-frame owners. An older extension would pin a
         child-frame login without the owner check, so it is refused.
         ``needs``: the lowest fill extension version that applies this spec.
+        ``browsers``: the browser kinds where this spec is proven (QR read pins: Chromium only).
         """
         self.prune()
         channels, tab_id = self._channels_for(request)
@@ -1111,6 +1120,8 @@ class ExtensionHub:
         if hardened and not channels[0].supports_capture():
             raise ExtensionError()
         if needs is not None and not channels[0].supports(needs):
+            raise ExtensionError()
+        if channels[0].browser not in browsers:
             raise ExtensionError()
         with self._lock:
             if self._closed or len(self.pins) >= MAX_PINS:
@@ -1178,8 +1189,9 @@ class ExtensionHub:
         return self._frame_pin('password', mode, request, spec, frame_origin, hardened=frame_origin is not None,
                                needs=TOTP_VERSION if mode == 'totp' else None)
 
-    def _frame_pin(self, kind, mode, request, spec, frame_origin, *, hardened, needs=None):
-        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, hardened=hardened, needs=needs)
+    def _frame_pin(self, kind, mode, request, spec, frame_origin, *, hardened, needs=None, browsers=BROWSERS):
+        channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, hardened=hardened, needs=needs,
+                                                            browsers=browsers)
         try:
             if frame_origin is None:
                 # The main frame of the exact top URL, as on the CDP route.
@@ -1204,11 +1216,17 @@ class ExtensionHub:
         need its position checked through every parent document, which the
         extension cannot map exactly for every iframe (padding, transforms), so
         a frame route (``frame_origin``) is refused. The CDP route reads there.
+        ``read_kind: "qr"`` (capture-totp only) decodes a QR code in the pinned
+        image, canvas or inline SVG; it needs fill extension 0.12.0 or newer in a
+        Chromium browser. Firefox refuses it: its content scripts read some
+        cross-origin pixels, and this path has no real-Firefox proof yet.
         """
         from . import browser_password
         required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode',
                     'capture_protocol', 'route'}
-        if (set(request) != required or request.get('route') != 'extension' or request.get('mode') != 'read'
+        qr = 'read_kind' in request
+        if (set(request) != required | ({'read_kind'} if qr else set()) or qr and request['read_kind'] != 'qr'
+                or request.get('route') != 'extension' or request.get('mode') != 'read'
                 or type(request.get('password_protocol')) is not int or request['password_protocol'] != 1
                 or type(request.get('capture_protocol')) is not int or request['capture_protocol'] != CAPTURE_PROTOCOL):
             raise ExtensionError()
@@ -1219,7 +1237,10 @@ class ExtensionHub:
             raise ExtensionError()
         _origin(request['top_url'])
         spec = dict(selector=selector, frame_origin=None)
-        return self._frame_pin('read', 'read', request, spec, None, hardened=True)
+        if qr:
+            spec['read_kind'] = 'qr'  # A text pin's spec stays as before, for older extensions.
+        return self._frame_pin('read', 'read', request, spec, None, hardened=True, needs=QR_VERSION if qr else None,
+                               browsers=CHROMIUM_BROWSERS if qr else BROWSERS)
 
     def pin_element(self, kind, request):
         """Card or identity field pin; same request shape as the CDP route plus ``route``."""

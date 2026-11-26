@@ -209,6 +209,21 @@ jobs:
           # The pixel challenge compares exact colours; tab screenshots must stay sRGB on a colour-managed display.
           AKDBX_TEST_BROWSER_EXTRA_ARGS: '--force-color-profile=display-p3-d65'
         run: python -m pytest -q -rs tests/test_extension_browser.py -k "cover or reads or fills or wrapped" --basetemp="${{ runner.temp }}/akdbx-tests-p3"
+      - name: Authenticator QR capture on the CDP and extension routes
+        env:
+          AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
+          AKDBX_REQUIRE_QR_CHROMIUM: '1'
+          AKDBX_TEST_EXTENSION_BROWSER: ${{ runner.temp }}/cft/chrome-linux64/chrome
+          AKDBX_TEST_BROWSER: ${{ runner.temp }}/cft/chrome-linux64/chrome
+          AKDBX_TEST_BROWSER_NO_SANDBOX: '1'
+        run: python -m pytest -q -rs tests/test_totp_qr_capture.py --basetemp="${{ runner.temp }}/akdbx-qr" --junitxml="${{ runner.temp }}/qr-capture.xml"
+      - name: QR pixel challenge as a wide-gamut display renders it
+        env:
+          AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
+          AKDBX_TEST_EXTENSION_BROWSER: ${{ runner.temp }}/cft/chrome-linux64/chrome
+          AKDBX_TEST_BROWSER_NO_SANDBOX: '1'
+          AKDBX_TEST_BROWSER_EXTRA_ARGS: '--force-color-profile=display-p3-d65'
+        run: python -m pytest -q -rs tests/test_totp_qr_capture.py -k enhanced --basetemp="${{ runner.temp }}/akdbx-qr-p3"
       - name: Require every extension browser case to run
         run: |
           python - <<'PY'
@@ -220,6 +235,8 @@ jobs:
           print(f'All {len(cases)} extension browser cases ran without skips.')
           totp = list(ET.parse(os.path.join(os.environ['RUNNER_TEMP'], 'extension-totp.xml')).iter('testcase'))
           assert totp and not any(c.find('skipped') is not None for c in totp), 'Extension TOTP cases must run without skips'
+          qr = list(ET.parse(os.path.join(os.environ['RUNNER_TEMP'], 'qr-capture.xml')).iter('testcase'))
+          assert len(qr) >= 40 and not any(c.find('skipped') is not None for c in qr), 'QR capture cases must run without skips'
           PY
   windows:
     runs-on: windows-latest
@@ -259,6 +276,13 @@ jobs:
           tests/test_card_computop.py::test_computop_fills_only_the_attested_field
           tests/test_sms_chromium.py::test_code_fills_only_the_pinned_focused_input_and_returns_no_code
           --basetemp="$env:LOCALAPPDATA/akdbx-edge" --junitxml="$env:RUNNER_TEMP/edge-cdp.xml"
+      - name: Windows authenticator QR capture on the CDP and extension routes
+        env:
+          AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
+          AKDBX_REQUIRE_QR_CHROMIUM: '1'
+          AKDBX_TEST_EXTENSION_BROWSER: 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+          AKDBX_TEST_BROWSER: 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+        run: python -m pytest -q -rs tests/test_totp_qr_capture.py --basetemp="$env:LOCALAPPDATA/akdbx-qr" --junitxml="$env:RUNNER_TEMP/qr-capture.xml"
       - name: Require every Windows case to run
         shell: pwsh
         run: |
@@ -275,6 +299,9 @@ jobs:
           if ([int]$totp.skipped -ne 0) { throw 'TOTP tests must run without skips' }
           [xml]$edge = Get-Content (Join-Path $env:RUNNER_TEMP 'edge-cdp.xml')
           if ([int]$edge.testsuites.testsuite.skipped -ne 0) { throw 'Edge CDP cases must run without skips' }
+          [xml]$qrReport = Get-Content (Join-Path $env:RUNNER_TEMP 'qr-capture.xml')
+          $qr = $qrReport.testsuites.testsuite
+          if ([int]$qr.tests -lt 40 -or [int]$qr.skipped -ne 0) { throw 'QR capture cases must run without skips' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -283,3 +310,4 @@ jobs:
             ${{ runner.temp }}/akdbx-windows.xml
             ${{ runner.temp }}/extension-totp.xml
             ${{ runner.temp }}/edge-cdp.xml
+            ${{ runner.temp }}/qr-capture.xml

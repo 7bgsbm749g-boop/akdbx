@@ -2,9 +2,10 @@
 
 Use this when the user authorized adding an authenticator app (TOTP) to a
 website account, for example GitHub's **Set up authenticator app**. The broker
-reads the setup key from the enrollment page itself, saves it to the correct
-vault entry, fills the site's confirmation code, and then makes the key the
-entry's authenticator. The user does not open a private page, click the
+reads the setup key from the enrollment page itself (the printed key, or the
+setup QR code when the page prints no key), saves it to the correct vault
+entry, fills the site's confirmation code, and then makes the key the entry's
+authenticator. The user does not open a private page, click the
 extension, copy a key or approve again. The agent never sees the key or a code.
 
 This changes the site's security settings. Do it only when the task authorizes
@@ -29,6 +30,15 @@ before reading the control.
 Extension read pins require the top document. The extension cannot verify
 the text's exact position and visibility through padded or transformed iframe
 owners. For a supported same-site child frame, use the CDP read route.
+
+For a setup QR code (`--qr`), `status` must also show integer
+`totp_qr_capture_protocol: 1`. On the extension route the QR read needs fill
+extension 0.12.0 or newer (`extension_qr_capture_min_version`) in a Chromium
+browser (Helium, Chrome or Edge); a Firefox extension refuses QR read pins
+(`target unavailable`), because this path has no real-Firefox proof yet. Text
+key reads work there as before. A QR in a same-site child frame uses the CDP
+read route, as text does. The CLI refuses `--qr` before it sends anything to a
+broker without the flag.
 
 The pending code fill uses the same TOTP pins as a saved code: retained DOM
 pins on CDP (Linux/Windows), the paired extension (Linux/Windows/macOS), native
@@ -59,6 +69,17 @@ refuses with `target unavailable`.
 - The value must parse as a supported TOTP setup: a Base32 key (one token or
   groups such as `abcd efgh ijkl mnop`) or an `otpauth://totp/` URI. Other text
   refuses with `nothing saved`.
+- A QR read (`--qr`) decodes the pinned `<img>`, `<canvas>` or inline `<svg>`
+  inside the browser, with the bundled jsQR, in the pin's isolated world (CDP)
+  or the extension's content script. Pixels and the decoded value never reach
+  the agent, a receipt or a log. It refuses, with nothing saved: an image from
+  another origin (only the page's own origin or a `data:` URL; also with CORS)
+  and any source that taints the canvas, no QR code, two or more codes, a code
+  that is not an `otpauth://totp/` URI (a bare key, HOTP, a link), and an
+  element whose pixels (an `<svg>`: markup or styles) changed after the pin.
+  The element must show whole and uncovered: a 5 x 5 grid of points over it
+  must hit-test to it, at least 21 CSS pixels a side, with `object-fit` fill
+  (or contain at the default position).
 - `commit-totp --site-accepted` moves the pending key into `otp`. If `otp`
   already holds a key, `--replace` is required; the old key stays in the
   entry's encrypted history.
@@ -85,20 +106,27 @@ boxes, never text. Do not select or drag over the text.
    before the key is shown.
 3. Show the key as text. GitHub shows a QR code and a **setup key** link under
    it; click the link. The key then shows in a dialog. Plan the selector before
-   this click.
-4. Focus the element that shows the key by script (for a non-focusable
-   element: `element.tabIndex = -1; element.focus()`, returning nothing), then
-   pin it:
+   this click. **When the page shows no text key** (no such link), pin the QR
+   code itself instead and pass `--qr` in steps 4 and 5. Find the QR element
+   from structure only (its tag `img`, `canvas` or `svg`, `id`, classes and
+   position); do not screenshot it or read its `src`.
+4. Focus the element that shows the key or the QR code by script (for a
+   non-focusable element: `element.tabIndex = -1; element.focus()`, returning
+   nothing), then pin it:
 
    ```bash
    akdbx pin-password-target --mode read --page-id PAGE_ID --frame-id MAIN_FRAME_ID \
-     --top-url EXACT_HTTPS_URL --selector 'SELECTOR' [--route extension]
+     --top-url EXACT_HTTPS_URL --selector 'SELECTOR' [--qr] [--route extension]
    ```
 
-5. Capture it into the entry, with a fresh search handle and the exact metadata:
+   A QR pin decodes the code at once: `target unavailable` means the element is
+   not one whole, uncovered QR code from the page's own origin. Do not retry
+   other selectors blindly; check the element's tag and origin from structure.
+5. Capture it into the entry, with a fresh search handle and the exact metadata
+   (`--qr` exactly when the pin used `--qr`; a mismatch refuses):
 
    ```bash
-   akdbx capture-totp --target TARGET --handle HANDLE \
+   akdbx capture-totp --target TARGET [--qr] --handle HANDLE \
      --title TITLE --username USERNAME --url URL --group GROUP
    ```
 
@@ -106,7 +134,10 @@ boxes, never text. Do not select or drag over the text.
    "metadata": {...}, "capture_delivery": "chromium-dom-read-v1"}`
    (`"extension-dom-read-v1"` on the extension route). `totp_configured: true`
    means the entry already has an authenticator; it is still unchanged.
-   `search` now shows `totp_pending: true`.
+   `search` now shows `totp_pending: true`. A QR capture gives the same
+   receipt. Its fixed refusal, `authenticator QR capture refused: ...; nothing
+   saved`, never says which check failed (another origin, no code, two codes,
+   not an otpauth TOTP URI, or a change after the pin); the pin is used up.
 6. Close the key dialog if the site needs it, focus the site's code field
    (GitHub: "Verify the code from the app"), and fill a code of the pending key:
 

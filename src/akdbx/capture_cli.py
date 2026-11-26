@@ -7,7 +7,7 @@ from .native_fields import READ_DELIVERY as NATIVE_READ_DELIVERY
 from .extension_route import CAPTURE_DELIVERY as EXTENSION_CAPTURE_DELIVERY
 from .secrets_capture import CAPTURE_DELIVERY, CAPTURE_PROTOCOL, valid_field
 from .sink_helper import PROTOCOL as SINK_PROTOCOL, SINK_NAME
-from .totp_capture import PROTOCOL as TOTP_CAPTURE_PROTOCOL
+from .totp_capture import OLD_BROKER as QR_CAPTURE_REFUSAL, PROTOCOL as TOTP_CAPTURE_PROTOCOL, QR_PROTOCOL
 
 COMMANDS = ('capture-secret', 'deliver-secret', 'capture-totp', 'commit-totp')
 UNCONFIRMED = {
@@ -40,6 +40,8 @@ def add_parsers(commands):
     p = commands.add_parser('capture-totp', help='save the TOTP setup key or otpauth URI shown in a pinned read target '
                             '(pin-password-target --mode read) as the entry\'s pending authenticator; returns only a receipt')
     p.add_argument('--target', required=True, help='fresh single-use read pin on the element that shows the setup key')
+    p.add_argument('--qr', action='store_true', help='the pin is a QR read pin (pin-password-target --mode read --qr): '
+                   'the browser decodes the setup QR code, which must hold an otpauth://totp/ URI')
     p.add_argument('--handle', required=True, help='fresh search handle of the existing entry for this site and account')
     for name in ('title', 'username', 'url', 'group'):
         p.add_argument('--' + name, required=True, help='exact verified entry metadata')
@@ -107,6 +109,10 @@ def run(args, request):
                 or caps['totp_capture_protocol'] != TOTP_CAPTURE_PROTOCOL):
             print(json.dumps(dict(ok=False, error='broker lacks authenticator capture protocol 1; require broker 0.35.0 or newer; request not sent')))
             return 1
+        if args.command == 'capture-totp' and args.qr and (
+                type(caps.get('totp_qr_capture_protocol')) is not int or caps['totp_qr_capture_protocol'] != QR_PROTOCOL):
+            print(json.dumps(dict(ok=False, error=QR_CAPTURE_REFUSAL + '; request not sent')))
+            return 1
         if args.command == 'deliver-secret' and (
                 caps.get('ok') is not True or type(caps.get('secret_sink_protocol')) is not int
                 or caps['secret_sink_protocol'] != SINK_PROTOCOL or not isinstance(caps.get('secret_sinks'), list)):
@@ -120,6 +126,8 @@ def run(args, request):
         if args.command == 'capture-totp':
             payload = dict(action='capture-totp', totp_capture_protocol=TOTP_CAPTURE_PROTOCOL, target=args.target,
                            handle=args.handle, metadata=metadata, start_deadline=time.monotonic() + 4)
+            if args.qr:
+                payload['read_kind'] = 'qr'
         elif args.command == 'commit-totp':
             payload = dict(action='commit-totp', totp_capture_protocol=TOTP_CAPTURE_PROTOCOL, handle=args.handle,
                            metadata=metadata, decision='site-accepted' if args.site_accepted else 'discard')

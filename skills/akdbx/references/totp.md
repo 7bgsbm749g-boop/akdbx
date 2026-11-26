@@ -120,7 +120,8 @@ The command returns `write_handle`, `private_url` and `state: pending`.
 The user opens that private HTTPS page, confirms the displayed destination,
 and enters the Base32 setup key or otpauth TOTP URI there. Never ask for the key
 in chat, pass it through RPC/CLI arguments/environment variables, read a live
-QR/setup key with GUI/browser tools, or extract a vault field. Do not observe
+QR/setup key with GUI/browser tools (screenshots, page text, image data), or
+extract a vault field; the broker's own `capture-totp --qr` is the only QR read. Do not observe
 the page while the user enters a key. No secret is returned or shown after
 submission. This initial private import is separate from later automatic fills.
 
@@ -141,7 +142,9 @@ This saves an authenticator to KeePass only. It does not enable or reconfigure
 2FA on the site. To add an authenticator app to a website account without a
 private page (0.35.0+), use [automatic enrollment](totp-enrollment.md): the
 broker reads the setup key through a CDP or extension read pin. Native controls
-cannot verify the enrollment site's origin. A pending site enrollment can be checked after import with a
+cannot verify the enrollment site's origin. When the page shows only a QR code,
+the broker decodes that QR code in the browser instead (`--qr`,
+`totp_qr_capture_protocol: 1`); the agent still never sees the key. A pending site enrollment can be checked after import with a
 normal code fill, but the agent must separately verify site acceptance and
 report failed enrollment accurately. Do not remove recovery methods. This
 version attaches TOTP to existing entries, including managed SSO/email-code

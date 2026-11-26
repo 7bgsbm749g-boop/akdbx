@@ -10,6 +10,8 @@ share the DOM contract; only the profile and peer checks are per platform.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import functools
+from importlib.resources import files
 import json
 import os
 from pathlib import Path
@@ -30,6 +32,9 @@ from . import browser_slots
 DELIVERY = 'chromium-password-dom-v1'
 PROTOCOL = 1
 CAPTURE_PROTOCOL = 1
+# Read pins read text, or (`read_kind: "qr"`, for capture-totp only) decode a QR code.
+READ_KINDS = ('text', 'qr')
+QR_PIN_TIMEOUT = 8  # The QR pin decodes in the renderer: more than a text pin's CDP call.
 # Read-pin selectors: type, #id, .class and :nth-of-type(n)/:nth-child(n)
 # compounds joined by descendant or child combinators. Attribute selectors
 # and other pseudo-classes could test the secret (for example
@@ -403,6 +408,210 @@ READ_CAPTURE = r'''(function(selector, url, frameOrigin) {
   if (!check()) { dispose(); throw 0; }
   return {mode: 'read', check, dispose, value: () => clean(text())};
 })'''
+# QR read pins (`read_kind: "qr"`, capture-totp only) retain one focused <img>,
+# <canvas> or outermost inline <svg> that shows an authenticator QR code. The
+# pin draws the element's own pixels into an offscreen canvas in this isolated
+# world and decodes them with the vendored jsQR (passed in as `jsQR`). The
+# checks of a text read pin apply, with a grid hit test over the whole element
+# instead of the text boxes. An image must come from the page's own origin (or
+# a data: URL), and a cross-origin (tainted) source refuses: getImageData
+# throws. No code, two or more codes, or a value that is not one line of text
+# refuses the pin. The read draws the element again and must get the same
+# pixels (an <svg>: the same markup and styles), so a change after the pin
+# refuses. The decoded value stays in the renderer until the broker's own read
+# call; no pixel or value is ever returned to the caller.
+QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
+  const sameOrigin = () => frameOrigin === null || (location.origin === frameOrigin && self.origin === frameOrigin);
+  if (typeof jsQR !== 'function' || !isSecureContext || location.href !== url || !sameOrigin() || !document.hasFocus() ||
+      document.visibilityState !== 'visible') throw 0;
+  const query = s => { const a = document.querySelectorAll(s); if (a.length !== 1) throw 0; return a[0]; };
+  const element = query(selector);
+  const created = performance.now();
+  const kind = element instanceof HTMLImageElement ? 'img' : element instanceof HTMLCanvasElement ? 'canvas' :
+    element instanceof SVGSVGElement && element.ownerSVGElement === null && element.parentElement instanceof HTMLElement ? 'svg' : null;
+  if (kind === null) throw 0;
+  // At least one CSS pixel per module of the smallest code; at most 1024 pixels a side are decoded.
+  const MIN = 21, MAX = 1024, LIMIT = 4096;
+  // The whole source shows in the box: object-fit fill, or contain at the default position.
+  const fitted = () => {
+    const s = getComputedStyle(element);
+    return kind === 'svg' || s.objectFit === 'fill' || s.objectFit === 'contain' && s.objectPosition === '50% 50%';
+  };
+  // Every point of a 5 x 5 grid over the code (10% to 90% of the box, clear of
+  // rounded corners in the quiet zone) hit-tests to the element: clipping,
+  // covers and pointer-transparent tricks then refuse rather than read a code
+  // nobody sees.
+  const hit = r => {
+    for (let i = 0; i < 5; ++i) for (let j = 0; j < 5; ++j) {
+      const found = document.elementFromPoint(r.left + r.width * (.1 + .2 * i), r.top + r.height * (.1 + .2 * j));
+      if (found !== element && !(kind === 'svg' && element.contains(found))) return false;
+    }
+    return true;
+  };
+  const visible = () => {
+    if (!element.isConnected || element.ownerDocument !== document || element.closest('[inert]')) return false;
+    const r = element.getBoundingClientRect(), s = getComputedStyle(element);
+    return element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true}) && r.width >= MIN && r.height >= MIN &&
+      r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && s.visibility === 'visible' &&
+      s.display !== 'none' && s.opacity !== '0' && hit(r);
+  };
+  // Focus only, with no active selection anywhere: on X11 a selection is published to PRIMARY.
+  const pointed = () => {
+    const selection = getSelection();
+    return document.activeElement === element && (!selection || selection.isCollapsed);
+  };
+  // Opaque white below the source, as on a page, then the pixels. getImageData
+  // throws for a source that tainted the canvas (cross-origin without CORS).
+  const raster = (source, width, height) => {
+    const scale = Math.min(1, MAX / Math.max(width, height));
+    const w = Math.max(1, Math.round(width * scale)), h = Math.max(1, Math.round(height * scale));
+    const context = new OffscreenCanvas(w, h).getContext('2d', {willReadFrequently: true});
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, w, h);
+    context.drawImage(source, 0, 0, w, h);
+    return context.getImageData(0, 0, w, h);
+  };
+  // An image's own URL must be on the page's origin, or a data: URL. The
+  // tainted-canvas check alone is not enough: an extension's content script
+  // may read some cross-origin pixels.
+  const ownImage = () => {
+    let source;
+    try { source = new URL(element.currentSrc); } catch { return false; }
+    return source.protocol === 'data:' || source.origin === location.origin;
+  };
+  const pixels = () => {
+    if (kind === 'img') {
+      if (!ownImage() || !element.complete || !(element.naturalWidth > 0 && element.naturalHeight > 0)) return null;
+      return raster(element, element.naturalWidth, element.naturalHeight);
+    }
+    if (!(element.width > 0 && element.height > 0)) return null;
+    return raster(element, element.width, element.height);
+  };
+  // An inline <svg>: a copy with each element's computed paint styles, drawn as
+  // an image at the size it shows (at least 512 and at most 1024 pixels a side).
+  const STYLES = ['display', 'visibility', 'opacity', 'fill', 'fill-opacity', 'fill-rule', 'stroke', 'stroke-opacity',
+                  'stroke-width', 'shape-rendering'];
+  const markup = () => {
+    const nodes = [element, ...element.querySelectorAll('*')];
+    if (nodes.length > 20000) return null;
+    const copy = element.cloneNode(true), copies = [copy, ...copy.querySelectorAll('*')];
+    if (copies.length !== nodes.length) return null;
+    nodes.forEach((node, i) => {
+      const s = getComputedStyle(node);
+      copies[i].setAttribute('style', STYLES.map(p => p + ':' + s.getPropertyValue(p)).join(';'));
+    });
+    const r = element.getBoundingClientRect(), s = getComputedStyle(element);
+    const width = r.width - parseFloat(s.borderLeftWidth) - parseFloat(s.borderRightWidth) - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight);
+    const height = r.height - parseFloat(s.borderTopWidth) - parseFloat(s.borderBottomWidth) - parseFloat(s.paddingTop) - parseFloat(s.paddingBottom);
+    if (!(width >= MIN && height >= MIN)) return null;
+    if (!copy.hasAttribute('viewBox')) copy.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    const long = Math.max(width, height), scale = Math.min(MAX, Math.max(512, long * devicePixelRatio)) / long;
+    const w = Math.max(1, Math.round(width * scale)), h = Math.max(1, Math.round(height * scale));
+    copy.setAttribute('width', String(w));
+    copy.setAttribute('height', String(h));
+    const text = new XMLSerializer().serializeToString(copy);
+    return text.length <= 4 * 1024 * 1024 ? {text, w, h} : null;
+  };
+  const drawn = async drawing => {
+    const image = new Image();
+    image.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(drawing.text);
+    await image.decode();
+    return raster(image, drawing.w, drawing.h);
+  };
+  // One code only: after the first is found, blank it (quiet zone included) and
+  // look again; a second code refuses. jsQR returns one code per call.
+  const decode = data => {
+    let found = jsQR(data.data, data.width, data.height, {inversionAttempts: 'dontInvert'}), light = 255;
+    if (!found) {
+      found = jsQR(data.data, data.width, data.height, {inversionAttempts: 'invertFirst'});
+      light = 0;  // A light code on a dark ground.
+    }
+    if (!found || !found.location || typeof found.data !== 'string') return null;
+    const corners = ['topLeftCorner', 'topRightCorner', 'bottomLeftCorner', 'bottomRightCorner'].map(k => found.location[k]);
+    const xs = corners.map(p => p.x), ys = corners.map(p => p.y);
+    const margin = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 4;
+    const left = Math.max(0, Math.floor(Math.min(...xs) - margin)), right = Math.min(data.width, Math.ceil(Math.max(...xs) + margin));
+    const top = Math.max(0, Math.floor(Math.min(...ys) - margin)), bottom = Math.min(data.height, Math.ceil(Math.max(...ys) + margin));
+    if (!(right > left && bottom > top)) return null;
+    const rest = new Uint8ClampedArray(data.data);
+    for (let y = top; y < bottom; ++y) {
+      for (let x = left; x < right; ++x) {
+        const i = (y * data.width + x) * 4;
+        rest[i] = rest[i + 1] = rest[i + 2] = light;
+        rest[i + 3] = 255;
+      }
+    }
+    if (jsQR(rest, data.width, data.height, {inversionAttempts: 'attemptBoth'})) return null;
+    const value = found.data;
+    return value && value.length <= LIMIT && !/[\s\p{C}\p{Z}]/u.test(value) ? value : null;
+  };
+  // What identifies the source without drawing it: the image URL, the canvas size.
+  const source = () => kind === 'img' ? element.currentSrc : kind === 'canvas' ? element.width + 'x' + element.height : '';
+  let tainted = false;
+  const dirty = () => { tainted = true; };
+  if (!window.navigation) throw 0;
+  window.navigation.addEventListener('navigate', dirty);
+  window.addEventListener('blur', dirty, true);
+  document.addEventListener('visibilitychange', dirty, true);
+  document.addEventListener('focusin', dirty, true);
+  element.addEventListener('load', dirty, true);
+  element.addEventListener('error', dirty, true);
+  const observer = new MutationObserver(records => {
+    for (const r of records) {
+      if (r.target === element || element.contains(r.target)) dirty();
+      if (r.type === 'childList' && [...r.removedNodes].some(n => n === element || n.contains(element))) dirty();
+    }
+  });
+  observer.observe(document, {childList:true, subtree:true, characterData:true, attributes:true});
+  const dispose = () => {
+    window.navigation.removeEventListener('navigate', dirty);
+    window.removeEventListener('blur', dirty, true);
+    document.removeEventListener('visibilitychange', dirty, true);
+    document.removeEventListener('focusin', dirty, true);
+    element.removeEventListener('load', dirty, true);
+    element.removeEventListener('error', dirty, true);
+    observer.disconnect();
+  };
+  const originalFocus = document.activeElement, origin = source();
+  // check() runs again during the extension's pixel challenge, whose rule hides
+  // the code's pixels for a moment: the content checks are in same().
+  const check = () => performance.now() - created < 30000 && !tainted && isSecureContext && location.href === url && sameOrigin() &&
+    document.hasFocus() && document.visibilityState === 'visible' && document.activeElement === originalFocus &&
+    visible() && query(selector) === element && pointed() && source() === origin;
+  let snapshot = null, drawing = null, decoded = null;
+  try {
+    if (!check() || !fitted()) throw 0;
+    if (kind === 'svg') {
+      drawing = markup();
+      decoded = drawing && decode(await drawn(drawing));
+    } else {
+      snapshot = pixels();
+      decoded = snapshot && decode(snapshot);
+    }
+    if (typeof decoded !== 'string' || !check() || !fitted()) throw 0;
+  } catch {
+    dispose();
+    throw 0;
+  }
+  // The same pixels as at the pin, or for an <svg> the same markup and styles.
+  const same = () => {
+    try {
+      if (!fitted()) return false;
+      if (kind === 'svg') {
+        const now = markup();
+        return now !== null && now.text === drawing.text;
+      }
+      const now = pixels();
+      if (!now || now.width !== snapshot.width || now.height !== snapshot.height) return false;
+      const a = now.data, b = snapshot.data;
+      for (let i = 0; i < a.length; ++i) if (a[i] !== b[i]) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  return {mode: 'read', kind: 'qr', check, dispose, value: () => same() ? decoded : null};
+})'''
 READ = r'''function(deadline) {
   if (this.mode !== 'read' || !this.check() || performance.now() >= deadline) return null;
   const value = this.value();
@@ -429,6 +638,14 @@ FILL = r'''function(mode, username, password, deadline) {
 }'''
 
 
+@functools.cache
+def qr_decoder():
+    """The vendored jsQR (import_assets) as an expression for its decode function; it defines no global."""
+    source = files('akdbx').joinpath('import_assets', 'jsQR.js').read_text(encoding='utf-8')
+    return ('(function() { const module = {exports: {}}; const exports = module.exports; const define = undefined;\n'
+            + source + '\nreturn module.exports; })()')
+
+
 @dataclass
 class PasswordPin:
     connection: CDP
@@ -445,6 +662,8 @@ class PasswordPin:
     guards: tuple = ()
     # The agent desktop slot whose Chrome holds this pin, or None.
     slot: str | None = None
+    # Read pins only: 'text', or 'qr' for a decoded QR code (capture-totp only).
+    read_kind: str = 'text'
 
     def close(self):
         try:
@@ -496,7 +715,8 @@ class BrowserPasswords:
         self.prune()
         request, profile, slot = browser_slots.select(request, self.profile, self.slots)
         required = {'action', 'password_protocol', 'page_id', 'frame_id', 'top_url', 'selector', 'mode'}
-        optional = set(request) & {'password_purpose', 'allow_autocomplete_off', 'frame_protocol', 'frame_origin', 'capture_protocol'}
+        optional = set(request) & {'password_purpose', 'allow_autocomplete_off', 'frame_protocol', 'frame_origin', 'capture_protocol',
+                                   'read_kind'}
         reading = request.get('mode') == 'read'
         if (set(request) != required | optional | ({'username_selector'} if request.get('mode') == 'login' else set())
                 or type(request.get('password_protocol')) is not int or request['password_protocol'] != PROTOCOL
@@ -504,6 +724,8 @@ class BrowserPasswords:
                 # Read pins need the explicit capture protocol; fill pins never carry it.
                 or reading != ('capture_protocol' in request)
                 or reading and (type(request['capture_protocol']) is not int or request['capture_protocol'] != CAPTURE_PROTOCOL)
+                # Only an explicit QR read; a text read sends no read_kind, so an older broker refuses the field.
+                or ('read_kind' in request and (not reading or request['read_kind'] != 'qr'))
                 or ('password_purpose' in request and (request['mode'] != 'password' or not isinstance(request['password_purpose'], str)
                                   or request['password_purpose'] not in {'current-password', 'new-password'}))
                 or ('allow_autocomplete_off' in request and (request['allow_autocomplete_off'] is not True
@@ -553,17 +775,26 @@ class BrowserPasswords:
                 frame = route['path'][-1]['frame']
                 url, field_session = frame_url(frame), route['field_session']
             world = connection.call('Page.createIsolatedWorld', {'frameId': frame['id'], 'worldName': 'akdbx-password-v1'}, field_session)['executionContextId']
+            read_kind = request.get('read_kind', 'text')
             if request['mode'] == 'read':
-                script, args = READ_CAPTURE, [request['selector'], url, origin]
+                script, args = (QR_CAPTURE if read_kind == 'qr' else READ_CAPTURE), [request['selector'], url, origin]
             else:
                 script = CAPTURE
                 args = [request['selector'], request.get('username_selector'), request['mode'], url, request.get('password_purpose'),
                         request.get('allow_autocomplete_off', False), origin]
-            result = connection.call('Runtime.evaluate', {'expression': script + '(' + ','.join(json.dumps(v) for v in args) + ')', 'contextId': world}, field_session)
+            arguments = [json.dumps(v) for v in args]
+            evaluation = {'contextId': world}
+            if read_kind == 'qr':
+                # The decoder goes to the pin's own isolated world with the call; the pin awaits its drawing.
+                arguments.insert(0, qr_decoder())
+                evaluation['awaitPromise'] = True
+            evaluation['expression'] = script + '(' + ','.join(arguments) + ')'
+            result = connection.call('Runtime.evaluate', evaluation, field_session,
+                                     timeout=QR_PIN_TIMEOUT if read_kind == 'qr' else 3)
             if 'exceptionDetails' in result or result['result'].get('type') != 'object' or 'objectId' not in result['result']:
                 raise TargetError()
             pin = PasswordPin(connection, field_session, result['result']['objectId'], page['targetId'], frame['id'], url, request['mode'],
-                              request['top_url'] if route else None, origin, route, guards, slot)
+                              request['top_url'] if route else None, origin, route, guards, slot, read_kind)
             if route is not None and not password_frames.verify(connection, route, request['top_url'], origin, guards):
                 raise TargetError()
             token = secrets.token_hex(32)

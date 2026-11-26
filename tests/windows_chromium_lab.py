@@ -156,9 +156,13 @@ def chromium_lab(directory, certificate, key, *, pages=None, binary=None, extens
             if body is None:
                 self.send_error(404)
                 return
-            data = body.encode()
+            # A page is HTML text; another resource is (bytes, content type, extra headers).
+            body, kind, headers = body if isinstance(body, tuple) else (body, 'text/html; charset=utf-8', {})
+            data = body if isinstance(body, bytes) else body.encode()
             self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Type', kind)
+            for name, value in headers.items():
+                self.send_header(name, value)
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()
             self.wfile.write(data)

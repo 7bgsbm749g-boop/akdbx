@@ -546,6 +546,7 @@ def _content_script():
         '__STRIPE_ELEMENTS__': card_processor.STRIPE_ELEMENTS_JSON,
         '__PASSWORD_COUNT__': password_frames.COUNT,
         '__READ_CAPTURE__': browser_password.READ_CAPTURE,
+        '__QR_CAPTURE__': browser_password.QR_CAPTURE,
         '__READ__': browser_password.READ,
         '__OWNER_GUARD__': password_frames.OWNER_GUARD,
         '__READ_SELECTOR__': json.dumps(browser_password.READ_SELECTOR.pattern),
@@ -590,6 +591,9 @@ def _source_files(host_name=HOST_NAME):
         if item.name == 'background.js' and host_name != HOST_NAME:
             data = data.replace(HOST_NAME.encode(), host_name.encode())
         written[item.name] = data
+    # The vendored QR decoder for QR read pins (capture-totp --qr), unmodified, with its licence.
+    for name in ('jsQR.js', 'jsQR.LICENSE'):
+        written[name] = files('akdbx').joinpath('import_assets', name).read_bytes()
     return written
 
 

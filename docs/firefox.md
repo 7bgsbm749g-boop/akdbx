@@ -74,6 +74,12 @@ From fill extension 0.11.1, a card or address field inside a clipped drawer
 can pass the inset check in Firefox. The extension checks open and closed shadow
 roots when it walks the field’s ancestors.
 
+The fill extension's QR read pins for `capture-totp --qr` are Chromium-only: a
+Firefox extension refuses `pin-password-target --mode read --qr` with `target
+unavailable` (no real-Firefox proof of that path yet). Text setup keys still
+capture in Firefox, and this does not change the Firefox fill extension's
+shown-once secret read pins.
+
 ## Enhanced security
 
 With **Enhanced security** on, card, address and read pins require a pixel check
