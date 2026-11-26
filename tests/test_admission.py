@@ -263,8 +263,10 @@ def test_precondition_concurrency_policy_guards_and_locked(case,monkeypatch):
 def test_keyfile_and_rotation_guard(case,tmp_path,monkeypatch):
     broker,target,source,_=case
     key=tmp_path/'synthetic.key';key.write_bytes(b'synthetic key material')
-    for path in (target,source):
-        v=PyKeePass(path,password=MASTER);v.keyfile=str(key);v.save()
+    # Setting the key stamps Meta/MasterKeyChanged in whole seconds: one stamped file for both,
+    # or two saves in different seconds differ and admission rightly refuses.
+    v=PyKeePass(target,password=MASTER);v.keyfile=str(key);v.save()
+    shutil.copyfile(target,source)
     broker.vault=open_vault_with_password(target,MASTER,key)
     result=admit(case);assert result['ok'],result
     key.write_bytes(b'changed synthetic key')
