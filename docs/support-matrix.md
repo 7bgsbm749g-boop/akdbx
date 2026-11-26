@@ -71,7 +71,7 @@ DOM, tab or origin proof.
 | Card, identity | ⛔ (B) | ⛔ (B) | ⛔ (B) | ◼ (E) |
 | Card processor iframes, child-frame login, notify-page, popup | — | — | — | — |
 | Secret read, `capture-totp` (text or QR) | ◼ (C) | ◼ (C) | ◼ (C) | ◼ (E) |
-| SMS code (split boxes) | ✅ 0.40.0 · no CI (H) | ✅ XWayland (0.49.0); ◼ native (D) | ✅ 0.49.0 · `windows` | ◼ (E) |
+| SMS code (split boxes) | ✅ 0.40.0 · contract test (`linux`) (H) | ✅ XWayland (0.49.0); ◼ native (D) | ✅ 0.49.0 · `windows` | ◼ (E) |
 | Agent desktop slot window | ✅ 0.35.3 · `synthetic-password-fields` | ✅ 0.35.3 (the slot has its own X display) | ✗ (I) | ◼ (E) |
 
 ## Native field (`pin-native-target`)
@@ -110,7 +110,7 @@ connection before the WebSocket handshake.
 | Card processor iframes | ✅ Adyen 0.14.0, Computop 0.14.2, Stripe 0.18.1, Stripe Card Element 0.24.0 · `card-safety` | ✅ 0.17.0 Adyen and Computop, 0.18.1 Stripe · `windows` (Edge) | ✅ 0.50.0 Stripe Card Element · `macos-broker`; Adyen and Computop: no CI |
 | Identity | ✅ 0.18.2 · `card-safety` | ✅ 0.18.2 · `windows` | ✅ 0.50.0 · `macos-broker` |
 | Child-frame login | ✅ 0.16.0 · `synthetic-password-fields` | ✅ 0.17.0 · `windows` | ✅ 0.50.0 · `macos-broker` |
-| notify-page (identity) | ✅ 0.41.0 · `card-safety` | ✅ 0.41.0 · `windows` | ✅ 0.50.0 · no CI |
+| notify-page (identity) | ✅ 0.41.0 · `card-safety` | ✅ 0.41.0 · `windows` | ✅ 0.50.0 · `macos-broker` |
 | Secret read (`capture-secret`), also in child frames | ✅ 0.20.0 · `synthetic-password-fields` | ✅ 0.20.0 · `windows` | ✅ 0.50.0 · `macos-broker` |
 | `capture-totp`, text key | ✅ 0.35.0 · `synthetic-password-fields` | ✅ 0.35.0 · `windows` | ✅ 0.50.0 · `macos-broker` |
 | `capture-totp`, QR code | ✅ 0.50.0 · `synthetic-password-fields` | ✅ 0.50.0 · `windows` | ✅ 0.50.0 · no CI |
@@ -221,8 +221,10 @@ socket; app fields use the akdbx accessibility helper. Check
   the same `win32-char-v1` transport. Usernames and TOTP have contract tests
   with simulated windows only; a real-app check is the manual
   [desktop acceptance check](windows.md#desktop-acceptance-check-for-window-pins).
-- **H** The real X11 test (`tests/test_sms.py`) runs in no CI job. The `linux`
-  job checks the window token with a simulated window only.
+- **H** No test sends an SMS code to a real X11 window. `tests/test_sms.py`
+  tests the window route with a simulated window, and no CI job runs that
+  test. The `linux` job fills through a simulated window token in the
+  cross-route test of `tests/test_android_route.py`.
 - **I** Not built: slot window pins find the slot Chrome's X display, and
   Windows has none. The broker refuses with `browser slot window pins need
   Linux X11`.
@@ -237,7 +239,7 @@ socket; app fields use the akdbx accessibility helper. Check
   broker consumes the pin and saves nothing.
 - **M** The broker accepts code pins on WinForms and WPF controls, but no test
   sends an SMS code to them.
-- **N** The `macos-broker` CDP tests fill identities, a Stripe Card Element
+- **N** The `macos-broker` CDP tests fill identities (also with `--notify-page`), a Stripe Card Element
   frame and every login mode. No macOS test fills a card field on the
   merchant page itself; it uses the same transport as the Stripe frame.
 - **O** Refused by design: the extension cannot map a child frame's text
