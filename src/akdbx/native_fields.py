@@ -259,7 +259,9 @@ class NativeFields:
         self._write(pin, values, ready, deadline)
 
     def fill(self, pin, value, field, ready, deadline=None, *, notify_page=False):
-        from .browser_card import failure
+        from .browser_card import NOTIFY_PAGE_REFUSED, failure
+        if notify_page and pin.kind == 'identity' and pin.field == field:
+            return dict(NOTIFY_PAGE_REFUSED)
         try:
             if pin.kind not in {'card', 'identity', 'code'} or pin.field != field or notify_page:
                 raise DeliveryError(False)

@@ -202,7 +202,12 @@ the verified `--app-site` when pinning.
 For a card or identity pin, use the field name for the selected value as its
 purpose. On Chrome, focus the field and use the matching HTML autocomplete
 token. The browser guard checks that the field is visible, exposed and still
-the same element. App identity fields do not support `--notify-page`.
+the same element. On a Chrome page, `fill-identity --notify-page` sends
+bubbling `input` and `change` events after the value is set; without it the
+fill sends no event. An app field has no page to notify: after 0.51.0 the
+broker refuses `--notify-page` there before any value, with `identity fill
+not started: --notify-page needs a web page, and an app field has none`. The
+pin is used up; pin again and fill without the option.
 For a read pin, focus a visible read-only text input or a focusable text leaf.
 Supply a simple selector for that element. Read pins accept up to 16 rendered text rectangles. A leaf may need a selector from
 the page because `android inspect` lists input fields. The read pin checks
@@ -211,6 +216,27 @@ value inside the broker. After `capture-totp`, use a fresh `--mode totp` pin
 and `akdbx android fill-totp --pending HANDLE --target TOKEN` for the site's
 confirmation step (requires `android_pending_totp: true`). Then run
 `commit-totp` with the site's result. In-app web views and frames remain unsupported.
+
+**Reply time and cold boots.** Before each value the helper runs its typed
+check (below), which takes under a second on a warm device and 5 to 10
+seconds right after a cold boot. A managed emulator always starts from a
+cold boot.
+
+- Login, username, password, generated-password and TOTP pins: the 4-second
+  start deadline bounds the first key of the check, so a fill right after a
+  cold boot still fills. When the broker has Android devices configured,
+  `fill`, `fill-generated`, `fill-totp`, `fill-card`, `fill-identity` and
+  `fill-sms-code` wait up to 60 seconds for the broker's answer, as `akdbx
+  android fill` does (after 0.51.0). Before, they waited 5 seconds, and a
+  fill right after a cold boot ended with `autofill outcome uncertain:
+  connection lost after request`.
+- Card, identity, SMS-code and read pins: the whole typed check must end
+  within the 4-second start deadline. Right after a cold boot these fills,
+  `capture-secret` and `capture-totp` are refused with delivery
+  `not-started` and nothing filled or read. Search and pin again a few
+  seconds later: in the lab, the next pin 10 seconds later filled every time,
+  about a minute after the emulator started. To avoid the wait, wake the
+  device first (`akdbx android wake`, or hold it with `akdbx android run`).
 
 For these new Chrome read, SMS, card and identity pins, the helper sends
 random key events only to Chrome. The retained focused element must receive
@@ -269,6 +295,25 @@ reported as `uncertain`.
 - Tested on an Android 15 (API 35) Google Play emulator with Chrome 124 and
   Google Play services 26.45. A physical device over USB uses the same path but
   was not tested; the device must have USB debugging on.
+- `tests/test_android_emulator.py` (after 0.51.0) runs on a real emulator
+  through the real broker, CLI and helper: on a Chrome page, a login, a
+  generated password from pin through commit, `capture-secret` from pin
+  through save, a text-key `capture-totp` through the pending code and
+  `commit-totp`, a card field, an identity with and without `--notify-page`,
+  an SMS code, and their refusals (another site, a used pin, a value or key
+  that changes after the pin, covered text, an editable field, prose). With
+  `AKDBX_TEST_ANDROID_COLD_BOOTS=N` it cold-boots a managed emulator N times
+  and fills a generated password at once each time. It needs KVM, so it runs
+  on a Linux host by hand, not in CI:
+
+  ```sh
+  AKDBX_TEST_ANDROID_DEVICES=/path/devices.json AKDBX_TEST_ANDROID_DEVICE=NAME \
+    python -m pytest -rs tests/test_android_emulator.py
+  ```
+
+  The device file is the broker's format. Chrome must have finished its
+  first-run screens, and the device needs network access to
+  `https://example.com`, whose document the tests replace with synthetic forms.
 - Managed emulators need Linux: their worker runs as a systemd user unit
   with a private runtime directory, and the stock image is x86-64 for KVM.
   On macOS and Windows the broker refuses a managed entry with that reason.

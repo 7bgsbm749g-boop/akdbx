@@ -5,13 +5,13 @@ import sys
 import time
 from urllib.parse import urlsplit
 
-from .browser_card import TTL, failure
+from .browser_card import NOTIFY_PAGE_REFUSED, TTL, failure
 from .browser_identity import DELIVERY
 from . import browser_slots, page_lifetime, page_url
 from .identities import (COMMANDS, FAILED, FIELD_PURPOSE_PROTOCOL, FIELDS, FIELDS_PROTOCOL, FILL_FIELDS, REFUSED,
                          TEL_FORMATS, UPDATE_PROTOCOL, label_matches)
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
-from .android_route import CHROME_DELIVERY as ANDROID_CHROME_DELIVERY, DELIVERY as ANDROID_DELIVERY
+from .android_route import CHROME_DELIVERY as ANDROID_CHROME_DELIVERY, DELIVERY as ANDROID_DELIVERY, fill_reply
 from .native_fields import DELIVERY as NATIVE_DELIVERY
 
 PIN_ARGS = ('page_id', 'frame_id', 'top_url', 'frame_url', 'selector', 'field')
@@ -114,7 +114,7 @@ def valid_receipt(args, response):
         if (args.command == 'pin-identity-target' and set(response) == {'ok', 'error'}
                 and browser_slots.valid_message(response['error'])):
             return True
-        if args.command == 'fill-identity' and response == TARGET_UNCERTAIN:
+        if args.command == 'fill-identity' and response in (TARGET_UNCERTAIN, NOTIFY_PAGE_REFUSED):
             return True
         error = response.get('error')
         allowed = {'ok', 'error', 'unlock_url', 'unlock_blocked'} if error == 'vault locked' else {'ok', 'error'}
@@ -229,7 +229,7 @@ def run(args, request):
                 payload['format'] = args.format
             if args.calling_code is not None:
                 payload['calling_code'] = args.calling_code
-        response = request(payload)
+        response = request(payload, **(fill_reply(caps) if args.command == 'fill-identity' else {}))
         if not valid_receipt(args, response):
             raise ValueError
     except Exception:

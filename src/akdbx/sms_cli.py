@@ -305,7 +305,8 @@ def run(args, request):
                            start_deadline=time.monotonic() + 4)
             if args.target_url is not None:
                 payload['target_url'] = args.target_url
-        response = request(payload)
+        from .android_route import fill_reply
+        response = request(payload, **(fill_reply(caps) if args.command == 'fill-sms-code' else {}))
         if not valid_receipt(args, response):
             raise ValueError
     except Exception:

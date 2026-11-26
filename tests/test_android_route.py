@@ -1062,15 +1062,63 @@ def test_cli_sends_an_android_sms_fill_when_no_desktop_route_exists(capsys, andr
     sent = []
     responses = [status, receipt]
 
-    def request(payload):
-        sent.append(payload)
+    def request(payload, timeout=None):
+        sent.append((payload, timeout))
         return responses.pop(0)
     code = sms_cli.run(args, request)
     out = capsys.readouterr().out
-    assert [p['action'] for p in sent] == (['ping', 'fill-sms-code'] if sent_fill else ['ping'])
+    assert [p['action'] for p, _ in sent] == (['ping', 'fill-sms-code'] if sent_fill else ['ping'])
+    assert all(timeout == (android_route.FILL_REPLY_TIMEOUT if p['action'] == 'fill-sms-code' else None)
+               for p, timeout in sent)
     assert code == (0 if sent_fill else 1)
     if not sent_fill:
         assert 'no SMS fill route' in out
+
+
+FILL_COMMANDS = [
+    ['fill-generated', '--target-url', 'https://example.com/', '--target', 'b' * 64, '--', 'c' * 64],
+    ['fill', 'a' * 64, '--mode', 'password', '--target', 'b' * 64],
+    ['fill-totp', 'a' * 64, '--target', 'b' * 64, '--target-url', 'https://example.com/'],
+    ['fill-card', 'a' * 64, '--target', 'b' * 64, '--field', 'cc-name'],
+    ['fill-identity', 'a' * 64, '--target', 'b' * 64, '--field', 'email'],
+    ['fill-sms-code', 'd' * 32, '--target', 'b' * 64, '--target-url', 'https://example.com/'],
+]
+
+
+@pytest.mark.parametrize('argv', FILL_COMMANDS, ids=[argv[0] for argv in FILL_COMMANDS])
+@pytest.mark.parametrize('configured', [True, False], ids=['android', 'no-android'])
+def test_fill_commands_wait_for_a_started_android_fill_when_android_is_configured(device_file, tmp_path, monkeypatch,
+                                                                                  capsys, argv, configured):
+    """Regression: right after a cold boot the typed check takes about 5 seconds, the whole fill about 6.
+
+    The CLI's usual 5-second reply budget then ended a started Android fill with 'connection lost'. With
+    Android devices configured, every fill command waits as long as `android fill` does.
+    """
+    from akdbx import cli
+    broker = make_broker(device_file if configured else tmp_path / 'none.json', {})
+    status = broker.dispatch({'action': 'ping'})
+    assert status['android_devices_configured'] is configured
+    budgets = {}
+
+    def request(_socket, payload, **kwargs):
+        if payload['action'] == 'ping':
+            return status
+        budgets[payload['action']] = kwargs.get('timeout')
+        return {'ok': False, 'error': 'unknown or expired handle; search again'}
+    monkeypatch.setattr(cli, 'request', request)
+    cli.main(argv)
+    capsys.readouterr()
+    if configured:
+        assert budgets == {argv[0]: android_route.FILL_REPLY_TIMEOUT}
+    else:
+        # The usual budget (no explicit timeout): 5 seconds.
+        assert budgets in ({}, {argv[0]: None}) and cli._request_timeout({'action': argv[0]}) == 5
+
+
+def test_android_fill_budget_covers_the_start_deadline_and_a_whole_helper_run():
+    from akdbx.broker import FILL_START_TIMEOUT
+    assert android_cli.TIMEOUTS['fill'] == android_cli.TIMEOUTS['fill-totp'] == android_route.FILL_REPLY_TIMEOUT
+    assert android_route.FILL_REPLY_TIMEOUT > FILL_START_TIMEOUT + android_route.HELPER_TIMEOUT + 3 * 3
 
 
 def test_cli_fill_sends_no_value_and_prints_the_receipt(capsys):
@@ -1150,6 +1198,28 @@ def test_android_app_structured_fill_is_bound_to_its_field_purpose(device_file, 
             targets._close(target)
         assert result['ok'] is (field_name == purpose)
     assert len(fill_requests()) == 1
+
+
+def test_notify_page_on_an_android_app_field_is_refused_before_any_value(device_file, capsys):
+    from akdbx import identity_cli
+    from akdbx.browser_card import NOTIFY_PAGE_REFUSED
+    from akdbx.cli import parser
+    broker, scene = app_broker(device_file)
+    receipt = pin(broker, mode='identity', purpose='email', field='21', app_site='https://example.com')
+    target = broker.identity_targets.consume(receipt['target'])
+    try:
+        result = broker.identity_targets.fill(target, 'fixture', 'email', lambda: True, broker.clock() + 4,
+                                              notify_page=True)
+    finally:
+        broker.identity_targets._close(target)
+    assert result == NOTIFY_PAGE_REFUSED and '--notify-page needs a web page' in result['error']
+    assert fill_requests() == [] and not [r for r in FakeAdb.requests if r['op'] in {'probe', 'type'}]
+    # The CLI shows that refusal as a clean "not started" receipt.
+    args = parser().parse_args(['fill-identity', 'a' * 64, '--target', 'b' * 64, '--field', 'email', '--notify-page'])
+    status = broker.dispatch({'action': 'ping'})
+    replies = iter([status, NOTIFY_PAGE_REFUSED])
+    assert identity_cli.run(args, lambda payload, **kwargs: next(replies)) == 1
+    assert json.loads(capsys.readouterr().out) == NOTIFY_PAGE_REFUSED
 
 
 def test_android_sms_pin_spent_but_message_restored_for_wrong_site(device_file, tmp_path):
