@@ -98,7 +98,7 @@ pin, fill and receipt model. Agents choose with `--route extension|cdp`, and
 
 | | Extension route (0.21.0+) | CDP route |
 | --- | --- | --- |
-| Browser | The user's everyday Helium, Chrome, Edge or Firefox 153+, with the akdbx extension | A Chromium profile started with `--remote-debugging-port` |
+| Browser | The user's everyday Helium, Chrome, Edge, Chromium, Brave or Firefox 153+, with the akdbx extension | A Chromium profile started with `--remote-debugging-port` |
 | Connection | Native-messaging host; values sealed to the extension (AES-256-GCM) | Chrome DevTools Protocol over loopback |
 | Setup | Install the host, load the extension, pair once per browser session | Configure the profile at broker start |
 | Sites see | The user's normal browser | A browser with a debugging port, which anti-bot checks often flag |
@@ -151,8 +151,7 @@ pages keep using the CDP or Extension route with tab, URL and DOM verification.
 ## Platforms
 
 - **macOS** (0.43.0+): local browser-extension broker, with native Unix peer
-  checks, private HTTPS unlock and encrypted vault writes. Chrome, Edge and Firefox (0.47.0+)
-  native-host locations are supported. Native window delivery, CDP and guided
+  checks, private HTTPS unlock and encrypted vault writes. The native host supports Chrome, Edge, Helium, Chromium, Brave and Firefox 153+. Native window delivery, CDP and guided
   setup are unavailable. Safari's Apple wrapper is a separate delivery. See
   [macOS setup and limits](docs/macos.md).
 - **Linux** (X11 desktop): the original platform. The setup notes in this
@@ -247,7 +246,7 @@ This prevents accidental disclosure into chat, command output, logs, process arg
 ## Browser extension route (0.21.0)
 
 The broker can also fill through the akdbx browser extension in the user's
-everyday Helium, Chrome, Edge or Firefox (0.47.0+), reached through a native-messaging host. The
+everyday Helium, Chrome, Edge, Chromium, Brave or Firefox (0.47.0+), reached through a native-messaging host. The
 browser then needs no remote-debugging port, which would give every process
 of the same user full control of that profile. Agents add `--route extension`
 to `list-password-frames`, `pin-password-target`, `pin-card-target` and
@@ -270,7 +269,7 @@ card in `chrome://extensions`. An extension built by akdbx 0.21.2 or earlier
 reports no version; it still works and shows as outdated.
 
 ```bash
-akdbx extension install --browser helium   # or chrome, edge; Windows and Linux; --python PATH (0.31.1+)
+akdbx extension install --browser helium   # chrome, edge, helium, chromium, brave or firefox on all three desktops
 akdbx extension refresh                    # 0.31.1+: after an update moves akdbx to another folder
 akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" extension build --output /path/to/akdbx-extension   # then Load unpacked
 ```
@@ -287,9 +286,9 @@ is sealed with AES-256-GCM to the extension, so the native host relays only
 ciphertext. This adds `cryptography` as a runtime dependency. Origin
 and frame identity come from the browser, never from page content; cards go
 only to merchant frames or to the supported processor frames below them. On
-Linux the host manifest goes in `~/.config/net.imput.helium`,
-`~/.config/google-chrome` or `~/.config/microsoft-edge` under
-`NativeMessagingHosts`. From 0.31.1 the Linux and macOS launcher names the folder
+Linux, Chromium-family hosts use the browser’s `NativeMessagingHosts` folder.
+Run `akdbx extension info` to see each location. After 0.47.0,
+`extension_host_browsers` in `status` lists the supported installer names. From 0.31.1 the Linux and macOS launcher names the folder
 of the akdbx that installed it, so the host runs that akdbx even when the
 interpreter has another one; see [host launcher](skills/akdbx/references/extension.md#host-launcher-0311).
 See [the extension route](skills/akdbx/references/extension.md)

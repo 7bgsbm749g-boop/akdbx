@@ -46,7 +46,7 @@ Serve and the [browser native host for authenticator capture](#authenticator-cap
   start with `--card-browser-profile`.
 - `merge` (including `--check`, `--refresh-target` and `--preserve-conflicts`),
   `admit` and `merge-status`, with the built-in merge engine. See [Merge and admission](#merge-and-admission).
-- Fills through the paired akdbx browser extension in Helium, Chrome or Edge,
+- Fills through the paired akdbx browser extension in Helium, Chrome, Edge, Chromium, Brave or Firefox 153+,
   with no debugging port (`extension-dom-v1`). See
   [Browser extension route](#browser-extension-route).
 - Unlock webhook subscriptions that survive a broker restart.
@@ -377,12 +377,20 @@ browser and install again.
 ## Browser extension route
 
 From 0.21.0 the broker can also fill through the akdbx browser extension in
-your everyday Helium, Chrome or Edge, without a remote-debugging port. A
+your everyday Helium, Chrome, Edge, Chromium, Brave or Firefox 153+, without a remote-debugging port. A
 debugging port gives every process of the same user full control of that
 profile; the extension route removes that need. Agents use it with
 `--route extension`, and you can click the extension yourself to fill a
 focused field. See the skill's [extension route](../skills/akdbx/references/extension.md)
 for the commands, capabilities and security model.
+
+After 0.47.0, `--browser chromium` shares Helium’s registry registration and
+`--browser brave` uses Chrome’s registration. A Chromium-specific key can take
+precedence over Chrome’s fallback key. A shared host reports its launcher’s
+browser name. Removing that registration affects all browsers that use it.
+Use `--manifest-dir DIR` with install and uninstall to choose where the JSON file
+lives. Windows uses one HKCU value per host name and browser key, across all
+profiles. For Firefox use the [Firefox build and loading steps](firefox.md).
 
 ### Install in Helium
 

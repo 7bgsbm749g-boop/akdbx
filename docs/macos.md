@@ -3,9 +3,14 @@
 The macOS broker runs locally as your normal user with Python 3.11 or newer.
 It uses the shared encrypted KeePass vault, metadata search, private HTTPS
 pages, password writes, paired extension protocol and non-secret receipts.
-The native host supports Chrome and Edge on macOS. Safari packaging and its
-Apple native-messaging adapter are a separate change; this release alone does
-not install or enable a Safari extension.
+The native host supports Chrome, Edge, Helium and Firefox 153+. After 0.47.0,
+use `--browser chromium` for Chromium or `--browser brave` for Brave. Brave
+reads Chrome’s host folder, so both use one launcher and registration.
+
+Safari requires a containing app, a Safari native-messaging adapter and
+signatures for the app and extension. Direct macOS distribution also requires
+Developer ID signing and notarization. See Apple’s [packaging guide](https://developer.apple.com/documentation/safariservices/packaging-a-web-extension-for-safari)
+and [distribution guide](https://developer.apple.com/documentation/safariservices/distributing-your-safari-web-extension).
 
 ## Install and run
 

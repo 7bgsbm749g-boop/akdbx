@@ -31,7 +31,7 @@ import time
 from xml.sax.saxutils import escape
 
 from . import __version__, native_merge
-from .extension_route import BROWSERS, CHROMIUM_BROWSERS, FIREFOX_EXTENSION_ID, EXTENSION_ID, EXTENSION_VERSION
+from .extension_route import BROWSERS, CAPTURE_HOST_BROWSERS, CHROMIUM_BROWSERS, FIREFOX_EXTENSION_ID, EXTENSION_ID, EXTENSION_VERSION
 
 COMMAND = 'setup'
 STAGES = ('system', 'vault', 'page', 'access', 'login', 'fill', 'features', 'skill')
@@ -70,11 +70,12 @@ MARKER = 'akdbx-setup'
 SAFE_WORD = frozenset('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./:=\\')
 STATE_LIMIT = 64 * 1024
 LINUX_BROWSERS = {
-    'firefox': ('firefox',),
+    'firefox': ('firefox', 'org.mozilla.firefox'),
     'helium': ('helium', 'helium-browser'),
     'chrome': ('google-chrome', 'google-chrome-stable'),
     'edge': ('microsoft-edge', 'microsoft-edge-stable'),
     'chromium': ('chromium', 'chromium-browser'),
+    'brave': ('brave-browser', 'brave-browser-stable', 'brave'),
 }
 STATE_KEYS = ('vault', 'keyfile', 'tls_cert', 'tls_key', 'access', 'tailscale_name', 'tailnet_port',
               'local_port', 'start_at_login', 'browsers', 'extension_dir', 'firefox_extension_dir', 'cdp_profile', 'capture_host',
@@ -130,7 +131,7 @@ def add_parser(commands):
     command.add_argument('--capture-host', action='store_true', default=None,
                          help='set up the authenticator capture extension and native host')
     command.add_argument('--no-capture-host', action='store_false', dest='capture_host')
-    command.add_argument('--capture-browser', choices=CHROMIUM_BROWSERS, help='browser for the capture host (default chrome)')
+    command.add_argument('--capture-browser', choices=CAPTURE_HOST_BROWSERS, help='browser for the capture host (default chrome)')
     command.add_argument('--capture-extension-id',
                          help='ID of the loaded capture extension (32 letters a-p), shown in chrome://extensions')
     command.add_argument('--capture-dir', type=Path, help='folder for the unpacked capture extension')
@@ -699,7 +700,7 @@ class Setup:
         }
         self.tools = tools
         if not tools['browsers']:
-            gaps.append('no supported Chromium browser (Helium, Chrome, Edge) found (needed for browser fills)')
+            gaps.append('no supported fill extension browser found (expected ' + ', '.join(BROWSERS) + ')')
         self.say(f'Python {python}; {platform}: {desktop}')
         self.say('Built-in merge engine: ' + native_merge.ENGINE)
         self.say('mkcert: ' + (tools['mkcert'] or 'not found') + '; tailscale: ' + (tools['tailscale'] or 'not found'))
@@ -723,8 +724,12 @@ class Setup:
             local = self.env.get('LOCALAPPDATA', '')
             programs = [self.env.get(name, '') for name in ('ProgramFiles', 'ProgramFiles(x86)')]
             candidates = {
-                'firefox': [Path(base) / 'Mozilla Firefox' / 'firefox.exe' for base in programs if base],
+                'firefox': [Path(base) / 'Mozilla Firefox' / 'firefox.exe' for base in (*programs, local) if base],
                 'helium': [Path(local) / 'imput' / 'Helium' / 'Application' / 'chrome.exe'],
+                'brave': [Path(base) / 'BraveSoftware/Brave-Browser/Application/brave.exe'
+                          for base in (*programs, local) if base],
+                'chromium': [Path(base) / 'Chromium/Application/chrome.exe'
+                             for base in (*programs, local) if base],
                 'chrome': [Path(base) / 'Google' / 'Chrome' / 'Application' / 'chrome.exe'
                            for base in (*programs, local) if base],
                 'edge': [Path(base) / 'Microsoft' / 'Edge' / 'Application' / 'msedge.exe'
@@ -732,7 +737,17 @@ class Setup:
             }
             for name, paths in candidates.items():
                 for path in paths:
-                    if local and path.is_file():
+                    if path.is_absolute() and path.is_file():
+                        found[name] = str(path)
+                        break
+        elif sys.platform == 'darwin':
+            bundles = {'chrome': 'Google Chrome', 'chromium': 'Chromium', 'brave': 'Brave Browser',
+                       'edge': 'Microsoft Edge', 'helium': 'Helium', 'firefox': 'Firefox'}
+            for name, bundle in bundles.items():
+                binary = 'firefox' if name == 'firefox' else bundle
+                for base in (self.home / 'Applications', Path('/Applications')):
+                    path = base / (bundle + '.app') / 'Contents/MacOS' / binary
+                    if path.is_file():
                         found[name] = str(path)
                         break
         else:
@@ -741,6 +756,12 @@ class Setup:
                     path = self.which(command)
                     if path:
                         found[name] = path
+                        break
+            if 'firefox' not in found:
+                exports = (self.home / '.local/share/flatpak', Path('/var/lib/flatpak'))
+                for path in (Path('/snap/bin/firefox'), *(base / 'exports/bin/org.mozilla.firefox' for base in exports)):
+                    if path.is_file():
+                        found['firefox'] = str(path)
                         break
         return found
 
@@ -1467,10 +1488,13 @@ class Setup:
             installed = (_read_regular(where['launcher'], LAUNCHER_LIMIT) == expected
                          and _owned_manifest(where['manifest'], where['launcher']))
             if installed and self.windows:
-                import winreg
-                from .extension_host import HOST_NAME, WINDOWS_KEYS
-                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WINDOWS_KEYS[browser] + '\\' + HOST_NAME) as key:
-                    installed = winreg.QueryValueEx(key, '')[0] == str(where['manifest'])
+                from .extension_host import windows_registered_manifest
+                installed = windows_registered_manifest(browser) == str(where['manifest'])
+            if installed and browser == 'firefox' and sys.platform.startswith('linux'):
+                from .extension_host import check_firefox_bridge, detected_firefox_package
+                package = detected_firefox_package()
+                if package != 'native':
+                    check_firefox_bridge(package)
         except (OSError, ValueError):
             installed = False
         if installed:

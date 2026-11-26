@@ -31,7 +31,14 @@ the existing extension protocol and its field and origin restrictions.
 A temporary add-on is removed when Firefox exits. Load it again at the next
 start, then pair again. Permanent installation in standard Firefox requires a
 Mozilla-signed XPI. This source release does not publish an AMO listing or
-provide a signed XPI. Do not disable Firefox's signature checks.
+provide a signed XPI. For an unlisted release the publisher needs an AMO
+developer account authorized for `akdbx@akdbx.org`, its API key (JWT issuer)
+and its API secret. Build the Firefox folder with the intended initial broker
+origin, assign an unused, increasing add-on version, and submit that folder
+with `web-ext sign --channel=unlisted`. Supply the credentials privately as
+`WEB_EXT_API_KEY` and `WEB_EXT_API_SECRET`. Distribute the returned signed
+XPI after review. Editing its bundled origin or rebuilding the files requires
+a new signature. See Mozilla’s [web-ext signing instructions](https://extensionworkshop.com/documentation/develop/getting-started-with-web-ext/).
 
 After an update, rebuild with `--browser firefox` into the same Firefox
 folder, reload the temporary add-on, and pair again. Keep Chromium and
@@ -58,9 +65,17 @@ the two formats share one folder.
 | Windows | `HKEY_CURRENT_USER\Software\Mozilla\NativeMessagingHosts\org.akdbx.extension`; its default value names the host manifest |
 
 `akdbx extension info` reports the paths and launcher state. Run
-`akdbx extension refresh` if an upgrade moves the broker package. Sandboxed
-Snap or Flatpak Firefox packages are not covered by this host installation;
-use a standard Mozilla Firefox installation.
+`akdbx extension refresh` if an upgrade moves the broker package. For Linux Snap or Flatpak builds, run the host installer outside
+the sandbox in the user’s graphical session. After 0.47.0 it recognizes the
+usual launchers. Use `--firefox-package snap` or `--firefox-package flatpak`
+to select the intended package explicitly, or `native` for an unconfined
+build on the same machine. The installer checks the session bus with `gdbus`
+before writing the normal Mozilla manifest. The desktop needs the native
+messaging proxy or the WebExtensions portal. Firefox and its package must
+also allow that service. A portal may ask for permission on first use.
+Confirm `extension_connected` in broker status after loading the add-on.
+If the bridge is unavailable, use an unconfined Firefox installation.
+See [Mozilla’s native messaging design](https://firefox-source-docs.mozilla.org/toolkit/components/extensions/webextensions/native-messaging-portal-design.html).
 
 For a user-started QR import, build the **separate importer** (1.1.0+) with
 `akdbx-browser-import build-extension --browser firefox NEW_DIRECTORY` and load
