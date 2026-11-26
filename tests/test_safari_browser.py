@@ -71,6 +71,7 @@ def test_actual_safari_loads_the_native_app_and_attaches_to_its_local_broker(tmp
         with log.open('wb') as stream:
             result = subprocess.run(['xcodebuild', '-project', str(project), '-scheme', 'SafariUI',
                 '-destination', 'platform=macOS', '-derivedDataPath', str(tmp_path / 'ui-derived'),
+                '-resultBundlePath', str(tmp_path / 'safari-ui.xcresult'),
                 '-parallel-testing-enabled', 'NO', '-maximum-test-execution-time-allowance', '180',
                 'test'], stdout=stream, stderr=subprocess.STDOUT, timeout=600)
         assert result.returncode == 0, log.read_text(errors='replace')[-20000:]
@@ -79,6 +80,13 @@ def test_actual_safari_loads_the_native_app_and_attaches_to_its_local_broker(tmp
         observer.shutdown()
         observer.server_close()
         worker.join(5)
+        bundle = tmp_path / 'safari-ui.xcresult'
+        if bundle.exists():
+            exported = subprocess.run(['xcrun', 'xcresulttool', 'export', 'attachments',
+                '--path', str(bundle), '--output-path', str(tmp_path / 'safari-ui-attachments')],
+                capture_output=True, timeout=30)
+            if exported.returncode:
+                print('UI attachment export failed: ' + exported.stderr.decode(errors='replace')[-2048:])
         log = tmp_path / 'safari-ui-xcode.log'
         if log.exists():
             content = log.read_text(errors='replace')

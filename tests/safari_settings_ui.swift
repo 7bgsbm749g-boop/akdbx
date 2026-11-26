@@ -10,6 +10,14 @@ final class SafariSettingsTests: XCTestCase {
 
     func record(_ stage: String) {
         print("Safari UI stage: \(stage)\n\(safari.debugDescription.prefix(60000))")
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = stage
+        image.lifetime = .keepAlways
+        add(image)
+        let tree = XCTAttachment(string: String(safari.debugDescription.prefix(60000)))
+        tree.name = stage + "-tree"
+        tree.lifetime = .keepAlways
+        add(tree)
         try? String(safari.debugDescription.prefix(60000)).write(to: artifactDirectory.appendingPathComponent(stage + ".txt"),
                                           atomically: true, encoding: .utf8)
         try? XCUIScreen.main.screenshot().pngRepresentation.write(
@@ -25,9 +33,16 @@ final class SafariSettingsTests: XCTestCase {
         radio.click()
     }
 
+    func checkbox(containing name: String) -> XCUIElement {
+        // AppKit controls can expose their visible name as title rather than
+        // label. Both Safari versions in the native matrix use title here.
+        safari.checkBoxes.matching(NSPredicate(
+            format: "label CONTAINS[c] %@ OR title CONTAINS[c] %@", name, name)).firstMatch
+    }
+
     func enable(_ checkbox: XCUIElement) {
         XCTAssertTrue(checkbox.waitForExistence(timeout: 5), "Missing Safari checkbox")
-        if (checkbox.value as? String) != "1" { checkbox.click() }
+        if String(describing: checkbox.value ?? "") != "1" { checkbox.click() }
     }
 
     func testPackagedExtensionAttachesToBroker() throws {
@@ -41,24 +56,21 @@ final class SafariSettingsTests: XCTestCase {
         record("safari-ui-settings")
         tab("Advanced")
         record("safari-ui-advanced")
-        var developer = safari.checkBoxes.matching(NSPredicate(
-            format: "label CONTAINS[c] %@", "web developers")).firstMatch
+        var developer = checkbox(containing: "web developers")
         if !developer.exists {
-            developer = safari.checkBoxes.matching(NSPredicate(
-                format: "label CONTAINS[c] %@", "Develop menu")).firstMatch
+            developer = checkbox(containing: "Develop menu")
         }
         enable(developer)
         tab("Developer")
         record("safari-ui-developer")
-        let unsigned = safari.checkBoxes.matching(NSPredicate(
-            format: "label CONTAINS[c] %@", "Allow unsigned extensions")).firstMatch
+        let unsigned = checkbox(containing: "Allow unsigned extensions")
         enable(unsigned)
         record("safari-ui-after-unsigned")
-        XCTAssertEqual(unsigned.value as? String, "1", "Safari did not permit unsigned developer extensions")
+        XCTAssertEqual(String(describing: unsigned.value ?? ""), "1",
+                       "Safari did not permit unsigned developer extensions")
         tab("Extensions")
         record("safari-ui-extensions")
-        let extensionToggle = safari.checkBoxes.matching(NSPredicate(
-            format: "label CONTAINS[c] %@", "akdbx")).firstMatch
+        let extensionToggle = checkbox(containing: "akdbx")
         enable(extensionToggle)
         let turnOn = safari.buttons["Turn On"]
         if turnOn.waitForExistence(timeout: 2) { turnOn.click() }

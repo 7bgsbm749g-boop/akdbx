@@ -43,6 +43,7 @@ jobs:
             ${{ runner.temp }}/sb/**/safari-ui-xcode.log
             ${{ runner.temp }}/sb/**/safari-ui/*.txt
             ${{ runner.temp }}/sb/**/safari-ui/*.png
+            ${{ runner.temp }}/sb/**/safari-ui-attachments/*
             ${{ runner.temp }}/sb/**/safari-startup.png
             ${{ runner.temp }}/sb/**/safari-startup.json
   safari-native:
