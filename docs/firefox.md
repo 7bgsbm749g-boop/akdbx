@@ -37,18 +37,12 @@ restrictions.
 
 A temporary add-on is removed when Firefox exits. Load it again at the next
 start, then pair again. Permanent installation in standard Firefox requires a
-Mozilla-signed XPI. This source release does not publish an AMO listing or
-provide a signed XPI. For an unlisted release the publisher needs an AMO
-developer account authorized for `akdbx@akdbx.org`, its API key (JWT issuer)
-and its API secret. Build the Firefox folder with the intended initial broker
-origin, assign an unused, increasing add-on version, and submit that folder
-with `web-ext sign --channel=unlisted`. Supply the credentials privately as
-`WEB_EXT_API_KEY` and `WEB_EXT_API_SECRET`. Distribute the returned signed
-XPI after review. Editing its bundled origin or rebuilding the files requires
-a new signature. See Mozilla’s [web-ext signing instructions](https://extensionworkshop.com/documentation/develop/getting-started-with-web-ext/).
+Mozilla-signed XPI. After 0.52.0 the broker gets its own build signed:
+see [Permanent install](#permanent-install-a-mozilla-signed-xpi-after-0520).
 
 After an update, rebuild with `--browser firefox` into the same Firefox
-folder. For an unpacked install, reload the temporary add-on. For a ZIP
+folder (a signed install needs a new signature instead; see
+[Updates](#updates)). For an unpacked install, reload the temporary add-on. For a ZIP
 install, create a fresh ZIP from the rebuilt folder and select the new archive
 with **Load Temporary Add-on**. Pair again. Keep Chromium and
 Firefox builds in separate folders; the builder refuses to replace the other
@@ -64,6 +58,134 @@ An existing akdbx manifest establishes which format owns a saved or default
 folder. This also handles unused Chromium paths saved by older setup versions
 and Firefox builds made with the standalone command. Path aliases do not make
 the two formats share one folder.
+
+## Permanent install: a Mozilla-signed XPI (after 0.52.0)
+
+Release Firefox installs an add-on permanently only when Mozilla signed it.
+`akdbx extension sign` gets the broker's own Firefox build signed on
+addons.mozilla.org (AMO) through the **unlisted** channel: Mozilla's
+self-distribution route, where the add-on is not listed on AMO, Mozilla
+reviews and signs every submission, and the developer distributes the file.
+Each deployment signs its own file. The build writes the broker's
+private-page origin and a new random build ID (the extension's trust anchor,
+see [Origin trust](../skills/akdbx/references/extension.md#origin-trust)) into
+config.js, so a file that all users shared would share one trust anchor.
+`status` reports `firefox_signing_protocol: 1` and
+`firefox_signing_configured: true` when the running broker can sign.
+
+### One-time setup
+
+1. Create a Mozilla account with two-step authentication, open
+   <https://addons.mozilla.org/en-US/developers/addon/api/key/>, accept the
+   developer agreement and generate credentials. Do not paste them into a
+   terminal or a chat.
+2. Save them in the vault as one entry on exactly
+   `https://addons.mozilla.org` with two captured protected fields: the
+   **JWT issuer** as `jwt_issuer` and the **JWT secret** as `jwt_secret`.
+   Pin each value on the key page with `pin-password-target --mode read` and
+   save it with `capture-secret --field jwt_issuer` and
+   `capture-secret --field jwt_secret` (see
+   [secret capture](../skills/akdbx/references/secret-capture.md)).
+3. The first signature creates the add-on `akdbx@akdbx.org` in that AMO
+   account. Later signatures add versions to it.
+
+### Sign, install and pair
+
+```sh
+akdbx search addons.mozilla.org                      # the AMO API key entry's handle
+akdbx extension sign --output ~/akdbx-firefox HANDLE
+```
+
+The broker builds the Firefox files from its own installed akdbx, never from
+files a caller supplies, so nobody can get other code signed under the
+owner's account. It picks a new add-on version, uploads the archive, waits
+for AMO's validation and signature, downloads the signed XPI and checks that
+it holds exactly the submitted files plus Mozilla's signature files under
+`META-INF/`. It saves the XPI in its own private folder
+(`${XDG_STATE_HOME:-~/.local/state}/akdbx/firefox-signed-KEY/` on Linux and
+macOS, `%LOCALAPPDATA%\akdbx\firefox-signed\` on Windows). The CLI then
+copies it into `--output` (an existing file with other contents is never
+replaced) and prints JSON with `state: "signed"`, `addon_version`, `xpi` (the
+copy), `broker_xpi`, `size`, `sha256` and `trusted_origin`.
+
+One call works for at most about 100 seconds. When AMO needs longer, the
+result is `state: "pending"` with the `stage` (`validation`, `review`, ...)
+and `retry_after` seconds. Run the same command again with a fresh search
+handle: it resumes the same job and does not submit again. `--restart` drops a
+pending job and submits a new version. The job lives only in broker memory
+(no secret in it) for at most 24 hours; after a broker restart the next call
+submits a new version.
+
+To install, open `about:addons` in Firefox, choose the gear menu, **Install
+Add-on From File…**, and select the XPI (or drop the file on the Firefox
+window). Remove a temporary akdbx add-on first in
+`about:debugging#/runtime/this-firefox`: both use the ID `akdbx@akdbx.org`.
+The installed add-on stays after Firefox restarts, uses the same native host
+(`akdbx extension install --browser firefox`) and pairs as usual: open the
+toolbar popup and approve the code on the broker's private page. The pairing
+key lives in session storage, so pair again after each Firefox start.
+
+### Updates
+
+Mozilla signs the exact files, and Firefox refuses a signed add-on whose
+files changed. So every rebuild needs a new signature: after an akdbx update
+that changes the extension, `status` shows the installed add-on as
+`version_status: "outdated"` or `"mismatch"`. Run `akdbx extension sign`
+again and install the new XPI over the old one. Each new XPI also has a new
+build ID, so the extension trusts the built origin again from the start and
+asks for a new pairing. Origin changes that the broker's identity key signs
+need no new file.
+
+### Versions
+
+AMO accepts every version string only once per add-on, deleted versions
+included. A signed build's version is `MAJOR.MINOR.PATCH.N`, where
+N = 100000000 + 1000 × (the content part of the unsigned build version) + a
+sequence number from 1 to 999, for example `0.15.1.111058001`. Firefox and
+AMO allow up to nine digits in a part. The broker reads the add-on's versions
+on AMO and takes the next sequence number; when another deployment of the
+same account took one (AMO answers HTTP 409), it builds the next one. From
+the version alone the broker knows that a signed add-on runs its own
+contents, so `status` shows it as `version_status: "current"`. A broker from
+0.52.0 or earlier refuses the nine-digit version.
+
+### How the API key is protected
+
+- The caller passes only the entry's search handle. The broker reads the two
+  protected fields itself and never returns, logs or prints them.
+- For each AMO request the broker signs a JSON Web Token (HS256, a unique
+  `jti`, valid for 60 seconds; AMO allows at most 300). A child process
+  (`akdbx/amo_https.py`, standard library only) sends that one request and is
+  stopped at a fixed deadline. The child gets the token on standard input,
+  never the secret, and nothing goes into argv or the environment.
+- The child ignores proxy variables and follows no redirect. The broker sends
+  a token only to the API's own origin; a download redirect to another origin
+  gets no token.
+- AMO's own error text is shortened to one line without control characters,
+  and any copy of the key in it is withheld.
+
+akdbx calls the AMO v5 API from Python rather than running `web-ext sign`:
+that needs Node.js and the secret in its environment or command line, and a
+signing child that holds only one-minute tokens keeps the secret inside the
+broker.
+
+### Refusals
+
+| Result | Meaning |
+| --- | --- |
+| `the entry is not on https://addons.mozilla.org` | Select the AMO API key entry. Look-alike hosts and AMO's staging site are refused. |
+| `the entry has no captured protected jwt_issuer and jwt_secret fields` | Capture both values with `capture-secret`. A value typed into another field, or an unprotected field, does not count. |
+| `vault locked` | Unlock first; the result includes the private unlock link. |
+| `this broker serves no private HTTPS page` | The add-on would trust no origin. Start the broker with its private page (relay, loopback HTTPS or Tailscale Serve). |
+| `AMO refused the API key (HTTP 401)` | Wrong issuer or secret, or this computer's clock is wrong. The job is kept. |
+| `AMO refused add-on ID akdbx@akdbx.org (HTTP 403 or 409)` | Another AMO account owns the ID (or a deleted add-on used it), or the key cannot manage it. Nothing is signed. |
+| `AMO validation failed for VERSION: …` | AMO's validator refused the archive; its first errors follow. Nothing is signed. |
+| `Mozilla did not sign VERSION` | AMO rejected or disabled the version; see the AMO developer hub. |
+| `AMO could not be reached`, `AMO is busy or failed (HTTP 5xx or 429)` | Network failure or an AMO outage. The job is kept: run the command again later. |
+| `the signed add-on from AMO does not match the submitted build` | The download is not the submitted build plus signatures. Nothing is saved. |
+
+Guided setup (`akdbx setup --browser firefox`) still loads the temporary
+add-on and names this command; it does not sign by itself yet.
 
 ## Native host locations
 
@@ -157,7 +279,15 @@ on a login, an address (with the identity pin's checks, 0.15.0) and a texted
 code (0.15.0); no Firefox test fills a TOTP code or a card from the popup. It
 also checks the pixel check on an uncovered and a covered field. For `capture-secret`
 and `capture-totp`, it reopens a disposable encrypted vault to verify the
-result. CI runs this suite on Linux, macOS and Windows with Firefox 161, and on
+result. After 0.52.0 it also loads the exact archive that
+`akdbx extension sign` uploads, with its nine-digit signed-build version, and
+fills a password through it (the broker reports it `current`).
+`tests/test_firefox_signing.py` runs the whole signing flow against a fake
+AMO over loopback TLS (the real child process, AMO's status codes and
+messages, no request to Mozilla). In the Linux Firefox job, Mozilla's
+`addons-linter` 10.16.0 (the validator AMO runs on uploads) checks that
+archive and must find no error. The first real signature happens on the
+owner's own account. CI runs this suite on Linux, macOS and Windows with Firefox 161, and on
 Linux with the minimum supported version, Firefox 153. The
 [support matrix](support-matrix.md#extension-route-firefox) lists each Firefox
 operation and its CI job.

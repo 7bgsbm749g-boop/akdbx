@@ -1484,8 +1484,10 @@ def test_host_refuses_a_malformed_extension_version(version):
 def test_extension_version_check_is_strict():
     assert route.valid_extension_version('1.2.3') and route.valid_extension_version('99999.0.0')
     assert route.valid_extension_version('1.2.3.4') and route.valid_extension_version('99999.99999.99999.99999')
+    # An AMO-signed Firefox build has nine digits in its fourth part (extension_host.signed_version).
+    assert route.valid_extension_version('0.15.1.123456789')
     for bad in ('1.2', '1.2.3.4.5', '1.2.3.04', '01.2.3', '1.2.3 ', '1.2.3\n', '99999.99999.999999', '1.2.3.',
-                '1.2.3.123456', 1, True, None, '١.٢.٣', ''):
+                '1.2.3.1234567890', '99999.99999.99999.123456789', 1, True, None, '١.٢.٣', ''):
         assert not route.valid_extension_version(bad)
 
 

@@ -25,7 +25,7 @@ from .web_unlock import start_unlock_server
 from .local_https import is_loopback_origin, reload_certificate, start_local_unlock_server
 from .notifications import validate_webhook_url
 from . import capture_cli, card_cli, extension_host, identity_cli, pairing_cli, relay as relay_module, relay_cli, secret_cli, sms_cli
-from . import android_cli, android_route, browser_slots, page_url, setup_cli, native_cli
+from . import android_cli, android_route, browser_slots, firefox_signing, page_url, setup_cli, native_cli
 from .native_fields import DELIVERY as NATIVE_DELIVERY
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES as FILL_ROUTES
 from .sink_helper import SinkError
@@ -285,6 +285,8 @@ def _request_timeout(payload: dict) -> int:
     slow = action in {'pin-card-target', 'pin-identity-target', 'list-password-frames'} or (
         action == 'pin-password-target' and ('frame_origin' in payload or payload.get('route') == 'extension'
                                              or payload.get('mode') == 'read'))
+    if action == firefox_signing.ACTION:
+        return firefox_signing.CLI_TIMEOUT  # The broker answers "pending" after about 100 s of AMO work.
     if action == 'sms-wait':
         timeout = payload.get('timeout', 0)
         return (timeout if type(timeout) is int and 0 <= timeout <= 300 else 0) + 10
@@ -817,7 +819,7 @@ def main(argv: list[str] | None = None) -> int:
         print('--broker-uid applies only to Linux; Windows requires the same user/session', file=sys.stderr)
         return 2
     resolve_unlock_origin(args)
-    if args.command == 'extension':
+    if args.command == 'extension' and args.extension_command != 'sign':
         return extension_host.run(args, args.socket, args.unlock_origin)
     # Setup passes --socket on to the commands it runs only when it was given.
     args.socket_explicit = args.socket is not None
@@ -904,7 +906,8 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
                             notification_state_path=state, secret_sinks_path=args.secret_sinks,
                             default_fill_route=args.default_fill_route,
                             sms_sources_path=default_sms_sources(args, state),
-                            android_devices_path=args.android_devices)
+                            android_devices_path=args.android_devices,
+                            firefox_signing_dir=firefox_signing.default_folder(args.socket))
         except SinkError as exc:
             print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
             return 2
@@ -955,7 +958,8 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
                                                else default_unlock_block_state(args.socket)),
                             secret_sinks_path=args.secret_sinks, default_fill_route=args.default_fill_route,
                             sms_sources_path=default_sms_sources(args),
-                            android_devices_path=args.android_devices)
+                            android_devices_path=args.android_devices,
+                            firefox_signing_dir=firefox_signing.default_folder(args.socket))
         except SinkError as exc:
             print('secret sink configuration refused: ' + str(exc), file=sys.stderr)
             return 2
@@ -1025,6 +1029,9 @@ def _serve(args, database, keyfile, relay_config, relay_store, relay_moved=()) -
 
 
 def _command(args) -> int:
+    if args.command == 'extension':  # extension sign: the broker builds, submits and saves.
+        return firefox_signing.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
+                                                                 expected_unlock_origin=args.unlock_origin))
     if args.command in native_cli.COMMANDS:
         return native_cli.run(args, lambda payload: request(args.socket, payload, broker_uid=args.broker_uid,
                                                           expected_unlock_origin=args.unlock_origin))
