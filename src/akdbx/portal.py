@@ -687,7 +687,13 @@ SCRIPT = r""""use strict";
       return true;
     }
     // The page's signature for the extension lasts an hour; an older page asks for a reload first.
-    if (performance.now() > 50 * 60 * 1000) {
+    let issued = null;
+    try {
+      issued = JSON.parse(key.getAttribute("data-hardware-proof") || "null")?.statement?.issued ?? null;
+    } catch {
+      issued = null;
+    }
+    if (Number.isSafeInteger(issued) && Date.now() / 1000 - issued > 50 * 60) {
       setStatus(status, "This page is more than 50 minutes old. Reload it, then try again.", "is-error");
       return false;
     }

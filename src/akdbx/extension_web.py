@@ -58,11 +58,17 @@ def handle_pairing(handler, state):
         held = getattr(broker.vault, 'password', None)
         return broker.locked or not (isinstance(held, str) and held)
 
+    def held_seed():
+        # The challenge of the vault in memory, which the pairing check uses; not the file's.
+        from .unlock_keys import vault_seed
+        return vault_seed(broker.vault)
+
     def form(error='', keys_open=False, browsing_key=False):
         action = ROUTE + '?token=' + html.escape(token, quote=True)
         message = f'<p class="error" role="alert">{html.escape(error)}</p>' if error else ''
         unlock = '<p>The vault is locked: this also unlocks it.</p>' if broker.locked else ''
-        keys = keys_section(state, open_section=keys_open, browsing_key=browsing_key) if by_keys() else ''
+        keys = keys_section(state, open_section=keys_open, browsing_key=browsing_key,
+                            seed=None if broker.locked else held_seed()) if by_keys() else ''
         encoding = ' enctype="multipart/form-data"' if keys else ''
         # The unlock page's form and button: the shared script posts it, shows the busy
         # state and then replaces the sheet with the result page (success or error).
@@ -135,6 +141,8 @@ def handle_pairing(handler, state):
                 return True
             ok = False
             keys_used = keys is not None
+            # After a try with this computer's key, that route stays selected.
+            from_browser = keys is not None and bool(keys.responses)
             checked, was_locked = by_keys(), broker.locked
             if checked:
                 if keys is not None and keys.broker_key and hasattr(handler, 'server'):  # the key's touch
@@ -148,7 +156,7 @@ def handle_pairing(handler, state):
                         from .unlock_keys import held_keys_match
                         ok = held_keys_match(broker.vault, password, keys, state.keyfile)
                 except Exception as exc:
-                    browsing = browsing_first(keys, exc) or (keys is not None and bool(keys.responses))
+                    browsing = browsing_first(keys, exc) or from_browser
                     password = keys = None
                     if isinstance(exc, (ChallengeChanged, HardwareKeyError)):
                         # No response, or one for another challenge: not a failed attempt.
@@ -173,7 +181,7 @@ def handle_pairing(handler, state):
                 held = getattr(broker.vault, 'password', None)
                 ok = isinstance(held, str) and bool(held) and isinstance(password, str) and hmac.compare_digest(
                     password.encode('utf-8'), held.encode('utf-8'))
-            browsing = keys is not None and bool(keys.responses)
+            browsing = from_browser
             password = keys = None
             if not ok:
                 if state.record_failure(attempt) or state.blocked:

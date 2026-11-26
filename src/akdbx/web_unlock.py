@@ -211,7 +211,7 @@ def browsing_first(keys, exc) -> bool:
             and not isinstance(exc, TouchTimeout))
 
 
-def keys_section(state, *, open_section: bool = False, browsing_key: bool = False) -> str:
+def keys_section(state, *, open_section: bool = False, browsing_key: bool = False, seed: bytes | None = None) -> str:
     """The form's key file and hardware key fields; empty when the vault can use neither.
 
     The key file field shows when the broker has no key file of its own. The
@@ -231,7 +231,8 @@ def keys_section(state, *, open_section: bool = False, browsing_key: bool = Fals
                      '<input id="keyfile" name="keyfile" type="file" aria-describedby="keyfile-note">'
                      '<p id="keyfile-note" class="setup-note">Only if the vault uses one. The broker keeps it '
                      'in memory and never saves it.</p></div>')
-    seed = read_challenge(state.database)
+    # ``seed``: the open vault's challenge, when its own keys are checked (pairing an open vault).
+    seed = seed if seed is not None else read_challenge(state.database)
     if seed is not None:
         names.append('hardware key')
         computer = html.escape(computer_name())

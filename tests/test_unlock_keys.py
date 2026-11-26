@@ -657,6 +657,46 @@ def test_a_failed_try_with_this_computers_key_keeps_that_route(tmp_path, broker_
         server.server_close()
 
 
+def test_the_unlocked_pairing_page_shows_the_open_vaults_challenge(tmp_path, broker_key):
+    """Another app may have saved the file with a new seed; the check uses the vault in memory."""
+    import re
+    from test_extension_route import PageHandler
+    from akdbx.extension_web import handle_pairing
+    from akdbx.web_unlock import UnlockState
+    folder = tmp_path / 'vault'
+    folder.mkdir(mode=0o700)
+    changed = folder / 'changed.kdbx'
+    hardware_vault(changed, password=None)  # the file on disk now has another seed
+    broker, path = pairing(locked=False)
+    response = bytes.fromhex(YUBIKEY_RESPONSE)
+    broker.vault = open_encrypted(YUBIKEY_VAULT.read_bytes(), YUBIKEY_PASSWORD, key_material(None, response))
+    broker.vault.password = None  # an open vault with no master password: its keys decide
+    state = UnlockState(broker, changed, None, lambda *_, **__: pytest.fail('the vault file was opened'))
+    page = PageHandler(path)
+    handle_pairing(page, state)
+    assert re.search(r'data-hardware-challenge="([0-9a-f]+)"', page.sent[0][1]).group(1) == YUBIKEY_SEED.hex()
+
+
+def test_held_keys_match_reads_the_whole_configured_key_file(tmp_path):
+    big = tmp_path / 'big.key'
+    big.write_bytes(bytes(range(256)) * (5 * 1024))  # 1.25 MiB, more than the upload limit
+    vault = create_database(io.BytesIO(), password=MASTER, keyfile=key_material(big.read_bytes(), None))
+    assert unlock_keys.held_keys_match(vault, MASTER, None, big)
+
+
+def test_a_failed_pairing_try_with_this_computers_key_keeps_that_route(broker_key):
+    from akdbx.web_unlock import UnlockState
+    broker, path = pairing()
+
+    def opener(_database, password, _keyfile, keys=None):
+        raise CredentialsError('synthetic failure')
+    state = UnlockState(broker, YUBIKEY_VAULT, None, opener)
+    status, body = pair(path, state, [('password', 'wrong'), ('confirmed', 'yes'), ('hardware', 'on'),
+                                      ('hardware_route', 'browser'), ('challenge', YUBIKEY_SEED.hex()),
+                                      ('response', YUBIKEY_RESPONSE)])
+    assert status == 401 and route_checked(body.encode()) == 'browser'
+
+
 # ----- the real kernel path ------------------------------------------------------
 # Defined only on Linux: other systems have no /dev/uhid, and their CI jobs refuse skips.
 if sys.platform == 'linux':

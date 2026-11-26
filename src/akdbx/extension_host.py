@@ -249,7 +249,13 @@ def hardware_request(message, outgoing, out_lock, responses=None):
             reply['error'] = 'busy'
         else:
             try:
-                reply['responses'] = [item.hex() for item in ask(bytes.fromhex(challenge))]
+                found = ask(bytes.fromhex(challenge))
+                if getattr(found, 'complete', True) is False:
+                    # Time cut the search short: the right slot may be missing, so ask for a retry
+                    # rather than send answers that could cost the user one of the link's attempts.
+                    reply['error'] = 'timeout'
+                else:
+                    reply['responses'] = [item.hex() for item in found]
             except hardware_key.HardwareKeyError as exc:
                 reply['error'] = _HARDWARE_ERRORS.get(type(exc).__name__, 'failed')
             except Exception:

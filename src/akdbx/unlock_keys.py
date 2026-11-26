@@ -198,6 +198,14 @@ def uses_hardware_key(keyfile) -> bool:
     return callable(getvalue) and getvalue().startswith(MARKER)
 
 
+def vault_seed(vault) -> bytes | None:
+    """The hardware key challenge (KDF seed) of an open vault, or None."""
+    try:
+        return bytes(vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict['S'].value)
+    except Exception:
+        return None
+
+
 def held_keys_match(vault, password, keys: UnlockKeys | None, configured_keyfile=None) -> bool:
     """Whether the page's keys are the ones the open vault was unlocked with.
 
@@ -216,12 +224,12 @@ def held_keys_match(vault, password, keys: UnlockKeys | None, configured_keyfile
     held = holder.getvalue() if holder is not None else None
     key_bytes = keys.keyfile if keys is not None and keys.keyfile is not None else None
     if key_bytes is None and configured_keyfile is not None:
+        # The whole file, as the unlock read it; the upload limit is only for the page.
         with open(configured_keyfile, 'rb') as stream:
-            key_bytes = stream.read(KEYFILE_LIMIT + 1)
+            key_bytes = stream.read()
     candidates = [None]
     if keys is not None and keys.hardware:
-        parameters = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
-        seed = bytes(parameters['S'].value)
+        seed = vault_seed(vault)
         if keys.responses:
             if keys.challenge != seed:
                 raise ChallengeChanged

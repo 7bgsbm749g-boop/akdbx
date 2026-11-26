@@ -373,3 +373,13 @@ def test_this_computer_lists_its_keys_without_error():
                             'the hardware key has no challenge-response slot set up'} or 'hardware key' in str(exc)
     else:
         assert all(len(answer) == 20 for answer in answers)
+
+
+def test_the_native_host_never_sends_the_answers_of_a_cut_search():
+    out, lock = io.BytesIO(), threading.Lock()
+    cut = hardware_key.Responses([expected()])
+    cut.complete = False
+    worker = extension_host.hardware_request(dict(type='hardware-key', id=3, challenge=SEED.hex()), out, lock,
+                                             responses=lambda challenge: cut)
+    worker.join(5)
+    assert frames(out.getvalue()) == [dict(type='hardware-key', id=3, error='timeout')]
