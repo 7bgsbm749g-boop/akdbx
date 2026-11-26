@@ -477,7 +477,7 @@ available, whatever the table says.
 Everywhere: passwords never go to a window pin; `capture-totp` needs a CDP,
 extension or Android Chrome read pin (a native read pin is refused); the
 extension reads only in the top document (use CDP for a child frame); QR read
-pins need CDP or a Chromium-family extension (Firefox refuses them); agent
+pins need CDP or fill extension 0.14.0+ (Firefox: 0.14.2+); agent
 desktop slots apply to CDP pins and, on Linux, to window pins of a slot's
 Chrome, never to the extension route.
 

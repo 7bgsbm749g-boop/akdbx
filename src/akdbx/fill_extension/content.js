@@ -490,6 +490,9 @@
     // A scroll container's own scroll markers are generated boxes too, unless the group has no box.
     const markers = style.getPropertyValue("scroll-marker-group");
     if (markers && markers !== "none" && getComputedStyle(el, "::scroll-marker-group").display !== "none") return true;
+    // A loaded <img> is a replaced element: no ::before or ::after paints on it. Firefox
+    // still reports its alt text as ::before content, the broken-image fallback.
+    if (el instanceof HTMLImageElement && el.complete && el.naturalWidth > 0) return false;
     return ["::before", "::after"].some(pseudo => {
       const generated = getComputedStyle(el, pseudo);
       return drawn(generated.content) && generated.display !== "none";
