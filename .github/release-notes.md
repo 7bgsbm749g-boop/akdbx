@@ -8,6 +8,8 @@ akdbx {{VERSION}} is one release for every platform. Install the same wheel on L
 
 Every operation, per route and platform, with the CI job that proves it and the reason for each gap: [support matrix](https://github.com/7bgsbm749g-boop/akdbx/blob/v{{VERSION}}/docs/support-matrix.md).
 
+From 0.50.1, the private unlock page also accepts a vault key file or a KeePassXC YubiKey challenge-response (KDBX 4, Argon2). Linux CI tests the whole page flow, Windows CI the vault store, and macOS has no CI for it yet. Version 0.50.0 was tagged but not published; its changes ship in 0.50.1.
+
 Verify a download before installing it:
 
 ```sh
@@ -17,6 +19,6 @@ gh attestation verify akdbx-{{VERSION}}-py3-none-any.whl --repo 7bgsbm749g-boop/
 
 Merge and snapshot admission run inside akdbx on Linux, macOS and Windows. No KeePass or KeePassXC installation is required.
 
-From 0.50.1 the private unlock page also takes a key file, or a KeePassXC YubiKey challenge-response for a KDBX 4 Argon2 vault; Linux CI tests the whole page flow, Windows CI the vault store, and macOS has no CI for it yet. All three platforms serve the same private HTTPS page: HTTPS on `127.0.0.1` with your own certificate (`--tls-cert`, `--tls-key`), opened on the broker's computer or, through Tailscale Serve to a verified `https://127.0.0.1:PORT` target (`--local-port`), on any tailnet device. Linux and macOS also support the Tailscale Serve Unix-socket route; Tailscale Serve on Windows cannot proxy to a Unix socket. From 0.26.0, `akdbx relay enable` opens the same page on any device through the akdbx relay, with no open port: the relay forwards encrypted traffic and TLS ends in the broker. The default `--unlock-origin` is `https://localhost:9443` on every platform, or the origin of an enabled relay. See `docs/private-pages.md`.
+All three platforms serve the same private HTTPS page: HTTPS on `127.0.0.1` with your own certificate (`--tls-cert`, `--tls-key`), opened on the broker's computer or, through Tailscale Serve to a verified `https://127.0.0.1:PORT` target (`--local-port`), on any tailnet device. Linux and macOS also support the Tailscale Serve Unix-socket route; Tailscale Serve on Windows cannot proxy to a Unix socket. From 0.26.0, `akdbx relay enable` opens the same page on any device through the akdbx relay, with no open port: the relay forwards encrypted traffic and TLS ends in the broker. The default `--unlock-origin` is `https://localhost:9443` on every platform, or the origin of an enabled relay. See `docs/private-pages.md`.
 
 Restarting a broker on a new version locks its vault until the private unlock page is used. See `docs/releasing.md` for upgrade steps and `docs/windows.md` for Windows setup, limits and pending checks.
