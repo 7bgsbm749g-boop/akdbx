@@ -333,8 +333,13 @@ akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" extension build --output /path/to/a
 
 Firefox 153+ uses `extension install --browser firefox` and a separate build
 with `extension build --browser firefox --output FOLDER` (0.47.0+).
-See [Firefox setup](docs/firefox.md) for temporary add-on loading, the signed
-XPI requirement for permanent installation, and native host locations.
+From 0.53.0, `akdbx extension sign --output FOLDER HANDLE` has Mozilla sign
+the broker's own Firefox build (AMO, unlisted channel) for a permanent
+install. HANDLE selects the owner's AMO API key entry, whose `jwt_issuer` and
+`jwt_secret` fields stay inside the broker; only the AMO account that owns
+the add-on ID `akdbx@akdbx.org` can sign. See [Firefox setup](docs/firefox.md)
+for temporary add-on loading, signing, permanent installation and updates,
+and native host locations.
 
 The extension pairs its ECDH public key with the broker once per browser
 session: the popup shows a code computed from that key, and the broker's

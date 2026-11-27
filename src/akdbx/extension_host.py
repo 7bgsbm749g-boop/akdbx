@@ -710,6 +710,32 @@ def built_version():
     return EXTENSION_VERSION + '.' + str(int.from_bytes(digest.digest()[:2], 'big'))
 
 
+def _manifest_for(browser, written, version):
+    """The manifest.json bytes of one build format with this version."""
+    manifest = json.loads(written['manifest.json'])
+    manifest['version'] = version
+    if browser == 'firefox':
+        manifest.pop('key', None)
+        manifest.pop('minimum_chrome_version', None)
+        manifest['browser_specific_settings'] = {'gecko': {
+            'id': FIREFOX_EXTENSION_ID, 'strict_min_version': '153.0',
+            'data_collection_permissions': {'required': ['none']}}}
+        manifest['background'] = {'scripts': ['api.js', 'config.js', 'trust.js', 'background.js']}
+        # The browser's native document IDs are required, including for child frames.
+        manifest['permissions'] = [p for p in manifest['permissions'] if p != 'contextMenus'] + ['menus']
+    return json.dumps(manifest, indent=2).encode('utf-8')
+
+
+def _config_text(origin, version, build_id):
+    return ('"use strict";\n// Written by `akdbx extension build`: the first trusted origin for pairing and unlock links.\n'
+            '// After the first pairing, origin changes signed by the broker identity key replace it.\n'
+            'globalThis.AKDBX_TRUSTED_ORIGIN = ' + json.dumps(origin) + ';\n'
+            '// A new random ID on every build: broker trust saved under another build no longer counts.\n'
+            'globalThis.AKDBX_BUILD_ID = ' + json.dumps(build_id) + ';\n'
+            '// The manifest version of this build. The worker reports this copy, which Chrome caches with it.\n'
+            'globalThis.AKDBX_EXTENSION_VERSION = ' + json.dumps(version) + ';\n')
+
+
 # Files that older builds wrote and this build no longer ships: the Enhanced
 # security settings page of fill extension 0.5.0 to 0.15.x. A copy left in an
 # updated folder would still open at its extension URL and show a switch that
@@ -749,32 +775,93 @@ def build(destination, *, host_name=HOST_NAME, unlock_origin=None, browser='chro
             raise ValueError('destination exists and does not hold the akdbx extension; choose a new folder')
     written = _source_files(host_name)
     version = built_version()
-    manifest = json.loads(written['manifest.json'])
-    manifest['version'] = version
-    if browser == 'firefox':
-        manifest.pop('key', None)
-        manifest.pop('minimum_chrome_version', None)
-        manifest['browser_specific_settings'] = {'gecko': {
-            'id': FIREFOX_EXTENSION_ID, 'strict_min_version': '153.0',
-            'data_collection_permissions': {'required': ['none']}}}
-        manifest['background'] = {'scripts': ['api.js', 'config.js', 'trust.js', 'background.js']}
-        # The browser's native document IDs are required, including for child frames.
-        manifest['permissions'] = [p for p in manifest['permissions'] if p != 'contextMenus'] + ['menus']
-    written['manifest.json'] = json.dumps(manifest, indent=2).encode('utf-8')
+    written['manifest.json'] = _manifest_for(browser, written, version)
     destination.mkdir(parents=True, exist_ok=True)
     for name in RETIRED_FILES:
         (destination / name).unlink(missing_ok=True)
     for name, data in written.items():
         (destination / name).write_bytes(data)
-    (destination / 'config.js').write_text(
-        '"use strict";\n// Written by `akdbx extension build`: the first trusted origin for pairing and unlock links.\n'
-        '// After the first pairing, origin changes signed by the broker identity key replace it.\n'
-        'globalThis.AKDBX_TRUSTED_ORIGIN = ' + json.dumps(origin) + ';\n'
-        '// A new random ID on every build: broker trust saved under another build no longer counts.\n'
-        'globalThis.AKDBX_BUILD_ID = ' + json.dumps(secrets.token_urlsafe(16)) + ';\n'
-        '// The manifest version of this build. The worker reports this copy, which Chrome caches with it.\n'
-        'globalThis.AKDBX_EXTENSION_VERSION = ' + json.dumps(version) + ';\n', encoding='utf-8')
+    (destination / 'config.js').write_text(_config_text(origin, version, secrets.token_urlsafe(16)), encoding='utf-8')
     return destination
+
+
+# ----- the Firefox build that AMO signs (akdbx extension sign) ------------
+# A signed build's fourth version part is SIGNED_BASE + 1000 * (the content
+# part of built_version()) + a sequence number 1..999. AMO needs a new version
+# string for every signature, and the broker can still tell from the version
+# alone that a signed add-on runs its own contents (version_status 'current').
+# Unsigned builds use 0..65535 there, so the two never collide; Firefox and AMO
+# allow up to nine digits in each part.
+SIGNED_BASE = 100_000_000
+SIGNED_SEQUENCES = 999
+# Fixed ZIP entry times: the archive bytes depend only on the files.
+ZIP_TIME = (2020, 1, 1, 0, 0, 0)
+
+
+def _content_part():
+    return int(built_version().rsplit('.', 1)[1])
+
+
+def signed_version(sequence):
+    """The add-on version of signed build ``sequence`` (1..999) of this akdbx."""
+    if type(sequence) is not int or not 1 <= sequence <= SIGNED_SEQUENCES:
+        raise ValueError('no signed version number left for this extension build')
+    return f'{EXTENSION_VERSION}.{SIGNED_BASE + 1000 * _content_part() + sequence}'
+
+
+def signed_sequence(version):
+    """The sequence number of a signed version of this build's contents, else None."""
+    if not isinstance(version, str) or not valid_extension_version(version):
+        return None
+    base, _, last = version.rpartition('.')
+    if base != EXTENSION_VERSION or not last.isdigit():
+        return None
+    number = int(last) - SIGNED_BASE
+    if number < 0 or number // 1000 != _content_part() or not 1 <= number % 1000 <= SIGNED_SEQUENCES:
+        return None
+    return number % 1000
+
+
+def firefox_signing_files(origin, version, *, host_name=HOST_NAME, build_id=None):
+    """The files of one Firefox build for signing: this akdbx's own source, nothing from a caller.
+
+    The same files as ``build(browser='firefox')`` writes, with ``version`` in
+    manifest.json and config.js and a new random build ID (the add-on's trust
+    anchor; every signed build has its own). ``build_id`` repeats a submitted
+    build (the source archive's rebuild.py). ``host_name`` is for tests only,
+    as in ``build``; the broker always uses the default host.
+    """
+    if signed_sequence(version) is None:
+        raise ValueError('invalid signed extension version')
+    if build_id is None:
+        build_id = secrets.token_urlsafe(16)
+    elif not isinstance(build_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{22}', build_id):
+        raise ValueError('invalid build ID')
+    written = _source_files(host_name)
+    written['manifest.json'] = _manifest_for('firefox', written, version)
+    written['config.js'] = _config_text(trusted_origin(origin), version, build_id).encode('utf-8')
+    return written
+
+
+def xpi_bytes(files):
+    """A ZIP of the files, with manifest.json at the root (what AMO receives).
+
+    Its bytes depend only on the files, on every platform: entries are stored,
+    not compressed (zlib builds, such as zlib-ng in CPython for Windows, can
+    compress the same data differently), with fixed times, a fixed creating
+    system (zipfile writes 0 on Windows, 3 elsewhere) and fixed permissions.
+    """
+    import io
+    import zipfile
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_STORED) as archive:
+        for name in sorted(files):
+            info = zipfile.ZipInfo(name, ZIP_TIME)
+            info.compress_type = zipfile.ZIP_STORED
+            info.create_system = 3
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, files[name])
+    return buffer.getvalue()
 
 
 # The build ID line in config.js: 128 random bits, base64url (trust.js BUILD_ID).
@@ -782,7 +869,7 @@ BUILD_ID = re.compile(r'^globalThis\.AKDBX_BUILD_ID = "([A-Za-z0-9_-]{22})";$', 
 
 
 def add_parser(commands):
-    extension = commands.add_parser('extension', help='install the akdbx browser extension host, or build the extension')
+    extension = commands.add_parser('extension', help='install the akdbx browser extension host, build the extension, or have Mozilla sign the Firefox build')
     actions = extension.add_subparsers(dest='extension_command', required=True)
     python_help = ('interpreter that the launcher runs; it must import this akdbx (checked). '
                    'Default: the interpreter of this CLI')
@@ -804,6 +891,8 @@ def add_parser(commands):
     build_command.add_argument('--browser', choices=BROWSERS, default='chrome',
                                help='extension format to build (default: chrome; Firefox requires 153+)')
     actions.add_parser('info', help='show the extension ID, host name and per-browser host locations')
+    from .firefox_signing import add_parser as add_sign_parser
+    add_sign_parser(actions)
 
 
 def run(args, socket_path=None, unlock_origin=None):

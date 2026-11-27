@@ -78,6 +78,8 @@ def target_capabilities():
                 additional_urls_protocol=1, additional_urls_policy='kp2a-exact-origin-v1', entry_organize_protocol=1, entry_edit_protocol=1, group_create_protocol=1,
                 secret_save_protocol=1, secret_save_field='password',
                 secret_capture_protocol=1, secret_capture_delivery='chromium-dom-read-v1', secret_sink_protocol=1, secret_sinks=[],
+                firefox_signing_protocol=1, firefox_signing_channel='unlisted', firefox_signing_entry_origin='https://addons.mozilla.org',
+                firefox_signing_fields=['jwt_issuer', 'jwt_secret'], firefox_signing_configured=False,
                 totp_capture_protocol=1, totp_qr_capture_protocol=1, android_fill_protocol=1, android_fill_delivery='android-accessibility-set-text-v1',
                 android_chrome_delivery='android-chrome-verified-dom-v1',
                 android_generated_password=True, android_pending_totp=True, android_read_delivery='android-chrome-verified-read-v1',

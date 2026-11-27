@@ -357,9 +357,14 @@ def firefox_lab(private_dir, certificates, request):
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, registration) as handle:
                 winreg.SetValueEx(handle, '', 0, winreg.REG_SZ, str(manifest))
         addon = private_dir / 'extension.xpi'
-        with zipfile.ZipFile(addon, 'w') as archive:
-            for path in folder.iterdir():
-                archive.write(path, path.name)
+        if mode == 'signed':
+            # The exact archive that `akdbx extension sign` uploads to AMO, with its signed-build version.
+            addon.write_bytes(extension_host.xpi_bytes(extension_host.firefox_signing_files(
+                origin, extension_host.signed_version(1), host_name=name)))
+        else:
+            with zipfile.ZipFile(addon, 'w') as archive:
+                for path in folder.iterdir():
+                    archive.write(path, path.name)
         options = Options()
         extension_uuid = str(uuid.uuid4())
         options.set_preference('extensions.webextensions.uuids', json.dumps({'akdbx@akdbx.org': extension_uuid}))
@@ -478,6 +483,29 @@ def test_firefox_local_host_document_pins_and_secret_delivery(firefox_lab):
     driver.refresh()
     driver.find_element('id', 'password').click()
     assert not fill(target['target'])['ok']
+
+
+@pytest.mark.parametrize('firefox_lab', ['signed'], indirect=True)
+def test_firefox_runs_the_archive_that_extension_sign_submits_as_a_current_build(firefox_lab):
+    """AMO signs the uploaded archive unchanged; Firefox loads it, and the broker calls its version current."""
+    broker, url = firefox_lab.broker, firefox_lab.url
+    version = extension_host.signed_version(1)
+    assert len(version.rsplit('.', 1)[1]) == 9  # Firefox accepts nine digits in a version part.
+    browsers = broker.dispatch({'action': 'ping'})['extension_browsers']
+    assert browsers == [dict(browser='firefox', paired=True, version=version, version_status='current')]
+    listing = broker.dispatch(dict(action='list-password-frames', password_protocol=1,
+                                   frame_protocol=1, top_url=url, route='extension'))
+    assert listing['ok'] and len(listing['frames']) == 2  # Not refused as a stale or other build.
+    firefox_lab.driver.find_element('id', 'password').click()
+    target = broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                                  frame_id=listing['main_frame_id'], top_url=url, selector='#password',
+                                  mode='password', route='extension'))
+    handle = broker.dispatch(dict(action='search', query='localhost'))['entries'][0]['handle']
+    assert target['ok'] and broker.dispatch(dict(action='fill', handle=handle, mode='password',
+                                                 target=target['target'], target_protocol=1))['ok']
+    assert firefox_lab.driver.execute_async_script(
+        'const done=arguments[arguments.length-1];digest(arguments[0]).then(done)', 'password') == \
+        hashlib.sha256(PASSWORD.encode()).hexdigest()
 
 
 def test_firefox_totp_uses_exact_main_and_child_documents_without_keyboard(firefox_lab):

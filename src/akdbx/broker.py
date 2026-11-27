@@ -51,6 +51,7 @@ from .android_route import (AndroidTargets, AndroidPin, AndroidError, AndroidMis
                             GOOGLE_SIGN_IN_ORIGIN, GMAIL_ONLY)
 from .identities import COMMANDS as IDENTITY_COMMANDS, IdentityManager, capabilities as identity_capabilities, is_identity
 from .secrets_capture import SecretCaptures, captured_fields, is_secret_record
+from .firefox_signing import FirefoxSigning
 from . import sms as sms_module
 from .browser_code import BrowserCodes
 from .totp_capture import TotpCaptures, pending as totp_pending, read_pending
@@ -126,6 +127,7 @@ class Broker:
         browser_profile_root=None,
         sms_sources_path=None,
         android_devices_path=None,
+        firefox_signing_dir=None,
     ) -> None:
         self.session = VaultSession(lock_timeout, unlocked=vault is not None)
         self.lock_events = {}
@@ -167,6 +169,8 @@ class Broker:
         self.merges = create_merge_manager(self)
         self.secrets = SecretCaptures(self, secret_sinks_path)
         self.totp_captures = TotpCaptures(self)
+        # `akdbx extension sign`: this broker's own Firefox build, signed by AMO.
+        self.firefox_signing = FirefoxSigning(self, firefox_signing_dir)
         self.unlock_url: str | None = None
         # The private page's UnlockState, when this broker serves one.
         self.unlock_link = None
@@ -542,7 +546,7 @@ class Broker:
                     **({"relay": self.relay.status()} if self.relay is not None else {}),
                     **({"active_origin": origin} if isinstance(origin, str) else {})}
         if action == "ping":
-            return {"ok": True, "version": __version__, "lock_timeout_seconds": self.session.timeout, "lock_event_sources": self.lock_events.copy(), **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **page_lifetime_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **entry_organize_capabilities(), **entry_edit_capabilities(), **secret_save_capabilities(), **target_capabilities(), **self.native.capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **write_notification_capabilities(), **pairing_notification_capabilities(), **sms_notification_capabilities(), **self.secrets.capabilities(), **self.android.capabilities(), **self.totp_captures.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "browser_totp_protocol": 1, "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
+            return {"ok": True, "version": __version__, "lock_timeout_seconds": self.session.timeout, "lock_event_sources": self.lock_events.copy(), **self.extension.capabilities(), **self.card_targets.capabilities(), **self.identity_targets.capabilities(), **identity_capabilities(), **page_lifetime_capabilities(), **self.merges.capabilities(), **sso_capabilities(), **passwordless_capabilities(), **additional_urls_capabilities(), **entry_organize_capabilities(), **entry_edit_capabilities(), **secret_save_capabilities(), **target_capabilities(), **self.native.capabilities(), **totp_capabilities(), **notification_capabilities(), **card_notification_capabilities(), **write_notification_capabilities(), **pairing_notification_capabilities(), **sms_notification_capabilities(), **self.secrets.capabilities(), **self.firefox_signing.capabilities(), **self.android.capabilities(), **self.totp_captures.capabilities(), **self.sms.capabilities(), **self.code_targets.capabilities(), "browser_totp_protocol": 1, "password_fill_protocol": 1, "password_purpose_protocol": 1, "password_autocomplete_off_protocol": 1, "password_frame_protocol": PASSWORD_FRAME_PROTOCOL, "password_frame_policy": PASSWORD_FRAME_POLICY, "password_fill_delivery": PASSWORD_DELIVERY, "password_browser_configured": self.passwords.configured, "browser_slot_protocol": browser_slots.PROTOCOL, **browser_slots.status(self.browser_slots, browser_endpoint), **generated_capabilities(), "writes_available": self.writes.available(refresh_inputs=True), "recovery_required": bool(getattr(getattr(self.vault, "_akdbx_store", None), "recovery_required", False)), "unlock_link_protocol": UNLOCK_LINK_PROTOCOL, "unlock_link_max_failures": UNLOCK_LINK_MAX_FAILURES, "locked": self.locked, **({"relay": self.relay.status()} if self.relay is not None else {}), **(self._blocked_status() if self.unlock_blocked else self.unlock_fields() if self.locked else {})}
         if action == 'list-password-frames':
             # Read-only browser discovery: no vault access, credential or pin.
             try:
@@ -629,6 +633,11 @@ class Broker:
                 return self.totp_captures.commit(request)
             except Exception:
                 return {'ok': False, 'error': 'authenticator save failed; vault update not confirmed'}
+        if action == 'sign-firefox-extension':
+            try:
+                return self.firefox_signing.sign(request)
+            except Exception:
+                return {'ok': False, 'error': 'Firefox signing failed; nothing confirmed'}
         if action == 'deliver-secret':
             try:
                 return self.secrets.deliver(request)

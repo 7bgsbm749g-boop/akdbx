@@ -26,7 +26,9 @@ Windows, Linux and macOS support Helium, Google Chrome, Microsoft Edge and
 Firefox 153+ (0.47.0+). From 0.49.0, the installer also accepts Chromium and
 Brave. See `extension_host_browsers` in broker status. The Chromium family uses the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg`;
 Firefox uses `akdbx@akdbx.org`. Both use host name `org.akdbx.extension`.
-See [Firefox setup and installation limits](../../../docs/firefox.md).
+See [Firefox setup and installation limits](../../../docs/firefox.md). After
+0.52.0 Firefox can also run a permanently installed add-on that Mozilla signed
+for this broker ([signed Firefox add-on](#signed-firefox-add-on-0530)).
 
 ## Capabilities
 
@@ -71,6 +73,15 @@ shows it. A broker or host launcher from akdbx 0.35.1 or earlier refuses the
 four-part hello (the popup says the broker is not reachable): restart the
 broker on the updated akdbx, and run `akdbx extension refresh` (or
 `install`) from it.
+
+A Firefox add-on signed with `akdbx extension sign` (0.53.0) has its
+own version, because AMO accepts each version only once:
+`MAJOR.MINOR.PATCH.N` with N = 100000000 + 1000 × (the unsigned build's
+fourth part) + a sequence number 1–999, for example `0.15.1.111058001`. The
+broker reads the contents from N and shows such an add-on as `"current"`;
+another build's signed version is `"mismatch"`. A broker or host from 0.52.0
+or earlier refuses the nine-digit part. The popup footer shows the
+nine-digit version from fill extension 0.17.0.
 
 An extension built by akdbx 0.21.2 or earlier reports no version. It still
 attaches and works, with `version: null` and `version_status: "outdated"`.
@@ -132,7 +143,9 @@ From 0.35.2:
   the folder the browser loads with this akdbx and the broker's private-page
   origin (the origin of its unlock link): \`akdbx --unlock-origin ORIGIN
   extension build --output FOLDER\`, or restart the broker if akdbx was
-  updated; then reload akdbx on chrome://extensions and pair it again`.
+  updated; then reload akdbx on chrome://extensions and pair it again. An
+  AMO-signed Firefox add-on needs a new signature instead: \`akdbx extension
+  sign\`, then install the new XPI`.
 
 Fix: restart the browser, or click reload on the akdbx card in
 `chrome://extensions`. Keep Developer mode on there: with it off, Chromium
@@ -560,6 +573,48 @@ load the folder as an unpacked extension (`chrome://extensions`,
 **Developer mode**, **Load unpacked**). Run `akdbx extension uninstall
 --browser NAME` to remove the host registration.
 
+### Signed Firefox add-on (0.53.0)
+
+Require `firefox_signing_protocol: 1` and `firefox_signing_configured: true`
+in `status`. `firefox_signing_entry_origin` (`https://addons.mozilla.org`)
+and `firefox_signing_fields` (`jwt_issuer`, `jwt_secret`) describe the entry
+the broker needs; `firefox_signing_channel` is `unlisted`.
+
+1. The user creates the AMO API key once (Mozilla account with two-step
+   authentication, <https://addons.mozilla.org/en-US/developers/addon/api/key/>).
+   Save both shown values with `pin-password-target --mode read` and
+   `capture-secret --field jwt_issuer` / `--field jwt_secret` on one entry for
+   that page ([secret capture](secret-capture.md)). Never read, type or paste
+   them.
+2. `akdbx search addons.mozilla.org`, then
+   `akdbx extension sign --output FOLDER HANDLE`. The broker builds the Firefox
+   files from its own akdbx (callers cannot add files), uses its own
+   private-page origin, picks the next free add-on version, submits it on the
+   unlisted channel with a source archive of the akdbx package (its
+   `rebuild.py` reproduces the upload byte for byte), and checks
+   that the signed XPI holds exactly the submitted files plus Mozilla's
+   `META-INF/` signatures. The result has `state:
+   "signed"`, `addon_version`, `xpi` (the copy in FOLDER), `broker_xpi`,
+   `size`, `sha256` and `trusted_origin`.
+3. `state: "pending"` (with `stage` and `retry_after`): AMO is still
+   validating or reviewing. Wait `retry_after` seconds, then run the command
+   again with a fresh handle; it resumes and does not submit again. Errors
+   with `resumable: true` (network, AMO outage, HTTP 401) keep the job too.
+   `--restart` drops the job and submits a new version.
+4. Tell the user to install the XPI: `about:addons`, gear menu, **Install
+   Add-on From File…**, after removing a temporary akdbx add-on. Then pair as
+   usual. After each akdbx update that changes the extension (`version_status`
+   `"outdated"` or `"mismatch"`), sign again and install the new file: a
+   signed add-on cannot be rebuilt in place.
+
+Only the AMO account that owns the fixed add-on ID `akdbx@akdbx.org` can
+sign; another account's key gets HTTP 403 or 409. Refusals name the cause:
+an entry on another origin or without both protected fields, a locked vault,
+no private page, AMO HTTP 401 (key or clock), HTTP 403/409 (another account
+owns `akdbx@akdbx.org`), validation errors (AMO's first messages), a refused
+source archive (job kept), a rejected version, or a download that is not the
+signed submitted build. See [Firefox setup](../../../docs/firefox.md#permanent-install-a-mozilla-signed-xpi-0530).
+
 ### Host launcher (0.31.1+)
 
 `extension install` writes one launcher per browser
@@ -810,7 +865,7 @@ uses it.
 | Popup: "…this extension was built for…", "…this extension trusts…" or "no trusted broker address" | The broker names another origin than the trusted one, or the extension has none. No reset is offered: you run `akdbx extension build` again with the broker's current origin and the user reloads the extension. Any local build (also one for the same origin) replaces the saved broker trust; the extension then binds the broker key from the built origin's HTTPS page. A reload without a build changes nothing. |
 | Popup: "The broker page at … names another identity than the native host sent" | The native host and the broker's HTTPS page disagree about the broker key, so the extension learned nothing. Tell the user not to enter the master password; check that the broker on that origin and the installed native host (`akdbx extension install`) are the user's own. |
 | `version_status: "stale"` in `extension_browsers`, or a pin or frame list fails with `…older akdbx extension service worker…` | The browser runs an old worker beside newer files ([stale service worker](#stale-service-worker-0352)). Restart the browser, or reload akdbx in `chrome://extensions`, then pair again. |
-| `version_status: "mismatch"`, or a pin or frame list fails with `…another build than this broker's…` | The loaded folder holds another build than this broker's. Run `akdbx --unlock-origin ORIGIN extension build --output FOLDER` with the broker's akdbx, where ORIGIN is the broker's private-page origin (the origin of its unlock link; the build replaces the saved broker trust), or restart the broker if akdbx was updated in place. Then reload akdbx in `chrome://extensions` and pair again. |
+| `version_status: "mismatch"`, or a pin or frame list fails with `…another build than this broker's…` | The loaded folder holds another build than this broker's. Run `akdbx --unlock-origin ORIGIN extension build --output FOLDER` with the broker's akdbx, where ORIGIN is the broker's private-page origin (the origin of its unlock link; the build replaces the saved broker trust), or restart the broker if akdbx was updated in place. Then reload akdbx in `chrome://extensions` and pair again. For a Mozilla-signed Firefox add-on, run `akdbx extension sign` and install the new XPI instead. |
 | `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Ask the user to rebuild into the same folder and reload it in `chrome://extensions`. |
 | `pin-code-target --route extension` refuses with `no paired akdbx fill extension 0.13.0 or newer is connected` | No paired browser runs fill extension 0.13.0 or newer (`extension_code_min_version`). Rebuild the folder the browser loads with `akdbx extension build`, reload it and pair it; or pair the browser first if `extension_paired` is false. |
 | `pin-code-target --route extension` refuses with `the paired akdbx extension runs a stale build or another build…` | Every suitable paired browser has `version_status` `"stale"` or `"mismatch"`: follow the `version_status: "stale"` or `"mismatch"` row above, then pin again. |
