@@ -744,7 +744,7 @@ search handle and pin for each field. Supported types are `cc-name`, `cc-number`
 `cc-exp-month`, `cc-exp-year`, `cc-exp` and `cc-csc`. Combined expiry requires
 `--format MM/YY` or `MM/YYYY`; expiry year requires `--format YY` or `YYYY`.
 Month/year selects are supported when the value matches an unambiguous option.
-After 0.53.0, `pin-card-target --field-purpose FIELD` (with
+From 0.54.0, `pin-card-target --field-purpose FIELD` (with
 `--allow-autocomplete-off` for `off`) pins a main-frame or same-origin card
 field with no autocomplete token after the agent verified its purpose; a token
 for another detail still refuses. With `cc-exp-month` or `cc-exp-year` it also

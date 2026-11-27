@@ -79,7 +79,7 @@ a click-through cover over a field ([Firefox covers](../../../docs/firefox.md#co
 [visibility checks](../../../README.md#visibility-checks-what-they-stop)).
 Other cross-origin frames, shadow DOM and unannotated fields must be refused,
 except a main-frame or same-origin field whose purpose you verified (see
-[Field without an autocomplete hint](#field-without-an-autocomplete-hint-after-0530)).
+[Field without an autocomplete hint](#field-without-an-autocomplete-hint-0540)).
 
 ```bash
 akdbx pin-card-target --page-id PAGE_ID --frame-id FRAME_ID \
@@ -95,7 +95,7 @@ printing it, pass `--top-url-file FILE` or `--frame-url-file FILE` in place of
 the plain flag, and delete the file after the pin. See
 [exact URL with a private token](target-fill.md#exact-url-with-a-private-token).
 
-### Field without an autocomplete hint (after 0.53.0)
+### Field without an autocomplete hint (0.54.0)
 
 Some merchants build the card form themselves, in the main frame, with no
 `cc-…` autocomplete tokens: plain inputs for the number and security code, and

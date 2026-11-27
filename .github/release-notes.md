@@ -22,6 +22,8 @@ From 0.53.0: every private save page (password, authenticator key and import, id
 
 From 0.53.0 (fill extension 0.17.0): `akdbx extension sign --output DIR HANDLE` has Mozilla sign the broker's own Firefox build (AMO, unlisted channel) for a permanent install, with the AMO API key from a vault entry that stays inside the broker. Only the AMO account that owns the add-on ID `akdbx@akdbx.org` can sign. Each signed build has its own version; `status` reports it as current. See `docs/firefox.md`.
 
+From 0.54.0 (fill extension 0.18.0): `pin-card-target --field-purpose cc-number|cc-csc|cc-name|cc-exp-month|cc-exp-year` fills a main-frame card field that has no autocomplete hint after the agent checks its purpose, and an expiry month or year that is an ARIA dropdown (a button with a listbox) is chosen by the broker itself, refusing on no match or an ambiguous match. This covers Microsoft's own card form (Azure sign-up).
+
 Verify a download before installing it:
 
 ```sh

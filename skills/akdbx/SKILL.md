@@ -754,8 +754,8 @@ you verify its purpose on the page (`autocomplete="off"` also needs
 month or year that is an ARIA dropdown button (`aria-haspopup="listbox"` or
 `role="combobox"`, with `aria-controls` or `aria-owns`) pins the same way: the
 broker opens it and chooses the one matching option itself, or refuses and
-leaves it as it was (after 0.53.0, `card_field_purpose_protocol: 1`;
-[cards](references/cards.md#field-without-an-autocomplete-hint-after-0530)).
+leaves it as it was (0.54.0+, `card_field_purpose_protocol: 1`;
+[cards](references/cards.md#field-without-an-autocomplete-hint-0540)).
 Card values go only to a
 verified DOM element: no keyboard, Tab or clipboard, and never the login fill
 commands. Save a new card with `create-card` (the user types the card on a
