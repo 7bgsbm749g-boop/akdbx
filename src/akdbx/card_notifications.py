@@ -16,7 +16,14 @@ def capabilities():
 
 
 class CardSaveNotifications(UnlockNotifications):
+    """One-shot results of a private save page, keyed by its write handle.
+
+    The webhook body carries only ``_event``, the result state and two random
+    ids. The write handle is stored only as a SHA-256 hash.
+    """
     _label = 'card-save'
+    _event = 'akdbx.card-save'
+    _protocol_error = 'card-save notification protocol 1 and exact write handle required'
     def __init__(self, *, expire_handler, **kwargs):
         self._timers = {}
         self._expire_handler = expire_handler
@@ -35,7 +42,7 @@ class CardSaveNotifications(UnlockNotifications):
         subject, result = row.get('subject'), row.get('result')
         if (not isinstance(subject, str) or not re.fullmatch('[a-f0-9]{64}', subject)
                 or result is not None and result not in RESULTS):
-            raise ValueError('invalid card notification state')
+            raise ValueError(f'invalid {self._label} notification state')
         # Private forms are intentionally not restored. Report interruption,
         # never claim a save from a lost in-memory write operation.
         item.subject, item.result = subject, result or 'interrupted'
@@ -45,7 +52,7 @@ class CardSaveNotifications(UnlockNotifications):
         return dict(super()._row(key, item), subject=item.subject, result=item.result)
 
     def _payload(self, key, item):
-        return dict(event='akdbx.card-save', state=item.result,
+        return dict(event=self._event, state=item.result,
                     subscription_id=key, event_id=item.event_id)
 
     @staticmethod
@@ -58,7 +65,7 @@ class CardSaveNotifications(UnlockNotifications):
                 or type(request.get('notification_protocol')) is not int
                 or request['notification_protocol'] != 1
                 or not isinstance(handle, str) or not re.fullmatch('[a-f0-9]{64}', handle)):
-            return dict(ok=False, error='card-save notification protocol 1 and exact write handle required')
+            return dict(ok=False, error=self._protocol_error)
         subject = self._subject(handle)
         receipt = super().subscribe(request, unlocked=state != 'pending', subject=subject,
                                     result=None if state == 'pending' else state)
@@ -82,6 +89,9 @@ class CardSaveNotifications(UnlockNotifications):
             timer = self._timers.pop(subject, None)
             if timer is not None:
                 timer.cancel()
+            if not any(item.subject == subject and item.state == 'subscribed' for item in self._items.values()):
+                # Nothing waits for this write: do not rewrite the state file.
+                return
         super().publish(subject=subject, result=state)
 
     def status(self, key, *, cancel=False):

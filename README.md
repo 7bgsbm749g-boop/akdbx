@@ -611,7 +611,10 @@ the previous version stays in the entry history. From 0.51.0, both commands
 take `--valid-minutes N` (1 to 30, and not longer than the vault lock
 timeout; default 5) for a page that stays valid longer, and report
 `expires_in` and `expires_at` (UTC); the page shows the expiry time. A vault
-lock still ends the page. `search-identities LABEL` returns
+lock still ends the page. From 0.53.0, `subscribe-write WRITE_HANDLE` sends one
+event when the page is saved, fails, is cancelled or expires
+([write-result notifications](#write-result-notifications-0530)), so an agent
+does not poll `write-status`. `search-identities LABEL` returns
 only labels, group paths and single-use handles. Login search excludes these
 records. `pin-identity-target` and `fill-identity` deliver one field to a
 verified and focused DOM element (CDP, or the extension in a Chromium browser
@@ -654,8 +657,8 @@ akdbx conventions; other clients can display them as custom fields.
 workflow. Enter card values only on the returned private HTTPS page. Never
 put them in command arguments, agent messages or notes. `update-card HANDLE
 --title EXACT_TITLE --group EXACT_GROUP` prepares an update. Updates preserve
-the previous entry in KDBX History. `write-status` and `cancel-write` apply to
-these saves. Persistence reopens and verifies every protected field before
+the previous entry in KDBX History. `write-status`, `cancel-write` and
+`subscribe-write` (0.53.0) apply to these saves. Persistence reopens and verifies every protected field before
 replacing the encrypted vault. A private page expires after five minutes.
 From 0.51.0, `--valid-minutes N` (1 to 30, and not longer than the vault
 lock timeout) keeps it valid for N minutes. The receipt reports `expires_in`
@@ -776,7 +779,41 @@ the card values. A malicious page, compromised browser or process with the same
 OS-user privileges remains outside this boundary. Do not read filled card values
 back through browser tools or capture unmasked fields in screenshots.
 
+## Write-result notifications (0.53.0)
+
+Every private save page can resume the agent task through a one-shot HTTPS
+webhook: the password page of `create-entry` and `update-password`, the
+authenticator page of `setup-totp` (with its QR, export and browser-capture
+import), the identity page of `create-identity` and `update-identity`, and the
+card page of `create-card` and `update-card`. Register before sharing the
+page; the agent ends its turn and does not poll `write-status`:
+
+```bash
+.venv/bin/akdbx subscribe-write WRITE_HANDLE --webhook-url-file /private/url-file
+.venv/bin/akdbx write-subscription-status SUBSCRIPTION_ID
+.venv/bin/akdbx unsubscribe-write SUBSCRIPTION_ID
+```
+
+The callback URL is read only from a private mode-0600 file and never printed.
+Require `write_notifications_supported: true`, `write_notifications_protocol:
+1` and `write_notifications_until_result: true` from the running broker;
+`write_notification_kinds` lists the page kinds. Waits have no subscription
+TTL. The event is `{"event": "akdbx.write-result", "state": "saved", ...}`
+with only the result state (`saved`, `failed`, `cancelled`, `expired` or
+`interrupted`) and opaque subscription and event IDs: no values, metadata,
+page URL or write handle. The page deadline sends `expired`; a cancel, a
+stale page (another vault change) and a failed save send their results; a
+correctable mistake on the page sends nothing. Waits survive a restart in the
+notification-state file plus `.writes`, which holds only a hash of the write
+handle; a page that was still open reports `interrupted`. Delivery makes at
+most three attempts. Generated passwords have no page and take no
+subscription. See the
+[write-result notification workflow](skills/akdbx/references/write-notifications.md).
+
 ## Card-save notifications
+
+From 0.53.0, `subscribe-write` also covers card pages. The card-save commands
+below keep working unchanged.
 
 Private card forms can resume the same agent task through a one-shot HTTPS
 webhook, with the same bounded sender and private persistent storage used by
@@ -906,7 +943,12 @@ the broker posts `akdbx.sms-received` with only the source and the message id
 when the next text with a code arrives, so an agent can end its turn and
 resume on the text. The setup page also ends with a live test: it waits for a
 test text and shows **Code received** when the code arrives, or why AKDBX dropped
-the text.
+the text. From 0.53.0, `subscribe-sms --source NAME --any-text` wakes on the
+next text that source forwards, with or without a code, so an agent can
+resume when the user finishes a setup or test page
+(`sms_notifications_any_text: true`). Its event adds the text's `result`
+(`code`, `no-code-word`, `no-code`, `several-codes` or `empty`) and has a
+message id only when a code was kept.
 
 Each source has its own random 256-bit token in its webhook URL
 (`/sms/in/TOKEN`). The broker saves only its SHA-256 hash, in a private mode
@@ -973,7 +1015,9 @@ This returns a private `/totp?token=...` page. The user enters the site's setup
 key or otpauth URI there and confirms the displayed account. Never put keys,
 URIs or generated codes in CLI arguments, environment variables, chat, logs,
 screenshots or notes. The page uses the existing Tailscale private-write
-transport; it accepts no secrets through agent RPC. Check
+transport; it accepts no secrets through agent RPC. Register
+`subscribe-write WRITE_HANDLE` before sharing the page and resume on its
+`akdbx.write-result` event (0.53.0), then check
 `write-status -- WRITE_HANDLE` for `state: saved`. A cancelled, expired or stale request cannot
 save; an existing OTP field requires explicit `setup-totp ... --replace`.
 Private imports save to KeePass only: they do not enable or change site 2FA.
@@ -1215,6 +1259,7 @@ Password fills also require integer `password_fill_protocol: 1`,
 - `commit-password --site-accepted -- WRITE_HANDLE`
 - `write-status -- WRITE_HANDLE`
 - `cancel-write -- WRITE_HANDLE`
+- `subscribe-write WRITE_HANDLE --webhook-url-file FILE` (0.53.0): one event when a private page has a result
 
 Put options before `--` and the returned handle after it. This also accepts
 opaque handles from older running brokers that start with `-`.

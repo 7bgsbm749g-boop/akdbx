@@ -211,6 +211,18 @@ consumes the link even if persistence fails; validation failures may be retried
 before expiry. The page changes KeePass only, so coordinate it after the site
 has accepted the user's privately chosen password.
 
+Before you share the link, register a one-shot write-result webhook for the
+`write_handle` and end the turn (0.53.0+, `write_notifications_protocol: 1`):
+
+```bash
+akdbx subscribe-write WRITE_HANDLE --webhook-url-file /private/temporary/url-file
+```
+
+The `akdbx.write-result` event tells you when to check `write-status`; do not
+poll it while the user types. See
+[resume after a private save page](write-notifications.md). A generated
+password has no page, so it takes no subscription.
+
 Creation requires an existing unambiguous group; it does not create groups.
 Every non-root ancestor in the destination path must have a nonempty name.
 Search display paths can omit unnamed ancestors. Before using one for creation,

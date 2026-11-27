@@ -44,6 +44,10 @@ akdbx sms-add-source iphone --kind shortcut
 
 The receipt has a `private_url` setup page (one hour). Send it to the user
 privately (`send_to_user`); they open it on the iPhone and follow its steps.
+To resume when the user's test text arrives, register `subscribe-sms --source
+NAME --any-text` before you run `sms-add-source` (0.53.0+,
+[setup and test pages](sms-notifications.md#setup-and-test-pages-0530)), then
+end the turn. Do not poll `sms-sources`.
 The page shows the webhook URL (tap to copy) and the Shortcuts steps for the
 iPhone's iOS version: it detects the version from the browser and offers the
 other versions (iOS 27 and later, iOS 17 to 26, iOS 16 and earlier) in a list.

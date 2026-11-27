@@ -465,6 +465,9 @@ class Write:
     single_field: bool = False
     # Identity and card save pages: the wall-clock expiry the page shows.
     expires_at: float | None = None
+    # False for a generated password: it has no page, and the agent commits
+    # it. Only page writes take write-result subscriptions.
+    private_page: bool = True
 
 
 def page_lifetime_capabilities():
@@ -540,25 +543,36 @@ class WriteManager:
         if not ready:
             raise WriteError('private writes unavailable; check activation, vault/key changes and path safety')
 
-    def notify_card(self, op):
-        if op.kind == 'card' and op.state != 'pending':
+    def _publish(self, handle, op, state):
+        """Wake the subscriptions that wait for this write's page result."""
+        if op.kind == 'card':
+            self.broker.card_save_notifications.publish_save(handle, state)
+        if op.private_page:
+            self.broker.write_notifications.publish_save(handle, state)
+
+    def notify_result(self, op):
+        """Publish a finished write's result: saved, failed or cancelled."""
+        if op.state != 'pending':
             for handle, candidate in self.operations.items():
                 if candidate is op:
-                    self.broker.card_save_notifications.publish_save(handle, op.state)
+                    self._publish(handle, op, op.state)
                     break
 
-    def invalidate_revision(self, current=None, *, all_pending=False):
+    def invalidate_revision(self, current=None):
         self.revision += 1
         for other in self.operations.values():
             if other is not current:
                 other.import_candidates = ()
                 other.import_nonce = None
-            if other is not current and other.state == 'pending' and (all_pending or other.password is not None or other.kind in {'card', 'identity'}):
+            # Every pending write is now stale: a page token and a generated
+            # commit both need the current revision. Fail them at once, so a
+            # waiting page subscription gets its result now.
+            if other is not current and other.state == 'pending':
                 other.state = 'failed'
                 other.error = 'stale write; search and start again'
                 other.password = None
                 other.fill_refs.clear()
-                self.notify_card(other)
+                self.notify_result(other)
         with self.broker._state_lock:
             self.broker._handles.clear()
 
@@ -578,8 +592,8 @@ class WriteManager:
         now = self.broker.clock()
         for handle, op in list(self.operations.items()):
             if op.expires <= now:
-                if op.kind == 'card' and op.state == 'pending':
-                    self.broker.card_save_notifications.publish_save(handle, 'expired')
+                if op.state == 'pending':
+                    self._publish(handle, op, 'expired')
                 op.password = None
                 op.import_candidates = ()
                 op.import_nonce = None
@@ -1109,6 +1123,7 @@ class WriteManager:
                 if all(any(c in group for c in password) for group in (string.ascii_lowercase, string.ascii_uppercase, string.digits, *([symbols] if symbols else []))):
                     break
             op.password = password
+            op.private_page = False
             op.single_field = single_field
             modes = GENERATED_SINGLE_MODES if single_field else GENERATED_MODES
             op.fill_refs = {secrets.token_hex(32): mode for mode in modes}
@@ -1138,7 +1153,7 @@ class WriteManager:
             op.fill_refs.clear()
             op.import_candidates = ()
             op.import_nonce = None
-        self.notify_card(op)
+        self.notify_result(op)
         result = {'ok': True, 'state': op.state, **({'error': op.error} if op.error else {})}
         if op.kind == 'card' and op.state == 'saved':
             # The page can change the title and group; report what was saved.
@@ -1197,6 +1212,7 @@ class WriteManager:
             op.state = 'saved'
             op.password = None
             op.fill_refs.clear()
+            self.notify_result(op)
             return {'ok': True, 'state': 'saved'}
         except (SaveError, WriteError) as exc:
             op.error = str(exc)
@@ -1206,6 +1222,7 @@ class WriteManager:
             op.error = 'save failed; vault update not confirmed'
         op.password = None
         op.fill_refs.clear()
+        self.notify_result(op)
         return {'ok': False, 'error': op.error}
 
     def stage_totp_import(self, op, payloads, source=''):
@@ -1287,6 +1304,7 @@ class WriteManager:
             self.broker.vault = vault._akdbx_store.commit(vault, mutate, verify_candidate=verify_saved)
             self.invalidate_revision(op)
             op.state = 'saved'
+            self.notify_result(op)
             return {'ok': True, 'state': 'saved'}
         except SaveError as exc:
             op.error = str(exc)
@@ -1296,6 +1314,7 @@ class WriteManager:
             op.error = 'stale or conflicting TOTP destination; search and start again'
         except Exception:
             op.error = 'TOTP save failed; vault update not confirmed'
+        self.notify_result(op)
         return {'ok': False, 'error': op.error}
 
     def fill(self, request, delivery_ready):
