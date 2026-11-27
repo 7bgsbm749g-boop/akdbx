@@ -20,8 +20,10 @@ also retain their existing same-origin QR scripts.
 
 Every save page (card, identity, password and authenticator) reuses the unlock
 button component (`.portal-submit` with `.portal-progress`): it is disabled
-with an indeterminate bar while saving, then shows `Saved`, or a dashed error
-state (`Page expired`, `Vault changed`, `Cancelled`, `Not confirmed`). A broker
+with an indeterminate bar while saving. A save then replaces the form with the
+broker's small `Success` result screen (0.52.1); a final error keeps the form
+with a dashed error state on the button (`Page expired`, `Vault changed`,
+`Cancelled`, `Not confirmed`). A broker
 refusal of the form, such as a duplicate card title or a password mismatch,
 returns the button to its idle label with the message below it. Each server
 result carries `data-save-result`, so the page shows the real broker state; a

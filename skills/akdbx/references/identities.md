@@ -57,13 +57,26 @@ details out of labels, arguments, notes and agent responses. Give the user the
 returned `private_url` within the private task. The user enters and confirms
 the details on that page. The form accepts trimmed, single-line values and
 requires at least one value. Country code uses two letters (for example `DE`).
-The save button shows a busy bar while saving, then `Saved` or an error state
-(`Page expired`, `Not confirmed`); a correctable form error keeps the page
-open with the message under the button. The page expires after five minutes
-unless you ask for a longer lifetime (below).
+The save button shows a busy bar while saving. A save then ends on a small
+`Success` screen (`Identity saved to vault`, and the title and group it was
+saved as), the same as a card page; an error keeps the form with an error
+state on the button (`Page expired`, `Not confirmed`). A correctable form
+error keeps the page open with the message under the button. The page expires
+after five minutes unless you ask for a longer lifetime (below).
 Only `state: "saved"` from `write-status` confirms persistence; the
 `akdbx.write-result` event tells you when to check it. Use `cancel-write` to cancel a pending page. The broker refuses a duplicate
 identity label in the same group.
+
+### The user may rename the identity on the page (0.52.1)
+
+The page shows the title in a text field that the user may change. A new
+title is saved in the same write as the fields. An unchanged or empty title
+field keeps the title you gave. The page applies the `--title` rules (up to
+4096 bytes, no line breaks or control characters) and refuses a title that
+another identity in the same group already has; the form stays open with the
+message. The group cannot be changed on the page. After the save,
+`write-status` returns the saved `title` and `group` with `state: "saved"`.
+Use that title, not the one you gave, to search for the identity again.
 
 ## Update an existing identity (0.28.3)
 
@@ -84,8 +97,9 @@ empty keeps its saved value, and at least one field must be filled in. Saving
 changes only the filled-in fields, keeps the `akdbx.identity=v1` marker and the
 protection on every field, and keeps the previous version in the entry
 history. The receipt, `write-status` states, the write-result event,
-`cancel-write`, page lifetime and save button are the same as for
-`create-identity`.
+`cancel-write`, page lifetime, title field and save button are the same as for
+`create-identity`. A new title replaces the old one in the same write; the
+entry history keeps the old title.
 
 ## Page lifetime (0.51.0)
 

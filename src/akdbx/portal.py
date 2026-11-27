@@ -111,11 +111,8 @@ button:disabled { cursor: default; opacity: .4; }
   background-color: #ffffff12; box-shadow: inset 0 3px 9px #000a, inset 0 1px 0 #ffffff08;
 }
 .portal-submit.is-pending::before, .portal-submit.is-pending::after { display: none; }
-.portal-submit.is-done, .portal-submit.is-error { opacity: 1; cursor: default; box-shadow: none; }
-.portal-submit.is-done { border-color: #ffffff70; background-color: #ffffff12; }
-.portal-submit.is-done::after { width: 5px; height: 10px; border-top: 0; border-bottom: 1px solid currentColor; transform: translateY(-2px) rotate(45deg); }
-.portal-submit.is-error { border-style: dashed; border-color: #ffffff52; background: #ffffff03; }
-.portal-submit.is-error::after, .portal-submit.is-done::before, .portal-submit.is-error::before { display: none; }
+.portal-submit.is-error { opacity: 1; cursor: default; box-shadow: none; border-style: dashed; border-color: #ffffff52; background: #ffffff03; }
+.portal-submit.is-error::after, .portal-submit.is-error::before { display: none; }
 .portal-progress { position: absolute; inset: 0; pointer-events: none; background: #ffffff0b; }
 .portal-progress::before {
   content: ""; position: absolute; inset: 0; width: 40%;
@@ -210,7 +207,8 @@ button.copy-field:active { transform: none; border-color: #ffffff5c; }
 @media (prefers-reduced-motion: reduce) {
   .copy-field.is-copied .copy-done, .copy-field.is-copied .copy-done circle, .copy-field.is-copied .copy-done path { animation: none; stroke-dashoffset: 0; }
 }
-.portal-status.is-error, .portal-status.is-shown {
+#portal-title[tabindex="-1"]:focus { outline: 0; }
+.portal-status.is-error {
   position: static; width: auto; height: auto; margin: 18px 0 0 !important;
   overflow: visible; clip-path: none; white-space: normal;
 }
@@ -302,9 +300,9 @@ SCRIPT = r""""use strict";
   """ + CARD_CHECK + r"""
   const CARD_FIELDS = ["name", "number", "month", "year", "csc"];
   const BRAND_NAMES = {visa: "Visa", mastercard: "Mastercard", amex: "American Express", other: "another brand"};
-  // Final button state for each save result from the broker.
-  const SAVE_RESULTS = {saved: ["Saved", "is-done"], expired: ["Page expired", "is-error"],
-    stale: ["Vault changed", "is-error"], cancelled: ["Cancelled", "is-error"], failed: ["Not confirmed", "is-error"]};
+  // Final button state for each failed save result from the broker. A saved
+  // page shows the broker's result page instead.
+  const SAVE_RESULTS = {expired: "Page expired", stale: "Vault changed", cancelled: "Cancelled", failed: "Not confirmed"};
   function concealPasswords() {
     document.querySelectorAll("[data-password-toggle]").forEach(button => {
       const input = document.getElementById(button.getAttribute("aria-controls"));
@@ -579,12 +577,13 @@ SCRIPT = r""""use strict";
       .map(control => [control, control.value]);
     setBusy(form, true);
     setStatus(status, "Saving. Please wait.", "");
-    let result = "", message = "", title = "";
+    let result = "", message = "", title = "", sheet = null;
     try {
       const page = await post(form);
       const note = page.querySelector("[data-save-result]");
       if (!note) throw new Error();
       result = note.getAttribute("data-save-result");
+      sheet = page.querySelector("main > .sheet");
       message = Array.from(note.querySelectorAll("p"), line => line.textContent).join(" ");
       title = page.querySelector("#portal-title")?.textContent || "";
     } catch {
@@ -597,6 +596,18 @@ SCRIPT = r""""use strict";
       return;
     }
     const final = SAVE_RESULTS[result];
+    if (result === "saved" && sheet) {
+      // A saved page ends on the broker's small result page, the same page
+      // that a reopened card link shows. The form and its values go away.
+      form.reset();
+      document.querySelector("main > .sheet").replaceWith(sheet);
+      document.title = "AKDBX: " + title;
+      const heading = sheet.querySelector("#portal-title");
+      heading.setAttribute("tabindex", "-1");
+      heading.focus();
+      window.scrollTo({top: 0});
+      return;
+    }
     if (!final) {
       setStatus(status, "Save result not confirmed. Ask for the save status before you try again.", "is-error");
       return;
@@ -611,14 +622,14 @@ SCRIPT = r""""use strict";
     }
     form.querySelectorAll("input, select, button").forEach(control => { control.disabled = true; });
     const button = form.querySelector(".portal-submit");
-    button.classList.add(final[1]);
-    button.querySelector(".button-label").textContent = final[0];
+    button.classList.add("is-error");
+    button.querySelector(".button-label").textContent = final;
     // The heading and tab title show the result page's Success or Failure.
     if (title) {
       document.getElementById("portal-title").textContent = title;
       document.title = "AKDBX: " + title;
     }
-    setStatus(status, message, final[1] === "is-done" ? "is-shown" : "is-error");
+    setStatus(status, message, "is-error");
   }
   async function unlock(form) {
     form.closest(".sheet").querySelector("[role=alert]")?.remove();
