@@ -838,22 +838,47 @@ def test_cli_reports_pending_and_refuses_an_old_broker(lab, capsys):
     assert SECRET not in out.out + out.err and 'outcome unconfirmed' in out.err
 
 
-@pytest.mark.skipif(os.name == 'nt', reason='the Unix socket transport; Windows uses the named pipe')
-def test_cli_command_over_the_broker_socket(lab, capsys):
+def test_cli_command_over_the_broker_endpoint(lab, capsys):
+    """`akdbx extension sign` through the real transport: the Unix socket, or the named pipe on Windows."""
     from akdbx import cli
-    from test_broker import running_broker
+    from akdbx.broker import serve
+    import shutil
     import tempfile
-    short = Path(os.path.realpath(tempfile.mkdtemp(prefix='aks', dir='/tmp')))  # AF_UNIX paths are short.
-    socket_path = short / 'run' / 's'
+    if os.name == 'nt':
+        short, endpoint = None, Path('\\\\.\\pipe\\akdbx-sign-' + secrets.token_hex(8))
+    else:
+        short = Path(os.path.realpath(tempfile.mkdtemp(prefix='aks', dir='/tmp')))  # AF_UNIX paths are short.
+        endpoint = short / 'run' / 's'
     output = lab.tmp / 'cli-out'
+    stop, errors = threading.Event(), []
+
+    def run():
+        try:
+            serve(endpoint, lab.broker, stop)
+        except Exception as error:
+            errors.append(repr(error))
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
     try:
-        with running_broker(socket_path, lab.broker):
-            value = handle(lab.broker)
-            assert cli.main(['--socket', str(socket_path), '--unlock-origin', ORIGIN, 'extension', 'sign',
-                             '--output', str(output), value]) == 0
+        deadline = time.monotonic() + 10
+        while True:  # Ready once the endpoint answers with its peer checks.
+            try:
+                if cli.request(endpoint, {'action': 'ping'}, expected_unlock_origin=ORIGIN)['ok']:
+                    break
+            except Exception:
+                pass
+            assert not errors and worker.is_alive() and time.monotonic() < deadline, errors
+            time.sleep(0.05)
+        value = handle(lab.broker)
+        assert cli.main(['--socket', str(endpoint), '--unlock-origin', ORIGIN, 'extension', 'sign',
+                         '--output', str(output), value]) == 0
     finally:
-        import shutil
-        shutil.rmtree(short, ignore_errors=True)
+        stop.set()
+        worker.join(5)
+        if short is not None:
+            shutil.rmtree(short, ignore_errors=True)
+    assert not errors and not worker.is_alive(), errors
     printed = json.loads(capsys.readouterr().out)
     assert printed['state'] == 'signed' and Path(printed['xpi']).parent == output
+    assert Path(printed['xpi']).read_bytes() == Path(printed['broker_xpi']).read_bytes()
     assert cli._request_timeout({'action': 'sign-firefox-extension'}) == firefox_signing.CLI_TIMEOUT
