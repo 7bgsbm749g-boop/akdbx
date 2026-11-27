@@ -744,6 +744,14 @@ search handle and pin for each field. Supported types are `cc-name`, `cc-number`
 `cc-exp-month`, `cc-exp-year`, `cc-exp` and `cc-csc`. Combined expiry requires
 `--format MM/YY` or `MM/YYYY`; expiry year requires `--format YY` or `YYYY`.
 Month/year selects are supported when the value matches an unambiguous option.
+After 0.53.0, `pin-card-target --field-purpose FIELD` (with
+`--allow-autocomplete-off` for `off`) pins a main-frame or same-origin card
+field with no autocomplete token after the agent verified its purpose; a token
+for another detail still refuses. With `cc-exp-month` or `cc-exp-year` it also
+pins an ARIA dropdown button that owns one listbox (`aria-controls` or
+`aria-owns`): the broker opens it and chooses the one option that names the
+saved month or year, or refuses and leaves the selection as it was
+(`card_field_purpose_protocol: 1`, fill extension 0.18.0 on the extension route).
 Main frames and same-origin iframes are supported. Version 0.14.0 adds the
 explicit `--processor adyen` pin option, gated by integer
 `card_processor_frames_protocol: 1` and `adyen` in `card_processors`.

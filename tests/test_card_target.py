@@ -1,4 +1,5 @@
 """Endpoint trust, authorization lifetimes and non-secret failure receipts."""
+import json
 import os
 import threading
 import time
@@ -514,3 +515,60 @@ def test_unconfigured_browser_and_locked_broker_never_access_transport():
     broker.vault = Vault([CardEntry()])
     assert not broker.dispatch(dict(action='pin-card-target', card_protocol=1))['ok']
     assert not broker.card_targets.pins and broker.typer.events == []
+
+
+CARD_PIN = ['pin-card-target', '--page-id', 'P', '--frame-id', 'F', '--top-url', 'https://shop.example/',
+            '--frame-url', 'https://shop.example/', '--selector', '#month', '--field', 'cc-exp-month']
+CARD_CAPS = dict(ok=True, locked=False, cards_supported=True, card_protocol=1, card_delivery='cdp-card-element-v1',
+                 card_browser_configured=True, default_fill_route='cdp', card_processor_frames_protocol=1,
+                 card_processors=['adyen', 'computop', 'stripe'], stripe_card_element=True)
+
+
+@pytest.mark.parametrize('extra, caps, error', [
+    (['--field-purpose', 'cc-exp-month'], CARD_CAPS, 'broker lacks card field purpose protocol 1'),
+    (['--allow-autocomplete-off'], CARD_CAPS | dict(card_field_purpose_protocol=1),
+     '--allow-autocomplete-off needs --field-purpose'),
+    (['--field-purpose', 'cc-exp-year'], CARD_CAPS | dict(card_field_purpose_protocol=1),
+     '--field-purpose must name the same detail as --field'),
+    (['--field-purpose', 'cc-exp-month', '--processor', 'stripe'], CARD_CAPS | dict(card_field_purpose_protocol=1),
+     '--field-purpose does not apply to a --processor frame'),
+])
+def test_cli_refuses_card_purpose_options_before_sending(extra, caps, error, monkeypatch, capsys):
+    from akdbx import cli
+    calls = []
+
+    def broker(_, payload, **kwargs):
+        calls.append(payload)
+        return caps
+    monkeypatch.setattr(cli, 'request', broker)
+    assert cli.main(CARD_PIN + extra) == 1
+    assert calls == [{'action': 'ping'}]
+    assert json.loads(capsys.readouterr().out)['error'] == error + '; pin request not sent'
+
+
+def test_cli_refuses_a_card_purpose_the_card_route_does_not_take(capsys):
+    from akdbx import cli
+    with pytest.raises(SystemExit):
+        cli.main(CARD_PIN[:-1] + ['cc-exp', '--field-purpose', 'cc-exp'])
+    capsys.readouterr()
+
+
+def test_cli_sends_the_card_purpose_options(monkeypatch, capsys):
+    from akdbx import cli
+    sent = []
+
+    def broker(_, payload, **kwargs):
+        if payload['action'] == 'ping':
+            return CARD_CAPS | dict(card_field_purpose_protocol=1)
+        sent.append(payload)
+        return dict(ok=True, field='cc-exp-month', target='c' * 64, expires_in=30, card_delivery='cdp-card-element-v1')
+    monkeypatch.setattr(cli, 'request', broker)
+    assert cli.main(CARD_PIN + ['--field-purpose', 'cc-exp-month', '--allow-autocomplete-off']) == 0
+    assert cli.main(CARD_PIN) == 0
+    assert sent[0]['field_purpose'] == 'cc-exp-month' and sent[0]['allow_autocomplete_off'] is True
+    assert not {'field_purpose', 'allow_autocomplete_off'} & set(sent[1])
+    capsys.readouterr()
+
+
+def test_status_advertises_card_field_purpose():
+    assert BrowserCards().capabilities()['card_field_purpose_protocol'] == 1

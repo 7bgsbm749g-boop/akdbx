@@ -2040,6 +2040,28 @@ def test_an_sms_code_fills_an_extension_pin_once_and_never_returns_the_code(monk
     assert len(extension.filled) == 2 and broker.typer.events == [] and not broker.extension.pins
 
 
+def test_a_card_purpose_pin_goes_only_to_an_extension_that_applies_it():
+    broker = make_broker([CardEntry()])
+    channel, extension = attach(broker, {5: [Document('TOP', TOP)]})
+    purpose = dict(field_purpose='cc-exp-month')
+    # Fill extension 0.17.0 ignores a card purpose: it is never asked for such a pin.
+    reported, channel.version = channel.version, '0.17.0.3'
+    assert card_pin(broker, channel, 'TOP', 'cc-exp-month', **purpose) == card_failure()
+    assert 'pin' not in extension.calls
+    channel.version = reported
+    # A purpose for another field, a field without a card purpose, or a processor frame refuses first.
+    for field, extra in (('cc-number', purpose), ('cc-exp', dict(field_purpose='cc-exp')),
+                         ('cc-number', dict(field_purpose='cc-number', processor='stripe', processor_protocol=1)),
+                         ('cc-number', dict(allow_autocomplete_off=True))):
+        assert card_pin(broker, channel, 'TOP', field, **extra) == card_failure()
+    assert 'pin' not in extension.calls
+    pin = card_pin(broker, channel, 'TOP', 'cc-exp-month', **purpose, allow_autocomplete_off=True)
+    assert pin['ok'], pin
+    assert [p['spec'] for p in extension.pins.values()] == [dict(
+        selector='#number', field='cc-exp-month', processor=None, field_purpose='cc-exp-month',
+        allow_autocomplete_off=True)]
+
+
 def test_an_older_extension_is_never_asked_for_a_code_pin():
     broker = make_broker()
     channel, extension = attach(broker, {5: [Document('TOP', TOP)]})

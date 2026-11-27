@@ -97,9 +97,10 @@
           READ_CAPTURE(spec.selector, frameURL, null);
       } else if (kind === "card" || kind === "identity") {
         const identity = kind === "identity";
+        // A card purpose also needs the broker's check: never with a processor.
+        const purpose = typeof spec.field_purpose === "string" && (identity || !spec.processor);
         state = CARD_PIN(spec.selector, spec.field, frameURL, topURL, spec.processor || false, identity,
-          identity && typeof spec.field_purpose === "string" ? spec.field_purpose : false,
-          identity && spec.allow_autocomplete_off === true, shadowRootOf);
+          purpose ? spec.field_purpose : false, purpose && spec.allow_autocomplete_off === true, shadowRootOf);
       } else if (kind === "code") {
         // An SMS code or a source's webhook URL, never a field of another kind.
         if (!CODE_FIELDS.includes(spec.field)) return null;
@@ -141,7 +142,9 @@
   }
 
   // Every DOM check and the write run in one task: no page task runs between them.
-  function fill(id, kind, values, maxAgeMs) {
+  // Only a card expiry dropdown (an ARIA button) continues after that task: it waits
+  // for the page's list, and checks the field again before it chooses an option.
+  async function fill(id, kind, values, maxAgeMs) {
     const item = pins.get(id);
     pins.delete(id);
     if (!item || item.kind !== kind || performance.now() - item.created >= PIN_MS) {
@@ -161,7 +164,8 @@
         return PASSWORD_FILL.call(item.state, values.mode, values.username, values.password, deadline) ? "filled" : "refused";
       }
       if (!item.state.geometry()) return "refused";
-      const state = item.state.fill(values.value, maxAgeMs, values.notify_page === true);
+      // A card expiry dropdown (an ARIA button) chooses its option across a few tasks.
+      const state = await item.state.fill(values.value, maxAgeMs, values.notify_page === true);
       return state === "filled" || state === "refused" ? state : "uncertain";
     } catch {
       return "uncertain";

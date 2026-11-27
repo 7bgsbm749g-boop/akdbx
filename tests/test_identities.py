@@ -796,8 +796,13 @@ def test_broker_refuses_an_inconsistent_purpose_before_any_browser_call(extra):
     from akdbx.browser_card import CardTargetError, field_purpose
     with pytest.raises(CardTargetError):
         field_purpose('identity', dict(field='tel', **extra))
-    with pytest.raises(CardTargetError):
-        field_purpose('card', dict(field='cc-number', field_purpose='cc-number'))
+    # A card pin takes a purpose for its own fields only, and never with a processor.
+    for card in (dict(field='cc-exp', field_purpose='cc-exp'), dict(field='cc-number', field_purpose='cc-csc'),
+                 dict(field='cc-number', field_purpose='cc-number', processor='stripe'),
+                 dict(field='cc-number', allow_autocomplete_off=True)):
+        with pytest.raises(CardTargetError):
+            field_purpose('card', card)
+    assert field_purpose('card', dict(field='cc-number', field_purpose='cc-number')) == ('cc-number', False)
     assert field_purpose('identity', dict(field='tel')) == (False, False)
     assert field_purpose('identity', dict(field='tel', field_purpose='tel', allow_autocomplete_off=True)) == ('tel', True)
 

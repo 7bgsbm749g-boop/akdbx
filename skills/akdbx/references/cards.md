@@ -77,7 +77,9 @@ The native hit tests and Chrome out-of-process iframe checks described below
 apply to the CDP route. The extension uses the DOM checks only: it does not see
 a click-through cover over a field ([Firefox covers](../../../docs/firefox.md#covers),
 [visibility checks](../../../README.md#visibility-checks-what-they-stop)).
-Other cross-origin frames, shadow DOM and unannotated fields must be refused.
+Other cross-origin frames, shadow DOM and unannotated fields must be refused,
+except a main-frame or same-origin field whose purpose you verified (see
+[Field without an autocomplete hint](#field-without-an-autocomplete-hint-after-0530)).
 
 ```bash
 akdbx pin-card-target --page-id PAGE_ID --frame-id FRAME_ID \
@@ -92,6 +94,92 @@ command line and do not ask the user. Write it to a mode-0600 file without
 printing it, pass `--top-url-file FILE` or `--frame-url-file FILE` in place of
 the plain flag, and delete the file after the pin. See
 [exact URL with a private token](target-fill.md#exact-url-with-a-private-token).
+
+### Field without an autocomplete hint (after 0.53.0)
+
+Some merchants build the card form themselves, in the main frame, with no
+`cc-…` autocomplete tokens: plain inputs for the number and security code, and
+expiry month and year as dropdown buttons that open a list. Require
+`card_field_purpose_protocol: 1` from `akdbx status`. First verify from the
+page itself that the field takes this detail: its label, `aria-label`,
+placeholder, `id`, `name` and the form around it. Then add
+`--field-purpose FIELD` with the same value as `--field`:
+
+```bash
+akdbx pin-card-target --page-id PAGE_ID --frame-id FRAME_ID \
+  --top-url EXACT_HTTPS_URL --frame-url EXACT_HTTPS_URL \
+  --selector '#pidlInput_accountToken' --field cc-number --field-purpose cc-number
+akdbx fill-card SEARCH_HANDLE --target CARD_TARGET --field cc-number
+```
+
+- `--field-purpose` takes `cc-number`, `cc-csc`, `cc-exp-month`,
+  `cc-exp-year` or `cc-name`. A combined `cc-exp` field still needs its
+  autocomplete token.
+- With the purpose, the broker also accepts an input or select with no
+  autocomplete attribute, an empty one, or only `on`. `autocomplete="off"`
+  needs `--allow-autocomplete-off` as well (only together with
+  `--field-purpose`).
+- A token for another detail still refuses, for example `cc-csc` when you pin
+  `cc-number`, and so does a token with a prefix the card grammar refuses
+  (`shipping cc-number`). A purpose that differs from `--field`, or one given
+  with `--processor`, refuses before the request is sent.
+- Every other guard stays: exact URL, main frame or same-origin frame, unique
+  selector, visible and uncovered field, input type `text`, `tel` or
+  `password`, 30-second single-use pin, and no value in any output. A hint that
+  changes after the pin refuses the fill. Never add or rewrite page
+  attributes to make a field eligible.
+
+#### Expiry month or year in a dropdown button
+
+An expiry month or year that is a custom ARIA dropdown (not an `<input>` or
+`<select>`) pins with `--field-purpose cc-exp-month` or
+`--field-purpose cc-exp-year`. The pinned element must be one of:
+
+- a `<button type="button">` with `aria-haspopup="listbox"` (and no role, or
+  `role="combobox"`);
+- an element with `role="combobox"` (and no `aria-haspopup`, or
+  `aria-haspopup="listbox"`).
+
+It must name exactly one list through `aria-controls` or `aria-owns` (both
+only when they name the same id), must not be inside a link, button, label or
+summary, and must not be `aria-disabled`. Any other button refuses at the pin.
+
+```bash
+akdbx pin-card-target --page-id PAGE_ID --frame-id FRAME_ID \
+  --top-url EXACT_HTTPS_URL --frame-url EXACT_HTTPS_URL \
+  --selector '#pidlInput_expiryYear' --field cc-exp-year --field-purpose cc-exp-year
+akdbx fill-card SEARCH_HANDLE --target CARD_TARGET --field cc-exp-year --format YYYY
+```
+
+The broker itself opens the dropdown with a DOM click, waits up to about
+0.6 seconds for the list (an element with `role="listbox"` and the named id,
+in the same document), and chooses the one enabled `role="option"` whose
+visible text names the saved month (`MM` or `M`, for example `09` or `9`) or
+year (`YYYY` or `YY`, for example `2031` or `31`). The year matches both forms
+whichever `--format` you give. An option's `data-value` or `value` counts only
+for a month, and only when its visible text is that month's English name or
+three-letter abbreviation (`September` or `Sep` with `data-value="9"`): a list
+that counts its values from 0 then refuses instead of choosing another month. It then confirms that
+the button (or the label inside it) shows the choice, or that the option has
+`aria-selected="true"`. No key is sent and no value is typed; the receipt is
+the usual `ok` and field only.
+
+- No matching option, more than one (for example both `9` and `09`), a
+  disabled match, a list that does not appear, or an option that is a link,
+  form control or submit button: the fill refuses with `card fill not
+  started`. The broker closes the dropdown again if it opened it, and the
+  selection stays as it was.
+- A choice the page does not show within about 0.6 seconds is `uncertain`: do
+  not retry automatically. Inspect the non-secret state of the dropdown
+  (its visible text) instead.
+- Month names alone (`September` with no value attribute, or in another
+  language) do not match. Report such a form as missing support.
+- The page's own handlers see the click, as they would for the user.
+
+The CDP route supports both forms. The extension route applies the same DOM
+checks and needs fill extension 0.18.0 or newer (`extension_browsers` in
+`status` shows `version_status: "current"`); the broker refuses a card purpose
+pin to an older extension.
 
 ### Adyen processor frames
 
@@ -227,7 +315,7 @@ retry it automatically. No submit, keyboard, clipboard or agent-visible card
 value is used. Use a fresh search handle and pin for every field.
 
 Allowed field types: `cc-name`, `cc-number`, `cc-exp-month`, `cc-exp-year`,
-`cc-exp`, `cc-csc`. For `cc-exp`, explicitly select `--format MM/YY` or
+`cc-exp`, `cc-csc`. Processor routes never take `--field-purpose`. For `cc-exp`, explicitly select `--format MM/YY` or
 `--format MM/YYYY`; for `cc-exp-year`, select `--format YY` or `--format YYYY`
 from the observed form. Do not guess the expiry format. Each field requires a
 fresh search handle and fresh 30-second pin. The broker fills the retained DOM

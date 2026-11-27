@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .browser_card import DELIVERY, failure
+from .browser_card import CARD_PURPOSE_FIELDS, CARD_PURPOSE_PROTOCOL, DELIVERY, failure
 from .cards import FILL_FIELDS
 from .card_notifications import RESULTS
 from . import browser_slots, card_processor, page_lifetime, page_url
@@ -54,6 +54,12 @@ def add_parsers(commands):
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
     p.add_argument('--processor', choices=card_processor.PROCESSORS,
                    help='explicitly pin an attested supported production card processor iframe')
+    p.add_argument('--field-purpose', choices=CARD_PURPOSE_FIELDS, metavar='FIELD',
+                   help='you verified on the page that the field takes this card detail (the same value as --field); '
+                        'accepts a field with no autocomplete token or only "on", and an expiry month or year '
+                        'dropdown button; a token for another detail still refuses. Not with --processor')
+    p.add_argument('--allow-autocomplete-off', action='store_true',
+                   help='with --field-purpose: also accept autocomplete="off"')
     p.add_argument('--route', choices=ROUTES, help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
     browser_slots.add_argument(p)
     p = commands.add_parser('fill-card', help='fill only the pinned card field; never types keys or submits')
@@ -61,6 +67,22 @@ def add_parsers(commands):
     p.add_argument('--target', required=True)
     p.add_argument('--field', required=True, choices=FILL_FIELDS)
     p.add_argument('--format', choices=('MM/YY', 'MM/YYYY', 'YY', 'YYYY'))
+
+
+def purpose_refusal(args, caps):
+    """Why the CLI refuses the pin's field purpose options before sending, or None."""
+    if args.allow_autocomplete_off and args.field_purpose is None:
+        return '--allow-autocomplete-off needs --field-purpose'
+    if args.field_purpose is None:
+        return None
+    if args.field_purpose != args.field:
+        return '--field-purpose must name the same detail as --field'
+    if args.processor is not None:
+        return '--field-purpose does not apply to a --processor frame'
+    if (type(caps.get('card_field_purpose_protocol')) is not int
+            or caps['card_field_purpose_protocol'] != CARD_PURPOSE_PROTOCOL):
+        return 'broker lacks card field purpose protocol 1'
+    return None
 
 
 def valid_receipt(command, response, args):
@@ -137,6 +159,10 @@ def run(args, request):
             print(json.dumps(dict(ok=False, error=refusal + '; card request not sent')))
             return 1
         if args.command == 'pin-card-target':
+            refusal = purpose_refusal(args, caps)
+            if refusal is not None:
+                print(json.dumps(dict(ok=False, error=refusal + '; pin request not sent')))
+                return 1
             args.resolved_route = args.route or caps.get('default_fill_route') or 'cdp'
             if args.resolved_route == 'extension' and (type(caps.get('extension_protocol')) is not int
                                                        or caps['extension_protocol'] != 1):
@@ -170,6 +196,10 @@ def run(args, request):
                 payload['frame_url'] = args.frame_url
             if args.route is not None:
                 payload['route'] = args.route
+            if args.field_purpose is not None:
+                payload['field_purpose'] = args.field_purpose
+            if args.allow_autocomplete_off:
+                payload['allow_autocomplete_off'] = True
             slot, refusal = browser_slots.request_field(args, caps, args.resolved_route)
             if refusal is not None:
                 print(json.dumps(dict(ok=False, error=refusal)))

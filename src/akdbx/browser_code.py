@@ -19,8 +19,8 @@ def _derive(script: str) -> str:
     replacements = (
         ("(selector, field, frameURL, topURL, processor=false, identity=false, purpose=false, allowOff=false, shadowRootOf=null) => {",
          "(selector, field, frameURL, topURL, processor=false, identity=false, purpose=false, allowOff=false, code=false, shadowRootOf=null) => {"),
-        ("  if (!input && !select && !textarea) return null;\n",
-         "  if (!input && !select && !textarea) return null;\n  if (code && !input) return null;\n"),
+        ("  if (!input && !select && !textarea && !aria) return null;\n",
+         "  if (!input && !select && !textarea && !aria) return null;\n  if (code && !input) return null;\n"),
         ("  } else if (computop ? !knownComputopField() :",
          "  } else if (code) {\n"
          "    if (!(field === 'one-time-code' ? ['text','tel','number','password'] : ['text','url']).includes(type)) return null;\n"
