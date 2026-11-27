@@ -328,12 +328,12 @@ class CardManager:
             # write-status reports the final non-secret destination.
             op.values = destination
             self.broker.writes.invalidate_revision(op)
-            self.broker.writes.notify_card(op)
+            self.broker.writes.notify_result(op)
             return dict(ok=True, state='saved', reason='saved', **destination)
         except Exception:
             op.state = 'failed'
             op.error = 'card save failed; vault update not confirmed'
-            self.broker.writes.notify_card(op)
+            self.broker.writes.notify_result(op)
             return dict(ok=False, reason='failed', error=FAILED)
 
     @staticmethod

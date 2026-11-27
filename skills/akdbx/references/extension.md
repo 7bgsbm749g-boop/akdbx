@@ -28,7 +28,7 @@ Brave. See `extension_host_browsers` in broker status. The Chromium family uses 
 Firefox uses `akdbx@akdbx.org`. Both use host name `org.akdbx.extension`.
 See [Firefox setup and installation limits](../../../docs/firefox.md). After
 0.52.0 Firefox can also run a permanently installed add-on that Mozilla signed
-for this broker ([signed Firefox add-on](#signed-firefox-add-on-after-0520)).
+for this broker ([signed Firefox add-on](#signed-firefox-add-on-0530)).
 
 ## Capabilities
 
@@ -74,7 +74,7 @@ four-part hello (the popup says the broker is not reachable): restart the
 broker on the updated akdbx, and run `akdbx extension refresh` (or
 `install`) from it.
 
-A Firefox add-on signed with `akdbx extension sign` (after 0.52.0) has its
+A Firefox add-on signed with `akdbx extension sign` (0.53.0) has its
 own version, because AMO accepts each version only once:
 `MAJOR.MINOR.PATCH.N` with N = 100000000 + 1000 × (the unsigned build's
 fourth part) + a sequence number 1–999, for example `0.15.1.111058001`. The
@@ -573,7 +573,7 @@ load the folder as an unpacked extension (`chrome://extensions`,
 **Developer mode**, **Load unpacked**). Run `akdbx extension uninstall
 --browser NAME` to remove the host registration.
 
-### Signed Firefox add-on (after 0.52.0)
+### Signed Firefox add-on (0.53.0)
 
 Require `firefox_signing_protocol: 1` and `firefox_signing_configured: true`
 in `status`. `firefox_signing_entry_origin` (`https://addons.mozilla.org`)
@@ -613,7 +613,7 @@ an entry on another origin or without both protected fields, a locked vault,
 no private page, AMO HTTP 401 (key or clock), HTTP 403/409 (another account
 owns `akdbx@akdbx.org`), validation errors (AMO's first messages), a refused
 source archive (job kept), a rejected version, or a download that is not the
-signed submitted build. See [Firefox setup](../../../docs/firefox.md#permanent-install-a-mozilla-signed-xpi-after-0520).
+signed submitted build. See [Firefox setup](../../../docs/firefox.md#permanent-install-a-mozilla-signed-xpi-0530).
 
 ### Host launcher (0.31.1+)
 

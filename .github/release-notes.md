@@ -16,7 +16,9 @@ From 0.52.0: macOS native fields fill passwords, logins and generated passwords 
 
 After 0.52.0 (fill extension 0.16.0): the extension's experimental Enhanced security pixel check, its settings page and its `<all_urls>` permission request are removed. A page could beat the check, and the page that gets a value can read it anyway. The checks that stop hidden and invisible fields stay on both routes, and the CDP route still refuses a click-through cover. An extension that had the setting on keeps working. See the README section "Visibility checks: what they stop".
 
-After 0.52.0 (fill extension 0.17.0): `akdbx extension sign --output DIR HANDLE` has Mozilla sign the broker's own Firefox build (AMO, unlisted channel) for a permanent install, with the AMO API key from a vault entry that stays inside the broker. Only the AMO account that owns the add-on ID `akdbx@akdbx.org` can sign. Each signed build has its own version; `status` reports it as current. See `docs/firefox.md`.
+From 0.53.0: every private save page (password, authenticator key and import, identity, card) sends a one-shot `akdbx.write-result` webhook when it is saved, fails, is cancelled or expires (`subscribe-write`), and `subscribe-sms --any-text` wakes when an SMS setup or test page receives its test text. Agents resume on the event instead of polling.
+
+From 0.53.0 (fill extension 0.17.0): `akdbx extension sign --output DIR HANDLE` has Mozilla sign the broker's own Firefox build (AMO, unlisted channel) for a permanent install, with the AMO API key from a vault entry that stays inside the broker. Only the AMO account that owns the add-on ID `akdbx@akdbx.org` can sign. Each signed build has its own version; `status` reports it as current. See `docs/firefox.md`.
 
 Verify a download before installing it:
 

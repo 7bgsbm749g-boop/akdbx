@@ -154,7 +154,7 @@ install from 0.49.0.
 ## Extension route, Firefox
 
 Firefox 153 or newer, with its own host and build (`--browser firefox`). It
-runs as a temporary add-on, or, after 0.52.0, as a permanently installed XPI
+runs as a temporary add-on, or, from 0.53.0, as a permanently installed XPI
 that Mozilla signed for this broker (`akdbx extension sign`, AH); see
 [Firefox setup](firefox.md).
 
@@ -175,7 +175,7 @@ that Mozilla signed for this broker (`akdbx extension sign`, AH); see
 | Refuses a click-through cover over a field | ◼ (AG) | ◼ (AG) | ◼ (AG) |
 | Popup human click | ✅ login 0.47.0; address and texted (SMS) code from 0.52.0 (ext 0.15.0) · `firefox-extension-browser`; TOTP, card: no Firefox test (R) | ✅ login, address, texted code · `firefox-extension-browser` | ✅ login, address, texted code · `firefox-extension-browser` |
 | Agent desktop slots | — (U) | — (U) | — (U) |
-| Permanent install: AMO-signed XPI (`akdbx extension sign`) | ✅ after 0.52.0 · contract test (`linux`) against a fake AMO; `firefox-extension-browser` loads and fills through the submitted archive (AH) | ✅ after 0.52.0 · contract test (`windows`); `firefox-extension-browser` (AH) | ✅ after 0.52.0 · contract test (`macos-broker`); `firefox-extension-browser` (AH) |
+| Permanent install: AMO-signed XPI (`akdbx extension sign`) | ✅ from 0.53.0 · contract test (`linux`) against a fake AMO; `firefox-extension-browser` loads and fills through the submitted archive (AH) | ✅ from 0.53.0 · contract test (`windows`); `firefox-extension-browser` (AH) | ✅ from 0.53.0 · contract test (`macos-broker`); `firefox-extension-browser` (AH) |
 
 ## Android route (`akdbx android`)
 

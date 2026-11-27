@@ -32,7 +32,11 @@ live deployment is separate work; keep its current vault and credentials intact.
    the account or website. Other accounts are discarded, not silently added.
    To import another account, start a fresh request and reuse the original QR
    images privately; a successful save invalidates other pending requests.
-6. Check `write-status WRITE_HANDLE` for `state: saved`. Use a fresh normal
+6. Resume on the `akdbx.write-result` event of a `subscribe-write` webhook
+   that you registered before you shared the page (0.53.0+,
+   [write-result notifications](write-notifications.md)); the QR, export and
+   browser-capture imports send it as the manual form does. Do not poll.
+   Then check `write-status WRITE_HANDLE` for `state: saved`. Use a fresh normal
    `fill-totp` request to verify sign-in when authorized. The save receipt alone
    does not certify site acceptance or that the phone is still configured.
 

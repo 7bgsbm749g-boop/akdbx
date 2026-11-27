@@ -122,9 +122,10 @@ single-use pin for the requested fill or read-only capture.
   true` and read `merge_engine`. With akdbx 0.46.0 and later, this is
   `akdbx-native-v1`. Unlock the vault and check its write and recovery status
   if merge is unavailable.
-- `subscribe-unlock` and `subscribe-card-save` read the callback from a file
-  that only this user, SYSTEM and administrators can open. Until-unlock
-  subscriptions survive a broker restart.
+- `subscribe-unlock`, `subscribe-card-save` and `subscribe-write` (0.53.0)
+  read the callback from a file that only this user, SYSTEM and administrators
+  can open. Until-unlock and until-result subscriptions survive a broker
+  restart.
 - The three-attempt unlock link block, `unlock_blocked`, the
   `akdbx.unlock-blocked` event and `new-unlock-link --user-confirmed` work as
   on Linux (0.25.0+). Ask the user the skill's two questions first.

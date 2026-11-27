@@ -37,8 +37,8 @@ restrictions.
 
 A temporary add-on is removed when Firefox exits. Load it again at the next
 start, then pair again. Permanent installation in standard Firefox requires a
-Mozilla-signed XPI. After 0.52.0 the broker gets its own build signed:
-see [Permanent install](#permanent-install-a-mozilla-signed-xpi-after-0520).
+Mozilla-signed XPI. From 0.53.0 the broker gets its own build signed:
+see [Permanent install](#permanent-install-a-mozilla-signed-xpi-0530).
 
 After an update, rebuild with `--browser firefox` into the same Firefox
 folder (a signed install needs a new signature instead; see
@@ -59,7 +59,7 @@ folder. This also handles unused Chromium paths saved by older setup versions
 and Firefox builds made with the standalone command. Path aliases do not make
 the two formats share one folder.
 
-## Permanent install: a Mozilla-signed XPI (after 0.52.0)
+## Permanent install: a Mozilla-signed XPI (0.53.0)
 
 Release Firefox installs an add-on permanently only when Mozilla signed it.
 `akdbx extension sign` gets the broker's own Firefox build signed on
@@ -305,7 +305,7 @@ on a login, an address (with the identity pin's checks, 0.15.0) and a texted
 code (0.15.0); no Firefox test fills a TOTP code or a card from the popup. The
 QR tests also run with `<all_urls>` host access. For `capture-secret`
 and `capture-totp`, it reopens a disposable encrypted vault to verify the
-result. After 0.52.0 it also loads the exact archive that
+result. From 0.53.0 it also loads the exact archive that
 `akdbx extension sign` uploads, with its nine-digit signed-build version, and
 fills a password through it (the broker reports it `current`).
 `tests/test_firefox_signing.py` runs the whole signing flow against a fake

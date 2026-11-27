@@ -803,8 +803,8 @@ def run(args, request):
         return 2
     if caps.get('ok') is not True or type(caps.get('firefox_signing_protocol')) is not int \
             or caps['firefox_signing_protocol'] != PROTOCOL:
-        print(json.dumps(dict(ok=False, error='broker lacks Firefox signing (firefox_signing_protocol 1); require a '
-                                              'broker newer than 0.52.0; request not sent')))
+        print(json.dumps(dict(ok=False, error='broker lacks Firefox signing (firefox_signing_protocol 1); require '
+                                              'broker 0.53.0 or newer; request not sent')))
         return 1
     if caps.get('firefox_signing_configured') is not True:
         print(json.dumps(dict(ok=False, error='this broker has no folder for signed add-ons; start it with '
