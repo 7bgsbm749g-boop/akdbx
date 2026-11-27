@@ -132,7 +132,7 @@ DOM hit test on both routes. See [Visibility checks](#visibility-checks-what-the
 
 Fill extension 0.5.0 to 0.15.x (akdbx 0.34.0 to 0.52.0) had an experimental,
 opt-in **Enhanced security** setting: a pixel check with tab screenshots for
-covers over card, address, code and read targets. After 0.52.0 (fill extension
+covers over card, address, code and read targets. From 0.53.0 (fill extension
 0.16.0) that setting, its settings page and its `<all_urls>` permission request
 are removed. A page could beat the check, and the page that gets a value can read
 it anyway. Fills and reads work as with the setting off; a stored setting is
@@ -287,8 +287,8 @@ field that the agent chose, and that field must be one the user can see.
 | --- | --- | --- | --- |
 | DOM checks. Every pin: `display: none`, `visibility`, `opacity: 0`, zero size, off-screen, `inert`; focus (every pin except card pins); visible owners of child frames. Card, address and code pins: the style guard (filter, mask, clip, blend; only an ancestor `clip-path: inset()` that holds the whole field) and the `elementFromPoint` hit test at the field centre, through each parent frame. Read pins: the hit test at the start, centre and end of each line of the secret's text (of the box for a text input), or a 5 x 5 grid over a QR code. | CDP and extension | Hidden, transparent, zero-size, off-screen and inert targets; for card, address and code fields also clipped fields and an opaque cover that takes pointer events; a hidden login frame | Yes: a cover with a hole at the tested points. On the extension route, also a click-through cover. |
 | CDP native hit test (`DOM.getNodeForLocation`, which ignores `pointer-events: none`) for card, address and code fields, at the pin and before and after the write | CDP | A click-through cover at the field centre: `pointer-events: none`, `inert`, a popover `::backdrop` | Yes: a cover with a hole at the tested point. |
-| `IntersectionObserver` v2 occlusion test (removed after 0.52.0) | Extension, Chromium, with Enhanced security | Any box over the element | It refused ordinary pages (5 of 9 test pages: a floating label, a copy button, a cookie banner elsewhere), Firefox has no such test, and it ran only beside the pixel check. |
-| Pixel check with tab screenshots (removed after 0.52.0) | Extension, with Enhanced security (opt-in) | A cover over the sampled points | Yes: a page can read the check's colour from its own style and remove its cover while the check runs, or cover the text between the sampled points. It needed the `<all_urls>` permission. |
+| `IntersectionObserver` v2 occlusion test (removed in 0.53.0) | Extension, Chromium, with Enhanced security | Any box over the element | It refused ordinary pages (5 of 9 test pages: a floating label, a copy button, a cookie banner elsewhere), Firefox has no such test, and it ran only beside the pixel check. |
+| Pixel check with tab screenshots (removed in 0.53.0) | Extension, with Enhanced security (opt-in) | A cover over the sampled points | Yes: a page can read the check's colour from its own style and remove its cover while the check runs, or cover the text between the sampled points. It needed the `<all_urls>` permission. |
 
 Password pins have no style guard and no hit test, on both routes: a cover
 over a visible, focused password field does not stop its fill. Read pins

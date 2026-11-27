@@ -401,7 +401,7 @@ job, for the reason given. Only `test_relay_integration.py` and `test_android_em
   address and code fields; `card-safety` tests all three kinds of cover on a
   card field and `pointer-events: none` on a code field. An extension has no
   browser-native hit test, so the extension route cannot see one. Fill
-  extension 0.5.0 to 0.15.x had an opt-in pixel check for covers; after 0.52.0
+  extension 0.5.0 to 0.15.x had an opt-in pixel check for covers; from 0.53.0
   it is removed, because a page could beat it and the page gets the value
   anyway. A read pin uses the DOM hit test on both routes. See
   [Visibility checks](../README.md#visibility-checks-what-they-stop).
