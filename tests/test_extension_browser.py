@@ -14,6 +14,7 @@ loads an unpacked extension (Chromium or Chrome for Testing; Google Chrome 137+
 does not), and on Linux AKDBX_TEST_BROWSER_NO_SANDBOX=1 on a host without user
 namespaces.
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -414,7 +415,20 @@ class Harness:
 
 
 @pytest.fixture
-def harness(private_dir, certificates, monkeypatch, request):
+def harness(private_dir, certificates, request):
+    with extension_session(private_dir, certificates, getattr(request, 'param', None)) as running:
+        yield running
+
+
+@contextlib.contextmanager
+def extension_session(private_dir, certificates, mode=None, *, host_name=None, password=PASSWORD):
+    """One broker, its HTTPS page on a fresh loopback origin, its native host and one Chromium profile.
+
+    The generic build (fill extension 0.19.0) trusts no broker address until the user confirms one in the
+    popup. The session confirms the broker's origin as the popup's "Trust this address" click does (the popup
+    tests click it for real) and then pairs. Mode 'unconfirmed' leaves both to the test. ``host_name``: the native
+    host the build connects to, so that several sessions load one build folder; ``password``: this broker's.
+    """
     if sys.platform != 'win32':
         certificates[1].chmod(0o600)  # The POSIX page refuses a key other users could read.
     binary = extension_browser()
@@ -424,7 +438,7 @@ def harness(private_dir, certificates, monkeypatch, request):
         pytest.skip('the extension route tests require Helium, Chrome or Edge')
     kind = browser_kind(binary)
     suffix = uuid.uuid4().hex[:10]
-    host_name = 'org.akdbx.test_' + suffix
+    host_name = host_name or 'org.akdbx.test_' + suffix
     pipe = (Path(r'\\.\pipe\akdbx-test-extension-' + suffix) if sys.platform == 'win32'
             else Path(private_dir) / 'run' / 'broker.sock')
     # The broker's own HTTPS page on loopback, as `akdbx serve --tls-cert` runs it: the built origin.
@@ -432,7 +446,7 @@ def harness(private_dir, certificates, monkeypatch, request):
         probe.bind(('127.0.0.1', 0))
         unlock_port = probe.getsockname()[1]
     unlock_origin = f'https://localhost:{unlock_port}'
-    extension = extension_host.build(Path(private_dir) / 'extension', host_name=host_name, unlock_origin=unlock_origin)
+    extension = extension_host.build(Path(private_dir) / 'extension', host_name=host_name)
     launcher = Path(private_dir) / ('host.cmd' if sys.platform == 'win32' else 'host.sh')
     launcher.write_text(extension_host._launcher_text(kind, sys.executable, str(pipe)), encoding='utf-8', newline='')
     native_hosts = None
@@ -446,7 +460,7 @@ def harness(private_dir, certificates, monkeypatch, request):
     else:
         launcher.chmod(0o700)
         native_hosts = {host_name: extension_host._manifest(launcher, host_name)}
-    entries = [Entry(username=USERNAME, password=PASSWORD, url=ORIGIN + '/login'), CardEntry(title='Synthetic card'),
+    entries = [Entry(username=USERNAME, password=password, url=ORIGIN + '/login'), CardEntry(title='Synthetic card'),
                IdentityEntry(uuid='identity', title='Synthetic phone', path=('Root', 'Web', 'Synthetic phone')),
                Entry(title='Other', username='other@example.test', password=PASSWORD, url='https://other.example.org/'),
                Entry(title='Auth', username=USERNAME, password=PASSWORD, url='https://auth.example.com/login')]
@@ -477,13 +491,21 @@ def harness(private_dir, certificates, monkeypatch, request):
             worker = lab.observer.call('Target.attachToTarget', dict(targetId=workers[0]['targetId'], flatten=True))
             state = lab.observer.evaluate('popupState()', worker['sessionId'], await_promise=True)
             assert state['paired'] is False and state['code'] == route.pairing_code(channel.digest)
-            # Pair through the hub; the private page itself has its own tests.
+            # The generic build trusts no broker address yet: no pairing page, and the popup asks the user
+            # to confirm the origin that the native host names.
+            assert state['origin'] is None and state['pairing_url'] is None, state
+            assert state['propose_origin'] == unlock_origin and state['trust_error'] is None
             token = next(t for t, (digest, _) in broker.extension.pairings.items() if digest == channel.digest)
-            assert broker.extension.approve(token)
-            # Reload so the declared content script runs in the test page.
-            lab.navigate('/login')
             harness = Harness(lab, broker, kind, unlock_origin, identity)
             harness.extension, harness.host_name = extension, host_name  # For a rebuild in the same folder.
+            harness.token = token
+            if mode != 'unconfirmed':
+                confirmed = harness.worker_call(f'popupConfirm({{origin: {json.dumps(unlock_origin)}}})')
+                assert confirmed == dict(ok=True, origin=unlock_origin, origin_learned=True), confirmed
+                # Pair through the hub; the private page itself has its own tests.
+                assert broker.extension.approve(token)
+                # Reload so the declared content script runs in the test page.
+                lab.navigate('/login')
             yield harness
     finally:
         stop.set()
@@ -507,22 +529,168 @@ def store_enhanced_security(harness):
     assert harness.worker_call(SETTINGS) == dict(enhanced_security=True)
 
 
-def test_the_service_worker_binds_the_first_broker_key_from_the_https_identity_page(harness):
-    """The MV3 worker itself reads /.well-known/akdbx-identity: CSP connect-src, host permission and the
-    page's Origin allowlist all let it through, and the key is stored only after that read verifies."""
+TRUST = "chrome.storage.local.get('broker_trust').then(found => found.broker_trust ?? null)"
+
+
+def bound_record(harness):
     statement = harness.identity.message()['statement']
-    read = "chrome.storage.local.get('broker_trust').then(found => found.broker_trust ?? null)"
-    deadline = time.monotonic() + 30
-    record = harness.worker_call(read)
-    while record is None and time.monotonic() < deadline:
-        time.sleep(.2)
-        record = harness.worker_call(read)
-    build = harness.worker_call('globalThis.AKDBX_BUILD_ID')  # The ID that config.js of this build holds.
-    assert isinstance(build, str) and len(build) == 22
-    assert record == {'v': 1, 'public_key': harness.identity.message()['public_key'], 'key_id': statement['key_id'],
-                      'origin': harness.unlock_origin, 'seq': statement['seq'], 'build': build}
+    return {'v': 1, 'public_key': harness.identity.message()['public_key'], 'key_id': statement['key_id'],
+            'origin': harness.unlock_origin, 'seq': statement['seq']}
+
+
+def test_the_service_worker_binds_the_first_broker_key_from_the_https_identity_page(harness):
+    """The MV3 worker itself reads /.well-known/akdbx-identity after the confirmation: CSP connect-src, host
+    permission and the page's Origin allowlist all let it through, and the key is stored only after that read
+    verifies. The generic build holds no address and no build ID."""
+    assert harness.worker_call(TRUST) == bound_record(harness)
+    assert harness.worker_call('[typeof globalThis.AKDBX_TRUSTED_ORIGIN, typeof globalThis.AKDBX_BUILD_ID]') == [
+        'undefined', 'undefined']
     state = harness.worker_call('popupState()')
     assert state['origin'] == harness.unlock_origin and state['trust_error'] is None and state['trust_reset'] is False
+    assert state['propose_origin'] is None and state['trust_forget'] is False
+
+
+def popup_page(harness):
+    """Open the toolbar popup as the user's button press does; its CDP session once its script ran."""
+    observer = harness.lab.observer
+    harness.worker_call('chrome.action.openPopup()')
+    deadline = time.monotonic() + 10
+    while not (found := [t for t in observer.call('Target.getTargets')['targetInfos']
+                         if t['url'] == route.EXTENSION_ORIGIN + 'popup.html']):
+        assert time.monotonic() < deadline, 'the popup did not open'
+        time.sleep(.05)
+    session = observer.call('Target.attachToTarget', dict(targetId=found[0]['targetId'], flatten=True))['sessionId']
+    while observer.evaluate('document.getElementById("status").textContent', session) == 'Checking the akdbx broker…':
+        assert time.monotonic() < deadline, 'the popup did not show the broker state'
+        time.sleep(.05)
+    return session
+
+
+def click_selector(harness, session, selector):
+    """A trusted mouse click, as the user's, on one visible popup element."""
+    observer = harness.lab.observer
+    point = observer.evaluate(f'(element => {{ if (!element || element.closest("[hidden]")) return null;'
+                              ' const r = element.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })'
+                              f'(document.querySelector({json.dumps(selector)}))', session)
+    assert point, observer.evaluate('document.body.innerText', session)
+    for kind in ('mousePressed', 'mouseReleased'):
+        observer.call('Input.dispatchMouseEvent', dict(type=kind, x=point[0], y=point[1], button='left', clickCount=1),
+                      session=session)
+
+
+def popup_shows(harness, session, expression, timeout=10):
+    deadline = time.monotonic() + timeout
+    while not harness.lab.observer.evaluate(expression, session):
+        assert time.monotonic() < deadline, harness.lab.observer.evaluate('document.body.innerText', session)
+        time.sleep(.05)
+
+
+@pytest.mark.parametrize('harness', ['unconfirmed'], indirect=True)
+def test_a_generic_build_opens_nothing_before_the_user_confirms_and_pairs_after_a_real_click(harness):
+    """The broker runs on a fresh loopback port, not the default origin, and the build names no origin. The popup
+    shows the host's origin and opens no page until the user's click confirms it; then the HTTPS page binds the
+    key, the popup shows the pairing page on that origin, and the paired browser fills."""
+    lab, broker = harness.lab, harness.broker
+    assert harness.unlock_origin != 'https://localhost:9443'
+    assert not any(harness.unlock_origin.encode() in p.read_bytes() for p in harness.extension.iterdir())
+    assert harness.worker_call(TRUST) is None
+    assert harness.worker_call('channelTrusted()') is None  # No captured secret is sealed to any broker key.
+    session = popup_page(harness)
+    shown = lab.observer.evaluate('[document.getElementById("confirm").hidden, '
+                                  'document.getElementById("confirm-origin").textContent, '
+                                  'document.getElementById("pairing").hidden, document.getElementById("unlock").hidden]',
+                                  session)
+    assert shown == [False, harness.unlock_origin, True, True]
+    # A script's click in the popup is not the user's: nothing is saved.
+    lab.observer.evaluate('document.getElementById("confirm-yes").click()', session)
+    time.sleep(.5)
+    assert harness.worker_call(TRUST) is None
+    click_selector(harness, session, '#confirm-yes')
+    popup_shows(harness, session, f'document.getElementById("origin").textContent === '
+                                  f'{json.dumps("Pairing page: " + harness.unlock_origin)} && !document.getElementById("pairing").hidden')
+    assert harness.worker_call(TRUST) == bound_record(harness)
+    assert lab.observer.evaluate('document.getElementById("code").textContent', session) == route.pairing_code(
+        next(iter(harness.hub.channels.values())).digest)
+    # The user enters the master password on that pairing page; the hub's approval stands for it here.
+    lab.observer.evaluate('window.close()', session)
+    assert broker.extension.approve(harness.token)
+    lab.navigate('/login')
+    url = lab.evaluate('location.href')
+    listing = harness.frames(url)
+    harness.focus('password')
+    pin = broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
+                               frame_id=listing['main_frame_id'], top_url=url, selector='#password', mode='password',
+                               route='extension'))
+    assert pin['ok'], pin
+    assert broker.dispatch(dict(action='fill', handle=search(broker), mode='password', target=pin['target'],
+                                target_protocol=1))['ok']
+    assert lab.digest('password') == sha(PASSWORD)
+
+
+@pytest.mark.parametrize('harness', ['unconfirmed'], indirect=True)
+def test_trust_that_a_per_deployment_build_saved_keeps_working_after_the_update(harness):
+    """Fill extension 0.18.x saved its broker trust with the random build ID of its config.js. The generic build
+    keeps that record: the popup opens the pairing page on its origin with no new confirmation."""
+    record = dict(bound_record(harness), build='Q' * 22)
+    harness.worker_call(f'chrome.storage.local.set({{broker_trust: {json.dumps(record)}}})')
+    state = harness.worker_call('popupState()')
+    assert state['origin'] == harness.unlock_origin and state['propose_origin'] is None and state['trust_error'] is None
+    assert state['pairing_url'] and state['pairing_url'].startswith(harness.unlock_origin + '/extension/pair?')
+    assert harness.worker_call(TRUST) == record  # Kept as it was; nothing read again.
+
+
+def test_a_broker_that_moved_without_a_signature_is_forgotten_by_the_users_clicks_and_confirmed_again(harness):
+    """Another broker key on another origin: no link opens; the popup offers Forget, and after two real clicks
+    it asks to confirm the new origin."""
+    lab, broker = harness.lab, harness.broker
+    assert harness.worker_call(TRUST) == bound_record(harness)
+    other = 'https://other.example.test:9443'
+    store = broker_identity.IdentityStore(Path(harness.extension).parent / 'other-identity')
+    broker.extension.set_identity(store.announce(other))
+    session = popup_page(harness)
+    popup_shows(harness, session, '!document.getElementById("forget").hidden')
+    assert lab.observer.evaluate('document.getElementById("trust").textContent', session).startswith(
+        f'The broker names {other}, but this extension trusts {harness.unlock_origin}')
+    assert lab.observer.evaluate('document.getElementById("reset").hidden', session) is True
+    click_selector(harness, session, '#forget-start')
+    popup_shows(harness, session, '!document.getElementById("forget-confirm").hidden')
+    click_selector(harness, session, '#forget-yes')
+    popup_shows(harness, session, 'document.getElementById("trust").textContent.startsWith("Broker forgotten")')
+    assert harness.worker_call(TRUST) is None
+    lab.observer.evaluate('window.close()', session)
+    state = harness.worker_call('popupState()')
+    assert state['origin'] is None and state['propose_origin'] == other and state['pairing_url'] is None
+
+
+def test_users_of_two_brokers_load_the_same_build(private_dir, certificates):
+    """One build folder, two users with their own broker (own origin, key and vault), one after the other: each
+    confirms its own broker, binds its key, and fills from it."""
+    host = 'org.akdbx.test_' + uuid.uuid4().hex[:10]
+    passwords = ['SYNTHETIC-Broker-A-Only-1!', 'SYNTHETIC-Broker-B-Only-2!']
+    builds, records = [], []
+    for index, password in enumerate(passwords):
+        folder = Path(private_dir) / f'user{index}'
+        if sys.platform == 'win32':
+            from akdbx.windows_security import ensure_private_directory
+            ensure_private_directory(folder)
+        else:
+            folder.mkdir(mode=0o700)
+        with extension_session(folder, certificates, host_name=host, password=password) as running:
+            builds.append({p.name: p.read_bytes() for p in running.extension.iterdir()})
+            record = running.worker_call(TRUST)
+            assert record == bound_record(running)
+            records.append(record)
+            url = running.lab.evaluate('location.href')
+            listing = running.frames(url)
+            running.focus('password')
+            pin = running.broker.dispatch(dict(action='pin-password-target', password_protocol=1,
+                                               page_id=listing['page_id'], frame_id=listing['main_frame_id'],
+                                               top_url=url, selector='#password', mode='password', route='extension'))
+            assert running.broker.dispatch(dict(action='fill', handle=search(running.broker), mode='password',
+                                                target=pin['target'], target_protocol=1))['ok']
+            assert running.lab.digest('password') == sha(password)
+    assert builds[0] == builds[1] == extension_host.build_files('chrome', host_name=host)
+    assert records[0]['origin'] != records[1]['origin'] and records[0]['key_id'] != records[1]['key_id']
 
 
 def search(broker):
@@ -1480,18 +1648,17 @@ def test_a_rebuild_with_other_contents_runs_the_new_worker_after_a_browser_resta
     if sys.platform != 'win32':
         certificates[1].chmod(0o600)
     folder = Path(private_dir) / 'extension'
-    origin = 'https://localhost:9443'
-    extension_host.build(folder, unlock_origin=origin)
+    extension_host.build(folder)
     first = extension_host.built_version()
     run = dict(binary=binary, extension=folder)
     with chromium_lab(private_dir, *certificates, **run) as lab:
         assert worker_value(lab, RUNS) == [first, False, 'function']
-    same = rebuild(monkeypatch, folder, keep_version=True, unlock_origin=origin)
+    same = rebuild(monkeypatch, folder, keep_version=True)
     assert same == first and REBUILT in (folder / 'background.js').read_bytes()
     with chromium_lab(private_dir, *certificates, restart=True, **run) as lab:
         # Usually the cached old worker beside the new files (the defect); Chromium does not always keep it.
         assert worker_value(lab, RUNS) in ([first, False, 'function'], [first, True, 'function'])
-    stamped = rebuild(monkeypatch, folder, unlock_origin=origin)
+    stamped = rebuild(monkeypatch, folder)
     assert stamped != first and json.loads((folder / 'manifest.json').read_text())['version'] == stamped
     with chromium_lab(private_dir, *certificates, restart=True, **run) as lab:
         # Chromium registers the new worker at startup. Chromium or Edge can first start the worker it
@@ -1517,7 +1684,7 @@ def test_a_worker_that_finds_a_newer_build_on_disk_refuses_the_pin_and_reloads_i
     pin = dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
                frame_id=listing['main_frame_id'], top_url=url, selector='#password', mode='password', route='extension')
     assert harness.broker.dispatch(pin)['ok'] is True
-    newer = rebuild(monkeypatch, harness.extension, host_name=harness.host_name, unlock_origin=harness.unlock_origin)
+    newer = rebuild(monkeypatch, harness.extension, host_name=harness.host_name)
     assert newer != old.version
     assert harness.broker.dispatch(pin) == dict(ok=False, error=route.STALE)
     assert old.stale is True and harness.frames(url) == dict(ok=False, error=route.STALE)

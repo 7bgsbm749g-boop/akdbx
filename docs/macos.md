@@ -59,11 +59,14 @@ extension route:
 
 ```sh
 .venv/bin/akdbx extension install --browser chrome
-.venv/bin/akdbx --unlock-origin https://localhost:9443 extension build --output /absolute/path/to/extension
+.venv/bin/akdbx extension build --output /absolute/path/to/extension
 ```
 
-Load the built extension and pair it as [Extension route](../skills/akdbx/references/extension.md)
-describes. Chrome's host manifest is under
+Load the built extension (the same generic build as the release's Chrome
+ZIP), confirm the broker address that its popup shows on first use
+(`https://localhost:9443` here; `akdbx status` shows it as
+`extension_trust.origin`) and pair it as
+[Extension route](../skills/akdbx/references/extension.md) describes. Chrome's host manifest is under
 `~/Library/Application Support/Google/Chrome/NativeMessagingHosts`; Edge's is
 under `~/Library/Application Support/Microsoft Edge/NativeMessagingHosts`.
 Pairing and sealed values use the same protocol as Linux and Windows.

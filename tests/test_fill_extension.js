@@ -7,28 +7,52 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const path = require("node:path");
 const root = path.join(__dirname, "../src/akdbx/fill_extension");
-const {userGesture, privateLink, versionText} = require(path.join(root, "popup.js"));
+const {userGesture, privateLink, versionText, showConfirm} = require(path.join(root, "popup.js"));
 const trust = require(path.join(root, "trust.js"));
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
 // Origin statements that src/akdbx/broker_identity.py signed (tests/test_broker_identity.py).
 const signed = JSON.parse(fs.readFileSync(path.join(__dirname, "origin_statement_fixture.json"), "utf8"));
 const copy = value => JSON.parse(JSON.stringify(value));
-// Build IDs that `akdbx extension build` writes into config.js: one per build.
-const BUILD = "build-one-AAAAAAAAAAAA", REBUILD = "build-two-BBBBBBBBBBBB";
-// What config.js says: the built origin and the build ID.
-const at = (origin, build = BUILD) => ({origin, build});
-// A saved record, made under `build` (null: a record with no build ID, from an unreleased 0.3.0 build).
-const recordOf = (message, build = BUILD) => ({v: 1, public_key: message.public_key, key_id: message.statement.key_id,
+// A random build ID that per-deployment builds (fill extension 0.18.x and earlier) saved with each record.
+const BUILD = "build-one-AAAAAAAAAAAA";
+// A saved record; `build`: as a per-deployment build saved it (null: as this generic build saves it).
+const recordOf = (message, build = null) => ({v: 1, public_key: message.public_key, key_id: message.statement.key_id,
   origin: message.statement.origin, seq: message.statement.seq, ...(build === null ? {} : {build})});
 
+// Set globals for one call of `fn` (the popup's document and navigator), then restore them.
+function withGlobals(values, fn) {
+  const saved = Object.fromEntries(Object.keys(values).map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
+  for (const [name, value] of Object.entries(values)) {
+    Object.defineProperty(globalThis, name, {value, configurable: true, writable: true});
+  }
+  const restore = () => {
+    for (const [name, descriptor] of Object.entries(saved)) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  };
+  let result;
+  try {
+    result = fn();
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  if (result && typeof result.then === "function") return result.finally(restore);
+  restore();
+  return result;
+}
+
 // `disk`: the version in manifest.json on disk (default: what this worker runs); `version`: what config.js says.
-function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, session, version, disk,
+// `globals`: other values a config.js could hold (a stale per-deployment one); this build reads none of them.
+function loadBackground({local = {}, answer, fetch, session, version, disk, globals = {},
   browserNamespace = false} = {}) {
   const posted = [];
   const listeners = {};
   const event = name => ({addListener: fn => { listeners[name] = fn; }});
   const area = store => ({get: async key => (key in store ? {[key]: copy(store[key])} : {}),
-    set: async items => { Object.assign(store, copy(items)); }, remove: async key => { delete store[key]; },
+    set: async items => { Object.assign(store, copy(items)); },
+    remove: async keys => { for (const key of [keys].flat()) delete store[key]; },
     setAccessLevel: options => {
       assert.deepEqual(copy(options), {accessLevel: "TRUSTED_CONTEXTS"});
       return Promise.resolve();
@@ -58,8 +82,7 @@ function loadBackground({builtOrigin, build = BUILD, local = {}, answer, fetch, 
   chrome.scripting.insertCSS = async details => { screen.css.push(details); };
   chrome.tabs.captureVisibleTab = async () => { screen.captures += 1; return "data:image/png;base64,AAAA"; };
   const sandbox = {chrome, crypto: globalThis.crypto, btoa, atob, setTimeout, clearTimeout, URL, TextEncoder,
-    TextDecoder, Uint8Array, AbortController, module: {exports: {}}, AKDBX_TRUSTED_ORIGIN: builtOrigin ?? null,
-    AKDBX_BUILD_ID: build};
+    TextDecoder, Uint8Array, AbortController, module: {exports: {}}, ...globals};
   if (browserNamespace) sandbox.browser = chrome;  // Chromium148+ exposes both as the same API objects.
   if (version !== undefined) sandbox.AKDBX_EXTENSION_VERSION = version;
   // No network in these tests: the broker's HTTPS statement comes only from a scripted fetch,
@@ -272,7 +295,7 @@ test("agent fill refuses a pin whose field spec differs from the sealed one", as
   assert.ok(scripts.slice(count).every(s => !String(s.func).includes("__akdbxContent.fill(")));
 });
 
-// A broker identity key, its saved trust record (made under BUILD) and a signature over one connection.
+// A broker identity key, its saved trust record and a signature over one connection.
 async function signedChannel(extensionKey) {
   const identity = await crypto.subtle.generateKey({name: "ECDSA", namedCurve: "P-256"}, false, ["sign"]);
   const point = new Uint8Array(await crypto.subtle.exportKey("raw", identity.publicKey));
@@ -283,13 +306,13 @@ async function signedChannel(extensionKey) {
   const statement = {broker_key: brokerKey, extension_key: extensionKey, key_id: keyId, type: "akdbx-channel", v: 1};
   const signature = b64(new Uint8Array(await crypto.subtle.sign({name: "ECDSA", hash: "SHA-256"}, identity.privateKey,
     new TextEncoder().encode(trust.canonical(statement)))));
-  const record = {v: 1, public_key: b64(point), key_id: keyId, origin: "https://localhost:9443", seq: 1, build: BUILD};
+  const record = {v: 1, public_key: b64(point), key_id: keyId, origin: "https://localhost:9443", seq: 1};
   return {record, brokerKey, signature};
 }
 
 test("a read answers only a signed broker connection and facts sealed for that pin, sealed to the broker", async () => {
   const local = {};
-  const {exports, chrome} = loadBackground({builtOrigin: "https://localhost:9443", local});
+  const {exports, chrome} = loadBackground({local});
   const key = await crypto.subtle.generateKey({name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
   exports.setSealKey(key);
   exports.setCaptureKey(key);
@@ -540,92 +563,83 @@ function identityFetch(body, {status = 200, type = "application/json", calls = [
   };
 }
 
-test("a first key is stored only after the trusted origin's HTTPS page confirms it", async () => {
+test("first use: the host's origin is only a proposal; nothing opens and nothing is read or stored", async () => {
   const first = await trust.verifyIdentity(signed.first);
-  // The host's statement alone stores nothing: read the built origin's page first.
-  const pending = trust.decide(null, at(LOCAL), first, true);
-  assert.equal(pending.fetch, LOCAL);
-  assert.equal(pending.origin, LOCAL);
-  assert.equal(pending.store, undefined);
-  assert.equal(pending.learned, false);
-  const learned = trust.decide(null, at(LOCAL), first, true, first);
+  for (const fetched of [undefined, null, first]) {
+    const decision = trust.decide(null, first, true, fetched);
+    assert.deepEqual([decision.origin, decision.propose, decision.error], [null, LOCAL, null]);
+    assert.deepEqual([decision.store, decision.fetch, decision.reset, decision.forget, decision.learned],
+      [undefined, undefined, false, false, false]);
+  }
+  // A statement that does not verify, or none at all (a broker before 0.29.0): no proposal either.
+  const invalid = trust.decide(null, null, true);
+  assert.deepEqual([invalid.origin, invalid.propose, invalid.store, invalid.fetch], [null, null, undefined, undefined]);
+  assert.match(invalid.error, /could not be verified/);
+  const none = trust.decide(null, null, false);
+  assert.deepEqual([none.origin, none.propose], [null, null]);
+  assert.match(none.error, /sent no signed address/);
+  // Nothing saved, or a record this build does not trust: nothing is trusted.
+  for (const stored of [{v: 1, reset: true}, {v: 2, origin: LOCAL}, {v: 1, origin: "http://localhost:9443"}, "x", []]) {
+    assert.equal(trust.trustedOrigin(stored), null);
+    assert.equal(trust.decide(stored, first, true).propose, LOCAL);
+  }
+  assert.deepEqual(trust.originRecord(LOCAL), {v: 1, origin: LOCAL});
+  assert.equal(trust.originRecord("https://look-alike.example.test/x"), null);
+});
+
+test("after the user confirms, the confirmed origin's HTTPS page alone binds the first key", async () => {
+  const first = await trust.verifyIdentity(signed.first);
+  const confirmed = trust.originRecord(LOCAL);
+  assert.equal(trust.trustedOrigin(confirmed), LOCAL);
+  assert.equal(trust.trustedKey(confirmed), null);
+  const pending = trust.decide(confirmed, first, true);
+  assert.deepEqual([pending.origin, pending.fetch, pending.store, pending.propose], [LOCAL, LOCAL, undefined, null]);
+  const learned = trust.decide(confirmed, first, true, first);
   assert.equal(learned.learned, true);
-  assert.equal(learned.origin, LOCAL);
   assert.deepEqual(learned.store, recordOf(signed.first));
-  // A replaced host sends its own key for the built origin; the broker's page has the real one.
+  // A replaced host sends its own key for the confirmed origin; the broker's page has the real one.
   const forged = await trust.verifyIdentity(await hostKeyStatement(LOCAL));
-  assert.equal(forged.origin, LOCAL);
-  const mismatch = trust.decide(null, at(LOCAL), forged, true, first);
-  assert.equal(mismatch.origin, LOCAL);
-  assert.equal(mismatch.store, undefined);
-  assert.equal(mismatch.reset, false);
+  const mismatch = trust.decide(confirmed, forged, true, first);
+  assert.deepEqual([mismatch.origin, mismatch.store, mismatch.reset, mismatch.forget], [LOCAL, undefined, false, false]);
   assert.match(mismatch.error, /another identity than the native host sent/);
   // The page answers with a statement for another origin: refused.
-  const offOrigin = trust.decide(null, at(LOCAL), first, true, await trust.verifyIdentity(signed.moved));
-  assert.equal(offOrigin.origin, LOCAL);
-  assert.equal(offOrigin.store, undefined);
+  const offOrigin = trust.decide(confirmed, first, true, await trust.verifyIdentity(signed.moved));
+  assert.deepEqual([offOrigin.origin, offOrigin.store], [LOCAL, undefined]);
   assert.ok(offOrigin.error);
-  // The read failed: keep the built origin, store nothing, no warning; the next popup tries again.
-  const failed = trust.decide(null, at(LOCAL), first, true, null);
+  // The read failed: keep the confirmed origin, store nothing, no warning; the next statement tries again.
+  const failed = trust.decide(confirmed, first, true, null);
   assert.deepEqual([failed.origin, failed.store, failed.error, failed.fetch], [LOCAL, undefined, null, undefined]);
-});
-
-test("built for one origin, a broker that names another is never learned and offers no reset", async () => {
+  // An older broker sends no statement: the confirmed origin works for links, and no key is learned.
+  assert.equal(trust.decide(confirmed, null, false).origin, LOCAL);
+  // The host names another origin than the confirmed one: nothing is read there; only the user can forget.
   const moved = await trust.verifyIdentity(signed.moved);
-  const refused = trust.decide(null, at(LOCAL), moved, true);
-  assert.equal(refused.origin, LOCAL);
-  assert.equal(refused.store, undefined);
-  assert.equal(refused.fetch, undefined);
-  assert.equal(refused.reset, false);
-  assert.match(refused.error, /built for https:\/\/localhost:9443/);
-  assert.match(refused.error, /akdbx extension build/);
-  // An older broker sends no statement: the built origin works as before.
-  assert.equal(trust.decide(null, at(LOCAL), null, false).origin, LOCAL);
-  // A statement that does not verify is not learned and not read.
-  const invalid = trust.decide(null, at(LOCAL), null, true);
-  assert.equal(invalid.origin, LOCAL);
-  assert.equal(invalid.store, undefined);
-  assert.equal(invalid.fetch, undefined);
-  assert.ok(invalid.error);
-});
-
-test("with no built origin and nothing stored, no origin is ever trusted", async () => {
-  for (const [verified, received] of [[await trust.verifyIdentity(signed.first), true], [null, true], [null, false]]) {
-    for (const fetched of [undefined, null, verified]) {
-      const decision = trust.decide(null, at(null), verified, received, fetched);
-      assert.equal(decision.origin, null);
-      assert.equal(decision.store, undefined);
-      assert.equal(decision.fetch, undefined);
-      assert.equal(decision.reset, false);
-      assert.match(decision.error, /akdbx extension build/);
-    }
-  }
-  // An old reset record without an origin gives no origin either; the built one still counts.
-  assert.equal(trust.decide({v: 1, reset: true}, at(null), null, false).origin, null);
-  assert.equal(trust.decide({v: 1, reset: true}, at(LOCAL), null, false).origin, LOCAL);
+  const refused = trust.decide(confirmed, moved, true);
+  assert.deepEqual([refused.origin, refused.fetch, refused.store, refused.reset, refused.forget, refused.propose],
+    [LOCAL, undefined, undefined, false, true, null]);
+  assert.match(refused.error, /names https:\/\/abcdefghijkl\.akdbx\.link, but this extension trusts https:\/\/localhost:9443/);
+  assert.match(refused.error, /forget this broker below/);
 });
 
 test("after a reset, the kept origin's HTTPS page alone binds the next key", async () => {
-  const afterReset = {v: 1, reset: true, origin: RELAY, build: BUILD};
-  const fresh = await trust.verifyIdentity(await hostKeyStatement(RELAY));
-  // The kept origin wins over the built one, and the page is read there.
-  const pending = trust.decide(afterReset, at(LOCAL), fresh, true);
-  assert.deepEqual([pending.origin, pending.fetch, pending.store], [RELAY, RELAY, undefined]);
-  const learned = trust.decide(afterReset, at(LOCAL), fresh, true, fresh);
-  assert.equal(learned.learned, true);
-  assert.deepEqual(learned.store, {v: 1, ...fresh, build: BUILD});
-  // The read failed: nothing is stored, and there is no trust on first use.
-  const failed = trust.decide(afterReset, at(LOCAL), fresh, true, null);
-  assert.deepEqual([failed.origin, failed.store, failed.learned], [RELAY, undefined, false]);
-  // The page has another key than the host sent: nothing is stored.
-  const forged = await trust.verifyIdentity(await hostKeyStatement(RELAY));
-  const refused = trust.decide(afterReset, at(LOCAL), forged, true, fresh);
-  assert.equal(refused.store, undefined);
-  assert.match(refused.error, /another identity/);
-  // The host names another origin: no reset can help; only a rebuild changes the first origin.
-  const off = trust.decide(afterReset, at(LOCAL), await trust.verifyIdentity(signed.first), true);
-  assert.deepEqual([off.origin, off.fetch, off.store, off.reset], [RELAY, undefined, undefined, false]);
-  assert.match(off.error, /akdbx extension build/);
+  for (const afterReset of [trust.originRecord(RELAY), {v: 1, reset: true, origin: RELAY, build: BUILD}]) {
+    const fresh = await trust.verifyIdentity(await hostKeyStatement(RELAY));
+    const pending = trust.decide(afterReset, fresh, true);
+    assert.deepEqual([pending.origin, pending.fetch, pending.store], [RELAY, RELAY, undefined]);
+    const learned = trust.decide(afterReset, fresh, true, fresh);
+    assert.equal(learned.learned, true);
+    assert.deepEqual(learned.store, {v: 1, ...fresh});
+    // The read failed: nothing is stored.
+    const failed = trust.decide(afterReset, fresh, true, null);
+    assert.deepEqual([failed.origin, failed.store, failed.learned], [RELAY, undefined, false]);
+    // The page has another key than the host sent: nothing is stored.
+    const forged = await trust.verifyIdentity(await hostKeyStatement(RELAY));
+    const refused = trust.decide(afterReset, forged, true, fresh);
+    assert.equal(refused.store, undefined);
+    assert.match(refused.error, /another identity/);
+    // The host names another origin: no reset can help; the user may forget this broker.
+    const off = trust.decide(afterReset, await trust.verifyIdentity(signed.first), true);
+    assert.deepEqual([off.origin, off.fetch, off.store, off.reset, off.forget], [RELAY, undefined, undefined, false, true]);
+  }
 });
 
 test("the identity page is read with no redirect, no credentials and no cache, and only a valid answer counts", async () => {
@@ -653,222 +667,309 @@ test("the identity page is read with no redirect, no credentials and no cache, a
 });
 
 test("a signed origin change with a higher sequence replaces the stored origin", async () => {
-  const decision = trust.decide(recordOf(signed.first), at(LOCAL), await trust.verifyIdentity(signed.moved), true);
+  const decision = trust.decide(recordOf(signed.first), await trust.verifyIdentity(signed.moved), true);
   assert.equal(decision.origin, RELAY);
   assert.equal(decision.changed, true);
+  assert.equal(decision.from, LOCAL);
   assert.deepEqual(decision.store, recordOf(signed.moved));
   assert.equal(decision.error, null);
-  const same = trust.decide(recordOf(signed.moved), at(LOCAL), await trust.verifyIdentity(signed.moved), true);
-  assert.equal(same.origin, RELAY);
-  assert.equal(same.store, undefined);
-  assert.equal(same.error, null);
+  const same = trust.decide(recordOf(signed.moved), await trust.verifyIdentity(signed.moved), true);
+  assert.deepEqual([same.origin, same.store, same.error, same.forget], [RELAY, undefined, null, false]);
 });
 
 test("a rollback, a conflicting statement, a bad statement or another key keeps the stored origin", async () => {
   const stored = recordOf(signed.moved);
-  const rollback = trust.decide(stored, at(LOCAL), await trust.verifyIdentity(signed.first), true);
-  assert.equal(rollback.origin, RELAY);
-  assert.equal(rollback.store, undefined);
+  const rollback = trust.decide(stored, await trust.verifyIdentity(signed.first), true);
+  assert.deepEqual([rollback.origin, rollback.store, rollback.forget], [RELAY, undefined, false]);
   assert.match(rollback.error, /older origin statement/);
-  const conflict = trust.decide(stored, at(null), await trust.verifyIdentity(signed.same_seq_other_origin), true);
-  assert.equal(conflict.origin, RELAY);
-  assert.equal(conflict.store, undefined);
+  const conflict = trust.decide(stored, await trust.verifyIdentity(signed.same_seq_other_origin), true);
+  assert.deepEqual([conflict.origin, conflict.store, conflict.forget], [RELAY, undefined, false]);
   assert.ok(conflict.error);
-  const invalid = trust.decide(stored, at(null), null, true);
+  const invalid = trust.decide(stored, null, true);
   assert.equal(invalid.origin, RELAY);
   assert.match(invalid.error, /could not be verified/);
   // A host that drops the statement changes nothing.
-  assert.equal(trust.decide(stored, at(LOCAL), null, false).origin, RELAY);
+  assert.equal(trust.decide(stored, null, false).origin, RELAY);
 });
 
 test("another broker key keeps the saved record but leaves no origin for links", async () => {
   const stored = recordOf(signed.moved);
   // The same origin with another key: a reset is offered, and no link opens meanwhile.
-  const sameOrigin = trust.decide(stored, at(LOCAL), await trust.verifyIdentity(await hostKeyStatement(RELAY, 9)), true);
-  assert.deepEqual([sameOrigin.origin, sameOrigin.store, sameOrigin.reset], [null, undefined, true]);
+  const sameOrigin = trust.decide(stored, await trust.verifyIdentity(await hostKeyStatement(RELAY, 9)), true);
+  assert.deepEqual([sameOrigin.origin, sameOrigin.store, sameOrigin.reset, sameOrigin.forget], [null, undefined, true, false]);
   assert.match(sameOrigin.error, /another identity key/);
   assert.match(sameOrigin.error, /did not set up this broker again yourself, do not reset and do not enter your master password/);
-  // Another key and another origin: no reset (it could not bind there); a rebuild is the only way.
-  const otherKey = trust.decide(stored, at(null), await trust.verifyIdentity(signed.other_key), true);
-  assert.deepEqual([otherKey.origin, otherKey.store, otherKey.reset], [null, undefined, false]);
-  assert.match(otherKey.error, /akdbx extension build/);
+  // Another key and another origin: no reset (it could not bind there); the user may forget the broker.
+  const otherKey = trust.decide(stored, await trust.verifyIdentity(signed.other_key), true);
+  assert.deepEqual([otherKey.origin, otherKey.store, otherKey.reset, otherKey.forget, otherKey.propose],
+    [null, undefined, false, true, null]);
+  assert.match(otherKey.error, /forget this broker below/);
+});
+
+test("trust saved by a per-deployment build (0.18.x and earlier) keeps working, with no new confirmation", async () => {
+  // Those builds saved the random build ID of their config.js with each record.
+  const legacy = recordOf(signed.first, BUILD);
+  assert.equal(trust.trustedOrigin(legacy), LOCAL);
+  assert.deepEqual(trust.trustedKey(legacy), {public_key: signed.first.public_key, key_id: signed.first.statement.key_id});
+  const same = trust.decide(legacy, await trust.verifyIdentity(signed.first), true);
+  assert.deepEqual([same.origin, same.error, same.propose, same.store, same.fetch], [LOCAL, null, null, undefined, undefined]);
+  // A signed move is followed, and the new record has no build field.
+  assert.deepEqual(trust.decide(legacy, await trust.verifyIdentity(signed.moved), true).store, recordOf(signed.moved));
+  // A record with no build field (an unreleased 0.3.0 build) counts too.
+  assert.equal(trust.trustedOrigin(recordOf(signed.first)), LOCAL);
+  // A malformed build field is not a record this extension wrote: nothing is trusted.
+  for (const build of [7, "short", null, ""]) {
+    assert.equal(trust.trustedOrigin({...recordOf(signed.first), build}), null);
+    assert.equal(trust.trustedOrigin({v: 1, reset: true, origin: LOCAL, build}), null);
+  }
 });
 
 function brokerAnswer(fields) {
   return () => ({ok: true, channel: "c0ffee00", protocol: 1, broker_public_key: "x", ...copy(fields)});
 }
 
-test("the popup state learns the key at pairing, follows a signed move, and refuses a rollback", async () => {
+test("first use in the popup: nothing opens until the user confirms the shown origin; then the key is bound", async () => {
   let fields = {paired: false, locked: true, pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=t1"},
     identity: signed.first};
   const local = {};
   const calls = [];
-  const {exports} = loadBackground({builtOrigin: LOCAL, local, answer: () => brokerAnswer(fields)(),
-    fetch: identityFetch(signed.first, {calls})});
+  const {exports} = loadBackground({local, answer: () => brokerAnswer(fields)(), fetch: identityFetch(signed.first, {calls})});
   let state = await exports.popupState();
+  assert.deepEqual([state.origin, state.propose_origin, state.pairing_url, state.trust_error], [null, LOCAL, null, null]);
+  assert.deepEqual([state.origin_learned, state.trust_reset, state.trust_forget], [false, false, false]);
+  assert.equal(calls.length, 0);  // No read on the host's word alone.
+  assert.equal(local[trust.STORAGE_KEY], undefined);
+  // The user clicks "Trust this address" for exactly that origin: it is saved, and its HTTPS page binds the key.
+  const confirmed = copy(await exports.popupConfirm({op: "confirm-origin", origin: LOCAL}));
+  assert.deepEqual(confirmed, {ok: true, origin: LOCAL, origin_learned: true});
   assert.deepEqual(calls.map(c => c.url), [LOCAL + "/.well-known/akdbx-identity"]);
-  assert.equal(state.origin, LOCAL);
-  assert.equal(state.pairing_url, LOCAL + "/extension/pair?token=t1");
-  assert.equal(state.origin_learned, true);
   assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first));
-  // The broker restarted on the relay origin and signed it with the stored key: no rebuild, no reload.
+  state = await exports.popupState();
+  assert.deepEqual([state.origin, state.propose_origin, state.pairing_url], [LOCAL, null, LOCAL + "/extension/pair?token=t1"]);
+  // The broker restarted on the relay origin and signed it with the stored key: no confirmation, no reload.
   fields = {paired: true, locked: true, unlock_url: RELAY + "/?token=u1", identity: signed.moved};
   state = await exports.popupState();
-  assert.equal(state.origin, RELAY);
-  assert.equal(state.unlock_url, RELAY + "/?token=u1");
-  assert.equal(state.origin_changed, true);
+  assert.deepEqual([state.origin, state.unlock_url, state.origin_changed], [RELAY, RELAY + "/?token=u1", true]);
   assert.equal(local[trust.STORAGE_KEY].seq, 2);
   assert.equal(calls.length, 1);  // A signed change needs no read.
   // A replaced host replays the first statement and a link to the old origin.
   fields = {paired: true, locked: true, unlock_url: LOCAL + "/?token=u2", identity: signed.first};
   state = await exports.popupState();
-  assert.equal(state.origin, RELAY);
-  assert.equal(state.unlock_url, null);
+  assert.deepEqual([state.origin, state.unlock_url], [RELAY, null]);
   assert.match(state.trust_error, /older origin statement/);
-  // Or claims another key and a look-alike page.
+  // Or claims another key and a look-alike page: no link, no proposal, no reset.
   fields = {paired: false, locked: true, pairing: {code: "AAAA-AAAA", url: "https://look-alike.example.test/extension/pair?token=t"},
     identity: signed.other_key};
   state = await exports.popupState();
-  assert.equal(state.pairing_url, null);
-  assert.equal(state.origin, null);
-  assert.equal(state.trust_reset, false);
+  assert.deepEqual([state.pairing_url, state.origin, state.propose_origin, state.trust_reset, state.trust_forget],
+    [null, null, null, false, true]);
   assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.moved));
 });
 
-test("the popup state stores no host-only key: a failed read keeps the built origin and retries", async () => {
+test("the confirmation saves only the origin the host names now, only once, and only from the popup", async () => {
+  let fields = {paired: false, locked: true, identity: signed.first};
+  const local = {};
+  const calls = [];
+  const {exports, listeners} = loadBackground({local, answer: () => brokerAnswer(fields)(),
+    fetch: identityFetch(signed.first, {calls})});
+  // Another origin than the host names, an invalid one, or none: nothing saved, nothing read.
+  for (const origin of [RELAY, LOCAL + "/", "http://localhost:9443", null, undefined]) {
+    const refused = await exports.popupConfirm({op: "confirm-origin", origin});
+    assert.equal(refused.ok, false, String(origin));
+    assert.equal(local[trust.STORAGE_KEY], undefined);
+  }
+  // The host's statement changed after the popup showed the origin.
+  fields = {paired: false, locked: true, identity: signed.moved};
+  assert.match((await exports.popupConfirm({origin: LOCAL})).error, /address changed/);
+  // A statement that does not verify, or none.
+  fields = {paired: false, locked: true, identity: {...copy(signed.first), signature: signed.moved.signature}};
+  assert.equal((await exports.popupConfirm({origin: LOCAL})).ok, false);
+  fields = {paired: false, locked: true};
+  assert.equal((await exports.popupConfirm({origin: LOCAL})).ok, false);
+  assert.equal(local[trust.STORAGE_KEY], undefined);
+  assert.equal(calls.length, 0);
+  // Web pages and content scripts cannot send it: only the popup page's own messages reach the handlers.
+  const popup = {id: "jjoamaejjkldcjcpgncoomoaagdfimhg", url: "chrome-extension://jjoamaejjkldcjcpgncoomoaagdfimhg/popup.html"};
+  fields = {paired: false, locked: true, identity: signed.first};
+  for (const sender of [{...popup, tab: {id: 1}}, {...popup, url: "https://localhost:9443/"}, {...popup, id: "x"}]) {
+    assert.equal(listeners.message({op: "confirm-origin", origin: LOCAL}, sender, () => {}), false);
+  }
+  await exports.trustIdle();
+  assert.equal(local[trust.STORAGE_KEY], undefined);
+  // The popup's message saves it once; a second confirmation is refused and changes nothing.
+  const answer = copy(await new Promise(resolve => listeners.message({op: "confirm-origin", origin: LOCAL}, popup, resolve)));
+  assert.deepEqual(answer, {ok: true, origin: LOCAL, origin_learned: true});
+  assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first));
+  fields = {paired: false, locked: true, identity: signed.other_key};
+  assert.match((await exports.popupConfirm({origin: signed.other_key.statement.origin})).error, /already trusts/);
+  assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first));
+});
+
+test("a failed read after the confirmation keeps the confirmed origin and retries", async () => {
   const fields = {paired: false, locked: true, pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=t1"},
     identity: signed.first};
   const local = {};
   let page = new TypeError("connection refused");
   const calls = [];
   const fetch = (url, options) => identityFetch(page, {calls})(url, options);
-  const {exports} = loadBackground({builtOrigin: LOCAL, local, answer: brokerAnswer(fields), fetch});
+  const {exports} = loadBackground({local, answer: brokerAnswer(fields), fetch});
+  assert.deepEqual(copy(await exports.popupConfirm({origin: LOCAL})), {ok: true, origin: LOCAL, origin_learned: false});
+  assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, origin: LOCAL});
   let state = await exports.popupState();
-  assert.equal(state.origin, LOCAL);
-  assert.equal(state.pairing_url, LOCAL + "/extension/pair?token=t1");  // The built origin works as before.
-  assert.equal(state.origin_learned, false);
-  assert.equal(state.trust_error, null);
-  assert.equal(local[trust.STORAGE_KEY], undefined);
-  assert.equal(calls.length, 1);
+  // The confirmed origin works for links, as a built origin did; no key is learned from the host alone.
+  assert.deepEqual([state.origin, state.pairing_url, state.origin_learned, state.trust_error],
+    [LOCAL, LOCAL + "/extension/pair?token=t1", false, null]);
+  assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, origin: LOCAL});
+  assert.equal(calls.length, 2);
   // The next popup reads the page again and then learns the key.
   page = signed.first;
   state = await exports.popupState();
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.equal(state.origin_learned, true);
   assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first));
 });
 
-test("a replaced host's own key for the built origin is refused when the HTTPS page has another", async () => {
+test("a replaced host's own key for the confirmed origin is refused when the HTTPS page has another", async () => {
   const forged = await hostKeyStatement(LOCAL);
   const local = {};
-  const {exports} = loadBackground({builtOrigin: LOCAL, local, fetch: identityFetch(signed.first),
+  const {exports} = loadBackground({local, fetch: identityFetch(signed.first),
     answer: brokerAnswer({paired: false, locked: true, pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=t"},
       identity: forged})});
+  const confirmed = copy(await exports.popupConfirm({origin: LOCAL}));
+  assert.deepEqual(confirmed, {ok: true, origin: LOCAL, origin_learned: false});
   const state = await exports.popupState();
   assert.equal(state.origin, LOCAL);
   assert.match(state.trust_error, /another identity than the native host sent/);
-  assert.equal(local[trust.STORAGE_KEY], undefined);
-  // Without a stored key, the forged key can never sign a move away from the built origin.
+  assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, origin: LOCAL});
+  // Without a stored key, the forged key can never sign a move away from the confirmed origin.
   const moved = await hostKeyStatement(RELAY, 2);
-  const again = loadBackground({builtOrigin: LOCAL, local, fetch: identityFetch(signed.first),
+  const again = loadBackground({local, fetch: identityFetch(signed.first),
     answer: brokerAnswer({paired: true, locked: true, unlock_url: RELAY + "/?token=u", identity: moved})});
   const next = await again.exports.popupState();
-  assert.equal(next.origin, LOCAL);
-  assert.equal(next.unlock_url, null);
-  assert.equal(local[trust.STORAGE_KEY], undefined);
+  assert.deepEqual([next.origin, next.unlock_url, next.trust_forget], [LOCAL, null, true]);
+  assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, origin: LOCAL});
 });
 
-test("a rebuild replaces the saved trust; a reload of the same build does not", async () => {
-  // Broker A at the built origin: the extension binds key A through A's HTTPS page.
-  const local = {};
-  const first = loadBackground({builtOrigin: LOCAL, local, fetch: identityFetch(signed.first),
-    answer: brokerAnswer({paired: false, locked: true, pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=a"},
-      identity: signed.first})});
-  assert.equal((await first.exports.popupState()).origin_learned, true);
-  const saved = copy(local[trust.STORAGE_KEY]);
-  assert.deepEqual(saved, recordOf(signed.first));
-  // Broker B was set up at another address with a new key, and its HTTPS page serves key B.
+test("one build, two brokers: each user's extension trusts only the broker that its user confirmed", async () => {
+  const brokerB = await hostKeyStatement(RELAY);
+  const users = [[signed.first, LOCAL], [brokerB, RELAY]].map(([identity, origin]) => {
+    const local = {};
+    const calls = [];
+    const fields = {paired: false, locked: true, pairing: {code: "AAAA-AAAA", url: origin + "/extension/pair?token=t"}, identity};
+    return {identity, origin, local, calls, ...loadBackground({local, answer: brokerAnswer(fields),
+      fetch: identityFetch(identity, {calls})})};
+  });
+  for (const user of users) {
+    assert.equal((await user.exports.popupState()).propose_origin, user.origin);
+    assert.equal((await user.exports.popupConfirm({origin: user.origin})).origin_learned, true);
+    assert.deepEqual(user.calls.map(c => c.url), [user.origin + "/.well-known/akdbx-identity"]);
+    assert.equal(user.local[trust.STORAGE_KEY].key_id, user.identity.statement.key_id);
+    assert.equal((await user.exports.popupState()).pairing_url, user.origin + "/extension/pair?token=t");
+  }
+  // The same files run for both: nothing in the build named either broker.
+  assert.notEqual(users[0].local[trust.STORAGE_KEY].key_id, users[1].local[trust.STORAGE_KEY].key_id);
+  // A host that sends the other user's broker is refused by each.
+  for (const [user, other] of [[users[0], users[1]], [users[1], users[0]]]) {
+    const swapped = loadBackground({local: user.local, fetch: identityFetch(other.identity),
+      answer: brokerAnswer({paired: false, locked: true, identity: other.identity,
+        pairing: {code: "AAAA-AAAA", url: other.origin + "/extension/pair?token=x"}})});
+    const state = await swapped.exports.popupState();
+    assert.deepEqual([state.origin, state.pairing_url, state.propose_origin, state.trust_forget], [null, null, null, true]);
+    assert.equal(user.local[trust.STORAGE_KEY].origin, user.origin);
+  }
+});
+
+test("a broker that moved without a signed statement is forgotten only by the user, then confirmed again", async () => {
+  // Key A is bound at LOCAL. Broker B was set up at RELAY with a new key, and its HTTPS page serves key B.
+  const local = {[trust.STORAGE_KEY]: recordOf(signed.first, BUILD)};
   const keyB = await hostKeyStatement(RELAY);
-  const brokerB = brokerAnswer({paired: false, locked: true, pairing: {code: "BBBB-BBBB", url: RELAY + "/extension/pair?token=b"},
-    identity: keyB});
-  // A reload of the same build (same build ID) keeps refusing B.
+  let fields = {paired: false, locked: true, pairing: {code: "BBBB-BBBB", url: RELAY + "/extension/pair?token=b"},
+    identity: keyB};
   const calls = [];
-  const reloaded = loadBackground({builtOrigin: LOCAL, local, fetch: identityFetch(keyB, {calls}), answer: brokerB});
-  const refused = await reloaded.exports.popupState();
-  assert.deepEqual([refused.origin, refused.pairing_url, refused.trust_reset], [null, null, false]);
-  assert.match(refused.trust_error, /akdbx extension build/);
-  assert.deepEqual(local[trust.STORAGE_KEY], saved);
+  const {exports, session, port} = loadBackground({local, fetch: identityFetch(keyB, {calls}),
+    answer: () => brokerAnswer(fields)()});
+  let state = await exports.popupState();
+  assert.deepEqual([state.origin, state.pairing_url, state.trust_reset, state.trust_forget, state.propose_origin],
+    [null, null, false, true, null]);
+  assert.match(state.trust_error, /forget this broker below and confirm https:\/\/abcdefghijkl\.akdbx\.link/);
   assert.equal(calls.length, 0);
-  // The user runs akdbx extension build for B and reloads: B's key is bound through B's HTTPS page.
-  const rebuilt = loadBackground({builtOrigin: RELAY, build: REBUILD, local, fetch: identityFetch(keyB, {calls}),
-    answer: brokerB});
-  const state = await rebuilt.exports.popupState();
+  const keyBefore = session.pairing.publicKey;
+  // While the broker names the trusted origin again, there is nothing to forget.
+  fields = {...fields, identity: signed.first};
+  assert.equal((await exports.popupForget({op: "forget-trust"})).ok, false);
+  assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first, BUILD));
+  // The user forgets the broker: the saved trust and the pairing go, and nothing is trusted.
+  fields = {...fields, identity: keyB};
+  local.broker_trust_moved = {from: LOCAL, to: LOCAL};
+  assert.deepEqual(copy(await exports.popupForget({op: "forget-trust"})), {ok: true});
+  assert.deepEqual([local[trust.STORAGE_KEY], local.broker_trust_moved, session.pairing], [undefined, undefined, undefined]);
+  assert.equal(port.disconnected, true);
+  assert.notEqual((await exports.pairingKeys()).publicKey, keyBefore);
+  // The next popup asks again, for broker B's origin, and binds key B through B's HTTPS page after the confirmation.
+  state = await exports.popupState();
+  assert.deepEqual([state.origin, state.propose_origin, state.pairing_url], [null, RELAY, null]);
+  assert.equal(calls.length, 0);
+  assert.equal((await exports.popupConfirm({origin: RELAY})).origin_learned, true);
   assert.deepEqual(calls.map(c => c.url), [RELAY + "/.well-known/akdbx-identity"]);
-  assert.deepEqual([state.origin, state.origin_learned, state.trust_error], [RELAY, true, null]);
-  assert.equal(state.pairing_url, RELAY + "/extension/pair?token=b");
   assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, public_key: keyB.public_key, key_id: keyB.statement.key_id,
-    origin: RELAY, seq: 1, build: REBUILD});
+    origin: RELAY, seq: 1});
+  state = await exports.popupState();
+  assert.deepEqual([state.origin, state.pairing_url, state.trust_forget], [RELAY, RELAY + "/extension/pair?token=b", false]);
 });
 
-test("after a signed move away, a rebuild for the same address binds a replacement broker there", async () => {
-  // Built for A; key A is bound, then the broker signs a move to B with key A.
+test("after a signed move away, a replacement broker at the old address needs a forget and a confirmation", async () => {
+  // Key A is bound at A, then the broker signs a move to B with key A.
   const local = {};
   let fields = {paired: false, locked: true, pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=a"},
     identity: signed.first};
-  const first = loadBackground({builtOrigin: LOCAL, local, fetch: identityFetch(signed.first), answer: () => brokerAnswer(fields)()});
-  assert.equal((await first.exports.popupState()).origin_learned, true);
+  const first = loadBackground({local, fetch: identityFetch(signed.first), answer: () => brokerAnswer(fields)()});
+  assert.equal((await first.exports.popupConfirm({origin: LOCAL})).origin_learned, true);
   fields = {paired: true, locked: true, unlock_url: RELAY + "/?token=b", identity: signed.moved};
   assert.equal((await first.exports.popupState()).origin, RELAY);
   const saved = copy(local[trust.STORAGE_KEY]);
   assert.deepEqual([saved.origin, saved.key_id, saved.seq], [RELAY, signed.first.statement.key_id, 2]);
   // A replacement broker with a new key now runs at A, and A's HTTPS page serves the new key.
   const replacement = await hostKeyStatement(LOCAL);
-  const brokerA = brokerAnswer({paired: false, locked: true, unlock_url: LOCAL + "/?token=u",
-    pairing: {code: "CCCC-CCCC", url: LOCAL + "/extension/pair?token=c"}, identity: replacement});
-  // A reload of the same build refuses it with no reset, and says to rebuild.
+  fields = {paired: false, locked: true, unlock_url: LOCAL + "/?token=u",
+    pairing: {code: "CCCC-CCCC", url: LOCAL + "/extension/pair?token=c"}, identity: replacement};
   const calls = [];
-  const reloaded = loadBackground({builtOrigin: LOCAL, local, fetch: identityFetch(replacement, {calls}), answer: brokerA});
+  const reloaded = loadBackground({local, fetch: identityFetch(replacement, {calls}), answer: () => brokerAnswer(fields)()});
   const refused = await reloaded.exports.popupState();
-  assert.deepEqual([refused.origin, refused.pairing_url, refused.unlock_url, refused.trust_reset], [null, null, null, false]);
+  assert.deepEqual([refused.origin, refused.pairing_url, refused.unlock_url, refused.trust_reset, refused.trust_forget],
+    [null, null, null, false, true]);
   assert.match(refused.trust_error, /trusts https:\/\/abcdefghijkl\.akdbx\.link/);
-  assert.match(refused.trust_error, /akdbx extension build/);
   assert.deepEqual(local[trust.STORAGE_KEY], saved);
   assert.equal(calls.length, 0);
-  // The user rebuilds for A (the same origin, a new build ID) and reloads: the new key is bound from A's page.
-  const rebuilt = loadBackground({builtOrigin: LOCAL, build: REBUILD, local, fetch: identityFetch(replacement, {calls}),
-    answer: brokerA});
-  const state = await rebuilt.exports.popupState();
+  assert.equal((await reloaded.exports.popupForget({})).ok, true);
+  assert.equal((await reloaded.exports.popupConfirm({origin: LOCAL})).origin_learned, true);
+  const state = await reloaded.exports.popupState();
   assert.deepEqual(calls.map(c => c.url), [LOCAL + "/.well-known/akdbx-identity"]);
-  assert.deepEqual([state.origin, state.origin_learned, state.trust_error, state.trust_reset], [LOCAL, true, null, false]);
-  assert.equal(state.pairing_url, LOCAL + "/extension/pair?token=c");
-  assert.equal(state.unlock_url, LOCAL + "/?token=u");
+  assert.deepEqual([state.origin, state.trust_error, state.pairing_url, state.unlock_url],
+    [LOCAL, null, LOCAL + "/extension/pair?token=c", LOCAL + "/?token=u"]);
   assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, public_key: replacement.public_key,
-    key_id: replacement.statement.key_id, origin: LOCAL, seq: 1, build: REBUILD});
+    key_id: replacement.statement.key_id, origin: LOCAL, seq: 1});
 });
 
-test("a saved record counts only under the build that made it", async () => {
-  const moved = await trust.verifyIdentity(signed.moved);
-  assert.equal(trust.trustedOrigin(recordOf(signed.moved), at(LOCAL)), RELAY);
-  assert.equal(trust.trustedOrigin({v: 1, reset: true, origin: RELAY, build: BUILD}, at(LOCAL)), RELAY);
-  // Another build, also for the same address: the record, or a reset that kept an origin, no longer counts.
-  assert.equal(trust.trustedOrigin(recordOf(signed.moved), at(LOCAL, REBUILD)), LOCAL);
-  assert.equal(trust.trustedOrigin({v: 1, reset: true, origin: RELAY, build: BUILD}, at(LOCAL, REBUILD)), LOCAL);
-  // A record with no build ID (an unreleased 0.3.0 build), or a malformed one, matches no build.
-  assert.equal(trust.trustedOrigin(recordOf(signed.moved, null), at(LOCAL)), LOCAL);
-  assert.equal(trust.trustedOrigin({...recordOf(signed.moved), build: 7}, at(LOCAL)), LOCAL);
-  // A config.js with no valid build ID counts as not built, whatever is saved.
-  for (const build of [null, undefined, "short", 7]) {
-    assert.equal(trust.trustedOrigin(recordOf(signed.moved), {origin: LOCAL, build}), null);
-    assert.match(trust.decide(recordOf(signed.moved), {origin: LOCAL, build}, moved, true).error, /akdbx extension build/);
-  }
-  // The same build: the signed move is followed as before and keeps the build ID in the record.
-  assert.deepEqual(trust.decide(recordOf(signed.first), at(LOCAL), moved, true).store, recordOf(signed.moved));
+test("a per-deployment build's saved trust survives the update to the generic build", async () => {
+  // The update rewrites config.js (no address, no build ID) and the worker reloads into it. Even a stale
+  // config.js that still names another origin and build ID changes nothing: this build never reads them.
+  const local = {[trust.STORAGE_KEY]: recordOf(signed.first, BUILD)};
+  const calls = [];
+  const {exports} = loadBackground({local, fetch: identityFetch(signed.first, {calls}),
+    globals: {AKDBX_TRUSTED_ORIGIN: RELAY, AKDBX_BUILD_ID: "build-two-BBBBBBBBBBBB"},
+    answer: brokerAnswer({paired: false, locked: true, pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=t"},
+      identity: signed.first})});
+  const state = await exports.popupState();
+  assert.deepEqual([state.origin, state.pairing_url, state.propose_origin, state.trust_error],
+    [LOCAL, LOCAL + "/extension/pair?token=t", null, null]);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first, BUILD));
 });
 
 test("a signed move that arrives while the popup is closed is shown once in the next popup", async () => {
   const local = {[trust.STORAGE_KEY]: recordOf(signed.first)};
   const fields = {paired: true, locked: true, unlock_url: RELAY + "/?token=u", identity: signed.moved};
-  const {exports, listeners} = loadBackground({builtOrigin: LOCAL, local, answer: brokerAnswer(fields)});
+  const {exports, listeners} = loadBackground({local, answer: brokerAnswer(fields)});
   for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
   listeners["port.message"]({type: "attached", ...fields});
   await exports.trustIdle();
@@ -884,7 +985,7 @@ test("a signed move that arrives while the popup is closed is shown once in the 
 test("a move notice waits while the popup shows a trust warning", async () => {
   const local = {[trust.STORAGE_KEY]: recordOf(signed.first)};
   let fields = {paired: true, locked: true, unlock_url: RELAY + "/?token=u", identity: signed.moved};
-  const {exports, listeners} = loadBackground({builtOrigin: LOCAL, local, answer: () => brokerAnswer(fields)()});
+  const {exports, listeners} = loadBackground({local, answer: () => brokerAnswer(fields)()});
   for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
   listeners["port.message"]({type: "attached", ...fields});
   await exports.trustIdle();
@@ -902,19 +1003,22 @@ test("a move notice waits while the popup shows a trust warning", async () => {
   assert.deepEqual([state.origin_changed, state.moved_from], [false, null]);
 });
 
-test("with no built origin, the host's statement opens nothing and reads nothing", async () => {
+test("with nothing confirmed, the host's statement and links open nothing and read nothing", async () => {
   const local = {};
   const calls = [];
-  const {exports} = loadBackground({local, fetch: identityFetch(signed.first, {calls}),
-    answer: brokerAnswer({paired: false, locked: true, pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=t"},
-      identity: signed.first})});
+  const {exports, listeners} = loadBackground({local, fetch: identityFetch(signed.first, {calls}),
+    answer: brokerAnswer({paired: false, locked: true, unlock_url: LOCAL + "/?token=u",
+      pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=t"}, identity: signed.first})});
+  for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  listeners["port.message"]({type: "attached", paired: false, locked: true, identity: signed.first});
+  await exports.trustIdle();
   const state = await exports.popupState();
-  assert.equal(state.origin, null);
-  assert.equal(state.pairing_url, null);
-  assert.equal(state.origin_learned, false);
-  assert.equal(state.trust_reset, false);
-  assert.match(state.trust_error, /akdbx extension build/);
+  assert.deepEqual([state.origin, state.pairing_url, state.unlock_url, state.propose_origin], [null, null, null, LOCAL]);
+  assert.deepEqual([state.origin_learned, state.trust_reset, state.trust_forget, state.trust_error], [false, false, false, null]);
   assert.equal(calls.length, 0);
+  assert.equal(local[trust.STORAGE_KEY], undefined);
+  // The reset needs a trusted origin to keep: with none, it saves nothing.
+  assert.equal((await exports.popupReset()).ok, true);
   assert.equal(local[trust.STORAGE_KEY], undefined);
 });
 
@@ -924,34 +1028,32 @@ test("a key change on the saved origin opens no link there until a reset and a n
   let page = new TypeError("connection refused");
   const calls = [];
   const fetch = (url, options) => identityFetch(page, {calls})(url, options);
-  const {exports} = loadBackground({builtOrigin: LOCAL, local, fetch,
+  const {exports} = loadBackground({local, fetch,
     answer: brokerAnswer({paired: true, locked: true, unlock_url: LOCAL + "/?token=u", identity: replaced})});
   let state = await exports.popupState();
-  assert.equal(state.origin, null);
-  assert.equal(state.unlock_url, null);
-  assert.equal(state.trust_reset, true);
+  assert.deepEqual([state.origin, state.unlock_url, state.trust_reset, state.trust_forget], [null, null, true, false]);
   assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first));
   assert.equal(calls.length, 0);
+  // Forget is not offered for a key change on the trusted origin, and the worker refuses it too.
+  assert.equal((await exports.popupForget({})).ok, false);
   // The reset keeps the origin; the new key is not trusted while its page cannot be read.
   await exports.popupReset();
-  assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, reset: true, origin: LOCAL, build: BUILD});
+  assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, origin: LOCAL});
   state = await exports.popupState();
   assert.equal(state.origin_learned, false);
-  assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, reset: true, origin: LOCAL, build: BUILD});
+  assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, origin: LOCAL});
   assert.ok(calls.every(c => c.url === LOCAL + "/.well-known/akdbx-identity") && calls.length >= 1);
   // The page at the kept origin has the new key: now it is bound, and the link opens.
   page = replaced;
   state = await exports.popupState();
-  assert.equal(state.origin_learned, true);
-  assert.equal(state.origin, LOCAL);
-  assert.equal(state.unlock_url, LOCAL + "/?token=u");
+  assert.deepEqual([state.origin_learned, state.origin, state.unlock_url], [true, LOCAL, LOCAL + "/?token=u"]);
   assert.equal(local[trust.STORAGE_KEY].key_id, replaced.statement.key_id);
 });
 
 test("identities are checked when they arrive: a first key on attach, a signed move on a state message", async () => {
-  const local = {};
+  const local = {[trust.STORAGE_KEY]: trust.originRecord(LOCAL)};
   const calls = [];
-  const {exports, listeners} = loadBackground({builtOrigin: LOCAL, local, fetch: identityFetch(signed.first, {calls})});
+  const {exports, listeners} = loadBackground({local, fetch: identityFetch(signed.first, {calls})});
   // connect() opens the port once the browser key exists.
   for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
   const send = message => listeners["port.message"](message);
@@ -969,9 +1071,9 @@ test("identities are checked when they arrive: a first key on attach, a signed m
   assert.equal(calls.length, 1);
 });
 
-test("an unsigned link off the built origin never opens, and the reset needs a new pairing", async () => {
-  const local = {};
-  const {exports, session, port} = loadBackground({builtOrigin: LOCAL, local, answer: brokerAnswer({paired: false,
+test("an unsigned link off the trusted origin never opens, and the reset needs a new pairing", async () => {
+  const local = {[trust.STORAGE_KEY]: trust.originRecord(LOCAL)};
+  const {exports, session, port} = loadBackground({local, answer: brokerAnswer({paired: false,
     locked: true, pairing: {code: "AAAA-AAAA", url: "https://look-alike.example.test/extension/pair?token=t"}})});
   const state = await exports.popupState();
   assert.equal(state.origin, LOCAL);
@@ -979,18 +1081,55 @@ test("an unsigned link off the built origin never opens, and the reset needs a n
   assert.ok(session.pairing);
   const keyBefore = session.pairing.publicKey;
   assert.equal((await exports.popupReset()).ok, true);
-  // The reset keeps the built origin as the trusted one.
-  assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, reset: true, origin: LOCAL, build: BUILD});
+  assert.deepEqual(local[trust.STORAGE_KEY], {v: 1, origin: LOCAL});
   assert.equal(session.pairing, undefined);
   assert.equal(port.disconnected, true);
   assert.notEqual((await exports.pairingKeys()).publicKey, keyBefore);
 });
 
-test("the popup and its reset are reachable only from the popup page", () => {
+// A small stand-in for the popup page: elements by id, with the fields popup.js sets.
+function popupDocument() {
+  const elements = {};
+  return {elements, getElementById: id => (elements[id] ??= {id, hidden: true, textContent: "", onclick: null})};
+}
+
+test("the popup shows the exact proposed origin, and only a real click confirms it", async () => {
+  const doc = popupDocument();
+  const sent = [];
+  const send = async message => { sent.push(message); return {ok: false, error: "The broker's address changed; nothing saved."}; };
+  const status = doc.getElementById("status");
+  const shown = withGlobals({document: doc, navigator: {userActivation: {isActive: true}}}, () =>
+    showConfirm({connected: true, origin: null, propose_origin: RELAY}, send, status));
+  assert.equal(shown, true);
+  assert.equal(doc.elements["confirm-origin"].textContent, RELAY);
+  assert.equal(doc.elements.confirm.hidden, false);
+  await withGlobals({document: doc, navigator: {userActivation: {isActive: true}}}, async () => {
+    await doc.elements["confirm-yes"].onclick({isTrusted: false, target: {}});  // A script's click: nothing sent.
+    assert.deepEqual(sent, []);
+    await doc.elements["confirm-yes"].onclick({isTrusted: true, target: {}});
+  });
+  assert.deepEqual(sent, [{op: "confirm-origin", origin: RELAY}]);
+  assert.match(status.textContent, /address changed/);
+  // A trusted origin, or an invalid proposal: no question.
+  for (const state of [{origin: LOCAL, propose_origin: null}, {origin: null, propose_origin: "http://x.test"},
+    {origin: null, propose_origin: null}]) {
+    assert.equal(withGlobals({document: popupDocument(), navigator: {}}, () => showConfirm(state, send, {})), false);
+  }
+});
+
+test("the popup and its trust actions are reachable only from the popup page", () => {
   const html = fs.readFileSync(path.join(root, "popup.html"), "utf8");
   assert.ok(html.indexOf('src="trust.js"') < html.indexOf('src="popup.js"'));
-  assert.match(html, /id="reset-yes"/);
+  for (const id of ["reset-yes", "forget-yes", "confirm-yes", "confirm-origin"]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.doesNotMatch(html, /config\.js/);
   const source = fs.readFileSync(path.join(root, "background.js"), "utf8");
   assert.match(source, /importScripts\("api.js", "config.js", "trust.js"\)/);
-  assert.match(source, /"reset-trust": popupReset/);
+  for (const handler of ['"reset-trust": popupReset', '"confirm-origin": popupConfirm', '"forget-trust": popupForget']) {
+    assert.ok(source.includes(handler), handler);
+  }
+  // No build-time address or build ID is read anywhere.
+  for (const name of ["background.js", "popup.js", "trust.js"]) {
+    const text = fs.readFileSync(path.join(root, name), "utf8");
+    assert.doesNotMatch(text, /AKDBX_TRUSTED_ORIGIN|AKDBX_BUILD_ID/, name);
+  }
 });

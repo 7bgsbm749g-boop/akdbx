@@ -55,7 +55,9 @@ and can be skipped (`--skip STAGE`):
    `akdbx serve --no-print-unlock-link`, so the journal or task output never
    keeps the unlock link: run `akdbx status` to get it.
 6. **Fill route**: the browser extension (`akdbx extension install` and
-   `build`) and/or the CDP route (Linux and Windows; on macOS, setup refuses
+   `build`; the build is the same generic extension for every user, and the
+   popup asks you once to confirm the broker address that setup prints)
+   and/or the CDP route (Linux and Windows; on macOS, setup refuses
    `--cdp-profile` and CDP is set up by hand).
 7. **Optional features**: the authenticator capture host, unlock notifications
    and merge.
@@ -325,21 +327,35 @@ the akdbx version; the popup shows it in its footer. After an akdbx update,
 card in `chrome://extensions`. An extension built by akdbx 0.21.2 or earlier
 reports no version; it still works and shows as outdated.
 
+From fill extension 0.19.0 (akdbx after 0.54.1) the extension is one generic
+build, the same for everyone who downloads akdbx, like any browser extension:
+it holds no broker address and no per-user ID. `akdbx extension build` writes
+those same files, and every GitHub release attaches them: a Chrome ZIP
+(`akdbx-extension-chrome-VERSION.zip`, unzip it and load it unpacked), an
+unsigned Firefox ZIP and, when the release could sign it, the same Firefox
+build signed by Mozilla (`akdbx-extension-firefox-VERSION.xpi`, a permanent
+install), all in `SHA256SUMS` with build-provenance attestations. On first
+use the popup shows the broker address that the native host names and opens
+no pairing or unlock page until you confirm it; see
+[Browser extension trust](docs/private-pages.md#browser-extension-trust).
+The Chrome Web Store listing is a follow-up.
+
 ```bash
 akdbx extension install --browser helium   # chrome, edge, helium, chromium, brave or firefox on all three desktops
 akdbx extension refresh                    # 0.31.1+: after an update moves akdbx to another folder
-akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" extension build --output /path/to/akdbx-extension   # then Load unpacked
+akdbx extension build --output /path/to/akdbx-extension   # then Load unpacked; or unzip the release's Chrome ZIP
+akdbx extension pack --browser firefox --output akdbx-firefox.zip   # the release's ZIP format (Snap/Flatpak Firefox)
 ```
 
 Firefox 153+ uses `extension install --browser firefox` and a separate build
-with `extension build --browser firefox --output FOLDER` (0.47.0+).
-From 0.53.0, `akdbx extension sign --output FOLDER HANDLE` has Mozilla sign
-the broker's own Firefox build (AMO, unlisted channel) for a permanent
-install. HANDLE selects the owner's AMO API key entry, whose `jwt_issuer` and
-`jwt_secret` fields stay inside the broker; only the AMO account that owns
-the add-on ID `akdbx@akdbx.org` can sign. See [Firefox setup](docs/firefox.md)
-for temporary add-on loading, signing, permanent installation and updates,
-and native host locations.
+with `extension build --browser firefox --output FOLDER` (0.47.0+). For a
+permanent install, use the release's Mozilla-signed XPI: the Release workflow
+signs the generic Firefox build once per release on addons.mozilla.org
+(unlisted channel), with the owner's AMO API key in GitHub Actions secrets.
+`akdbx extension sign` (0.53.0 to 0.54.x), which had each broker sign its own
+per-deployment build, is removed. See [Firefox setup](docs/firefox.md) for
+temporary add-on loading, the signed XPI and updates, and native host
+locations.
 
 The extension pairs its ECDH public key with the broker once per browser
 session: the popup shows a code computed from that key, and the broker's
@@ -369,14 +385,28 @@ an idle service worker or a host reconnect.
 From extension 0.3.0 (akdbx 0.29.0), an origin change needs no rebuild, no
 reload and no approval. The broker keeps a persistent identity key and signs
 its current origin with a sequence number at each start. The extension learns
-the key at its first pairing from the broker's HTTPS page on the built origin
+the key from the broker's HTTPS page on the trusted origin
 (`/.well-known/akdbx-identity`), never from the native host alone, then follows only
 origin changes that key signed with a higher sequence number. A changed broker
 key is refused until the user clicks **Reset broker trust…** in the popup; the
 reset keeps the trusted origin, and the new key must again come from that
-origin's HTTPS page. There is no trust on first use: only a local
-`akdbx extension build` sets the first origin. See
-[Browser extension trust](docs/private-pages.md#browser-extension-trust).
+origin's HTTPS page.
+
+**First use (fill extension 0.19.0).** The generic build trusts no origin
+until you confirm one. The popup shows the exact origin that the native host
+names and asks **Trust this address**; check it against `akdbx status`
+(`extension_trust.origin`) or what `akdbx setup` printed. Nothing opens before
+that click, and after it the key is bound through that origin's HTTPS page as
+above. What changes in the threat model: earlier builds took the first origin
+from a local `akdbx extension build`, so the native host never chose it. Now a
+native host that a same-user attacker replaced *before* your first
+confirmation can propose its own origin, and your check of the shown origin is
+the guard. After the first confirmation nothing changes: a replaced host still
+cannot move the origin or change the key by itself. A broker that names
+another origin without a signature by the trusted key gets **Forget this
+broker…** (two clicks), after which the popup asks for a confirmation again.
+Broker trust saved by an earlier per-deployment build carries over unchanged.
+See [Browser extension trust](docs/private-pages.md#browser-extension-trust).
 
 ## CDP route: install and run
 

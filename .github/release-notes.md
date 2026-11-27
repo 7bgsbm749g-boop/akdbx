@@ -20,17 +20,20 @@ From 0.53.0, the akdbx relay no longer closes a connection before the phone rece
 
 From 0.53.0: every private save page (password, authenticator key and import, identity, card) sends a one-shot `akdbx.write-result` webhook when it is saved, fails, is cancelled or expires (`subscribe-write`), and `subscribe-sms --any-text` wakes when an SMS setup or test page receives its test text. Agents resume on the event instead of polling.
 
-From 0.53.0 (fill extension 0.17.0): `akdbx extension sign --output DIR HANDLE` has Mozilla sign the broker's own Firefox build (AMO, unlisted channel) for a permanent install, with the AMO API key from a vault entry that stays inside the broker. Only the AMO account that owns the add-on ID `akdbx@akdbx.org` can sign. Each signed build has its own version; `status` reports it as current. See `docs/firefox.md`.
+From 0.53.0 (fill extension 0.17.0): `akdbx extension sign --output DIR HANDLE` has Mozilla sign the broker's own Firefox build (AMO, unlisted channel) for a permanent install, with the AMO API key from a vault entry that stays inside the broker. Only the AMO account that owns the add-on ID `akdbx@akdbx.org` can sign. Each signed build has its own version; `status` reports it as current. See `docs/firefox.md`. (Removed after 0.54.1: the release signs one generic build instead.)
 
 From 0.54.0 (fill extension 0.18.0): `pin-card-target --field-purpose cc-number|cc-csc|cc-name|cc-exp-month|cc-exp-year` fills a main-frame card field that has no autocomplete hint after the agent checks its purpose, and an expiry month or year that is an ARIA dropdown (a button with a listbox) is chosen by the broker itself, refusing on no match or an ambiguous match. This covers Microsoft's own card form (Azure sign-up).
 
 From 0.54.1 (fill extension 0.18.1): a card expiry dropdown may be a `role=combobox` button with `aria-haspopup="true"` (Microsoft's card form) as long as the list it owns is a listbox; a menu still refuses.
+
+After 0.54.1 (fill extension 0.19.0): the browser extension is one generic build for everyone, with no broker address and no per-user ID, so this release attaches it: `akdbx-extension-chrome-*.zip` (unzip, then Load unpacked), `akdbx-extension-firefox-*.zip` (unsigned, a temporary add-on) and, when the release could sign it, `akdbx-extension-firefox-*.xpi`, the same Firefox build signed by Mozilla for a permanent install. On first use the popup shows the broker address that the native host names and opens no pairing or unlock page until you confirm it; check it against `extension_trust.origin` in `akdbx status`. Broker trust that an earlier extension saved carries over. `akdbx extension sign` and the `firefox_signing_*` status fields are removed. See `docs/private-pages.md` (Browser extension trust) and `docs/firefox.md`.
 
 Verify a download before installing it:
 
 ```sh
 sha256sum --check SHA256SUMS
 gh attestation verify akdbx-{{VERSION}}-py3-none-any.whl --repo 7bgsbm749g-boop/akdbx
+gh attestation verify akdbx-extension-chrome-*.zip --repo 7bgsbm749g-boop/akdbx   # and each other extension file
 ```
 
 Merge and snapshot admission run inside akdbx on Linux, macOS and Windows. No KeePass or KeePassXC installation is required.

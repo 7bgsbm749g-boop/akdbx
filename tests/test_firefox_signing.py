@@ -1,10 +1,10 @@
-"""`akdbx extension sign` against a fake AMO over loopback TLS: no request reaches Mozilla.
+"""The release's signing step (python -m akdbx.firefox_signing) against a fake AMO over loopback TLS.
 
-The fake checks each request's JSON Web Token (HS256, issuer, lifetime, unique
-jti) the way AMO documents it, and answers with AMO's own status codes and
-messages (addons-server: 409 for a taken version or add-on ID, 403 for another
-account's add-on). Every AMO request runs through the real child process
-(amo_https.py). All vaults, keys and secrets are synthetic.
+No request reaches Mozilla. The fake checks each request's JSON Web Token
+(HS256, issuer, lifetime, unique jti) the way AMO documents it, and answers
+with AMO's own status codes and messages (addons-server: 409 for a taken
+version or add-on ID, 403 for another account's add-on). Every AMO request
+runs through the real child process (amo_https.py). The API key is synthetic.
 """
 import base64
 from datetime import datetime, timedelta, timezone
@@ -14,12 +14,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import ipaddress
 import json
-import logging
 import os
 import re
 import secrets
 import ssl
-import stat
 import subprocess
 import sys
 import threading
@@ -34,66 +32,15 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from pykeepass import create_database, PyKeePass
 
 from akdbx import extension_host, extension_route, firefox_signing
-from akdbx.broker import Broker
-from akdbx.secrets_capture import CAPTURED_FIELDS
 
-MASTER = 'synthetic-signing-master-only'
 ISSUER = 'user:' + str(secrets.randbelow(10**7)) + ':' + str(secrets.randbelow(1000))
 SECRET = secrets.token_hex(32)
-ORIGIN = 'https://node.example:9443'
 GUID = 'akdbx@akdbx.org'
-TITLE = 'AMO API key'
+ROOT = Path(__file__).resolve().parents[1]
 
 
-class NoKeys:
-    """The broker's typer: signing never types."""
-
-
-class Link:
-    """The broker's private page, as far as signing and locking read it: only its origin."""
-
-    def __init__(self, origin=ORIGIN):
-        self.origin, self.blocked, self.public_base, self.url = origin, False, None, None
-        self.lock, self.unlock_lock = threading.Lock(), threading.Lock()
-
-
-# ----- synthetic vault -----------------------------------------------------
-@pytest.fixture(scope='module')
-def template(tmp_path_factory):
-    path = tmp_path_factory.mktemp('signing') / 'synthetic.kdbx'
-    vault = create_database(io.BytesIO(), password=MASTER)
-    params = vault.kdbx.header.value.dynamic_header.kdf_parameters.data.dict
-    params['I'].value = 1
-    params['M'].value = 1024 * 1024
-    web = vault.add_group(vault.root_group, 'Web')
-
-    def amo(title, url, fields, protect=True):
-        entry = vault.add_entry(web, title, 'akdbx-signing', '', url=url)
-        for name, value in fields.items():
-            entry.set_custom_property(name, value, protect=protect)
-        entry.set_custom_property(CAPTURED_FIELDS, ','.join(sorted(fields)))
-    keys = {'jwt_issuer': ISSUER, 'jwt_secret': SECRET}
-    amo(TITLE, 'https://addons.mozilla.org/en-US/developers/addon/api/key/', keys)
-    amo('Look-alike key', 'https://addons.mozilla.org.example/en-US/developers/addon/api/key/', keys)
-    amo('Staging key', 'https://addons.allizom.org/en-US/developers/addon/api/key/', keys)
-    amo('Issuer only', 'https://addons.mozilla.org/issuer-only/', {'jwt_issuer': ISSUER})
-    amo('Unprotected key', 'https://addons.mozilla.org/unprotected/', keys, protect=False)
-    amo('Other account key', 'https://addons.mozilla.org/other/', {'jwt_issuer': 'user:1:1', 'jwt_secret': 'f' * 64})
-    buffer = io.BytesIO()
-    vault.save(buffer)
-    path.write_bytes(buffer.getvalue())
-    return path
-
-
-def handle(broker, title=TITLE):
-    entries = broker.dispatch({'action': 'search', 'query': title})['entries']
-    return next(e['handle'] for e in entries if e['title'] == title)
-
-
-# ----- fake AMO -----------------------------------------------------------
 def certificate(folder):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'localhost')])
@@ -124,7 +71,7 @@ class Amo:
         self.owner = 'mine'            # 'mine', 'other-listed' (403) or 'other-hidden' (404, then 409)
         self.exists = False
         self.versions = {}             # version string -> dict(id, upload, polls, deleted)
-        self.taken = set()             # Versions that another deployment of the account created.
+        self.taken = set()             # Versions that another run created after this run's lookup (a race).
         self.deleted = set()
         self.uploads = {}
         self.validation_polls = 1
@@ -299,7 +246,12 @@ class Amo:
                 if amo.owner == 'other-hidden':
                     return self.reply(409, {'version': {'upload': ['Duplicate add-on ID found.']}})
                 version = upload['version']
-                if version in amo.taken or version in amo.versions:
+                if version in amo.taken:  # Another run created it after this run looked: it exists now.
+                    amo.taken.discard(version)
+                    amo.next_id += 1
+                    amo.versions[version] = dict(id=amo.next_id, xpi=upload['xpi'], polls=0, source=b'other run')
+                    amo.exists = True
+                if version in amo.versions:
                     return self.reply(409, {'version': {'version': [f'Version {version} already exists.']}})
                 if version in amo.deleted:
                     return self.reply(409, {'version': {'version': [f'Version {version} was uploaded before and '
@@ -323,6 +275,7 @@ class Amo:
                 number = next(k for k, v in amo.versions.items() if v is item)
                 signed = amo.signed(item) if status == 'public' else b''
                 return self.reply(200, {'id': item['id'], 'version': number, 'channel': 'unlisted',
+                                        'source': amo.origin + '/source.zip' if item.get('source') else None,
                                         'is_disabled': False, 'file': {
                                             'id': item['id'], 'status': status, 'size': len(signed),
                                             'hash': 'sha256:' + hashlib.sha256(signed).hexdigest(),
@@ -361,39 +314,45 @@ class Other(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+
 @pytest.fixture
-def lab(tmp_path, template, monkeypatch):
+def lab(tmp_path):
     cert, key = certificate(tmp_path)
     amo = Amo(cert, key)
-    vault = PyKeePass(str(template), password=MASTER)
-    broker = Broker(vault, NoKeys())
-    broker.unlock_link = Link()
-    if os.name == 'nt':
-        folder = Path(os.environ['LOCALAPPDATA']) / ('akdbx-sign-test-' + secrets.token_hex(8)) / 'signed'
-    else:
-        folder = tmp_path.resolve() / 'state' / 'signed'
-    signing = firefox_signing.FirefoxSigning(broker, folder, api_base=amo.origin + '/api/v5/', ca_file=cert,
-                                             sleep=lambda seconds: None)
-    broker.firefox_signing = signing
     requests = []
     real = firefox_signing.run_child
 
     def recording(request, timeout):
         requests.append(json.dumps(request))
         return real(request, timeout)
-    signing.runner = recording
     try:
-        yield SimpleNamespace(amo=amo, broker=broker, folder=folder, cert=cert, requests=requests, tmp=tmp_path)
+        yield SimpleNamespace(amo=amo, cert=cert, requests=requests, tmp=tmp_path, runner=recording)
     finally:
         amo.close()
-        if os.name == 'nt':
-            import shutil
-            shutil.rmtree(folder.parent, ignore_errors=True)
 
 
-def sign(lab, title=TITLE, **extra):
-    return lab.broker.dispatch(dict(action='sign-firefox-extension', firefox_signing_protocol=1,
-                                    handle=handle(lab.broker, title), **extra))
+class Clock:
+    """A clock that only sleeps move: review polls in no wall time."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def release(lab, *argv, environ=None, clock=None, runner=None, output=None, capsys=None):
+    """Run the release workflow's signing step against the fake: (exit status, printed JSON)."""
+    clock = clock or Clock()
+    output = output or lab.tmp / 'ext'
+    environ = {'AMO_JWT_ISSUER': ISSUER, 'AMO_JWT_SECRET': SECRET} if environ is None else environ
+    code = firefox_signing.main(['--output', str(output), *argv], environ=environ, api_base=lab.amo.origin + '/api/v5/',
+                                ca_file=lab.cert, runner=runner or lab.runner, sleep=clock.sleep, clock=clock)
+    printed = capsys.readouterr().out if capsys is not None else None
+    return code, (json.loads(printed) if printed else None)
 
 
 def assert_no_secret(lab, *values):
@@ -402,381 +361,231 @@ def assert_no_secret(lab, *values):
     assert all(SECRET not in request for request in lab.requests)  # Only short-lived tokens reach the child.
 
 
-# ----- the signed build version -----------------------------------------
-def test_signed_versions_encode_this_builds_contents_and_stay_apart_from_unsigned_ones():
-    built = extension_host.built_version()
-    part = int(built.rsplit('.', 1)[1])
-    first, last = extension_host.signed_version(1), extension_host.signed_version(999)
-    assert first == f'{extension_route.EXTENSION_VERSION}.{100_000_000 + 1000 * part + 1}'
-    assert extension_host.signed_sequence(first) == 1 and extension_host.signed_sequence(last) == 999
-    for version in (first, last):
-        assert extension_route.valid_extension_version(version)
-        assert extension_route.version_status(version) == 'current'
-        assert len(version.rsplit('.', 1)[1]) == 9  # Firefox and AMO allow up to nine digits.
-    for bad in (0, 1000, True, '1'):
-        with pytest.raises(ValueError):
-            extension_host.signed_version(bad)
-    # Another build's contents, an unsigned build, sequence 0 and a ten-digit part are not this build's signature.
-    other = f'{extension_route.EXTENSION_VERSION}.{100_000_000 + 1000 * ((part + 1) % 65536) + 1}'
-    for version in (other, built, first.rsplit('.', 1)[0] + '.' + str(100_000_000 + 1000 * part),
-                    first.rsplit('.', 1)[0] + '.1' + first.rsplit('.', 1)[1]):
-        assert extension_host.signed_sequence(version) is None
-    assert extension_route.version_status(other) == 'mismatch'
-    assert extension_route.version_status(built) == 'current'
-    assert not extension_route.valid_extension_version(first.rsplit('.', 1)[0] + '.1000000000')
-
-
-def test_the_signing_archive_holds_exactly_the_firefox_build_with_its_version(tmp_path, monkeypatch):
-    version = extension_host.signed_version(7)
-    files = extension_host.firefox_signing_files(ORIGIN, version)
-    folder = extension_host.build(tmp_path / 'ff', unlock_origin=ORIGIN, browser='firefox')
-    on_disk = {p.name: p.read_bytes() for p in folder.iterdir()}
-    assert set(files) == set(on_disk)
-    for name in set(files) - {'manifest.json', 'config.js'}:
-        assert files[name] == on_disk[name]
-    manifest, built = json.loads(files['manifest.json']), json.loads(on_disk['manifest.json'])
-    assert manifest == dict(built, version=version)
-    config = files['config.js'].decode()
-    assert f'globalThis.AKDBX_TRUSTED_ORIGIN = "{ORIGIN}";' in config
-    assert f'globalThis.AKDBX_EXTENSION_VERSION = "{version}";' in config
-    assert extension_host.BUILD_ID.search(config) is not None
-    # A new trust anchor for every signed build; the archive bytes depend only on the files.
-    again = extension_host.firefox_signing_files(ORIGIN, version)
-    assert again['config.js'] != files['config.js']
-    assert extension_host.xpi_bytes(files) == extension_host.xpi_bytes(dict(files))
+# ----- the build that the release signs -----------------------------------
+def test_the_signed_upload_is_the_release_firefox_zip_at_the_build_version(tmp_path, monkeypatch, capsys):
+    build = firefox_signing.Build.current()
+    assert build.version == extension_host.built_version()
+    assert build.files == extension_host.build_files('firefox')
+    manifest = json.loads(build.files['manifest.json'])
+    assert manifest['version'] == build.version and manifest['browser_specific_settings']['gecko']['id'] == GUID
+    assert build.files['config.js'].decode().count('globalThis.') == 1  # Only the version: no address, no build ID.
+    # The upload equals `akdbx extension pack --browser firefox`, which the release attaches unsigned.
+    zipped = tmp_path / extension_host.archive_name('firefox')
+    assert extension_host.run(SimpleNamespace(extension_command='pack', output=zipped, browser='firefox')) == 0
+    capsys.readouterr()
+    assert zipped.read_bytes() == build.xpi
     # The same bytes when another platform builds it (zipfile records Windows as creating system 0).
-    here = extension_host.xpi_bytes(files)
     monkeypatch.setattr(sys, 'platform', 'linux' if sys.platform == 'win32' else 'win32')
-    there = extension_host.xpi_bytes(files)
+    there = extension_host.archive_bytes(build.files)
     monkeypatch.undo()
-    assert there == here
-    with zipfile.ZipFile(io.BytesIO(here)) as archive:
+    assert there == build.xpi
+    with zipfile.ZipFile(io.BytesIO(build.xpi)) as archive:
         assert {(i.compress_type, i.create_system, i.external_attr >> 16) for i in archive.infolist()} == {
             (zipfile.ZIP_STORED, 3, 0o644)}
-    with zipfile.ZipFile(io.BytesIO(extension_host.xpi_bytes(files))) as archive:
-        assert sorted(archive.namelist()) == sorted(files) and 'manifest.json' in archive.namelist()
-        assert all(archive.read(name) == files[name] for name in files)
-    with pytest.raises(ValueError):
-        extension_host.firefox_signing_files(ORIGIN, extension_host.built_version())
+        assert {name: archive.read(name) for name in archive.namelist()} == build.files
+    # The broker calls this version current: the signed add-on reports the version it builds itself.
+    assert extension_route.version_status(build.version) == 'current'
+
+
+def test_the_source_archive_rebuilds_the_upload_byte_for_byte(tmp_path):
+    build = firefox_signing.Build.current()
+    source = firefox_signing.source_archive(build.version, build.xpi)
+    folder = tmp_path / 'source'
+    with zipfile.ZipFile(io.BytesIO(source)) as archive:
+        names = archive.namelist()
+        assert {'BUILD.md', 'rebuild.py', 'akdbx/extension_host.py', 'akdbx/fill_extension/trust.js'} <= set(names)
+        assert not any('__pycache__' in name or name.endswith('.pyc') for name in names)
+        archive.extractall(folder)
+    notes = (folder / 'BUILD.md').read_text()
+    assert build.version in notes and hashlib.sha256(build.xpi).hexdigest() in notes and 'origin' not in notes.lower()
+    out = tmp_path / 'rebuilt'
+    done = subprocess.run([sys.executable, '-I', str(folder / 'rebuild.py'), str(out)], capture_output=True, text=True,
+                          timeout=120, check=False)
+    assert done.returncode == 0, done.stderr
+    printed = json.loads(done.stdout)
+    assert printed['sha256'] == hashlib.sha256(build.xpi).hexdigest()
+    assert Path(printed['akdbx']).resolve().is_relative_to(folder.resolve())  # The archive's akdbx, not this one.
+    assert out.with_name('rebuilt.xpi').read_bytes() == build.xpi
+    assert {p.name: p.read_bytes() for p in out.iterdir()} == build.files
 
 
 @pytest.mark.skipif(not os.environ.get('AKDBX_TEST_ADDONS_LINTER'),
                     reason='set AKDBX_TEST_ADDONS_LINTER to the addons-linter bin script (CI installs 10.16.0)')
-def test_mozillas_add_on_validator_accepts_the_archive_that_sign_submits(tmp_path):
+def test_mozillas_add_on_validator_accepts_the_archive_that_the_release_signs(tmp_path):
     """addons-linter is the validator AMO runs on every upload; an error there would refuse the signature."""
-    version = extension_host.signed_version(1)
+    build = firefox_signing.Build.current()
     archive = tmp_path / 'akdbx-firefox.xpi'
-    archive.write_bytes(extension_host.xpi_bytes(extension_host.firefox_signing_files(ORIGIN, version)))
+    archive.write_bytes(build.xpi)
     done = subprocess.run(['node', os.environ['AKDBX_TEST_ADDONS_LINTER'], '--output', 'json', str(archive)],
                           capture_output=True, timeout=300, check=False)
     report = json.loads(done.stdout)
     assert report['errors'] == [] and report['summary']['errors'] == 0, report['errors']
-    assert report['metadata']['version'] == version and report['metadata']['manifestVersion'] == 3
+    assert report['metadata']['version'] == build.version and report['metadata']['manifestVersion'] == 3
     assert done.returncode == 0
 
 
 def test_the_rebuild_instructions_name_akdbx_s_own_dependencies():
     import tomllib
-    project = tomllib.loads((Path(__file__).resolve().parents[1] / 'pyproject.toml').read_text(encoding='utf-8'))
+    project = tomllib.loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))
     everywhere = sorted(d for d in project['project']['dependencies'] if ';' not in d)
     assert sorted(firefox_signing.REBUILD_REQUIREMENTS) == everywhere
 
 
-def test_the_host_relays_a_signed_build_version():
-    """The native host checks the worker's hello with the same version rule as the broker."""
-    version = extension_host.signed_version(3)
-    assert extension_route.valid_extension_version(version)
-    assert extension_route.REPORTED_VERSION_FORMAT.fullmatch(version)
-
-
-# ----- the signing flow ---------------------------------------------------
-def test_sign_submits_the_brokers_own_build_unlisted_and_saves_the_signed_file(lab, caplog, capsys):
-    caplog.set_level(logging.DEBUG)
-    status = lab.broker.dispatch({'action': 'ping'})
-    assert {k: status[k] for k in status if k.startswith('firefox_signing')} == dict(
-        firefox_signing_protocol=1, firefox_signing_channel='unlisted',
-        firefox_signing_entry_origin='https://addons.mozilla.org', firefox_signing_fields=['jwt_issuer', 'jwt_secret'],
-        firefox_signing_configured=True)
-    receipt = sign(lab)
-    version = extension_host.signed_version(1)
-    assert receipt['ok'] and receipt['state'] == 'signed', receipt
-    assert set(receipt) == {'ok', 'state', 'addon_id', 'addon_version', 'channel', 'xpi', 'size', 'sha256',
-                            'trusted_origin'}
-    assert (receipt['addon_id'], receipt['addon_version'], receipt['channel'], receipt['trusted_origin']) == \
-        (GUID, version, 'unlisted', ORIGIN)
-    path = Path(receipt['xpi'])
-    assert path.parent == lab.folder and path.name == f'akdbx-firefox-{version}.xpi'
-    data = path.read_bytes()
-    assert len(data) == receipt['size'] and hashlib.sha256(data).hexdigest() == receipt['sha256']
-    if os.name != 'nt':
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600 and stat.S_IMODE(lab.folder.stat().st_mode) == 0o700
-    uploaded = lab.amo.uploads[next(iter(lab.amo.uploads))]['xpi']
-    with zipfile.ZipFile(io.BytesIO(data)) as signed, zipfile.ZipFile(io.BytesIO(uploaded)) as submitted:
-        assert all(signed.read(n) == submitted.read(n) for n in submitted.namelist())
-        assert {n for n in signed.namelist() if n not in submitted.namelist()} <= {
-            'META-INF/manifest.mf', 'META-INF/mozilla.sf', 'META-INF/mozilla.rsa', 'META-INF/cose.manifest',
-            'META-INF/cose.sig'}
-        manifest = json.loads(submitted.read('manifest.json'))
-        config = submitted.read('config.js').decode()
-    assert manifest['version'] == version and manifest['browser_specific_settings']['gecko']['id'] == GUID
-    assert f'"{ORIGIN}"' in config and f'"{version}"' in config
-    # The submitted sources are this akdbx's own, unchanged.
-    for name, content in extension_host._source_files().items():
-        if name != 'manifest.json':
-            assert zipfile.ZipFile(io.BytesIO(uploaded)).read(name) == content
-    # AMO order: version list, upload, upload status, create the version, version status, download.
-    paths = [(method, path) for method, path, _ in lab.amo.log]
-    assert paths[0] == ('GET', f'/api/v5/addons/addon/{GUID}/versions/')
-    assert paths[1] == ('POST', '/api/v5/addons/upload/') and ('PUT', f'/api/v5/addons/addon/{GUID}/') in paths
-    put = paths.index(('PUT', f'/api/v5/addons/addon/{GUID}/'))
-    assert paths[put + 1][0] == 'PATCH'  # The source archive goes to the new version before review.
-    source = zipfile.ZipFile(io.BytesIO(lab.amo.versions[version]['source']))
-    names = source.namelist()
-    assert 'BUILD.md' in names and 'akdbx/extension_host.py' in names and 'akdbx/fill_extension/content.js' in names
-    assert 'akdbx/import_assets/jsQR.js' in names and 'akdbx/browser_password.py' in names
-    assert not any('__pycache__' in n or n.endswith(('.pyc', '.dex')) for n in names)
-    assert source.read('akdbx/fill_extension/content.js') == (
-        Path(firefox_signing.__file__).with_name('fill_extension') / 'content.js').read_bytes()
-    notes = source.read('BUILD.md').decode()
-    assert version in notes and 'python rebuild.py OUT' in notes and '_content_script' in notes
-    assert hashlib.sha256(uploaded).hexdigest() in notes and ORIGIN in notes
-    # A reviewer's rebuild from the archive gives every submitted file and the uploaded archive itself.
-    folder = lab.tmp / 'review'
-    source.extractall(folder)
-    out = folder / 'OUT'
-    done = subprocess.run([sys.executable, 'rebuild.py', str(out)], cwd=folder, capture_output=True, timeout=120)
-    assert done.returncode == 0, done.stderr
-    result = json.loads(done.stdout)
-    assert Path(result['akdbx']).resolve().is_relative_to(folder.resolve())  # The archived akdbx, not this one.
-    assert (folder / 'OUT.xpi').read_bytes() == uploaded and result['sha256'] == hashlib.sha256(uploaded).hexdigest()
-    with zipfile.ZipFile(io.BytesIO(uploaded)) as submitted:
-        assert sorted(p.name for p in out.iterdir()) == sorted(submitted.namelist())
-        assert all((out / name).read_bytes() == submitted.read(name) for name in submitted.namelist())
-    assert paths[-1][1].startswith('/files/') and all(has for _, _, has in lab.amo.log)
-    assert all(c['exp'] - c['iat'] == 60 and c['iss'] == ISSUER for c in lab.amo.claims)
+# ----- the signing step ------------------------------------------------
+def test_the_release_step_uploads_the_generic_build_unlisted_and_saves_the_signed_file(lab, capsys):
+    build = firefox_signing.Build.current()
+    code, printed = release(lab, capsys=capsys)
+    assert code == 0, printed
+    name = extension_host.archive_name('firefox', signed=True)
+    saved = lab.tmp / 'ext' / name
+    data = saved.read_bytes()
+    assert printed == dict(ok=True, state='signed', addon_id=GUID, version=build.version, channel='unlisted', file=name,
+                           size=len(data), sha256=hashlib.sha256(data).hexdigest())
+    firefox_signing.verify(build, data)  # The submitted files plus Mozilla's signature files, nothing else.
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        assert {n for n in archive.namelist() if not n.startswith('META-INF/')} == set(build.files)
+    [item] = lab.amo.versions.values()
+    assert item['xpi'] == build.xpi  # The release's unsigned Firefox ZIP, byte for byte.
+    assert list(lab.amo.versions) == [build.version]
+    # The source archive went with the version, as AMO asks for generated code.
+    with zipfile.ZipFile(io.BytesIO(item['source'])) as source:
+        assert 'rebuild.py' in source.namelist()
+    paths = [(m, p) for m, p, _ in lab.amo.log]
+    base = f'/api/v5/addons/addon/{GUID}/'
+    assert paths[:2] == [('GET', base + f'versions/v{build.version}/'), ('POST', '/api/v5/addons/upload/')]
+    assert ('PUT', base) in paths and ('PATCH', base + f'versions/{item["id"]}/') in paths
+    assert all(token for _, _, token in lab.amo.log)  # Every request to the API's own origin has a token.
     assert len({c['jti'] for c in lab.amo.claims}) == len(lab.amo.claims)
-    assert extension_route.version_status(version) == 'current' and lab.broker.firefox_signing.job is None
-    out = capsys.readouterr()
-    assert_no_secret(lab, receipt, status, out.out, out.err, caplog.text)
-    # The handle was used up; the next signature gets the next version.
-    assert lab.broker.dispatch(dict(action='sign-firefox-extension', firefox_signing_protocol=1,
-                                    handle='0' * 64))['error'] == 'unknown or expired handle; search again'
-    second = sign(lab)
-    assert second['ok'] and second['addon_version'] == extension_host.signed_version(2), second
+    assert all(c['exp'] - c['iat'] == 60 for c in lab.amo.claims)
+    assert_no_secret(lab, printed)
 
 
-def test_the_next_version_follows_amo_and_skips_versions_another_deployment_took(lab):
-    lab.amo.exists = True
-    lab.amo.versions = {extension_host.signed_version(n): dict(id=n, xpi=b'', polls=0) for n in (1, 2, 4)}
-    lab.amo.versions['0.1.0'] = dict(id=50, xpi=b'', polls=0)
-    lab.amo.taken = {extension_host.signed_version(5)}
-    lab.amo.deleted = {extension_host.signed_version(6)}
-    receipt = sign(lab)
-    assert receipt['ok'] and receipt['addon_version'] == extension_host.signed_version(7), receipt
-    assert [u['version'] for u in lab.amo.uploads.values()] == [extension_host.signed_version(n) for n in (5, 6, 7)]
-    assert_no_secret(lab, receipt)
-
-
-def test_the_version_list_is_read_past_its_first_page_from_the_api_origin_only(lab):
-    lab.amo.exists = True
-    lab.amo.versions = {extension_host.signed_version(n): dict(id=n, xpi=b'', polls=0) for n in (1, 2, 3)}
-    lab.amo.versions.update({f'0.9.{n}': dict(id=10 + n, xpi=b'', polls=0) for n in range(60)})  # Newer, other builds.
-    receipt = sign(lab)
-    assert receipt['ok'] and receipt['addon_version'] == extension_host.signed_version(4), receipt
-    assert len(lab.amo.uploads) == 1  # No version taken: the second page named sequences 1 to 3.
-    assert sum(1 for m, path, _ in lab.amo.log if path.endswith('/versions/') and m == 'GET') == 2
-    # A next link to another origin is not followed: the token stays on the API's origin.
-    lab.amo.log.clear()
-    lab.amo.next_host = 'localhost'
-    receipt = sign(lab)
-    assert not receipt['ok'] and 'version list page on another origin' in receipt['error'], receipt
-    assert sum(1 for m, path, _ in lab.amo.log if path.endswith('/versions/') and m == 'GET') == 1
+def test_a_rerun_of_the_tag_resumes_the_same_version_and_uploads_nothing(lab, capsys):
+    """Review outlasts the first run; the re-run waits for the same version, and a third run downloads it again."""
+    build = firefox_signing.Build.current()
+    lab.amo.review_polls = 10_000
+    code, printed = release(lab, '--timeout', '60', capsys=capsys)
+    assert code == 1 and printed['stage'] == 'review' and printed['version'] == build.version
+    assert printed['error'] == (f'AMO has not signed {build.version} within 60 seconds (stage review); the version stays '
+                                'on AMO; re-run the failed release jobs to resume this version')
+    assert not (lab.tmp / 'ext').exists() or not any((lab.tmp / 'ext').iterdir())
+    uploads = len(lab.amo.uploads)
+    lab.amo.review_polls = 0
+    code, printed = release(lab, capsys=capsys)
+    assert code == 0 and printed['state'] == 'signed', printed
+    assert len(lab.amo.uploads) == uploads == 1 and list(lab.amo.versions) == [build.version]
+    log = len(lab.amo.log)
+    # A later release with the same extension contents (or a re-run after a later job failed): no upload either.
+    code, again = release(lab, capsys=capsys)
+    assert code == 0 and again == printed
+    assert [m for m, _, _ in lab.amo.log[log:]] == ['GET', 'GET', 'GET']  # Lookup, review, download.
     assert len(lab.amo.uploads) == 1
 
 
-def test_a_long_version_list_resumes_across_calls_and_its_page_limit_holds(lab, monkeypatch):
-    lab.amo.exists = True
-    lab.amo.versions = {extension_host.signed_version(n): dict(id=n, xpi=b'', polls=0) for n in range(1, 7)}
-    lab.amo.versions.update({f'0.9.{n}': dict(id=1000 + n, xpi=b'', polls=0) for n in range(100)})  # 3 pages.
-    clock = [0.0]
-    lab.broker.clock = lambda: clock[0]
-    real = lab.broker.firefox_signing.runner
+def test_a_rerun_attaches_a_source_archive_that_an_earlier_run_could_not(lab, capsys):
+    real = lab.runner
 
-    def slow_list(request, timeout):
-        if '/versions/?' in request['url']:
-            clock[0] += 80  # Each page takes most of a call's budget.
+    def refuse_patch(request, timeout):
+        if request['method'] == 'PATCH':
+            return dict(status=400, location=None, body=b'{"source": ["Invalid source."]}')
         return real(request, timeout)
-    lab.broker.firefox_signing.runner = slow_list
-    monkeypatch.setattr(firefox_signing, 'MAX_VERSION_PAGES', 2)
-    first, second, third = sign(lab), sign(lab), sign(lab)
-    assert first['state'] == second['state'] == 'pending' and first['stage'] == second['stage'] == 'plan'
-    # The page count lives in the job: the third page would pass the limit, so nothing is submitted.
-    assert not third['ok'] and 'more than 100 versions' in third['error'] and not lab.amo.uploads
-    monkeypatch.setattr(firefox_signing, 'MAX_VERSION_PAGES', 200)
-    receipts = [sign(lab) for _ in range(3)]  # Pages 1, 2, then 3 (which leaves no room to upload).
-    assert [(r['state'], r['stage']) for r in receipts] == [('pending', 'plan')] * 2 + [('pending', 'upload')]
-    done = sign(lab)
-    # Sequences 1 to 6 sit on the third page; the resumed scan saw them.
-    assert done['ok'] and done['addon_version'] == extension_host.signed_version(7), done
-    assert len(lab.amo.uploads) == 1
+    code, printed = release(lab, runner=refuse_patch, capsys=capsys)
+    assert code == 1 and printed['stage'] == 'source' and 'Invalid source' in printed['error']
+    assert 're-run the failed release jobs' in printed['error']
+    [item] = lab.amo.versions.values()
+    assert not item.get('source')
+    code, printed = release(lab, capsys=capsys)
+    assert code == 0, printed
+    assert item['source'] and len(lab.amo.uploads) == 1
 
 
-def test_slow_review_answers_pending_and_a_fresh_handle_resumes_the_same_job(lab, monkeypatch):
-    lab.amo.validation_polls, lab.amo.review_polls = 1, 10**6
-    clock = [1000.0]
-    lab.broker.clock = lambda: clock[0]
-    # Each poll interval takes 20 s of broker time: one call ends in review, before its 100 s budget.
-    lab.broker.firefox_signing.sleep = lambda seconds: clock.__setitem__(0, clock[0] + 20)
-    pending = sign(lab)
-    version = extension_host.signed_version(1)
-    assert pending == dict(ok=True, state='pending', stage='review', addon_id=GUID, addon_version=version,
-                           channel='unlisted', retry_after=30)
-    assert not lab.folder.exists() or not any(lab.folder.iterdir())
-    again = sign(lab)
-    assert again['state'] == 'pending' and again['addon_version'] == version
-    lab.amo.review_polls = 0
-    done = sign(lab)
-    assert done['ok'] and done['state'] == 'signed' and done['addon_version'] == version, done
-    assert len(lab.amo.uploads) == 1 and len(lab.amo.versions) == 1  # Resumed, not submitted again.
-    # A pending job belongs to its API key and origin.
-    lab.amo.review_polls = 10**6
-    assert sign(lab)['state'] == 'pending'
-    other = sign(lab, 'Other account key')
-    assert not other['ok'] and 'another AMO API key is pending' in other['error']
-    lab.broker.unlock_link = Link('https://moved.example')
-    moved = sign(lab)
-    assert not moved['ok'] and 'pass --restart' in moved['error'] and 'https://moved.example' in moved['error']
-    lab.amo.review_polls = 0
-    restarted = sign(lab, restart=True)
-    assert restarted['ok'] and restarted['trusted_origin'] == 'https://moved.example'
-    assert restarted['addon_version'] == extension_host.signed_version(3)
+def test_a_version_another_run_created_meanwhile_is_resumed(lab, capsys):
+    build = firefox_signing.Build.current()
+    lab.amo.taken.add(build.version)  # Created between this run's lookup and its version create.
+    code, printed = release(lab, capsys=capsys)
+    assert code == 0, printed
+    assert list(lab.amo.versions) == [build.version]
+    assert lab.amo.versions[build.version]['source'] == b'other run'  # Not attached twice.
 
 
-def test_an_interrupted_version_create_is_looked_up_before_it_is_sent_again(lab):
-    real = lab.broker.firefox_signing.runner
-    dropped = []
-
-    def drop_first_put(request, timeout):
-        response = real(request, timeout)
-        if request['method'] == 'PUT' and not dropped:
-            dropped.append(True)
-            return None  # AMO created the version, but the answer was lost.
-        return response
-    lab.broker.firefox_signing.runner = drop_first_put
-    lost = sign(lab)
-    assert lost == dict(ok=False, resumable=True, error=lost['error']) and 'network error' in lost['error']
-    done = sign(lab)
-    assert done['ok'] and done['addon_version'] == extension_host.signed_version(1), done
-    assert len(lab.amo.versions) == 1 and sum(1 for m, *_ in lab.amo.log if m == 'PUT') == 1
-    assert lab.amo.versions[done['addon_version']].get('source')  # The resumed job still sent its source.
-
-
-def test_a_refused_source_archive_keeps_the_job_and_resumes(lab):
-    real = lab.broker.firefox_signing.runner
-    refused = []
-
-    def refuse_first_patch(request, timeout):
-        if request['method'] == 'PATCH' and not refused:
-            refused.append(True)
-            return dict(status=400, location=None, body=b'{"source": ["Unsupported file type."]}')
-        return real(request, timeout)
-    lab.broker.firefox_signing.runner = refuse_first_patch
-    receipt = sign(lab)
-    assert receipt['resumable'] is True and 'refused the source archive' in receipt['error']
-    assert 'Unsupported file type.' in receipt['error']
-    done = sign(lab)
-    assert done['ok'] and len(lab.amo.uploads) == 1, done
-
-
-@pytest.mark.parametrize('title, error', [
-    ('Look-alike key', 'the entry is not on https://addons.mozilla.org'),
-    ('Staging key', 'the entry is not on https://addons.mozilla.org'),
-    ('Issuer only', 'no captured protected jwt_issuer and jwt_secret fields'),
-    ('Unprotected key', 'no captured protected jwt_issuer and jwt_secret fields'),
-])
-def test_entries_other_than_the_amo_key_are_refused_before_any_request(lab, title, error):
-    receipt = sign(lab, title)
-    assert not receipt['ok'] and error in receipt['error'] and 'nothing submitted' in receipt['error']
+def test_no_api_key_signs_nothing_and_says_so(lab, capsys):
+    for environ in ({}, {'AMO_JWT_ISSUER': ISSUER}, {'AMO_JWT_SECRET': SECRET}, {'AMO_JWT_ISSUER': '', 'AMO_JWT_SECRET': ''}):
+        code, printed = release(lab, environ=environ, capsys=capsys)
+        assert code == 3
+        assert printed == dict(ok=False, state='unsigned', file=extension_host.archive_name('firefox', signed=True),
+                               error='AMO_JWT_ISSUER and AMO_JWT_SECRET are not both set, so Mozilla signs nothing; '
+                                     'this release has no signed Firefox add-on')
     assert lab.amo.log == [] and lab.requests == []
-    assert_no_secret(lab, receipt)
 
 
-def test_locked_unconfigured_or_originless_brokers_refuse(lab):
-    value = handle(lab.broker)
-    assert lab.broker.dispatch(dict(action='sign-firefox-extension', firefox_signing_protocol=2,
-                                    handle=value))['error'].startswith('invalid Firefox signing request')
-    assert lab.broker.dispatch(dict(action='sign-firefox-extension', firefox_signing_protocol=1, handle=value,
-                                    restart=False))['error'].startswith('invalid Firefox signing request')
-    lab.broker.unlock_link = None
-    receipt = sign(lab)
-    assert not receipt['ok'] and 'serves no private HTTPS page' in receipt['error']
-    lab.broker.unlock_link = Link()
-    lab.broker.firefox_signing.folder = None
-    receipt = sign(lab)
-    assert not receipt['ok'] and 'no folder for signed add-ons' in receipt['error']
-    assert lab.broker.dispatch({'action': 'ping'})['firefox_signing_configured'] is False
-    value = handle(lab.broker)
-    lab.broker.lock()
-    locked = lab.broker.dispatch(dict(action='sign-firefox-extension', firefox_signing_protocol=1, handle=value))
-    assert locked['ok'] is False and locked['error'] == 'vault locked'
-    assert lab.amo.log == []
+def test_a_rejected_or_deleted_version_asks_for_an_extension_version_bump(lab, capsys):
+    build = firefox_signing.Build.current()
+    lab.amo.reject = True
+    code, printed = release(lab, capsys=capsys)
+    assert code == 1 and 'Mozilla did not sign' in printed['error'] and 'bump the fill extension version' in printed['error']
+    # The re-run finds the same disabled version: the same refusal, and nothing uploaded again.
+    code, again = release(lab, capsys=capsys)
+    assert code == 1 and again['error'] == printed['error'] and len(lab.amo.uploads) == 1
+    lab.amo.reject = False
+    lab.amo.versions.clear()
+    lab.amo.deleted.add(build.version)
+    code, printed = release(lab, capsys=capsys)
+    assert code == 1 and 'deleted it, so it can never be used again' in printed['error']
+    assert 'bump the fill extension version' in printed['error']
+    assert not (lab.tmp / 'ext').exists() or not any((lab.tmp / 'ext').iterdir())
 
 
-def test_a_second_concurrent_call_is_refused(lab):
-    signing = lab.broker.firefox_signing
-    assert signing._busy.acquire(blocking=False)
-    try:
-        receipt = sign(lab)
-    finally:
-        signing._busy.release()
-    assert not receipt['ok'] and 'another Firefox signing call is running' in receipt['error']
-
-
-def test_amo_refusals_are_clear_and_never_show_the_key(lab):
+def test_amo_refusals_are_clear_and_never_show_the_key(lab, capsys):
     amo = lab.amo
-    amo.secret = 'e' * 64  # The vault holds another secret: every token fails.
-    receipt = sign(lab)
-    assert not receipt['ok'] and 'HTTP 401' in receipt['error'] and receipt['resumable'] is True
+    amo.secret = 'e' * 64  # Another secret: every token fails.
+    code, printed = release(lab, capsys=capsys)
+    assert code == 1 and 'HTTP 401' in printed['error'] and 'AMO_JWT_SECRET' in printed['error']
     amo.secret = SECRET
-    lab.broker.firefox_signing.job = None
     amo.owner = 'other-listed'
-    receipt = sign(lab)
-    assert not receipt['ok'] and 'another AMO account owns this ID' in receipt['error'] and 'HTTP 403' in receipt['error']
-    assert 'resumable' not in receipt and not amo.uploads
-    amo.owner = 'other-hidden'
-    receipt = sign(lab)
-    assert not receipt['ok'] and 'HTTP 409' in receipt['error'] and 'Duplicate add-on ID found' in receipt['error']
+    amo.exists = True
+    code, printed = release(lab, capsys=capsys)
+    assert code == 1 and 'another AMO account owns this ID' in printed['error'] and 'HTTP 403' in printed['error']
+    assert not amo.versions  # An upload alone creates no version; AMO drops it.
+    amo.owner, amo.exists = 'other-hidden', False
+    code, printed = release(lab, capsys=capsys)
+    assert code == 1 and 'HTTP 409' in printed['error'] and 'Duplicate add-on ID found' in printed['error']
     amo.owner = 'mine'
-    amo.validation_errors = ['The "version" property must be a string.\x1b[31m', 'Unsupported permission']
-    receipt = sign(lab)
-    assert not receipt['ok'] and receipt['error'].startswith('AMO validation failed for ')
-    assert 'The "version" property must be a string. [31m manifest.json; Unsupported permission' in receipt['error']
-    assert 'unsafe assignment' not in receipt['error'] and lab.broker.firefox_signing.job is None
+    amo.validation_errors = ['The "version" property must be a string.\x1b[31m', 'Unsupported permission ' + SECRET]
+    code, printed = release(lab, capsys=capsys)
+    assert code == 1 and printed['error'].startswith('AMO validation failed for ')
+    assert 'The "version" property must be a string. [31m manifest.json; Unsupported permission [withheld]' in printed['error']
+    assert 'unsafe assignment' not in printed['error']
     amo.validation_errors = []
-    amo.reject = True
-    receipt = sign(lab)
-    assert not receipt['ok'] and 'Mozilla did not sign' in receipt['error'] and 'resumable' not in receipt
-    amo.reject = False
     amo.tamper = True
-    receipt = sign(lab)
-    assert not receipt['ok'] and 'does not match the submitted build' in receipt['error']
+    code, printed = release(lab, capsys=capsys)
+    assert code == 1 and 'does not match the' in printed['error']
+    amo.versions.clear()
     amo.tamper, amo.unsigned = False, True  # The submitted files with no Mozilla signature.
-    receipt = sign(lab)
-    assert not receipt['ok'] and 'does not match the submitted build' in receipt['error']
-    amo.unsigned = False
-    assert not lab.folder.exists() or not any(lab.folder.iterdir())
-    assert_no_secret(lab, receipt)
+    code, printed = release(lab, capsys=capsys)
+    assert code == 1 and 'does not match the' in printed['error']
+    assert not (lab.tmp / 'ext').exists() or not any((lab.tmp / 'ext').iterdir())
+    assert_no_secret(lab, printed)
 
 
-def test_network_failure_keeps_the_job(lab):
+def test_network_errors_and_a_busy_amo_are_retried_within_the_deadline(lab, capsys):
+    real, seen = lab.runner, []
+
+    def flaky(request, timeout):
+        seen.append(request['method'])
+        if len(seen) == 1:
+            return None  # A network error.
+        if len(seen) == 2:
+            return dict(status=503, location=None, body=b'')
+        return real(request, timeout)
+    code, printed = release(lab, runner=flaky, capsys=capsys)
+    assert code == 0, printed
     lab.amo.close()
-    receipt = sign(lab)
-    assert receipt == dict(ok=False, resumable=True, error='AMO could not be reached (network error or timeout); the '
-                           'signing job is kept; run `akdbx extension sign` again with a fresh search handle to resume')
-    assert lab.broker.firefox_signing.job is not None
+    code, printed = release(lab, output=lab.tmp / 'second', capsys=capsys)
+    assert code == 1 and printed['error'] == ('AMO could not be reached (network error or timeout); re-run the '
+                                              'failed release jobs to resume this version')
 
 
-def test_a_download_redirect_to_another_origin_gets_no_token(lab):
+def test_a_download_redirect_to_another_origin_gets_no_token(lab, capsys):
     other = ThreadingHTTPServer(('127.0.0.1', 0), Other)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(lab.cert, lab.cert.with_name('amo-key.pem'))
@@ -786,99 +595,51 @@ def test_a_download_redirect_to_another_origin_gets_no_token(lab):
     Other.seen, Other.amo = [], lab.amo
     lab.amo.redirect = f'https://localhost:{other.server_port}'
     try:
-        receipt = sign(lab)
+        code, printed = release(lab, capsys=capsys)
     finally:
         other.shutdown()
         other.server_close()
-    assert receipt['ok'], receipt
+    assert code == 0, printed
     assert Other.seen == [None]
 
 
-# ----- CLI ---------------------------------------------------------------
-def test_cli_copies_the_checked_file_and_prints_only_non_secret_data(lab, capsys):
-    output = lab.tmp / 'out'
-    args = SimpleNamespace(output=output, handle=handle(lab.broker), restart=False)
-    assert firefox_signing.run(args, lab.broker.dispatch) == 0
-    printed = json.loads(capsys.readouterr().out)
-    version = extension_host.signed_version(1)
-    assert printed['xpi'] == str(output / f'akdbx-firefox-{version}.xpi')
-    assert Path(printed['broker_xpi']).read_bytes() == Path(printed['xpi']).read_bytes()
-    assert hashlib.sha256(Path(printed['xpi']).read_bytes()).hexdigest() == printed['sha256']
-    assert_no_secret(lab, printed)
-    # An existing file with other contents is never replaced.
-    Path(printed['broker_xpi']).unlink()
-    args.handle = handle(lab.broker)
-    (output / f'akdbx-firefox-{extension_host.signed_version(2)}.xpi').write_bytes(b'other')
-    assert firefox_signing.run(args, lab.broker.dispatch) == 1
-    refused = json.loads(capsys.readouterr().out)
-    assert 'exists with other contents' in refused['error'] and Path(refused['broker_xpi']).is_file()
+def test_an_existing_file_with_other_contents_is_never_replaced(lab, capsys):
+    output = lab.tmp / 'ext'
+    output.mkdir()
+    target = output / extension_host.archive_name('firefox', signed=True)
+    target.write_bytes(b'something else')
+    code, printed = release(lab, capsys=capsys)
+    assert code == 1 and 'exists with other contents' in printed['error'] and target.read_bytes() == b'something else'
+    assert release(lab, '--timeout', '5', capsys=capsys)[0] == 1  # Outside 60..21600 seconds: refused.
 
 
-def test_cli_reports_pending_and_refuses_an_old_broker(lab, capsys):
-    lab.amo.review_polls = 10**6
-    clock = [0.0]
-    lab.broker.clock = lambda: clock[0]
-    lab.broker.firefox_signing.sleep = lambda seconds: clock.__setitem__(0, clock[0] + 60)
-    args = SimpleNamespace(output=lab.tmp / 'out', handle=handle(lab.broker), restart=False)
-    assert firefox_signing.run(args, lab.broker.dispatch) == 0
-    assert json.loads(capsys.readouterr().out)['state'] == 'pending'
+# ----- the release workflow ------------------------------------------------
+def test_the_release_workflow_signs_with_the_amo_secrets_and_publishes_the_extension_archives():
+    """The Release workflow runs exactly this step, with the two secrets, after the tests; exit 3 publishes the
+    rest and says that the signed add-on is missing, any other failure publishes nothing."""
+    text = (ROOT / '.github' / 'workflows' / 'release.yml').read_text(encoding='utf-8')
+    job = text[text.index('\n  extension:\n'):text.index('\n  publish:\n')]
+    assert 'needs: [verify, build]' in job  # build needs every test workflow.
+    assert 'AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}' in job and 'AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}' in job
+    assert 'clean/bin/python -m akdbx.firefox_signing --output ext --timeout 1200' in job
+    assert 'pip install "dist/akdbx-${VERSION}-py3-none-any.whl"' in job  # The released wheel builds the archives.
+    assert 'extension pack --browser "$browser" --output "ext/$name"' in job
+    assert '"$status" -eq 3' in job and 'echo signed=false' in job and 'exit 1' in job
+    assert text.count('secrets.AMO_JWT') == 2  # No other step sees the key.
+    publish = text[text.index('\n  publish:\n'):]
+    assert 'needs: [verify, build, install, extension]' in publish
+    assert 'sha256sum akdbx-* > SHA256SUMS' in publish and 'subject-path: dist/akdbx-*' in publish
+    assert publish.index('sha256sum akdbx-* > SHA256SUMS') < publish.index('attest-build-provenance')
+    assert 'no Mozilla-signed Firefox add-on' in publish
+    # The asset names that the workflow checks are the ones this akdbx writes.
+    assert extension_host.archive_name('chrome').startswith('akdbx-extension-chrome-')
+    assert extension_host.archive_name('firefox', signed=True).startswith('akdbx-extension-firefox-')
 
-    def old(payload):
-        assert payload == {'action': 'ping'}
-        return {'ok': True, 'locked': False}
-    assert firefox_signing.run(args, old) == 1
-    assert 'broker lacks Firefox signing' in json.loads(capsys.readouterr().out)['error']
 
-    def leaky(payload):
-        if payload['action'] == 'ping':
-            return lab.broker.dispatch(payload)
-        return {'ok': True, 'state': 'signed', 'addon_id': GUID, 'secret': SECRET}
-    assert firefox_signing.run(args, leaky) == 2
-    out = capsys.readouterr()
-    assert SECRET not in out.out + out.err and 'outcome unconfirmed' in out.err
-
-
-def test_cli_command_over_the_broker_endpoint(lab, capsys):
-    """`akdbx extension sign` through the real transport: the Unix socket, or the named pipe on Windows."""
-    from akdbx import cli
-    from akdbx.broker import serve
-    import shutil
-    import tempfile
-    if os.name == 'nt':
-        short, endpoint = None, Path('\\\\.\\pipe\\akdbx-sign-' + secrets.token_hex(8))
-    else:
-        short = Path(os.path.realpath(tempfile.mkdtemp(prefix='aks', dir='/tmp')))  # AF_UNIX paths are short.
-        endpoint = short / 'run' / 's'
-    output = lab.tmp / 'cli-out'
-    stop, errors = threading.Event(), []
-
-    def run():
-        try:
-            serve(endpoint, lab.broker, stop)
-        except Exception as error:
-            errors.append(repr(error))
-    worker = threading.Thread(target=run, daemon=True)
-    worker.start()
-    try:
-        deadline = time.monotonic() + 10
-        while True:  # Ready once the endpoint answers with its peer checks.
-            try:
-                if cli.request(endpoint, {'action': 'ping'}, expected_unlock_origin=ORIGIN)['ok']:
-                    break
-            except Exception:
-                pass
-            assert not errors and worker.is_alive() and time.monotonic() < deadline, errors
-            time.sleep(0.05)
-        value = handle(lab.broker)
-        assert cli.main(['--socket', str(endpoint), '--unlock-origin', ORIGIN, 'extension', 'sign',
-                         '--output', str(output), value]) == 0
-    finally:
-        stop.set()
-        worker.join(5)
-        if short is not None:
-            shutil.rmtree(short, ignore_errors=True)
-    assert not errors and not worker.is_alive(), errors
-    printed = json.loads(capsys.readouterr().out)
-    assert printed['state'] == 'signed' and Path(printed['xpi']).parent == output
-    assert Path(printed['xpi']).read_bytes() == Path(printed['broker_xpi']).read_bytes()
-    assert cli._request_timeout({'action': 'sign-firefox-extension'}) == firefox_signing.CLI_TIMEOUT
+def test_the_step_runs_as_the_workflow_runs_it_and_needs_no_key_to_publish_the_rest(tmp_path):
+    """`python -m akdbx.firefox_signing` with no key in the environment: exit 3 and no request."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith('AMO_JWT_')}
+    done = subprocess.run([sys.executable, '-m', 'akdbx.firefox_signing', '--output', str(tmp_path / 'ext'),
+                           '--timeout', '1200'], capture_output=True, text=True, timeout=120, env=env, check=False)
+    assert done.returncode == 3, done.stderr
+    assert json.loads(done.stdout)['state'] == 'unsigned' and not (tmp_path / 'ext').exists()

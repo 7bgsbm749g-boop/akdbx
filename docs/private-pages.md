@@ -96,8 +96,9 @@ Rules for both platforms:
 - The origin is `https://localhost:PORT` or `https://127.0.0.1:PORT`, with a
   port from 1024 to 65535. `https://localhost:9443` is the default. The
   certificate must match its host name. The same origin must be set for every
-  CLI command and for `akdbx extension build` (global `--unlock-origin` or
-  `AKDBX_UNLOCK_ORIGIN`).
+  CLI command (global `--unlock-origin` or `AKDBX_UNLOCK_ORIGIN`). The browser
+  extension (0.19.0+) holds no origin: confirm this one in its popup on first
+  use.
 - The private key must be readable by the broker's user only. Linux requires a
   regular file that this user owns with mode `0600` or stricter, opened
   without following a symbolic link. Windows requires a restrictive DACL on a
@@ -163,7 +164,8 @@ listener still binds `127.0.0.1` only.
    target, Serve would show that user's fake unlock page at your trusted
    tailnet name, and could collect the master password.
 4. Start the broker with the Tailscale origin and the loopback port. Use the
-   same origin for every CLI command and for `akdbx extension build`:
+   same origin for every CLI command, and confirm it in the extension popup
+   on first use:
 
    ```bash
    export AKDBX_UNLOCK_ORIGIN=https://node.tailnet.ts.net:9443
@@ -434,39 +436,39 @@ Costs of one rotation:
 The browser extension opens pairing and unlock links only on one trusted
 origin, so a replaced native host cannot send you to a look-alike
 master-password page. From extension version 0.3.0 (akdbx 0.29.0), an origin
-change needs no rebuild, no reload and no approval:
+change needs no rebuild, no reload and no approval. From fill extension 0.19.0
+(akdbx after 0.54.1) the extension is one generic build, the same for every
+user and every release asset: `config.js` holds only its version, with no
+broker address and no build ID.
 
-1. **Built origin.** `akdbx extension build` writes the CLI's origin into
-   `config.js`. It is the first trusted origin. The extension always has a
-   trusted origin that the native host did not choose: the built origin, or
-   the one it stored after a verified key binding or a signed change. An
-   extension built without an origin opens no pairing or unlock page; the
-   popup asks you to run `akdbx extension build`. There is no trust on first
-   use.
+1. **First use: you confirm the origin.** With no saved trust, the extension
+   takes the origin that the native host's signed statement names only as a
+   proposal. The popup shows that exact origin, says that this extension does
+   not trust a broker address yet, and offers **Trust this address**. It opens
+   no pairing or unlock page, reads nothing from that origin and seals no
+   captured secret to any broker key until you click it. Confirm only your
+   broker's address: `akdbx status` on the computer with the broker shows it
+   as `extension_trust.origin`, and `akdbx setup` and `akdbx extension build`
+   (`confirm_origin`) print it. The service worker saves the origin only if
+   the native host, at that moment, still names exactly the origin you saw in
+   a statement that verifies; then it binds the key (step 2). A script in the
+   popup cannot confirm: the click must be a real one. A broker older than
+   0.29.0 sends no statement and gets no proposal.
 2. **First key, bound to HTTPS.** Each broker has a persistent identity key
    (ECDSA P-256). At each start it signs a statement with its current origin
    and a sequence number. When the extension has no stored key, it does not
-   take the key from the native host alone. When the native host first sends
-   the statement (at the connection, not only when the popup opens), the
+   take the key from the native host alone. For a trusted origin with no key
+   (just confirmed, or kept by a reset), when the native host sends the
+   statement (at the connection, not only when the popup opens), the
    extension's service worker reads
    `GET <trusted origin>/.well-known/akdbx-identity` over HTTPS (no
    redirects, no cookies, no cache, a three-second limit). It stores the
    broker's public key, origin and sequence number in `chrome.storage.local`
    only when that statement verifies, names the trusted origin, and has the
    same key as the statement from the native host. If the read fails, the
-   extension stores nothing, keeps the trusted origin, and tries again at the
-   next statement or popup. A broker that names another origin than the
-   trusted one before the first key is refused, with no reset: the popup says
-   that the extension was built for another address. Only a new local
-   `akdbx extension build` changes the first trusted origin. Each build
-   writes a new random build ID into `config.js`, and the extension saves
-   that ID with its stored trust. After any local `akdbx extension build`
-   (for the same address or another one) and a reload, the extension
-   discards the stored key and origin and binds the broker key again from
-   the built origin's HTTPS page. A reload of the same build keeps the stored
-   trust. `akdbx setup` does not rebuild an unchanged extension folder, so it
-   keeps the stored trust too. The popup shows the origin next to the pairing
-   code: check it before you open the page.
+   extension stores nothing new, keeps the trusted origin, and tries again at
+   the next statement or popup. The popup shows the origin next to the
+   pairing code: check it before you open the page.
 3. **Signed changes.** When the origin changes (a relay port move, `relay
    rotate`, `relay enable` or `disable`, another `--unlock-origin`), the broker
    adds 1 to the sequence number and signs the new origin. The extension
@@ -487,11 +489,28 @@ change needs no rebuild, no reload and no approval:
    key. It then accepts a new key only when
    `GET <trusted origin>/.well-known/akdbx-identity` over HTTPS returns a valid
    statement for that origin with that key. If you did not set up this broker
-   again yourself, do not reset and do not enter your master password. A
-   broker with another key that names another origin gets no reset: run
-   `akdbx extension build` again for the broker's current origin and reload
-   the extension. Any new build replaces the stored trust (step 2), also a
-   build for the same address after a signed move away from it.
+   again yourself, do not reset and do not enter your master password.
+5. **Forget.** A broker that names another origin than the trusted one, with
+   no signature by the stored key (moved by hand to a new address, or set up
+   again elsewhere), gets no reset. The popup says which origin the broker
+   names and which one the extension trusts, and offers **Forget this
+   broker…**. Its second click (**Forget and confirm again**) deletes the
+   saved trust and the pairing; the next popup asks you to confirm the
+   origin that the broker names now (step 1). The service worker forgets only
+   while the broker still names another origin without the trusted key's
+   signature. This replaces the rebuild of earlier builds: they started over
+   from a new `config.js`. If you did not move the broker yourself, do not
+   forget it and do not enter your master password.
+6. **Update from a per-deployment build.** Fill extension 0.18.x and earlier
+   wrote the CLI's origin and a random build ID into `config.js` and saved
+   the build ID with the stored trust. When such an extension is rebuilt with
+   this akdbx (or replaced by a release asset with the same extension ID) and
+   reloads, the generic build keeps that stored key, origin and sequence
+   number: no new confirmation, no re-pairing beyond the one every reload
+   needs. A trust record with a malformed build field is not one the
+   extension wrote, so nothing is trusted and the popup asks for a
+   confirmation. Firefox removes a temporary add-on's storage when Firefox
+   quits, so a temporary add-on asks at each first use.
 
 The broker sends the statement in the `identity` field of its `attached` and
 `state` messages to the extension. Its private HTTPS page server (the
@@ -518,14 +537,27 @@ one file, `identity-default.json`, and every other `--socket` pipe has its own
 
 **Trust point.** Every key, also the one after a reset, must come from the
 broker's HTTPS page on the trusted origin, which the browser checks with TLS
-and the broker checks with `Host`. The native host never chooses that origin.
-A replaced native host can send its own key, but the extension refuses it when
-the page has another key, so the host cannot sign a move off the trusted
-origin. After the first key, a replaced host can no longer change the trusted
-origin or key; the popup shows a key change as a warning and opens no link.
-The first trusted origin comes only from a local `akdbx extension build`, and
-only a local build (a new build ID in `config.js`) discards the stored trust:
-the native host cannot write `config.js`.
+and the broker checks with `Host`. A replaced native host can send its own key
+for the trusted origin, but the extension refuses it when the page has another
+key, so the host cannot sign a move off the trusted origin. After the first
+key, a replaced host can no longer change the trusted origin or key; the popup
+shows a key change or an unsigned move as a warning and opens no link. The
+native host cannot click in the popup, so it can neither confirm an origin nor
+forget a broker.
+
+**What the generic build changes.** Earlier builds took the first trusted
+origin from a local `akdbx extension build`, so the native host never chose
+it. In the generic build the native host proposes the first origin and you
+confirm it. A same-user process that replaced the native host *before* your
+first confirmation (or after you chose Forget) can therefore propose an origin
+it controls and serve a matching statement there; your check of the shown
+origin against `akdbx status` is the only guard at that point. This is the
+trust on first use that earlier builds did not have, limited to the moment you
+confirm. akdbx does not protect against a malicious process of your own OS
+user in general (see [Security model](../README.md#security-model)); such a
+process could also have rewritten an unpacked extension folder before. Every
+check after the confirmation is unchanged.
+
 
 ## Key file and hardware key
 

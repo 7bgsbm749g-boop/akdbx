@@ -39,9 +39,9 @@ CI jobs (all in `.github/workflows/`):
 | `linux` | `tests.yml` | Unit and contract suites on Ubuntu, including Android with a simulated device, the X11 key-event transport, and window-pin SMS code fills to real windows of an isolated Xvfb display |
 | `linux-native-fields` | `tests.yml` | Real GTK and Qt apps on X11, XWayland and native Wayland (Weston), including window-pin usernames and SMS codes to a GTK entry |
 | `native-merge` | `tests.yml` | Merge, admission, recovery and key-file suites with full Git history and a pinned KeePassXC 2.7.10 as the independent reference, with no skips; the full-cost admission deadlines |
-| `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, hidden-field and cover refusals |
+| `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, hidden-field and cover refusals; the generic build's first-use origin confirmation (a real popup click), Forget, trust kept from a per-deployment build, two brokers on one build |
 | `macos-extension-browser` | `tests.yml` | Chrome for Testing 153 (arm64) with the built extension on macOS 15: the extension suite, TOTP, and QR capture on the CDP and extension routes |
-| `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension: fills, TOTP, secret reads, QR capture (also with `<all_urls>`), SMS codes, the archive that `extension sign` submits; on Ubuntu with Firefox 161, Mozilla's `addons-linter` checks that archive |
+| `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension: fills, TOTP, secret reads, QR capture (also with `<all_urls>`), SMS codes, the generic build's first-use origin confirmation (a real popup click in every session), two brokers on one archive, the release archive that AMO signs; on Ubuntu with Firefox 161, Mozilla's `addons-linter` checks that archive |
 | `windows` | `tests.yml` | Named pipe, real Win32, WinForms and WPF apps, Chrome and Edge CDP, the extension in Edge, QR capture |
 | `macos-broker` | `tests.yml` | macOS 15: AppKit fields, Darwin IPC and TLS, Chrome CDP (logins, identities, SMS codes, cards on the page and in Adyen, Computop and Stripe frames) with a foreign-user listener, key-file and hardware-key unlock, guided setup and LaunchAgent, Android attach host checks with a simulated device |
 | `card-safety` | `card-safety.yml` | Real Chrome CDP: cards, processor frames, identities, SMS codes, agent desktop slots |
@@ -150,13 +150,16 @@ install from 0.49.0.
 | Refuses a click-through cover over a field | ◼ (AG) | ◼ (AG) | ◼ (AG) |
 | Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0); address with the identity pin's checks and texted (SMS) code from 0.52.0 (ext 0.15.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ login and card 0.43.0, TOTP 0.49.0; address and texted code from 0.52.0 · `macos-extension-browser` (R) (S) |
 | Agent desktop slots | — (U) | — (U) | — (U) |
+| First use: the user confirms the broker origin; nothing opens before (generic build, AI) | ✅ after 0.54.1 (ext 0.19.0) · `linux-extension-browser` | ✅ after 0.54.1 · `windows` (Edge) | ✅ after 0.54.1 · `macos-extension-browser` |
+| Release assets: generic Chrome ZIP, `SHA256SUMS`, attestation | ✅ after 0.54.1 · Release workflow `extension` job; Chrome Web Store: ✗ not built (follow-up) | same | same |
 
 ## Extension route, Firefox
 
 Firefox 153 or newer, with its own host and build (`--browser firefox`). It
-runs as a temporary add-on, or, from 0.53.0, as a permanently installed XPI
-that Mozilla signed for this broker (`akdbx extension sign`, AH); see
-[Firefox setup](firefox.md).
+runs as a temporary add-on, or as a permanently installed XPI that Mozilla
+signed: from fill extension 0.19.0 (after 0.54.1) the release's one generic
+build (AH). `akdbx extension sign` (0.53.0 to 0.54.x), which signed a
+per-deployment build, is removed. See [Firefox setup](firefox.md).
 
 | Operation | Linux (Firefox 153 and 161) | Windows (Firefox 161) | macOS (Firefox 161) |
 | --- | --- | --- | --- |
@@ -175,7 +178,8 @@ that Mozilla signed for this broker (`akdbx extension sign`, AH); see
 | Refuses a click-through cover over a field | ◼ (AG) | ◼ (AG) | ◼ (AG) |
 | Popup human click | ✅ login 0.47.0; address and texted (SMS) code from 0.52.0 (ext 0.15.0) · `firefox-extension-browser`; TOTP, card: no Firefox test (R) | ✅ login, address, texted code · `firefox-extension-browser` | ✅ login, address, texted code · `firefox-extension-browser` |
 | Agent desktop slots | — (U) | — (U) | — (U) |
-| Permanent install: AMO-signed XPI (`akdbx extension sign`) | ✅ from 0.53.0 · contract test (`linux`) against a fake AMO; `firefox-extension-browser` loads and fills through the submitted archive (AH) | ✅ from 0.53.0 · contract test (`windows`); `firefox-extension-browser` (AH) | ✅ from 0.53.0 · contract test (`macos-broker`); `firefox-extension-browser` (AH) |
+| First use: the user confirms the broker origin; nothing opens before (generic build, AI) | ✅ after 0.54.1 (ext 0.19.0) · `firefox-extension-browser` | ✅ after 0.54.1 · `firefox-extension-browser` | ✅ after 0.54.1 · `firefox-extension-browser` |
+| Permanent install: the release's AMO-signed XPI | ✅ after 0.54.1 · Release workflow `extension` job; contract test (`linux`) against a fake AMO; `firefox-extension-browser` loads and fills through the release archive (AH) | ✅ after 0.54.1 · contract test (`windows`); `firefox-extension-browser` (AH) | ✅ after 0.54.1 · contract test (`macos-broker`); `firefox-extension-browser` (AH) |
 
 ## Android route (`akdbx android`)
 
@@ -405,18 +409,33 @@ job, for the reason given. Only `test_relay_integration.py` and `test_android_em
   it is removed, because a page could beat it and the page gets the value
   anyway. A read pin uses the DOM hit test on both routes. See
   [Visibility checks](../README.md#visibility-checks-what-they-stop).
-- **AH** `tests/test_firefox_signing.py` runs `akdbx extension sign` against
-  a fake AMO over loopback TLS in the `linux`, `windows` and `macos-broker`
+- **AH** From fill extension 0.19.0 the Release workflow signs the one
+  generic Firefox build per release (`python -m akdbx.firefox_signing`, with
+  the GitHub Actions secrets `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`) and
+  attaches the XPI. `tests/test_firefox_signing.py` runs that step against a
+  fake AMO over loopback TLS in the `linux`, `windows` and `macos-broker`
   jobs: the real signing child process, AMO's documented token checks, status
-  codes and messages (taken versions, another account's add-on ID, validation
-  errors, rejection, a slow review that answers `pending` and resumes, a lost
-  answer, a tampered download, a redirect that must get no token). No CI job
-  calls Mozilla. The fake also takes the source archive (PATCH) and reads
-  the version list across pages. The `firefox-extension-browser` job loads the exact archive
-  that the command uploads, with its nine-digit signed-build version, into
-  real Firefox and fills through it, and Mozilla's `addons-linter` 10.16.0
-  must find no error in it. The first real signature happens on the owner's
-  AMO account. Firefox's check of Mozilla's signature itself is not tested in
-  CI. The add-on ID is fixed (`akdbx@akdbx.org`), so only the AMO account
-  that owns it can sign (✗ not built: signing under another account's own
-  add-on ID).
+  codes and messages (another account's add-on ID, validation errors,
+  rejection, a deleted version, a review that outlasts the step and a re-run
+  of the same tag that resumes it without a second upload, a missing source
+  archive, network errors and 5xx retries, a tampered or unsigned download, a
+  redirect that must get no token, no secrets: exit 3). It also rebuilds the
+  upload byte for byte from the source archive. No CI job calls Mozilla. The
+  `firefox-extension-browser` job loads the release archive into real
+  Firefox and fills through it, and Mozilla's `addons-linter` 10.16.0 must
+  find no error in it. The first real signature of the generic build happens
+  in the first release after the owner sets the two secrets; until then a
+  release says that it has no signed add-on. Firefox's check of Mozilla's
+  signature itself is not tested in CI. The add-on ID is fixed
+  (`akdbx@akdbx.org`), so only the AMO account that owns it can sign (✗ not
+  built: a fork signing under its own add-on ID).
+- **AI** Fill extension 0.19.0 is one generic build with no broker address.
+  On first use the popup shows the origin that the native host names and
+  saves it only after the user's real click, while the host still names it;
+  then the key is bound through that origin's HTTPS page as before. Tests:
+  `tests/test_fill_extension.js` (decisions, the click, Forget, trust kept
+  from a per-deployment build, two brokers), and real-browser tests on a
+  broker at a fresh loopback origin in Chrome for Testing (Linux, macOS),
+  Edge (Windows) and Firefox 153 and 161. A native host replaced before the
+  first confirmation can propose its own origin; the user's check is the
+  guard ([Browser extension trust](private-pages.md#browser-extension-trust)).

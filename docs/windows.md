@@ -293,7 +293,8 @@ same steps; see [Private HTTPS pages](private-pages.md#unlock-from-another-devic
    target, Serve would show that user's fake unlock page at your trusted
    tailnet name, and could collect the master password.
 4. Start the broker with the Tailscale origin and the loopback port. Use the
-   same origin for every CLI command and for `akdbx extension build`:
+   same origin for every CLI command, and confirm it in the extension popup
+   on first use:
 
    ```powershell
    $env:AKDBX_UNLOCK_ORIGIN = 'https://node.tailnet.ts.net:9443'
@@ -434,17 +435,23 @@ profiles. For Firefox use the [Firefox build and loading steps](firefox.md).
    ```
 
    Run the same command again after an upgrade; it updates only a folder that
-   already holds this extension. It prints the `extension_version` it wrote. The build writes the unlock origin
-   (`AKDBX_UNLOCK_ORIGIN`, or `--unlock-origin` before `extension`; on Windows
-   the default is `https://localhost:9443`) into the extension. The popup opens
-   pairing and unlock links only on a trusted origin, so a replaced native host
-   cannot send you to a look-alike master-password page. The built origin is
-   the first trusted origin. From extension 0.3.0 you do not rebuild after an
-   origin change: see [Extension trust](#extension-trust).
+   already holds this extension. It prints the `extension_version` it wrote and
+   `confirm_origin`, the broker origin this CLI expects (`AKDBX_UNLOCK_ORIGIN`,
+   or `--unlock-origin` before `extension`; on Windows the default is
+   `https://localhost:9443`). From fill extension 0.19.0 the build is generic,
+   the same for every user, with no origin in it; you can also unzip the
+   release's `akdbx-extension-chrome-VERSION.zip` there instead. The popup
+   opens pairing and unlock links only on a trusted origin, so a replaced
+   native host cannot send you to a look-alike master-password page. From
+   extension 0.3.0 you do not rebuild after an origin change: see
+   [Extension trust](#extension-trust).
 4. In Helium open `chrome://extensions`, turn on **Developer mode**, choose
    **Load unpacked** and select that folder. The extension ID must be
    `jjoamaejjkldcjcpgncoomoaagdfimhg`; its manifest key keeps it fixed.
-5. Click the akdbx toolbar button. The popup shows a code. Choose **Open the
+5. Click the akdbx toolbar button. On first use the popup shows the broker
+   address that the native host names: check that it equals `confirm_origin`
+   above (or `extension_trust.origin` in `akdbx status`) and click **Trust
+   this address**. The popup then shows a code. Choose **Open the
    pairing page**, check that the page shows the same code, and enter the
    master password there. If the broker is locked, this also unlocks it.
    Pairing lasts until the browser or the broker restarts. The popup footer
@@ -456,16 +463,17 @@ From extension version 0.3.0 the extension follows the broker's origin by
 itself, with no rebuild, reload or approval. The rules are the same on Linux;
 see [Browser extension trust](private-pages.md#browser-extension-trust).
 
-- **First pairing.** The popup shows the pairing page's origin next to the
-  code. At the first pairing the extension reads the broker's signed
-  statement over HTTPS from the built origin (`/.well-known/akdbx-identity`)
-  and stores the broker's identity key, origin and sequence number in its
-  local storage only when that page confirms the key that the native host
-  sent. If the page cannot be read, it stores nothing and tries again at the
-  next connection or popup. A broker that names another origin than the
-  built one gets no reset: run `akdbx extension build` again and reload the
-  extension. Any new build replaces the stored trust; a reload alone does
-  not. An extension built with no origin opens no link.
+- **First use (fill extension 0.19.0).** The generic build trusts no origin
+  until you confirm the one the popup shows; nothing opens before that click.
+  Then the extension reads the broker's signed statement over HTTPS from that
+  origin (`/.well-known/akdbx-identity`) and stores the broker's identity
+  key, origin and sequence number in its local storage only when that page
+  confirms the key that the native host sent. If the page cannot be read, it
+  stores nothing new and tries again at the next connection or popup. The
+  popup shows the pairing page's origin next to the code. A native host that
+  another program of your user replaced before this first confirmation could
+  propose its own origin: the check of the shown origin is the guard. Trust
+  that an older build saved carries over to the generic build.
 - **Signed changes.** After a relay port move, `relay rotate`, `relay enable`
   or `disable`, or another `--unlock-origin`, the broker signs the new origin
   with the same key at its next start. The extension accepts it only with the
@@ -479,6 +487,10 @@ see [Browser extension trust](private-pages.md#browser-extension-trust).
   trusted origin: the new key is accepted only from that origin's HTTPS
   identity page. If you did not set up this broker again yourself, do not
   reset and do not enter your master password.
+- **Forget.** A broker that names another origin with no signature by the
+  stored key gets no reset. If you moved the broker yourself, click **Forget
+  this broker…**, then **Forget and confirm again**, and confirm the new
+  origin. A rebuild no longer changes the trusted origin.
 
 The broker keeps its identity key in
 `%LOCALAPPDATA%\akdbx\broker-identity\`, that only this user and SYSTEM can

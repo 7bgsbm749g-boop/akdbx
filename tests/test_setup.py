@@ -237,7 +237,7 @@ def test_legacy_unused_chromium_path_does_not_displace_a_later_firefox_build(hom
 @pytest.mark.parametrize('browsers', [('chrome',), ('chrome', 'firefox')])
 def test_legacy_default_holding_a_standalone_firefox_build_is_preserved(home, vault, pair, capsys, browsers):
     folder = home / '.local/share/akdbx/extension'
-    extension_host.build(folder, browser='firefox', unlock_origin='https://localhost:9443')
+    extension_host.build(folder, browser='firefox')
     state = home / '.config/akdbx/setup.json'
     state.parent.mkdir(mode=0o700)
     state.write_text(json.dumps(dict(version='0.44.0', browsers=[], extension_dir=str(folder))))
@@ -255,7 +255,7 @@ def test_legacy_default_holding_a_standalone_firefox_build_is_preserved(home, va
 
 def test_saved_firefox_alias_of_chromium_default_is_preserved(home, vault, pair, capsys):
     folder = home / '.local/share/akdbx/extension'
-    extension_host.build(folder, browser='firefox', unlock_origin='https://localhost:9443')
+    extension_host.build(folder, browser='firefox')
     alias = home / 'firefox-alias'
     alias.symlink_to(folder, target_is_directory=True)
     state = home / '.config/akdbx/setup.json'
@@ -346,7 +346,9 @@ def test_a_non_interactive_run_sets_up_every_selected_stage(home, vault, pair, c
     manifest = home / '.config/google-chrome/NativeMessagingHosts/org.akdbx.extension.json'
     assert json.loads(manifest.read_text())['path'].endswith('chrome.sh')
     built = home / '.local/share/akdbx/extension'
-    assert '"https://localhost:9443"' in (built / 'config.js').read_text()
+    # The generic build (fill extension 0.19.0): no address in it; the user confirms this broker's in the popup.
+    assert {p.name: p.read_bytes() for p in built.iterdir()} == extension_host.build_files('chrome')
+    assert any('Confirm only https://localhost:9443' in step for step in result['user_steps'])
     link = home / '.claude/skills/akdbx'
     assert link.is_symlink() and (link / 'SKILL.md').is_file()
     assert (home / '.codex/skills/akdbx').is_symlink()
@@ -387,7 +389,7 @@ def test_running_setup_again_changes_nothing(home, vault, pair, capsys):
     setup(*options, runner=first, capsys=capsys)
     config = home / '.local/share/akdbx/extension/config.js'
     built = config.read_text()
-    assert extension_host.BUILD_ID.search(built)
+    assert built == extension_host.build_files('chrome')['config.js'].decode()
     second = Runner()
     second.enabled = True
     # The service started the broker after the first run. The flags select the same changes again; the
@@ -397,7 +399,7 @@ def test_running_setup_again_changes_nothing(home, vault, pair, capsys):
     assert code == 0, result
     assert {name: result['stages'][name]['state'] for name in ('login', 'fill', 'skill')} == {
         'login': 'done', 'fill': 'done', 'skill': 'done'}
-    # The unchanged extension was not rebuilt: it keeps its build ID, so the browser keeps its broker trust.
+    # The unchanged extension was not rebuilt (a rebuild would write the same generic files).
     assert config.read_text() == built
     # Only read-only checks ran.
     assert [argv[1:] for argv in runner.commands()] == [['--user', 'is-enabled', 'akdbx.service']]
@@ -1191,7 +1193,9 @@ def test_the_extension_waits_for_a_started_relay_broker_to_save_its_move(home, v
                             '--browser', 'chrome', runner=runner, status=SlowStart(runner), capsys=capsys)
     builds = [argv for argv in runner.commands() if 'extension' in argv and 'build' in argv]
     assert builds, result
-    assert all(argv[argv.index('--unlock-origin') + 1] == 'https://k3x7q2mbn5vd.akdbx.link' for argv in builds)
+    # The generic build takes no origin; the popup's first-use step names the moved one.
+    assert not any('--unlock-origin' in argv for argv in builds)
+    assert any('Confirm only https://k3x7q2mbn5vd.akdbx.link,' in step for step in result['user_steps'])
 
 
 def test_setup_reads_the_origin_again_when_the_broker_moved_during_its_status_check(home, vault, monkeypatch,
@@ -1226,4 +1230,4 @@ def test_setup_reads_the_origin_again_when_the_broker_moved_during_its_status_ch
                             '--browser', 'chrome', runner=runner, status=MovesDuringCheck(runner), capsys=capsys)
     builds = [argv for argv in runner.commands() if 'extension' in argv and 'build' in argv]
     assert builds and result['broker']['running'] is True, result
-    assert all(argv[argv.index('--unlock-origin') + 1] == 'https://k3x7q2mbn5vd.akdbx.link' for argv in builds)
+    assert any('Confirm only https://k3x7q2mbn5vd.akdbx.link,' in step for step in result['user_steps'])

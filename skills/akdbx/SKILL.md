@@ -19,7 +19,7 @@ session.
 | --- | --- |
 | Log in to a website | This file, then [password field delivery](references/target-fill.md) |
 | Fill through the browser extension | [Extension route](references/extension.md), [pairing notifications](references/pairing-notifications.md) |
-| Install the Firefox extension permanently (a Mozilla-signed XPI) | [Signed Firefox add-on](references/extension.md#signed-firefox-add-on-0530) |
+| Install the Firefox extension permanently (a Mozilla-signed XPI) | [Signed Firefox add-on](references/extension.md#signed-firefox-add-on-fill-extension-0190) |
 | Fill or save a payment card | [Cards](references/cards.md), [write-result notifications](references/write-notifications.md) |
 | Fill or save an address or contact | [Identities](references/identities.md), [write-result notifications](references/write-notifications.md) |
 | Authenticator (TOTP) code | [TOTP](references/totp.md), [private key import](references/private-import.md) |
@@ -802,17 +802,19 @@ selector from page structure only. After the secret is visible, do not
 screenshot, snapshot, read, select or copy that page. Both routes from 0.32.0
 (`--route extension` needs `extension_capture_protocol: 1` and fill extension 0.4.0).
 
-**Signed Firefox add-on** (0.53.0+, `firefox_signing_protocol: 1`).
-`akdbx extension sign --output FOLDER HANDLE` has Mozilla (AMO, unlisted
-channel) sign the broker's own Firefox build for a permanent install. HANDLE
-is a fresh search handle of the owner's AMO API key entry on
-`https://addons.mozilla.org` with the captured protected fields `jwt_issuer`
-and `jwt_secret`; the broker keeps them. Only the AMO account that owns the
-add-on ID `akdbx@akdbx.org` can sign. It prints only the XPI path,
-version, size and SHA-256. `state: "pending"` means AMO is still reviewing:
-run it again with a fresh handle, which resumes the job. Never pass AMO
-credentials on a command line or in the environment
-([signed Firefox add-on](references/extension.md#signed-firefox-add-on-0530)).
+**Generic extension, first use** (fill extension 0.19.0, after 0.54.1). The
+extension is one build for every user: `akdbx extension build` and the
+release assets (Chrome ZIP, Firefox ZIP, Mozilla-signed Firefox XPI) hold no
+broker address. On first use the popup shows the origin that the native host
+names, with **Trust this address**, and opens no pairing or unlock page until
+a real click confirms it. Compare it with `extension_trust.origin` in
+`akdbx status` first; confirm only an exact match (the user, or you in your
+own slot browser), and on a mismatch confirm nothing and report both
+origins. Trust that an older per-deployment build saved carries over.
+`akdbx extension sign` is removed; for a permanent Firefox install use the
+release's signed XPI
+([origin trust](references/extension.md#origin-trust),
+[signed Firefox add-on](references/extension.md#signed-firefox-add-on-fill-extension-0190)).
 
 ## Save or change credentials
 
@@ -892,7 +894,8 @@ retained encrypted originals.
 | Pin refused | Read the reason. Fix the target (focus, selector, frame, origin); never edit the page or the entry to force it. |
 | `frame list unavailable` / `target unavailable` on the extension route | Browser closed, extension not loaded, or not paired (`extension_paired: false`). Give the user the pairing link. |
 | `extension route unavailable: the browser runs an older akdbx extension service worker …` (pins and frame lists), or `version_status: "stale"` | The browser kept an old service worker after `akdbx extension build` rewrote the folder (0.35.2+ detects it). Before 0.35.2 the pin worked and every later `fill` failed with `target unavailable, changed or unsupported; pin again`. Restart the browser, or reload akdbx on `chrome://extensions`, then pair again (`extension_paired: false` until then). A worker that sees a newer build on disk reloads itself once, so it may only need the pairing ([stale worker](references/extension.md#stale-service-worker-0352)). |
-| `extension route unavailable: the browser runs akdbx extension … another build than this broker's …`, or `version_status: "mismatch"` | The loaded folder holds another build than the broker's. Run `akdbx --unlock-origin ORIGIN extension build --output FOLDER` with the broker's akdbx, where ORIGIN is the origin of the broker's unlock link (or restart the broker if akdbx was updated in place), reload akdbx on `chrome://extensions`, then pair again. A Mozilla-signed Firefox add-on cannot be rebuilt in place: run `akdbx extension sign` and install the new XPI. |
+| `extension route unavailable: the browser runs akdbx extension … another build than this broker's …`, or `version_status: "mismatch"` | The loaded folder holds another build than the broker's. Run `akdbx extension build --output FOLDER` with the broker's akdbx (or restart the broker if akdbx was updated in place), reload akdbx on `chrome://extensions`, then pair again; the saved broker trust stays. A Mozilla-signed Firefox add-on cannot be rebuilt in place: install the signed XPI of the broker's release. |
+| Extension popup: "This extension does not trust a broker address yet" | First use of the generic build (0.19.0). Confirm the shown origin only if it equals `extension_trust.origin` in `akdbx status`; otherwise confirm nothing and report both origins ([origin trust](references/extension.md#origin-trust)). |
 | Extension popup: broker not reachable while the broker runs (`extension_connected: false`) | Run `akdbx extension info`. If a browser shows `launcher_state: "stale"`, run `akdbx extension refresh` (0.31.1+), then reopen the popup ([host launcher](references/extension.md#host-launcher-0311)). |
 | Site check or card decline that looks like a false positive on CDP | Stop retrying. Use the extension route ([Choose the fill route](#choose-the-fill-route)). |
 | `fill denied` or a terminal approval prompt | The running broker is very old. Do not approve the prompt. Its owner must restart it on a current version (private web unlock). |

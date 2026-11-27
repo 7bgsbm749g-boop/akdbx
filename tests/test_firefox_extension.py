@@ -12,7 +12,7 @@ from akdbx.extension_route import EXTENSION_ORIGIN, FIREFOX_EXTENSION_ID
 
 
 def test_firefox_build_has_native_document_targeting_and_event_page(tmp_path):
-    folder = host.build(tmp_path / 'firefox', browser='firefox', unlock_origin='https://localhost:9443')
+    folder = host.build(tmp_path / 'firefox', browser='firefox')
     manifest = json.loads((folder / 'manifest.json').read_text())
     assert manifest['browser_specific_settings']['gecko']['id'] == FIREFOX_EXTENSION_ID
     assert manifest['browser_specific_settings']['gecko']['strict_min_version'] == '153.0'
@@ -24,7 +24,7 @@ def test_firefox_build_has_native_document_targeting_and_event_page(tmp_path):
     for script in manifest['background']['scripts']:
         assert (folder / script).is_file()
     # Rebuilds keep the supported format, and never overwrite another browser's build.
-    host.build(folder, browser='firefox', unlock_origin='https://localhost:9443')
+    host.build(folder, browser='firefox')
     with pytest.raises(ValueError, match='does not hold'):
         host.build(folder, browser='chrome')
     chrome = host.build(tmp_path / 'chrome')

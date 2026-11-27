@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
+import zipfile
 
 import pytest
 
@@ -930,10 +931,7 @@ def test_pairing_store_errors_do_not_count_as_failed_attempts():
 # ----- install and build -------------------------------------------------------------
 def test_build_fills_the_content_script_from_the_cdp_route(tmp_path):
     from akdbx import browser_card, browser_code, browser_password, card_processor
-    built = extension_host.build(tmp_path / 'akdbx-extension', unlock_origin='https://localhost:9443/')
-    assert 'AKDBX_TRUSTED_ORIGIN = "https://localhost:9443";' in (built / 'config.js').read_text()
-    with pytest.raises(Exception):
-        extension_host.build(tmp_path / 'insecure', unlock_origin='http://localhost:9443')
+    built = extension_host.build(tmp_path / 'akdbx-extension')
     manifest = json.loads((built / 'manifest.json').read_text())
     assert manifest['key'] == extension_host.EXTENSION_KEY and manifest['permissions'].count('nativeMessaging') == 1
     content = (built / 'content.js').read_text()
@@ -1189,20 +1187,55 @@ def test_target_settings_reach_the_cdp_manager():
     assert broker.card_targets.kind == 'card'
 
 
-def test_build_stores_the_browser_serialization_of_the_trusted_origin(tmp_path):
-    built = extension_host.build(tmp_path / 'ext', unlock_origin='https://localhost:443')
-    assert 'AKDBX_TRUSTED_ORIGIN = "https://localhost";' in (built / 'config.js').read_text()
+def test_every_build_is_the_same_generic_build_with_no_address_and_no_build_id(tmp_path, capsys):
+    """Fill extension 0.19.0: one build for every user. Two builds (any CLI origin) give the same bytes, which
+    equal the release archive's files; config.js holds only the version."""
+    for browser in ('chrome', 'firefox'):
+        first = extension_host.build(tmp_path / browser / 'a', browser=browser)
+        second = tmp_path / browser / 'b'
+        args = SimpleNamespace(extension_command='build', output=second, browser=browser)
+        assert extension_host.run(args, unlock_origin='https://other.example.test:9443') == 0
+        printed = json.loads(capsys.readouterr().out)
+        # The CLI prints the origin that it expects the broker to serve: the one to confirm in the popup.
+        assert printed['confirm_origin'] == 'https://other.example.test:9443' and 'trusted_origin' not in printed
+        files = extension_host.build_files(browser)
+        for folder in (first, second):
+            assert {p.name: p.read_bytes() for p in folder.iterdir()} == files
+        config = files['config.js'].decode()
+        assert config.count('globalThis.') == 1
+        assert f'globalThis.AKDBX_EXTENSION_VERSION = "{BUILT}";' in config
+        assert 'AKDBX_TRUSTED_ORIGIN' not in config and 'AKDBX_BUILD_ID' not in config and 'https://' not in config
+        archive = extension_host.archive_bytes(files)
+        assert archive == extension_host.archive_bytes(extension_host.build_files(browser))  # Reproducible.
+        with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+            assert {name: zipped.read(name) for name in zipped.namelist()} == files  # manifest.json at the root.
+            assert all(info.compress_type == zipfile.ZIP_STORED for info in zipped.infolist())
+    # No file reads a build-time address or build ID: the release asset is the same for everyone.
+    for browser in ('chrome', 'firefox'):
+        assert not any(b'AKDBX_TRUSTED_ORIGIN' in data or b'AKDBX_BUILD_ID' in data
+                       for data in extension_host.build_files(browser).values())
+    assert extension_host.archive_name('chrome') == f'akdbx-extension-chrome-{BUILT}.zip'
+    assert extension_host.archive_name('firefox') == f'akdbx-extension-firefox-{BUILT}.zip'
+    assert extension_host.archive_name('firefox', signed=True) == f'akdbx-extension-firefox-{BUILT}.xpi'
+    with pytest.raises(ValueError):
+        extension_host.archive_name('chrome', signed=True)
 
 
-def test_every_build_writes_a_new_build_id(tmp_path):
-    # The extension drops broker trust saved under another build ID, so each build must write a new one.
-    ids = []
-    for origin in ('https://localhost:9443', 'https://localhost:9443', None):
-        config = (extension_host.build(tmp_path / 'ext', unlock_origin=origin) / 'config.js').read_text()
-        found = extension_host.BUILD_ID.findall(config)
-        assert len(found) == 1 and len(found[0]) == 22
-        ids.append(found[0])
-    assert len(set(ids)) == 3
+def test_pack_writes_the_release_archive_and_never_replaces_another_file(tmp_path, capsys):
+    target = tmp_path / extension_host.archive_name('firefox')
+    args = SimpleNamespace(extension_command='pack', output=target, browser='firefox')
+    assert extension_host.run(args) == 0
+    printed = json.loads(capsys.readouterr().out)
+    data = target.read_bytes()
+    assert data == extension_host.archive_bytes(extension_host.build_files('firefox'))
+    assert printed['sha256'] == hashlib.sha256(data).hexdigest() and printed['size'] == len(data)
+    assert printed['extension_id'] == route.FIREFOX_EXTENSION_ID and printed['extension_version'] == BUILT
+    assert extension_host.run(args) == 0  # The same archive again: kept.
+    capsys.readouterr()
+    other = tmp_path / 'other.zip'
+    other.write_bytes(b'not akdbx')
+    assert extension_host.run(SimpleNamespace(extension_command='pack', output=other, browser='chrome')) == 1
+    assert 'exists with other contents' in capsys.readouterr().err and other.read_bytes() == b'not akdbx'
 
 
 def test_sealed_match_list_stays_within_the_transport_limit():
@@ -1255,7 +1288,7 @@ def test_extension_version_changes_with_its_contents(tmp_path):
     minor: feature, major: protocol break), then run this test once with
     AKDBX_UPDATE_EXTENSION_FINGERPRINT=1 to record the new contents.
     """
-    built = extension_host.build(tmp_path / 'ext', unlock_origin='https://localhost:9443')
+    built = extension_host.build(tmp_path / 'ext')
     current = dict(version=route.EXTENSION_VERSION, sha256=extension_fingerprint(built))
     recorded = json.loads(FINGERPRINT_RECORD.read_text(encoding='utf-8'))
     if current == recorded:
@@ -1275,7 +1308,7 @@ def test_extension_version_changes_with_its_contents(tmp_path):
 
 
 def test_build_stamps_the_extension_version_with_its_contents_and_reports_it(tmp_path, capsys):
-    built = extension_host.build(tmp_path / 'ext', unlock_origin='https://localhost:9443')
+    built = extension_host.build(tmp_path / 'ext')
     manifest = json.loads((built / 'manifest.json').read_text())
     # MAJOR.MINOR.PATCH from the source manifest, then 16 bits of the content hash.
     assert manifest['version'] == BUILT and BUILT.startswith(route.EXTENSION_VERSION + '.')
@@ -1315,7 +1348,7 @@ def test_other_extension_contents_give_another_build_version(monkeypatch):
 
 
 def test_a_build_for_a_test_host_keeps_the_version_of_the_shipped_contents(tmp_path):
-    built = extension_host.build(tmp_path / 'ext', host_name='org.akdbx.test_x', unlock_origin='https://localhost:9443')
+    built = extension_host.build(tmp_path / 'ext', host_name='org.akdbx.test_x')
     assert b'org.akdbx.test_x' in (built / 'background.js').read_bytes()
     assert json.loads((built / 'manifest.json').read_text())['version'] == BUILT
 
@@ -1343,7 +1376,8 @@ def test_a_stale_or_mismatched_worker_gets_no_frame_list_and_no_pin_and_the_erro
         assert result == dict(ok=False, error=error)
     assert 'chrome://extensions' in error and 'pair it again' in error
     assert ('restart the browser' in error) == (status == 'stale')
-    assert ('akdbx --unlock-origin ORIGIN extension build' in error and version in error) == (status == 'mismatch')
+    assert ('akdbx extension build --output FOLDER' in error and version in error) == (status == 'mismatch')
+    assert 'ORIGIN' not in error and 'extension sign' not in error  # The build is generic: no origin to give.
     # Only the frame list reached the worker (it counts the browser's tabs with the URL); never a pin.
     assert extension.calls == ['frames'] and broker.extension.pins == {}
 
@@ -1491,7 +1525,7 @@ def test_host_refuses_a_malformed_extension_version(version):
 def test_extension_version_check_is_strict():
     assert route.valid_extension_version('1.2.3') and route.valid_extension_version('99999.0.0')
     assert route.valid_extension_version('1.2.3.4') and route.valid_extension_version('99999.99999.99999.99999')
-    # An AMO-signed Firefox build has nine digits in its fourth part (extension_host.signed_version).
+    # Add-ons that the removed `akdbx extension sign` (0.53.0 to 0.54.x) signed have nine digits in the fourth part.
     assert route.valid_extension_version('0.15.1.123456789')
     for bad in ('1.2', '1.2.3.4.5', '1.2.3.04', '01.2.3', '1.2.3 ', '1.2.3\n', '99999.99999.999999', '1.2.3.',
                 '1.2.3.1234567890', '99999.99999.99999.123456789', 1, True, None, '١.٢.٣', ''):
@@ -1518,6 +1552,8 @@ def test_attach_refuses_a_malformed_extension_version(pair_of_sockets, version):
     # the browser loads another build than this broker's.
     (dict(extension_version=OTHER_BUILD), OTHER_BUILD, 'mismatch'),
     (dict(extension_version=route.EXTENSION_VERSION), route.EXTENSION_VERSION, 'mismatch'),
+    # A per-deployment add-on that the removed `akdbx extension sign` had signed: another build too.
+    (dict(extension_version=route.EXTENSION_VERSION + '.112579001'), route.EXTENSION_VERSION + '.112579001', 'mismatch'),
     # The worker found a newer build on disk and could not reload into it.
     (dict(extension_version=BUILT, extension_stale=True), BUILT, 'stale'),
     # An extension built by akdbx 0.21.2 or earlier sends no version: it attaches and shows as outdated.
