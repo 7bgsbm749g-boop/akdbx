@@ -291,6 +291,7 @@ class Signer:
         self.deadline = clock() + timeout
         self.timeout = timeout
         self.stage = 'lookup'
+        self.version = None
 
     @property
     def hide(self):
@@ -299,12 +300,16 @@ class Signer:
     def _late(self, seconds=0.0):
         return self.clock() + seconds > self.deadline
 
-    def _out_of_time(self, version):
-        return SigningError(f'AMO has not signed {version} within {int(self.timeout)} seconds (stage {self.stage}); '
-                            f'the version stays on AMO; {RESUME}')
+    def _out_of_time(self, version=None):
+        return SigningError(f'AMO has not signed {version or self.version} within {int(self.timeout)} seconds '
+                            f'(stage {self.stage}); the version stays on AMO; {RESUME}')
 
     # ---- AMO requests --------------------------------------------------
     def _call(self, method, path, *, body=None, content_type=None, timeout=REQUEST_TIMEOUT, url=None, auth=True):
+        # No request outlasts the run: each one gets at most the time that is left.
+        timeout = min(timeout, self.deadline - self.clock())
+        if timeout < 1:
+            raise self._out_of_time()
         request = dict(method=method, url=url or urljoin(self.api_base, path), timeout=timeout)
         if body is not None:
             request.update(body=base64.b64encode(body).decode('ascii'), content_type=content_type)
@@ -319,12 +324,14 @@ class Signer:
             status = response['status'] if response is not None else None
             if status is not None and status != 429 and status < 500:
                 break
-            if attempt == RETRIES or self._late(pause + timeout):
+            if attempt == RETRIES or self._late(pause + 1):
                 if status is None:
                     raise SigningError('AMO could not be reached (network error or timeout); ' + RESUME)
                 raise SigningError(f'AMO is busy or failed (HTTP {status}); {RESUME}')
             self.sleep(pause)
             pause *= 2
+            timeout = min(timeout, self.deadline - self.clock())
+            request['timeout'] = timeout
         if status == 401:
             raise SigningError(f'AMO refused the API key (HTTP 401): check the {ISSUER_ENV} and {SECRET_ENV} '
                                "secrets and this runner's clock; nothing signed")
@@ -504,7 +511,7 @@ class Signer:
 
     def sign(self, build):
         """The signed XPI bytes of ``build``: an existing AMO version of it is resumed, else one is created."""
-        self.stage = 'lookup'
+        self.stage, self.version = 'lookup', build.version
         record = self._version(build.version)
         if record is None:
             upload = self._upload(build)

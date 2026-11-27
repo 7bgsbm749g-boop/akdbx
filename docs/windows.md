@@ -472,8 +472,8 @@ see [Browser extension trust](private-pages.md#browser-extension-trust).
   stores nothing new and tries again at the next connection or popup. The
   popup shows the pairing page's origin next to the code. A native host that
   another program of your user replaced before this first confirmation could
-  propose its own origin: the check of the shown origin is the guard. Trust
-  that an older build saved carries over once the broker signs with that key.
+  propose its own origin: the check of the shown origin is the guard. After
+  the update from an older build the popup asks once too.
 - **Signed changes.** After a relay port move, `relay rotate`, `relay enable`
   or `disable`, or another `--unlock-origin`, the broker signs the new origin
   with the same key at its next start. The extension accepts it only with the

@@ -628,24 +628,19 @@ def test_a_generic_build_opens_nothing_before_the_user_confirms_and_pairs_after_
 
 
 @pytest.mark.parametrize('harness', ['unconfirmed'], indirect=True)
-def test_trust_that_a_per_deployment_build_saved_is_adopted_only_when_the_broker_proves_its_key(harness):
+def test_trust_that_a_per_deployment_build_saved_is_replaced_by_one_confirmation(harness):
     """Fill extension 0.18.x saved its broker trust with the random build ID of its config.js. The generic build
-    adopts such a record only when the broker signs with that key now; a stale record of another key (a rebuild
-    for another broker that never bound its key) counts for nothing and the popup asks for a confirmation."""
-    other = broker_identity.IdentityStore(Path(harness.extension).parent / 'stale-identity').announce(
-        'https://old-broker.example.test').message()
-    stale = {'v': 1, 'public_key': other['public_key'], 'key_id': other['statement']['key_id'],
-             'origin': 'https://old-broker.example.test', 'seq': 1, 'build': 'Q' * 22}
-    harness.worker_call(f'chrome.storage.local.set({{broker_trust: {json.dumps(stale)}}})')
-    state = harness.worker_call('popupState()')
-    assert state['origin'] is None and state['pairing_url'] is None and state['propose_origin'] == harness.unlock_origin
-    assert harness.worker_call(TRUST) == stale
+    trusts no such record, also when the broker's statement names its key, origin and sequence (a replaced host
+    could replay one): the popup asks once, and the confirmation binds the key through the HTTPS page again."""
     record = dict(bound_record(harness), build='Q' * 22)
     harness.worker_call(f'chrome.storage.local.set({{broker_trust: {json.dumps(record)}}})')
     state = harness.worker_call('popupState()')
-    assert state['origin'] == harness.unlock_origin and state['propose_origin'] is None and state['trust_error'] is None
-    assert state['pairing_url'] and state['pairing_url'].startswith(harness.unlock_origin + '/extension/pair?')
-    assert harness.worker_call(TRUST) == bound_record(harness)  # Adopted: saved again without the build field.
+    assert state['origin'] is None and state['pairing_url'] is None and state['propose_origin'] == harness.unlock_origin
+    assert harness.worker_call('channelTrusted()') is None
+    assert harness.worker_call(TRUST) == record
+    confirmed = harness.worker_call(f'popupConfirm({{origin: {json.dumps(harness.unlock_origin)}}})')
+    assert confirmed == dict(ok=True, origin=harness.unlock_origin, origin_learned=True)
+    assert harness.worker_call(TRUST) == bound_record(harness)
 
 
 def test_a_broker_that_moved_without_a_signature_is_forgotten_by_the_users_clicks_and_confirmed_again(harness):

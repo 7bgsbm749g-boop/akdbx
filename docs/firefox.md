@@ -96,9 +96,9 @@ each Firefox start; the confirmed address stays.
 
 `akdbx extension sign` (0.53.0 to 0.54.x) had each broker sign its own
 per-deployment build with an AMO key from the vault. It is removed: the
-release signs the one generic build, so no broker needs an AMO key. An add-on
-that it signed keeps its broker trust when the release's XPI replaces it
-(same ID, higher version), once the broker signs with the saved key
+release signs the one generic build, so no broker needs an AMO key. When the
+release's XPI replaces an add-on that it signed (same ID, higher version),
+the popup asks once to confirm the broker address
 ([update from a per-deployment build](private-pages.md#browser-extension-trust)).
 
 ### How the release signs

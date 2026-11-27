@@ -762,16 +762,21 @@ async function popupState() {
     origin_changed: moved !== null, moved_from: moved ? moved.from : null, origin_learned: trust.learned};
 }
 
-// Ask the broker for its newest state over the port when one is open. True when it answered.
-async function freshState() {
-  await connect();
-  const fresh = port ? await brokerRequest("state", {}, 5000) : null;
-  if (fresh && fresh.ok) state = brokerState(fresh);
-  return Boolean(fresh && fresh.ok);
-}
-
 const UNANSWERED = "The akdbx broker did not answer; nothing changed. Open akdbx again.";
 const CHANGED = "The broker's state changed; nothing changed. Open akdbx again.";
+
+/* Ask the broker for its newest state over the port when one is open. null when its answer is the state now;
+ * else why not (UNANSWERED, or CHANGED when the port closed or a host message arrived while the request was
+ * pending: that newer message stays the state, and the late answer is dropped). */
+async function freshState() {
+  await connect();
+  const current = port, before = state;
+  const fresh = current ? await brokerRequest("state", {}, 5000) : null;
+  if (!(fresh && fresh.ok)) return UNANSWERED;
+  if (port !== current || state !== before) return CHANGED;
+  state = brokerState(fresh);
+  return null;
+}
 
 async function popupConfirm(message) {
   /* The user clicked "Trust this address" in the popup for the exact origin it showed (first use). Save it only
@@ -779,7 +784,8 @@ async function popupConfirm(message) {
    * that verifies. Then bind the broker key through that origin's HTTPS page at once, as for any trusted origin. */
   const origin = message && message.origin;
   if (!akdbxTrust.validOrigin(origin)) return {ok: false, error: "invalid broker address; nothing saved"};
-  if (!(await freshState())) return {ok: false, error: UNANSWERED};
+  const stale = await freshState();
+  if (stale) return {ok: false, error: stale};
   return withTrust(async () => {
     const latest = state;
     if (!latest.connected) return {ok: false, error: UNANSWERED};
@@ -834,7 +840,8 @@ async function popupForget() {
   /* The user clicked "Forget this broker": the broker names another origin than the trusted one, and the stored
    * key did not sign that move. Delete the saved trust only while that is still the case; the next origin then
    * needs the user's confirmation again (first use), and the browser pairs again with a new key. */
-  if (!(await freshState())) return {ok: false, error: UNANSWERED};
+  const stale = await freshState();
+  if (stale) return {ok: false, error: stale};
   const error = await withTrust(async () => {
     const latest = state;
     if (!latest.connected) return UNANSWERED;

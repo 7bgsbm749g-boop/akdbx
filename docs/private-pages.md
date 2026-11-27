@@ -505,17 +505,16 @@ broker address and no build ID.
    wrote the CLI's origin and a random build ID into `config.js` and saved
    the build ID with the stored trust. When such an extension is rebuilt with
    this akdbx (or replaced by a release asset with the same extension ID) and
-   reloads, the generic build adopts that stored key, origin and sequence
-   number as soon as the broker signs a statement with that same key (at the
-   connection): no new confirmation, no re-pairing beyond the one every reload
-   needs. Until then the old record counts for nothing. Such a build ignored
-   the record of an earlier build but left it in storage until it bound a
-   new key, and the generic build cannot see which build was installed last:
-   a record whose key the broker no longer signs with (for example after a
-   rebuild for another broker that never bound its key) is not adopted, and
-   the popup asks for a first-use confirmation instead. Firefox removes a
-   temporary add-on's storage when Firefox quits, so a temporary add-on asks
-   at each first use.
+   reloads, the generic build trusts none of that stored trust: the popup
+   asks once for the first-use confirmation (step 1), and the confirmation
+   binds the key through the confirmed origin's HTTPS page again. Such a
+   build ignored the record of an earlier build but left it in storage until
+   it bound a new key, so a stored record may belong to a broker that a later
+   rebuild replaced, and the generic build cannot see which build was
+   installed last. A broker statement cannot settle it: statements are
+   public and carry no freshness, so a replaced native host could replay an
+   old broker's. Firefox removes a temporary add-on's storage when Firefox
+   quits, so a temporary add-on asks at each first use.
 
 The broker sends the statement in the `identity` field of its `attached` and
 `state` messages to the extension. Its private HTTPS page server (the
@@ -554,7 +553,8 @@ forget a broker.
 origin from a local `akdbx extension build`, so the native host never chose
 it. In the generic build the native host proposes the first origin and you
 confirm it. A same-user process that replaced the native host *before* your
-first confirmation (or after you chose Forget) can therefore propose an origin
+first confirmation (also the one after the update from a per-deployment
+build, or after you chose Forget) can therefore propose an origin
 it controls and serve a matching statement there; your check of the shown
 origin against `akdbx status` is the only guard at that point. This is the
 trust on first use that earlier builds did not have, limited to the moment you

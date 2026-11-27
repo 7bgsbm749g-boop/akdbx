@@ -405,8 +405,9 @@ the guard. After the first confirmation nothing changes: a replaced host still
 cannot move the origin or change the key by itself. A broker that names
 another origin without a signature by the trusted key gets **Forget this
 broker…** (two clicks), after which the popup asks for a confirmation again.
-Broker trust saved by an earlier per-deployment build carries over once the
-broker signs with the saved key; otherwise the popup asks for a confirmation.
+After an update from an earlier per-deployment build, the popup asks for this
+confirmation once: the generic build cannot tell whether that build's saved
+trust was still current.
 See [Browser extension trust](docs/private-pages.md#browser-extension-trust).
 
 ## CDP route: install and run

@@ -152,8 +152,9 @@ after the worker's own reload. Then pair again: a reload, also the worker's own
 reload, ends the pairing, because the pairing key lives in session storage.
 So expect a new pairing after every rebuild that the browser loads. The saved
 broker trust (address and key) stays: fill extension 0.19.0 is a generic
-build with no build ID, and it also adopts the trust that a per-deployment
-build saved once the broker signs with that key. A content-identical
+build with no build ID. The one exception is the update from a
+per-deployment build (0.18.x and earlier): its saved trust is not used, and
+the popup asks once for the first-use confirmation. A content-identical
 rebuild gets the same version, so a restart keeps the running worker, but a
 reload still needs a pairing. Rebuild only when `extension info` shows
 another `extension_version` than the folder's manifest.
@@ -242,10 +243,9 @@ reload and no approval. This covers a relay port move, `akdbx relay rotate`,
   the user's browser, tell the user the origin to expect and let them click.
   On a mismatch, click nothing and report both origins: a replaced native
   host proposes its own origin only at this step, and this check is the
-  guard. Trust that a per-deployment build (0.18.x and earlier) saved
-  carries over with no question once the broker signs a statement with
-  that key; a record of a key the broker no longer uses leads to this
-  question instead.
+  guard. The update from a per-deployment build (0.18.x and earlier) leads
+  to this question once: its saved trust is not used, because such a build
+  could leave the record of a broker that a later rebuild replaced.
 - After the confirmation the trusted origin is the one stored after a
   verified binding or a signed change. The extension never stores a key that
   only the native host sent: when an `attached` or `state` message brings

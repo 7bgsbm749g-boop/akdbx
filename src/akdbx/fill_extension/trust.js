@@ -34,14 +34,12 @@
  *   in the popup, so it cannot forget or confirm anything itself.
  * - Records saved by a per-deployment build (fill extension 0.18.x and
  *   earlier, which baked the origin and a random build ID into config.js)
- *   carry a `build` field. Such a build ignored a record of another build
- *   but left it in storage until it bound a new key, and this build cannot
- *   see which build was installed last. So it adopts a `build` record only
- *   when the broker, now, signs a statement with that record's key (the same
- *   origin, or a move that key signed): then the record is saved again
- *   without the field, and an update needs no new confirmation. Until then
- *   the record counts for nothing: no link, no key, and a statement with
- *   another key is a first-use proposal.
+ *   carry a `build` field, and this build trusts none of them: after the
+ *   update the popup asks for the first-use confirmation once. Such a build
+ *   ignored a record of another build but left it in storage until it bound
+ *   a new key, and this build cannot see which build was installed last. A
+ *   broker statement cannot settle it either: statements are public and
+ *   carry no freshness, so a replaced host could replay an old broker's.
  *
  * The signed bytes are the statement's JSON text with sorted keys and no
  * whitespace; src/akdbx/broker_identity.py documents the encoding and signs.
@@ -172,11 +170,6 @@
     }
   }
 
-  // A record that a per-deployment build saved: it has that build's `build` field (see the header).
-  function legacy(stored) {
-    return plain(stored) && Object.prototype.hasOwnProperty.call(stored, "build");
-  }
-
   // A bound broker key: its public key, key id, trusted origin and sequence number.
   function storedKey(record) {
     return hasKeys(record, ["key_id", "origin", "public_key", "seq", "v"]) && record.v === 1 &&
@@ -190,7 +183,8 @@
     return hasKeys(record, ["origin", "v"]) && record.v === 1 && validOrigin(record.origin);
   }
 
-  // The saved record when it is one this extension trusts, else null (then nothing is trusted yet).
+  // The saved record when it is one this extension trusts, else null (then nothing is trusted yet). A record of a
+  // per-deployment build has a `build` field and is not one of them (see the header).
   function current(stored) {
     return storedKey(stored) || originOnly(stored) ? stored : null;
   }
@@ -235,17 +229,6 @@
       `${named} when akdbx asks. Otherwise, do not forget it and do not enter your master password.`;
   }
 
-  // A per-deployment build's record, adopted only when the broker signs with its key now (see the header);
-  // else nothing is trusted yet. An adopted record is saved again without its `build` field.
-  function adopt(stored, verified, received, fetched) {
-    const {build, ...record} = stored;
-    if (storedKey(record) && verified && verified.public_key === record.public_key && verified.key_id === record.key_id) {
-      const decision = decide(record, verified, received, fetched);
-      if (!decision.error) return decision.store ? decision : {...decision, store: record};
-    }
-    return decide(null, verified, received, fetched);
-  }
-
   /* What to trust now. `stored` is the saved record (or null), `verified` the result of verifyIdentity, and
    * `received` whether the host sent an identity at all. `fetched` is the statement read over HTTPS: undefined
    * before the read, null when it failed.
@@ -256,7 +239,6 @@
    * fixed text for the user, `reset` whether the popup offers the reset and `forget` whether it offers to forget
    * the broker. */
   function decide(stored, verified, received, fetched) {
-    if (legacy(stored)) return adopt(stored, verified, received, fetched);
     const saved = current(stored);
     const known = storedKey(saved) ? saved : null;
     const trusted = saved ? saved.origin : null;

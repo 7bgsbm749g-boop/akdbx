@@ -503,6 +503,25 @@ def test_a_rerun_finds_the_version_in_the_authors_list_when_the_lookup_by_number
     assert code == 1 and 'another origin' in printed['error']
 
 
+def test_no_request_outlasts_the_run(lab, capsys):
+    """Every request gets at most the time that is left; slow but successful answers end the run on time."""
+    clock = Clock()
+    start, budgets = clock.now, []
+    real = lab.runner
+    lab.amo.by_number = False
+    lab.amo.exists = True
+    lab.amo.versions = {f'0.0.{n}': dict(id=1000 + n, xpi=b'', polls=0) for n in range(1, 120)}
+
+    def slow(request, timeout):
+        budgets.append((request['timeout'], start + 60 - clock.now))
+        clock.now += min(21, request['timeout'])  # Each answer takes 21 seconds, or the child is stopped.
+        return real(request, timeout)
+    code, printed = release(lab, '--timeout', '60', clock=clock, runner=slow, capsys=capsys)
+    assert code == 1 and 'within 60 seconds (stage lookup)' in printed['error'], printed
+    assert clock.now - start <= 60
+    assert all(asked <= left for asked, left in budgets) and len(budgets) == 3
+
+
 def test_the_https_child_gets_no_amo_key(lab, monkeypatch):
     """The step's environment holds the key; the child that sends each request gets only its one-minute token."""
     monkeypatch.setenv('AMO_JWT_ISSUER', ISSUER)
