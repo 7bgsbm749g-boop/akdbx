@@ -56,8 +56,9 @@ def add_parsers(commands):
                         '"last digits of your number" challenge; the fill writes only digit N, counted from 1, '
                         'of the last --of-last digits of the saved number')
     p.add_argument('--of-last', type=int, metavar='M',
-                   help=f'with --phone-digit: the number of boxes, that is how many last digits the page asks about '
-                        f'({PHONE_DIGIT_BOXES[0]} to {PHONE_DIGIT_BOXES[1]})')
+                   help=f'with --phone-digit: how many last digits the page names ({PHONE_DIGIT_BOXES[0]} to '
+                        f'{PHONE_DIGIT_BOXES[1]}); the page must have one single-character box for each of them, '
+                        'the known digits included; never the count of empty boxes alone')
     p.add_argument('--route', choices=ROUTES, help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
     browser_slots.add_argument(p)
     p = commands.add_parser('fill-identity', help='fill the pinned identity field')

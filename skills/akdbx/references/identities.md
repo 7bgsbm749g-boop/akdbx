@@ -325,9 +325,13 @@ Require `identity_phone_digit_protocol: 1` from `akdbx status`. On the
 extension route it needs fill extension 0.20.0 or newer; the broker refuses
 the pin to an older one. Native field and Android pins do not take it.
 
-- `--of-last M` is the number of boxes, that is how many last digits the page
-  asks about (2 to 8). `--phone-digit N` is the box's place among them,
-  counted from 1 on the left. The broker fills digit N of the last M digits of
+- `--of-last M` is how many last digits the page names ("the last four
+  digits": 4), from 2 to 8. The page must show one single-character box for
+  each of those M digits, the known ones included (as disabled boxes).
+  `--phone-digit N` is the box's place among them, counted from 1 on the left.
+- If the page shows the known digits as text, or has boxes only for the
+  missing digits, do not use a digit pin, and never lower M to the number of
+  boxes: the broker would then fill the wrong digits and could not notice. The broker fills digit N of the last M digits of
   the saved `tel`, counted from the end of the number, and nothing else. Read
   N and M from the page's own text and box labels (`Enter code digit 1`);
   never read or type the digits yourself.
