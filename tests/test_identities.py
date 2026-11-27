@@ -7,6 +7,7 @@ import pytest
 from akdbx import cli
 from akdbx.broker import Broker
 from akdbx.identities import FIELDS, MARKER, property_key
+from akdbx.writes import WriteError
 from test_broker import Entry, RecordingTyper, Vault, running_broker, x11_target_request
 from test_web_unlock import call
 from test_writes import deployed, reopened, template
@@ -897,3 +898,149 @@ def test_a_title_another_identity_has_in_the_group_is_refused_on_the_page(deploy
     assert page_post(web, pending, email=IDENTITY['email'], title='Work shipping')[0] == 200
     vault = reopened(path)
     assert vault.find_entries(title=LABEL) == [] and len(vault.find_entries(title='Work shipping')) == 1
+
+
+# Phone-digit pins (0.55.0): one box of a split "last digits of your number" challenge.
+@pytest.mark.parametrize('saved, count, digits', [
+    ('+1 (555) 010-0128', 4, '0128'),
+    ('+44 7700 900 528', 4, '0528'),
+    ('0049/30.000-00028', 2, '28'),
+    ('5550100128', 8, '50100128'),
+])
+def test_last_digits_keep_only_the_digits_of_the_saved_number(saved, count, digits):
+    from akdbx.identities import last_digits
+    assert last_digits(saved, count) == digits
+
+
+@pytest.mark.parametrize('saved, count', [
+    ('+1 23', 4),                    # Too short for the boxes.
+    ('128', 4),
+    ('+1 555 010 0128 ext 12', 4),   # An extension would move the last digits.
+    ('+1 555 010 0128 x12', 4),
+    ('+1 555 010 0128 +', 4),        # A + only opens the number.
+    ('+1 555 010 ١٢', 4),  # Only ASCII digits count.
+    ('+1 555;010 0128', 4),
+])
+def test_last_digits_refuse_a_value_they_cannot_read_safely(saved, count):
+    from akdbx.identities import last_digits
+    with pytest.raises(WriteError) as refused:
+        last_digits(saved, count)
+    assert saved not in str(refused.value) and '0128' not in str(refused.value)
+
+
+class DigitTargets(RecordingTargets):
+    """A phone-digit pin of 'of_last' boxes, as the CDP route records it."""
+
+    def __init__(self, of_last=4):
+        super().__init__()
+        self.of_last = of_last
+
+    def consume(self, token):
+        return dict(field='tel', request=dict(field='tel', phone_digit=1, of_last=self.of_last))
+
+
+class SyntheticPhone(Entry):
+    tel = '+1 (555) 010-0128'  # Synthetic only.
+
+    def get_custom_property(self, key):
+        return {MARKER: 'v1', property_key('tel'): self.tel}.get(key)
+
+
+@pytest.mark.parametrize('tel, extra, delivered', [
+    ('+1 (555) 010-0128', {}, '0128'),
+    ('+1 (555) 010-0128', {'notify_page': True}, '0128'),
+    ('+1 23', {}, None),                                   # Fewer digits than boxes.
+    ('+1 (555) 010-0128', {'format': 'national'}, None),   # A digit pin takes no format.
+    ('+1 (555) 010-0128', {'format': 'international', 'calling_code': '1'}, None),
+])
+def test_a_phone_digit_pin_receives_only_the_last_digits(tel, extra, delivered):
+    """The broker sends the pinned box's script the last digits it checks; the box's own script writes one."""
+    from akdbx.browser_card import failure
+    entry = SyntheticPhone(uuid='phone', title=LABEL, path=('Web', LABEL))
+    entry.tel = tel
+    broker = Broker(Vault([entry]), RecordingTyper())
+    broker.identity_targets = targets = DigitTargets()
+    handle = search(broker)['entries'][0]['handle']
+    receipt = broker.dispatch(dict(action='fill-identity', identity_protocol=1, handle=handle, target='t' * 64,
+                                   field='tel', start_deadline=broker.clock() + 3, **extra))
+    if delivered is None:
+        assert receipt == failure(kind='identity') and targets.delivered == []
+    else:
+        assert receipt == dict(ok=True, filled='tel', identity_delivery='cdp-identity-element-v1')
+        assert targets.delivered == [('tel', delivered)]
+    assert tel not in json.dumps(receipt) and targets.closed == 1
+
+
+@pytest.mark.parametrize('extra', [
+    dict(phone_digit=1), dict(of_last=4), dict(phone_digit=0, of_last=4), dict(phone_digit=5, of_last=4),
+    dict(phone_digit=1, of_last=1), dict(phone_digit=1, of_last=9), dict(phone_digit=True, of_last=4),
+    dict(phone_digit='1', of_last=4), dict(phone_digit=1, of_last=4.0),
+    dict(phone_digit=1, of_last=4, field_purpose='tel'), dict(phone_digit=1, of_last=4, field='email'),
+])
+def test_broker_refuses_an_invalid_phone_digit_pin_before_any_browser_call(extra):
+    from akdbx.browser_card import CardTargetError
+    from akdbx.browser_identity import BrowserIdentities, digit_spec
+
+    def no_browser(profile):
+        pytest.fail('an invalid phone-digit pin reached the browser')
+    request = dict(field='tel') | extra
+    with pytest.raises(CardTargetError):
+        digit_spec(request)
+    targets = BrowserIdentities('/nonexistent/profile', connector=no_browser)
+    with pytest.raises(CardTargetError):
+        targets.pin(dict(action='pin-identity-target', identity_protocol=1, page_id='P', frame_id='F',
+                         top_url='https://shop.example/', frame_url='https://shop.example/', selector='#d',
+                         **request))
+    assert digit_spec(dict(field='tel')) is None
+    assert digit_spec(dict(field='tel', phone_digit=2, of_last=4)) == (1, 4)
+
+
+def test_identity_status_advertises_the_phone_digit_protocol():
+    status = Broker(Vault([]), RecordingTyper()).dispatch(dict(action='ping'))
+    assert status['identity_phone_digit_protocol'] == 1
+
+
+DIGIT_CAPS = CAPS | dict(identity_phone_digit_protocol=1)
+
+
+@pytest.mark.parametrize('extra, caps, error', [
+    (['--phone-digit', '1', '--of-last', '4'], CAPS, 'broker lacks identity phone digit protocol 1'),
+    (['--phone-digit', '1'], DIGIT_CAPS, '--phone-digit and --of-last go together'),
+    (['--of-last', '4'], DIGIT_CAPS, '--phone-digit and --of-last go together'),
+    (['--phone-digit', '5', '--of-last', '4'], DIGIT_CAPS, '--of-last must be 2 to 8'),
+    (['--phone-digit', '0', '--of-last', '4'], DIGIT_CAPS, '--of-last must be 2 to 8'),
+    (['--phone-digit', '1', '--of-last', '9'], DIGIT_CAPS, '--of-last must be 2 to 8'),
+    (['--phone-digit', '1', '--of-last', '4', '--field-purpose', 'tel'],
+     DIGIT_CAPS | dict(identity_field_purpose_protocol=1), '--phone-digit does not combine with --field-purpose'),
+])
+def test_cli_refuses_phone_digit_options_before_sending(extra, caps, error, monkeypatch, capsys):
+    calls = []
+
+    def broker(_, payload, **kwargs):
+        calls.append(payload)
+        return caps
+    monkeypatch.setattr(cli, 'request', broker)
+    assert cli.main(PIN + extra) == 1
+    assert calls == [{'action': 'ping'}]
+    assert json.loads(capsys.readouterr().out)['error'].startswith(error)
+
+
+def test_cli_refuses_a_phone_digit_for_another_field(monkeypatch, capsys):
+    monkeypatch.setattr(cli, 'request', lambda _, payload, **kwargs: DIGIT_CAPS)
+    args = [a if a != 'tel' else 'email' for a in PIN]
+    assert cli.main(args + ['--phone-digit', '1', '--of-last', '4']) == 1
+    assert json.loads(capsys.readouterr().out)['error'].startswith('--phone-digit applies only to --field tel')
+
+
+def test_cli_sends_the_phone_digit_and_the_box_count(monkeypatch, capsys):
+    sent = []
+
+    def broker(_, payload, **kwargs):
+        if payload['action'] == 'ping':
+            return DIGIT_CAPS
+        sent.append(payload)
+        return dict(ok=True, field='tel', target='c' * 64, expires_in=30, identity_delivery='cdp-identity-element-v1')
+    monkeypatch.setattr(cli, 'request', broker)
+    assert cli.main(PIN + ['--phone-digit', '2', '--of-last', '4']) == 0
+    assert sent[0]['phone_digit'] == 2 and sent[0]['of_last'] == 4 and 'field_purpose' not in sent[0]
+    capsys.readouterr()

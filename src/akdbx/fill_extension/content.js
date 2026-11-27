@@ -33,6 +33,9 @@
   // The popup's address fields: the identity pin script without its own focus check
   // (browser_identity.POPUP_PIN_SCRIPT). The popup checks the focused field itself.
   const POPUP_IDENTITY_PIN = __POPUP_IDENTITY_PIN__;
+  // The CDP route's phone-digit pin (browser_identity.DIGIT_PIN_SCRIPT): one single-character
+  // box of a split "last digits of your number" challenge, at its place among the boxes.
+  const DIGIT_PIN = __DIGIT_PIN_SCRIPT__;
   const GUARD = __CARD_GUARD__;
   const STRIPE_ELEMENTS = __STRIPE_ELEMENTS__;
   const count = () => __PASSWORD_COUNT__;
@@ -95,6 +98,12 @@
         if (window !== window.top) return null;
         state = spec.read_kind === "qr" ? await QR_CAPTURE(globalThis.jsQR, spec.selector, frameURL, null) :
           READ_CAPTURE(spec.selector, frameURL, null);
+      } else if (kind === "identity" && (spec.phone_digit !== undefined || spec.of_last !== undefined)) {
+        // The broker checked these too; a purpose never combines with a digit pin.
+        if (spec.field !== "tel" || spec.field_purpose !== undefined || spec.allow_autocomplete_off !== undefined ||
+            !Number.isInteger(spec.phone_digit) || !Number.isInteger(spec.of_last)) return null;
+        state = DIGIT_PIN(spec.selector, "tel", frameURL, topURL, false, true, false, false, shadowRootOf,
+          {index: spec.phone_digit - 1, count: spec.of_last});
       } else if (kind === "card" || kind === "identity") {
         const identity = kind === "identity";
         // A card purpose also needs the broker's check: never with a processor.

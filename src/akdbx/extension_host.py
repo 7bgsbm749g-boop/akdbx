@@ -635,6 +635,7 @@ def _content_script():
         '__CARD_PIN_SCRIPT__': browser_card.PIN_SCRIPT,
         '__CODE_PIN_SCRIPT__': browser_code.CODE_PIN_SCRIPT,
         '__POPUP_IDENTITY_PIN__': browser_identity.POPUP_PIN_SCRIPT,
+        '__DIGIT_PIN_SCRIPT__': browser_identity.DIGIT_PIN_SCRIPT,
         '__CARD_GUARD__': card_processor.GUARD,
         '__STRIPE_ELEMENTS__': card_processor.STRIPE_ELEMENTS_JSON,
         '__PASSWORD_COUNT__': password_frames.COUNT,

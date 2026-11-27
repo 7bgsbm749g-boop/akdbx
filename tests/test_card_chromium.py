@@ -954,3 +954,116 @@ def test_an_ignored_dropdown_click_is_uncertain_whatever_the_stale_label_or_valu
     assert target['ok'], target
     assert fill(chrome, target, 'cc-exp-month') == failure(True)
     assert evaluate(chrome, f"document.querySelector('{selector}').firstElementChild.textContent") == label
+
+
+# A split "Enter the missing digits from the last four digits of your number" challenge, modelled
+# on a real sign-up page: two editable one-digit boxes, then two disabled boxes that show the known
+# digits. Synthetic numbers only; the masked hint copies the page's own form.
+PHONE_DIGITS = '''<form id="phone-digits"><p id="masked">We'll send a code to *********28.</p>
+  <div id="boxes" style="display:flex">
+  <input type="text" maxlength="1" id="codeEntry-0" aria-label="Enter code digit 1" inputmode="numeric" style="width:30px">
+  <input type="text" maxlength="1" id="codeEntry-1" aria-label="Enter code digit 2" inputmode="numeric" style="width:30px">
+  <input type="text" maxlength="1" id="codeEntry-2" aria-label="Enter code digit 3" inputmode="numeric" style="width:30px" disabled value="2">
+  <input type="text" maxlength="1" id="codeEntry-3" aria-label="Enter code digit 4" inputmode="numeric" style="width:30px" disabled value="8">
+  </div>
+  <div id="wide" style="display:flex">
+  <input type="tel" maxlength="2" id="wide-0" style="width:30px"><input type="tel" maxlength="2" id="wide-1" style="width:30px">
+  </div></form>'''
+PHONES = {'Synthetic phone': '+1 (555) 010-0128', 'Other phone': '+1 555 010 4799', 'Short phone': '+1 28'}
+
+
+class PhoneEntry(Entry):
+    def get_custom_property(self, key):
+        from akdbx.identities import MARKER as IDENTITY_MARKER, property_key
+        return {IDENTITY_MARKER: 'v1', property_key('tel'): PHONES[self.title]}.get(key)
+
+
+def test_phone_digit_pins_fill_only_their_own_digit_of_the_saved_number(chrome, tmp_path, capsys):
+    """CDP route: each editable box gets its digit of the last four; nothing else reaches the page or the output."""
+    broker = Broker(Vault([PhoneEntry(uuid=title, title=title, path=('Root', 'Web', title)) for title in PHONES]),
+                    RecordingTyper(), card_browser_profile=chrome.profile, default_fill_route='cdp')
+    rpc = tmp_path / 'private' / 'phone-digit-rpc.sock'
+    secrets = [*PHONES.values(), '15550100128', '15550104799', '*********28']
+
+    def command(*args, code=0):
+        assert cli.main(['--socket', str(rpc), '--unlock-origin', 'https://node.example:9443', *args]) == code
+        captured = capsys.readouterr()
+        for value in secrets:
+            assert value not in captured.out + captured.err
+        return json.loads(captured.out)
+
+    def box(n):
+        return f'document.getElementById("codeEntry-{n}")'
+
+    def pin(selector, digit, of_last='4', code=0):
+        return command('pin-identity-target', '--route', 'cdp', '--page-id', chrome.page, '--frame-id', chrome.frame,
+                       '--top-url', chrome.url, '--frame-url', chrome.url, '--selector', selector, '--field', 'tel',
+                       '--phone-digit', digit, '--of-last', of_last, code=code)
+
+    def fill(target, title='Synthetic phone', *extra, code=0):
+        handle = command('search-identities', title, '--exact')['entries'][0]['handle']
+        return command('fill-identity', '--field', 'tel', *extra, '--target', target, '--', handle, code=code)
+
+    with running_broker(rpc, broker):
+        evaluate(chrome, f'''document.body.insertAdjacentHTML("beforeend", {json.dumps(PHONE_DIGITS)});
+          window.digitKeys = 0;
+          for (const event of ["keydown", "keypress", "keyup"]) document.addEventListener(event, () => digitKeys++, true);
+          // The page moves the focus to the next box after a digit, as split-code pages do.
+          for (const n of [0, 1]) document.getElementById("codeEntry-" + n).addEventListener("input",
+            () => document.getElementById("codeEntry-" + (n + 1)).focus());''')
+        state = f'[0, 1, 2, 3].map(n => document.getElementById("codeEntry-" + n).value).join()'
+        evaluate(chrome, f'{box(0)}.focus()')
+        # A box at another place, a wrong box count, or the whole number refuses.
+        assert pin('#codeEntry-0', '2', code=1)['delivery'] == 'not-started'
+        assert pin('#codeEntry-0', '1', of_last='6', code=1)['delivery'] == 'not-started'
+        # Digit 1, with the page's own events: the focus then moves on to digit 2's box.
+        target = pin('#codeEntry-0', '1')
+        assert target == dict(ok=True, field='tel', target=target['target'], expires_in=TTL,
+                              identity_delivery='cdp-identity-element-v1')
+        assert fill(target['target'], 'Synthetic phone', '--notify-page') == dict(
+            ok=True, filled='tel', identity_delivery='cdp-identity-element-v1')
+        assert evaluate(chrome, f'{state} === "0,,2,8" && document.activeElement === {box(1)}')
+        # Digit 2, silently.
+        target = pin('#codeEntry-1', '2')
+        assert fill(target['target'])['ok']
+        assert evaluate(chrome, f'{state} === "0,1,2,8"')
+
+        evaluate(chrome, f'{box(0)}.value = ""; {box(1)}.value = ""; {box(0)}.focus()')
+        # The disabled boxes show 2 and 8: a saved number that ends otherwise is another number.
+        target = pin('#codeEntry-0', '1')
+        assert fill(target['target'], 'Other phone', code=1)['delivery'] == 'not-started'
+        # Only that check refused it: without the known digits, the same number fills its digit.
+        evaluate(chrome, f'{box(2)}.value = ""; {box(3)}.value = ""; {box(0)}.focus()')
+        assert fill(pin('#codeEntry-0', '1')['target'], 'Other phone')['ok']
+        assert evaluate(chrome, f'{state} === "4,,,"')
+        evaluate(chrome, f'{box(0)}.value = ""; {box(2)}.value = "2"; {box(3)}.value = "8"; {box(0)}.focus()')
+        # A saved number with fewer digits than boxes refuses.
+        target = pin('#codeEntry-0', '1')
+        assert fill(target['target'], 'Short phone', code=1)['delivery'] == 'not-started'
+        # A format never applies to a digit pin.
+        target = pin('#codeEntry-0', '1')
+        assert fill(target['target'], 'Synthetic phone', '--format', 'national', code=1)['delivery'] == 'not-started'
+        assert evaluate(chrome, f'{state} === ",,2,8"')
+        # A box that the page disables after the pin refuses the fill.
+        target = pin('#codeEntry-0', '1')
+        evaluate(chrome, f'{box(0)}.disabled = true')
+        assert fill(target['target'], code=1)['delivery'] == 'not-started'
+        evaluate(chrome, f'{box(0)}.disabled = false; {box(0)}.focus()')
+        # A box that turns into a wider one after the pin refuses the fill.
+        target = pin('#codeEntry-0', '1')
+        evaluate(chrome, f'{box(0)}.maxLength = 2')
+        assert fill(target['target'], code=1)['delivery'] == 'not-started'
+        evaluate(chrome, f'{box(0)}.maxLength = 1; {box(0)}.focus()')
+        assert evaluate(chrome, f'{state} === ",,2,8"')
+        # A disabled box, even one that holds the focus no longer, never pins; nor does a read-only one.
+        assert pin('#codeEntry-2', '3', code=1)['delivery'] == 'not-started'
+        evaluate(chrome, f'{box(1)}.readOnly = true; {box(1)}.focus()')
+        assert pin('#codeEntry-1', '2', code=1)['delivery'] == 'not-started'
+        # A box that takes more than one character refuses.
+        evaluate(chrome, 'document.getElementById("wide-0").focus()')
+        assert pin('#wide-0', '1', of_last='2', code=1)['delivery'] == 'not-started'
+        # An unfocused box refuses.
+        evaluate(chrome, f'{box(1)}.readOnly = false; {box(0)}.blur()')
+        assert pin('#codeEntry-0', '1', code=1)['delivery'] == 'not-started'
+        assert evaluate(chrome, f'{state} === ",,2,8" && document.getElementById("wide-0").value === "" && digitKeys === 0')
+    assert broker.typer.events == []

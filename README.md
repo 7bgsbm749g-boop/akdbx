@@ -681,7 +681,14 @@ slots it into a shadow tree or puts it in an SVG viewport: a side drawer
 whose negative inset only trims its shadow. Every other clip
 shape, `clip`, masks, filters and `backdrop-filter` still refuse. The CDP
 route still refuses every `clip-path`, because its page script cannot inspect closed shadow
-roots. See
+roots. From 0.55.0, `pin-identity-target --field tel --phone-digit N
+--of-last M` pins one single-character box (`maxlength` 1) of a split "enter
+the missing digits from the last four digits of your number" challenge that
+has one box for each of the last M digits, the known ones included; the
+fill writes only digit N of the last M digits of the saved number, and refuses
+when a disabled box of the group shows a digit that differs from the saved one
+(`identity_phone_digit_protocol: 1`, fill extension 0.20.0 on the extension
+route). See
 [identity workflows](skills/akdbx/references/identities.md) for
 supported fields, target discovery and example commands.
 
