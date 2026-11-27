@@ -448,11 +448,13 @@ class IdentityManager:
         except Exception:
             op.state = 'failed'
             op.error = 'identity save failed; vault update not confirmed'
+            self.broker.writes.notify_result(op)
             return dict(ok=False, error=op.error)
         op.state = 'saved'
         # write-status reports the title that was saved.
         op.values = dict(op.values, title=title)
         self.broker.writes.invalidate_revision(op)
+        self.broker.writes.notify_result(op)
         return dict(ok=True, state='saved', **op.values)
 
 

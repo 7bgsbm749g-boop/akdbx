@@ -33,9 +33,15 @@ which title to use; do not create another one.
 
 ```bash
 akdbx create-identity --title 'Home shipping' --group 'Personal' --fields tel
-akdbx write-status -- WRITE_HANDLE
+akdbx subscribe-write WRITE_HANDLE --webhook-url-file /private/temporary/url-file
+akdbx write-status -- WRITE_HANDLE   # after the event
 akdbx cancel-write -- WRITE_HANDLE
 ```
+
+Before you give the user the page, register a one-shot write-result webhook
+for its `write_handle` (0.53.0+, `write_notifications_protocol: 1`) and end
+the turn: see [resume after a private save page](write-notifications.md). Do
+not poll `write-status` while the user works on the page.
 
 Ask only for the fields the task needs. Pass them with `--fields`, a
 comma-separated list of the field keys in the fill table below (for example
@@ -57,8 +63,8 @@ saved as), the same as a card page; an error keeps the form with an error
 state on the button (`Page expired`, `Not confirmed`). A correctable form
 error keeps the page open with the message under the button. The page expires
 after five minutes unless you ask for a longer lifetime (below).
-Only `state: "saved"` from `write-status` confirms persistence.
-Use `cancel-write` to cancel a pending page. The broker refuses a duplicate
+Only `state: "saved"` from `write-status` confirms persistence; the
+`akdbx.write-result` event tells you when to check it. Use `cancel-write` to cancel a pending page. The broker refuses a duplicate
 identity label in the same group.
 
 ### The user may rename the identity on the page (0.52.1)
@@ -77,7 +83,8 @@ Use that title, not the one you gave, to search for the identity again.
 ```bash
 akdbx search-identities 'Home shipping' --exact --group 'Personal'
 akdbx update-identity --title 'Home shipping' --group 'Personal' --fields tel -- HANDLE_FROM_SEARCH
-akdbx write-status -- WRITE_HANDLE
+akdbx subscribe-write WRITE_HANDLE --webhook-url-file /private/temporary/url-file
+akdbx write-status -- WRITE_HANDLE   # after the event
 ```
 
 Requires `identity_update_protocol: 1` from `akdbx status`. Pass a fresh
@@ -89,9 +96,10 @@ with empty inputs; it never shows the saved values. A field the user leaves
 empty keeps its saved value, and at least one field must be filled in. Saving
 changes only the filled-in fields, keeps the `akdbx.identity=v1` marker and the
 protection on every field, and keeps the previous version in the entry
-history. The receipt, `write-status` states, `cancel-write`, page lifetime,
-title field and save button are the same as for `create-identity`. A new title
-replaces the old one in the same write; the entry history keeps the old title.
+history. The receipt, `write-status` states, the write-result event,
+`cancel-write`, page lifetime, title field and save button are the same as for
+`create-identity`. A new title replaces the old one in the same write; the
+entry history keeps the old title.
 
 ## Page lifetime (0.51.0)
 
@@ -166,7 +174,9 @@ require a unique enabled option whose value matches the stored text exactly.
 An absent saved value or missing or conflicting autocomplete token refuses,
 unless you give an explicit field purpose (below).
 The broker also refuses a hidden, unfocused, covered, ambiguous, or changed
-field. It uses the retained DOM element and sends no keys, focus changes,
+field. A cover means one that takes pointer events at the field centre; only the
+CDP route also refuses a click-through cover
+([visibility checks](../../../README.md#visibility-checks-what-they-stop)). It uses the retained DOM element and sends no keys, focus changes,
 clipboard data or form submission. By default the fill sends no events.
 For a form that tracks edits, use
 `fill-identity --notify-page` to send bubbling `input` and `change` events
@@ -240,7 +250,7 @@ akdbx pin-identity-target --route extension --page-id PAGE_ID --frame-id FRAME_I
   pin `tel`, and so does a sub-token such as `tel-national`. A purpose that
   differs from `--field` refuses before the request is sent.
 - Every other guard stays: exact URL, same origin, unique selector, visible
-  and uncovered field, focus, compatible input type, 30-second single-use
+  and uncovered field (as above), focus, compatible input type, 30-second single-use
   pin, and no value in any output. A hint that changes after the pin refuses
   the fill. Never add or rewrite page attributes to make a field eligible.
 - The CDP and extension routes apply the same rules. The extension route

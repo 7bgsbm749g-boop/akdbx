@@ -50,11 +50,14 @@ than the broker's `lock_timeout_seconds`, and the default page is cut to it.
 The CLI refuses a value outside 1 to 30 or longer than the lock timeout before
 sending; the broker refuses one too.
 
-Before giving the user a private save page, register the event-driven
-[card-save notification](card-save-notifications.md) so the authorized task can
-resume without asking the user to report completion. Require the advertised
-card-save notification protocol; installing a CLI alone does not update a running
-broker. Do not create a polling schedule or give the subscription a waiting TTL.
+Before giving the user a private save page, register an event-driven
+notification so the authorized task can resume without asking the user to
+report completion: `subscribe-write` (0.53.0+,
+[write-result notifications](write-notifications.md), the same for every save
+page) or `subscribe-card-save` ([card-save notification](card-save-notifications.md),
+for older brokers; it still works). Require the advertised notification
+protocol; installing a CLI alone does not update a running broker. Do not poll
+`write-status`, create a polling schedule or give the subscription a waiting TTL.
 
 ## Choose a card and destination
 
@@ -71,8 +74,9 @@ route. For Adyen, Computop or Stripe card iframes, use the explicit processor
 routes below. In Firefox, choose `--route extension` and use the document ID
 from `list-password-frames`. The extension checks the actual processor URL.
 The native hit tests and Chrome out-of-process iframe checks described below
-apply to the CDP route. See [Firefox cover checks](../../../docs/firefox.md#enhanced-security)
-for the extension’s DOM checks and optional screenshot check.
+apply to the CDP route. The extension uses the DOM checks only: it does not see
+a click-through cover over a field ([Firefox covers](../../../docs/firefox.md#covers),
+[visibility checks](../../../README.md#visibility-checks-what-they-stop)).
 Other cross-origin frames, shadow DOM and unannotated fields must be refused.
 
 ```bash

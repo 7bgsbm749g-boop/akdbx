@@ -1,5 +1,11 @@
 # Resume after a private card save
 
+From 0.53.0, `subscribe-write` gives the same one-shot event for every private
+save page, cards included: see [write-result notifications](write-notifications.md).
+Use it when the broker advertises `write_notifications_protocol: 1`. The
+card-save commands below keep working unchanged, with their own state file and
+`akdbx.card-save` event.
+
 Card-save notifications use the same one-shot HTTPS sender and persistent private
 storage as [unlock notifications](unlock-notifications.md). Require broker
 `card_save_notifications_supported: true`, integer

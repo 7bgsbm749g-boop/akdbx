@@ -44,6 +44,10 @@ akdbx sms-add-source iphone --kind shortcut
 
 The receipt has a `private_url` setup page (one hour). Send it to the user
 privately (`send_to_user`); they open it on the iPhone and follow its steps.
+To resume when the user's test text arrives, register `subscribe-sms --source
+NAME --any-text` before you run `sms-add-source` (0.53.0+,
+[setup and test pages](sms-notifications.md#setup-and-test-pages-0530)), then
+end the turn. Do not poll `sms-sources`.
 The page shows the webhook URL (tap to copy) and the Shortcuts steps for the
 iPhone's iOS version: it detects the version from the browser and offers the
 other versions (iOS 27 and later, iOS 17 to 26, iOS 16 and earlier) in a list.
@@ -189,9 +193,8 @@ age. It never shows the code.
 - After the click the popup closes, so the browser gives the focus back to the
   field. Then the same checks as `pin-code-target --route extension` pin it:
   one focused, visible, enabled `text`, `tel`, `number` or `password` input on
-  the exact page, under no cover at its centre. With Enhanced security on, the
-  extension's cover check also runs. A field in a frame refuses: use an agent
-  pin for it.
+  the exact page, under no cover that takes pointer events at its centre. A
+  field in a frame refuses: use an agent pin for it.
 - Only after that pin holds does the broker take the text from the inbox. Its
   code goes sealed to the extension and only into the pinned field. A text is
   used once, by the popup or by `fill-sms-code`, whichever comes first.

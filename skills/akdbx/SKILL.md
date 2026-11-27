@@ -19,12 +19,13 @@ session.
 | --- | --- |
 | Log in to a website | This file, then [password field delivery](references/target-fill.md) |
 | Fill through the browser extension | [Extension route](references/extension.md), [pairing notifications](references/pairing-notifications.md) |
-| Fill or save a payment card | [Cards](references/cards.md), [card-save notifications](references/card-save-notifications.md) |
-| Fill or save an address or contact | [Identities](references/identities.md) |
+| Fill or save a payment card | [Cards](references/cards.md), [write-result notifications](references/write-notifications.md) |
+| Fill or save an address or contact | [Identities](references/identities.md), [write-result notifications](references/write-notifications.md) |
 | Authenticator (TOTP) code | [TOTP](references/totp.md), [private key import](references/private-import.md) |
-| Phone (SMS) verification code, or set up a phone number for codes | [SMS](references/sms.md) |
+| Phone (SMS) verification code, or set up a phone number for codes | [SMS](references/sms.md), [SMS notifications](references/sms-notifications.md) |
+| Wait for the user on a private page (save page, SMS setup, pairing, unlock) | [Resume on a private page result](#resume-on-a-private-page-result) |
 | Add an authenticator app to a website account (enrollment, such as GitHub 2FA) | [Automatic authenticator enrollment](references/totp-enrollment.md) |
-| Create or change a password, save SSO/email-code accounts, add an origin, edit, move or delete an entry, create a group, store a key file | [Password writes](references/password-writes.md) |
+| Create or change a password, save SSO/email-code accounts, add an origin, edit, move or delete an entry, create a group, store a key file | [Password writes](references/password-writes.md), [write-result notifications](references/write-notifications.md) |
 | Capture a secret a site shows once | [Secret capture](references/secret-capture.md) |
 | Vault locked: wait for unlock | [Unlock notifications](references/unlock-notifications.md) |
 | Unlock link blocked (`unlock_blocked: true` or `akdbx.unlock-blocked`) | [Blocked unlock link](#blocked-unlock-link) |
@@ -281,6 +282,27 @@ the block, and `serve` then prints no unlock link.
 Keep the existing unlock subscription and its one-shot trigger: they still
 deliver the later unlock.
 
+## Resume on a private page result
+
+When the user must act on an akdbx private page, never poll `write-status`,
+`sms-sources`, `status` or a page for the result. Register the page's one-shot
+webhook (in T3: a `schedule_task` webhook bound to the current thread), give
+the user the link, and end the turn. Every subscription reads its URL from an
+owned mode-0600 file and never prints it, and its event carries only ids and
+a state.
+
+| Private page | Event to register |
+| --- | --- |
+| Save page: `create-entry`, `update-password`, `setup-totp` (and its private import), `create-identity`, `update-identity`, `create-card`, `update-card` | `subscribe-write WRITE_HANDLE` (0.53.0+, `write_notifications_protocol: 1`): [write-result notifications](references/write-notifications.md) |
+| SMS setup or test page: `sms-add-source`, `sms-test-page` | `subscribe-sms --source NAME --any-text` (0.53.0+, `sms_notifications_any_text: true`): [SMS notifications](references/sms-notifications.md#setup-and-test-pages-0530) |
+| Extension pairing page | `subscribe-pairing`: [pairing notifications](references/pairing-notifications.md) |
+| Unlock link | `subscribe-unlock`: [unlock notifications](references/unlock-notifications.md) |
+
+On the event, remove the host trigger first, then check the result with the
+matching status command (`write-status`, `sms-sources`, `status`) and resume.
+A generated password (`generate-password`, `generate-entry`) has no page: you
+commit it yourself.
+
 ## The akdbx relay
 
 The relay (0.26.0+) lets the user open the private pages (unlock, saves,
@@ -379,6 +401,14 @@ has two costs:
 So:
 
 - If the extension is paired, use it for logins, cards and identities.
+- Both routes refuse a field the user cannot see: hidden, transparent, zero
+  size, off-screen or inert. Card, address and code pins also refuse a clipped
+  field or one under a cover that takes pointer events, and only the CDP route
+  also refuses a click-through cover over them. Password pins have no hit test:
+  a cover over a password field does not stop its fill. No route keeps a value
+  from the page at the pinned origin, so check the site and the field yourself
+  before a fill
+  ([visibility checks](https://github.com/7bgsbm749g-boop/akdbx/blob/main/README.md#visibility-checks-what-they-stop)).
 - If a site blocks or declines on the CDP route and the block looks like a false
   positive (the user's own account and data, a check that fails for no stated
   reason), **do not keep retrying on CDP**. Each failed attempt can raise the
@@ -657,7 +687,8 @@ Require `browser_totp_protocol: 1`; extension also needs
 `extension_totp_protocol: 1` and fill extension 0.10.0+. Only one whole-code
 input is supported; no split fields or keyboard fallback. The exact challenge
 URL must match the pinned field document and entry origin. Codes and keys never appear in output. If the key is missing, the user
-imports it once through `setup-totp`'s private page. When the task authorizes
+imports it once through `setup-totp`'s private page (register
+`subscribe-write` for its write handle and resume on the event). When the task authorizes
 adding an authenticator app to the account, enroll it yourself with
 `capture-totp` (0.35.0+): the broker reads the setup key from the site's
 enrollment page through a CDP or extension read pin. A native read pin cannot
@@ -683,8 +714,9 @@ real phone number, forwarded by an iOS Shortcuts automation (`--kind
 shortcut`), is the recommended source: Google, many banks, WhatsApp and some
 other sites reject VoIP numbers, so a virtual number (`--kind twilio`) does not
 always work. If `sms_sources_configured` is 0, add a source once with
-`sms-add-source` and give the user its private setup link. Codes, webhook URLs
-and setup links never appear in output. To resume when the text arrives
+`sms-add-source` and give the user its private setup link; register
+`subscribe-sms --source NAME --any-text` first to resume on the user's test
+text. Codes, webhook URLs and setup links never appear in output. To resume when the text arrives
 instead of waiting, register `subscribe-sms --source NAME --recent 120` with a
 webhook task bound to the current thread and end the turn; the
 `akdbx.sms-received` event carries only the source and message id. Details:
@@ -717,8 +749,9 @@ needs `--format MM/YY` or `MM/YYYY`. Processor iframes need `--processor
 adyen|computop|stripe` and the exact supported inputs. Card values go only to a
 verified DOM element: no keyboard, Tab or clipboard, and never the login fill
 commands. Save a new card with `create-card` (the user types the card on a
-private page; register a [card-save notification](references/card-save-notifications.md)
-first), and change one with `update-card`. For a user who needs more time,
+private page; register a [write-result notification](references/write-notifications.md)
+first, or a [card-save notification](references/card-save-notifications.md) on
+a broker before 0.53.0), and change one with `update-card`. For a user who needs more time,
 add `--valid-minutes N` (1 to 30, default 5; 0.51.0) to any card or identity
 save command, and give the `expires_at` time with the link.
 
@@ -726,7 +759,9 @@ save command, and give the `expires_at` time with the link.
 Before saving, run `search-identities` for the user's existing identities. If
 exactly one fits, add the missing field to it with `update-identity` instead
 of creating a duplicate; if none fits, use `create-identity`; if several fit,
-ask the user which one to use. Both give the user a private save page. Ask
+ask the user which one to use. Both give the user a private save page:
+register `subscribe-write WRITE_HANDLE` before you share it and resume on its
+event. Ask
 only for the fields the task needs: pass them with `--fields` (for example
 `--fields tel` for a phone number) so the page shows only those fields.
 `search-identities`,
@@ -774,7 +809,8 @@ capability checks and recovery. In short:
   The field's origin must be the entry's main URL origin or one of its
   `additional_urls` (needs `generated_additional_urls: true`, 0.31.2+).
 - **User-chosen password:** `create-entry` or `update-password` return a private
-  page where the user types it.
+  page where the user types it. Register `subscribe-write WRITE_HANDLE` before
+  you share it and resume on the `akdbx.write-result` event.
 - **SSO account (Google/GitHub):** `create-sso-entry` saves the metadata with an
   empty password. **Email-code account:** `create-passwordless-entry
   --auth-method email_code`. Never invent a password, copy a provider password,

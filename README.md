@@ -125,22 +125,19 @@ shown-once secrets shown in the top document, and it holds a child frame's
 `<iframe>` owner with the CDP route's owner guard (found with a nonce
 handshake). Top-document read pins and child-frame password pins require fill
 extension 0.4.0 or newer. Use CDP for supported same-site child-frame reads. One check
-stays weaker by default: the extension has no browser-native hit test, so only
-the CDP route refuses a card or address field under a click-through cover
+is weaker: the extension has no browser-native hit test, so only
+the CDP route refuses a card, address or code field under a click-through cover
 (`pointer-events: none`, `inert` or a popover backdrop). Read pins use the same
-DOM hit test on both routes.
+DOM hit test on both routes. See [Visibility checks](#visibility-checks-what-they-stop).
 
-From 0.34.0 (fill extension 0.5.0) the extension has a settings page (the cog
-in its popup). Its experimental **Enhanced security** setting, off by default,
-checks for paint over the tested points on card, address and read targets,
-including click-through and inert covers. Where the browser supports
-`IntersectionObserver` visibility tracking, akdbx also checks the whole element
-for occlusion. Firefox 161 uses the pixel check alone. The pixel check
-paints the field in a random colour for about a tenth of a second and a tab
-screenshot must show that colour (one check at each pin and each fill). Turning
-it on asks the browser for the `<all_urls>` permission; the check needs a
-rendered, active tab and can refuse a safe page. See
-[the extension route](skills/akdbx/references/extension.md).
+Fill extension 0.5.0 to 0.15.x (akdbx 0.34.0 to 0.52.0) had an experimental,
+opt-in **Enhanced security** setting: a pixel check with tab screenshots for
+covers over card, address, code and read targets. After 0.52.0 (fill extension
+0.16.0) that setting, its settings page and its `<all_urls>` permission request
+are removed. A page could beat the check, and the page that gets a value can read
+it anyway. Fills and reads work as with the setting off; a stored setting is
+ignored. See [Visibility checks](#visibility-checks-what-they-stop) and
+[the extension route](skills/akdbx/references/extension.md#removed-enhanced-security).
 
 From 0.35.0 (fill extension 0.6.0) read pins on both routes also accept an
 authenticator setup key printed in space-separated Base32 groups, for
@@ -272,6 +269,35 @@ limits are in [Android devices](skills/akdbx/references/android.md).
 - Errors are deliberately generic after the typing boundary.
 
 This prevents accidental disclosure into chat, command output, logs, process arguments, and agent RPC responses. It does **not** protect against a malicious process running as your OS user, a compromised target application, screen/key logging, or an agent that can redirect focus or inspect a filled web page. Browser password fills require a short-lived DOM target pin; see [the target contract](skills/akdbx/references/target-fill.md). The broker verifies the exact HTTPS page, main frame and retained editable password input. Window pins (X11, XWayland or HWND) refuse password/login delivery. Application acceptance remains a caller check; malicious pages and compromised local processes are outside this boundary. Python cannot guarantee memory zeroization.
+
+### Visibility checks: what they stop
+
+The broker checks the exact HTTPS origin before a fill or a read. The page at
+that origin is the destination: its scripts can read a filled value at once,
+and it decides which text a secret shows. No check of covers or pixels can keep
+a value from that page, so akdbx does not try. The agent must verify the site
+and the field before it fills.
+
+The visibility checks stop the classic hidden-field autofill harvest: a form
+shows one field and hides others (an address, a phone number, a card, a
+password) so that the user does not see what it receives. Each pin is for one
+field that the agent chose, and that field must be one the user can see.
+
+| Check | Route | What it stops | Can a page that targets it get past it? |
+| --- | --- | --- | --- |
+| DOM checks. Every pin: `display: none`, `visibility`, `opacity: 0`, zero size, off-screen, `inert`; focus (every pin except card pins); visible owners of child frames. Card, address and code pins: the style guard (filter, mask, clip, blend; only an ancestor `clip-path: inset()` that holds the whole field) and the `elementFromPoint` hit test at the field centre, through each parent frame. Read pins: the hit test at the start, centre and end of each line of the secret's text (of the box for a text input), or a 5 x 5 grid over a QR code. | CDP and extension | Hidden, transparent, zero-size, off-screen and inert targets; for card, address and code fields also clipped fields and an opaque cover that takes pointer events; a hidden login frame | Yes: a cover with a hole at the tested points. On the extension route, also a click-through cover. |
+| CDP native hit test (`DOM.getNodeForLocation`, which ignores `pointer-events: none`) for card, address and code fields, at the pin and before and after the write | CDP | A click-through cover at the field centre: `pointer-events: none`, `inert`, a popover `::backdrop` | Yes: a cover with a hole at the tested point. |
+| `IntersectionObserver` v2 occlusion test (removed after 0.52.0) | Extension, Chromium, with Enhanced security | Any box over the element | It refused ordinary pages (5 of 9 test pages: a floating label, a copy button, a cookie banner elsewhere), Firefox has no such test, and it ran only beside the pixel check. |
+| Pixel check with tab screenshots (removed after 0.52.0) | Extension, with Enhanced security (opt-in) | A cover over the sampled points | Yes: a page can read the check's colour from its own style and remove its cover while the check runs, or cover the text between the sampled points. It needed the `<all_urls>` permission. |
+
+Password pins have no style guard and no hit test, on both routes: a cover
+over a visible, focused password field does not stop its fill. Read pins
+(`capture-secret`, `capture-totp`) have no style guard. A cover over a secret
+does not change the text that akdbx saves: the page shows that text itself.
+The toolbar popup's login, card and TOTP fills check that the focused field and
+its form partners are visible (no style guard, no hit test); its address and
+texted-code fills use the agent pin checks. Native field and Android pins have
+their own checks ([support matrix](docs/support-matrix.md)).
 
 ## Browser extension route (0.21.0)
 
@@ -588,7 +614,10 @@ From 0.51.0, both commands
 take `--valid-minutes N` (1 to 30, and not longer than the vault lock
 timeout; default 5) for a page that stays valid longer, and report
 `expires_in` and `expires_at` (UTC); the page shows the expiry time. A vault
-lock still ends the page. `search-identities LABEL` returns
+lock still ends the page. From 0.53.0, `subscribe-write WRITE_HANDLE` sends one
+event when the page is saved, fails, is cancelled or expires
+([write-result notifications](#write-result-notifications-0530)), so an agent
+does not poll `write-status`. `search-identities LABEL` returns
 only labels, group paths and single-use handles. Login search excludes these
 records. `pin-identity-target` and `fill-identity` deliver one field to a
 verified and focused DOM element (CDP, or the extension in a Chromium browser
@@ -631,8 +660,8 @@ akdbx conventions; other clients can display them as custom fields.
 workflow. Enter card values only on the returned private HTTPS page. Never
 put them in command arguments, agent messages or notes. `update-card HANDLE
 --title EXACT_TITLE --group EXACT_GROUP` prepares an update. Updates preserve
-the previous entry in KDBX History. `write-status` and `cancel-write` apply to
-these saves. Persistence reopens and verifies every protected field before
+the previous entry in KDBX History. `write-status`, `cancel-write` and
+`subscribe-write` (0.53.0) apply to these saves. Persistence reopens and verifies every protected field before
 replacing the encrypted vault. A private page expires after five minutes.
 From 0.51.0, `--valid-minutes N` (1 to 30, and not longer than the vault
 lock timeout) keeps it valid for N minutes. The receipt reports `expires_in`
@@ -754,7 +783,41 @@ the card values. A malicious page, compromised browser or process with the same
 OS-user privileges remains outside this boundary. Do not read filled card values
 back through browser tools or capture unmasked fields in screenshots.
 
+## Write-result notifications (0.53.0)
+
+Every private save page can resume the agent task through a one-shot HTTPS
+webhook: the password page of `create-entry` and `update-password`, the
+authenticator page of `setup-totp` (with its QR, export and browser-capture
+import), the identity page of `create-identity` and `update-identity`, and the
+card page of `create-card` and `update-card`. Register before sharing the
+page; the agent ends its turn and does not poll `write-status`:
+
+```bash
+.venv/bin/akdbx subscribe-write WRITE_HANDLE --webhook-url-file /private/url-file
+.venv/bin/akdbx write-subscription-status SUBSCRIPTION_ID
+.venv/bin/akdbx unsubscribe-write SUBSCRIPTION_ID
+```
+
+The callback URL is read only from a private mode-0600 file and never printed.
+Require `write_notifications_supported: true`, `write_notifications_protocol:
+1` and `write_notifications_until_result: true` from the running broker;
+`write_notification_kinds` lists the page kinds. Waits have no subscription
+TTL. The event is `{"event": "akdbx.write-result", "state": "saved", ...}`
+with only the result state (`saved`, `failed`, `cancelled`, `expired` or
+`interrupted`) and opaque subscription and event IDs: no values, metadata,
+page URL or write handle. The page deadline sends `expired`; a cancel, a
+stale page (another vault change) and a failed save send their results; a
+correctable mistake on the page sends nothing. Waits survive a restart in the
+notification-state file plus `.writes`, which holds only a hash of the write
+handle; a page that was still open reports `interrupted`. Delivery makes at
+most three attempts. Generated passwords have no page and take no
+subscription. See the
+[write-result notification workflow](skills/akdbx/references/write-notifications.md).
+
 ## Card-save notifications
+
+From 0.53.0, `subscribe-write` also covers card pages. The card-save commands
+below keep working unchanged.
 
 Private card forms can resume the same agent task through a one-shot HTTPS
 webhook, with the same bounded sender and private persistent storage used by
@@ -884,7 +947,12 @@ the broker posts `akdbx.sms-received` with only the source and the message id
 when the next text with a code arrives, so an agent can end its turn and
 resume on the text. The setup page also ends with a live test: it waits for a
 test text and shows **Code received** when the code arrives, or why AKDBX dropped
-the text.
+the text. From 0.53.0, `subscribe-sms --source NAME --any-text` wakes on the
+next text that source forwards, with or without a code, so an agent can
+resume when the user finishes a setup or test page
+(`sms_notifications_any_text: true`). Its event adds the text's `result`
+(`code`, `no-code-word`, `no-code`, `several-codes` or `empty`) and has a
+message id only when a code was kept.
 
 Each source has its own random 256-bit token in its webhook URL
 (`/sms/in/TOKEN`). The broker saves only its SHA-256 hash, in a private mode
@@ -951,7 +1019,9 @@ This returns a private `/totp?token=...` page. The user enters the site's setup
 key or otpauth URI there and confirms the displayed account. Never put keys,
 URIs or generated codes in CLI arguments, environment variables, chat, logs,
 screenshots or notes. The page uses the existing Tailscale private-write
-transport; it accepts no secrets through agent RPC. Check
+transport; it accepts no secrets through agent RPC. Register
+`subscribe-write WRITE_HANDLE` before sharing the page and resume on its
+`akdbx.write-result` event (0.53.0), then check
 `write-status -- WRITE_HANDLE` for `state: saved`. A cancelled, expired or stale request cannot
 save; an existing OTP field requires explicit `setup-totp ... --replace`.
 Private imports save to KeePass only: they do not enable or change site 2FA.
@@ -1193,6 +1263,7 @@ Password fills also require integer `password_fill_protocol: 1`,
 - `commit-password --site-accepted -- WRITE_HANDLE`
 - `write-status -- WRITE_HANDLE`
 - `cancel-write -- WRITE_HANDLE`
+- `subscribe-write WRITE_HANDLE --webhook-url-file FILE` (0.53.0): one event when a private page has a result
 
 Put options before `--` and the returned handle after it. This also accepts
 opaque handles from older running brokers that start with `-`.

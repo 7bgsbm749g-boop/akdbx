@@ -149,7 +149,9 @@ def test_stale_private_links_refuse_forms_and_submissions(deployed, action, stat
     assert private_post(socket, winner)[0] == 200
     before = path.read_bytes()
     op = broker.writes.get(prepared['write_handle'])
-    assert op.state == 'pending' and op.revision != broker.writes.revision
+    # 0.53.0+: the competing save fails the stale form at once, so a
+    # write-result subscription gets its event without a status check.
+    assert op.state == 'failed' and op.revision != broker.writes.revision
     body = urlencode(dict(setup=URI, confirmed='yes')) if action == 'setup-totp' else urlencode(
         dict(password='synthetic-rejected-password', confirmation='synthetic-rejected-password', confirmed='yes'))
     for method in ('GET', 'POST'):

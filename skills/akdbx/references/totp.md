@@ -135,7 +135,12 @@ extract a vault field; the broker's own `capture-totp --qr` is the only QR read.
 the page while the user enters a key. No secret is returned or shown after
 submission. This initial private import is separate from later automatic fills.
 
-Check `write-status -- WRITE_HANDLE` for `state: saved`. `cancel-write -- WRITE_HANDLE` cancels an
+Before you share the page, register `subscribe-write WRITE_HANDLE
+--webhook-url-file FILE` (0.53.0+, `write_notifications_protocol: 1`) and end
+the turn; the `akdbx.write-result` event comes when the import is saved,
+fails, is cancelled or expires ([write-result notifications](write-notifications.md)).
+Do not poll `write-status` while the user imports the key. After the event,
+check `write-status -- WRITE_HANDLE` for `state: saved`. `cancel-write -- WRITE_HANDLE` cancels an
 unused request. The private link expires after five minutes and is invalid
 after a save attempt, cancellation, restart or conflicting vault change.
 Input validation errors permit correcting the same private form without

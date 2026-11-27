@@ -477,9 +477,10 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
   // image of another origin without CORS, also behind a redirect from a URL on
   // the page's origin, or a canvas that drew one) taints the canvas, and
   // getImageData throws in a page or a Chromium isolated world. A Firefox content
-  // script with <all_urls> host access (Enhanced security) may read a tainted
-  // canvas anyway, so the pin decodes only after convertToBlob, which refuses a
-  // canvas that is not origin-clean whatever its caller may read.
+  // script with <all_urls> host access (fill extension 0.5.0 to 0.15.x could ask
+  // for it) may read a tainted canvas anyway, so the pin decodes only after
+  // convertToBlob, which refuses a canvas that is not origin-clean whatever its
+  // caller may read.
   const originClean = async context => {
     if (context) await context.canvas.convertToBlob();
     return context;
@@ -649,8 +650,8 @@ QR_CAPTURE = r'''(async function(jsQR, selector, url, frameOrigin) {
     observer.disconnect();
   };
   const originalFocus = document.activeElement, origin = source();
-  // check() runs again during the extension's pixel challenge, whose rule hides
-  // the code's pixels for a moment: the content checks are in same().
+  // check() holds the DOM checks; the content comparison is in same(), which the
+  // read runs once through value().
   const check = () => performance.now() - created < 30000 && !tainted && isSecureContext && location.href === url && sameOrigin() &&
     document.hasFocus() && document.visibilityState === 'visible' && document.activeElement === originalFocus &&
     visible() && query(selector) === element && pointed() && source() === origin;
