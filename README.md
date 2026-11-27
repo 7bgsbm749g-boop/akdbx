@@ -132,7 +132,7 @@ DOM hit test on both routes. See [Visibility checks](#visibility-checks-what-the
 
 Fill extension 0.5.0 to 0.15.x (akdbx 0.34.0 to 0.52.0) had an experimental,
 opt-in **Enhanced security** setting: a pixel check with tab screenshots for
-covers over card, address, code and read targets. After 0.52.0 (fill extension
+covers over card, address, code and read targets. From 0.53.0 (fill extension
 0.16.0) that setting, its settings page and its `<all_urls>` permission request
 are removed. A page could beat the check, and the page that gets a value can read
 it anyway. Fills and reads work as with the setting off; a stored setting is
@@ -287,8 +287,8 @@ field that the agent chose, and that field must be one the user can see.
 | --- | --- | --- | --- |
 | DOM checks. Every pin: `display: none`, `visibility`, `opacity: 0`, zero size, off-screen, `inert`; focus (every pin except card pins); visible owners of child frames. Card, address and code pins: the style guard (filter, mask, clip, blend; only an ancestor `clip-path: inset()` that holds the whole field) and the `elementFromPoint` hit test at the field centre, through each parent frame. Read pins: the hit test at the start, centre and end of each line of the secret's text (of the box for a text input), or a 5 x 5 grid over a QR code. | CDP and extension | Hidden, transparent, zero-size, off-screen and inert targets; for card, address and code fields also clipped fields and an opaque cover that takes pointer events; a hidden login frame | Yes: a cover with a hole at the tested points. On the extension route, also a click-through cover. |
 | CDP native hit test (`DOM.getNodeForLocation`, which ignores `pointer-events: none`) for card, address and code fields, at the pin and before and after the write | CDP | A click-through cover at the field centre: `pointer-events: none`, `inert`, a popover `::backdrop` | Yes: a cover with a hole at the tested point. |
-| `IntersectionObserver` v2 occlusion test (removed after 0.52.0) | Extension, Chromium, with Enhanced security | Any box over the element | It refused ordinary pages (5 of 9 test pages: a floating label, a copy button, a cookie banner elsewhere), Firefox has no such test, and it ran only beside the pixel check. |
-| Pixel check with tab screenshots (removed after 0.52.0) | Extension, with Enhanced security (opt-in) | A cover over the sampled points | Yes: a page can read the check's colour from its own style and remove its cover while the check runs, or cover the text between the sampled points. It needed the `<all_urls>` permission. |
+| `IntersectionObserver` v2 occlusion test (removed in 0.53.0) | Extension, Chromium, with Enhanced security | Any box over the element | It refused ordinary pages (5 of 9 test pages: a floating label, a copy button, a cookie banner elsewhere), Firefox has no such test, and it ran only beside the pixel check. |
+| Pixel check with tab screenshots (removed in 0.53.0) | Extension, with Enhanced security (opt-in) | A cover over the sampled points | Yes: a page can read the check's colour from its own style and remove its cover while the check runs, or cover the text between the sampled points. It needed the `<all_urls>` permission. |
 
 Password pins have no style guard and no hit test, on both routes: a cover
 over a visible, focused password field does not stop its fill. Read pins
@@ -333,8 +333,13 @@ akdbx --unlock-origin "$AKDBX_UNLOCK_ORIGIN" extension build --output /path/to/a
 
 Firefox 153+ uses `extension install --browser firefox` and a separate build
 with `extension build --browser firefox --output FOLDER` (0.47.0+).
-See [Firefox setup](docs/firefox.md) for temporary add-on loading, the signed
-XPI requirement for permanent installation, and native host locations.
+From 0.53.0, `akdbx extension sign --output FOLDER HANDLE` has Mozilla sign
+the broker's own Firefox build (AMO, unlisted channel) for a permanent
+install. HANDLE selects the owner's AMO API key entry, whose `jwt_issuer` and
+`jwt_secret` fields stay inside the broker; only the AMO account that owns
+the add-on ID `akdbx@akdbx.org` can sign. See [Firefox setup](docs/firefox.md)
+for temporary add-on loading, signing, permanent installation and updates,
+and native host locations.
 
 The extension pairs its ECDH public key with the broker once per browser
 session: the popup shows a code computed from that key, and the broker's
@@ -607,7 +612,10 @@ the page, and the stored fields, to the listed fields; without it the page
 shows all fields. `update-identity HANDLE --title --group --fields` (0.28.3)
 adds or changes the chosen fields of one existing identity, selected with a
 fresh `search-identities` handle; its page never shows the saved values, and
-the previous version stays in the entry history. From 0.51.0, both commands
+the previous version stays in the entry history. From 0.52.1, the user may
+rename the identity on either page (same title rules and duplicate check as
+`--title`), and a saved `write-status` reports the saved `title` and `group`.
+From 0.51.0, both commands
 take `--valid-minutes N` (1 to 30, and not longer than the vault lock
 timeout; default 5) for a page that stays valid longer, and report
 `expires_in` and `expires_at` (UTC); the page shows the expiry time. A vault
@@ -673,8 +681,9 @@ detected Visa, Mastercard or American Express brand), the expiry (month 01 to
 12, not in the past) and the security-code length for the brand. It shows the
 detected brand and an error under each wrong field. The broker repeats the
 same checks, so a request that bypasses the page is refused; a refused form
-stays open for correction. The save button shows a busy state, then `Saved`,
-or `Page expired`, `Vault changed`, `Cancelled` or `Not confirmed`. A saved
+stays open for correction. The save button shows a busy state; a save then
+ends on a small `Success` screen (0.52.1), and a final error shows `Page
+expired`, `Vault changed`, `Cancelled` or `Not confirmed` on the button. A saved
 `write-status` includes the final non-secret `title` and `group`.
 
 `search-cards QUERY` returns only title, group, brand, last four digits and a
@@ -735,14 +744,14 @@ search handle and pin for each field. Supported types are `cc-name`, `cc-number`
 `cc-exp-month`, `cc-exp-year`, `cc-exp` and `cc-csc`. Combined expiry requires
 `--format MM/YY` or `MM/YYYY`; expiry year requires `--format YY` or `YYYY`.
 Month/year selects are supported when the value matches an unambiguous option.
-From 0.53.0, `pin-card-target --field-purpose FIELD` (with
+After 0.53.0, `pin-card-target --field-purpose FIELD` (with
 `--allow-autocomplete-off` for `off`) pins a main-frame or same-origin card
 field with no autocomplete token after the agent verified its purpose; a token
 for another detail still refuses. With `cc-exp-month` or `cc-exp-year` it also
 pins an ARIA dropdown button that owns one listbox (`aria-controls` or
 `aria-owns`): the broker opens it and chooses the one option that names the
 saved month or year, or refuses and leaves the selection as it was
-(`card_field_purpose_protocol: 1`, fill extension 0.17.0 on the extension route).
+(`card_field_purpose_protocol: 1`, fill extension 0.18.0 on the extension route).
 Main frames and same-origin iframes are supported. Version 0.14.0 adds the
 explicit `--processor adyen` pin option, gated by integer
 `card_processor_frames_protocol: 1` and `adyen` in `card_processors`.

@@ -11,10 +11,11 @@ function userGesture(event, activation) {
 const trust = globalThis.akdbxTrust || (typeof require === "function" ? require("./trust.js") : null);
 const privateLink = trust.privateLink;
 
-// The extension's own version, so a user can see a stale unpacked copy.
+// The extension's own version, so a user can see a stale unpacked copy. An AMO-signed Firefox
+// build has nine digits in its fourth part (akdbx extension sign).
 function versionText(manifest) {
   const version = manifest && typeof manifest.version === "string" ? manifest.version : "";
-  return /^\d{1,5}\.\d{1,5}\.\d{1,5}(\.\d{1,5})?$/.test(version) ? "akdbx extension " + version : "akdbx extension";
+  return /^\d{1,5}\.\d{1,5}\.\d{1,5}(\.\d{1,9})?$/.test(version) ? "akdbx extension " + version : "akdbx extension";
 }
 
 // How long ago a text arrived, in words.

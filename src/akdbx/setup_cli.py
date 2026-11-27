@@ -1703,7 +1703,9 @@ class Setup:
                       'For Snap or Flatpak, archive the contents of the build folder in a ZIP with manifest.json '
                       'at its root and select the ZIP. After each rebuild, create a fresh ZIP and load it with '
                       'Load Temporary Add-on. Load the add-on again after Firefox restarts. '
-                      'Permanent installation requires a Mozilla-signed XPI.', 'fill')
+                      'Permanent installation requires a Mozilla-signed XPI: with an AMO API key saved in the vault, '
+                      'the broker gets its own build signed with `akdbx extension sign --output FOLDER HANDLE` '
+                      '(docs/firefox.md).', 'fill')
         else:
             self.step(f'Load the extension once in each Chromium browser: open chrome://extensions, turn on Developer mode, '
                   f'choose Load unpacked and select {folder} (extension ID {EXTENSION_ID}). After an akdbx update, '

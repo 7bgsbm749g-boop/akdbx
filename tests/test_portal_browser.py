@@ -277,6 +277,17 @@ def enter(cdp, session, values):
         cdp.call('Input.insertText', {'text': text}, session)
 
 
+def saved_screen(cdp, session):
+    """The small saved screen: the result page's sheet, with no form left."""
+    wait_for(cdp, session, "document.querySelector('[data-save-result=saved]') !== null")
+    return cdp.evaluate("""(() => { const sheet = document.querySelector('main > .sheet');
+      return {forms: sheet.querySelectorAll('form, input, select, button, #page-expiry, dl').length,
+        heading: document.getElementById('portal-title').textContent, tab: document.title,
+        focused: document.activeElement === document.getElementById('portal-title'),
+        role: document.getElementById('save-result').getAttribute('role'),
+        lines: [...sheet.querySelectorAll('#save-result p')].map(p => p.textContent)}; })()""", session)
+
+
 def button(cdp, session):
     return cdp.evaluate("""(() => { const b = document.querySelector('.portal-submit');
       return {disabled: b.disabled, pending: b.classList.contains('is-pending'), done: b.classList.contains('is-done'),
@@ -313,16 +324,11 @@ def test_card_page_checks_details_then_shows_busy_and_saved_states(synthetic_chr
     assert pending['disabled'] and pending['pending'] and pending['bar'] and pending['busy'] == 'true'
     assert pending['label'] == 'Saving card\u2026'
     release.set()
-    wait_for(cdp, session, "document.querySelector('.portal-submit').classList.contains('is-done')")
-    saved = button(cdp, session)
-    assert saved['disabled'] and saved['label'] == 'Saved' and not saved['bar'] and saved['busy'] is None
-    assert saved['status'] == ('Card saved to vault. You may close this page. Saved as '
-                               '\u201cSynthetic travel card\u201d in Top level (no folder).')
-    assert cdp.evaluate("[document.getElementById('portal-title').textContent, document.title]", session) == [
-        'Success', 'AKDBX: Success']
-    assert cdp.evaluate("[...document.querySelectorAll('form input, form select')].every(c => c.disabled)", session)
-    assert cdp.evaluate("document.getElementById('number').value === ''", session)
-    assert cdp.evaluate("document.getElementById('title').value", session) == 'Synthetic travel card'
+    # The page ends on the small saved screen: no form, fields or expiry note.
+    assert saved_screen(cdp, session) == dict(
+        forms=0, heading='Success', tab='AKDBX: Success', focused=True, role='status',
+        lines=['Card saved to vault. You may close this page.',
+               'Saved as \u201cSynthetic travel card\u201d in Top level (no folder).'])
     assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle'])) == dict(
         ok=True, state='saved', title='Synthetic travel card', group='')
 
@@ -432,7 +438,7 @@ def open_save_page(cdp, session, base, prepared, title):
 
 
 @pytest.mark.parametrize('save_lab', list(SAVES), indirect=True)
-def test_save_pages_share_the_busy_and_saved_button(synthetic_chromium, save_lab):
+def test_save_pages_share_the_busy_state_and_saved_screen(synthetic_chromium, save_lab):
     _, _, cdp, session, _, _ = synthetic_chromium
     kind, broker, _, base, entered, release = save_lab
     prepare, _, title, idle, busy, values = SAVES[kind]
@@ -440,9 +446,9 @@ def test_save_pages_share_the_busy_and_saved_button(synthetic_chromium, save_lab
     open_save_page(cdp, session, base, prepared, title)
     assert button(cdp, session)['label'] == idle
     if kind.startswith('identity'):
-        # Only the requested field is on the page.
+        # Only the editable title and the requested field are on the page.
         assert cdp.evaluate("[...document.querySelectorAll('form input[name]')].map(i => i.name)", session) == [
-            'tel', 'confirmed']
+            'title', 'tel', 'confirmed']
     enter(cdp, session, values)
     cdp.evaluate("document.querySelector('input[name=confirmed]').click()", session)
     cdp.evaluate("document.querySelector('.portal-submit').click()", session)
@@ -451,14 +457,12 @@ def test_save_pages_share_the_busy_and_saved_button(synthetic_chromium, save_lab
     assert pending['disabled'] and pending['pending'] and pending['bar'] and pending['busy'] == 'true'
     assert pending['label'] == busy and pending['status'] == 'Saving. Please wait.'
     release.set()
-    wait_for(cdp, session, "document.querySelector('.portal-submit').classList.contains('is-done')")
-    saved = button(cdp, session)
-    assert saved['disabled'] and saved['label'] == 'Saved' and not saved['bar'] and saved['busy'] is None
     subject = {'identity': 'Identity', 'identity-update': 'Identity', 'password': 'Password', 'totp': 'Authenticator'}[kind]
-    assert saved['status'] == f'{subject} saved to vault. You may close this page.'
-    assert cdp.evaluate("[document.getElementById('portal-title').textContent, document.title]", session) == [
-        'Success', 'AKDBX: Success']
-    assert cdp.evaluate("[...document.querySelectorAll('form input')].every(c => c.disabled && !c.value || c.type === 'checkbox')", session)
+    # Every save page ends on the same small saved screen as a card.
+    assert saved_screen(cdp, session) == dict(
+        forms=0, heading='Success', tab='AKDBX: Success', focused=True, role='status',
+        lines=[f'{subject} saved to vault. You may close this page.']
+        + (['Saved as \u201cSample shipping\u201d in Web.'] if subject == 'Identity' else []))
     assert broker.dispatch(dict(action='write-status', write_handle=prepared['write_handle']))['state'] == 'saved'
 
 

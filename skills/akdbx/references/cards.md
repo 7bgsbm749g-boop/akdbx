@@ -79,7 +79,7 @@ a click-through cover over a field ([Firefox covers](../../../docs/firefox.md#co
 [visibility checks](../../../README.md#visibility-checks-what-they-stop)).
 Other cross-origin frames, shadow DOM and unannotated fields must be refused,
 except a main-frame or same-origin field whose purpose you verified (see
-[Field without an autocomplete hint](#field-without-an-autocomplete-hint-0530)).
+[Field without an autocomplete hint](#field-without-an-autocomplete-hint-after-0530)).
 
 ```bash
 akdbx pin-card-target --page-id PAGE_ID --frame-id FRAME_ID \
@@ -95,7 +95,7 @@ printing it, pass `--top-url-file FILE` or `--frame-url-file FILE` in place of
 the plain flag, and delete the file after the pin. See
 [exact URL with a private token](target-fill.md#exact-url-with-a-private-token).
 
-### Field without an autocomplete hint (0.53.0)
+### Field without an autocomplete hint (after 0.53.0)
 
 Some merchants build the card form themselves, in the main frame, with no
 `cc-…` autocomplete tokens: plain inputs for the number and security code, and
@@ -177,7 +177,7 @@ the usual `ok` and field only.
 - The page's own handlers see the click, as they would for the user.
 
 The CDP route supports both forms. The extension route applies the same DOM
-checks and needs fill extension 0.17.0 or newer (`extension_browsers` in
+checks and needs fill extension 0.18.0 or newer (`extension_browsers` in
 `status` shows `version_status: "current"`); the broker refuses a card purpose
 pin to an older extension.
 

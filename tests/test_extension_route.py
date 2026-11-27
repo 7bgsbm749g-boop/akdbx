@@ -1491,8 +1491,10 @@ def test_host_refuses_a_malformed_extension_version(version):
 def test_extension_version_check_is_strict():
     assert route.valid_extension_version('1.2.3') and route.valid_extension_version('99999.0.0')
     assert route.valid_extension_version('1.2.3.4') and route.valid_extension_version('99999.99999.99999.99999')
+    # An AMO-signed Firefox build has nine digits in its fourth part (extension_host.signed_version).
+    assert route.valid_extension_version('0.15.1.123456789')
     for bad in ('1.2', '1.2.3.4.5', '1.2.3.04', '01.2.3', '1.2.3 ', '1.2.3\n', '99999.99999.999999', '1.2.3.',
-                '1.2.3.123456', 1, True, None, '١.٢.٣', ''):
+                '1.2.3.1234567890', '99999.99999.99999.123456789', 1, True, None, '١.٢.٣', ''):
         assert not route.valid_extension_version(bad)
 
 
@@ -2042,8 +2044,8 @@ def test_a_card_purpose_pin_goes_only_to_an_extension_that_applies_it():
     broker = make_broker([CardEntry()])
     channel, extension = attach(broker, {5: [Document('TOP', TOP)]})
     purpose = dict(field_purpose='cc-exp-month')
-    # Fill extension 0.16.0 ignores a card purpose: it is never asked for such a pin.
-    reported, channel.version = channel.version, '0.16.0.3'
+    # Fill extension 0.17.0 ignores a card purpose: it is never asked for such a pin.
+    reported, channel.version = channel.version, '0.17.0.3'
     assert card_pin(broker, channel, 'TOP', 'cc-exp-month', **purpose) == card_failure()
     assert 'pin' not in extension.calls
     channel.version = reported

@@ -673,7 +673,7 @@ def _save_result(kind: str, result: dict) -> tuple[str, str]:
     title = 'Success' if reason == 'saved' else 'Failure'
     if result['ok']:
         lines = [f'{SUBJECTS[kind]} saved to vault. You may close this page.']
-        if kind == 'card':
+        if kind in {'card', 'identity'}:
             lines.append(f'Saved as \u201c{result["title"]}\u201d in {_group_label(result["group"])}.')
     else:
         lines = [_vault_text(result['error'])]
@@ -762,6 +762,14 @@ def _card_form(op, action: str, groups: list) -> str:
     inner = (f'{title}{group}{"".join(fields)}'
              '<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this card and destination</label>')
     return intro + _save_form(action, inner, label, 'Saving card\u2026', card=True)
+
+
+def _identity_title(op) -> str:
+    """The identity's title field: the user may rename the identity on the page."""
+    return field('Title', 'title', kind='text', maxlength=4096, value=op.values['title'], required=False,
+                 describedby='title-hint',
+                 note='<p class="field-hint" id="title-hint">The name you and the agent see when choosing '
+                      'this identity. Leave it empty to keep the current title.</p>')
 
 
 def computer_name(windows: bool | None = None) -> str:
@@ -882,9 +890,11 @@ def handler_for(state: UnlockState):
                             # Saved values are never shown; empty fields keep them.
                             hint = ('You are updating a saved identity. Saved values are not shown. ' + hint
                                     + ('' if len(op.fields) == 1 else ' A field you leave empty keeps its saved value.'))
-                        inner = f'{fields}<label><input type="checkbox" name="confirmed" value="yes" required>I confirm this identity and destination</label>'
+                        inner = (f'{_identity_title(op)}<p>{hint}</p>{fields}<label><input type="checkbox" name="confirmed" '
+                                 'value="yes" required>I confirm this identity and destination</label>')
                         label = 'Update identity in AKDBX' if op.uuid is not None else 'Save identity to AKDBX'
-                        body = f'<dl>{destination}</dl><p>{hint}</p>' + _save_form(action, inner, label, 'Saving identity\u2026')
+                        body = (f'<dl><dt>Group</dt><dd>{html.escape(_group_label(op.values["group"]))}</dd></dl>'
+                                + _save_form(action, inner, label, 'Saving identity\u2026'))
                     elif kind == 'totp':
                         replacement = '<p>This replaces the saved authenticator key.</p>' if op.replace else ''
                         setup = field('Setup key or otpauth TOTP URI', 'setup', maxlength=4096)
@@ -925,7 +935,8 @@ def handler_for(state: UnlockState):
                 if kind == 'card' and not CARD_FORM <= set(values) <= CARD_FORM | {'title', 'group'}:
                     raise ValueError
                 # The page shows only the fields this save asked for.
-                if kind == 'identity' and set(values) != set(op.fields) | {'confirmed'}:
+                if kind == 'identity' and not (set(op.fields) | {'confirmed'} <= set(values)
+                                               <= set(op.fields) | {'confirmed', 'title'}):
                     raise ValueError
             except Exception:
                 # Too much text can be corrected on the open page; nothing was saved.
@@ -960,7 +971,7 @@ def handler_for(state: UnlockState):
                                                    values.get('confirmed') == ['yes'], chosen)
             elif kind == 'identity':
                 return state.broker.identities.submit(op, {key: values[key][0] for key in op.fields},
-                                                        values['confirmed'] == ['yes'])
+                                                        values['confirmed'] == ['yes'], values.get('title', [None])[0])
             elif kind == 'totp':
                 return state.broker.writes.submit_totp(op, values.get('setup', [''])[0], values.get('confirmed') == ['yes'])
             else:

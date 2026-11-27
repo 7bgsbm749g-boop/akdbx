@@ -462,6 +462,9 @@ test("popup footer shows the extension's own version", () => {
   assert.equal(versionText(manifest), "akdbx extension " + manifest.version);
   assert.equal(versionText({version: "<b>1</b>"}), "akdbx extension");
   assert.equal(versionText(null), "akdbx extension");
+  // An AMO-signed Firefox build (akdbx extension sign) has nine digits in its fourth part.
+  assert.equal(versionText({version: "0.17.0.111058001"}), "akdbx extension 0.17.0.111058001");
+  assert.equal(versionText({version: "0.17.0.1110580010"}), "akdbx extension");
 });
 
 // ----- broker trust: signed origin statements ---------------------------------------

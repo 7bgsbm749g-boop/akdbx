@@ -41,7 +41,7 @@ CI jobs (all in `.github/workflows/`):
 | `native-merge` | `tests.yml` | Merge, admission, recovery and key-file suites with full Git history and a pinned KeePassXC 2.7.10 as the independent reference, with no skips; the full-cost admission deadlines |
 | `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, hidden-field and cover refusals |
 | `macos-extension-browser` | `tests.yml` | Chrome for Testing 153 (arm64) with the built extension on macOS 15: the extension suite, TOTP, and QR capture on the CDP and extension routes |
-| `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension: fills, TOTP, secret reads, QR capture (also with `<all_urls>`), SMS codes |
+| `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension: fills, TOTP, secret reads, QR capture (also with `<all_urls>`), SMS codes, the archive that `extension sign` submits; on Ubuntu with Firefox 161, Mozilla's `addons-linter` checks that archive |
 | `windows` | `tests.yml` | Named pipe, real Win32, WinForms and WPF apps, Chrome and Edge CDP, the extension in Edge, QR capture |
 | `macos-broker` | `tests.yml` | macOS 15: AppKit fields, Darwin IPC and TLS, Chrome CDP (logins, identities, SMS codes, cards on the page and in Adyen, Computop and Stripe frames) with a foreign-user listener, key-file and hardware-key unlock, guided setup and LaunchAgent, Android attach host checks with a simulated device |
 | `card-safety` | `card-safety.yml` | Real Chrome CDP: cards, processor frames, identities, SMS codes, agent desktop slots |
@@ -154,7 +154,9 @@ install from 0.49.0.
 ## Extension route, Firefox
 
 Firefox 153 or newer, with its own host and build (`--browser firefox`). It
-runs as a temporary add-on; see [Firefox setup](firefox.md).
+runs as a temporary add-on, or, from 0.53.0, as a permanently installed XPI
+that Mozilla signed for this broker (`akdbx extension sign`, AH); see
+[Firefox setup](firefox.md).
 
 | Operation | Linux (Firefox 153 and 161) | Windows (Firefox 161) | macOS (Firefox 161) |
 | --- | --- | --- | --- |
@@ -173,6 +175,7 @@ runs as a temporary add-on; see [Firefox setup](firefox.md).
 | Refuses a click-through cover over a field | ◼ (AG) | ◼ (AG) | ◼ (AG) |
 | Popup human click | ✅ login 0.47.0; address and texted (SMS) code from 0.52.0 (ext 0.15.0) · `firefox-extension-browser`; TOTP, card: no Firefox test (R) | ✅ login, address, texted code · `firefox-extension-browser` | ✅ login, address, texted code · `firefox-extension-browser` |
 | Agent desktop slots | — (U) | — (U) | — (U) |
+| Permanent install: AMO-signed XPI (`akdbx extension sign`) | ✅ from 0.53.0 · contract test (`linux`) against a fake AMO; `firefox-extension-browser` loads and fills through the submitted archive (AH) | ✅ from 0.53.0 · contract test (`windows`); `firefox-extension-browser` (AH) | ✅ from 0.53.0 · contract test (`macos-broker`); `firefox-extension-browser` (AH) |
 
 ## Android route (`akdbx android`)
 
@@ -331,9 +334,7 @@ job, for the reason given. Only `test_relay_integration.py` and `test_android_em
   stays origin-clean. A canvas
   tainted after the pin refuses even with identical pixels.
 - **W** Safari needs a containing Apple app, a Safari native-messaging adapter
-  and Apple signing. A permanently installed (signed) Firefox add-on also
-  needs the owner's Mozilla AMO credentials; until then Firefox uses a
-  temporary add-on.
+  and Apple signing.
 - **X** CI checks the Android route with a simulated device. From 0.52.0,
   `tests/test_android_emulator.py` also proves every Chrome-page operation
   on a real Android 15 Google Play emulator (Chrome 124) through the real
@@ -400,7 +401,22 @@ job, for the reason given. Only `test_relay_integration.py` and `test_android_em
   address and code fields; `card-safety` tests all three kinds of cover on a
   card field and `pointer-events: none` on a code field. An extension has no
   browser-native hit test, so the extension route cannot see one. Fill
-  extension 0.5.0 to 0.15.x had an opt-in pixel check for covers; after 0.52.0
+  extension 0.5.0 to 0.15.x had an opt-in pixel check for covers; from 0.53.0
   it is removed, because a page could beat it and the page gets the value
   anyway. A read pin uses the DOM hit test on both routes. See
   [Visibility checks](../README.md#visibility-checks-what-they-stop).
+- **AH** `tests/test_firefox_signing.py` runs `akdbx extension sign` against
+  a fake AMO over loopback TLS in the `linux`, `windows` and `macos-broker`
+  jobs: the real signing child process, AMO's documented token checks, status
+  codes and messages (taken versions, another account's add-on ID, validation
+  errors, rejection, a slow review that answers `pending` and resumes, a lost
+  answer, a tampered download, a redirect that must get no token). No CI job
+  calls Mozilla. The fake also takes the source archive (PATCH) and reads
+  the version list across pages. The `firefox-extension-browser` job loads the exact archive
+  that the command uploads, with its nine-digit signed-build version, into
+  real Firefox and fills through it, and Mozilla's `addons-linter` 10.16.0
+  must find no error in it. The first real signature happens on the owner's
+  AMO account. Firefox's check of Mozilla's signature itself is not tested in
+  CI. The add-on ID is fixed (`akdbx@akdbx.org`), so only the AMO account
+  that owns it can sign (✗ not built: signing under another account's own
+  add-on ID).
