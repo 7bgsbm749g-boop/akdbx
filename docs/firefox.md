@@ -184,7 +184,7 @@ process.
 | `AMO refused the API key (HTTP 401)` | Wrong issuer or secret, or the runner's clock is wrong. Nothing is signed. |
 | `AMO refused add-on ID akdbx@akdbx.org (HTTP 403 or 409)` | Another AMO account owns the ID, or the key cannot manage it. Nothing is signed. |
 | `AMO validation failed for VERSION: …` | AMO's validator refused the archive; its first errors follow. Nothing is signed. |
-| `AMO has not signed VERSION within N seconds (stage …)` | Review (or validation) outlasted the step. The version stays on AMO; re-run the failed release jobs to resume it. |
+| `AMO has not signed VERSION within N seconds (stage …)` | Review, validation or a slow AMO answer outlasted the step; every request and its child process end by the deadline. Once the version is on AMO, the message says so and a re-run of the failed release jobs resumes it; before that (lookup, upload or validation) it says that AMO has no version from this run. |
 | `Mozilla did not sign VERSION`, `AMO had version VERSION before and deleted it` | That version string is spent. Bump the fill extension version and release again. |
 | `AMO refused the source archive of VERSION` | AMO did not take the source archive. Re-run: the next run attaches it. |
 | `AMO could not be reached`, `AMO is busy or failed (HTTP 5xx or 429)` | Network failure or an AMO outage, after four retries. Re-run later. |

@@ -292,6 +292,7 @@ class Signer:
         self.timeout = timeout
         self.stage = 'lookup'
         self.version = None
+        self.on_amo = False  # AMO has this version: the lookup found it, or this run created it.
 
     @property
     def hide(self):
@@ -301,13 +302,20 @@ class Signer:
         return self.clock() + seconds > self.deadline
 
     def _out_of_time(self, version=None):
-        return SigningError(f'AMO has not signed {version or self.version} within {int(self.timeout)} seconds '
-                            f'(stage {self.stage}); the version stays on AMO; {RESUME}')
+        version = version or self.version
+        where = ('the version stays on AMO; ' + RESUME if self.on_amo
+                 else f'AMO has no version {version} from this run; re-run the failed release jobs')
+        return SigningError(f'AMO has not signed {version} within {int(self.timeout)} seconds '
+                            f'(stage {self.stage}); {where}')
+
+    def _budget(self, limit):
+        """A request timeout that ends, with the child's one-second stop margin, by the run's deadline."""
+        return min(limit, self.deadline - self.clock() - 1)
 
     # ---- AMO requests --------------------------------------------------
     def _call(self, method, path, *, body=None, content_type=None, timeout=REQUEST_TIMEOUT, url=None, auth=True):
-        # No request outlasts the run: each one gets at most the time that is left.
-        timeout = min(timeout, self.deadline - self.clock())
+        # No request outlasts the run: the child is stopped one second after its timeout, by the deadline.
+        timeout = self._budget(timeout)
         if timeout < 1:
             raise self._out_of_time()
         request = dict(method=method, url=url or urljoin(self.api_base, path), timeout=timeout)
@@ -319,18 +327,18 @@ class Signer:
         for attempt in range(RETRIES + 1):
             if auth:
                 request['token'] = token(self.issuer, self.secret, self.wall_clock())
-            response = self.runner(request, timeout + 5)
+            response = self.runner(request, timeout + 1)
             request.pop('token', None)
             status = response['status'] if response is not None else None
             if status is not None and status != 429 and status < 500:
                 break
-            if attempt == RETRIES or self._late(pause + 1):
+            if attempt == RETRIES or self._late(pause + 2):
                 if status is None:
                     raise SigningError('AMO could not be reached (network error or timeout); ' + RESUME)
                 raise SigningError(f'AMO is busy or failed (HTTP {status}); {RESUME}')
             self.sleep(pause)
             pause *= 2
-            timeout = min(timeout, self.deadline - self.clock())
+            timeout = self._budget(timeout)  # At least one second: two were left before the pause.
             request['timeout'] = timeout
         if status == 401:
             raise SigningError(f'AMO refused the API key (HTTP 401): check the {ISSUER_ENV} and {SECRET_ENV} '
@@ -513,6 +521,7 @@ class Signer:
         """The signed XPI bytes of ``build``: an existing AMO version of it is resumed, else one is created."""
         self.stage, self.version = 'lookup', build.version
         record = self._version(build.version)
+        self.on_amo = record is not None
         if record is None:
             upload = self._upload(build)
             record = self._create(build, upload)
@@ -521,6 +530,7 @@ class Signer:
                 record = self._version(build.version)
                 if record is None:
                     raise SigningError(f'AMO said version {build.version} exists but does not list it; ' + RESUME)
+            self.on_amo = True
         # AMO shows its own add-on's `source` to the author: null until an archive is attached.
         if 'source' in record and not record['source']:
             self._source(build, record['id'])

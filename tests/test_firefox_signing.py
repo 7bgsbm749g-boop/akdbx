@@ -504,22 +504,25 @@ def test_a_rerun_finds_the_version_in_the_authors_list_when_the_lookup_by_number
 
 
 def test_no_request_outlasts_the_run(lab, capsys):
-    """Every request gets at most the time that is left; slow but successful answers end the run on time."""
+    """Every request, and the child that sends it, ends by the deadline; slow but successful answers end the run on
+    time. A run that stops before AMO has the version does not say that it does."""
     clock = Clock()
-    start, budgets = clock.now, []
+    start, calls = clock.now, []
     real = lab.runner
     lab.amo.by_number = False
     lab.amo.exists = True
     lab.amo.versions = {f'0.0.{n}': dict(id=1000 + n, xpi=b'', polls=0) for n in range(1, 120)}
 
-    def slow(request, timeout):
-        budgets.append((request['timeout'], start + 60 - clock.now))
-        clock.now += min(21, request['timeout'])  # Each answer takes 21 seconds, or the child is stopped.
-        return real(request, timeout)
+    def slow(request, stop):
+        calls.append((request['timeout'], stop, start + 60 - clock.now))
+        clock.now += min(21, stop)  # Each answer takes 21 seconds, or the child is stopped first.
+        return real(request, stop)
     code, printed = release(lab, '--timeout', '60', clock=clock, runner=slow, capsys=capsys)
-    assert code == 1 and 'within 60 seconds (stage lookup)' in printed['error'], printed
+    version = firefox_signing.Build.current().version
+    assert code == 1 and printed['error'] == (f'AMO has not signed {version} within 60 seconds (stage lookup); AMO has '
+                                              f'no version {version} from this run; re-run the failed release jobs')
     assert clock.now - start <= 60
-    assert all(asked <= left for asked, left in budgets) and len(budgets) == 3
+    assert all(asked + 1 == stop <= left for asked, stop, left in calls) and len(calls) == 3
 
 
 def test_the_https_child_gets_no_amo_key(lab, monkeypatch):
