@@ -304,6 +304,57 @@ akdbx fill-identity --field tel --format international --calling-code 44 \
   phone number in international form with `update-identity --fields tel`.
 - A refusal never shows the number. `--format` applies only to `--field tel`.
 
+### Missing digits of the phone number in split boxes (0.55.0)
+
+Some sign-up pages check the phone number before they send a code: "We'll
+send a code to *********28. Enter the missing digits from the last four
+digits of your number." They show one single-character box per digit; the
+boxes for the known digits are disabled and already show them. Fill each
+empty box with its own pin, one digit at a time:
+
+```bash
+akdbx pin-identity-target --page-id PAGE_ID --frame-id FRAME_ID \
+  --top-url EXACT_HTTPS_URL --frame-url EXACT_HTTPS_URL \
+  --selector '#codeEntry-0' --field tel --phone-digit 1 --of-last 4
+akdbx search-identities 'Phone (mobile)' --exact
+akdbx fill-identity --field tel --notify-page --target TARGET_FROM_PIN -- HANDLE_FROM_SEARCH
+# Then the next box: a fresh pin with --phone-digit 2 and a fresh search handle.
+```
+
+Require `identity_phone_digit_protocol: 1` from `akdbx status`. On the
+extension route it needs fill extension 0.20.0 or newer; the broker refuses
+the pin to an older one. Native field and Android pins do not take it.
+
+- `--of-last M` is the number of boxes, that is how many last digits the page
+  asks about (2 to 8). `--phone-digit N` is the box's place among them,
+  counted from 1 on the left. The broker fills digit N of the last M digits of
+  the saved `tel`, counted from the end of the number, and nothing else. Read
+  N and M from the page's own text and box labels (`Enter code digit 1`);
+  never read or type the digits yourself.
+- Only ASCII digits of the saved value count. Spaces, a leading `+`,
+  hyphens, dots, slashes and brackets are dropped. Letters, an extension or
+  any other character refuse, and so does a number with fewer than M digits.
+- The pinned box must be a focused, visible, enabled, editable `<input>` of
+  type `text`, `tel` or `number` with `maxlength` 1 (`inputmode=numeric` is
+  fine; any autocomplete value is accepted). The nearest element around it
+  that holds another such box must hold exactly M of them, with the pinned box
+  at place N. A disabled or read-only box, a wider box, a wrong place or a
+  wrong box count refuses. The exact URL, same-origin frame, cover and
+  30-second single-use pin checks are those of any identity pin.
+- Known digits: before the write, every disabled or read-only box of the
+  group that shows one digit must show the saved number's digit at its place.
+  If one differs, the page asks about another phone number and the fill
+  refuses with nothing written. The masked text (`*********28`) is not
+  checked: its wording and place vary too much to read reliably. Check
+  yourself that it names the number you expect to fill.
+- `--field-purpose`, `--format` and `--calling-code` do not apply. A digit
+  pin with `--format` refuses.
+- Use `--notify-page` when the page must see the digit (most do); its handler
+  may move the focus to the next box, and the fill still confirms. Pin the next
+  box after the focus moved there.
+- The receipt is the usual `{"ok": true, "filled": "tel", ...}`. The digit,
+  the number and the masked text never appear in any output.
+
 A receipt reports the field token and delivery outcome. Check the site's
 non-secret state without reading the filled value. On an uncertain response
 or timeout, check the destination before taking any further action. Use

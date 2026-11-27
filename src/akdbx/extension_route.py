@@ -107,6 +107,8 @@ QR_VERSION = (0, 14, 0)
 FIREFOX_QR_VERSION = (0, 14, 2)
 # Identity pins with an explicit field purpose (pin-identity-target --field-purpose).
 FIELD_PURPOSE_VERSION = (0, 7, 0)
+# Phone-digit identity pins (pin-identity-target --phone-digit N --of-last M).
+PHONE_DIGIT_VERSION = (0, 20, 0)
 # Card pins with an explicit field purpose, and ARIA expiry dropdowns (pin-card-target --field-purpose).
 CARD_PURPOSE_VERSION = (0, 18, 0)
 # The toolbar popup offers the inbox's texted codes for a focused one-time-code field.
@@ -1385,6 +1387,14 @@ class ExtensionHub:
         except CardTargetError:
             raise ExtensionError() from None
         allowed |= set(request) & {'field_purpose', 'allow_autocomplete_off'}
+        digit = None
+        if kind == 'identity':
+            from .browser_identity import digit_spec
+            try:
+                digit = digit_spec(request)
+            except CardTargetError:
+                raise ExtensionError() from None
+            allowed |= set(request) & {'phone_digit', 'of_last'}
         if (set(request) != allowed or request.get('route') != 'extension'
                 or type(request.get(protocol)) is not int or request[protocol] != 1
                 or request.get('field') not in fields or not _text(request.get('selector'))
@@ -1404,6 +1414,11 @@ class ExtensionHub:
         # An extension older than 0.13.0 has no code pin; it is never asked for one.
         needs = (CODE_VERSION if kind == 'code' else None if purpose is False else
                  CARD_PURPOSE_VERSION if kind == 'card' else FIELD_PURPOSE_VERSION)
+        if digit is not None:
+            # Fill extension 0.20.0 and newer pin one box of a split phone-digit challenge;
+            # an older one is never asked for one.
+            spec.update(phone_digit=request['phone_digit'], of_last=request['of_last'])
+            needs = PHONE_DIGIT_VERSION
         channel, tab_id, pin_id, chain, created = self._pin(kind, request, spec, request.get('frame_url'), hardened=False,
                                                             needs=needs)
         try:

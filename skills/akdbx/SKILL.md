@@ -784,6 +784,16 @@ input next to a separate country picker takes `fill-identity --format national
 `--format international --calling-code CODE` (`+` code and number). A saved
 `07...` number needs `--calling-code`; some countries refuse it
 ([identities](references/identities.md#phone-number-next-to-a-country-picker)).
+A page that asks for the missing digits of the phone number in split
+one-digit boxes ("Enter the missing digits from the last four digits of your
+number") takes one pin per editable box, from 0.55.0:
+`pin-identity-target --field tel --phone-digit N --of-last M` (box N of M,
+counted from 1), then `fill-identity --field tel --notify-page`. The broker
+fills only that digit of the saved number's last M digits, and refuses when a
+disabled box shows a known digit that differs from the saved number
+(`identity_phone_digit_protocol: 1`; fill extension 0.20.0 on the extension
+route). Never read or type the digits yourself
+([split phone digits](references/identities.md#missing-digits-of-the-phone-number-in-split-boxes-0550)).
 From 0.36.3 (fill extension 0.7.2), a field in a side drawer or modal whose
 `clip-path: inset(...)` only trims its shadow pins with `--route extension` (Firefox requires fill extension 0.11.1+);
 the CDP route and other clip shapes refuse

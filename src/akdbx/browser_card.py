@@ -460,6 +460,10 @@ class BrowserCards:
     pin_script = PIN_SCRIPT
     pin_extra = ()
 
+    def _pin_variant(self, request):
+        """Extra request keys, the pin script and its extra arguments for this pin request."""
+        return set(), self.pin_script, self.pin_extra
+
     def _failure(self, started=False):
         return failure(started, kind=self.kind)
 
@@ -528,6 +532,8 @@ class BrowserCards:
             allowed |= {'processor', 'processor_protocol'}
         purpose, allow_off = field_purpose(self.kind, request)
         allowed |= set(request) & {'field_purpose', 'allow_autocomplete_off'}
+        variant_keys, pin_script, pin_extra = self._pin_variant(request)
+        allowed |= variant_keys
         self.prune()
         if (set(request) != allowed or type(request.get(protocol)) is not int or request[protocol] != 1
                 or profile is None or len(self.pins) >= MAX_PINS or request.get('field') not in self.fields
@@ -567,8 +573,8 @@ class BrowserCards:
                 arguments.extend((False, True, purpose, allow_off))
             elif self.kind == 'card' and purpose is not False:
                 arguments.extend((False, False, purpose, allow_off))
-            arguments.extend(self.pin_extra)
-            expression = '(' + self.pin_script + ')(' + ','.join(map(json.dumps, arguments)) + ')'
+            arguments.extend(pin_extra)
+            expression = '(' + pin_script + ')(' + ','.join(map(json.dumps, arguments)) + ')'
             result = cdp.call('Runtime.evaluate', dict(expression=expression, contextId=context,
                               silent=True, timeout=1000), session)
             created = self.clock()

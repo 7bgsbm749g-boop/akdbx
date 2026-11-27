@@ -1268,6 +1268,56 @@ def test_an_identity_field_without_an_autocomplete_hint_fills_with_an_explicit_p
     assert not any(e['trusted'] for e in lab.evaluate('syntheticEvents'))
 
 
+def digit_boxes(known):
+    """A split "last four digits of your number" challenge: two editable boxes, two disabled known digits."""
+    boxes = ''.join(f'<input type="text" maxlength="1" id="codeEntry-{n}" aria-label="Enter code digit {n + 1}" '
+                    f'inputmode="numeric" style="width:30px;height:30px">' for n in (0, 1))
+    boxes += ''.join(f'<input type="text" maxlength="1" id="codeEntry-{n}" aria-label="Enter code digit {n + 1}" '
+                     f'inputmode="numeric" style="width:30px;height:30px" disabled value="{d}">'
+                     for n, d in zip((2, 3), known))
+    return (f'<!doctype html><meta charset="utf-8"><form><p>We will send a code to *********{known}.</p>'
+            f'<div style="display:flex">{boxes}</div></form>' + DIGEST)
+
+
+# The synthetic PHONE ends in 0000; the second page names a number that ends otherwise.
+PAGES['/phone-digits'] = digit_boxes('00')
+PAGES['/phone-digits-other'] = digit_boxes('28')
+
+
+def test_phone_digit_pins_fill_one_digit_each_on_the_extension_route(harness):
+    """The extension applies the CDP route's phone-digit pin: one digit per box, and known digits must agree."""
+    lab, broker = harness.lab, harness.broker
+    url = lab.navigate('/phone-digits')
+    digit = lambda n: dict(phone_digit=n, of_last=4)  # noqa: E731
+    # Another place, a disabled box and a box count the page does not have all refuse.
+    assert identity_pin(harness, url, '#codeEntry-0', **digit(2)) == card_failure(kind='identity')
+    assert identity_pin(harness, url, '#codeEntry-0', phone_digit=1, of_last=6) == card_failure(kind='identity')
+    # A disabled box cannot take the focus; pin it while the editable box before it has the focus.
+    listing = harness.frames(url)
+    assert broker.dispatch(dict(action='pin-identity-target', identity_protocol=1, page_id=listing['page_id'],
+                                frame_id=listing['main_frame_id'], top_url=url, selector='#codeEntry-2', field='tel',
+                                route='extension', **digit(3))) == card_failure(kind='identity')
+    for n in (1, 2):
+        target = identity_pin(harness, url, f'#codeEntry-{n - 1}', **digit(n))
+        assert target['ok'] and target['identity_delivery'] == route.DELIVERY, target
+        receipt = identity_fill(broker, target['target'], notify_page=True)
+        assert receipt == dict(ok=True, filled='tel', identity_delivery=route.DELIVERY)
+        assert PHONE not in json.dumps(receipt)
+    assert lab.digest('codeEntry-0') == sha('0') and lab.digest('codeEntry-1') == sha('0')
+    # A format never applies to a digit pin.
+    lab.evaluate("document.getElementById('codeEntry-0').value = ''")
+    target = identity_pin(harness, url, '#codeEntry-0', **digit(1))
+    assert identity_fill(broker, target['target'], format='national') == card_failure(kind='identity')
+    assert lab.digest('codeEntry-0') == EMPTY
+    # The disabled boxes show 2 and 8: the saved number ends otherwise, so it is another number.
+    url = lab.navigate('/phone-digits-other')
+    target = identity_pin(harness, url, '#codeEntry-0', **digit(1))
+    assert target['ok'], target
+    assert identity_fill(broker, target['target']) == card_failure(kind='identity')
+    assert lab.digest('codeEntry-0') == EMPTY and lab.digest('codeEntry-1') == EMPTY
+    assert not any(e['trusted'] for e in lab.evaluate('syntheticEvents'))
+
+
 def test_an_ancestor_clip_path_inset_that_holds_the_field_fills_and_others_refuse(harness):
     """Only the extension route sees closed shadow roots, so only it accepts an inset that holds the whole field."""
     lab, broker = harness.lab, harness.broker

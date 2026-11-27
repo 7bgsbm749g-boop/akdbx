@@ -43,6 +43,12 @@ FIELD_PURPOSE_PROTOCOL = 1
 # number (digits only, no calling code or trunk prefix); ``international`` gives
 # ``+`` and the calling code before it.
 TEL_FORMATS = ('national', 'international')
+# pin-identity-target ``phone_digit`` and ``of_last`` (0.55.0): one single-character
+# box of a split "last digits of your number" challenge. The fill writes only digit
+# ``phone_digit`` of the saved number's last ``of_last`` digits.
+PHONE_DIGIT_PROTOCOL = 1
+# The lowest and highest ``of_last``: the number of boxes in the challenge.
+PHONE_DIGIT_BOXES = (2, 8)
 # Two-digit country calling codes (ITU-T E.164). Codes that start with 1 or 7
 # have one digit; every other code has three. The set of codes is prefix-free,
 # so these rules split any international number without a full table.
@@ -84,7 +90,7 @@ TRUNK_ZERO = {
 def capabilities():
     return dict(identity_fields_protocol=FIELDS_PROTOCOL, identity_update_protocol=UPDATE_PROTOCOL,
                 identity_field_purpose_protocol=FIELD_PURPOSE_PROTOCOL, identity_tel_formats=list(TEL_FORMATS),
-                identity_notify_page=True)
+                identity_notify_page=True, identity_phone_digit_protocol=PHONE_DIGIT_PROTOCOL)
 
 
 def calling_code(digits):
@@ -152,6 +158,38 @@ def international_number(value, expected_code=None):
     """``+``, the calling code and the national significant number, digits only."""
     code, national = _phone_number(value, expected_code)
     return '+' + code + national
+
+
+def last_digits(value, count):
+    """The last ``count`` digits of a saved phone number, for a phone-digit pin.
+
+    Only ASCII digits count. Spaces (any Unicode space separator), one leading
+    ``+``, hyphens, dots, slashes and brackets are dropped; anything else (an
+    extension, letters, other digits) refuses, so the digits are never taken
+    from the wrong part of the value. A number with fewer than ``count``
+    digits refuses. Errors never include the value.
+    """
+    text = ''.join(' ' if unicodedata.category(c) == 'Zs' else c for c in value).strip()
+    if text.startswith('+'):
+        text = text[1:]
+    if not re.fullmatch(r'[0-9 ().\-/]+', text, re.ASCII):
+        raise WriteError()
+    digits = re.sub(r'[^0-9]', '', text)
+    if not 1 <= count <= len(digits):
+        raise WriteError()
+    return digits[-count:]
+
+
+def pin_digit_boxes(pin):
+    """``of_last`` of a phone-digit pin (CDP or extension route), or None for any other pin."""
+    from .extension_route import ExtensionPin
+    request = pin.spec if isinstance(pin, ExtensionPin) else pin.get('request') if isinstance(pin, dict) else None
+    if isinstance(request, dict) and 'phone_digit' in request:
+        count = request.get('of_last')
+        if type(count) is not int or not PHONE_DIGIT_BOXES[0] <= count <= PHONE_DIGIT_BOXES[1]:
+            raise WriteError()
+        return count
+    return None
 
 
 def formatted(value, field, formatting, expected_code):
@@ -274,8 +312,15 @@ class IdentityManager:
                             or not self.broker.clock() < deadline <= self.broker.clock() + 4
                             or request['field'] != pin['field'] or not ready()):
                         return failure(kind='identity')
-                    value = formatted(_value_for(entry, request['field']), request['field'],
-                                      request.get('format'), expected_code)
+                    boxes = pin_digit_boxes(pin)
+                    if boxes is None:
+                        value = formatted(_value_for(entry, request['field']), request['field'],
+                                          request.get('format'), expected_code)
+                    elif request['field'] != 'tel' or {'format', 'calling_code'} & set(request):
+                        return failure(kind='identity')
+                    else:
+                        # The pinned box's script writes only its own digit of these.
+                        value = last_digits(_value_for(entry, 'tel'), boxes)
                     return targets.fill(pin, value, request['field'],
                                         lambda: ready() and self.broker.clock() < deadline, deadline,
                                         notify_page=request.get('notify_page', False))

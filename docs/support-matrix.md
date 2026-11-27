@@ -118,6 +118,7 @@ connection before the WebSocket handshake.
 | Identity | ✅ 0.18.2 · `card-safety` | ✅ 0.18.2 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | Child-frame login | ✅ 0.16.0 · `synthetic-password-fields` | ✅ 0.17.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | notify-page (identity) | ✅ 0.41.0 · `card-safety` | ✅ 0.41.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
+| Identity phone digit in a split box (`--phone-digit`) | ✅ 0.55.0 · `card-safety` | ✅ 0.55.0 · no CI | ✅ 0.55.0 · no CI |
 | Secret read (`capture-secret`), also in child frames | ✅ 0.20.0 · `synthetic-password-fields` | ✅ 0.20.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | `capture-totp`, text key | ✅ 0.35.0 · `synthetic-password-fields` | ✅ 0.35.0 · `windows` | ✅ 0.50.1 · `macos-broker` |
 | `capture-totp`, QR code | ✅ 0.50.1 · `synthetic-password-fields` | ✅ 0.50.1 · `windows` | ✅ 0.50.1 · `macos-extension-browser` (Chrome for Testing) |
@@ -142,6 +143,7 @@ install from 0.49.0.
 | Identity | ✅ 0.21.0 · `linux-extension-browser` | ✅ 0.21.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
 | Child-frame login | ✅ 0.32.0 (ext 0.4.0) · `linux-extension-browser` | ✅ 0.32.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
 | notify-page (identity) | ✅ 0.41.0 (ext 0.9.0) · `linux-extension-browser` | ✅ 0.41.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
+| Identity phone digit in a split box (`--phone-digit`) | ✅ 0.55.0 (ext 0.20.0) · `linux-extension-browser` | ✅ 0.55.0 · `windows` | ✅ 0.55.0 · `macos-extension-browser` |
 | Secret read, top document | ✅ 0.32.0 (ext 0.4.0) · `linux-extension-browser` | ✅ 0.32.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
 | Secret read, child frame | ⛔ (O) | ⛔ (O) | ⛔ (O) |
 | `capture-totp`, text key (top document) | ✅ 0.35.0 (ext 0.6.0 for grouped keys) · `linux-extension-browser` | ✅ 0.35.0 · `windows` | ✅ 0.43.0 · `macos-extension-browser` |
@@ -169,6 +171,7 @@ per-deployment build, is removed. See [Firefox setup](firefox.md).
 | Card (clipped drawers: ext 0.11.1) | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
 | Card processor iframes (Adyen, Computop, Stripe, Stripe Card Element) | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
 | Identity, notify-page | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
+| Identity phone digit in a split box (`--phone-digit`) | ✅ 0.55.0 (ext 0.20.0) · no CI | ✅ 0.55.0 (ext 0.20.0) · no CI | ✅ 0.55.0 (ext 0.20.0) · no CI |
 | Child-frame login | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
 | Secret read, top document | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` | ✅ 0.47.0 · `firefox-extension-browser` |
 | Secret read, child frame | ⛔ (O) | ⛔ (O) | ⛔ (O) |

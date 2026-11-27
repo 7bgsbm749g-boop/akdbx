@@ -8,8 +8,8 @@ from urllib.parse import urlsplit
 from .browser_card import NOTIFY_PAGE_REFUSED, TTL, failure
 from .browser_identity import DELIVERY
 from . import browser_slots, page_lifetime, page_url
-from .identities import (COMMANDS, FAILED, FIELD_PURPOSE_PROTOCOL, FIELDS, FIELDS_PROTOCOL, FILL_FIELDS, REFUSED,
-                         TEL_FORMATS, UPDATE_PROTOCOL, label_matches)
+from .identities import (COMMANDS, FAILED, FIELD_PURPOSE_PROTOCOL, FIELDS, FIELDS_PROTOCOL, FILL_FIELDS,
+                         PHONE_DIGIT_BOXES, PHONE_DIGIT_PROTOCOL, REFUSED, TEL_FORMATS, UPDATE_PROTOCOL, label_matches)
 from .extension_route import DELIVERY as EXTENSION_DELIVERY, ROUTES
 from .android_route import CHROME_DELIVERY as ANDROID_CHROME_DELIVERY, DELIVERY as ANDROID_DELIVERY, fill_reply
 from .native_fields import DELIVERY as NATIVE_DELIVERY
@@ -51,6 +51,13 @@ def add_parsers(commands):
                         'accepts a field with no autocomplete token or only "on"; a token for another detail still refuses')
     p.add_argument('--allow-autocomplete-off', action='store_true',
                    help='with --field-purpose: also accept autocomplete="off"')
+    p.add_argument('--phone-digit', type=int, metavar='N',
+                   help='with --field tel and --of-last: pin one single-character box (maxlength 1) of a split '
+                        '"last digits of your number" challenge; the fill writes only digit N, counted from 1, '
+                        'of the last --of-last digits of the saved number')
+    p.add_argument('--of-last', type=int, metavar='M',
+                   help=f'with --phone-digit: the number of boxes, that is how many last digits the page asks about '
+                        f'({PHONE_DIGIT_BOXES[0]} to {PHONE_DIGIT_BOXES[1]})')
     p.add_argument('--route', choices=ROUTES, help="cdp (debugging port) or extension (paired browser extension); default: the broker's")
     browser_slots.add_argument(p)
     p = commands.add_parser('fill-identity', help='fill the pinned identity field')
@@ -85,6 +92,19 @@ def _option_refusal(args, caps):
             return '--allow-autocomplete-off needs --field-purpose'
         if args.field_purpose is not None and args.field_purpose != args.field:
             return '--field-purpose must name the same detail as --field'
+        if (args.phone_digit is None) != (args.of_last is None):
+            return '--phone-digit and --of-last go together'
+        if args.phone_digit is not None:
+            if args.field != 'tel':
+                return '--phone-digit applies only to --field tel'
+            if args.field_purpose is not None or args.allow_autocomplete_off:
+                return '--phone-digit does not combine with --field-purpose'
+            if not PHONE_DIGIT_BOXES[0] <= args.of_last <= PHONE_DIGIT_BOXES[1] or not 1 <= args.phone_digit <= args.of_last:
+                return (f'--of-last must be {PHONE_DIGIT_BOXES[0]} to {PHONE_DIGIT_BOXES[1]} '
+                        'and --phone-digit 1 to --of-last')
+            if (type(caps.get('identity_phone_digit_protocol')) is not int
+                    or caps['identity_phone_digit_protocol'] != PHONE_DIGIT_PROTOCOL):
+                return 'broker lacks identity phone digit protocol 1'
         if args.field_purpose is not None and (type(caps.get('identity_field_purpose_protocol')) is not int
                                                or caps['identity_field_purpose_protocol'] != FIELD_PURPOSE_PROTOCOL):
             return 'broker lacks identity field purpose protocol 1'
@@ -216,6 +236,8 @@ def run(args, request):
                 payload['field_purpose'] = args.field_purpose
             if args.allow_autocomplete_off:
                 payload['allow_autocomplete_off'] = True
+            if args.phone_digit is not None:
+                payload.update(phone_digit=args.phone_digit, of_last=args.of_last)
             slot, refusal = browser_slots.request_field(args, caps, args.resolved_route)
             if refusal is not None:
                 print(json.dumps(dict(ok=False, error=refusal)))

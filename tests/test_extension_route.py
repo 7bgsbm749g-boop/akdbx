@@ -2297,3 +2297,37 @@ def test_a_text_expired_or_taken_by_the_agent_is_not_released_and_a_lock_drops_r
     # A lock clears the inbox, and with it every way to put a released text back.
     broker.lock()
     assert not broker.extension.restores and not broker.sms.messages
+
+
+class SplitPhoneEntry(Entry):
+    def get_custom_property(self, key):
+        return {IDENTITY_MARKER: 'v1', property_key('tel'): '+1 (555) 010-0128'}.get(key)  # Synthetic only.
+
+
+def test_a_phone_digit_pin_goes_only_to_an_extension_that_applies_it():
+    """Fill extension 0.20.0 and newer pin one box of a split phone-digit challenge; it gets the last digits sealed."""
+    broker = make_broker([SplitPhoneEntry(title='Phone (mobile)')])
+    channel, extension = attach(broker, {5: [Document('TOP', TOP)]})
+
+    def pin(**extra):
+        return broker.dispatch(dict(action='pin-identity-target', identity_protocol=1, page_id=f'{channel.id}.5',
+                                    frame_id='TOP', top_url=TOP, selector='#codeEntry-0', field='tel',
+                                    route='extension', **extra))
+    digit = dict(phone_digit=1, of_last=4)
+    reported, channel.version = channel.version, '0.19.0.3'
+    assert pin(**digit) == card_failure(kind='identity')
+    assert 'pin' not in extension.calls
+    channel.version = reported
+    for extra in (dict(phone_digit=1), dict(phone_digit=5, of_last=4), dict(phone_digit=1, of_last=4, field_purpose='tel')):
+        assert pin(**extra) == card_failure(kind='identity')
+    assert 'pin' not in extension.calls
+    target = pin(**digit)
+    assert target['ok'], target
+    assert [p['spec'] for p in extension.pins.values()] == [dict(
+        selector='#codeEntry-0', field='tel', processor=None, phone_digit=1, of_last=4)]
+    handle = broker.dispatch(dict(action='search-identities', identity_protocol=1, query='Phone'))['entries'][0]['handle']
+    receipt = broker.dispatch(dict(action='fill-identity', identity_protocol=1, handle=handle, target=target['target'],
+                                   field='tel', start_deadline=broker.clock() + 4))
+    assert receipt == dict(ok=True, filled='tel', identity_delivery=route.DELIVERY)
+    # The pinned box's own script picks its digit of these; the whole number never goes to the page.
+    assert extension.filled == [dict(value='0128')]
