@@ -47,6 +47,14 @@ final class SafariSettingsTests: XCTestCase {
 
     func testPackagedExtensionAttachesToBroker() throws {
         continueAfterFailure = false
+        addUIInterruptionMonitor(withDescription: "Disposable Python observer local network") { alert in
+            let description = alert.debugDescription
+            guard description.contains("Python"), description.contains("local networks") else { return false }
+            let allow = alert.buttons["Allow"]
+            guard allow.exists else { return false }
+            allow.click()
+            return true
+        }
         defer { record("safari-ui-final") }
         safari.launch()
         record("safari-ui-launched")
@@ -66,6 +74,20 @@ final class SafariSettingsTests: XCTestCase {
         let unsigned = checkbox(containing: "Allow unsigned extensions")
         enable(unsigned)
         record("safari-ui-after-unsigned")
+        let passwordField = safari.sheets.secureTextFields["Password"]
+        if passwordField.waitForExistence(timeout: 3) {
+            // The Python fixture created this credential on this disposable
+            // VM. No real user password or keychain is read by the test.
+            guard let password = ProcessInfo.processInfo.environment["AKDBX_CI_TEST_PASSWORD"] else {
+                XCTFail("Missing disposable CI account authorization")
+                return
+            }
+            passwordField.click()
+            passwordField.typeText(password)
+            safari.sheets.buttons["OK"].click()
+            XCTAssertTrue(passwordField.waitForNonExistence(timeout: 5), "Safari authorization did not complete")
+        }
+        record("safari-ui-authorized")
         XCTAssertEqual(String(describing: unsigned.value ?? ""), "1",
                        "Safari did not permit unsigned developer extensions")
         tab("Extensions")

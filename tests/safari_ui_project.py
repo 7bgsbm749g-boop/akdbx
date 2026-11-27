@@ -9,9 +9,9 @@ import plistlib
 from xml.sax.saxutils import escape
 
 
-def create_project(folder, probe_url):
+def create_project(folder, probe_url, *, authorization_password=None):
     folder = Path(folder)
-    folder.mkdir()
+    folder.mkdir(mode=0o700)
     (folder / 'main.swift').write_text('import Cocoa\nNSApplication.shared.run()\n')
     source = Path(__file__).with_name('safari_settings_ui.swift').read_text()
     source = source.replace('__PROBE_URL__', json.dumps(probe_url))
@@ -92,11 +92,21 @@ def create_project(folder, probe_url):
       buildForArchiving="NO" buildForAnalyzing="NO">{ui_ref}</BuildActionEntry>
   </BuildActionEntries></BuildAction>
   <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB"
-    selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
+    selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="NO">
     <Testables><TestableReference skipped="NO">{ui_ref}</TestableReference></Testables>
     <MacroExpansion>{host_ref}</MacroExpansion>
   </TestAction>
 </Scheme>
 '''
-    (scheme_dir / 'SafariUI.xcscheme').write_text(scheme)
+    if authorization_password is not None:
+        # This generated scheme stays private on the disposable VM. Neither
+        # the scheme nor the XCTest result bundle is a published artifact.
+        from xml.sax.saxutils import quoteattr
+        environment = ('<EnvironmentVariables><EnvironmentVariable '
+                       'key="AKDBX_CI_TEST_PASSWORD" value=' + quoteattr(authorization_password) +
+                       ' isEnabled="YES"/></EnvironmentVariables>')
+        scheme = scheme.replace('</TestAction>', environment + '</TestAction>')
+    path = scheme_dir / 'SafariUI.xcscheme'
+    path.write_text(scheme)
+    path.chmod(0o600)
     return bundle
