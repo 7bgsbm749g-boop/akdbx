@@ -362,8 +362,8 @@ akdbx fill HANDLE_FROM_SEARCH --mode password --target TARGET_FROM_PIN
 - Identity pins with `--field-purpose` (0.35.1) need fill extension 0.7.0 or
   newer. An older extension gets no such pin: rebuild and reload it
   (`version_status` in `extension_browsers`).
-- Card pins with `--field-purpose`, including expiry dropdown buttons (after
-  0.52.0), need fill extension 0.17.0 or newer. An older extension gets no
+- Card pins with `--field-purpose`, including expiry dropdown buttons
+  (0.53.0), need fill extension 0.17.0 or newer. An older extension gets no
   such pin.
 - A card or identity field under an ancestor `clip-path: inset(...)` that holds
   the whole field (a side drawer that trims its shadow) pins from fill

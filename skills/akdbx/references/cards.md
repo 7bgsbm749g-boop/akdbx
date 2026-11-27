@@ -50,11 +50,14 @@ than the broker's `lock_timeout_seconds`, and the default page is cut to it.
 The CLI refuses a value outside 1 to 30 or longer than the lock timeout before
 sending; the broker refuses one too.
 
-Before giving the user a private save page, register the event-driven
-[card-save notification](card-save-notifications.md) so the authorized task can
-resume without asking the user to report completion. Require the advertised
-card-save notification protocol; installing a CLI alone does not update a running
-broker. Do not create a polling schedule or give the subscription a waiting TTL.
+Before giving the user a private save page, register an event-driven
+notification so the authorized task can resume without asking the user to
+report completion: `subscribe-write` (0.53.0+,
+[write-result notifications](write-notifications.md), the same for every save
+page) or `subscribe-card-save` ([card-save notification](card-save-notifications.md),
+for older brokers; it still works). Require the advertised notification
+protocol; installing a CLI alone does not update a running broker. Do not poll
+`write-status`, create a polling schedule or give the subscription a waiting TTL.
 
 ## Choose a card and destination
 
@@ -76,7 +79,7 @@ a click-through cover over a field ([Firefox covers](../../../docs/firefox.md#co
 [visibility checks](../../../README.md#visibility-checks-what-they-stop)).
 Other cross-origin frames, shadow DOM and unannotated fields must be refused,
 except a main-frame or same-origin field whose purpose you verified (see
-[Field without an autocomplete hint](#field-without-an-autocomplete-hint-after-0520)).
+[Field without an autocomplete hint](#field-without-an-autocomplete-hint-0530)).
 
 ```bash
 akdbx pin-card-target --page-id PAGE_ID --frame-id FRAME_ID \
@@ -92,7 +95,7 @@ printing it, pass `--top-url-file FILE` or `--frame-url-file FILE` in place of
 the plain flag, and delete the file after the pin. See
 [exact URL with a private token](target-fill.md#exact-url-with-a-private-token).
 
-### Field without an autocomplete hint (after 0.52.0)
+### Field without an autocomplete hint (0.53.0)
 
 Some merchants build the card form themselves, in the main frame, with no
 `cc-…` autocomplete tokens: plain inputs for the number and security code, and

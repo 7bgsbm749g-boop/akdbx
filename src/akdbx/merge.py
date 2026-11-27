@@ -512,7 +512,7 @@ class MergeManager:
                         store.verified_capsules = admitted_capsules if admitting else versions.archives(verified)
                         verified._akdbx_store = store
                         self.broker.vault = verified
-                        self.broker.writes.invalidate_revision(all_pending=True)
+                        self.broker.writes.invalidate_revision()
                         receipt.update(ok=True, state='saved')
                     finally:
                         try:
@@ -537,7 +537,7 @@ class MergeManager:
                     store.verified_capsules = admitted_capsules if admitting else versions.archives(verified)
                     verified._akdbx_store = store
                     self.broker.vault = verified
-                    self.broker.writes.invalidate_revision(all_pending=True)
+                    self.broker.writes.invalidate_revision()
                 if admitting:
                     receipt['timings']['total_s'] = round(time.monotonic() - started, 6)
                     receipt['timings']['durability_s'] = round(time.monotonic() - validation_finished, 6)
