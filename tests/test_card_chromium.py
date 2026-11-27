@@ -895,6 +895,8 @@ def dropdown_state(chrome, selector):
     ('cc-exp-year', '#pidlInput_expiryYear', 'YY', '2031'),
     ('cc-exp-year', '#short-year', 'YYYY', '31'),
     ('cc-exp-month', '#combo-month', None, '9'),
+    # Microsoft's card form: a combobox button with aria-haspopup="true".
+    ('cc-exp-month', '#ms-month', None, '09'),
     # A value attribute counts when the text is that month's name.
     ('cc-exp-month', '#one-based-names', None, 'September')])
 def test_an_aria_expiry_dropdown_chooses_the_one_matching_option(chrome, field, selector, formatting, shown):
@@ -923,7 +925,8 @@ def test_an_aria_dropdown_with_no_single_match_refuses_and_keeps_the_selection(c
     assert evaluate(chrome, 'events') == ['open:' + selector[1:], 'close:' + selector[1:]]
 
 
-@pytest.mark.parametrize('selector', ['#plain-button', '#submit-dropdown', '#menu-dropdown', '#two-lists'])
+@pytest.mark.parametrize('selector', ['#plain-button', '#submit-dropdown', '#menu-dropdown', '#two-lists',
+                                      '#ms-menu'])
 def test_a_button_that_is_not_an_aria_listbox_dropdown_refuses(chrome, selector):
     page = hintless(chrome)
     assert hintless_pin(chrome, page, selector, 'cc-exp-month', field_purpose='cc-exp-month') == failure()

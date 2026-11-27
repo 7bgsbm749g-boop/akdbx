@@ -49,6 +49,10 @@ HINTLESS = """<!doctype html><title>Synthetic hint-less card form</title>
   data-options="01 02 03 04 05 06 07 08 09 10 11 12"><span>Month</span></button>
 <button type=button id=two-lists aria-haspopup=listbox aria-expanded=false aria-controls=list-a aria-owns=list-b
   data-options="01 02 03 04 05 06 07 08 09 10 11 12"><span>Month</span></button>
+<button type=button role=combobox id=ms-month aria-haspopup=true aria-expanded=false aria-owns=ms-month-list
+  data-options="01 02 03 04 05 06 07 08 09 10 11 12"><span>Month</span></button>
+<button type=button role=combobox id=ms-menu aria-haspopup=true aria-expanded=false aria-owns=ms-menu-list><span>Month</span></button>
+<ul id=ms-menu-list role=menu hidden><li role=menuitem>09</li></ul>
 </form>
 <script>
 window.events = [];
