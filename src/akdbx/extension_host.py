@@ -25,7 +25,6 @@ import json
 import os
 from pathlib import Path
 import re
-import secrets
 import shlex
 import shutil
 import socket
@@ -726,12 +725,10 @@ def _manifest_for(browser, written, version):
     return json.dumps(manifest, indent=2).encode('utf-8')
 
 
-def _config_text(origin, version, build_id):
-    return ('"use strict";\n// Written by `akdbx extension build`: the first trusted origin for pairing and unlock links.\n'
-            '// After the first pairing, origin changes signed by the broker identity key replace it.\n'
-            'globalThis.AKDBX_TRUSTED_ORIGIN = ' + json.dumps(origin) + ';\n'
-            '// A new random ID on every build: broker trust saved under another build no longer counts.\n'
-            'globalThis.AKDBX_BUILD_ID = ' + json.dumps(build_id) + ';\n'
+def _config_text(version):
+    return ('"use strict";\n// Written by `akdbx extension build`. Every akdbx with this extension version writes the same\n'
+            '// file for every user: no broker address and no build ID. The popup asks the user to confirm the\n'
+            '// broker address on first use (trust.js).\n'
             '// The manifest version of this build. The worker reports this copy, which Chrome caches with it.\n'
             'globalThis.AKDBX_EXTENSION_VERSION = ' + json.dumps(version) + ';\n')
 
@@ -741,110 +738,62 @@ def _config_text(origin, version, build_id):
 # updated folder would still open at its extension URL and show a switch that
 # no longer does anything, so a build removes it.
 RETIRED_FILES = ('options.html', 'options.js', 'options.css')
+# Fixed ZIP entry times: an archive's bytes depend only on its files.
+ZIP_TIME = (2020, 1, 1, 0, 0, 0)
 
 
-def build(destination, *, host_name=HOST_NAME, unlock_origin=None, browser='chrome'):
-    """Write the unpacked extension. An existing folder must already hold this extension.
+def build_files(browser='chrome', *, host_name=HOST_NAME):
+    """Every file of the generic build for one browser format: name -> bytes.
 
-    The popup opens pairing and unlock links only on a trusted origin, so a
-    replaced host cannot send the user to a look-alike master-password page.
-    ``unlock_origin`` comes from local configuration, never from the native
-    host: it is the first trusted origin. At the first pairing the extension
-    reads the broker's identity key over HTTPS from this origin and later follows
-    the origin changes that key signs (``broker_identity``), with no rebuild.
-    Every build writes a new random build ID (``BUILD_ID``): the extension
-    drops broker trust saved under another build and starts again from this
-    origin, while a reload of the same build keeps it.
+    From fill extension 0.19.0 the build holds no broker address and no build
+    ID, so every akdbx with this extension version writes the same files for
+    every user (the release attaches them). The popup asks the user to confirm
+    the broker address on first use and then binds the broker key through that
+    address's HTTPS page (``fill_extension/trust.js``). ``host_name`` is for
+    tests only; the release and the CLI always use the default host.
 
     The manifest gets ``built_version()``, and config.js the same version: the
     worker imports config.js, so Chrome caches it with the worker, and the
     worker reports that copy, not the manifest on disk (see background.js).
     """
-    destination = Path(destination)
     if browser not in BROWSERS:
         raise ValueError('unsupported extension browser')
-    origin = trusted_origin(unlock_origin) if unlock_origin is not None else None
-    if destination.exists():
-        try:
-            current = json.loads((destination / 'manifest.json').read_text(encoding='utf-8'))
-        except Exception:
-            current = {}
-        owned = (current.get('browser_specific_settings', {}).get('gecko', {}).get('id') == FIREFOX_EXTENSION_ID
-                 if browser == 'firefox' else current.get('key') == EXTENSION_KEY)
-        if not owned:
-            raise ValueError('destination exists and does not hold the akdbx extension; choose a new folder')
     written = _source_files(host_name)
     version = built_version()
     written['manifest.json'] = _manifest_for(browser, written, version)
+    written['config.js'] = _config_text(version).encode('utf-8')
+    return written
+
+
+def _owned(destination, browser):
+    try:
+        current = json.loads((destination / 'manifest.json').read_text(encoding='utf-8'))
+    except Exception:
+        current = {}
+    return (current.get('browser_specific_settings', {}).get('gecko', {}).get('id') == FIREFOX_EXTENSION_ID
+            if browser == 'firefox' else current.get('key') == EXTENSION_KEY)
+
+
+def build(destination, *, host_name=HOST_NAME, browser='chrome'):
+    """Write the generic unpacked extension (``build_files``). An existing folder must already hold this extension.
+
+    A folder built by an earlier akdbx keeps working after this rebuild: the
+    extension keeps the broker trust that it saved (trust.js).
+    """
+    destination = Path(destination)
+    written = build_files(browser, host_name=host_name)
+    if destination.exists() and not _owned(destination, browser):
+        raise ValueError('destination exists and does not hold the akdbx extension; choose a new folder')
     destination.mkdir(parents=True, exist_ok=True)
     for name in RETIRED_FILES:
         (destination / name).unlink(missing_ok=True)
     for name, data in written.items():
         (destination / name).write_bytes(data)
-    (destination / 'config.js').write_text(_config_text(origin, version, secrets.token_urlsafe(16)), encoding='utf-8')
     return destination
 
 
-# ----- the Firefox build that AMO signs (akdbx extension sign) ------------
-# A signed build's fourth version part is SIGNED_BASE + 1000 * (the content
-# part of built_version()) + a sequence number 1..999. AMO needs a new version
-# string for every signature, and the broker can still tell from the version
-# alone that a signed add-on runs its own contents (version_status 'current').
-# Unsigned builds use 0..65535 there, so the two never collide; Firefox and AMO
-# allow up to nine digits in each part.
-SIGNED_BASE = 100_000_000
-SIGNED_SEQUENCES = 999
-# Fixed ZIP entry times: the archive bytes depend only on the files.
-ZIP_TIME = (2020, 1, 1, 0, 0, 0)
-
-
-def _content_part():
-    return int(built_version().rsplit('.', 1)[1])
-
-
-def signed_version(sequence):
-    """The add-on version of signed build ``sequence`` (1..999) of this akdbx."""
-    if type(sequence) is not int or not 1 <= sequence <= SIGNED_SEQUENCES:
-        raise ValueError('no signed version number left for this extension build')
-    return f'{EXTENSION_VERSION}.{SIGNED_BASE + 1000 * _content_part() + sequence}'
-
-
-def signed_sequence(version):
-    """The sequence number of a signed version of this build's contents, else None."""
-    if not isinstance(version, str) or not valid_extension_version(version):
-        return None
-    base, _, last = version.rpartition('.')
-    if base != EXTENSION_VERSION or not last.isdigit():
-        return None
-    number = int(last) - SIGNED_BASE
-    if number < 0 or number // 1000 != _content_part() or not 1 <= number % 1000 <= SIGNED_SEQUENCES:
-        return None
-    return number % 1000
-
-
-def firefox_signing_files(origin, version, *, host_name=HOST_NAME, build_id=None):
-    """The files of one Firefox build for signing: this akdbx's own source, nothing from a caller.
-
-    The same files as ``build(browser='firefox')`` writes, with ``version`` in
-    manifest.json and config.js and a new random build ID (the add-on's trust
-    anchor; every signed build has its own). ``build_id`` repeats a submitted
-    build (the source archive's rebuild.py). ``host_name`` is for tests only,
-    as in ``build``; the broker always uses the default host.
-    """
-    if signed_sequence(version) is None:
-        raise ValueError('invalid signed extension version')
-    if build_id is None:
-        build_id = secrets.token_urlsafe(16)
-    elif not isinstance(build_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{22}', build_id):
-        raise ValueError('invalid build ID')
-    written = _source_files(host_name)
-    written['manifest.json'] = _manifest_for('firefox', written, version)
-    written['config.js'] = _config_text(trusted_origin(origin), version, build_id).encode('utf-8')
-    return written
-
-
-def xpi_bytes(files):
-    """A ZIP of the files, with manifest.json at the root (what AMO receives).
+def archive_bytes(files):
+    """A ZIP of the files, with manifest.json at the root: the release asset, and the archive AMO signs.
 
     Its bytes depend only on the files, on every platform: entries are stored,
     not compressed (zlib builds, such as zlib-ng in CPython for Windows, can
@@ -864,12 +813,36 @@ def xpi_bytes(files):
     return buffer.getvalue()
 
 
-# The build ID line in config.js: 128 random bits, base64url (trust.js BUILD_ID).
-BUILD_ID = re.compile(r'^globalThis\.AKDBX_BUILD_ID = "([A-Za-z0-9_-]{22})";$', re.M)
+def archive_name(browser, *, signed=False):
+    """The release asset name of the generic build for one browser format."""
+    if browser not in BROWSERS:
+        raise ValueError('unsupported extension browser')
+    if signed and browser != 'firefox':
+        raise ValueError('only the Firefox build is signed')
+    kind = 'firefox' if browser == 'firefox' else 'chrome'
+    return f'akdbx-extension-{kind}-{built_version()}.{"xpi" if signed else "zip"}'
+
+
+def pack(output, browser='chrome'):
+    """Write the generic build's archive (``archive_bytes``) to ``output``.
+
+    An existing file is never replaced: one with the same bytes is kept as it is (a second pack of the same
+    build), and any other is refused.
+    """
+    output = Path(output)
+    data = archive_bytes(build_files(browser))
+    try:
+        with open(output, 'xb') as stream:
+            stream.write(data)
+    except FileExistsError:
+        with open(output, 'rb') as stream:
+            if stream.read(len(data) + 1) != data:
+                raise
+    return output, data
 
 
 def add_parser(commands):
-    extension = commands.add_parser('extension', help='install the akdbx browser extension host, build the extension, or have Mozilla sign the Firefox build')
+    extension = commands.add_parser('extension', help='install the akdbx browser extension host, or build the generic extension')
     actions = extension.add_subparsers(dest='extension_command', required=True)
     python_help = ('interpreter that the launcher runs; it must import this akdbx (checked). '
                    'Default: the interpreter of this CLI')
@@ -886,13 +859,26 @@ def add_parser(commands):
     refresh_command = actions.add_parser(
         'refresh', help='point every installed host launcher at this akdbx (run after an update moves akdbx)')
     refresh_command.add_argument('--python', type=Path, help=python_help)
-    build_command = actions.add_parser('build', help='write the unpacked extension to a folder (load it unpacked)')
+    build_command = actions.add_parser(
+        'build', help='write the generic unpacked extension to a folder (load it unpacked); the same for every user')
     build_command.add_argument('--output', required=True, type=Path)
     build_command.add_argument('--browser', choices=BROWSERS, default='chrome',
                                help='extension format to build (default: chrome; Firefox requires 153+)')
+    pack_command = actions.add_parser(
+        'pack', help='write the generic extension as one ZIP with manifest.json at its root (the release asset)')
+    pack_command.add_argument('--output', required=True, type=Path,
+                              help='ZIP file to write; an existing file with other contents is never replaced')
+    pack_command.add_argument('--browser', choices=BROWSERS, default='chrome',
+                              help='extension format (default: chrome; firefox gives the archive that Mozilla signs)')
     actions.add_parser('info', help='show the extension ID, host name and per-browser host locations')
-    from .firefox_signing import add_parser as add_sign_parser
-    add_sign_parser(actions)
+
+
+def _confirm_origin(unlock_origin):
+    """The origin this CLI expects the broker to serve: what the user confirms in the popup on first use."""
+    try:
+        return trusted_origin(unlock_origin) if unlock_origin is not None else None
+    except Exception:
+        return None
 
 
 def run(args, socket_path=None, unlock_origin=None):
@@ -910,12 +896,17 @@ def run(args, socket_path=None, unlock_origin=None):
         elif args.extension_command == 'uninstall':
             removed = uninstall(args.browser, manifest_dir=getattr(args, 'manifest_dir', None))
             print(json.dumps(dict(ok=True, browser=args.browser, removed=removed), indent=2))
-        elif args.extension_command == 'build':
+        elif args.extension_command in ('build', 'pack'):
             browser = getattr(args, 'browser', 'chrome')
-            path = build(args.output, unlock_origin=unlock_origin, browser=browser)
+            if args.extension_command == 'build':
+                path, extra = build(args.output, browser=browser), {}
+            else:
+                path, data = pack(args.output, browser)
+                extra = dict(size=len(data), sha256=hashlib.sha256(data).hexdigest())
+            # The build holds no address: the popup asks the user to confirm the broker's on first use.
             print(json.dumps(dict(ok=True, extension_id=FIREFOX_EXTENSION_ID if browser == 'firefox' else EXTENSION_ID,
-                                  extension_version=built_version(),
-                                  path=str(path.absolute()), trusted_origin=trusted_origin(unlock_origin)), indent=2))
+                                  extension_version=built_version(), path=str(path.absolute()), **extra,
+                                  confirm_origin=_confirm_origin(unlock_origin)), indent=2))
         else:
             print(json.dumps(dict(ok=True, extension_id=EXTENSION_ID, extension_version=built_version(),
                                   host=HOST_NAME, protocol=PROTOCOL,
@@ -927,6 +918,10 @@ def run(args, socket_path=None, unlock_origin=None):
                                                 'extension_id': FIREFOX_EXTENSION_ID if b == 'firefox' else EXTENSION_ID,
                                                 'launcher_state': launcher_state(b)} for b in BROWSERS}), indent=2))
         return 0
+    except FileExistsError:
+        print(json.dumps(dict(ok=False, error=f'{args.output} exists with other contents; choose a new file')),
+              file=sys.stderr)
+        return 1
     except (OSError, ValueError, RuntimeError) as exc:
         print(json.dumps(dict(ok=False, error=str(exc))), file=sys.stderr)
         return 1

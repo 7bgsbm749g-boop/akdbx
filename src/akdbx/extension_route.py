@@ -151,8 +151,9 @@ NO_EXTENSION = 'extension route unavailable: no paired akdbx browser extension i
 # Bump it whenever the built extension changes: tests/fill_extension_fingerprint.json
 # records each version's contents, and test_extension_route.py checks the record.
 # A build adds a fourth part from its contents (extension_host.built_version), and
-# a loaded extension reports that four-part version. A Firefox build that AMO
-# signed has nine digits there (extension_host.signed_version).
+# a loaded extension reports that four-part version. The release signs that same
+# generic Firefox build on AMO, so a signed add-on reports it too. Add-ons that
+# the removed `akdbx extension sign` (0.53.0 to 0.54.x) signed have nine digits there.
 EXTENSION_VERSION_FORMAT = re.compile(r'(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})')
 REPORTED_VERSION_FORMAT = re.compile(EXTENSION_VERSION_FORMAT.pattern + r'(\.(0|[1-9][0-9]{0,8}))?')
 EXTENSION_VERSION = json.loads(files('akdbx').joinpath('fill_extension', 'manifest.json')
@@ -163,10 +164,10 @@ STALE = ('extension route unavailable: the browser runs an older akdbx extension
          'extension files on disk (stale build); restart the browser, or reload akdbx on chrome://extensions, '
          'then pair it again')
 MISMATCH = ('extension route unavailable: the browser runs akdbx extension {loaded}, another build than this '
-            "broker's {expected}; rebuild the folder the browser loads with this akdbx and the broker's private-page "
-            'origin (the origin of its unlock link): `akdbx --unlock-origin ORIGIN extension build --output FOLDER`, '
-            'or restart the broker if akdbx was updated; then reload akdbx on chrome://extensions and pair it again. '
-            'An AMO-signed Firefox add-on needs a new signature instead: `akdbx extension sign`, then install the new XPI')
+            "broker's {expected}; rebuild the folder the browser loads with this akdbx "
+            '(`akdbx extension build --output FOLDER`), or restart the broker if akdbx was updated; then reload akdbx '
+            'on chrome://extensions and pair it again. A signed Firefox add-on: install the signed XPI from the '
+            "release of this broker's akdbx version")
 
 
 def valid_extension_version(value):
@@ -187,8 +188,8 @@ def version_status(version, stale=False):
     and could not reload into it, so a browser restart or reload fixes it. ``mismatch``: the
     same MAJOR.MINOR.PATCH as this broker's build with another (or no) fourth part, so the
     browser loads other contents than this akdbx builds; a rebuild with this akdbx (or a
-    broker restart after an update) fixes it. A Firefox add-on signed by AMO for this
-    akdbx (``akdbx extension sign``) has its own version, which also counts as current.
+    broker restart after an update) fixes it. The release's AMO-signed Firefox add-on is the
+    same generic build, with the same version.
     """
     if version is None:
         return 'outdated'
@@ -196,8 +197,8 @@ def version_status(version, stale=False):
         return 'stale'
     loaded, shipped = version_parts(version), version_parts(EXTENSION_VERSION)
     if loaded == shipped:
-        from .extension_host import built_version, signed_sequence
-        return 'current' if version == built_version() or signed_sequence(version) is not None else 'mismatch'
+        from .extension_host import built_version
+        return 'current' if version == built_version() else 'mismatch'
     return 'outdated' if loaded < shipped else 'newer'
 
 

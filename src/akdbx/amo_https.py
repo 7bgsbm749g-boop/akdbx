@@ -1,16 +1,16 @@
-"""One HTTPS request to the Mozilla add-ons (AMO) API, in a child process of the broker.
+"""One HTTPS request to the Mozilla add-ons (AMO) API, in a child process of the release signer.
 
-`akdbx extension sign` talks to AMO through this file. The broker starts it
-with ``python -I`` for each request, sends one JSON object on stdin and kills
-it at a fixed deadline, so a slow DNS lookup, TLS handshake or server never
-holds a broker thread longer than that. It uses only the standard library.
+The release signing step (``firefox_signing``) talks to AMO through this file.
+It starts it with ``python -I`` for each request, sends one JSON object on
+stdin and kills it at a fixed deadline, so a slow DNS lookup, TLS handshake or
+server never holds the run longer than that. It uses only the standard library.
 
 The input names the method, the URL, an optional request body (base64) and
 its content type, and a JSON Web Token that expires within a minute. The
-API secret never reaches this process: the broker signs the token. The
+API secret never reaches this process: the signer signs the token. The
 token goes only in the Authorization header of this one request. This file
 ignores proxy variables and follows no redirect, so the header never goes to
-another host; the broker decides about a redirect itself. The output is one
+another host; the signer decides about a redirect itself. The output is one
 JSON object: the HTTP status, the Location header and the body (base64), or
 ``{"error": "network"}``. Nothing is logged.
 """
@@ -25,7 +25,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Requ
 MAX_INPUT = 16 * 1024 * 1024
 MAX_BODY = 8 * 1024 * 1024
 METHODS = ('GET', 'POST', 'PUT', 'PATCH')
-USER_AGENT = 'akdbx-extension-sign/1'
+USER_AGENT = 'akdbx-release-sign/1'
 
 
 class _NoRedirect(HTTPRedirectHandler):

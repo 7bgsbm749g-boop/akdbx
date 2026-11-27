@@ -81,7 +81,7 @@ Build an unpacked extension after installing this version of akdbx:
 For Firefox, add `--browser firefox` to the build command. Load its
 `manifest.json` through **about:debugging > This Firefox > Load Temporary
 Add-on**. Repeat after Firefox restarts. Permanent installation in standard
-Firefox requires a Mozilla-signed XPI (`akdbx extension sign` signs only the
+Firefox requires a Mozilla-signed XPI (the release signs only the
 fill extension, not this importer). Register with `install-host --browser
 firefox` and the origin and socket options below. Its fixed ID is
 `private-import@akdbx.org`. Omit `--extension-id` for Firefox. Use separate

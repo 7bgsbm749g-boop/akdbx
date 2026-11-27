@@ -13,6 +13,23 @@
     <button id="reset-yes" type="button">Reset and pair again</button>
   </div>
 </div>
+<div id="confirm" hidden>
+  <p>First use with this broker. akdbx opens pairing and unlock pages only on a broker address that you
+    confirm. The akdbx native host on this computer names this address:</p>
+  <p id="confirm-origin" class="origin"></p>
+  <p>Confirm it only if it is your broker's address: “akdbx status” on the computer with the broker shows it
+    as extension_trust.origin, and “akdbx setup” prints it. If you do not know this address, do not confirm it
+    and do not enter your master password.</p>
+  <button id="confirm-yes" type="button">Trust this address</button>
+</div>
+<div id="forget" hidden>
+  <button id="forget-start" type="button">Forget this broker…</button>
+  <div id="forget-confirm" hidden>
+    <p>Forgetting deletes the saved broker address and key. akdbx then asks you to confirm the address that the
+      broker names now. Forget only if you moved or set up this broker again yourself.</p>
+    <button id="forget-yes" type="button">Forget and confirm again</button>
+  </div>
+</div>
 <div id="pairing" hidden>
   <p>Pair this browser with akdbx. Check that the pairing page shows this code:</p>
   <p id="origin" class="detail"></p>
@@ -24,7 +41,6 @@
 <ul id="entries"></ul>
 <p id="version" class="footer"></p>
 <script src="api.js"></script>
-<script src="config.js"></script>
 <script src="trust.js"></script>
 <script src="popup.js"></script>
 </body>

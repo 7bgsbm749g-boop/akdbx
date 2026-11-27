@@ -7,12 +7,12 @@ function userGesture(event, activation) {
 }
 
 // Links arrive through the native host, so they open only on the origin that the
-// service worker trusts (trust.js): the built origin or one the broker's key signed.
+// service worker trusts (trust.js): the origin the user confirmed here, or one the broker's key signed.
 const trust = globalThis.akdbxTrust || (typeof require === "function" ? require("./trust.js") : null);
 const privateLink = trust.privateLink;
 
-// The extension's own version, so a user can see a stale unpacked copy. An AMO-signed Firefox
-// build has nine digits in its fourth part (akdbx extension sign).
+// The extension's own version, so a user can see a stale unpacked copy. Add-ons that the removed
+// `akdbx extension sign` (akdbx 0.53.0 to 0.54.x) had signed have nine digits in the fourth part.
 function versionText(manifest) {
   const version = manifest && typeof manifest.version === "string" ? manifest.version : "";
   return /^\d{1,5}\.\d{1,5}\.\d{1,5}(\.\d{1,9})?$/.test(version) ? "akdbx extension " + version : "akdbx extension";
@@ -36,7 +36,26 @@ function label(kind, entry) {
   return [entry.title, "address and contact details"];
 }
 
-// The trust message, and the reset that only a real click in this popup starts.
+// A two-step action (reset or forget) that only real clicks in this popup start.
+function twoStep(name, op, done, note, send) {
+  const box = document.getElementById(name);
+  box.hidden = false;
+  document.getElementById(name + "-start").onclick = event => {
+    if (!userGesture(event, navigator.userActivation)) return;
+    document.getElementById(name + "-confirm").hidden = false;
+  };
+  document.getElementById(name + "-yes").onclick = async event => {
+    if (!userGesture(event, navigator.userActivation)) return;
+    event.target.disabled = true;
+    const result = await send({op});
+    note.textContent = result && result.ok ? done : (result && result.error) || "Nothing changed.";
+    note.className = "detail";
+    note.hidden = false;
+    box.hidden = true;
+  };
+}
+
+// The trust message, and the reset or forget that only real clicks in this popup start.
 function showTrust(state, send) {
   const note = document.getElementById("trust");
   const text = state.trust_error || (state.origin_changed && trust.validOrigin(state.origin) &&
@@ -45,21 +64,35 @@ function showTrust(state, send) {
   note.textContent = typeof text === "string" ? text : "";
   note.hidden = !note.textContent;
   note.className = state.trust_error ? "warning" : "detail";
-  if (state.trust_reset !== true) return;
-  const reset = document.getElementById("reset");
-  reset.hidden = false;
-  document.getElementById("reset-start").onclick = event => {
-    if (!userGesture(event, navigator.userActivation)) return;
-    document.getElementById("reset-confirm").hidden = false;
-  };
-  document.getElementById("reset-yes").onclick = async event => {
+  if (state.trust_reset === true) {
+    twoStep("reset", "reset-trust", "Broker trust reset. Open akdbx again to pair this browser.", note, send);
+  } else if (state.trust_forget === true) {
+    twoStep("forget", "forget-trust", "Broker forgotten. Open akdbx again to confirm the broker's address.", note, send);
+  }
+}
+
+/* First use: nothing is trusted yet, and the native host names `state.propose_origin`. Show that exact origin;
+ * only a real click saves it, and the worker saves it only if the host still names it. Returns true when the
+ * popup shows the question (then it shows nothing else). */
+function showConfirm(state, send, status) {
+  const origin = state.propose_origin;
+  if (state.origin || !trust.validOrigin(origin)) return false;
+  status.textContent = "This extension does not trust a broker address yet.";
+  document.getElementById("confirm-origin").textContent = origin;
+  document.getElementById("confirm").hidden = false;
+  document.getElementById("confirm-yes").onclick = async event => {
     if (!userGesture(event, navigator.userActivation)) return;
     event.target.disabled = true;
-    const done = await send({op: "reset-trust"});
-    note.textContent = done && done.ok ? "Broker trust reset. Open akdbx again to pair this browser." : "Reset failed.";
-    note.className = "detail";
-    reset.hidden = true;
+    const result = await send({op: "confirm-origin", origin});
+    document.getElementById("confirm").hidden = true;
+    if (result && result.ok) {
+      status.textContent = "This extension now trusts " + origin + ".";
+      await main();
+    } else {
+      status.textContent = (result && result.error) || "Nothing saved.";
+    }
   };
+  return true;
 }
 
 async function main() {
@@ -73,6 +106,7 @@ async function main() {
     return;
   }
   showTrust(state, send);
+  if (showConfirm(state, send, status)) return;
   if (!state.paired) {
     const link = state.pairing_url && privateLink(state.pairing_url, "/extension/pair", state.origin);
     status.textContent = "This browser is not paired with akdbx yet.";
@@ -147,4 +181,4 @@ if (typeof document !== "undefined" && typeof akdbxBrowser !== "undefined" && ak
     document.getElementById("status").textContent = "akdbx request failed.";
   });
 }
-if (typeof module !== "undefined") module.exports = {userGesture, privateLink, label, versionText, age};
+if (typeof module !== "undefined") module.exports = {userGesture, privateLink, label, versionText, age, showConfirm};

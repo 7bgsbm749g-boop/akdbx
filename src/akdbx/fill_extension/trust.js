@@ -2,17 +2,23 @@
  *
  * Links arrive through the native host, and a replaced host could send the
  * user to a look-alike master-password page. So the popup opens a link only
- * on the origin this extension trusts:
+ * on the origin this extension trusts. Fill extension 0.19.0 is one generic
+ * build for every user: config.js holds no broker address and no build ID.
  *
- * - The extension always has an origin that it trusts independently of the
- *   host: the one `akdbx extension build` wrote into config.js, or the one it
- *   stored after a verified HTTPS key binding (or a signed move). With
- *   neither, it opens no link at all and asks the user to build it.
- * - It never stores a broker key or origin that only the native host sent.
- *   It reads the broker's statement over HTTPS from the trusted origin
+ * - First use. With no saved trust, the extension takes the origin that the
+ *   native host's signed identity statement names only as a proposal. The
+ *   popup shows that exact origin and asks the user to confirm it; until then
+ *   no pairing or unlock link opens and no captured secret is sealed to the
+ *   broker. The confirmation saves that origin only (`{v, origin}`), and only
+ *   while the host still names it. This is the one point where the native
+ *   host chooses anything: a host that a same-user attacker replaced before
+ *   the first confirmation can propose its own origin, and the user's check
+ *   of the shown origin is the guard (README "Browser extension trust").
+ * - It never stores a broker key that only the native host sent. It reads the
+ *   broker's statement over HTTPS from the trusted origin
  *   (`/.well-known/akdbx-identity`) and stores the key, origin and sequence
  *   number only when that statement verifies, names the trusted origin and
- *   has the key the host sent. A failed read stores nothing; the next
+ *   has the key the host sent. A failed read stores nothing new; the next
  *   identity message tries again.
  * - Later, it accepts a new origin only in a statement that the stored key
  *   signed, with the stored key id, a higher sequence number and a valid
@@ -22,16 +28,18 @@
  *   stored key and sequence number and keeps the trusted origin; the next
  *   key is again bound only through that origin's HTTPS page.
  * - A broker that names another origin than the trusted one, with no
- *   signature by the stored key, gets no reset: only a local
- *   `akdbx extension build` changes the first trusted origin.
- * - Every `akdbx extension build` writes a new random build ID into
- *   config.js, and each saved record keeps the build ID it was made under
- *   (`build`). A record from another build (the user ran
- *   `akdbx extension build` again and reloaded) no longer counts: trust
- *   starts again from the built origin. A reload of the same build keeps
- *   the record. A record with no `build` matches no build. A config.js with
- *   no valid build ID counts as not built. The native host cannot write
- *   config.js.
+ *   signature by the stored key, gets no reset. The popup offers "Forget this
+ *   broker" instead: it deletes the saved trust, and the next origin again
+ *   needs the user's confirmation (first use). The native host cannot click
+ *   in the popup, so it cannot forget or confirm anything itself.
+ * - Records saved by a per-deployment build (fill extension 0.18.x and
+ *   earlier, which baked the origin and a random build ID into config.js)
+ *   carry a `build` field, and this build trusts none of them: after the
+ *   update the popup asks for the first-use confirmation once. Such a build
+ *   ignored a record of another build but left it in storage until it bound
+ *   a new key, and this build cannot see which build was installed last. A
+ *   broker statement cannot settle it either: statements are public and
+ *   carry no freshness, so a replaced host could replay an old broker's.
  *
  * The signed bytes are the statement's JSON text with sorted keys and no
  * whitespace; src/akdbx/broker_identity.py documents the encoding and signs.
@@ -41,7 +49,6 @@
   const ORIGIN = new RegExp("^https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*" +
     "|\\[[0-9a-f:.]{2,45}\\])(?::[1-9][0-9]{0,4})?$");
   const KEY_ID = /^[A-Za-z0-9_-]{43}$/, PUBLIC_KEY = /^[A-Za-z0-9_-]{87}$/, SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
-  const BUILD_ID = /^[A-Za-z0-9_-]{22}$/;  // 128 random bits, base64url (src/akdbx/extension_host.py).
   const STORAGE_KEY = "broker_trust";
   const IDENTITY_PATH = "/.well-known/akdbx-identity";
   const FETCH_MS = 3000, MAX_IDENTITY = 4096;
@@ -163,19 +170,45 @@
     }
   }
 
-  // The record without its `build` field; current() checks that field.
-  function withoutBuild(record) {
-    if (!plain(record)) return null;
-    const {build, ...rest} = record;
-    return rest;
-  }
-
-  function storedKey(stored) {
-    const record = withoutBuild(stored);
+  // A bound broker key: its public key, key id, trusted origin and sequence number.
+  function storedKey(record) {
     return hasKeys(record, ["key_id", "origin", "public_key", "seq", "v"]) && record.v === 1 &&
       typeof record.public_key === "string" && PUBLIC_KEY.test(record.public_key) &&
       typeof record.key_id === "string" && KEY_ID.test(record.key_id) && validOrigin(record.origin) &&
       Number.isSafeInteger(record.seq) && record.seq >= 1;
+  }
+
+  // A trusted origin with no key yet: the user confirmed it, or a reset kept it.
+  function originOnly(record) {
+    return hasKeys(record, ["origin", "v"]) && record.v === 1 && validOrigin(record.origin);
+  }
+
+  // The saved record when it is one this extension trusts, else null (then nothing is trusted yet). A record of a
+  // per-deployment build has a `build` field and is not one of them (see the header).
+  function current(stored) {
+    return storedKey(stored) || originOnly(stored) ? stored : null;
+  }
+
+  // The broker identity key this extension trusts ({public_key, key_id}), or null before the first binding.
+  function trustedKey(stored) {
+    const record = current(stored);
+    return storedKey(record) ? {public_key: record.public_key, key_id: record.key_id} : null;
+  }
+
+  // The origin this extension trusts, or null: then no link opens and the popup asks for a confirmation.
+  function trustedOrigin(stored) {
+    const record = current(stored);
+    return record ? record.origin : null;
+  }
+
+  // A record to save: the verified facts {public_key, key_id, origin, seq}.
+  function saveRecord(facts) {
+    return {v: 1, ...facts};
+  }
+
+  // A trusted origin with no key: what the user's confirmation (first use) and a reset save.
+  function originRecord(origin) {
+    return validOrigin(origin) ? {v: 1, origin} : null;
   }
 
   const KEY_CHANGED = "This broker signs with another identity key than the one this extension trusts, so akdbx " +
@@ -183,93 +216,60 @@
     "state was deleted), reset the broker trust below: the extension then reads the new key from the broker's " +
     "HTTPS page at the same address. If you did not set up this broker again yourself, do not reset and do not " +
     "enter your master password.";
-  const NOT_BUILT = "This extension has no trusted broker address, so akdbx opens no pairing or unlock page. " +
-    "Run “akdbx extension build” on the computer with the broker, then load the new extension in this browser.";
+  const NO_STATEMENT = "The broker sent no signed address, so akdbx has no broker address to show you and opens " +
+    "no pairing or unlock page. Update akdbx on the computer with the broker and restart the broker; " +
+    "“akdbx status” there shows extension_trust when the broker signs its address.";
+  const UNVERIFIED = "The broker's origin statement could not be verified, so akdbx has no broker address to show " +
+    "you and opens no pairing or unlock page.";
 
   // The broker names another origin than the trusted one, and the stored key did not sign that move.
-  function elsewhere(named, trusted, built) {
-    return `The broker names ${named}, but this extension ${trusted === built ? "was built for" : "trusts"} ` +
-      `${trusted}, so akdbx opens no pairing or unlock page on ${named}. If you moved the broker to ${named} ` +
-      "yourself, run “akdbx extension build” again on the computer with the broker and reload the extension: " +
-      "a new build replaces the saved broker trust. Otherwise, do not enter your master password.";
+  function elsewhere(named, trusted) {
+    return `The broker names ${named}, but this extension trusts ${trusted}, so akdbx opens no pairing or unlock ` +
+      `page on ${named}. If you moved the broker to ${named} yourself, forget this broker below and confirm ` +
+      `${named} when akdbx asks. Otherwise, do not forget it and do not enter your master password.`;
   }
 
-  // An origin that the user's reset kept: the key is gone, the origin stays.
-  function resetRecord(stored) {
-    const record = withoutBuild(stored);
-    return hasKeys(record, ["origin", "reset", "v"]) && record.v === 1 && record.reset === true &&
-      validOrigin(record.origin);
-  }
-
-  // The build ID from config.js, or null: then nothing counts as built.
-  function buildOf(config) {
-    return plain(config) && typeof config.build === "string" && BUILD_ID.test(config.build) ? config.build : null;
-  }
-
-  // The built origin from config.js, or null.
-  function builtOrigin(config) {
-    return buildOf(config) && validOrigin(config.origin) ? config.origin : null;
-  }
-
-  // The saved record when this build made it, else null: any new build starts over from the built origin.
-  function current(stored, config) {
-    if (!(storedKey(stored) || resetRecord(stored))) return null;
-    const build = buildOf(config);
-    return build && stored.build === build ? stored : null;
-  }
-
-  // The broker identity key this extension trusts ({public_key, key_id}), or null before the first binding.
-  function trustedKey(stored, config) {
-    const record = current(stored, config);
-    return storedKey(record) ? {public_key: record.public_key, key_id: record.key_id} : null;
-  }
-
-  // The origin this extension trusts independently of the native host, or null.
-  function trustedOrigin(stored, config) {
-    const record = current(stored, config);
-    return record ? record.origin : builtOrigin(config);
-  }
-
-  // A record to save, with the build ID it was made under.
-  function saveRecord(facts, config) {
-    return {v: 1, ...facts, build: buildOf(config)};
-  }
-
-  /* What to trust now. `stored` is the saved record (or null), `config` the {origin, build} from config.js,
-   * `verified` the result of verifyIdentity, and `received` whether the host sent an identity at all.
-   * `fetched` is the statement read over HTTPS: undefined before the read, null when it failed.
-   * Returns {origin, store?, fetch?, from?, error, reset, changed, learned}: `origin` is the only origin for
-   * links (or null: no link opens), `store` a new record to save, `fetch` the origin whose statement to read
-   * before a first key is stored (then call again with `fetched`), `from` the old origin of a signed move,
-   * `error` fixed text for the user, and `reset` whether the popup offers the reset. A saved record made under
-   * another build is ignored, as if nothing were saved. */
-  function decide(stored, config, verified, received, fetched) {
-    const saved = current(stored, config);
+  /* What to trust now. `stored` is the saved record (or null), `verified` the result of verifyIdentity, and
+   * `received` whether the host sent an identity at all. `fetched` is the statement read over HTTPS: undefined
+   * before the read, null when it failed.
+   * Returns {origin, store?, fetch?, from?, propose, error, reset, forget, changed, learned}: `origin` is the only
+   * origin for links (or null: no link opens), `store` a new record to save, `fetch` the origin whose statement
+   * to read before a first key is stored (then call again with `fetched`), `from` the old origin of a signed
+   * move, `propose` the host's origin that the popup asks the user to confirm (nothing is trusted yet), `error`
+   * fixed text for the user, `reset` whether the popup offers the reset and `forget` whether it offers to forget
+   * the broker. */
+  function decide(stored, verified, received, fetched) {
+    const saved = current(stored);
     const known = storedKey(saved) ? saved : null;
-    const trusted = trustedOrigin(stored, config);
-    const built = builtOrigin(config);
-    const keep = (origin, error, reset = false) => ({origin, error, reset, changed: false, learned: false});
-    if (!trusted) return keep(null, NOT_BUILT);
+    const trusted = saved ? saved.origin : null;
+    const keep = (origin, error, {reset = false, forget = false, propose = null} = {}) =>
+      ({origin, error, reset, forget, propose, changed: false, learned: false});
+    if (!trusted) {
+      // First use: the host's origin is only a proposal, shown to the user; nothing opens before the confirmation.
+      if (!received) return keep(null, NO_STATEMENT);
+      if (!verified) return keep(null, UNVERIFIED);
+      return keep(null, null, {propose: verified.origin});
+    }
     if (known) {
       if (!received) return keep(known.origin, null);  // An older broker: no statement to check.
       if (!verified) return keep(known.origin, `The broker's origin statement could not be verified; akdbx keeps ${known.origin}.`);
       if (verified.public_key !== known.public_key || verified.key_id !== known.key_id) {
-        // No link opens until a reset and a new binding through the trusted origin's HTTPS page.
-        if (verified.origin !== known.origin) return keep(null, elsewhere(verified.origin, known.origin, built));
-        return keep(null, KEY_CHANGED, true);
+        // No link opens until a reset (same origin) or a forget (another origin) and a new binding.
+        if (verified.origin !== known.origin) return keep(null, elsewhere(verified.origin, known.origin), {forget: true});
+        return keep(null, KEY_CHANGED, {reset: true});
       }
       if (verified.seq > known.seq) {
         const changed = verified.origin !== known.origin;
-        return {origin: verified.origin, store: saveRecord(verified, config), error: null, reset: false, changed,
-          learned: false, ...(changed ? {from: known.origin} : {})};
+        return {origin: verified.origin, store: saveRecord(verified), error: null, reset: false, forget: false,
+          propose: null, changed, learned: false, ...(changed ? {from: known.origin} : {})};
       }
       if (verified.seq === known.seq && verified.origin === known.origin) return keep(known.origin, null);
       return keep(known.origin, `The broker sent an older origin statement; akdbx keeps ${known.origin}.`);
     }
-    // No key yet: the first key must come over HTTPS from the trusted origin.
+    // A trusted origin with no key yet: the first key must come over HTTPS from that origin.
     if (!received) return keep(trusted, null);
     if (!verified) return keep(trusted, `The broker's origin statement could not be verified; akdbx keeps ${trusted}.`);
-    if (verified.origin !== trusted) return keep(trusted, elsewhere(verified.origin, trusted, built));
+    if (verified.origin !== trusted) return keep(trusted, elsewhere(verified.origin, trusted), {forget: true});
     if (fetched === undefined) return {...keep(trusted, null), fetch: trusted};
     if (!fetched) return keep(trusted, null);  // The read failed: store nothing, try again later.
     if (fetched.origin !== trusted || fetched.public_key !== verified.public_key || fetched.key_id !== verified.key_id) {
@@ -277,11 +277,12 @@
         "akdbx learns no broker key. Do not enter your master password until the broker and the akdbx native host " +
         "are the ones you installed.");
     }
-    return {origin: fetched.origin, store: saveRecord(fetched, config), error: null, reset: false, changed: false, learned: true};
+    return {origin: fetched.origin, store: saveRecord(fetched), error: null, reset: false, forget: false, propose: null,
+      changed: false, learned: true};
   }
 
   const api = {STORAGE_KEY, IDENTITY_PATH, validOrigin, privateLink, canonical, verifyIdentity, fetchIdentity, decide,
-    storedKey, trustedOrigin, saveRecord, trustedKey, verifyChannel};
+    storedKey, trustedOrigin, saveRecord, originRecord, trustedKey, verifyChannel};
   globalThis.akdbxTrust = api;
   if (typeof module !== "undefined") module.exports = api;
 })();

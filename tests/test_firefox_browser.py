@@ -5,6 +5,7 @@ is a unique test host, removed at teardown. Only synthetic values enter Firefox;
 the observer checks hashes rather than reading field values.
 """
 import base64
+import contextlib
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -226,6 +227,30 @@ def fixture_markup(path):
 
 @pytest.fixture
 def firefox_lab(private_dir, certificates, request):
+    with firefox_session(private_dir, certificates, request, getattr(request, 'param', None)) as lab:
+        yield lab
+
+
+def private_subdir(parent, name):
+    """A new private folder inside the test's private folder (another broker's state)."""
+    folder = parent / name
+    if os.name == 'nt':
+        from akdbx.windows_security import ensure_private_directory
+        ensure_private_directory(folder)
+    else:
+        folder.mkdir(mode=0o700)
+    return folder
+
+
+@contextlib.contextmanager
+def firefox_session(private_dir, certificates, request, mode, *, host_name=None, password=PASSWORD):
+    """One broker, its HTTPS page on a fresh loopback origin, its native host and one Firefox profile.
+
+    The generic build (fill extension 0.19.0) trusts no broker address until the user confirms one in the
+    toolbar popup: the session confirms the broker's origin with a trusted click there, then pairs. Mode
+    'unconfirmed' leaves both to the test. ``host_name``: the native host that the build connects to, so
+    that several sessions load one build; ``password``: this broker's synthetic password.
+    """
     cert, key = private_dir / 'cert.pem', private_dir / 'key.pem'
     if os.name == 'nt':
         from akdbx.windows_security import write_new
@@ -293,7 +318,6 @@ def firefox_lab(private_dir, certificates, request):
     broker = None
     stop, errors = threading.Event(), []
     worker = driver = unlock = service = manifest = registration = None
-    mode = getattr(request, 'param', None)
     vault_path = private_dir / 'synthetic.kdbx'
     try:
         if mode in ('writable', 'qr', 'qr-all-urls'):
@@ -312,7 +336,7 @@ def firefox_lab(private_dir, certificates, request):
                 kdbx.save()
             vault = open_vault_with_password(vault_path, MASTER)
         else:
-            vault = Vault([Entry(username='synthetic@example.test', password=PASSWORD, url=url)])
+            vault = Vault([Entry(username='synthetic@example.test', password=password, url=url)])
         broker = Broker(vault, NoKeys())
         with socket.socket() as probe:
             probe.bind(('127.0.0.1', 0))
@@ -330,9 +354,8 @@ def firefox_lab(private_dir, certificates, request):
                 errors.append(type(error).__name__)
         worker = threading.Thread(target=run, daemon=True)
         worker.start()
-        name = 'org.akdbx.firefox_test_' + unique
-        folder = extension_host.build(private_dir / 'extension', browser='firefox', host_name=name,
-                                      unlock_origin=origin)
+        name = host_name or 'org.akdbx.firefox_test_' + unique
+        folder = extension_host.build(private_dir / 'extension', browser='firefox', host_name=name)
         if mode == 'qr-all-urls':
             # Fill extension 0.5.0 to 0.15.x could ask for <all_urls>, and Firefox keeps that grant
             # through an update that no longer lists it: the QR tests run with that access too.
@@ -357,10 +380,9 @@ def firefox_lab(private_dir, certificates, request):
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, registration) as handle:
                 winreg.SetValueEx(handle, '', 0, winreg.REG_SZ, str(manifest))
         addon = private_dir / 'extension.xpi'
-        if mode == 'signed':
-            # The exact archive that `akdbx extension sign` uploads to AMO, with its signed-build version.
-            addon.write_bytes(extension_host.xpi_bytes(extension_host.firefox_signing_files(
-                origin, extension_host.signed_version(1), host_name=name)))
+        if mode == 'release':
+            # The release's Firefox archive (`akdbx extension pack`), which AMO signs unchanged.
+            addon.write_bytes(extension_host.archive_bytes(extension_host.build_files('firefox', host_name=name)))
         else:
             with zipfile.ZipFile(addon, 'w') as archive:
                 for path in folder.iterdir():
@@ -380,9 +402,9 @@ def firefox_lab(private_dir, certificates, request):
         env = dict(os.environ)
         if os.environ.get('AKDBX_FIREFOX_NO_SANDBOX') == '1':
             env['MOZ_DISABLE_CONTENT_SANDBOX'] = '1'
-        service_args = ['--allow-system-access'] if mode in ('popup', 'qr-all-urls') else []
-        if service_args:
-            env["MOZ_REMOTE_ALLOW_SYSTEM_ACCESS"] = "1"
+        # The toolbar popup (first-use confirmation, popup fills) needs WebDriver's chrome context.
+        service_args = ['--allow-system-access']
+        env["MOZ_REMOTE_ALLOW_SYSTEM_ACCESS"] = "1"
         service = Service(service_args=service_args, executable_path=DRIVER, log_output=str(private_dir / 'geckodriver.log'),
                           env=env)
         driver = webdriver.Firefox(options=options, service=service)
@@ -404,10 +426,14 @@ def firefox_lab(private_dir, certificates, request):
                 break
             time.sleep(.05)
         assert token is not None and not errors, 'Firefox did not establish a pairing'
-        assert broker.extension.approve(token)
+        lab = SimpleNamespace(driver=driver, broker=broker, url=url, vault=vault_path, origin=origin, token=token,
+                              popup=f'moz-extension://{extension_uuid}/popup.html', addon=addon, host_name=name)
+        if mode != 'unconfirmed':
+            confirm_in_popup(lab)
+            wait_for_trust(lab, lambda record: record.get('key_id') is not None)
+            assert broker.extension.approve(token)
         driver.get(url)
-        yield SimpleNamespace(driver=driver, broker=broker, url=url, vault=vault_path,
-                              popup=f'moz-extension://{extension_uuid}/popup.html')
+        yield lab
     finally:
         try:
             if driver:
@@ -485,27 +511,89 @@ def test_firefox_local_host_document_pins_and_secret_delivery(firefox_lab):
     assert not fill(target['target'])['ok']
 
 
-@pytest.mark.parametrize('firefox_lab', ['signed'], indirect=True)
-def test_firefox_runs_the_archive_that_extension_sign_submits_as_a_current_build(firefox_lab):
-    """AMO signs the uploaded archive unchanged; Firefox loads it, and the broker calls its version current."""
-    broker, url = firefox_lab.broker, firefox_lab.url
-    version = extension_host.signed_version(1)
-    assert len(version.rsplit('.', 1)[1]) == 9  # Firefox accepts nine digits in a version part.
-    browsers = broker.dispatch({'action': 'ping'})['extension_browsers']
-    assert browsers == [dict(browser='firefox', paired=True, version=version, version_status='current')]
+def fill_main_password(lab):
+    """The agent route's password fill into the login page's main-frame field: the field's SHA-256 afterwards."""
+    broker, url = lab.broker, lab.url
     listing = broker.dispatch(dict(action='list-password-frames', password_protocol=1,
                                    frame_protocol=1, top_url=url, route='extension'))
-    assert listing['ok'] and len(listing['frames']) == 2  # Not refused as a stale or other build.
-    firefox_lab.driver.find_element('id', 'password').click()
+    assert listing['ok'] and len(listing['frames']) == 2, listing  # Not refused as a stale or other build.
+    lab.driver.find_element('id', 'password').click()
     target = broker.dispatch(dict(action='pin-password-target', password_protocol=1, page_id=listing['page_id'],
                                   frame_id=listing['main_frame_id'], top_url=url, selector='#password',
                                   mode='password', route='extension'))
     handle = broker.dispatch(dict(action='search', query='localhost'))['entries'][0]['handle']
     assert target['ok'] and broker.dispatch(dict(action='fill', handle=handle, mode='password',
                                                  target=target['target'], target_protocol=1))['ok']
-    assert firefox_lab.driver.execute_async_script(
-        'const done=arguments[arguments.length-1];digest(arguments[0]).then(done)', 'password') == \
-        hashlib.sha256(PASSWORD.encode()).hexdigest()
+    return lab.driver.execute_async_script(
+        'const done=arguments[arguments.length-1];digest(arguments[0]).then(done)', 'password')
+
+
+def bound_record(lab):
+    """The record the add-on saves once it bound this broker's key through the broker's HTTPS page."""
+    identity = lab.broker.extension.identity.message()
+    return {'v': 1, 'public_key': identity['public_key'], 'key_id': identity['statement']['key_id'],
+            'origin': lab.origin, 'seq': identity['statement']['seq']}
+
+
+@pytest.mark.parametrize('firefox_lab', ['release'], indirect=True)
+def test_firefox_runs_the_release_archive_that_amo_signs_as_a_current_build(firefox_lab):
+    """The release's Firefox ZIP is what AMO signs unchanged; Firefox loads it, and the broker calls it current."""
+    broker = firefox_lab.broker
+    data = firefox_lab.addon.read_bytes()
+    assert data == extension_host.archive_bytes(extension_host.build_files('firefox', host_name=firefox_lab.host_name))
+    with zipfile.ZipFile(firefox_lab.addon) as archive:
+        config = archive.read('config.js').decode()
+    assert 'AKDBX_TRUSTED_ORIGIN' not in config and 'AKDBX_BUILD_ID' not in config and firefox_lab.origin not in config
+    browsers = broker.dispatch({'action': 'ping'})['extension_browsers']
+    assert browsers == [dict(browser='firefox', paired=True, version=extension_host.built_version(),
+                             version_status='current')]
+    assert fill_main_password(firefox_lab) == hashlib.sha256(PASSWORD.encode()).hexdigest()
+
+
+@pytest.mark.parametrize('firefox_lab', ['unconfirmed'], indirect=True)
+def test_firefox_generic_build_opens_nothing_before_the_users_confirmation_and_pairs_after_it(firefox_lab):
+    """The broker runs on a fresh loopback port, not the default origin, and the build names no origin. The popup
+    shows the host's origin and opens no page until a trusted click confirms it; then the HTTPS page binds the key."""
+    lab, driver = firefox_lab, firefox_lab.driver
+    assert lab.origin != 'https://localhost:9443'
+    with zipfile.ZipFile(lab.addon) as archive:
+        assert not any(lab.origin.encode() in archive.read(name) for name in archive.namelist())
+    assert stored_trust(lab) is None
+    with driver.context(driver.CONTEXT_CHROME):
+        panel = open_toolbar_popup(lab)
+        try:
+            assert popup_find(lab, panel, f'//p[@id="confirm-origin" and text()={xpath_text(lab.origin)}]') == 1
+            for hidden in ('pairing', 'unlock'):  # No pairing or unlock page before the confirmation.
+                assert popup_find(lab, panel, f'//*[@id="{hidden}" and not(@hidden)]', timeout=0) == 0
+            assert popup_find(lab, panel, '//p[@id="status" and contains(., "does not trust a broker address yet")]') == 1
+        finally:
+            close_toolbar_popup(lab, panel)
+    assert stored_trust(lab) is None  # Opening the popup saved nothing.
+    with lab.broker.extension._lock:
+        assert not lab.broker.extension.approved
+    confirm_in_popup(lab)
+    assert stored_trust(lab) == bound_record(lab)
+    assert lab.broker.extension.approve(lab.token)
+    driver.get(lab.url)
+    assert fill_main_password(lab) == hashlib.sha256(PASSWORD.encode()).hexdigest()
+
+
+def test_firefox_users_of_two_brokers_load_the_same_build(private_dir, certificates, request):
+    """One release archive, two users with their own broker (own origin, key and vault): each confirms its own
+    broker in the popup, and each fill comes from that user's broker."""
+    host = 'org.akdbx.firefox_test_' + uuid.uuid4().hex
+    passwords = ['SYNTHETIC-Broker-A-Only-1!', 'SYNTHETIC-Broker-B-Only-2!']
+    archives, records = [], []
+    for index, password in enumerate(passwords):
+        folder = private_subdir(private_dir, f'user{index}')
+        with firefox_session(folder, certificates, request, 'release', host_name=host, password=password) as lab:
+            archives.append(lab.addon.read_bytes())
+            record = stored_trust(lab)
+            assert record == bound_record(lab)
+            records.append(record)
+            assert fill_main_password(lab) == hashlib.sha256(password.encode()).hexdigest()
+    assert archives[0] == archives[1]  # The same bytes for both users.
+    assert records[0]['origin'] != records[1]['origin'] and records[0]['key_id'] != records[1]['key_id']
 
 
 def test_firefox_totp_uses_exact_main_and_child_documents_without_keyboard(firefox_lab):
@@ -655,43 +743,123 @@ def test_firefox_generated_password_and_capture(firefox_lab, private_dir):
     assert hashlib.sha256(key.encode()).digest() == hashlib.sha256(b'JBSWY3DPEHPK3PXP').digest()
 
 
+# Firefox 153 reads WebDriver capabilities through toJSON(); newer releases use Map.get().
+POPUP_FIND = """
+    const [panel, xpath, click, timeout, done] = arguments;
+    (async () => {
+        const actor = panel.browsingContext.currentWindowGlobal.getActor("MarionetteCommands");
+        const found = await actor.findElements("xpath", xpath, {all: true, timeout});
+        if (click === "text") return Promise.all(found.map(element => actor.getElementText(element)));
+        if (!click || found.length !== 1) return found.length;
+        const capabilities = Object.assign(new Map([["moz:webdriverClick", true]]),
+            {toJSON() { return {"moz:webdriverClick": true}; }});
+        await actor.clickElement(found[0], capabilities);
+        return "clicked";
+    })().then(done, e => done(String(e)));
+"""
+
+
+def open_toolbar_popup(lab):
+    """Click akdbx's toolbar button as the user does; the popup's XUL browser (call in the chrome context)."""
+    from selenium.webdriver.support.ui import WebDriverWait
+
+    driver = lab.driver
+    driver.execute_script("window.CustomizableUI.addWidgetToArea('akdbx_akdbx_org-browser-action', 'nav-bar')")
+    widget = driver.find_element('id', 'akdbx_akdbx_org-browser-action')
+    widget.find_element('css selector', '.unified-extensions-item-action-button').click()
+    # The toolbar panel is a XUL browser. WebDriver's switch_to.frame only
+    # accepts HTML frames. Use Firefox's own WebDriver click in the panel.
+    return WebDriverWait(driver, 8).until(lambda d: d.execute_script("""
+        return [...document.querySelectorAll('browser.webextension-popup-browser')]
+            .find(b => b.getBoundingClientRect().width > 0 &&
+                b.browsingContext?.currentWindowGlobal?.documentURI.spec === arguments[0]) || null;
+    """, lab.popup))
+
+
+def popup_find(lab, panel, xpath, *, click=False, timeout=8000):
+    """How many popup elements match ``xpath`` (waiting up to ``timeout`` ms for one); with ``click``, a trusted
+    click on the only match ('clicked')."""
+    return lab.driver.execute_async_script(POPUP_FIND, panel, xpath, click, timeout)
+
+
+def close_toolbar_popup(lab, panel):
+    lab.driver.execute_script("arguments[0].closest('panel')?.hidePopup()", panel)
+
+
+def stored_trust(lab):
+    """The broker trust that the add-on saved, read in one of its own pages (a new tab, closed afterwards)."""
+    from selenium.webdriver.support.ui import WebDriverWait
+    driver = lab.driver
+    original = driver.current_window_handle
+    driver.switch_to.new_window('tab')
+    try:
+        driver.get(lab.popup)
+        WebDriverWait(driver, 5).until(lambda d: d.execute_script("return typeof browser === 'object'"))
+        return driver.execute_async_script(
+            "browser.storage.local.get('broker_trust').then(found => arguments[0](found.broker_trust ?? null))")
+    finally:
+        driver.close()
+        driver.switch_to.window(original)
+
+
+def wait_for_trust(lab, done, timeout=10):
+    deadline = time.monotonic() + timeout
+    while True:
+        record = stored_trust(lab)
+        if record is not None and done(record):
+            return record
+        assert time.monotonic() < deadline, record
+        time.sleep(.3)
+
+
+def xpath_text(text):
+    return json.dumps(text)  # The test origins hold no quote.
+
+
+def confirm_in_popup(lab, origin=None):
+    """The user's first use: the popup shows exactly the broker's origin, and a trusted click confirms it.
+
+    Returns once the popup shows the pairing page's origin (the broker key is then bound)."""
+    origin = origin or lab.origin
+    driver = lab.driver
+    with driver.context(driver.CONTEXT_CHROME):
+        panel = open_toolbar_popup(lab)
+        try:
+            shown = popup_find(lab, panel, f'//div[@id="confirm" and not(@hidden)]'
+                                           f'//p[@id="confirm-origin" and text()={xpath_text(origin)}]')
+            assert shown == 1, 'the popup does not ask to confirm ' + origin
+            assert popup_find(lab, panel, '//div[@id="pairing" and not(@hidden)]', timeout=0) == 0
+            # Firefox resizes the panel when the question appears, and a click during that can miss the button.
+            # The click handler disables the button at once, so click again only while it is still enabled.
+            for attempt in range(3):
+                assert popup_find(lab, panel, '//button[@id="confirm-yes" and not(@disabled)]', click=True) == 'clicked'
+                if popup_find(lab, panel, '//button[@id="confirm-yes" and @disabled] | //div[@id="confirm" and @hidden]',
+                              timeout=1500):
+                    break
+            else:
+                raise AssertionError('three trusted clicks on Trust this address had no effect')
+            paired = f'//div[@id="pairing" and not(@hidden)]//p[@id="origin" and text()={xpath_text("Pairing page: " + origin)}]'
+            if popup_find(lab, panel, paired, timeout=8000) != 1:
+                shown = popup_find(lab, panel, '//p[@id="status" or @id="trust" or @id="origin" or @id="code"]',
+                                   click='text', timeout=0)
+                shown.append(popup_find(lab, panel, '//div[@id="pairing" and not(@hidden)]', timeout=0))
+                raise AssertionError(f'the popup did not show the pairing page after the confirmation: {shown}')
+        finally:
+            close_toolbar_popup(lab, panel)
+
+
 def click_popup_entry(lab, text=None):
     """Open the toolbar popup and click one entry with Firefox's own WebDriver click (a trusted click).
 
     ``text``: the entry that shows it; None: the popup must list exactly one entry.
     """
-    from selenium.webdriver.support.ui import WebDriverWait
-
     driver = lab.driver
     with driver.context(driver.CONTEXT_CHROME):
-        driver.execute_script("window.CustomizableUI.addWidgetToArea('akdbx_akdbx_org-browser-action', 'nav-bar')")
-        widget = driver.find_element('id', 'akdbx_akdbx_org-browser-action')
-        widget.find_element('css selector', '.unified-extensions-item-action-button').click()
-        # The toolbar panel is a XUL browser. WebDriver's switch_to.frame only
-        # accepts HTML frames. Use Firefox's own WebDriver click in the panel.
-        popup_url = lab.popup
-        popup = WebDriverWait(driver, 8).until(lambda d: d.execute_script("""
-            return [...document.querySelectorAll('browser.webextension-popup-browser')]
-                .find(b => b.getBoundingClientRect().width > 0 &&
-                    b.browsingContext?.currentWindowGlobal?.documentURI.spec === arguments[0]) || null;
-        """, popup_url))
-        clicked = driver.execute_async_script("""
-            const [panel, text, done] = arguments;
-            (async () => {
-                const doc = panel.browsingContext.currentWindowGlobal;
-                const actor = doc.getActor("MarionetteCommands");
-                const all = await actor.findElements("css selector", "#entries button", {all:true, timeout:5000});
-                const buttons = text === null ? all : await actor.findElements("xpath",
-                    `//ul[@id="entries"]//button[contains(., ${JSON.stringify(text)})]`, {all:true, timeout:5000});
-                if (buttons.length !== 1) return "expected one matching entry, found " + buttons.length;
-                // Firefox 153 reads capabilities through toJSON(); newer releases use Map.get().
-                const capabilities = Object.assign(new Map([["moz:webdriverClick", true]]),
-                    {toJSON() { return {"moz:webdriverClick": true}; }});
-                await actor.clickElement(buttons[0], capabilities);
-                return "clicked";
-            })().then(done, e => done(String(e)));
-        """, popup, text)
-        assert clicked == 'clicked', clicked
+        panel = open_toolbar_popup(lab)
+        xpath = ('//ul[@id="entries"]//button' if text is None
+                 else f'//ul[@id="entries"]//button[contains(., {json.dumps(text)})]')
+        clicked = popup_find(lab, panel, xpath, click=True, timeout=5000)
+        assert clicked == 'clicked', f'expected one matching entry, found {clicked}'
 
 
 @pytest.mark.parametrize('firefox_lab', ['popup'], indirect=True)

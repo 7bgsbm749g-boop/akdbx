@@ -26,9 +26,10 @@ Windows, Linux and macOS support Helium, Google Chrome, Microsoft Edge and
 Firefox 153+ (0.47.0+). From 0.49.0, the installer also accepts Chromium and
 Brave. See `extension_host_browsers` in broker status. The Chromium family uses the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg`;
 Firefox uses `akdbx@akdbx.org`. Both use host name `org.akdbx.extension`.
-See [Firefox setup and installation limits](../../../docs/firefox.md). After
-0.52.0 Firefox can also run a permanently installed add-on that Mozilla signed
-for this broker ([signed Firefox add-on](#signed-firefox-add-on-0530)).
+See [Firefox setup and installation limits](../../../docs/firefox.md). From
+fill extension 0.19.0 (after 0.54.1) the extension is one generic build for
+every user, and Firefox can run the release's permanently installed add-on
+that Mozilla signed ([signed Firefox add-on](#signed-firefox-add-on-fill-extension-0190)).
 
 ## Capabilities
 
@@ -74,14 +75,13 @@ four-part hello (the popup says the broker is not reachable): restart the
 broker on the updated akdbx, and run `akdbx extension refresh` (or
 `install`) from it.
 
-A Firefox add-on signed with `akdbx extension sign` (0.53.0) has its
-own version, because AMO accepts each version only once:
-`MAJOR.MINOR.PATCH.N` with N = 100000000 + 1000 × (the unsigned build's
-fourth part) + a sequence number 1–999, for example `0.15.1.111058001`. The
-broker reads the contents from N and shows such an add-on as `"current"`;
-another build's signed version is `"mismatch"`. A broker or host from 0.52.0
-or earlier refuses the nine-digit part. The popup footer shows the
-nine-digit version from fill extension 0.17.0.
+From fill extension 0.19.0 the release's Mozilla-signed Firefox add-on is
+the same generic build, with the same four-part version, so `status` shows it
+as `"current"` like a local build. A Firefox add-on that the removed
+`akdbx extension sign` (0.53.0 to 0.54.x) signed has its own nine-digit
+fourth part (for example `0.18.0.116789001`); a broker after 0.54.1 shows it
+as `"outdated"` (an older MAJOR.MINOR.PATCH): install the release's XPI over
+it.
 
 An extension built by akdbx 0.21.2 or earlier reports no version. It still
 attaches and works, with `version: null` and `version_status: "outdated"`.
@@ -140,21 +140,21 @@ From 0.35.2:
   disk (stale build); restart the browser, or reload akdbx on
   chrome://extensions, then pair it again`. A mismatched one gets `…the
   browser runs akdbx extension X, another build than this broker's Y; rebuild
-  the folder the browser loads with this akdbx and the broker's private-page
-  origin (the origin of its unlock link): \`akdbx --unlock-origin ORIGIN
-  extension build --output FOLDER\`, or restart the broker if akdbx was
-  updated; then reload akdbx on chrome://extensions and pair it again. An
-  AMO-signed Firefox add-on needs a new signature instead: \`akdbx extension
-  sign\`, then install the new XPI`.
+  the folder the browser loads with this akdbx (\`akdbx extension build
+  --output FOLDER\`), or restart the broker if akdbx was updated; then reload
+  akdbx on chrome://extensions and pair it again. A signed Firefox add-on:
+  install the signed XPI from the release of this broker's akdbx version`.
 
 Fix: restart the browser, or click reload on the akdbx card in
 `chrome://extensions`. Keep Developer mode on there: with it off, Chromium
 blocks an unpacked extension when it reloads ("blocked by Chromium"), also
 after the worker's own reload. Then pair again: a reload, also the worker's own
 reload, ends the pairing, because the pairing key lives in session storage.
-Every `extension build` also writes a new random build ID, and a reloaded
-worker drops the broker trust saved under another build. So expect a new
-pairing after every rebuild that the browser loads. A content-identical
+So expect a new pairing after every rebuild that the browser loads. The saved
+broker trust (address and key) stays: fill extension 0.19.0 is a generic
+build with no build ID. The one exception is the update from a
+per-deployment build (0.18.x and earlier): its saved trust is not used, and
+the popup asks once for the first-use confirmation. A content-identical
 rebuild gets the same version, so a restart keeps the running worker, but a
 reload still needs a pairing. Rebuild only when `extension info` shows
 another `extension_version` than the folder's manifest.
@@ -231,25 +231,30 @@ reload and no approval. This covers a relay port move, `akdbx relay rotate`,
   the origin changes. It sends the statement in the `identity` field of its
   `attached` and `state` messages. `status` shows `extension_trust`
   (`key_id`, `origin`, `seq`).
-- The built origin (`config.js`) is the first trusted origin; later the
-  trusted origin is the one stored after a verified binding or a signed
-  change. The native host never chooses it, and there is no trust on first
-  use. With no stored key, the extension never stores a key that only the
-  native host sent: when an `attached` or `state` message brings the
-  statement, its service worker reads
+- **First use (fill extension 0.19.0, a generic build with no address).**
+  With no saved trust, the popup shows the origin that the native host's
+  signed statement names ("This extension does not trust a broker address
+  yet") and **Trust this address**. No pairing or unlock link opens, nothing
+  is read from that origin, and no captured secret is sealed (reads refuse)
+  until a real click confirms it; the worker saves it only while the host
+  still names that exact origin. Check it first: it must equal
+  `extension_trust.origin` in `akdbx status`. In your own slot browser you
+  may click it after that check, with a real (pixel or CDP input) click; in
+  the user's browser, tell the user the origin to expect and let them click.
+  On a mismatch, click nothing and report both origins: a replaced native
+  host proposes its own origin only at this step, and this check is the
+  guard. The update from a per-deployment build (0.18.x and earlier) leads
+  to this question once: its saved trust is not used, because such a build
+  could leave the record of a broker that a later rebuild replaced.
+- After the confirmation the trusted origin is the one stored after a
+  verified binding or a signed change. The extension never stores a key that
+  only the native host sent: when an `attached` or `state` message brings
+  the statement, its service worker reads
   `GET <trusted origin>/.well-known/akdbx-identity` over HTTPS and stores the
   public key, origin and `seq` only when that statement verifies, names the
-  trusted origin and has the host's key. A failed read stores nothing; the
-  next statement or popup tries again. A broker that names another origin
-  before the first key is refused with no reset: the popup says the extension
-  was built for another address, and only `akdbx extension build` (then a
-  reload) changes the first origin. Each build writes a new random build ID
-  into `config.js`, and the stored trust keeps it: after any local build and
-  a reload, the extension drops the stored key and origin and binds the key
-  again from the built origin's HTTPS page. A reload of the same build keeps
-  the stored trust. An extension built with no origin opens no link and asks
-  for `akdbx extension build`. The popup shows the origin next to the pairing
-  code.
+  trusted origin and has the host's key. A failed read stores nothing new;
+  the next statement or popup tries again. The popup shows the origin next to
+  the pairing code.
 - Later, it accepts a new origin only when the stored key signed it, the key
   id matches, `seq` is higher than the stored one, and the origin is an HTTPS
   origin without path, query or credentials. Otherwise it keeps the stored
@@ -263,8 +268,14 @@ reload and no approval. This covers a relay port move, `akdbx relay rotate`,
   them, and tell the user: if you did not set up this broker again yourself,
   do not reset and do not enter your master password. The reset clears only
   the stored key and `seq` and keeps the trusted origin; the new key is
-  accepted only from that origin's HTTPS identity page. Another key with
-  another origin gets no reset: the user runs `akdbx extension build` again.
+  accepted only from that origin's HTTPS identity page.
+- A broker that names another origin with no signature by the stored key
+  (moved by hand, or set up again elsewhere) gets no reset. The popup says
+  which origin it names and which one the extension trusts, and offers
+  **Forget this broker…** and then **Forget and confirm again**. Only the
+  user clicks these, after checking that they moved the broker themselves;
+  the next popup then asks to confirm the new origin (first use). A rebuild
+  no longer changes the trusted origin.
 
 After an origin change, the user does nothing in the browser: at the next
 connection the popup says that the broker moved. If it shows a trust warning instead, give
@@ -569,54 +580,35 @@ akdbx extension install --browser helium   # all three desktops: chrome, edge, h
 akdbx extension build --output /path/to/akdbx-extension
 ```
 
-The build writes the configured unlock origin (`AKDBX_UNLOCK_ORIGIN` or the
-global `--unlock-origin`) into the extension as the first trusted origin; later
-origin changes follow [Origin trust](#origin-trust) without a rebuild. Then
-load the folder as an unpacked extension (`chrome://extensions`,
-**Developer mode**, **Load unpacked**). Run `akdbx extension uninstall
---browser NAME` to remove the host registration.
+From fill extension 0.19.0 the build is generic: the same files for every
+user (no broker address, no build ID), so the release's ZIP or XPI works as
+well. `extension build` prints `confirm_origin`, the origin this CLI expects
+the broker to serve, which the popup asks the user to confirm on first use
+([Origin trust](#origin-trust)). Then load the folder as an unpacked
+extension (`chrome://extensions`, **Developer mode**, **Load unpacked**). Run
+`akdbx extension uninstall --browser NAME` to remove the host registration.
+`akdbx extension pack --browser chrome|firefox --output FILE.zip` writes the
+release's archive of the same build (an existing file with other contents is
+never replaced).
 
-### Signed Firefox add-on (0.53.0)
+### Signed Firefox add-on (fill extension 0.19.0)
 
-Require `firefox_signing_protocol: 1` and `firefox_signing_configured: true`
-in `status`. `firefox_signing_entry_origin` (`https://addons.mozilla.org`)
-and `firefox_signing_fields` (`jwt_issuer`, `jwt_secret`) describe the entry
-the broker needs; `firefox_signing_channel` is `unlisted`.
+Each GitHub release attaches `akdbx-extension-firefox-VERSION.xpi`, the
+generic Firefox build that Mozilla signed (AMO, unlisted channel) in the
+Release workflow, in `SHA256SUMS` and with a build-provenance attestation. A
+release without it says so in its notes (the owner's AMO key was not set);
+then the unsigned `akdbx-extension-firefox-VERSION.zip` loads as a temporary
+add-on. Tell the user to install the XPI: `about:addons`, gear menu,
+**Install Add-on From File…**, after removing a temporary akdbx add-on. Then
+confirm the broker address once (first use) and pair as usual. After an akdbx
+update that changes the extension (`version_status: "outdated"`), install the
+XPI of the broker's release; the saved trust stays. Never handle AMO
+credentials: only the release workflow uses them.
 
-1. The user creates the AMO API key once (Mozilla account with two-step
-   authentication, <https://addons.mozilla.org/en-US/developers/addon/api/key/>).
-   Save both shown values with `pin-password-target --mode read` and
-   `capture-secret --field jwt_issuer` / `--field jwt_secret` on one entry for
-   that page ([secret capture](secret-capture.md)). Never read, type or paste
-   them.
-2. `akdbx search addons.mozilla.org`, then
-   `akdbx extension sign --output FOLDER HANDLE`. The broker builds the Firefox
-   files from its own akdbx (callers cannot add files), uses its own
-   private-page origin, picks the next free add-on version, submits it on the
-   unlisted channel with a source archive of the akdbx package (its
-   `rebuild.py` reproduces the upload byte for byte), and checks
-   that the signed XPI holds exactly the submitted files plus Mozilla's
-   `META-INF/` signatures. The result has `state:
-   "signed"`, `addon_version`, `xpi` (the copy in FOLDER), `broker_xpi`,
-   `size`, `sha256` and `trusted_origin`.
-3. `state: "pending"` (with `stage` and `retry_after`): AMO is still
-   validating or reviewing. Wait `retry_after` seconds, then run the command
-   again with a fresh handle; it resumes and does not submit again. Errors
-   with `resumable: true` (network, AMO outage, HTTP 401) keep the job too.
-   `--restart` drops the job and submits a new version.
-4. Tell the user to install the XPI: `about:addons`, gear menu, **Install
-   Add-on From File…**, after removing a temporary akdbx add-on. Then pair as
-   usual. After each akdbx update that changes the extension (`version_status`
-   `"outdated"` or `"mismatch"`), sign again and install the new file: a
-   signed add-on cannot be rebuilt in place.
-
-Only the AMO account that owns the fixed add-on ID `akdbx@akdbx.org` can
-sign; another account's key gets HTTP 403 or 409. Refusals name the cause:
-an entry on another origin or without both protected fields, a locked vault,
-no private page, AMO HTTP 401 (key or clock), HTTP 403/409 (another account
-owns `akdbx@akdbx.org`), validation errors (AMO's first messages), a refused
-source archive (job kept), a rejected version, or a download that is not the
-signed submitted build. See [Firefox setup](../../../docs/firefox.md#permanent-install-a-mozilla-signed-xpi-0530).
+`akdbx extension sign` (0.53.0 to 0.54.x) is removed, with the broker's
+`firefox_signing_*` status fields and the `sign-firefox-extension` action: it
+signed a per-deployment build that worked with one broker only. See
+[Firefox setup](../../../docs/firefox.md#permanent-install-the-releases-mozilla-signed-xpi-0190).
 
 ### Host launcher (0.31.1+)
 
@@ -824,8 +816,11 @@ uses it.
    switch on **Developer mode**; **Load unpacked**; in the folder dialog
    `ctrl+L`, type the build folder, and select it. The extension stays in the
    slot profile; later runs need only pairing.
-5. **Pair.** Click the akdbx toolbar button. `akdbx status` must show
-   `extension_connected: true`. If it stays `false`, check which akdbx the
+5. **Pair.** Click the akdbx toolbar button. On the profile's first use the
+   popup shows a broker address and **Trust this address**: compare it with
+   `extension_trust.origin` in `akdbx status`, and click it with desktop input
+   only on an exact match ([Origin trust](#origin-trust)). `akdbx status`
+   must show `extension_connected: true`. If it stays `false`, check which akdbx the
    host launcher (`path` in the profile's `org.akdbx.extension.json`)
    imports: it must be the release the broker runs. A launcher whose Python
    imports an older akdbx (for example an old editable checkout) cannot reach
@@ -865,10 +860,12 @@ uses it.
 | The same with `extension_paired: false` | Give the user the `extension_pairing` link. Wait for the pairing; do not retry in a loop. |
 | `autofill outcome uncertain` | The browser did not confirm the fill. Check the page; do not retry automatically. |
 | Popup: "This broker signs with another identity key…" | The broker's identity key changed. Ask the user whether they set up the broker again (another computer, deleted state). Only then may the user click **Reset broker trust…** and pair again; otherwise they must not reset or enter the master password. |
-| Popup: "…this extension was built for…", "…this extension trusts…" or "no trusted broker address" | The broker names another origin than the trusted one, or the extension has none. No reset is offered: you run `akdbx extension build` again with the broker's current origin and the user reloads the extension. Any local build (also one for the same origin) replaces the saved broker trust; the extension then binds the broker key from the built origin's HTTPS page. A reload without a build changes nothing. |
+| Popup: "…but this extension trusts…" with **Forget this broker…** | The broker names another origin than the trusted one, with no signature by the trusted key. Ask the user whether they moved the broker or set it up again at that address themselves. Only then may the user click **Forget this broker…** and **Forget and confirm again**, and then confirm the new origin after checking it against `akdbx status`; otherwise they must not forget it or enter the master password. A rebuild changes nothing (fill extension 0.19.0 holds no address). |
+| Popup: "This extension does not trust a broker address yet" and **Trust this address** | First use of the generic build. Compare the shown origin with `extension_trust.origin` in `akdbx status`. Equal: the user confirms it (or you, in your own slot browser, with a real click). Different: confirm nothing, report both origins; a replaced native host may be proposing its own page. |
+| Popup: "The broker sent no signed address…" | The broker is older than 0.29.0 or started without its identity file (`extension_trust` missing in `status`). Update or fix the broker; nothing can be confirmed until it signs its origin. |
 | Popup: "The broker page at … names another identity than the native host sent" | The native host and the broker's HTTPS page disagree about the broker key, so the extension learned nothing. Tell the user not to enter the master password; check that the broker on that origin and the installed native host (`akdbx extension install`) are the user's own. |
 | `version_status: "stale"` in `extension_browsers`, or a pin or frame list fails with `…older akdbx extension service worker…` | The browser runs an old worker beside newer files ([stale service worker](#stale-service-worker-0352)). Restart the browser, or reload akdbx in `chrome://extensions`, then pair again. |
-| `version_status: "mismatch"`, or a pin or frame list fails with `…another build than this broker's…` | The loaded folder holds another build than this broker's. Run `akdbx --unlock-origin ORIGIN extension build --output FOLDER` with the broker's akdbx, where ORIGIN is the broker's private-page origin (the origin of its unlock link; the build replaces the saved broker trust), or restart the broker if akdbx was updated in place. Then reload akdbx in `chrome://extensions` and pair again. For a Mozilla-signed Firefox add-on, run `akdbx extension sign` and install the new XPI instead. |
+| `version_status: "mismatch"`, or a pin or frame list fails with `…another build than this broker's…` | The loaded folder holds another build than this broker's. Run `akdbx extension build --output FOLDER` with the broker's akdbx (the saved broker trust stays), or restart the broker if akdbx was updated in place; then the user reloads the extension and pairs again. A signed Firefox add-on: install the XPI of the broker's release. |
 | `version_status: "outdated"` in `extension_browsers` | The loaded extension is older than this akdbx build. Ask the user to rebuild into the same folder and reload it in `chrome://extensions`. |
 | `pin-code-target --route extension` refuses with `no paired akdbx fill extension 0.13.0 or newer is connected` | No paired browser runs fill extension 0.13.0 or newer (`extension_code_min_version`). Rebuild the folder the browser loads with `akdbx extension build`, reload it and pair it; or pair the browser first if `extension_paired` is false. |
 | `pin-code-target --route extension` refuses with `the paired akdbx extension runs a stale build or another build…` | Every suitable paired browser has `version_status` `"stale"` or `"mismatch"`: follow the `version_status: "stale"` or `"mismatch"` row above, then pin again. |

@@ -11,4 +11,5 @@ button:hover, button:focus-visible { border-color: currentColor; }
 .detail { display: block; opacity: .75; font-size: 12px; }
 .footer { margin: 10px 0 0; opacity: .6; font-size: 11px; }
 .warning { padding: 6px 8px; border: 1px solid #c60; border-radius: 6px; }
-#reset > * + *, #reset-confirm > * + * { margin-top: 6px; }
+.origin { font: 600 14px ui-monospace, monospace; overflow-wrap: anywhere; }
+#reset > * + *, #reset-confirm > * + *, #forget > * + *, #forget-confirm > * + * { margin-top: 6px; }

@@ -1670,26 +1670,24 @@ class Setup:
         raise Refusal('no separate default extension folder is available; give --extension-dir')
 
     def _build_extension(self, browser='chrome'):
-        from .extension_host import BUILD_ID, EXTENSION_KEY, built_version, trusted_origin
+        from .extension_host import archive_name, build_files, trusted_origin
         folder = self._extension_folder(browser)
         try:
             origin = trusted_origin(self.origin)
-            manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
-            config = (folder / 'config.js').read_text(encoding='utf-8')
-            # An unchanged folder is not rebuilt, so it keeps its build ID and the extension its saved trust.
-            own = (manifest.get('browser_specific_settings', {}).get('gecko', {}).get('id') == FIREFOX_EXTENSION_ID
-                   if browser == 'firefox' else manifest.get('key') == EXTENSION_KEY)
-            built = (own and manifest.get('version') == built_version()
-                     and f'globalThis.AKDBX_EXTENSION_VERSION = {json.dumps(built_version())};' in config
-                     and json.dumps(origin) in config and BUILD_ID.search(config) is not None)
+        except Exception:
+            origin = self.origin
+        try:
+            # The build is generic (fill extension 0.19.0+): a folder that holds exactly this akdbx's build is
+            # not rewritten. A folder that an earlier akdbx built is rebuilt; the extension keeps its saved trust.
+            built = all((folder / name).read_bytes() == data for name, data in build_files(browser).items())
         except Exception:
             built = False
-        argv = self.akdbx_argv('extension', 'build', '--output', str(folder), origin=self.origin)
+        argv = self.akdbx_argv('extension', 'build', '--output', str(folder))
         if browser == 'firefox':
             argv += ['--browser', 'firefox']
         result = 'done'
         if built:
-            self.say(f'The extension {EXTENSION_VERSION} for {self.origin} is already built in {folder}.')
+            self.say(f'The extension {EXTENSION_VERSION} is already built in {folder}.')
         else:
             applied = self.change('fill', f'write the unpacked fill extension {EXTENSION_VERSION} to {folder}',
                                   [shell_command(argv, self.windows)], lambda: self._akdbx_ok(argv), selected=True,
@@ -1700,16 +1698,21 @@ class Setup:
         if browser == 'firefox':
             self.step(f'Firefox 153 or newer: open about:debugging#/runtime/this-firefox, choose Load Temporary '
                       f'Add-on and select {folder / "manifest.json"}. The add-on ID is {FIREFOX_EXTENSION_ID}. '
-                      'For Snap or Flatpak, archive the contents of the build folder in a ZIP with manifest.json '
-                      'at its root and select the ZIP. After each rebuild, create a fresh ZIP and load it with '
-                      'Load Temporary Add-on. Load the add-on again after Firefox restarts. '
-                      'Permanent installation requires a Mozilla-signed XPI: with an AMO API key saved in the vault, '
-                      'the broker gets its own build signed with `akdbx extension sign --output FOLDER HANDLE` '
-                      '(docs/firefox.md).', 'fill')
+                      'For Snap or Flatpak, select a ZIP of the same build instead: '
+                      + shell_command(self.akdbx_argv('extension', 'pack', '--browser', 'firefox', '--output',
+                                                      str(folder.parent / archive_name('firefox'))), self.windows)
+                      + ' (after an akdbx update, pack and load the new ZIP). Load the add-on again after Firefox '
+                      'restarts. '
+                      'For a permanent installation, install the Mozilla-signed XPI from the GitHub release of this '
+                      f'akdbx version ({archive_name("firefox", signed=True)}; docs/firefox.md): it is the same '
+                      'generic build.', 'fill')
         else:
             self.step(f'Load the extension once in each Chromium browser: open chrome://extensions, turn on Developer mode, '
                   f'choose Load unpacked and select {folder} (extension ID {EXTENSION_ID}). After an akdbx update, '
                   'setup rebuilds it: click reload on the akdbx card.', 'fill')
+        self.step(f'On first use, the akdbx toolbar popup shows the broker address that the native host names and '
+                  f'asks you to confirm it. Confirm only {origin}, the address of this broker; then akdbx reads the '
+                  'broker key from that address over HTTPS. Never confirm another address.', 'fill')
         self.step('Pair the extension once per browser session: click the akdbx toolbar button, choose Open the '
                   'pairing page, check that the page shows the same code, and enter the master password there.',
                   'fill')

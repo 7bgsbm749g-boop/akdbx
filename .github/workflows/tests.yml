@@ -86,7 +86,7 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then firefox_test_base="$LOCALAPPDATA/akdbx-firefox-tests"; fi
           python -m pytest -q -rs tests/test_firefox_browser.py tests/test_firefox_extension.py \
             --basetemp="$firefox_test_base" --junitxml="$RUNNER_TEMP/firefox.xml"
-      - name: Mozilla's add-on validator accepts the archive that extension sign submits
+      - name: Mozilla's add-on validator accepts the archive that the release signs
         if: runner.os == 'Linux' && matrix.firefox == '161.0'
         env:
           AKDBX_TEST_ADDONS_LINTER: ${{ runner.temp }}/linter/node_modules/addons-linter/bin/addons-linter
@@ -410,8 +410,8 @@ jobs:
           AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
           AKDBX_TEST_EXTENSION_BROWSER: 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
         # addons-linter runs only in the Linux Firefox job; the archive it checks has the same bytes on every
-        # platform (test_the_signing_archive_holds_exactly_the_firefox_build_with_its_version).
-        run: python -m pytest -q -rs tests/test_vault_lock.py::test_windows_receives_session_and_power_messages tests/test_protocol.py tests/test_windows_target.py tests/test_native_fields.py tests/test_windows_unlock.py tests/test_windows_native.py tests/test_windows_sinks.py tests/test_windows_browser.py tests/test_windows_chromium.py tests/test_windows_merge.py tests/test_windows_unlock_keys.py tests/test_extension_route.py tests/test_firefox_signing.py tests/test_extension_browser.py --deselect tests/test_firefox_signing.py::test_mozillas_add_on_validator_accepts_the_archive_that_sign_submits --basetemp="$env:LOCALAPPDATA/akdbx-tests" --junitxml="$env:RUNNER_TEMP/akdbx-windows.xml"
+        # platform (test_the_signed_upload_is_the_release_firefox_zip_at_the_build_version).
+        run: python -m pytest -q -rs tests/test_vault_lock.py::test_windows_receives_session_and_power_messages tests/test_protocol.py tests/test_windows_target.py tests/test_native_fields.py tests/test_windows_unlock.py tests/test_windows_native.py tests/test_windows_sinks.py tests/test_windows_browser.py tests/test_windows_chromium.py tests/test_windows_merge.py tests/test_windows_unlock_keys.py tests/test_extension_route.py tests/test_firefox_signing.py tests/test_extension_browser.py --deselect tests/test_firefox_signing.py::test_mozillas_add_on_validator_accepts_the_archive_that_the_release_signs --basetemp="$env:LOCALAPPDATA/akdbx-tests" --junitxml="$env:RUNNER_TEMP/akdbx-windows.xml"
       - name: Windows TOTP delivery through Chrome CDP and Edge extension pins
         env:
           AKDBX_REQUIRE_EXTENSION_BROWSER: '1'
