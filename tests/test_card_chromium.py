@@ -913,8 +913,9 @@ def test_an_aria_expiry_dropdown_chooses_the_one_matching_option(chrome, field, 
 
 
 # '#zero-based-names': names counted from 0, so data-value 9 is October: never chosen.
+# '#ms-late-menu': an aria-haspopup="true" combobox whose owned list renders as a menu after the click.
 @pytest.mark.parametrize('selector', ['#ambiguous', '#no-match', '#disabled-match', '#never-opens',
-                                      '#zero-based-names'])
+                                      '#zero-based-names', '#ms-late-menu'])
 def test_an_aria_dropdown_with_no_single_match_refuses_and_keeps_the_selection(chrome, selector):
     page = hintless(chrome)
     target = hintless_pin(chrome, page, selector, 'cc-exp-month', field_purpose='cc-exp-month')
