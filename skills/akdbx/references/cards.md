@@ -137,8 +137,10 @@ An expiry month or year that is a custom ARIA dropdown (not an `<input>` or
 
 - a `<button type="button">` with `aria-haspopup="listbox"` (and no role, or
   `role="combobox"`);
-- an element with `role="combobox"` (and no `aria-haspopup`, or
-  `aria-haspopup="listbox"`).
+- an element with `role="combobox"` (and no `aria-haspopup`,
+  `aria-haspopup="listbox"`, or, from 0.54.1, `aria-haspopup="true"` when the
+  list it owns is not anything but a `role="listbox"`, as on Microsoft's card
+  form; fill extension 0.18.1 on the extension route).
 
 It must name exactly one list through `aria-controls` or `aria-owns` (both
 only when they name the same id), must not be inside a link, button, label or

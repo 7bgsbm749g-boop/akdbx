@@ -24,6 +24,8 @@ From 0.53.0 (fill extension 0.17.0): `akdbx extension sign --output DIR HANDLE` 
 
 From 0.54.0 (fill extension 0.18.0): `pin-card-target --field-purpose cc-number|cc-csc|cc-name|cc-exp-month|cc-exp-year` fills a main-frame card field that has no autocomplete hint after the agent checks its purpose, and an expiry month or year that is an ARIA dropdown (a button with a listbox) is chosen by the broker itself, refusing on no match or an ambiguous match. This covers Microsoft's own card form (Azure sign-up).
 
+From 0.54.1 (fill extension 0.18.1): a card expiry dropdown may be a `role=combobox` button with `aria-haspopup="true"` (Microsoft's card form) as long as the list it owns is a listbox; a menu still refuses.
+
 Verify a download before installing it:
 
 ```sh

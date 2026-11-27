@@ -159,12 +159,18 @@ PIN_SCRIPT = r'''(selector, field, frameURL, topURL, processor=false, identity=f
     const role = el.getAttribute('role'), popup = (el.getAttribute('aria-haspopup') || '').toLowerCase();
     if (el instanceof HTMLButtonElement ? el.type !== 'button' || role !== null && role !== 'combobox' :
         role !== 'combobox') return null;
-    if (role === 'combobox' ? el.hasAttribute('aria-haspopup') && popup !== 'listbox' : popup !== 'listbox') return null;
+    // A combobox may also say aria-haspopup="true" (Microsoft's card form). The
+    // list it owns must then not be anything but a listbox (a menu refuses), and
+    // the fill still accepts only a role=listbox list.
+    if (role === 'combobox' ? el.hasAttribute('aria-haspopup') && popup !== 'listbox' && popup !== 'true' :
+        popup !== 'listbox') return null;
     // A click must not also follow a link, submit a form or activate a label.
     if (el.parentElement?.closest('a[href],button,label,summary') ||
         el.getAttribute('aria-disabled') === 'true' || el.closest('[inert]')) return null;
     const owned = ['aria-controls','aria-owns'].filter(a => el.hasAttribute(a)).map(a => el.getAttribute(a).trim());
     if (!owned.length || owned.some(n => !/^[^\t\n\f\r ]+$/.test(n)) || new Set(owned).size !== 1) return null;
+    const list = popup === 'true' ? doc.getElementById(owned[0]) : null;
+    if (list && list.getAttribute('role') !== 'listbox') return null;
     return owned[0];
   }
   const listId = ariaList(), aria = listId !== null;
