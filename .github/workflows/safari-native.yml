@@ -40,6 +40,7 @@ jobs:
           name: safari-browser-results-${{ matrix.os }}
           path: |
             ${{ runner.temp }}/safari-browser.xml
+            ${{ runner.temp }}/sb/**/safari-ci-auth.json
             ${{ runner.temp }}/sb/**/safari-ui-xcode.log
             ${{ runner.temp }}/sb/**/safari-ui/*.txt
             ${{ runner.temp }}/sb/**/safari-ui/*.png

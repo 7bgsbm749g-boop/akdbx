@@ -23,7 +23,7 @@ from akdbx import safari
 from test_safari_native import local_broker  # noqa: F401
 
 
-def prepare_disposable_ci_password():
+def prepare_disposable_ci_password(folder):
     """Set a throwaway password only on GitHub's disposable hosted Mac.
 
     Safari's unsigned-extension authorization needs the logged-in account's
@@ -35,9 +35,29 @@ def prepare_disposable_ci_password():
     account = getpwuid(os.getuid()).pw_name
     assert account == 'runner', 'refusing to alter an ordinary user account'
     password = secrets.token_hex(24)
-    result = subprocess.run(['sudo', '-n', '/usr/bin/dscl', '.', '-passwd', '/Users/' + account, password],
-                            capture_output=True, timeout=30)
-    assert result.returncode == 0, f'disposable CI account password setup failed (exit {result.returncode})'
+    def status(argv):
+        # Return only an integer. Pytest's assert rewriter must never include
+        # a CompletedProcess repr containing the password-bearing arguments.
+        try:
+            return subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, timeout=30).returncode
+        except subprocess.TimeoutExpired:
+            return 124
+
+    attempts = []
+    code = status(['sudo', '-n', '/usr/bin/dscl', '.', '-passwd', '/Users/' + account, password])
+    attempts.append(dict(method='dscl', exit=code))
+    if code:
+        code = status(['sudo', '-n', '/usr/sbin/sysadminctl', '-resetPasswordFor', account,
+                       '-newPassword', password])
+        attempts.append(dict(method='sysadminctl', exit=code))
+    # sysadminctl can exit zero after reporting a failure. Verify the new
+    # throwaway credential without reading any existing credential or store.
+    verified = status(['/usr/bin/dscl', '.', '-authonly', account, password]) == 0
+    (folder / 'safari-ci-auth.json').write_text(json.dumps(dict(attempts=attempts, verified=verified)))
+    if not verified:
+        raise RuntimeError('GitHub-hosted macOS refused disposable account authorization; '
+                           'Safari unsigned-extension authentication cannot proceed on this VM')
     return password
 
 
@@ -87,7 +107,7 @@ def test_actual_safari_loads_the_native_app_and_attaches_to_its_local_broker(tmp
     # native app handler. Exercise the packaged extension in normal Safari.
     from safari_ui_project import create_project
 
-    ci_password = prepare_disposable_ci_password()
+    ci_password = prepare_disposable_ci_password(tmp_path)
     observed = threading.Event()
 
     class Observer(BaseHTTPRequestHandler):
