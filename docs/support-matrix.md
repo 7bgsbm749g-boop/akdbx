@@ -39,7 +39,7 @@ CI jobs (all in `.github/workflows/`):
 | `linux` | `tests.yml` | Unit and contract suites on Ubuntu, including Android with a simulated device, the X11 key-event transport, and window-pin SMS code fills to real windows of an isolated Xvfb display |
 | `linux-native-fields` | `tests.yml` | Real GTK and Qt apps on X11, XWayland and native Wayland (Weston), including window-pin usernames and SMS codes to a GTK entry |
 | `native-merge` | `tests.yml` | Merge, admission, recovery and key-file suites with full Git history and a pinned KeePassXC 2.7.10 as the independent reference, with no skips; the full-cost admission deadlines |
-| `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, hidden-field and cover refusals; the generic build's first-use origin confirmation (a real popup click), Forget, trust kept from a per-deployment build, two brokers on one build |
+| `linux-extension-browser` | `tests.yml` | Chrome for Testing 153 with the built extension: fills, TOTP, QR capture, hidden-field and cover refusals; the generic build's first-use origin confirmation (a real popup click), Forget, a per-deployment build's trust adopted only when the broker proves its key, two brokers on one build |
 | `macos-extension-browser` | `tests.yml` | Chrome for Testing 153 (arm64) with the built extension on macOS 15: the extension suite, TOTP, and QR capture on the CDP and extension routes |
 | `firefox-extension-browser` | `tests.yml` | Firefox 161 on Ubuntu, Windows and macOS 15, and Firefox 153 on Ubuntu, with the built extension: fills, TOTP, secret reads, QR capture (also with `<all_urls>`), SMS codes, the generic build's first-use origin confirmation (a real popup click in every session), two brokers on one archive, the release archive that AMO signs; on Ubuntu with Firefox 161, Mozilla's `addons-linter` checks that archive |
 | `windows` | `tests.yml` | Named pipe, real Win32, WinForms and WPF apps, Chrome and Edge CDP, the extension in Edge, QR capture |
@@ -433,8 +433,9 @@ job, for the reason given. Only `test_relay_integration.py` and `test_android_em
   On first use the popup shows the origin that the native host names and
   saves it only after the user's real click, while the host still names it;
   then the key is bound through that origin's HTTPS page as before. Tests:
-  `tests/test_fill_extension.js` (decisions, the click, Forget, trust kept
-  from a per-deployment build, two brokers), and real-browser tests on a
+  `tests/test_fill_extension.js` (decisions, the click, Forget, trust adopted
+  from a per-deployment build only when the broker signs with its key, two
+  brokers), and real-browser tests on a
   broker at a fresh loopback origin in Chrome for Testing (Linux, macOS),
   Edge (Windows) and Firefox 153 and 161. A native host replaced before the
   first confirmation can propose its own origin; the user's check is the

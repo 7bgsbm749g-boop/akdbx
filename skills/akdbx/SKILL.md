@@ -810,7 +810,8 @@ names, with **Trust this address**, and opens no pairing or unlock page until
 a real click confirms it. Compare it with `extension_trust.origin` in
 `akdbx status` first; confirm only an exact match (the user, or you in your
 own slot browser), and on a mismatch confirm nothing and report both
-origins. Trust that an older per-deployment build saved carries over.
+origins. Trust that an older per-deployment build saved carries over once the broker signs
+with that key.
 `akdbx extension sign` is removed; for a permanent Firefox install use the
 release's signed XPI
 ([origin trust](references/extension.md#origin-trust),

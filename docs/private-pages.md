@@ -505,12 +505,17 @@ broker address and no build ID.
    wrote the CLI's origin and a random build ID into `config.js` and saved
    the build ID with the stored trust. When such an extension is rebuilt with
    this akdbx (or replaced by a release asset with the same extension ID) and
-   reloads, the generic build keeps that stored key, origin and sequence
-   number: no new confirmation, no re-pairing beyond the one every reload
-   needs. A trust record with a malformed build field is not one the
-   extension wrote, so nothing is trusted and the popup asks for a
-   confirmation. Firefox removes a temporary add-on's storage when Firefox
-   quits, so a temporary add-on asks at each first use.
+   reloads, the generic build adopts that stored key, origin and sequence
+   number as soon as the broker signs a statement with that same key (at the
+   connection): no new confirmation, no re-pairing beyond the one every reload
+   needs. Until then the old record counts for nothing. Such a build ignored
+   the record of an earlier build but left it in storage until it bound a
+   new key, and the generic build cannot see which build was installed last:
+   a record whose key the broker no longer signs with (for example after a
+   rebuild for another broker that never bound its key) is not adopted, and
+   the popup asks for a first-use confirmation instead. Firefox removes a
+   temporary add-on's storage when Firefox quits, so a temporary add-on asks
+   at each first use.
 
 The broker sends the statement in the `identity` field of its `attached` and
 `state` messages to the extension. Its private HTTPS page server (the

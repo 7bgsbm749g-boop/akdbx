@@ -34,9 +34,14 @@
  *   in the popup, so it cannot forget or confirm anything itself.
  * - Records saved by a per-deployment build (fill extension 0.18.x and
  *   earlier, which baked the origin and a random build ID into config.js)
- *   carry a `build` field. This build keeps them: the extension wrote them
- *   itself after the same HTTPS key binding, so an update keeps the broker
- *   trust and needs no new confirmation. A newer record is saved without it.
+ *   carry a `build` field. Such a build ignored a record of another build
+ *   but left it in storage until it bound a new key, and this build cannot
+ *   see which build was installed last. So it adopts a `build` record only
+ *   when the broker, now, signs a statement with that record's key (the same
+ *   origin, or a move that key signed): then the record is saved again
+ *   without the field, and an update needs no new confirmation. Until then
+ *   the record counts for nothing: no link, no key, and a statement with
+ *   another key is a first-use proposal.
  *
  * The signed bytes are the statement's JSON text with sorted keys and no
  * whitespace; src/akdbx/broker_identity.py documents the encoding and signs.
@@ -46,8 +51,6 @@
   const ORIGIN = new RegExp("^https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*" +
     "|\\[[0-9a-f:.]{2,45}\\])(?::[1-9][0-9]{0,4})?$");
   const KEY_ID = /^[A-Za-z0-9_-]{43}$/, PUBLIC_KEY = /^[A-Za-z0-9_-]{87}$/, SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
-  // The random build ID that per-deployment builds (fill extension 0.18.x and earlier) saved with each record.
-  const LEGACY_BUILD = /^[A-Za-z0-9_-]{22}$/;
   const STORAGE_KEY = "broker_trust";
   const IDENTITY_PATH = "/.well-known/akdbx-identity";
   const FETCH_MS = 3000, MAX_IDENTITY = 4096;
@@ -169,31 +172,22 @@
     }
   }
 
-  // The record without the `build` field of a per-deployment build, or null when that field is malformed.
-  function withoutBuild(record) {
-    if (!plain(record)) return null;
-    const {build, ...rest} = record;
-    if (Object.prototype.hasOwnProperty.call(record, "build") && !(typeof build === "string" && LEGACY_BUILD.test(build))) {
-      return null;
-    }
-    return rest;
+  // A record that a per-deployment build saved: it has that build's `build` field (see the header).
+  function legacy(stored) {
+    return plain(stored) && Object.prototype.hasOwnProperty.call(stored, "build");
   }
 
   // A bound broker key: its public key, key id, trusted origin and sequence number.
-  function storedKey(stored) {
-    const record = withoutBuild(stored);
+  function storedKey(record) {
     return hasKeys(record, ["key_id", "origin", "public_key", "seq", "v"]) && record.v === 1 &&
       typeof record.public_key === "string" && PUBLIC_KEY.test(record.public_key) &&
       typeof record.key_id === "string" && KEY_ID.test(record.key_id) && validOrigin(record.origin) &&
       Number.isSafeInteger(record.seq) && record.seq >= 1;
   }
 
-  // A trusted origin with no key yet: the user confirmed it (`{v, origin}`), or a reset kept it
-  // (`{v, origin, reset: true}`, the form that builds before 0.19.0 wrote).
-  function originOnly(stored) {
-    const record = withoutBuild(stored);
-    if (!plain(record) || record.v !== 1 || !validOrigin(record.origin)) return false;
-    return hasKeys(record, ["origin", "v"]) || (hasKeys(record, ["origin", "reset", "v"]) && record.reset === true);
+  // A trusted origin with no key yet: the user confirmed it, or a reset kept it.
+  function originOnly(record) {
+    return hasKeys(record, ["origin", "v"]) && record.v === 1 && validOrigin(record.origin);
   }
 
   // The saved record when it is one this extension trusts, else null (then nothing is trusted yet).
@@ -241,6 +235,17 @@
       `${named} when akdbx asks. Otherwise, do not forget it and do not enter your master password.`;
   }
 
+  // A per-deployment build's record, adopted only when the broker signs with its key now (see the header);
+  // else nothing is trusted yet. An adopted record is saved again without its `build` field.
+  function adopt(stored, verified, received, fetched) {
+    const {build, ...record} = stored;
+    if (storedKey(record) && verified && verified.public_key === record.public_key && verified.key_id === record.key_id) {
+      const decision = decide(record, verified, received, fetched);
+      if (!decision.error) return decision.store ? decision : {...decision, store: record};
+    }
+    return decide(null, verified, received, fetched);
+  }
+
   /* What to trust now. `stored` is the saved record (or null), `verified` the result of verifyIdentity, and
    * `received` whether the host sent an identity at all. `fetched` is the statement read over HTTPS: undefined
    * before the read, null when it failed.
@@ -251,6 +256,7 @@
    * fixed text for the user, `reset` whether the popup offers the reset and `forget` whether it offers to forget
    * the broker. */
   function decide(stored, verified, received, fetched) {
+    if (legacy(stored)) return adopt(stored, verified, received, fetched);
     const saved = current(stored);
     const known = storedKey(saved) ? saved : null;
     const trusted = saved ? saved.origin : null;

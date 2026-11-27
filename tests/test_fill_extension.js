@@ -621,7 +621,7 @@ test("after the user confirms, the confirmed origin's HTTPS page alone binds the
 });
 
 test("after a reset, the kept origin's HTTPS page alone binds the next key", async () => {
-  for (const afterReset of [trust.originRecord(RELAY), {v: 1, reset: true, origin: RELAY, build: BUILD}]) {
+  for (const afterReset of [trust.originRecord(RELAY)]) {
     const fresh = await trust.verifyIdentity(await hostKeyStatement(RELAY));
     const pending = trust.decide(afterReset, fresh, true);
     assert.deepEqual([pending.origin, pending.fetch, pending.store], [RELAY, RELAY, undefined]);
@@ -706,22 +706,45 @@ test("another broker key keeps the saved record but leaves no origin for links",
   assert.match(otherKey.error, /forget this broker below/);
 });
 
-test("trust saved by a per-deployment build (0.18.x and earlier) keeps working, with no new confirmation", async () => {
+test("a per-deployment build's record is adopted only when the broker signs with its key now", async () => {
   // Those builds saved the random build ID of their config.js with each record.
   const legacy = recordOf(signed.first, BUILD);
-  assert.equal(trust.trustedOrigin(legacy), LOCAL);
-  assert.deepEqual(trust.trustedKey(legacy), {public_key: signed.first.public_key, key_id: signed.first.statement.key_id});
+  // Before the broker proves the key, the record counts for nothing: no origin, no key.
+  assert.equal(trust.trustedOrigin(legacy), null);
+  assert.equal(trust.trustedKey(legacy), null);
+  // The broker signs with the saved key, at the saved origin: adopted, saved again without the build field.
   const same = trust.decide(legacy, await trust.verifyIdentity(signed.first), true);
-  assert.deepEqual([same.origin, same.error, same.propose, same.store, same.fetch], [LOCAL, null, null, undefined, undefined]);
-  // A signed move is followed, and the new record has no build field.
-  assert.deepEqual(trust.decide(legacy, await trust.verifyIdentity(signed.moved), true).store, recordOf(signed.moved));
-  // A record with no build field (an unreleased 0.3.0 build) counts too.
+  assert.deepEqual([same.origin, same.error, same.propose, same.fetch], [LOCAL, null, null, undefined]);
+  assert.deepEqual(same.store, recordOf(signed.first));
+  assert.equal(trust.trustedOrigin(same.store), LOCAL);
+  // Or with a move that key signed: followed, and the new record has no build field.
+  const moved = trust.decide(legacy, await trust.verifyIdentity(signed.moved), true);
+  assert.deepEqual([moved.origin, moved.changed, moved.store], [RELAY, true, recordOf(signed.moved)]);
+  // A record with no build field (an unreleased 0.3.0 build) is in this build's own format.
   assert.equal(trust.trustedOrigin(recordOf(signed.first)), LOCAL);
-  // A malformed build field is not a record this extension wrote: nothing is trusted.
-  for (const build of [7, "short", null, ""]) {
-    assert.equal(trust.trustedOrigin({...recordOf(signed.first), build}), null);
-    assert.equal(trust.trustedOrigin({v: 1, reset: true, origin: LOCAL, build}), null);
-  }
+});
+
+test("a per-deployment build's stale record never brings back a broker that a later rebuild replaced", async () => {
+  // Built for A, key A bound; then rebuilt for broker B, which never bound its key: record A stayed in storage,
+  // ignored by build B. After the update, record A must not count again.
+  const stale = recordOf(signed.first, BUILD);
+  const keyB = await trust.verifyIdentity(await hostKeyStatement(RELAY));
+  const otherKey = trust.decide(stale, keyB, true);
+  assert.deepEqual([otherKey.origin, otherKey.propose, otherKey.store, otherKey.fetch, otherKey.forget],
+    [null, RELAY, undefined, undefined, false]);
+  // A replaced host that sends no statement, or one that does not verify, gets no link on A either.
+  const silent = trust.decide(stale, null, false);
+  assert.deepEqual([silent.origin, silent.store], [null, undefined]);
+  assert.match(silent.error, /sent no signed address/);
+  assert.deepEqual([trust.decide(stale, null, true).origin, trust.decide(stale, null, true).store], [null, undefined]);
+  // An older statement of key A (a rollback) is no proof either: nothing is adopted.
+  const rollback = trust.decide(recordOf(signed.moved, BUILD), await trust.verifyIdentity(signed.first), true);
+  assert.deepEqual([rollback.origin, rollback.store, rollback.propose], [null, undefined, LOCAL]);
+  // A reset that such a build kept (origin only) is not adopted: the next origin needs a confirmation.
+  const reset = {v: 1, reset: true, origin: LOCAL, build: BUILD};
+  assert.equal(trust.trustedOrigin(reset), null);
+  assert.deepEqual([trust.decide(reset, await trust.verifyIdentity(signed.first), true).propose,
+    trust.decide(reset, await trust.verifyIdentity(signed.first), true).fetch], [LOCAL, undefined]);
 });
 
 function brokerAnswer(fields) {
@@ -881,7 +904,7 @@ test("one build, two brokers: each user's extension trusts only the broker that 
 
 test("a broker that moved without a signed statement is forgotten only by the user, then confirmed again", async () => {
   // Key A is bound at LOCAL. Broker B was set up at RELAY with a new key, and its HTTPS page serves key B.
-  const local = {[trust.STORAGE_KEY]: recordOf(signed.first, BUILD)};
+  const local = {[trust.STORAGE_KEY]: recordOf(signed.first)};
   const keyB = await hostKeyStatement(RELAY);
   let fields = {paired: false, locked: true, pairing: {code: "BBBB-BBBB", url: RELAY + "/extension/pair?token=b"},
     identity: keyB};
@@ -897,7 +920,7 @@ test("a broker that moved without a signed statement is forgotten only by the us
   // While the broker names the trusted origin again, there is nothing to forget.
   fields = {...fields, identity: signed.first};
   assert.equal((await exports.popupForget({op: "forget-trust"})).ok, false);
-  assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first, BUILD));
+  assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first));
   // The user forgets the broker: the saved trust and the pairing go, and nothing is trusted.
   fields = {...fields, identity: keyB};
   local.broker_trust_moved = {from: LOCAL, to: LOCAL};
@@ -955,15 +978,61 @@ test("a per-deployment build's saved trust survives the update to the generic bu
   // config.js that still names another origin and build ID changes nothing: this build never reads them.
   const local = {[trust.STORAGE_KEY]: recordOf(signed.first, BUILD)};
   const calls = [];
-  const {exports} = loadBackground({local, fetch: identityFetch(signed.first, {calls}),
-    globals: {AKDBX_TRUSTED_ORIGIN: RELAY, AKDBX_BUILD_ID: "build-two-BBBBBBBBBBBB"},
-    answer: brokerAnswer({paired: false, locked: true, pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=t"},
-      identity: signed.first})});
+  const fields = {paired: false, locked: true, pairing: {code: "AAAA-AAAA", url: LOCAL + "/extension/pair?token=t"},
+    identity: signed.first};
+  const {exports, listeners} = loadBackground({local, fetch: identityFetch(signed.first, {calls}),
+    globals: {AKDBX_TRUSTED_ORIGIN: RELAY, AKDBX_BUILD_ID: "build-two-BBBBBBBBBBBB"}, answer: brokerAnswer(fields)});
+  // The broker's statement at the connection proves the saved key: adopted at once, before any popup.
+  for (let i = 0; i < 200 && !listeners["port.message"]; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  listeners["port.message"]({type: "attached", ...fields});
+  await exports.trustIdle();
+  assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first));
   const state = await exports.popupState();
   assert.deepEqual([state.origin, state.pairing_url, state.propose_origin, state.trust_error],
     [LOCAL, LOCAL + "/extension/pair?token=t", null, null]);
-  assert.equal(calls.length, 0);
-  assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first, BUILD));
+  assert.equal(calls.length, 0);  // No new read: the saved key stays.
+});
+
+test("confirm and forget need a fresh broker answer and act on no state that changed meanwhile", async () => {
+  let fields = {paired: false, locked: true, identity: signed.first};
+  let answering = true;
+  const local = {};
+  const calls = [];
+  const {exports, listeners} = loadBackground({local, fetch: identityFetch(signed.first, {calls}),
+    answer: () => (answering ? brokerAnswer(fields)() : {ok: false, error: "busy"})});
+  assert.equal((await exports.popupState()).propose_origin, LOCAL);
+  // The broker does not answer the state request: the cached proposal is not enough.
+  answering = false;
+  assert.match((await exports.popupConfirm({origin: LOCAL})).error, /did not answer/);
+  assert.equal(local[trust.STORAGE_KEY], undefined);
+  answering = true;
+  // A host message that arrives while the statement is checked supersedes the answer: nothing saved.
+  const verify = globalThis.crypto.subtle.verify.bind(globalThis.crypto.subtle);
+  let injected = false;
+  globalThis.crypto.subtle.verify = async (...args) => {
+    if (!injected) {
+      injected = true;
+      listeners["port.message"]({type: "state", paired: false, locked: true, identity: signed.first});
+    }
+    return verify(...args);
+  };
+  try {
+    assert.match((await exports.popupConfirm({origin: LOCAL})).error, /state changed/);
+  } finally {
+    globalThis.crypto.subtle.verify = verify;
+  }
+  await exports.trustIdle();
+  assert.equal(local[trust.STORAGE_KEY], undefined);
+  assert.equal((await exports.popupConfirm({origin: LOCAL})).ok, true);
+  // Forget: an unanswered state request deletes nothing.
+  fields = {paired: false, locked: true, identity: signed.other_key};
+  assert.equal((await exports.popupState()).trust_forget, true);
+  answering = false;
+  assert.match((await exports.popupForget({})).error, /did not answer/);
+  assert.deepEqual(local[trust.STORAGE_KEY], recordOf(signed.first));
+  answering = true;
+  assert.equal((await exports.popupForget({})).ok, true);
+  assert.equal(local[trust.STORAGE_KEY], undefined);
 });
 
 test("a signed move that arrives while the popup is closed is shown once in the next popup", async () => {

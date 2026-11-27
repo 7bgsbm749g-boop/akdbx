@@ -81,6 +81,7 @@ MAX_XPI = 8 * 1024 * 1024
 MAX_UNPACKED = 32 * 1024 * 1024
 MAX_SOURCE = 8 * 1024 * 1024
 MAX_REDIRECTS = 3
+MAX_VERSION_PAGES = 20     # 50 versions a page: the author's version list, when the version lookup finds nothing.
 CHILD = Path(__file__).resolve().with_name('amo_https.py')
 UUID = re.compile(r'[0-9a-f]{32}|[0-9a-f-]{36}')
 SIGNATURE_FILE = re.compile(r'META-INF/[A-Za-z0-9._-]{1,64}')
@@ -108,13 +109,18 @@ def token(issuer, secret, now):
     return (header + b'.' + claims + b'.' + signature).decode('ascii')
 
 
+def child_environment():
+    """This process's environment without the API key: the child gets only the one-minute token on stdin."""
+    return {name: value for name, value in os.environ.items() if name not in (ISSUER_ENV, SECRET_ENV)}
+
+
 def run_child(request, timeout):
     """One AMO request in a child process: the result object, or None for a network failure."""
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0
     try:
         done = subprocess.run([sys.executable, '-I', str(CHILD)], input=json.dumps(request).encode('utf-8'),
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout,
-                              creationflags=flags, check=False)
+                              creationflags=flags, env=child_environment(), check=False)
         result = json.loads(done.stdout)
     except Exception:
         return None
@@ -331,8 +337,45 @@ class Signer:
                             'manage it' + (f'. AMO says: {detail}' if detail else '') + '; nothing signed')
 
     def _version(self, version):
-        """AMO's record of this version string, or None when AMO has no such version (or no such add-on)."""
-        response = self._call('GET', f'addons/addon/{FIREFOX_EXTENSION_ID}/versions/v{version}/')
+        """AMO's record of this version string, or None when AMO has no such version (or no such add-on).
+
+        The lookup by version string (`v` prefix) comes first. AMO does not document that it shows an unlisted
+        version there, so a miss is checked in the author's list of all versions (`filter=all_with_unlisted`,
+        pages from the API's own origin only) before the version counts as new.
+        """
+        record = self._record(f'addons/addon/{FIREFOX_EXTENSION_ID}/versions/v{version}/', version)
+        if record is not None:
+            return record
+        url = urljoin(self.api_base, f'addons/addon/{FIREFOX_EXTENSION_ID}/versions/?filter=all_with_unlisted'
+                                     '&page_size=50')
+        for _ in range(MAX_VERSION_PAGES):
+            response = self._call('GET', None, url=url)
+            if response['status'] == 404:
+                return None  # No add-on with this ID yet: the first upload creates it.
+            if response['status'] == 403:
+                raise self._owner_refusal(response)
+            data = _json(response)
+            if response['status'] != 200 or not isinstance(data, dict) or not isinstance(data.get('results'), list):
+                raise SigningError(f'AMO refused the version list (HTTP {response["status"]}); nothing signed')
+            for item in data['results']:
+                if isinstance(item, dict) and item.get('version') == version and type(item.get('id')) is int:
+                    found = self._record(f'addons/addon/{FIREFOX_EXTENSION_ID}/versions/{item["id"]}/', version)
+                    if found is None:
+                        raise SigningError(f'AMO lists version {version} but does not show it; nothing signed')
+                    return found
+            following = data.get('next')
+            if following is None:
+                return None
+            # Pages come from the API's own origin only, so the token never goes elsewhere.
+            if not isinstance(following, str) or not self._same_api_origin(following):
+                raise SigningError('AMO named a version list page on another origin; nothing signed')
+            url = following
+        raise SigningError(f'AMO lists more than {MAX_VERSION_PAGES * 50} versions of {FIREFOX_EXTENSION_ID}; '
+                           'nothing signed')
+
+    def _record(self, path, version):
+        """One version record by its path, or None for HTTP 404."""
+        response = self._call('GET', path)
         if response['status'] == 404:
             return None
         if response['status'] == 403:
@@ -343,6 +386,11 @@ class Signer:
             raise SigningError(f'AMO refused the version lookup of {version} (HTTP {response["status"]}); '
                                'nothing signed')
         return data
+
+    def _same_api_origin(self, url):
+        api, parts = urlsplit(self.api_base), urlsplit(url)
+        return (parts.scheme == 'https' and parts.hostname is not None and not parts.username and not parts.password
+                and (parts.hostname.lower(), parts.port) == (api.hostname.lower(), api.port))
 
     def _upload(self, build):
         self.stage = 'upload'

@@ -82,6 +82,7 @@ class Amo:
         self.unsigned = False          # Serve the upload itself as the "signed" file.
         self.redirect = None           # Another origin that serves the signed file.
         self.next_host = None          # Another host name in the version list's next links.
+        self.by_number = True          # False: the lookup by version string misses (AMO does not document it).
         self.jtis = set()
         self.claims = []
         self.log = []                  # (method, path, has_token)
@@ -265,7 +266,7 @@ class Amo:
                                                        'edit_url': amo.origin + '/developers/edit'}})
 
             def version(self, key):
-                item = (amo.versions.get(key[1:]) if key.startswith('v')
+                item = ((amo.versions.get(key[1:]) if amo.by_number else None) if key.startswith('v')
                         else next((v for v in amo.versions.values() if str(v['id']) == key), None))
                 if item is None:
                     return self.reply(404, {'detail': 'Not found.'})
@@ -452,7 +453,9 @@ def test_the_release_step_uploads_the_generic_build_unlisted_and_saves_the_signe
         assert 'rebuild.py' in source.namelist()
     paths = [(m, p) for m, p, _ in lab.amo.log]
     base = f'/api/v5/addons/addon/{GUID}/'
-    assert paths[:2] == [('GET', base + f'versions/v{build.version}/'), ('POST', '/api/v5/addons/upload/')]
+    # The lookup by version string, then the author's version list (404: no add-on yet), then the upload.
+    assert paths[:3] == [('GET', base + f'versions/v{build.version}/'), ('GET', base + 'versions/'),
+                         ('POST', '/api/v5/addons/upload/')]
     assert ('PUT', base) in paths and ('PATCH', base + f'versions/{item["id"]}/') in paths
     assert all(token for _, _, token in lab.amo.log)  # Every request to the API's own origin has a token.
     assert len({c['jti'] for c in lab.amo.claims}) == len(lab.amo.claims)
@@ -480,6 +483,44 @@ def test_a_rerun_of_the_tag_resumes_the_same_version_and_uploads_nothing(lab, ca
     assert code == 0 and again == printed
     assert [m for m, _, _ in lab.amo.log[log:]] == ['GET', 'GET', 'GET']  # Lookup, review, download.
     assert len(lab.amo.uploads) == 1
+
+
+def test_a_rerun_finds_the_version_in_the_authors_list_when_the_lookup_by_number_misses(lab, capsys):
+    """AMO does not document that the lookup by version string shows an unlisted version; the list does."""
+    build = firefox_signing.Build.current()
+    lab.amo.by_number = False
+    lab.amo.review_polls = 10_000
+    code, printed = release(lab, '--timeout', '60', capsys=capsys)
+    assert code == 1 and printed['stage'] == 'review'
+    # 59 newer versions first (AMO lists newest first, 50 a page): the build's version is on the second page.
+    lab.amo.versions = {f'0.0.{n}': dict(id=1000 + n, xpi=b'', polls=0) for n in range(1, 60)} | lab.amo.versions
+    lab.amo.review_polls = 0
+    code, printed = release(lab, capsys=capsys)
+    assert code == 0 and printed['state'] == 'signed', printed
+    assert len(lab.amo.uploads) == 1 and printed['version'] == build.version
+    lab.amo.next_host = 'localhost'  # A next link on another host than the API's: refused, no token sent there.
+    code, printed = release(lab, output=lab.tmp / 'other', capsys=capsys)
+    assert code == 1 and 'another origin' in printed['error']
+
+
+def test_the_https_child_gets_no_amo_key(lab, monkeypatch):
+    """The step's environment holds the key; the child that sends each request gets only its one-minute token."""
+    monkeypatch.setenv('AMO_JWT_ISSUER', ISSUER)
+    monkeypatch.setenv('AMO_JWT_SECRET', SECRET)
+    seen = []
+    real = firefox_signing.subprocess.run
+
+    def recording(*args, **kwargs):
+        seen.append(kwargs.get('env'))
+        return real(*args, **kwargs)
+    monkeypatch.setattr(firefox_signing.subprocess, 'run', recording)
+    response = firefox_signing.run_child(dict(method='GET', url=lab.amo.origin + '/api/v5/x/', timeout=5,
+                                              ca_file=str(lab.cert)), 10)
+    assert response is not None and response['status'] == 401  # The child ran, with no token.
+    [env] = seen
+    assert env is not None and 'AMO_JWT_ISSUER' not in env and 'AMO_JWT_SECRET' not in env
+    assert SECRET not in json.dumps(env) and ISSUER not in json.dumps(env)
+    assert env.get('PATH') == os.environ.get('PATH')  # Everything else is inherited.
 
 
 def test_a_rerun_attaches_a_source_archive_that_an_earlier_run_could_not(lab, capsys):

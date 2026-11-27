@@ -98,7 +98,8 @@ each Firefox start; the confirmed address stays.
 per-deployment build with an AMO key from the vault. It is removed: the
 release signs the one generic build, so no broker needs an AMO key. An add-on
 that it signed keeps its broker trust when the release's XPI replaces it
-(same ID, higher version).
+(same ID, higher version), once the broker signs with the saved key
+([update from a per-deployment build](private-pages.md#browser-extension-trust)).
 
 ### How the release signs
 
@@ -108,6 +109,8 @@ the Chrome and Firefox archives with `akdbx extension pack`, and runs
 API key in the GitHub Actions secrets `AMO_JWT_ISSUER` and `AMO_JWT_SECRET`
 (only this step sees them). The step:
 
+- looks the version up on AMO (by its version string, then in the author's
+  list of all versions);
 - uploads exactly the release's unsigned Firefox ZIP, at the build's own
   version (`MAJOR.MINOR.PATCH.N`, N from the contents; the version `status`
   calls current);
@@ -159,7 +162,8 @@ Origin changes that the broker's identity key signs need no new file.
   `jti`, valid for 60 seconds; AMO allows at most 300). A child process
   (`akdbx/amo_https.py`, standard library only) sends that one request and is
   stopped at a fixed deadline. The child gets the token on standard input,
-  never the secret, and nothing goes into argv.
+  never the secret: its environment has no `AMO_JWT_ISSUER` or
+  `AMO_JWT_SECRET`, and nothing goes into argv.
 - The child ignores proxy variables and follows no redirect. The step sends
   a token only to the API's own origin; a download redirect to another origin
   gets no token.
