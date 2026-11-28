@@ -900,7 +900,7 @@ def test_a_title_another_identity_has_in_the_group_is_refused_on_the_page(deploy
     assert vault.find_entries(title=LABEL) == [] and len(vault.find_entries(title='Work shipping')) == 1
 
 
-# Phone-digit pins (0.55.0): one box of a split "last digits of your number" challenge.
+# Phone-digit pins (0.55.1): one box of a split "last digits of your number" challenge.
 @pytest.mark.parametrize('saved, count, digits', [
     ('+1 (555) 010-0128', 4, '0128'),
     ('+44 7700 900 528', 4, '0528'),

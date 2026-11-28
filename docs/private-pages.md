@@ -437,7 +437,7 @@ The browser extension opens pairing and unlock links only on one trusted
 origin, so a replaced native host cannot send you to a look-alike
 master-password page. From extension version 0.3.0 (akdbx 0.29.0), an origin
 change needs no rebuild, no reload and no approval. From fill extension 0.19.0
-(akdbx after 0.54.1) the extension is one generic build, the same for every
+(akdbx 0.55.0) the extension is one generic build, the same for every
 user and every release asset: `config.js` holds only its version, with no
 broker address and no build ID.
 

@@ -27,7 +27,7 @@ Firefox 153+ (0.47.0+). From 0.49.0, the installer also accepts Chromium and
 Brave. See `extension_host_browsers` in broker status. The Chromium family uses the fixed ID `jjoamaejjkldcjcpgncoomoaagdfimhg`;
 Firefox uses `akdbx@akdbx.org`. Both use host name `org.akdbx.extension`.
 See [Firefox setup and installation limits](../../../docs/firefox.md). From
-fill extension 0.19.0 (after 0.54.1) the extension is one generic build for
+fill extension 0.19.0 (0.55.0) the extension is one generic build for
 every user, and Firefox can run the release's permanently installed add-on
 that Mozilla signed ([signed Firefox add-on](#signed-firefox-add-on-fill-extension-0190)).
 
@@ -79,7 +79,7 @@ From fill extension 0.19.0 the release's Mozilla-signed Firefox add-on is
 the same generic build, with the same four-part version, so `status` shows it
 as `"current"` like a local build. A Firefox add-on that the removed
 `akdbx extension sign` (0.53.0 to 0.54.x) signed has its own nine-digit
-fourth part (for example `0.18.0.116789001`); a broker after 0.54.1 shows it
+fourth part (for example `0.18.0.116789001`); a broker from 0.55.0 shows it
 as `"outdated"` (an older MAJOR.MINOR.PATCH): install the release's XPI over
 it.
 

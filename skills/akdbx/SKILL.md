@@ -813,7 +813,7 @@ selector from page structure only. After the secret is visible, do not
 screenshot, snapshot, read, select or copy that page. Both routes from 0.32.0
 (`--route extension` needs `extension_capture_protocol: 1` and fill extension 0.4.0).
 
-**Generic extension, first use** (fill extension 0.19.0, after 0.54.1). The
+**Generic extension, first use** (fill extension 0.19.0, 0.55.0). The
 extension is one build for every user: `akdbx extension build` and the
 release assets (Chrome ZIP, Firefox ZIP, Mozilla-signed Firefox XPI) hold no
 broker address. On first use the popup shows the origin that the native host

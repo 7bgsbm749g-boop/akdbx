@@ -327,7 +327,7 @@ the akdbx version; the popup shows it in its footer. After an akdbx update,
 card in `chrome://extensions`. An extension built by akdbx 0.21.2 or earlier
 reports no version; it still works and shows as outdated.
 
-From fill extension 0.19.0 (akdbx after 0.54.1) the extension is one generic
+From fill extension 0.19.0 (akdbx 0.55.0) the extension is one generic
 build, the same for everyone who downloads akdbx, like any browser extension:
 it holds no broker address and no per-user ID. `akdbx extension build` writes
 those same files, and every GitHub release attaches them: a Chrome ZIP

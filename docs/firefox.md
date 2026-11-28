@@ -68,7 +68,7 @@ the two formats share one folder.
 ## Permanent install: the release's Mozilla-signed XPI (0.19.0)
 
 Release Firefox installs an add-on permanently only when Mozilla signed it.
-From fill extension 0.19.0 (akdbx after 0.54.1) the add-on is one generic
+From fill extension 0.19.0 (akdbx 0.55.0) the add-on is one generic
 build for every user, so Mozilla signs it once per release: the GitHub
 release attaches `akdbx-extension-firefox-VERSION.xpi`, listed in
 `SHA256SUMS` and covered by a build-provenance attestation like the wheel.

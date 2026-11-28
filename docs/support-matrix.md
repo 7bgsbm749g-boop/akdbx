@@ -152,14 +152,14 @@ install from 0.49.0.
 | Refuses a click-through cover over a field | ◼ (AG) | ◼ (AG) | ◼ (AG) |
 | Popup human click | ✅ login and card 0.21.0, TOTP 0.49.0 (ext 0.12.0); address with the identity pin's checks and texted (SMS) code from 0.52.0 (ext 0.15.0) · `linux-extension-browser` (R) | ✅ same · `windows` (S) | ✅ login and card 0.43.0, TOTP 0.49.0; address and texted code from 0.52.0 · `macos-extension-browser` (R) (S) |
 | Agent desktop slots | — (U) | — (U) | — (U) |
-| First use: the user confirms the broker origin; nothing opens before (generic build, AI) | ✅ after 0.54.1 (ext 0.19.0) · `linux-extension-browser` | ✅ after 0.54.1 · `windows` (Edge) | ✅ after 0.54.1 · `macos-extension-browser` |
-| Release assets: generic Chrome ZIP, `SHA256SUMS`, attestation | ✅ after 0.54.1 · Release workflow `extension` job; Chrome Web Store: ✗ not built (follow-up) | same | same |
+| First use: the user confirms the broker origin; nothing opens before (generic build, AI) | ✅ 0.55.0 (ext 0.19.0) · `linux-extension-browser` | ✅ 0.55.0 · `windows` (Edge) | ✅ 0.55.0 · `macos-extension-browser` |
+| Release assets: generic Chrome ZIP, `SHA256SUMS`, attestation | ✅ 0.55.0 · Release workflow `extension` job; Chrome Web Store: ✗ not built (follow-up) | same | same |
 
 ## Extension route, Firefox
 
 Firefox 153 or newer, with its own host and build (`--browser firefox`). It
 runs as a temporary add-on, or as a permanently installed XPI that Mozilla
-signed: from fill extension 0.19.0 (after 0.54.1) the release's one generic
+signed: from fill extension 0.19.0 (0.55.0) the release's one generic
 build (AH). `akdbx extension sign` (0.53.0 to 0.54.x), which signed a
 per-deployment build, is removed. See [Firefox setup](firefox.md).
 
@@ -181,8 +181,8 @@ per-deployment build, is removed. See [Firefox setup](firefox.md).
 | Refuses a click-through cover over a field | ◼ (AG) | ◼ (AG) | ◼ (AG) |
 | Popup human click | ✅ login 0.47.0; address and texted (SMS) code from 0.52.0 (ext 0.15.0) · `firefox-extension-browser`; TOTP, card: no Firefox test (R) | ✅ login, address, texted code · `firefox-extension-browser` | ✅ login, address, texted code · `firefox-extension-browser` |
 | Agent desktop slots | — (U) | — (U) | — (U) |
-| First use: the user confirms the broker origin; nothing opens before (generic build, AI) | ✅ after 0.54.1 (ext 0.19.0) · `firefox-extension-browser` | ✅ after 0.54.1 · `firefox-extension-browser` | ✅ after 0.54.1 · `firefox-extension-browser` |
-| Permanent install: the release's AMO-signed XPI | ✅ after 0.54.1 · Release workflow `extension` job; contract test (`linux`) against a fake AMO; `firefox-extension-browser` loads and fills through the release archive (AH) | ✅ after 0.54.1 · contract test (`windows`); `firefox-extension-browser` (AH) | ✅ after 0.54.1 · contract test (`macos-broker`); `firefox-extension-browser` (AH) |
+| First use: the user confirms the broker origin; nothing opens before (generic build, AI) | ✅ 0.55.0 (ext 0.19.0) · `firefox-extension-browser` | ✅ 0.55.0 · `firefox-extension-browser` | ✅ 0.55.0 · `firefox-extension-browser` |
+| Permanent install: the release's AMO-signed XPI | ✅ 0.55.1 · Release workflow `extension` job; contract test (`linux`) against a fake AMO; `firefox-extension-browser` loads and fills through the release archive (AH) | ✅ 0.55.0 · contract test (`windows`); `firefox-extension-browser` (AH) | ✅ 0.55.0 · contract test (`macos-broker`); `firefox-extension-browser` (AH) |
 
 ## Android route (`akdbx android`)
 
